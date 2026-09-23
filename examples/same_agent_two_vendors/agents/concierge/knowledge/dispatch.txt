@@ -1,0 +1,2 @@
+The warehouse dispatches Monday to Friday. Orders paid before 14:00 Lisbon time leave the same day;
+orders paid later leave the next business day.

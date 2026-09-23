@@ -1,0 +1,26 @@
+import rfnry_engine
+
+EXPECTED = {
+    "Engine", "AgentInfo", "Refinery", "InMemoryStorage", "PostgresStorage", "Storage", "RunRow", "LabelRow",
+    "Bucket", "Review", "Outcome", "Label", "Labeled", "Exported", "Conflict",
+    "Generation", "Decision", "Run", "Step",
+    "Message", "ToolSpec", "ToolCall", "Usage", "Reply", "State",
+    "Text", "Image", "Audio", "Document", "Part", "Content",
+    "Choice", "Score", "Check", "Question", "ChoiceAnswer", "ScoreAnswer", "CheckAnswer", "Answer", "Decided",
+    "GenerationModel", "StreamingGenerationModel", "DecisionModel", "Tool", "Tools", "EngineTools", "Jail", "Workspace",
+    "TextDelta", "ToolCallStarted", "ToolResultReady", "Event",
+    "confidence", "is_holdout",
+    "EngineException", "ConfigurationError", "NotFoundError", "InputError", "ModelError", "RunawayError",
+    "DelegationLoopError", "DelegationDepthError", "StorageError",
+}
+
+
+def test_public_names_are_exactly_these() -> None:
+    assert set(rfnry_engine.__all__) == EXPECTED
+    for name in EXPECTED:
+        assert getattr(rfnry_engine, name) is not None
+
+
+def test_the_engine_shows_its_agents_and_hides_its_internals() -> None:
+    public = {name for name in vars(rfnry_engine.Engine) if not name.startswith("_")}
+    assert public == {"agents", "run"}

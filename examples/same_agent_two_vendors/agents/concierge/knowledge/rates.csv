@@ -1,0 +1,11 @@
+country,city,zone,days,price_eur,free_over_eur
+Portugal,Lisbon,home,1,3.90,50
+Portugal,Porto,home,2,3.90,50
+Spain,Madrid,iberia,2,4.90,50
+Spain,Barcelona,iberia,2,4.90,50
+France,Paris,eu,4,9.90,120
+Germany,Berlin,eu,4,9.90,120
+Italy,Rome,eu,5,9.90,120
+United Kingdom,London,world,6,19.90,
+United States,New York,world,10,24.90,
+Brazil,Sao Paulo,world,12,29.90,

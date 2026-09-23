@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+.env*
+examples/**/uv.lock
+examples/**/datasets/*
+!examples/**/datasets/sample/

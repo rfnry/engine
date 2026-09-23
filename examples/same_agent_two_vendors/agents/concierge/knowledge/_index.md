@@ -1,0 +1,2 @@
+- knowledge/rates.csv — one row per destination: country, city, zone, days, price_eur, free_over_eur
+- knowledge/dispatch.txt — the warehouse's dispatch cutoff and days
