@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from rfnry_engine.bundle import build_bundle
 from rfnry_engine.errors import (
@@ -45,7 +45,7 @@ from rfnry_engine.records import Decision, Generation, Run, Step
 from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import DELEGATE_TOOL, child_result, enter, permit
 from rfnry_engine.tools.engine_tools import EngineTools
-from rfnry_engine.tools.tools import Tool, ToolsLike
+from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import Workspace
 from rfnry_engine.tree import AgentSpec, Kind, load_tree, validate_tree
 
@@ -70,6 +70,10 @@ class AgentInfo(BaseModel):
     kind: Kind
     description: str
     agents: list[str]
+
+
+class AgentInput(BaseModel):
+    input: str = Field(description="What to hand the agent")
 
 
 class Recorder(Protocol):
@@ -202,6 +206,30 @@ class Engine:
             except Exception:
                 logger.warning("refinery.record failed for run %s", run.run_id, exc_info=True)
         return run
+
+    def tool(
+        self,
+        agent: str,
+        *,
+        scope: str,
+        name: str | None = None,
+        description: str | None = None,
+        context: str | None = None,
+        tools: ToolsLike | None = None,
+        workspace: Workspace | None = None,
+    ) -> Tools:
+        if not scope:
+            raise InputError("engine: scope is required")
+        spec = self._spec(agent)
+
+        async def body(args: dict[str, Any]) -> Result:
+            run = await self.run(agent, scope, args["input"], context=context, tools=tools, workspace=workspace)
+            if isinstance(run, Generation):
+                return run.reply
+            return {qid: answer.model_dump() for qid, answer in run.answers.items()}
+
+        described = spec.description if description is None else description
+        return Tools([Tool(name or spec.name, described, body=body, args=AgentInput)])
 
     async def _run(
         self,

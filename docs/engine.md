@@ -580,6 +580,26 @@ combined = MemoryTools(memory, corpus_id="acme") + surface.only("Read", "Grep")
 A `Delegate` dispatched this way runs the child as its own top-level run, with the same scope,
 `tools=` and `workspace=` a `Delegate` inside a run would give it.
 
+An agent is itself a tool. `engine.tool(agent, scope=...)` gives any runtime — a live voice model,
+a loop of your own — one tool that runs the agent: named for the agent and described by its
+`AGENT.md` unless you say otherwise, taking `{"input": str}`, returning a generation agent's reply
+or a decision agent's answers as a dict:
+
+```python
+consult = engine.tool("billing", scope="acme", name="consult", description="Ask the billing desk.",
+                      context="Acme is on the enterprise plan.")
+reply = await consult.dispatch("consult", {"input": "Was I charged twice?"})
+answers = await engine.tool("triage", scope="acme").dispatch("triage", {"input": "It is down"})
+answers["urgent"]["probability"]                           # 0.91
+surface = consult + MemoryTools(memory, corpus_id="acme")
+```
+
+It is a `Tools` of one, so it adds to any other. Each call is a top-level run under the scope it
+was made with, recorded like any run; `context=`, `tools=` and `workspace=` ride every call.
+Mounted inside another run with `run(tools=)` it is a tool like any other, under `tool_timeout`,
+and its run is not the caller's child — to nest with lineage, name the agent in `agents:`. A loop
+through it is still refused.
+
 ## Storage
 
 The Refinery is the only part of the library that stores anything. Two storages ship: `InMemoryStorage()`

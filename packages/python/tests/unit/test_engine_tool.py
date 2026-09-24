@@ -1,0 +1,87 @@
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from rfnry_engine.engine import Engine
+from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
+from rfnry_engine.models import Answer, CheckAnswer, Reply, ScoreAnswer, ToolCall
+from rfnry_engine.records import Generation, Run
+from rfnry_engine.tools.tools import Tool, Tools
+
+from .fakes import TOOLS, Fixed, Scripted, text_reply
+
+TRIAGE: dict[str, Answer] = {"urgent": CheckAnswer(probability=0.9), "severity": ScoreAnswer(score=3, probabilities=[0, 0, 0, 1])}
+
+
+class Recorded:
+    def __init__(self) -> None:
+        self.runs: list[Run] = []
+
+    async def record(self, run: Run) -> None:
+        self.runs.append(run)
+
+
+def calling(name: str, text: str) -> Reply:
+    return Reply(tool_calls=[ToolCall(id="c1", name=name, args={"input": text})], stop_reason="tool_use")
+
+
+async def test_a_generation_agent_as_a_tool_replies_and_records(fixtures: Path) -> None:
+    llm = Scripted(text_reply("Refunded."))
+    recorder = Recorded()
+    engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=recorder)
+    billing = engine.tool("billing", scope="acme", context="Acme is on the enterprise plan.")
+    [definition] = billing.definitions()
+    assert definition["name"] == "billing" and definition["description"] == "Answers billing questions"
+    assert definition["input_schema"]["required"] == ["input"]
+    assert await billing.dispatch("billing", {"input": "Charged twice"}) == "Refunded."
+    [run] = recorder.runs
+    assert isinstance(run, Generation) and run.agent == "billing" and run.scope == "acme"
+    assert run.parent_run_id is None and run.input == "Charged twice"
+    assert "Acme is on the enterprise plan." in llm.calls[0][0]
+
+
+async def test_a_decision_agent_as_a_tool_returns_its_answers(fixtures: Path) -> None:
+    engine = Engine(fixtures, decision=Fixed(TRIAGE))
+    judge = engine.tool("triage", scope="acme", name="judge", description="Judge urgency.")
+    assert judge.names == ["judge"] and judge.definitions()[0]["description"] == "Judge urgency."
+    answers = await judge.dispatch("judge", {"input": "It is down"})
+    assert isinstance(answers, dict) and set(answers) == {"urgent", "severity"}
+    assert answers["urgent"]["probability"] == 0.9 and answers["severity"]["score"] == 3
+
+
+async def test_the_tool_composes_and_refuses_bad_calls(fixtures: Path) -> None:
+    engine = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+
+    async def ping(args: dict[str, Any]) -> str:
+        return "pong"
+
+    surface = engine.tool("billing", scope="acme", name="consult") + Tools([Tool("ping", "Ping", body=ping)])
+    assert surface.names == ["consult", "ping"]
+    with pytest.raises(InputError, match="^tools: invalid arguments for consult"):
+        await surface.dispatch("consult", {})
+    with pytest.raises(ConfigurationError, match="^tools: duplicate tool name 'consult'"):
+        surface + engine.tool("support", scope="acme", name="consult")
+    with pytest.raises(InputError, match="^engine: scope is required"):
+        engine.tool("billing", scope="")
+    with pytest.raises(NotFoundError, match="^engine: agent 'ghost' was not found"):
+        engine.tool("ghost", scope="acme")
+
+
+async def test_inside_a_run_it_is_its_own_top_level_run(fixtures: Path) -> None:
+    llm = Scripted(calling("consult", "Charged twice"), text_reply("Refunded."), text_reply("Done."))
+    recorder = Recorded()
+    engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=recorder)
+    run = await engine.run("support", "acme", "Help", tools=engine.tool("billing", scope="acme", name="consult"))
+    assert isinstance(run, Generation) and run.reply == "Done." and run.children == []
+    assert run.steps[0].result == "Refunded." and run.steps[0].child_run_id is None
+    assert [r.agent for r in recorder.runs] == ["billing", "support"]
+    assert recorder.runs[0].parent_run_id is None
+
+
+async def test_the_loop_guard_holds_across_the_tool(fixtures: Path) -> None:
+    llm = Scripted(calling("billing", "again"), text_reply("done"))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    run = await engine.run("billing", "acme", "hi", tools=engine.tool("billing", scope="acme"))
+    assert isinstance(run, Generation) and run.steps[0].is_error
+    assert run.steps[0].result == "DelegationLoopError: delegate: loop at billing -> billing"

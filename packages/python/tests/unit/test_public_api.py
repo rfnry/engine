@@ -23,4 +23,4 @@ def test_public_names_are_exactly_these() -> None:
 
 def test_the_engine_shows_its_agents_and_hides_its_internals() -> None:
     public = {name for name in vars(rfnry_engine.Engine) if not name.startswith("_")}
-    assert public == {"agents", "run"}
+    assert public == {"agents", "run", "tool"}
