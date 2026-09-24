@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,6 +82,7 @@ class Recorder(Protocol):
 
 
 PART = TypeAdapter[Part](Part)
+HISTORY = TypeAdapter(list[Message])
 PART_TYPES = ("text", "image", "audio", "document")
 
 
@@ -100,6 +102,13 @@ def _parts(value: object) -> list[Part] | None:
     if len(found) != len(parts):
         raise InputError("engine: input mixes parts with other values")
     return found
+
+
+def _history(value: Sequence[object] | None) -> list[Message]:
+    try:
+        return HISTORY.validate_python(list(value or []), from_attributes=True)
+    except ValidationError as exc:
+        raise InputError(f"engine: history does not fit the contract: {exc.errors(include_url=False)}") from exc
 
 
 def _content(value: object) -> Content:
@@ -182,7 +191,7 @@ class Engine:
         input: State,
         *,
         task: str | None = None,
-        history: list[Message] | None = None,
+        history: Sequence[object] | None = None,
         context: str | None = None,
         expect: type[BaseModel] | None = None,
         on_event: EventHandler | None = None,
@@ -196,7 +205,7 @@ class Engine:
         if task is not None and spec.kind == "decision":
             raise InputError(f"engine: decision agent {agent!r} takes no task")
         options = _Options(
-            task=task, history=list(history or []), context=context, expect=expect,
+            task=task, history=_history(history), context=context, expect=expect,
             on_event=on_event, tools=tools, workspace=workspace,
         )
         run = await self._run(spec, scope, input, options, None)

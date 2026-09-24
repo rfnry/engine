@@ -201,7 +201,8 @@ run = await engine.run("support", scope="acme", input=parts)
 ```
 
 A list of parts becomes the first user message as it is; parts in `history` reach the model
-unchanged, and a later run continues from them.
+unchanged, and a later run continues from them. History, like input, is read by shape: a message or
+part from another library is read by its fields.
 
 Pass `record=False` to run without the Refinery recording it — a replay, an evaluation, a dry run.
 

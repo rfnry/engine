@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from rfnry_engine.engine import Engine
+from rfnry_engine.errors import InputError
 from rfnry_engine.models import (
     AnswerLike,
     CheckAnswer,
@@ -91,3 +92,30 @@ async def test_parts_from_another_library_are_read_by_their_fields(fixtures: Pat
     assert isinstance(run, Generation)
     assert llm.calls[0][1][-1].content == [Text(text="And this?"), Image(media_type="image/png", url="https://x/c.png")]
     assert llm.calls[1][1][-1].content == [Text(text="the photo"), Image(media_type="image/png", data=b"png")]
+
+
+async def test_history_from_another_library_is_read_by_its_fields(fixtures: Path) -> None:
+    llm = Scripted(Reply(text="Still a cat."))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    history = [
+        other.Message(role="user", content=[other.Text(text="And this?"), other.Image(media_type="image/png", url="https://x/c.png")]),
+        other.Message(role="assistant", content="A cat.", tool_calls=[other.ToolCall(id="c1", name="Read")]),
+        {"role": "user", "content": [other.Text(text="Sure?"), other.Image(media_type="image/png", data=b"png")]},
+    ]
+    run = await engine.run("billing", "acme", "Look again.", history=history)
+    assert isinstance(run, Generation)
+    sent = llm.calls[0][1]
+    assert sent[0] == Message(role="user", content=[Text(text="And this?"), Image(media_type="image/png", url="https://x/c.png")])
+    assert sent[1] == Message(role="assistant", content="A cat.", tool_calls=[ToolCall(id="c1", name="Read")])
+    assert sent[2].content == [Text(text="Sure?"), Image(media_type="image/png", data=b"png")]
+    assert run.conversation[:3] == sent[:3]
+
+
+async def test_a_malformed_part_from_another_library_in_history_is_an_input_error(fixtures: Path) -> None:
+    engine = Engine(fixtures, generation=Scripted(Reply(text="x")), tools=TOOLS)
+    missing = other.Message.model_construct(role="user", content=[other.Text.model_construct(type="text")])
+    with pytest.raises(InputError, match=r"^engine: history does not fit the contract"):
+        await engine.run("billing", "acme", "x", history=[missing])
+    both = {"role": "user", "content": [other.Image(media_type="image/png", data=b"png", url="https://x/c.png")]}
+    with pytest.raises(InputError, match=r"^models: image carries data or url, not both"):
+        await engine.run("billing", "acme", "x", history=[both])
