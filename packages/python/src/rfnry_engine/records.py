@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from rfnry_engine.models import Answer, Content, Message, Question, State, Usage
+from rfnry_engine.models import Answer, Content, Message, Question, State, ToolSpec, Usage
 from rfnry_engine.stop import Stopped
 
 
@@ -34,6 +34,7 @@ class Generation(BaseModel):
     system: str
     messages: list[Message]
     conversation: list[Message]
+    tools: list[ToolSpec] = Field(default_factory=list)
     steps: list[Step]
     calls: int
     reply: str

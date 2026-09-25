@@ -431,7 +431,7 @@ class Engine:
             return Generation(
                 run_id=run_id, parent_run_id=parent_run_id, agent=spec.name, scope=scope, task=options.task,
                 at=at, duration_ms=int((time.monotonic() - started) * 1000), model=model,
-                input=input, system=system, messages=sent, conversation=list(messages), steps=steps, calls=calls,
+                input=input, system=system, messages=sent, conversation=list(messages), tools=specs, steps=steps, calls=calls,
                 reply=reply_text, usage=usage, children=children, stopped=stopped,
             )
 

@@ -172,7 +172,7 @@ caller passes. Everything else it reads when it needs it, with the `Read`, `Grep
 ### Running an agent
 
 `engine.run(agent, scope, input)` names the agent, the tenant and the input, and returns a record.
-For a generation agent that record is a `Generation`: the reply, the system prompt as sent, the messages as sent to the first model call, the whole conversation, every tool
+For a generation agent that record is a `Generation`: the reply, the system prompt as sent, the messages as sent to the first model call, the whole conversation, the tools the model was offered (`run.tools`, each a `ToolSpec`), every tool
 call as a `Step` with its result and timing, the model calls and their summed usage, and any child
 runs. It is the whole observability payload; hand it to your own telemetry:
 
@@ -511,11 +511,16 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | system, messages, steps, reply, stopped, usage, every label |
+| `generation` | generation run | system, messages, tools, conversation, steps, reply, stopped, usage, every label |
 | `preference` | human correction | prompt, chosen (the correction), rejected (the reply) |
 | `decision` | question of a decision run | state, question, answer, probabilities, confidence, truth, outcome |
 
-The first two are a generation agent's episodes and the corrections people made to them. Parts
+The first two are a generation agent's episodes and the corrections people made to them. A
+generation row's `tools` is what the model was offered — `{name, description, input_schema}` each —
+and `conversation` is `run.conversation` in order: history, input, assistant turns with their
+`tool_calls` (`{id, name, args}`), tool results with `is_error`, the final reply. Together they fit
+standard fine-tuning and eval formats with a few lines of mapping; the library writes no vendor's
+format. A run recorded before `tools` was kept exports `"tools": []`. Parts
 are written inline, their bytes as base64, so a row is self-contained; strip the media from a row
 you do not want it in. The third
 is a decision agent's answers beside what turned out true: a calibrated model is one whose 0.8 was

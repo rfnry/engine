@@ -41,6 +41,8 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
         "model": row.model,
         "system": body["system"],
         "messages": body["messages"],
+        "tools": body.get("tools", []),
+        "conversation": body.get("conversation", []),
         "steps": body["steps"],
         "reply": body["reply"],
         "stopped": body.get("stopped"),

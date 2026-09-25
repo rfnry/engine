@@ -3,7 +3,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from rfnry_engine.errors import StorageError
-from rfnry_engine.models import Document, Image, Message, Text, ToolCall
+from rfnry_engine.models import Document, Image, Message, Text, ToolCall, ToolSpec, Usage
+from rfnry_engine.records import Generation
+from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 
 
@@ -117,3 +119,26 @@ async def test_a_body_with_parts_round_trips(storage: Storage) -> None:
     got = await storage.get_run("a", "p")
     assert got is not None and got.body == body
     assert [Message.model_validate(m) for m in got.body["conversation"]] == conversation
+
+
+async def test_a_generation_with_its_tools_round_trips(storage: Storage) -> None:
+    at = datetime.now(UTC)
+    run = Generation(
+        run_id="g", agent="support", scope="a", at=at, duration_ms=1, model="m", input="hi", system="s",
+        messages=[Message(role="user", content="hi")],
+        conversation=[
+            Message(role="user", content="hi"),
+            Message(role="assistant", tool_calls=[ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"})]),
+            Message(role="tool", tool_call_id="c1", content='{"order": "A-1"}'),
+            Message(role="assistant", content="Found it."),
+        ],
+        tools=[ToolSpec(name="lookup_order", description="Fetch an order", input_schema={"type": "object", "properties": {"order_id": {"type": "string"}}})],
+        steps=[], calls=2, reply="Found it.", usage=Usage(),
+    )
+    await Refinery(storage).record(run)
+    got = await storage.get_run("a", "g")
+    assert got is not None and Generation.model_validate(got.body) == run
+    old = {key: value for key, value in got.body.items() if key != "tools"}
+    await storage.put_run("a", got.model_copy(update={"body": old}))
+    again = await storage.get_run("a", "g")
+    assert again is not None and Generation.model_validate(again.body).tools == []

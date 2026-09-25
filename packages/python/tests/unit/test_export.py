@@ -1,17 +1,19 @@
 import base64
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
-from rfnry_engine.models import Document, Image, Message, Part, Text
+from rfnry_engine.engine import Engine
+from rfnry_engine.models import Document, Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Generation, Step
 from rfnry_engine.refinery.holdout import is_holdout
 from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Outcome, Review
-from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.refinery import Refinery, flatten
 from rfnry_engine.refinery.storage import RunRow
 
-from .fakes import MemoryBucket, decision_record, generation_record
+from .fakes import TOOLS, MemoryBucket, Scripted, decision_record, generation_record, text_reply
 
 
 def test_holdout_is_derived_deterministic_and_roughly_twenty_percent() -> None:
@@ -183,3 +185,73 @@ async def test_a_run_with_parts_is_recorded_and_exported_with_its_bytes_as_base6
     [row] = _lines(next(data for key, data in bucket.objects.items() if "/generation/" in key))
     assert row["messages"][0]["content"][1] == {"type": "image", "media_type": "image/png", "data": base64.b64encode(png).decode(), "url": None}
     assert row["steps"][0]["result"][0]["data"] == base64.b64encode(b"%PDF").decode()
+
+
+async def test_a_generation_row_carries_the_tools_offered_and_the_conversation_in_order(fixtures: Path) -> None:
+    llm = Scripted(
+        Reply(
+            text="Checking.",
+            tool_calls=[ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"}), ToolCall(id="c2", name="Ghost")],
+            stop_reason="tool_use",
+        ),
+        text_reply("Refunded."),
+    )
+    refinery = Refinery(InMemoryStorage())
+    engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=refinery)
+    run = await engine.run("support", "acme", "Charged twice.", history=[Message(role="user", content="hi"), Message(role="assistant", content="hello")])
+    assert isinstance(run, Generation)
+    offered = llm.calls[0][2]
+    assert run.tools == offered and {"lookup_order", "now", "Read", "Delegate"} <= {spec.name for spec in offered}
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [row] = _lines(next(data for key, data in bucket.objects.items() if "/generation/" in key))
+    assert row["tools"] == [spec.model_dump(mode="json") for spec in offered]
+    assert set(row["tools"][0]) == {"name", "description", "input_schema"}
+    assert [(m["role"], m["content"]) for m in row["conversation"]] == [
+        ("user", "hi"),
+        ("assistant", "hello"),
+        ("user", "Charged twice."),
+        ("assistant", "Checking."),
+        ("tool", '{"order": "A-1"}'),
+        ("tool", run.steps[1].result),
+        ("assistant", "Refunded."),
+    ]
+    assert row["conversation"][3]["tool_calls"] == [
+        {"id": "c1", "name": "lookup_order", "args": {"order_id": "A-1"}},
+        {"id": "c2", "name": "Ghost", "args": {}},
+    ]
+    assert [(m["tool_call_id"], m["is_error"]) for m in row["conversation"][4:6]] == [("c1", False), ("c2", True)]
+    assert row["conversation"] == [m.model_dump(mode="json") for m in run.conversation]
+    assert row["messages"] == [m.model_dump(mode="json") for m in run.messages] and row["reply"] == "Refunded."
+
+
+async def test_a_run_offered_no_tools_exports_an_empty_list() -> None:
+    refinery = Refinery(InMemoryStorage())
+    run = generation_record(reply="Sure.")
+    assert run.tools == []
+    await refinery.record(run)
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [row] = _lines(next(iter(bucket.objects.values())))
+    assert row["tools"] == []
+    assert row["conversation"] == [{"role": "user", "content": "hi", "tool_calls": [], "tool_call_id": None, "reasoning": None, "is_error": False}, {"role": "assistant", "content": "Sure.", "tool_calls": [], "tool_call_id": None, "reasoning": None, "is_error": False}]
+
+
+async def test_a_run_stored_before_tools_were_recorded_still_loads_and_exports() -> None:
+    storage = InMemoryStorage()
+    refinery = Refinery(storage)
+    run = generation_record()
+    [stored] = flatten(run)
+    old = {key: value for key, value in stored.body.items() if key != "tools"}
+    await storage.put_run("acme", stored.model_copy(update={"body": old}))
+    assert Generation.model_validate(old).tools == []
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [row] = _lines(next(iter(bucket.objects.values())))
+    assert row["tools"] == [] and row["conversation"] == old["conversation"]
+    bare = {key: value for key, value in old.items() if key != "conversation"}
+    await storage.put_run("acme", stored.model_copy(update={"body": bare}))
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [row] = _lines(next(iter(bucket.objects.values())))
+    assert row["tools"] == [] and row["conversation"] == []
