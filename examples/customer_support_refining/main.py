@@ -137,11 +137,16 @@ async def main() -> None:
         tools=[Tool("lookup_order", body=lookup_order)],
     )
 
+    arm = {"arm": "a"}
     refund = await engine.run(
-        "support", "acme", "Order A-1 was charged twice. Can I get my money back?"
+        "support", "acme", "Order A-1 was charged twice. Can I get my money back?", tags=arm
     )
-    late = await engine.run("support", "acme", "Order A-2 still has not shipped. Where is it?")
-    triage = await engine.run("triage", "acme", {"message": "Checkout is down for every customer."})
+    late = await engine.run(
+        "support", "acme", "Order A-2 still has not shipped. Where is it?", tags=arm
+    )
+    triage = await engine.run(
+        "triage", "acme", {"message": "Checkout is down for every customer."}, tags=arm
+    )
 
     await refinery.review(
         "acme",
