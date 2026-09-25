@@ -28,6 +28,7 @@ vendor's blocks, in user turns and in tool results alike.
 | `same_agent_two_vendors` | the same agent run on two generation models, quoting from a CSV and a text file under `knowledge/` |
 | `tools_without_a_model` | `EngineTools` driven by code: `dispatch`, `Delegate`, `Jail`, `+`, `only`, `without` |
 | `tool_timeout` | a slow tool cut off by `Engine(tool_timeout=)`, reported to the model as an error |
+| `decision_vs_generation` | the same 26 labelled routing questions — team and urgency — asked of a decision agent and of a generation agent with `expect=`; accuracy, latency, tokens, an estimated cost at assumed prices, accuracy per confidence bucket, and the cases where they disagree. A small illustrative sample, not a benchmark |
 | `image_question` | `input=[Text(...), Image(...)]` answered on Claude and on Gemini; the same parts refused by a decision agent |
 
 ## The agent folder, file by file
@@ -41,7 +42,7 @@ vendor's blocks, in user turns and in tool results alike.
 | `tasks/<name>.md`, chosen with `run(task=)` | `agent_knows_its_folder` |
 | `tools/<name>.md` — a contract with `input:`, or a name-only adoption of a code tool | `agent_knows_its_folder`, `tool_timeout` |
 | `knowledge/_index.md` at boot; any other file (`.csv`, `.txt`, `notes/`) read with `Read` and `Grep` | `same_agent_two_vendors`, `tools_without_a_model` |
-| `questions/*.md` — `choice` with `options:`, `score` with `levels:`, `check` with `yes:`/`no:` | `decision_alone`, `customer_support_refining` |
+| `questions/*.md` — `choice` with `options:`, `score` with `levels:`, `check` with `yes:`/`no:` | `decision_alone`, `customer_support_refining`, `decision_vs_generation` |
 | `route:` with `min_confidence` | `decision_routes_to_llm` |
 | `agents:` — delegation through `Delegate` | `nested_agents` |
 | `workspace: true` | `workspace_python` |
