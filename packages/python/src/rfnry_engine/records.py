@@ -26,6 +26,7 @@ class Generation(BaseModel):
     parent_run_id: str | None = None
     agent: str
     scope: str
+    tags: dict[str, str] = Field(default_factory=dict)
     task: str | None = None
     at: datetime
     duration_ms: int
@@ -49,6 +50,7 @@ class Decision(BaseModel):
     parent_run_id: str | None = None
     agent: str
     scope: str
+    tags: dict[str, str] = Field(default_factory=dict)
     at: datetime
     duration_ms: int
     model: str | None

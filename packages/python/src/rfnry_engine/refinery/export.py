@@ -37,6 +37,7 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
         "holdout": holdout,
         "agent": row.agent,
         "task": row.task,
+        "tags": body.get("tags", {}),
         "at": row.at.isoformat(),
         "model": row.model,
         "system": body["system"],
@@ -56,6 +57,7 @@ def preference_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[
         {
             "run_id": row.run_id,
             "holdout": holdout,
+            "tags": row.body.get("tags", {}),
             "prompt": {"system": row.body["system"], "messages": row.body["messages"]},
             "chosen": label.review.correction,
             "rejected": row.body["reply"],
@@ -118,6 +120,7 @@ def decision_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[di
                 "run_id": row.run_id,
                 "holdout": holdout,
                 "agent": row.agent,
+                "tags": body.get("tags", {}),
                 "at": row.at.isoformat(),
                 "model": row.model,
                 "state": body["state"],

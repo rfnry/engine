@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from rfnry_engine.errors import ConfigurationError
@@ -22,6 +23,7 @@ class EngineTools(Tools):
         scope: str,
         tools: ToolsLike | None = None,
         workspace: Workspace | None = None,
+        tags: Mapping[str, str] | None = None,
     ) -> None:
         spec = engine._spec(agent)
         items: list[Tool | ToolsLike] = [*builtins(spec.root), *declared_tools(spec, engine.tools)]
@@ -30,7 +32,7 @@ class EngineTools(Tools):
                 raise ConfigurationError(f"engine_tools: agent {agent!r} declares workspace: true; pass workspace= to the run")
             items.extend(workspace.tools())
         if spec.agents:
-            items.append(delegate_tool(engine, spec, scope, tools, workspace))
+            items.append(delegate_tool(engine, spec, scope, tools, workspace, tags))
         if tools is not None:
             items.append(tools)
         super().__init__(items)

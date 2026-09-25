@@ -71,6 +71,7 @@ async def test_export_writes_three_datasets_with_labels_and_holdout() -> None:
     assert preference_row == {
         "run_id": generation.run_id,
         "holdout": is_holdout(generation.run_id),
+        "tags": {},
         "prompt": {"system": generation.system, "messages": generation_row["messages"]},
         "chosen": "Refund in full.",
         "rejected": "Sorry, no.",

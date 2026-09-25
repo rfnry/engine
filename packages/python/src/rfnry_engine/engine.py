@@ -4,8 +4,8 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -68,6 +68,7 @@ class _Options:
     workspace: Workspace | None
     stop: Stop | None = None
     inbox: asyncio.Queue[Any] | None = None
+    tags: dict[str, str] = field(default_factory=dict)
 
 
 class AgentInfo(BaseModel):
@@ -88,6 +89,9 @@ class Recorder(Protocol):
 PART = TypeAdapter[Part](Part)
 HISTORY = TypeAdapter(list[Message])
 PART_TYPES = ("text", "image", "audio", "document")
+MAX_TAGS = 32
+MAX_TAG_KEY = 64
+MAX_TAG_VALUE = 256
 
 
 def _part(item: object) -> Part | None:
@@ -113,6 +117,23 @@ def _history(value: Sequence[object] | None) -> list[Message]:
         return HISTORY.validate_python(list(value or []), from_attributes=True)
     except ValidationError as exc:
         raise InputError(f"engine: history does not fit the contract: {exc.errors(include_url=False)}") from exc
+
+
+def _tags(value: Mapping[str, str] | None) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise InputError("engine: tags must be a mapping of strings to strings")
+    if len(value) > MAX_TAGS:
+        raise InputError(f"engine: tags hold at most {MAX_TAGS} entries; got {len(value)}")
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            raise InputError(f"engine: tags must be a mapping of strings to strings; got {key!r}: {item!r}")
+        if not key or len(key) > MAX_TAG_KEY:
+            raise InputError(f"engine: tags need a key of 1 to {MAX_TAG_KEY} characters; got {key!r}")
+        if len(item) > MAX_TAG_VALUE:
+            raise InputError(f"engine: tags need a value of at most {MAX_TAG_VALUE} characters; {key!r} has {len(item)}")
+    return dict(value)
 
 
 def _content(value: object) -> Content:
@@ -204,6 +225,7 @@ class Engine:
         record: bool = True,
         stop: Stop | None = None,
         inbox: asyncio.Queue[Any] | None = None,
+        tags: Mapping[str, str] | None = None,
     ) -> Run:
         if not scope:
             raise InputError("engine: scope is required")
@@ -212,7 +234,7 @@ class Engine:
             raise InputError(f"engine: decision agent {agent!r} takes no task")
         options = _Options(
             task=task, history=_history(history), context=context, expect=expect,
-            on_event=on_event, tools=tools, workspace=workspace, stop=stop, inbox=inbox,
+            on_event=on_event, tools=tools, workspace=workspace, stop=stop, inbox=inbox, tags=_tags(tags),
         )
         run = await self._run(spec, scope, input, options, None)
         if record and self.refinery is not None:
@@ -232,13 +254,15 @@ class Engine:
         context: str | None = None,
         tools: ToolsLike | None = None,
         workspace: Workspace | None = None,
+        tags: Mapping[str, str] | None = None,
     ) -> Tools:
         if not scope:
             raise InputError("engine: scope is required")
         spec = self._spec(agent)
+        tagged = _tags(tags)
 
         async def body(args: dict[str, Any]) -> Result:
-            run = await self.run(agent, scope, args["input"], context=context, tools=tools, workspace=workspace)
+            run = await self.run(agent, scope, args["input"], context=context, tools=tools, workspace=workspace, tags=tagged)
             if isinstance(run, Generation):
                 return run.reply
             return {qid: answer.model_dump() for qid, answer in run.answers.items()}
@@ -287,7 +311,7 @@ class Engine:
             if target is not None and (floor is None or answer.confidence >= floor):
                 routed = await self._run(self._agents[target], scope, input, options, run_id)
         return Decision(
-            run_id=run_id, parent_run_id=parent_run_id, agent=spec.name, scope=scope, at=at,
+            run_id=run_id, parent_run_id=parent_run_id, agent=spec.name, scope=scope, tags=dict(options.tags), at=at,
             duration_ms=int((time.monotonic() - started) * 1000), model=decided.model,
             state=state, questions=questions, answers=answers,
             usage=decided.usage or Usage(), routed_to=routed,
@@ -317,7 +341,9 @@ class Engine:
         started = time.monotonic()
         at = _now()
         expect, on_event, stop, inbox = options.expect, options.on_event, options.stop, options.inbox
-        surface = EngineTools(self, agent=spec.name, scope=scope, tools=options.tools, workspace=options.workspace)
+        surface = EngineTools(
+            self, agent=spec.name, scope=scope, tools=options.tools, workspace=options.workspace, tags=options.tags
+        )
         specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
         if expect is not None:
             if OUTPUT_TOOL in surface:
@@ -429,8 +455,8 @@ class Engine:
 
         def finish(reply_text: str, stopped: Stopped | None = None) -> Generation:
             return Generation(
-                run_id=run_id, parent_run_id=parent_run_id, agent=spec.name, scope=scope, task=options.task,
-                at=at, duration_ms=int((time.monotonic() - started) * 1000), model=model,
+                run_id=run_id, parent_run_id=parent_run_id, agent=spec.name, scope=scope, tags=dict(options.tags),
+                task=options.task, at=at, duration_ms=int((time.monotonic() - started) * 1000), model=model,
                 input=input, system=system, messages=sent, conversation=list(messages), tools=specs, steps=steps, calls=calls,
                 reply=reply_text, usage=usage, children=children, stopped=stopped,
             )

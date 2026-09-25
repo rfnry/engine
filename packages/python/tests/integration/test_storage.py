@@ -3,8 +3,18 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from rfnry_engine.errors import StorageError
-from rfnry_engine.models import Document, Image, Message, Text, ToolCall, ToolSpec, Usage
-from rfnry_engine.records import Generation
+from rfnry_engine.models import (
+    Check,
+    CheckAnswer,
+    Document,
+    Image,
+    Message,
+    Text,
+    ToolCall,
+    ToolSpec,
+    Usage,
+)
+from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 
@@ -142,3 +152,26 @@ async def test_a_generation_with_its_tools_round_trips(storage: Storage) -> None
     await storage.put_run("a", got.model_copy(update={"body": old}))
     again = await storage.get_run("a", "g")
     assert again is not None and Generation.model_validate(again.body).tools == []
+
+
+async def test_tags_round_trip_and_old_bodies_read_as_no_tags(storage: Storage) -> None:
+    at = datetime.now(UTC)
+    decision = Decision(
+        run_id="d", agent="triage", scope="a", at=at, duration_ms=1, model="d", state="hi",
+        questions={"urgent": Check(instructions="Urgent?")}, answers={"urgent": CheckAnswer(probability=0.9)},
+        usage=Usage(), tags={"arm": "b", "commit": "a81d07b"},
+    )
+    run = Generation(
+        run_id="g", agent="support", scope="a", at=at, duration_ms=1, model="m", input="hi", system="s",
+        messages=[Message(role="user", content="hi")], conversation=[Message(role="user", content="hi")],
+        steps=[], calls=1, reply="ok", usage=Usage(), children=[decision], tags={"arm": "b", "commit": "a81d07b"},
+    )
+    await Refinery(storage).record(run)
+    for run_id, kind in (("g", Generation), ("d", Decision)):
+        got = await storage.get_run("a", run_id)
+        assert got is not None and got.body["tags"] == {"arm": "b", "commit": "a81d07b"}
+        assert kind.model_validate(got.body).tags == {"arm": "b", "commit": "a81d07b"}
+        old = {key: value for key, value in got.body.items() if key != "tags"}
+        await storage.put_run("a", got.model_copy(update={"body": old}))
+        again = await storage.get_run("a", run_id)
+        assert again is not None and kind.model_validate(again.body).tags == {}

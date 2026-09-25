@@ -210,6 +210,17 @@ part from another library is read by its fields.
 
 Pass `record=False` to run without the refinery recording it — a replay, an evaluation, a dry run.
 
+Pass `tags=` to mark a run with what you will group it by later — the commit of the tree, an
+experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64
+characters, values up to 256 — anything else is an `InputError`. The record and every exported row
+carry them; the model never sees them. Delegated and routed runs inherit the tags of the run that
+started them, so a version or an arm covers the whole tree of runs:
+
+```python
+run = await engine.run("support", scope="acme", input=message, tags={"commit": "4f2c9e1", "arm": "b"})
+run.tags                                             # {"commit": "4f2c9e1", "arm": "b"}
+```
+
 Ask for a typed reply and the model is made to produce one:
 
 ```python
@@ -379,7 +390,7 @@ Which department should handle this message?
 
 When the chosen option maps to an agent and confidence clears the floor, that agent runs with
 everything the run was given — the same input, parts included, `history`, `context`, `expect`, `tools`, `workspace`,
-`on_event`, `stop` and `inbox`; a decision agent itself takes no `task`. The routed run is attached:
+`on_event`, `stop`, `inbox` and `tags`; a decision agent itself takes no `task`. The routed run is attached:
 
 ```python
 engine = Engine(root, generation=llm, decision=dm, tools=tools)
@@ -515,9 +526,12 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | system, messages, tools, conversation, steps, reply, stopped, usage, every label |
-| `preference` | human correction | prompt, chosen (the correction), rejected (the reply) |
-| `decision` | question of a decision run | state, question, answer, probabilities, confidence, truth, outcome |
+| `generation` | generation run | tags, system, messages, tools, conversation, steps, reply, stopped, usage, every label |
+| `preference` | human correction | tags, prompt, chosen (the correction), rejected (the reply) |
+| `decision` | question of a decision run | tags, state, question, answer, probabilities, confidence, truth, outcome |
+
+Every row carries its run's `tags`, `{}` for a run that had none or was recorded before tags were
+kept; group or filter the rows by them in your own code.
 
 The first two are a generation agent's episodes and the corrections people made to them. A
 generation row's `tools` is what the model was offered — `{name, description, input_schema}` each —
@@ -531,7 +545,7 @@ is a decision agent's answers beside what turned out true: a calibrated model is
 right 80% of the time, and this is the table that says whether it was:
 
 ```json
-{"run_id": "…", "holdout": false, "agent": "frontdesk", "question_id": "intent", "answer": "billing",
+{"run_id": "…", "holdout": false, "agent": "frontdesk", "tags": {"arm": "b"}, "question_id": "intent", "answer": "billing",
  "probabilities": {"billing": 0.8, "technical": 0.15, "other": 0.05}, "confidence": 0.7,
  "truth": "technical", "truth_source": "human", "outcome": "failed"}
 ```
@@ -553,22 +567,23 @@ its runs have finished. The checkout is yours — `git worktree add`, a clone, a
 def load(commit):
     return commit, Engine(checkout(commit), generation=llm, decision=dm, tools=tools, refinery=refinery)
 
-served = {}
 live = load("4f2c9e1")
 commit, engine = live
-run = await engine.run("support", scope="acme", input=message)
-served[run.run_id] = commit
+run = await engine.run("support", scope="acme", input=message, tags={"commit": commit})
 
 live = load("a81d07b")
 
-arms = [load("4f2c9e1"), load("a81d07b")]
-commit, engine = arms[hashlib.sha256(b"user-42").digest()[0] % 2]
+arms = {"a": load("4f2c9e1"), "b": load("a81d07b")}
+arm = "ab"[hashlib.sha256(b"user-42").digest()[0] % 2]
+commit, engine = arms[arm]
+run = await engine.run("support", scope="acme", input=message, tags={"commit": commit, "arm": arm})
 ```
 
-A run's record says what the model was sent, not which commit it came from; keep that in a table of
-your own, `run_id` to commit, and join it to the refinery's rows, which are keyed by `run_id`. The
-same join is an A/B test: load two commits side by side, send each user to one by a stable hash of
-their id, and the labels and outcomes on each side compare whole versions of the tree.
+Tag each run with the commit it came from and the record, its delegated and routed runs, and every
+exported row say which version of the tree answered. The same tag is an A/B test: load two commits
+side by side, send each user to one by a stable hash of their id, tag the run with its arm, and
+group the exported rows by `tags["arm"]` to compare the labels and outcomes of whole versions of
+the tree.
 
 ## Tools
 
@@ -665,8 +680,8 @@ await surface.dispatch("Delegate", {"agent": "triage", "input": "It is down"})
 combined = MemoryTools(memory, corpus_id="acme") + surface.only("Read", "Grep")
 ```
 
-A `Delegate` dispatched this way runs the child as its own top-level run, with the same scope,
-`tools=` and `workspace=` a `Delegate` inside a run would give it.
+A `Delegate` dispatched this way runs the child as its own top-level run, with the scope, `tools=`,
+`workspace=` and `tags=` given to `EngineTools` — what a `Delegate` inside a run would give it.
 
 An agent is itself a tool. `engine.tool(agent, scope=...)` gives any runtime — a live voice model,
 a loop of your own — one tool that runs the agent: named for the agent and described by its
@@ -683,7 +698,7 @@ surface = consult + MemoryTools(memory, corpus_id="acme")
 ```
 
 It is a `Tools` of one, so it adds to any other. Each call is a top-level run under the scope it
-was made with, recorded like any run; `context=`, `tools=` and `workspace=` ride every call.
+was made with, recorded like any run; `context=`, `tools=`, `workspace=` and `tags=` ride every call.
 Mounted inside another run with `run(tools=)` it is a tool like any other, under `tool_timeout`,
 and its run is not the caller's child — to nest with lineage, name the agent in `agents:`. A loop
 through it is still refused.
@@ -726,8 +741,8 @@ Everything the package exports, by role.
 kind of model is absent, an unknown task, a missing workspace, a `Workspace` root that is not a
 directory, a `max_steps`, `max_depth` or `tool_timeout` that is not positive. `NotFoundError` for
 an agent the tree does not have or a run the refinery does not.
-`InputError` for a call the library refuses: an empty scope, a `task` for a decision agent, media
-given to a decision agent, a media part with both or neither of `data` and `url`, a
+`InputError` for a call the library refuses: an empty scope, a `task` for a decision agent, tags
+outside their limits, media given to a decision agent, a media part with both or neither of `data` and `url`, a
 correction of the wrong shape, a tool called with bad arguments or a path outside its directory. `ModelError` when an adapter breaks the contract — a
 result whose fields do not fit, a missing answer, probabilities that do not cover the options or do not sum to 1. `RunawayError` when
 a loop exceeds `max_steps` (default 200). `DelegationLoopError` and `DelegationDepthError` for
