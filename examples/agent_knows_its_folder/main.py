@@ -1,8 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 
-from pydantic import BaseModel
-from rfnry_engine import Document, Engine, Jail, Tool
+from rfnry_engine import Engine, Tool
 
 from providers import AnthropicProvider
 
@@ -42,15 +41,6 @@ async def now(args):
     return datetime.now(UTC).isoformat()
 
 
-class PdfArgs(BaseModel):
-    path: str
-
-
-async def read_pdf(args):
-    path = Jail("agents/support").resolve(args["path"])
-    return [Document(media_type="application/pdf", name=path.name, data=path.read_bytes())]
-
-
 async def main() -> None:
     engine = Engine(
         "agents",
@@ -58,7 +48,6 @@ async def main() -> None:
         tools=[
             Tool("lookup_order", body=lookup_order),
             Tool("now", "The current UTC time", body=now),
-            Tool("read_pdf", "Read a PDF in the agent directory", body=read_pdf, args=PdfArgs),
         ],
     )
 
@@ -67,6 +56,7 @@ async def main() -> None:
         "I want my $450 back for order B-7, I changed my mind.",
         "Order C-3 took forever to arrive. Not happy.",
         "Order A-1 has not shipped yet. What would express cost, and when would it arrive?",
+        "I finish work at 22:00. Which pickup lockers could I still collect a parcel from after that?",
     ]:
         run = await engine.run("support", scope="acme", input=message, task="triage")
         print(f"> {message}")
