@@ -143,8 +143,9 @@ agents/
     skills/_index.md      what the agent can do — the index at boot, a skill's body when loaded
     skills/escalate.md
     knowledge/_index.md   what the agent knows — the index at boot, the files on demand
+    knowledge/rates.pdf   knowledge is text, images or PDFs
     tools/lookup_order.md
-    tools/read_pdf.md
+    tools/fetch_invoice.md
     tasks/triage.md       a named task, chosen per run
 ```
 
@@ -164,7 +165,10 @@ You are the support desk for Acme. Be brief, be exact, cite the rule you are app
 At boot the model receives `AGENT.md`, `INDEX.md`, the three `_index.md` files, the list of tools it
 has, the descriptions of the agents it may call, the task if one was named, and any context the
 caller passes. Everything else it reads when it needs it, with the `Read`, `Grep`, `Glob`, `LS` and
-`Skill` tools, and it can read only inside its own directory. Write the maps with full paths —
+`Skill` tools, and it can read only inside its own directory. `Read` returns a text file as text
+and an image (PNG, JPEG, GIF, WebP) or a PDF as a part, which the model sees as it is — a price
+list, a diagram, a scanned form sits in `knowledge/` as it came, with no parser in between and
+nothing loaded until the model asks. Write the maps with full paths —
 `rules/refunds.md`, not `refunds.md` — because a model opens exactly what the map names.
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its
 `kind`, `description` and the `agents` it may call.
@@ -563,7 +567,7 @@ input:
 
 ```markdown
 ---
-name: read_pdf
+name: fetch_invoice
 ---
 ```
 
@@ -571,19 +575,20 @@ The first declares the contract the model sees and leaves the body to code. The 
 code tool as it is — description and schema included. Bodies and code tools go on the engine, one
 list for the whole tree. A body returns a string, a dict (the model reads it as JSON) or a list of
 parts, which reach the model as the tool result — a PDF the model reads itself, an image it looks
-at. `Jail` resolves a path the way the builtins do, and refuses one that leaves the directory:
+at. `Read` already does that for files in the agent's directory; a tool does it for what lives
+elsewhere, such as your own store:
 
 ```python
-class PdfArgs(BaseModel):
-    path: str
+class InvoiceArgs(BaseModel):
+    invoice_id: str
 
-async def read_pdf(args):
-    path = Jail(root / "support").resolve(args["path"])
-    return [Document(media_type="application/pdf", name=path.name, data=path.read_bytes())]
+async def fetch_invoice(args):
+    data = await invoices.get(args["invoice_id"])
+    return [Document(media_type="application/pdf", name=f"{args['invoice_id']}.pdf", data=data)]
 
 tools = [
     Tool("lookup_order", body=lookup_order),
-    Tool("read_pdf", "Read a PDF in the agent directory", body=read_pdf, args=PdfArgs),
+    Tool("fetch_invoice", "Fetch an invoice PDF by id", body=fetch_invoice, args=InvoiceArgs),
 ]
 engine = Engine(root, generation=llm, tools=tools)
 ```
@@ -599,10 +604,15 @@ Bodies are async and the deadline cancels them, so a body that runs blocking wor
 put its own limit on that work: cancelling the await does not stop the thread. `Delegate` has no
 deadline. The child run it starts is bounded by its own tool calls and `max_steps`.
 
-The builtins are bounded whatever the deadline. They read UTF-8 text only: `Read` refuses a binary
-file and `Grep` skips it. Neither reads a file over 5 MB. `Grep` stops after scanning 50 MB and
+The builtins are bounded whatever the deadline. `Read` returns UTF-8 text, images and PDFs — a
+file is an image or a PDF when both its extension and its first bytes say so — and refuses any
+other binary file; `offset` and `limit` select lines, so on an image or a PDF they are an
+`InputError`. `Grep` searches text only and skips the rest; `Glob` and `LS` list every file. Neither
+`Read` nor `Grep` reads a file over 5 MB, text or media. `Grep` stops after scanning 50 MB and
 notes the cut. A search that runs past 10 s in one call is an `InputError` the model can act on. `Glob` and
-`Grep` walk at most 100,000 entries. For other formats, declare a tool, as `read_pdf` does.
+`Grep` walk at most 100,000 entries. For other formats, declare a tool. A tool that reads the
+agent's directory itself resolves paths with `Jail`, which refuses one that leaves the directory,
+as the builtins do.
 
 Tools that belong to a tenant go on the call that names the tenant:
 

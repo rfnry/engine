@@ -1,4 +1,5 @@
 import asyncio
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -388,3 +389,28 @@ async def test_a_list_of_values_is_still_json_state(fixtures: Path) -> None:
     llm = Scripted(text_reply("ok"))
     await engine_for(fixtures, llm).run("billing", "acme", [1, "two"])
     assert llm.calls[0][1][-1] == Message(role="user", content='[1, "two"]')
+
+
+async def test_read_hands_the_model_an_image_and_a_pdf_from_its_folder(fixtures: Path, tmp_path: Path) -> None:
+    root = tmp_path / "agents"
+    shutil.copytree(fixtures, root)
+    png, pdf = b"\x89PNG\r\n\x1a\nbody", b"%PDF-1.7 rates"
+    (root / "billing" / "knowledge").mkdir()
+    (root / "billing" / "knowledge" / "diagram.png").write_bytes(png)
+    (root / "billing" / "knowledge" / "rates.pdf").write_bytes(pdf)
+    llm = Scripted(
+        _tool_use(
+            ToolCall(id="i", name="Read", args={"path": "knowledge/diagram.png"}),
+            ToolCall(id="d", name="Read", args={"path": "knowledge/rates.pdf"}),
+        ),
+        text_reply("Express is $25."),
+    )
+    run = await engine_for(root, llm).run("billing", "acme", "What does express cost?")
+    assert isinstance(run, Generation)
+    image: list[Part] = [Image(media_type="image/png", data=png)]
+    document: list[Part] = [Document(media_type="application/pdf", name="rates.pdf", data=pdf)]
+    assert llm.calls[1][1][-2:] == [
+        Message(role="tool", tool_call_id="i", content=image),
+        Message(role="tool", tool_call_id="d", content=document),
+    ]
+    assert [s.result for s in run.steps] == [image, document] and not any(s.is_error for s in run.steps)

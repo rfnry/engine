@@ -124,7 +124,7 @@ def tree(root: Path) -> None:
     write(root / "support/rules/_index.md", "rules/refunds.md: refunds\n")
     write(root / "support/rules/refunds.md", "A double charge is refunded in full.\n")
     write(root / "support/tasks/triage.md", "Triage the message.\n")
-    for name in ("lookup_order", "read_pdf"):
+    for name in ("lookup_order", "fetch_invoice"):
         write(root / f"support/tools/{name}.md", markdown(f"name: {name}\n"))
     write(root / "frontdesk/AGENT.md", markdown("name: frontdesk"))
     write(root / "frontdesk/questions/intent.md", markdown("type: choice"))
@@ -140,17 +140,22 @@ def tree(root: Path) -> None:
     write(root / "judge/questions/done.md", question("score", "levels: [Not addressed, Partly, Fully, Fully and confirmed]\n"))
 
 
-class PdfArgs(BaseModel):
-    path: str
+class InvoiceArgs(BaseModel):
+    invoice_id: str
 
 
-async def read_pdf(args: dict[str, Any]) -> list[Part]:
+async def fetch_invoice(args: dict[str, Any]) -> list[Part]:
     return [Document(media_type="application/pdf", name="a.pdf", data=b"%PDF-1.4")]
+
+
+class Invoices:
+    async def get(self, invoice_id: str) -> bytes:
+        return b"%PDF-1.4"
 
 
 TOOLS = [
     Tool("lookup_order", body=lookup_order),
-    Tool("read_pdf", "Read a PDF in the agent directory", body=read_pdf, args=PdfArgs),
+    Tool("fetch_invoice", "Fetch an invoice PDF by id", body=fetch_invoice, args=InvoiceArgs),
 ]
 
 
@@ -173,7 +178,7 @@ async def context(tmp_path: Path, setup: Setup) -> dict[str, Any]:
         "Path": Path, "BaseModel": BaseModel, "asyncio": asyncio,
         "root": root, "llm": llm, "dm": dm, "refinery": refinery,
         "engine": Engine(root, generation=llm, decision=dm, tools=TOOLS, refinery=refinery),
-        "tools": list(TOOLS), "PdfArgs": PdfArgs, "read_pdf": read_pdf,
+        "tools": list(TOOLS), "InvoiceArgs": InvoiceArgs, "fetch_invoice": fetch_invoice, "invoices": Invoices(),
         "lookup_order": lookup_order, "png": b"\x89PNG\r\n\x1a\n", "wav": b"RIFF",
         "MemoryTools": memory_tools, "memory": object(),
         "message": "My invoice was charged twice.", "text": "It is down", "history": [],

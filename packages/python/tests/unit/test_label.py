@@ -1,5 +1,6 @@
 import base64
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -175,3 +176,27 @@ async def test_the_judge_sees_media_as_placeholders_never_base64(fixtures: Path)
     [row] = await storage.runs("acme")
     assert row.body["input"][1]["data"] == base64.b64encode(JPEG).decode()
     assert row.body["steps"][0]["result"][1]["name"] == "policy.pdf"
+
+
+async def test_the_judge_sees_media_read_from_the_folder_as_placeholders(fixtures: Path, tmp_path: Path) -> None:
+    root = tmp_path / "agents"
+    shutil.copytree(fixtures, root)
+    png, pdf = b"\x89PNG\r\n\x1a\nbody", b"%PDF-1.7 rates"
+    (root / "billing" / "knowledge").mkdir()
+    (root / "billing" / "knowledge" / "diagram.png").write_bytes(png)
+    (root / "billing" / "knowledge" / "rates.pdf").write_bytes(pdf)
+    refinery = Refinery(InMemoryStorage())
+    dm = Fixed(JUDGEMENT)
+    reads = [ToolCall(id="i", name="Read", args={"path": "knowledge/diagram.png"}), ToolCall(id="d", name="Read", args={"path": "knowledge/rates.pdf"})]
+    llm = Scripted(Reply(tool_calls=reads, stop_reason="tool_use"), text_reply("Express is $25."))
+    engine = Engine(root, generation=llm, decision=dm, refinery=refinery, tools=TOOLS)
+    await engine.run("billing", "acme", "What does express cost?")
+    labeled = await refinery.label("acme", engine, judge="judge")
+    assert labeled.judged == 1 and labeled.errors == {}
+    state = dm.calls[0][0]
+    assert isinstance(state, dict) and state["steps"] == [
+        {"tool": "Read", "args": {"path": "knowledge/diagram.png"}, "result": ["[image: image/png]"]},
+        {"tool": "Read", "args": {"path": "knowledge/rates.pdf"}, "result": ['[document: application/pdf, "rates.pdf"]']},
+    ]
+    for encoded in (base64.b64encode(png).decode(), base64.b64encode(pdf).decode()):
+        assert encoded not in json.dumps(state)

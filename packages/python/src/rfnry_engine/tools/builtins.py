@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
 from rfnry_engine.errors import InputError
 from rfnry_engine.frontmatter import strip_frontmatter
 from rfnry_engine.jail import Jail
-from rfnry_engine.tools.tools import Tool
+from rfnry_engine.models import Document, Image, Part
+from rfnry_engine.tools.tools import Result, Tool
 
 _MAX_BYTES = 5 * 1024 * 1024
 _MAX_WALK = 100_000
@@ -20,6 +21,7 @@ _HEAD_LIMIT = 250
 _GREP_BYTES = 50 * 1024 * 1024
 _GREP_SECONDS = 10.0
 _SNIFF = 8192
+_MEDIA_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"}
 
 
 class ReadArgs(BaseModel):
@@ -55,7 +57,26 @@ def _hidden(rel: Path) -> bool:
 
 
 def _text(path: Path) -> str | None:
-    data = path.read_bytes()
+    return _decoded(path.read_bytes())
+
+
+def _media_type(path: Path, data: bytes) -> str | None:
+    if path.suffix.lower() not in _MEDIA_SUFFIXES:
+        return None
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"%PDF-"):
+        return "application/pdf"
+    return None
+
+
+def _decoded(data: bytes) -> str | None:
     if b"\0" in data[:_SNIFF]:
         return None
     try:
@@ -76,16 +97,27 @@ class _Directory:
             return False
         return True
 
-    def read(self, args: dict[str, Any]) -> str:
+    def read(self, args: dict[str, Any]) -> Result:
         a = ReadArgs.model_validate(args)
         target = self.jail.resolve(a.path)
         if not target.is_file():
             raise InputError(f"builtins: not a file: {a.path}")
         if target.stat().st_size > _MAX_BYTES:
             raise InputError(f"builtins: file exceeds {_MAX_BYTES} bytes: {a.path}")
-        text = _text(target)
+        data = target.read_bytes()
+        media_type = _media_type(target, data)
+        if media_type is not None:
+            part: Part
+            if media_type == "application/pdf":
+                part, kind = Document(media_type=media_type, name=target.name, data=data), "a PDF"
+            else:
+                part, kind = Image(media_type=media_type, data=data), "an image"
+            if a.offset or a.limit is not None:
+                raise InputError(f"builtins: offset and limit select lines of a text file; {a.path} is {kind}")
+            return [part]
+        text = _decoded(data)
         if text is None:
-            raise InputError(f"builtins: binary file: {a.path}; Read handles text only, reading it needs a declared tool")
+            raise InputError(f"builtins: binary file: {a.path}; Read returns UTF-8 text, images (PNG, JPEG, GIF, WebP) and PDFs")
         if a.offset or a.limit is not None:
             lines = text.splitlines()
             end = a.offset + a.limit if a.limit is not None else len(lines)
@@ -193,14 +225,14 @@ def builtins(root: Path) -> list[Tool]:
     directory = _Directory(root)
 
     def threaded(handler: Any) -> Any:
-        async def body(args: dict[str, Any]) -> str:
-            result: str = await asyncio.to_thread(handler, args)
+        async def body(args: dict[str, Any]) -> Result:
+            result: Result = await asyncio.to_thread(handler, args)
             return result
 
         return body
 
     return [
-        Tool("Read", "Read a file in the agent directory. Optional offset/limit select lines.", body=threaded(directory.read), args=ReadArgs),
+        Tool("Read", "Read a file in the agent directory: text, images (PNG, JPEG, GIF, WebP) and PDFs, which you see as they are. Optional offset/limit select lines of a text file.", body=threaded(directory.read), args=ReadArgs),
         Tool("Grep", "Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines.", body=threaded(directory.grep), args=GrepArgs),
         Tool("Glob", "Find files by glob pattern, e.g. '**/*.md'. Paths are relative to the agent directory.", body=threaded(directory.glob), args=GlobArgs),
         Tool("LS", "List a directory inside the agent directory.", body=threaded(directory.ls), args=LSArgs),
