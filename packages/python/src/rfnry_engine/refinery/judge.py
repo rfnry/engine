@@ -68,7 +68,7 @@ def teacher_prompt(row: RunRow) -> str:
         "for a score give the level index starting at 0, for a check give true or false.",
         "",
         "STATE:",
-        json.dumps(without_media(body["state"]), indent=2),
+        json.dumps(without_media(body["state"]), indent=2, ensure_ascii=False),
         "",
     ]
     for question_id, question in body["questions"].items():

@@ -119,7 +119,7 @@ def _content(value: object) -> Content:
     if isinstance(value, str):
         return value
     parts = _parts(value)
-    return parts if parts is not None else json.dumps(value)
+    return parts if parts is not None else json.dumps(value, ensure_ascii=False)
 
 
 def _state(spec: AgentSpec, value: State) -> State:

@@ -67,7 +67,7 @@ def delegate_description(engine: Engine, spec: AgentSpec) -> str:
 def child_result(child: Any) -> str:
     if isinstance(child, Generation):
         return child.reply
-    return json.dumps({k: v.model_dump() for k, v in child.answers.items()})
+    return json.dumps({k: v.model_dump() for k, v in child.answers.items()}, ensure_ascii=False)
 
 
 def delegate_tool(

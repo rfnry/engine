@@ -165,7 +165,7 @@ class Refinery:
             if not rows:
                 continue
             key = export_key(scope, agent, dataset, stamp)
-            await bucket.put(key, ("\n".join(json.dumps(r) for r in rows) + "\n").encode("utf-8"))
+            await bucket.put(key, ("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n").encode("utf-8"))
             keys.append(key)
             counts[dataset] = counts.get(dataset, 0) + len(rows)
         return Exported(keys=keys, rows=counts, watermark=max(stamps))
