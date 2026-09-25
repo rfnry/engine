@@ -43,6 +43,7 @@ from rfnry_engine.models import (
     settle,
 )
 from rfnry_engine.records import Decision, Generation, Run, Step
+from rfnry_engine.stop import Stop, Stopped, cancel, requested, wait
 from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import DELEGATE_TOOL, child_result, enter, permit
 from rfnry_engine.tools.engine_tools import EngineTools
@@ -51,6 +52,7 @@ from rfnry_engine.tools.workspace import Workspace
 from rfnry_engine.tree import AgentSpec, Kind, load_tree, validate_tree
 
 OUTPUT_TOOL = "Output"
+STOPPED = "stopped by the user"
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,8 @@ class _Options:
     on_event: EventHandler | None
     tools: ToolsLike | None
     workspace: Workspace | None
+    stop: Stop | None = None
+    inbox: asyncio.Queue[Any] | None = None
 
 
 class AgentInfo(BaseModel):
@@ -198,6 +202,8 @@ class Engine:
         tools: ToolsLike | None = None,
         workspace: Workspace | None = None,
         record: bool = True,
+        stop: Stop | None = None,
+        inbox: asyncio.Queue[Any] | None = None,
     ) -> Run:
         if not scope:
             raise InputError("engine: scope is required")
@@ -206,7 +212,7 @@ class Engine:
             raise InputError(f"engine: decision agent {agent!r} takes no task")
         options = _Options(
             task=task, history=_history(history), context=context, expect=expect,
-            on_event=on_event, tools=tools, workspace=workspace,
+            on_event=on_event, tools=tools, workspace=workspace, stop=stop, inbox=inbox,
         )
         run = await self._run(spec, scope, input, options, None)
         if record and self.refinery is not None:
@@ -310,7 +316,7 @@ class Engine:
         run_id = uuid4().hex
         started = time.monotonic()
         at = _now()
-        expect, on_event = options.expect, options.on_event
+        expect, on_event, stop, inbox = options.expect, options.on_event, options.stop, options.inbox
         surface = EngineTools(self, agent=spec.name, scope=scope, tools=options.tools, workspace=options.workspace)
         specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
         if expect is not None:
@@ -335,31 +341,39 @@ class Engine:
         calls = 0
         model: str | None = None
         streaming = on_event is not None and hasattr(model_, "generate_stream")
+        streamed: list[str] = []
+        said = ""
 
         async def emit(event: Any) -> None:
             if on_event is not None:
                 await on_event(event)
 
         async def delta(text: str) -> None:
+            streamed.append(text)
             await emit(TextDelta(run_id=run_id, agent=spec.name, text=text))
 
-        async def delegate(call: ToolCall) -> tuple[Content, bool, str | None]:
+        async def delegate(call: ToolCall) -> tuple[Content, bool, str | None, bool]:
+            if requested(stop) == "now":
+                return STOPPED, True, None, True
             try:
                 args = permit(spec, call.args)
-                forwarded = replace(options, task=None, history=[], expect=None)
+                forwarded = replace(options, task=None, history=[], expect=None, inbox=None)
                 child = await self._run(self._agents[args.agent], scope, args.input, forwarded, run_id)
             except Exception as exc:
-                return f"{type(exc).__name__}: {exc}", True, None
+                return f"{type(exc).__name__}: {exc}", True, None, False
             children.append(child)
-            return child_result(child), False, child.run_id
+            if isinstance(child, Generation) and child.stopped is not None:
+                return STOPPED, True, child.run_id, True
+            return child_result(child), False, child.run_id, False
 
         async def call_tool(call: ToolCall) -> Step:
             await emit(ToolCallStarted(run_id=run_id, agent=spec.name, call_id=call.id, tool=call.name))
             began = time.monotonic()
             child_run_id: str | None = None
+            stopped = False
             content: Content
             if spec.agents and call.name == DELEGATE_TOOL:
-                content, is_error, child_run_id = await delegate(call)
+                content, is_error, child_run_id, stopped = await delegate(call)
             else:
                 deadline = asyncio.timeout(self.tool_timeout)
                 try:
@@ -374,31 +388,71 @@ class Engine:
                     is_error = True
             step = Step(
                 tool=call.name, args=call.args, result=content, is_error=is_error, at=_now(),
-                duration_ms=int((time.monotonic() - began) * 1000), child_run_id=child_run_id,
+                duration_ms=int((time.monotonic() - began) * 1000), child_run_id=child_run_id, stopped=stopped,
             )
             await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, tool=call.name, is_error=is_error))
             return step
 
-        async def run_batch(batch: list[ToolCall]) -> None:
-            for call, step in zip(batch, await asyncio.gather(*(call_tool(c) for c in batch)), strict=True):
-                messages.append(Message(role="tool", tool_call_id=call.id, content=step.result, is_error=step.is_error))
-                steps.append(step)
+        def answer(call: ToolCall, step: Step) -> None:
+            messages.append(Message(role="tool", tool_call_id=call.id, content=step.result, is_error=step.is_error))
+            steps.append(step)
 
-        def finish(reply_text: str) -> Generation:
+        async def cut(call: ToolCall, began: float) -> Step:
+            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, tool=call.name, is_error=True))
+            return Step(
+                tool=call.name, args=call.args, result=STOPPED, is_error=True, at=_now(),
+                duration_ms=int((time.monotonic() - began) * 1000), stopped=True,
+            )
+
+        async def run_batch(batch: list[ToolCall]) -> bool:
+            began = time.monotonic()
+            tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
+            stopped = await wait(tasks, stop)
+            if stopped:
+                delegated = [t for c, t in zip(batch, tasks, strict=True) if spec.agents and c.name == DELEGATE_TOOL]
+                await cancel([t for t in tasks if t not in delegated and not t.done()])
+                if delegated:
+                    await asyncio.wait(delegated)
+            for call, task in zip(batch, tasks, strict=True):
+                answer(call, await cut(call, began) if task.cancelled() else task.result())
+            return stopped
+
+        def drain() -> None:
+            while inbox is not None and not inbox.empty():
+                messages.append(Message(role="user", content=_content(inbox.get_nowait())))
+                inbox.task_done()
+
+        async def ask() -> Reply:
+            if streaming:
+                return as_reply(await cast(StreamingGenerationModel, model_).generate_stream(system, messages, specs, delta))
+            return as_reply(await model_.generate(system, messages, specs))
+
+        def finish(reply_text: str, stopped: Stopped | None = None) -> Generation:
             return Generation(
                 run_id=run_id, parent_run_id=parent_run_id, agent=spec.name, scope=scope, task=options.task,
                 at=at, duration_ms=int((time.monotonic() - started) * 1000), model=model,
                 input=input, system=system, messages=sent, conversation=list(messages), steps=steps, calls=calls,
-                reply=reply_text, usage=usage, children=children,
+                reply=reply_text, usage=usage, children=children, stopped=stopped,
             )
 
-        for _ in range(self.max_steps):
-            if streaming:
-                reply = as_reply(await cast(StreamingGenerationModel, model_).generate_stream(system, messages, specs, delta))
-            else:
-                reply = as_reply(await model_.generate(system, messages, specs))
-                if reply.text:
-                    await delta(reply.text)
+        for index in range(self.max_steps):
+            mode = requested(stop)
+            if mode is not None:
+                return finish(said, mode)
+            if index:
+                drain()
+            streamed.clear()
+            asking = asyncio.ensure_future(ask())
+            if await wait([asking], stop):
+                await cancel([asking])
+                partial = "".join(streamed)
+                if partial:
+                    messages.append(Message(role="assistant", content=partial))
+                return finish(partial or said, "now")
+            reply = asking.result()
+            if not streaming and reply.text:
+                await delta(reply.text)
+            said = reply.text
             calls += 1
             if reply.usage is not None:
                 usage = usage + reply.usage
@@ -409,9 +463,12 @@ class Engine:
                 return finish(reply.text)
             output = next((c for c in reply.tool_calls if expect is not None and c.name == OUTPUT_TOOL), None)
             before = reply.tool_calls if output is None else reply.tool_calls[: reply.tool_calls.index(output)]
-            await run_batch(before)
+            stopped = await run_batch(before)
             if output is None or expect is None:
                 continue
+            if stopped:
+                answer(output, await cut(output, time.monotonic()))
+                return finish(said, "now")
             try:
                 parsed = expect.model_validate(output.args)
             except ValidationError as exc:

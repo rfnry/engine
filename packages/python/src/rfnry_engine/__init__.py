@@ -50,6 +50,7 @@ from rfnry_engine.refinery.labels import Conflict, Exported, Label, Labeled, Out
 from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
+from rfnry_engine.stop import Stop
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Workspace
@@ -62,7 +63,7 @@ __all__ = [
     "DelegationLoopError", "Event", "Exported", "Generation", "GenerationModel", "Engine", "EngineException",
     "InMemoryStorage", "InputError", "Jail", "Label", "LabelRow", "Labeled", "Message", "ModelError", "Outcome",
     "PostgresStorage", "Question", "Refinery", "Reply", "Review", "Run", "RunRow", "RunawayError", "Score",
-    "ScoreAnswer", "State", "Step", "Storage", "StorageError", "StreamingGenerationModel", "TextDelta",
+    "ScoreAnswer", "State", "Step", "Stop", "Storage", "StorageError", "StreamingGenerationModel", "TextDelta",
     "Tool", "ToolCall", "ToolCallStarted", "ToolResultReady", "ToolSpec", "Tools", "EngineTools", "Usage", "Workspace", "confidence",
     "is_holdout", "Text", "Image", "Audio", "Document", "Part", "Content",
 ]

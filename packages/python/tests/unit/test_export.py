@@ -58,7 +58,7 @@ async def test_export_writes_three_datasets_with_labels_and_holdout() -> None:
         and decision_row["outcome"] is None
     )
     [generation_row] = _lines(bucket.objects[keys[1]])
-    assert generation_row["holdout"] is is_holdout(generation.run_id)
+    assert generation_row["holdout"] is is_holdout(generation.run_id) and generation_row["stopped"] is None
     assert generation_row["reply"] == "Sorry, no." and sorted(
         label["source"] for label in generation_row["labels"]
     ) == ["human", "world"]

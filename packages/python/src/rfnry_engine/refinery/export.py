@@ -43,6 +43,7 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
         "messages": body["messages"],
         "steps": body["steps"],
         "reply": body["reply"],
+        "stopped": body.get("stopped"),
         "usage": body["usage"],
         "labels": [_label(label) for label in labels],
     }

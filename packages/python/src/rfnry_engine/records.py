@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from rfnry_engine.models import Answer, Content, Message, Question, State, Usage
+from rfnry_engine.stop import Stopped
 
 
 class Step(BaseModel):
@@ -16,6 +17,7 @@ class Step(BaseModel):
     at: datetime
     duration_ms: int
     child_run_id: str | None = None
+    stopped: bool = False
 
 
 class Generation(BaseModel):
@@ -37,6 +39,7 @@ class Generation(BaseModel):
     reply: str
     usage: Usage
     children: list[Run] = Field(default_factory=list)
+    stopped: Stopped | None = None
 
 
 class Decision(BaseModel):

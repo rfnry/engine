@@ -3,7 +3,7 @@ import rfnry_engine
 EXPECTED = {
     "Engine", "AgentInfo", "Refinery", "InMemoryStorage", "PostgresStorage", "Storage", "RunRow", "LabelRow",
     "Bucket", "Review", "Outcome", "Label", "Labeled", "Exported", "Conflict",
-    "Generation", "Decision", "Run", "Step",
+    "Generation", "Decision", "Run", "Step", "Stop",
     "Message", "ToolSpec", "ToolCall", "Usage", "Reply", "State",
     "Text", "Image", "Audio", "Document", "Part", "Content",
     "Choice", "Score", "Check", "Question", "ChoiceAnswer", "ScoreAnswer", "CheckAnswer", "Answer", "Decided",

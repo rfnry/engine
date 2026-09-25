@@ -231,6 +231,47 @@ run = await engine.run("support", scope="acme", input=message, task="triage",
                        on_event=show)
 ```
 
+A person can stop or steer a run while it works. Pass `stop=Stop()` and call `stop.now()` to cancel
+the model call in flight and every tool still running, or `stop.after_step()` to let the current
+tool calls finish and end before the next model call. Pass `inbox=asyncio.Queue()` and put a string
+or a list of parts on it whenever the person says something: at each step boundary — after the
+tool results, before the next model call — the run takes everything waiting and appends each as a
+`role="user"` message, in order:
+
+```python
+stop, inbox = Stop(), asyncio.Queue()
+work = asyncio.create_task(engine.run("support", scope="acme", input=message, stop=stop, inbox=inbox))
+inbox.put_nowait("Also check the March invoice.")
+stop.after_step()
+run = await work
+run.stopped, run.reply, run.steps
+```
+
+A stopped run returns, never raises: `run.stopped` is `"now"` or `"after_step"` (`None` for a run
+that ended on its own), `run.steps` are the steps it took, `run.reply` is the last text the model
+produced — text streamed before `now()` included — or `""`, and it is recorded like any run. A tool
+call cut off by `now()` is answered with the error `stopped by the user` and its `Step` has
+`stopped=True`, so every tool call in `run.conversation` has its result and the next run continues
+from it. A stop set before the run starts ends it before the first model call; one set after it
+ended does nothing. A stop reaches delegated and routed runs, which end the same way at their own
+next boundary. With `after_step()` pending the inbox is not read. Whatever is still in the inbox
+when the run ends stays there — the engine never starts a run; you do, with those messages as its
+input. A decision run never reads the inbox: its questions are one call, and a stop or an inbox
+rides to the run it routes to. "Pause, please" is a message in the inbox: the model reads it at the
+next boundary and wraps up in its own words.
+
+Rewinding is slicing. Cut `run.conversation` just before a `role="user"` message and pass it as the
+next run's `history`; files the agent changed in a `Workspace` are yours to restore — a snapshot per
+turn, say. The abandoned run stays recorded, and a review of it turns the rewind into preference
+data:
+
+```python
+turns = [i for i, m in enumerate(run.conversation) if m.role == "user"]
+retry = await engine.run("support", scope="acme", input="Refund only the second charge.",
+                         history=run.conversation[: turns[-1]])
+await refinery.review("acme", run.run_id, Review(stance="objection", correction=retry.reply))
+```
+
 ### Decision agents
 
 A decision agent is a directory of questions:
@@ -333,8 +374,8 @@ Which department should handle this message?
 ```
 
 When the chosen option maps to an agent and confidence clears the floor, that agent runs with
-everything the run was given — the same input, parts included, `history`, `context`, `expect`, `tools`, `workspace`
-and `on_event`; a decision agent itself takes no `task`. The routed run is attached:
+everything the run was given — the same input, parts included, `history`, `context`, `expect`, `tools`, `workspace`,
+`on_event`, `stop` and `inbox`; a decision agent itself takes no `task`. The routed run is attached:
 
 ```python
 engine = Engine(root, generation=llm, decision=dm, tools=tools)
@@ -387,7 +428,7 @@ An agent without `workspace: true` never sees these tools, even when the run has
 agent with it, run without one, is a `ConfigurationError`, and so is a decision agent that declares it. Delegated and routed agents receive the
 run's workspace on the same terms. Commands run with only `PATH`, `HOME` and `LANG` — the service's
 own environment, where its keys live, is not passed unless you pass `env=`. Every call is bounded by
-`Engine(tool_timeout=)`, and when it expires the command and everything it started are killed — except
+`Engine(tool_timeout=)`, and when it expires — or `stop.now()` is called — the command and everything it started are killed — except
 a process that leaves the command's process group with `setsid`, which is out of reach and, if it keeps
 the output open, holds the call until the deadline. You own the directory and its lifetime: a
 temporary one per run, or one kept for a project.
@@ -470,7 +511,7 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | system, messages, steps, reply, usage, every label |
+| `generation` | generation run | system, messages, steps, reply, stopped, usage, every label |
 | `preference` | human correction | prompt, chosen (the correction), rejected (the reply) |
 | `decision` | question of a decision run | state, question, answer, probabilities, confidence, truth, outcome |
 
@@ -624,7 +665,7 @@ of every table, and no read accepts its absence. Tools pinned to a tenant are pa
 
 Everything the package exports, by role.
 
-- **Run things:** `Engine`, `AgentInfo`.
+- **Run things:** `Engine`, `AgentInfo`, `Stop`.
 - **What a run returns:** `Generation`, `Decision`, `Run`, `Step`; events `TextDelta`, `ToolCallStarted`, `ToolResultReady`, `Event`.
 - **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; `confidence`.
 - **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Jail`, `Workspace`.
