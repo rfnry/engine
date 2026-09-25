@@ -6,7 +6,7 @@ An agent is one of two kinds. A **generation agent** puts a language model in a 
 until it has an answer. A **decision agent** asks a decision model a set of typed questions about a
 state and gets typed, probabilistic answers back in one call. Agents nest in both directions: a
 generation agent can delegate to any agent, a decision agent can route to any agent. Opt-in, a
-**Refinery** records what your agents did and exports it as datasets, with every label and its
+refinery records what your agents did and exports it as datasets, with every label and its
 source — from people, the world and models. What you do with them — evaluate, improve prompts and
 rules, train or distill models, audit — is yours.
 
@@ -204,7 +204,7 @@ A list of parts becomes the first user message as it is; parts in `history` reac
 unchanged, and a later run continues from them. History, like input, is read by shape: a message or
 part from another library is read by its fields.
 
-Pass `record=False` to run without the Refinery recording it — a replay, an evaluation, a dry run.
+Pass `record=False` to run without the refinery recording it — a replay, an evaluation, a dry run.
 
 Ask for a typed reply and the model is made to produce one:
 
@@ -394,10 +394,10 @@ temporary one per run, or one kept for a project.
 
 ### Refining
 
-The Refinery records and exports what your agents did, with every label and its source. What you do
+The refinery records and exports what your agents did, with every label and its source. What you do
 with it — evaluate, improve prompts and rules, train or distill models, audit — is yours.
 
-Attach a Refinery and every run is recorded. A recording that fails is logged as a warning and never
+Attach a refinery and every run is recorded. A recording that fails is logged as a warning and never
 fails the run.
 
 ```python
@@ -603,7 +603,7 @@ through it is still refused.
 
 ## Storage
 
-The Refinery is the only part of the library that stores anything. Two storages ship: `InMemoryStorage()`
+The refinery is the only part of the library that stores anything. Two storages ship: `InMemoryStorage()`
 for tests and small things, `PostgresStorage(pool)` for everything else, taking an asyncpg pool you
 built. `initialize()` creates two tables, `engine_runs` and `engine_labels`, and is safe to run
 again. The tables are prefixed so the same database can hold rfnry-memory's:
@@ -616,7 +616,7 @@ refinery = Refinery(rfnry_engine.PostgresStorage(pool))
 
 ## Tenancy
 
-`scope` is the tenant. It is required on every run and every Refinery verb, it is the first column
+`scope` is the tenant. It is required on every run and every refinery verb, it is the first column
 of every table, and no read accepts its absence. Tools pinned to a tenant are passed on the call.
 `refinery.delete_scope(scope)` removes everything; `refinery.verify_absent(scope)` proves it.
 
@@ -638,7 +638,7 @@ Everything the package exports, by role.
 `AGENT.md`, a tool declared without a body or given without a declaration, a run of an agent whose
 kind of model is absent, an unknown task, a missing workspace, a `Workspace` root that is not a
 directory, a `max_steps`, `max_depth` or `tool_timeout` that is not positive. `NotFoundError` for
-an agent the tree does not have or a run the Refinery does not.
+an agent the tree does not have or a run the refinery does not.
 `InputError` for a call the library refuses: an empty scope, a `task` for a decision agent, media
 given to a decision agent, a media part with both or neither of `data` and `url`, a
 correction of the wrong shape, a tool called with bad arguments or a path outside its directory. `ModelError` when an adapter breaks the contract — a

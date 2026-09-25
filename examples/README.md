@@ -24,7 +24,7 @@ vendor's blocks, in user turns and in tool results alike.
 | `multi_tenancy` | two tenants on one tree: `context=`, per-tenant `run(tools=)`, rows per scope, `delete_scope` |
 | `customer_support_refining` | review, outcome, a judge with `yes`/`no` criteria and a teacher, conflicts, export of the three datasets as JSONL files into `datasets/` — one real row of each in [`datasets/sample/`](customer_support_refining/datasets/sample/) |
 | `workspace_python` | a coder agent with `workspace: true` writing and running Python in a temporary directory |
-| `postgres_refinery` | a Refinery on `PostgresStorage` over an asyncpg pool |
+| `postgres_refinery` | a refinery on `PostgresStorage` over an asyncpg pool |
 | `same_agent_two_vendors` | the same agent run on two generation models, quoting from a CSV and a text file under `knowledge/` |
 | `tools_without_a_model` | `EngineTools` driven by code: `dispatch`, `Delegate`, `Jail`, `+`, `only`, `without` |
 | `tool_timeout` | a slow tool cut off by `Engine(tool_timeout=)`, reported to the model as an error |
