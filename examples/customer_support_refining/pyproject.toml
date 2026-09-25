@@ -6,6 +6,7 @@ dependencies = [
     "rfnry-engine",
     "anthropic",
     "httpx",
+    "datasets>=4.7",
 ]
 
 [dependency-groups]
@@ -25,3 +26,4 @@ select = ["E", "F", "I", "W", "B", "UP", "SIM"]
 
 [tool.ruff.lint.isort]
 known-local-folder = ["providers"]
+known-third-party = ["datasets"]

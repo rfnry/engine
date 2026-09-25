@@ -22,7 +22,7 @@ vendor's blocks, in user turns and in tool results alike.
 | `agent_knows_its_folder` | a support desk with a policy rule set, a flat skill and a folder skill, a task, a declared tool and two adopted ones — `read_pdf` hands the model the PDF itself as a `Document` |
 | `structured_and_streaming` | `on_event=` printing text as it streams; `expect=` a pydantic model |
 | `multi_tenancy` | two tenants on one tree: `context=`, per-tenant `run(tools=)`, rows per scope, `delete_scope` |
-| `customer_support_refining` | review, outcome, a judge with `yes`/`no` criteria and a teacher, conflicts, export of the three datasets as JSONL files into `datasets/` — one real row of each in [`datasets/sample/`](customer_support_refining/datasets/sample/) |
+| `customer_support_refining` | review, outcome, a judge with `yes`/`no` criteria and a teacher, conflicts, export of the three datasets as JSONL files into `datasets/` — one real row of each in [`datasets/sample/`](customer_support_refining/datasets/sample/) — then a few lines each turning them into TRL `messages`+`tools` (SFT) and `prompt`/`chosen`/`rejected` (DPO), loaded back with Hugging Face `datasets`, and an OpenAI-style chat fine-tuning JSONL |
 | `workspace_python` | a coder agent with `workspace: true` writing and running Python in a temporary directory |
 | `postgres_refinery` | a refinery on `PostgresStorage` over an asyncpg pool |
 | `same_agent_two_vendors` | the same agent run on two generation models, quoting from a CSV and a text file under `knowledge/` |
