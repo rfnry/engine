@@ -539,6 +539,37 @@ right 80% of the time, and this is the table that says whether it was:
 `refinery.conflicts(scope)` lists runs that carry two different human corrections — a dataset can
 hold either, not both, and the library reports rather than guesses.
 
+### Agents kept in a repository
+
+The engine reads a folder; a new version of the agents is a new `Engine`. Keep the tree in a git
+repository — people who do not write code edit it in the host's web UI, and every change is a
+reviewed pull request — check each commit out into a folder of its own, build an engine from it,
+and swap which engine new runs use. A run in flight finishes on the engine it started with. Rolling
+back is loading an older commit, and since a commit's folder never changes, a half-written
+checkout is never live. Agents read their files as they work, so remove an old folder only once
+its runs have finished. The checkout is yours — `git worktree add`, a clone, an archive:
+
+```python
+def load(commit):
+    return commit, Engine(checkout(commit), generation=llm, decision=dm, tools=tools, refinery=refinery)
+
+served = {}
+live = load("4f2c9e1")
+commit, engine = live
+run = await engine.run("support", scope="acme", input=message)
+served[run.run_id] = commit
+
+live = load("a81d07b")
+
+arms = [load("4f2c9e1"), load("a81d07b")]
+commit, engine = arms[hashlib.sha256(b"user-42").digest()[0] % 2]
+```
+
+A run's record says what the model was sent, not which commit it came from; keep that in a table of
+your own, `run_id` to commit, and join it to the refinery's rows, which are keyed by `run_id`. The
+same join is an A/B test: load two commits side by side, send each user to one by a stable hash of
+their id, and the labels and outcomes on each side compare whole versions of the tree.
+
 ## Tools
 
 One concept, one word. A **tool** is a name, a description, an input schema and a body. A

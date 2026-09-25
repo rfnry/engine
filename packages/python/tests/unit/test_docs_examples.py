@@ -1,7 +1,9 @@
 import ast
 import asyncio
+import hashlib
 import inspect
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -185,6 +187,7 @@ async def context(tmp_path: Path, setup: Setup) -> dict[str, Any]:
         "run": await recorded.run("support", "acme", "My invoice was charged twice."),
         "decision": await recorded.run("frontdesk", "acme", "It is down"),
         "last_watermark": None,
+        "hashlib": hashlib, "checkout": lambda commit: shutil.copytree(root, tmp_path / "versions" / commit, dirs_exist_ok=True),
     }
 
 
