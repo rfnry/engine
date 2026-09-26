@@ -411,9 +411,13 @@ about an agent changes when the other kind of model is absent — only which age
 
 ### Workspace
 
-> `Workspace` gives the model a real shell. It can do anything the user running it can do — read
-> files, reach the network, delete things. The directory is where it starts, not a wall: confine it
-> with `shell=` or with wherever you run the service. Keep the agent directory outside the workspace.
+> `Workspace` gives the model a real shell, and **a shell is not confined by its directory**. Without
+> a sandbox it can do anything the user running the service can do: read every other tenant's
+> workspace, read the service's configuration and any secret on disk, reach the database and the
+> network, delete things. A document an agent reads can tell it to try. In a service that holds more
+> than one tenant, or anything the model must not see, run every command inside a sandbox with
+> `shell=` — the recipe is below — or run the service where there is nothing else to reach. Keep the
+> agent directory outside the workspace.
 
 A workspace is a directory where an agent writes code, runs it, reads what happened and tries again —
 the loop a coding assistant runs in a developer's terminal. An agent opts in with one line in its
@@ -458,20 +462,29 @@ build and a thirty-second API call live in the same engine. Without bash on `PAT
 a `ConfigurationError` that says so; pass `shell=["sh", "-c"]` on a system that has only a POSIX
 shell, such as Alpine.
 
-`Write` and `Edit` stay inside the directory. `Shell` reaches what the process running it can reach,
-so the real boundary is `shell=` or the machine. On Linux, bubblewrap — the sandbox Claude Code uses
-for its own shell — gives each command the whole system read-only, the directory writable, no
-network, and kills every process when the command ends:
+`Write`, `Edit` and `Load` stay inside the directory: the engine runs them itself and refuses a path
+that leaves it. `Shell` reaches what the process running it can reach, so the real boundary is
+`shell=` or the machine. On Linux, bubblewrap — the sandbox Claude Code uses for its own shell —
+builds each command a world of its own: the system's programs read-only, this tenant's directory
+writable, an empty `/tmp`, and nothing else — no other tenant, no service configuration, no network —
+and it kills every process when the command ends:
 
 ```python
 sandboxed = Workspace("/srv/tenants/acme/work", shell=[
-    "bwrap", "--ro-bind", "/", "/", "--bind", "/srv/tenants/acme/work", "/srv/tenants/acme/work",
-    "--dev", "/dev", "--proc", "/proc", "--unshare-net", "--unshare-pid", "--die-with-parent",
+    "bwrap", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin",
+    "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
+    "--tmpfs", "/tmp", "--bind", "/srv/tenants/acme/work", "/srv/tenants/acme/work",
+    "--chdir", "/srv/tenants/acme/work", "--unshare-all", "--die-with-parent", "--new-session",
     "bash", "-c",
 ])
 ```
 
-A container works too, with two details. Killing `docker exec` does not reach inside the container,
+Binding the whole system read-only (`--ro-bind / /`) is not enough: a command could still read
+every other tenant's directory and every secret on disk. Mount only what commands need — the
+recipe above suits a system whose programs live under `/usr`; add a read-only `/etc` path when a tool
+needs one — and one workspace per tenant, each with its own sandbox.
+
+A container works too, one per tenant, with two details. Killing `docker exec` does not reach inside the container,
 so the time limit goes inside the wrapper, and the container starts with `--init` so killed processes
 are reaped. Mount the directory at the same path, so `Write` and the shell see the same files:
 
