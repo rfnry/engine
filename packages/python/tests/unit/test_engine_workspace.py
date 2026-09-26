@@ -101,16 +101,29 @@ async def test_end_to_end_write_run_edit_run(tmp_path: Path, work: Workspace) ->
     assert run.steps[0].args == {"path": "main.py", "content": "print(1)\n"}
 
 
-async def test_the_run_deadline_kills_a_shell(tmp_path: Path, work: Workspace) -> None:
+async def test_the_workspace_timeout_stops_a_shell_and_the_run_goes_on(tmp_path: Path) -> None:
+    root = tmp_path / "quick"
+    root.mkdir()
     llm = Scripted(
-        use(ToolCall(id="1", name="Shell", args={"command": "sleep 30 & echo $! > child.pid; wait"})),
+        use(
+            ToolCall(
+                id="1",
+                name="Shell",
+                args={"command": "echo started; sleep 30 & echo $! > child.pid; wait"},
+            )
+        ),
         text_reply("gave up"),
     )
-    engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=0.5)
-    run = await engine.run("coder", "acme", "x", workspace=work)
+    engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=None)
+    run = await engine.run("coder", "acme", "x", workspace=Workspace(root, timeout=0.5))
     assert isinstance(run, Generation) and run.reply == "gave up"
-    assert run.steps[0].is_error and "timed out after 0.5s" in run.steps[0].result
-    pid = int((work.root / "child.pid").read_text())
+    result = json.loads(str(run.steps[0].result))
+    assert (
+        not run.steps[0].is_error
+        and result["timed_out"] is True
+        and result["stdout"] == "started\n"
+    )
+    pid = int((root / "child.pid").read_text())
     for _ in range(40):
         try:
             os.kill(pid, 0)
@@ -125,6 +138,19 @@ async def test_the_run_deadline_kills_a_shell(tmp_path: Path, work: Workspace) -
         await asyncio.sleep(0.05)
     else:
         pytest.fail("the shell's child survived the deadline")
+
+
+async def test_the_engine_tool_timeout_leaves_workspace_tools_to_their_own(
+    tmp_path: Path, work: Workspace
+) -> None:
+    llm = Scripted(
+        use(ToolCall(id="1", name="Shell", args={"command": "sleep 0.5; echo done"})),
+        text_reply("ok"),
+    )
+    engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=0.1)
+    run = await engine.run("coder", "acme", "x", workspace=work)
+    assert isinstance(run, Generation) and not run.steps[0].is_error
+    assert json.loads(str(run.steps[0].result))["stdout"] == "done\n"
 
 
 async def test_delegation_passes_the_workspace_to_a_child_that_declares_it(tmp_path: Path, work: Workspace) -> None:

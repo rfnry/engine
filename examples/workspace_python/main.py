@@ -1,8 +1,9 @@
 import asyncio
+import sys
 import tempfile
 from pathlib import Path
 
-from rfnry_engine import Engine, Workspace
+from rfnry_engine import Engine, ToolCall, Workspace
 
 from providers import AnthropicProvider
 
@@ -11,11 +12,23 @@ with plain asserts, including an even-length list and an empty list (which must 
 ValueError). Run the tests until they pass."""
 
 
+async def ask_in_the_terminal(agent: str, call: ToolCall) -> bool:
+    if call.name in ("Write", "Edit"):
+        return True
+    question = f"{agent} wants to run: {call.args.get('command')}  allow? [y/n] "
+    answer = await asyncio.to_thread(input, question)
+    return answer.strip().lower() == "y"
+
+
 async def main() -> None:
-    engine = Engine("agents", generation=AnthropicProvider(), tool_timeout=60.0)
+    engine = Engine("agents", generation=AnthropicProvider())
+    approve = ask_in_the_terminal if sys.argv[1:] == ["ask"] else None
 
     with tempfile.TemporaryDirectory() as work:
-        run = await engine.run("coder", scope="demo", input=TASK, workspace=Workspace(work))
+        workspace = Workspace(work, timeout=60)
+        run = await engine.run(
+            "coder", scope="demo", input=TASK, workspace=workspace, approve=approve
+        )
         for step in run.steps:
             target = step.args.get("path") or step.args.get("command")
             print(f"{step.tool:5} {target}  {step.result[:80]!r}")

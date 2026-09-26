@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from rfnry_engine.errors import ConfigurationError, InputError
-from rfnry_engine.tools.workspace import STREAM_CAP, Workspace
+from rfnry_engine.tools.workspace import Workspace
 
 
 def tool(ws: Workspace, name: str) -> Any:
@@ -58,7 +58,7 @@ def test_three_tools_in_order(ws: Workspace) -> None:
 
 async def test_shell_returns_exit_code_and_both_streams(ws: Workspace) -> None:
     result = await shell(ws, "echo out; echo err >&2; exit 3")
-    assert result == {"exit_code": 3, "stdout": "out\n", "stderr": "err\n"}
+    assert result == {"exit_code": 3, "stdout": "out\n", "stderr": "err\n", "timed_out": False}
 
 
 async def test_shell_runs_in_the_root(ws: Workspace) -> None:
@@ -81,7 +81,7 @@ async def test_env_passes_through(ws: Workspace) -> None:
 async def test_output_is_capped_head_and_tail(ws: Workspace) -> None:
     result = await shell(ws, "head -c 200000 /dev/zero | tr '\\0' a")
     out = result["stdout"]
-    assert len(out) < STREAM_CAP + 100
+    assert len(out) < ws.output_bytes + 100
     assert "bytes omitted" in out and out.startswith("a") and out.endswith("a")
 
 
@@ -168,6 +168,86 @@ async def test_edit_refuses_empty_old_missing_file_and_binary(ws: Workspace) -> 
         await tool(ws, "Edit").call({"path": "bin", "old": "x", "new": "y"})
 
 
-def test_shell_says_it_already_runs_in_the_workspace(tmp_path: Path) -> None:
-    description = next(t.description for t in Workspace(tmp_path).tools() if t.name == "Shell")
-    assert "already runs in the workspace directory" in description and "relative paths" in description
+def test_shell_tells_the_model_its_terms(tmp_path: Path) -> None:
+    description = next(
+        t.description
+        for t in Workspace(tmp_path, timeout=45, output_bytes=8000).tools()
+        if t.name == "Shell"
+    )
+    assert description.startswith("Run a bash command. It starts in the workspace directory")
+    assert "relative paths work" in description and "does not carry over" in description
+    assert "stopped after 45 seconds" in description and "first and last 4000 bytes" in description
+
+
+async def test_the_default_shell_is_bash(ws: Workspace) -> None:
+    assert Path(ws.shell[0]).name == "bash" and ws.shell[1:] == ["-c"]
+    result = await shell(
+        ws, 'set -o pipefail; for i in {1..3}; do [[ $i -gt 1 ]] && echo "$i"; done'
+    )
+    assert result["stdout"] == "2\n3\n" and result["exit_code"] == 0
+
+
+def test_a_missing_bash_is_refused_with_the_way_out(tmp_path: Path) -> None:
+    with pytest.raises(
+        ConfigurationError,
+        match=r"^workspace: bash was not found; pass shell=, such as \['sh', '-c'\]$",
+    ):
+        Workspace(tmp_path, env={"PATH": str(tmp_path)})
+
+
+async def test_the_shell_can_be_chosen_and_wrapped(ws: Workspace) -> None:
+    posix = Workspace(ws.root, shell=["sh", "-c"])
+    assert (await shell(posix, "echo plain"))["stdout"] == "plain\n"
+    assert next(t.description for t in posix.tools() if t.name == "Shell").startswith(
+        "Run a sh command."
+    )
+    wrapped = Workspace(ws.root, shell=["env", "WRAPPED=yes", "bash", "-c"])
+    assert (await shell(wrapped, 'echo "$WRAPPED"'))["stdout"] == "yes\n"
+    assert next(t.description for t in wrapped.tools() if t.name == "Shell").startswith(
+        "Run a bash command."
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"shell": "bash -c"}, "shell must be a non-empty list of strings"),
+        ({"shell": []}, "shell must be a non-empty list of strings"),
+        ({"shell": ["bash", ""]}, "shell must be a non-empty list of strings"),
+        ({"timeout": 0}, "timeout must be positive"),
+        ({"output_bytes": 0}, "output_bytes must be positive"),
+    ],
+)
+def test_a_workspace_that_cannot_work_is_refused(
+    tmp_path: Path, kwargs: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ConfigurationError, match=f"^workspace: {message}"):
+        Workspace(tmp_path, **kwargs)
+
+
+async def test_the_timeout_stops_the_command_and_keeps_what_it_printed(tmp_path: Path) -> None:
+    quick = Workspace(tmp_path, timeout=0.5)
+    began = time.monotonic()
+    result = await shell(quick, "echo before; sleep 30 & echo $! > child.pid; wait")
+    assert time.monotonic() - began < 5
+    assert result["timed_out"] is True and result["stdout"] == "before\n"
+    assert await gone(int((tmp_path / "child.pid").read_text()))
+
+
+async def test_output_bytes_sets_the_cap(tmp_path: Path) -> None:
+    small = Workspace(tmp_path, output_bytes=1000)
+    out = (await shell(small, "head -c 50000 /dev/zero | tr '\\0' a"))["stdout"]
+    assert len(out) < 1100 and "49000 bytes omitted" in out
+
+
+async def test_write_and_edit_are_bounded_by_the_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slow = Workspace(tmp_path, timeout=0.2)
+    def late(args: dict[str, Any]) -> str:
+        time.sleep(1)
+        return "late"
+
+    monkeypatch.setattr(slow, "_write", late)
+    with pytest.raises(TimeoutError, match=r"^workspace: Write did not finish within 0\.2s$"):
+        await tool(slow, "Write").call({"path": "a.txt", "content": "x"})

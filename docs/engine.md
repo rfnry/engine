@@ -408,12 +408,13 @@ about an agent changes when the other kind of model is absent — only which age
 
 ### Workspace
 
-> `Workspace` gives the model a real shell on the machine where it runs. It can do anything that
-> machine's user can do — read files, reach the network, delete things. Run it where that is
-> acceptable. Keep the agent directory outside the workspace root.
+> `Workspace` gives the model a real shell. It can do anything the user running it can do — read
+> files, reach the network, delete things. The directory is where it starts, not a wall: confine it
+> with `shell=` or with wherever you run the service. Keep the agent directory outside the workspace.
 
-A workspace is a directory you own where an agent writes code, runs it, and tries again. An agent
-opts in with one line in its `AGENT.md`, and a run supplies the directory:
+A workspace is a directory where an agent writes code, runs it, reads what happened and tries again —
+the loop a coding assistant runs in a developer's terminal. An agent opts in with one line in its
+`AGENT.md`, and a run supplies the directory:
 
 ```
 agents/coder/AGENT.md
@@ -429,24 +430,91 @@ workspace: true
 from rfnry_engine import Workspace
 
 run = await engine.run("coder", scope="acme", input="make the failing test pass",
-                       workspace=Workspace("/srv/tenants/acme/work"))
+                       workspace=Workspace("/srv/tenants/acme/work", timeout=600))
 ```
 
-The agent then has three more tools: `Shell(command)` runs a command in the directory — its
-description tells the model it is already there, so relative paths work — and returns
-`exit_code`, `stdout` and `stderr`, each capped at 30,000 bytes with head and tail kept; `Write(path, content)` writes a file exactly; `Edit(path, old, new)`
-replaces one exact occurrence. `Write` and `Edit` stay inside the directory; `Shell` is a shell and
-can reach anything the service's user can. They are for exact edits and a clean record, not a
-security boundary — the isolation is wherever you run the service.
+The agent then has three more tools. `Shell(command)` runs a command and returns `exit_code`,
+`stdout`, `stderr` and `timed_out`. `Write(path, content)` writes a file exactly, and
+`Edit(path, old, new)` replaces one exact occurrence — helpers that send only what changes and leave
+a clean step in the record; the shell can do both too. Each command starts fresh in the directory,
+so a `cd` or a variable does not carry over, and the tool's description tells the model so, along
+with its shell and its limits.
+
+`Workspace(root, shell=, timeout=, output_bytes=, env=)`:
+
+| argument | default | what it does |
+| --- | --- | --- |
+| `shell` | `["bash", "-c"]`, bash found on `PATH` | the command each `Shell` call runs inside, the command appended last; the model is told the name of its last program |
+| `timeout` | `120` seconds | no `Shell`, `Write` or `Edit` call runs longer; a command still running is killed with everything it started, and the call returns what it printed with `timed_out: true` |
+| `output_bytes` | `30_000` | the cap on `stdout` and on `stderr`, each keeping its first and last half |
+| `env` | `PATH`, `HOME` (the directory), `LANG` | the only environment commands see, so the service's own keys never reach them |
+
+The workspace's `timeout` replaces `Engine(tool_timeout=)` for its three tools, so a ten-minute
+build and a thirty-second API call live in the same engine. Without bash on `PATH` the workspace is
+a `ConfigurationError` that says so; pass `shell=["sh", "-c"]` on a system that has only a POSIX
+shell, such as Alpine.
+
+`Write` and `Edit` stay inside the directory. `Shell` reaches what the process running it can reach,
+so the real boundary is `shell=` or the machine. On Linux, bubblewrap — the sandbox Claude Code uses
+for its own shell — gives each command the whole system read-only, the directory writable, no
+network, and kills every process when the command ends:
+
+```python
+sandboxed = Workspace("/srv/tenants/acme/work", shell=[
+    "bwrap", "--ro-bind", "/", "/", "--bind", "/srv/tenants/acme/work", "/srv/tenants/acme/work",
+    "--dev", "/dev", "--proc", "/proc", "--unshare-net", "--unshare-pid", "--die-with-parent",
+    "bash", "-c",
+])
+```
+
+A container works too, with two details. Killing `docker exec` does not reach inside the container,
+so the time limit goes inside the wrapper, and the container starts with `--init` so killed processes
+are reaped. Mount the directory at the same path, so `Write` and the shell see the same files:
+
+```python
+contained = Workspace("/srv/tenants/acme/work", timeout=600, shell=[
+    "docker", "exec", "-i", "-w", "/srv/tenants/acme/work", "sandbox",
+    "timeout", "-s", "KILL", "600", "bash", "-c",
+])
+```
+
+Without a sandbox, the kill reaches every process the command started except one that leaves its
+process group with `setsid`; bubblewrap's own process namespace closes that gap.
 
 An agent without `workspace: true` never sees these tools, even when the run has a workspace; an
-agent with it, run without one, is a `ConfigurationError`, and so is a decision agent that declares it. Delegated and routed agents receive the
-run's workspace on the same terms. Commands run with only `PATH`, `HOME` and `LANG` — the service's
-own environment, where its keys live, is not passed unless you pass `env=`. Every call is bounded by
-`Engine(tool_timeout=)`, and when it expires — or `stop.now()` is called — the command and everything it started are killed — except
-a process that leaves the command's process group with `setsid`, which is out of reach and, if it keeps
-the output open, holds the call until the deadline. You own the directory and its lifetime: a
-temporary one per run, or one kept for a project.
+agent with it, run without one, is a `ConfigurationError`, and so is a decision agent that declares
+it. Delegated and routed agents receive the run's workspace on the same terms. `stop.now()` kills a
+running command the same way the timeout does. You own the directory and its lifetime: a temporary
+one per run, or one kept for a project.
+
+### Approving tool calls
+
+By default an agent calls any tool it has. Pass `approve` and every tool call waits for your answer
+first — the shell, a `Write`, a refund, a `Delegate`. It receives the agent's name and the call, and
+returns `True` to run it or `False` to refuse:
+
+```python
+async def approve(agent, call):
+    if call.name in ("Write", "Edit"):
+        return True
+    return await ask_a_person(agent, call)
+
+run = await engine.run("coder", scope="acme", input="make the failing test pass",
+                       workspace=Workspace("/srv/tenants/acme/work"), approve=approve)
+```
+
+Where the person is — a thread, a dashboard, a chat app — is yours; the engine only waits. "Allow
+everything" is no `approve`; "ask every time" is one that always asks; "allow edits, ask for the
+rest" is the function above; "always allow this command" is a set the function keeps. A refused
+call does not run: the model reads `NotApproved: Shell was not approved` and carries on, and a
+reason reaches it through the `inbox`. Each step records `approved` — `True`, `False`, or `None`
+when nobody was asked — and the exported rows keep it, so a person's refusals become labels.
+
+Time spent waiting is not a tool's time: the deadline starts when the call runs. `stop.now()` ends
+a wait. Delegated and routed runs are asked through the same function, with their own agent's name;
+`engine.tool()` and `EngineTools` take `approve=` for the runs they start. An `approve` that returns
+anything but `True` or `False` is a `ConfigurationError`. The run waits in memory, so an approval
+that takes hours is better refused now and continued later from `run.conversation`.
 
 ### Refining
 
@@ -647,7 +715,8 @@ show — except the `Tools` a caller passes to `run(tools=)`, which ride that on
 Every tool call inside a run has a deadline, `Engine(tool_timeout=30.0)` by default and `None` to
 turn it off. When it passes, the model gets the error `timed out after 30s` and the run continues.
 Bodies are async and the deadline cancels them, so a body that runs blocking work in a thread must
-put its own limit on that work: cancelling the await does not stop the thread. `Delegate` has no
+put its own limit on that work: cancelling the await does not stop the thread. A workspace's
+`Shell`, `Write` and `Edit` keep the workspace's own `timeout` instead. `Delegate` has no
 deadline. The child run it starts is bounded by its own tool calls and `max_steps`.
 
 The builtins are bounded whatever the deadline. `Read` returns UTF-8 text, images and PDFs — a
@@ -739,7 +808,9 @@ Everything the package exports, by role.
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
 `AGENT.md`, a tool declared without a body or given without a declaration, a run of an agent whose
 kind of model is absent, an unknown task, a missing workspace, a `Workspace` root that is not a
-directory, a `max_steps`, `max_depth` or `tool_timeout` that is not positive. `NotFoundError` for
+directory, no bash on `PATH` and no `shell=`, a `shell` that is not a list of strings, a `max_steps`,
+`max_depth`, `tool_timeout`, `timeout` or `output_bytes` that is not positive, an `approve` that
+returns anything but `True` or `False`. `NotFoundError` for
 an agent the tree does not have or a run the refinery does not.
 `InputError` for a call the library refuses: an empty scope, a `task` for a decision agent, tags
 outside their limits, media given to a decision agent, a media part with both or neither of `data` and `url`, a

@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,11 +48,13 @@ from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import DELEGATE_TOOL, child_result, enter, permit
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
-from rfnry_engine.tools.workspace import Workspace
+from rfnry_engine.tools.workspace import WORKSPACE_TOOLS, Workspace
 from rfnry_engine.tree import AgentSpec, Kind, load_tree, validate_tree
 
 OUTPUT_TOOL = "Output"
 STOPPED = "stopped by the user"
+
+Approve = Callable[[str, ToolCall], Awaitable[bool]]
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,7 @@ class _Options:
     stop: Stop | None = None
     inbox: asyncio.Queue[Any] | None = None
     tags: dict[str, str] = field(default_factory=dict)
+    approve: Approve | None = None
 
 
 class AgentInfo(BaseModel):
@@ -226,6 +229,7 @@ class Engine:
         stop: Stop | None = None,
         inbox: asyncio.Queue[Any] | None = None,
         tags: Mapping[str, str] | None = None,
+        approve: Approve | None = None,
     ) -> Run:
         if not scope:
             raise InputError("engine: scope is required")
@@ -235,6 +239,7 @@ class Engine:
         options = _Options(
             task=task, history=_history(history), context=context, expect=expect,
             on_event=on_event, tools=tools, workspace=workspace, stop=stop, inbox=inbox, tags=_tags(tags),
+            approve=approve,
         )
         run = await self._run(spec, scope, input, options, None)
         if record and self.refinery is not None:
@@ -255,6 +260,7 @@ class Engine:
         tools: ToolsLike | None = None,
         workspace: Workspace | None = None,
         tags: Mapping[str, str] | None = None,
+        approve: Approve | None = None,
     ) -> Tools:
         if not scope:
             raise InputError("engine: scope is required")
@@ -262,7 +268,9 @@ class Engine:
         tagged = _tags(tags)
 
         async def body(args: dict[str, Any]) -> Result:
-            run = await self.run(agent, scope, args["input"], context=context, tools=tools, workspace=workspace, tags=tagged)
+            run = await self.run(
+                agent, scope, args["input"], context=context, tools=tools, workspace=workspace, tags=tagged, approve=approve
+            )
             if isinstance(run, Generation):
                 return run.reply
             return {qid: answer.model_dump() for qid, answer in run.answers.items()}
@@ -342,8 +350,10 @@ class Engine:
         at = _now()
         expect, on_event, stop, inbox = options.expect, options.on_event, options.stop, options.inbox
         surface = EngineTools(
-            self, agent=spec.name, scope=scope, tools=options.tools, workspace=options.workspace, tags=options.tags
+            self, agent=spec.name, scope=scope, tools=options.tools, workspace=options.workspace, tags=options.tags,
+            approve=options.approve,
         )
+        bounded_by_workspace = WORKSPACE_TOOLS if spec.workspace and options.workspace is not None else frozenset()
         specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
         if expect is not None:
             if OUTPUT_TOOL in surface:
@@ -398,23 +408,30 @@ class Engine:
             child_run_id: str | None = None
             stopped = False
             content: Content
-            if spec.agents and call.name == DELEGATE_TOOL:
+            approved = None if options.approve is None else await options.approve(spec.name, call)
+            if approved is not None and not isinstance(approved, bool):
+                raise ConfigurationError(f"engine: approve must return True or False; got {approved!r}")
+            if approved is False:
+                content, is_error = f"NotApproved: {call.name} was not approved", True
+            elif spec.agents and call.name == DELEGATE_TOOL:
                 content, is_error, child_run_id, stopped = await delegate(call)
             else:
-                deadline = asyncio.timeout(self.tool_timeout)
+                limit = None if call.name in bounded_by_workspace else self.tool_timeout
+                deadline = asyncio.timeout(limit)
                 try:
                     async with deadline:
                         result = await surface.dispatch(call.name, call.args)
                     content, is_error = _content(result), False
                 except Exception as exc:
                     if deadline.expired():
-                        content = f"TimeoutError: {call.name} timed out after {self.tool_timeout:g}s"
+                        content = f"TimeoutError: {call.name} timed out after {limit:g}s"
                     else:
                         content = f"{type(exc).__name__}: {exc}"
                     is_error = True
             step = Step(
                 tool=call.name, args=call.args, result=content, is_error=is_error, at=_now(),
                 duration_ms=int((time.monotonic() - began) * 1000), child_run_id=child_run_id, stopped=stopped,
+                approved=approved,
             )
             await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, tool=call.name, is_error=is_error))
             return step

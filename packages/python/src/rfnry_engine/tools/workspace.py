@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import shutil
 import signal
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,7 @@ from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.jail import Jail
 from rfnry_engine.tools.tools import Tool
 
-STREAM_CAP = 30_000
+WORKSPACE_TOOLS = frozenset({"Shell", "Write", "Edit"})
 
 
 class ShellArgs(BaseModel):
@@ -33,7 +34,8 @@ class EditArgs(BaseModel):
 
 
 class _Capture(asyncio.SubprocessProtocol):
-    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(self, loop: asyncio.AbstractEventLoop, cap: int) -> None:
+        self.half = cap // 2
         self.heads = {1: bytearray(), 2: bytearray()}
         self.tails = {1: bytearray(), 2: bytearray()}
         self.totals = {1: 0, 2: 0}
@@ -42,7 +44,7 @@ class _Capture(asyncio.SubprocessProtocol):
         self.closed: asyncio.Future[None] = loop.create_future()
 
     def pipe_data_received(self, fd: int, data: bytes) -> None:
-        half = STREAM_CAP // 2
+        half = self.half
         head, tail = self.heads[fd], self.tails[fd]
         self.totals[fd] += len(data)
         room = half - len(head)
@@ -79,52 +81,102 @@ def _kill(pid: int) -> None:
         os.killpg(pid, signal.SIGKILL)
 
 
-def _threaded(handler: Callable[[dict[str, Any]], str]) -> Callable[[dict[str, Any]], Awaitable[str]]:
+def _bounded(handler: Callable[[dict[str, Any]], str], name: str, timeout: float) -> Callable[[dict[str, Any]], Awaitable[str]]:
     async def body(args: dict[str, Any]) -> str:
-        return await asyncio.to_thread(handler, args)
+        try:
+            async with asyncio.timeout(timeout):
+                return await asyncio.to_thread(handler, args)
+        except TimeoutError:
+            raise TimeoutError(f"workspace: {name} did not finish within {timeout:g}s") from None
 
     return body
 
 
+def _named(shell: list[str]) -> str:
+    return next((Path(part).name for part in reversed(shell) if not part.startswith("-")), shell[0])
+
+
 class Workspace:
-    def __init__(self, root: Path | str, *, env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        root: Path | str,
+        *,
+        shell: Sequence[str] | None = None,
+        timeout: float = 120.0,
+        output_bytes: int = 30_000,
+        env: dict[str, str] | None = None,
+    ) -> None:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"workspace: root is not a directory: {root}")
+        if timeout <= 0:
+            raise ConfigurationError("workspace: timeout must be positive")
+        if output_bytes <= 0:
+            raise ConfigurationError("workspace: output_bytes must be positive")
         self.env = (
             dict(env)
             if env is not None
             else {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(self.root), "LANG": "C.UTF-8"}
         )
+        if shell is None:
+            bash = shutil.which("bash", path=self.env.get("PATH"))
+            if bash is None:
+                raise ConfigurationError("workspace: bash was not found; pass shell=, such as ['sh', '-c']")
+            shell = [bash, "-c"]
+        elif isinstance(shell, str) or not shell or not all(isinstance(part, str) and part for part in shell):
+            raise ConfigurationError("workspace: shell must be a non-empty list of strings, such as ['bash', '-c']")
+        self.shell = list(shell)
+        self.timeout = timeout
+        self.output_bytes = output_bytes
         self.jail = Jail(self.root)
 
     def tools(self) -> list[Tool]:
+        shell = (
+            f"Run a {_named(self.shell)} command. It starts in the workspace directory, so relative paths work and "
+            "there is no need to search the filesystem for it. Each command starts fresh: a cd or a variable does not "
+            f"carry over to the next one. A command is stopped after {self.timeout:g} seconds. Returns exit_code, "
+            f"stdout, stderr and timed_out; stdout and stderr keep their first and last {self.output_bytes // 2} bytes."
+        )
         return [
-            Tool("Shell", "Run a shell command; it already runs in the workspace directory, so relative paths work and there is no need to search the filesystem for it. Returns exit_code, stdout and stderr.", body=self._shell, args=ShellArgs),
-            Tool("Write", "Write a file in the workspace with exactly this content, creating parent directories.", body=_threaded(self._write), args=WriteArgs),
-            Tool("Edit", "Replace one exact occurrence of old with new in a workspace file.", body=_threaded(self._edit), args=EditArgs),
+            Tool("Shell", shell, body=self._shell, args=ShellArgs),
+            Tool("Write", "Write a file in the workspace with exactly this content, creating parent directories.", body=_bounded(self._write, "Write", self.timeout), args=WriteArgs),
+            Tool("Edit", "Replace one exact occurrence of old with new in a workspace file.", body=_bounded(self._edit, "Edit", self.timeout), args=EditArgs),
         ]
 
     async def _shell(self, args: dict[str, Any]) -> dict[str, Any]:
         command = ShellArgs.model_validate(args).command
         loop = asyncio.get_running_loop()
         transport, capture = await loop.subprocess_exec(
-            lambda: _Capture(loop),
-            "/bin/sh", "-c", command, cwd=self.root, env=self.env,
+            lambda: _Capture(loop, self.output_bytes),
+            *self.shell, command, cwd=self.root, env=self.env,
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
         pid = transport.get_pid()
+        timed_out = False
         try:
-            await capture.exited
-            _kill(pid)
-            await capture.closed
+            try:
+                async with asyncio.timeout(self.timeout):
+                    await asyncio.shield(capture.exited)
+                    _kill(pid)
+                    await asyncio.shield(capture.closed)
+            except TimeoutError:
+                timed_out = not capture.exited.done()
+                _kill(pid)
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(1.0):
+                        await asyncio.shield(capture.exited)
         except BaseException:
             _kill(pid)
             raise
         finally:
             transport.close()
-        return {"exit_code": transport.get_returncode(), "stdout": capture.text(1), "stderr": capture.text(2)}
+        return {
+            "exit_code": transport.get_returncode(),
+            "stdout": capture.text(1),
+            "stderr": capture.text(2),
+            "timed_out": timed_out,
+        }
 
     def _target(self, path: str) -> Path:
         try:

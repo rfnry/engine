@@ -18,6 +18,7 @@ class Step(BaseModel):
     duration_ms: int
     child_run_id: str | None = None
     stopped: bool = False
+    approved: bool | None = None
 
 
 class Generation(BaseModel):

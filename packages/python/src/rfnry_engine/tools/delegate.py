@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import contextvars
 import json
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
 
 from rfnry_engine.errors import DelegationDepthError, DelegationLoopError, InputError
+from rfnry_engine.models import ToolCall
 from rfnry_engine.records import Generation
 from rfnry_engine.tools.tools import Tool, ToolsLike
 from rfnry_engine.tree import AgentSpec
@@ -77,9 +78,12 @@ def delegate_tool(
     tools: ToolsLike | None = None,
     workspace: Workspace | None = None,
     tags: Mapping[str, str] | None = None,
+    approve: Callable[[str, ToolCall], Awaitable[bool]] | None = None,
 ) -> Tool:
     async def body(args: dict[str, Any]) -> str:
         parsed = permit(spec, args)
-        return child_result(await engine.run(parsed.agent, scope, parsed.input, tools=tools, workspace=workspace, tags=tags))
+        return child_result(
+            await engine.run(parsed.agent, scope, parsed.input, tools=tools, workspace=workspace, tags=tags, approve=approve)
+        )
 
     return Tool(DELEGATE_TOOL, delegate_description(engine, spec), body=body, input_schema=delegate_schema(spec))

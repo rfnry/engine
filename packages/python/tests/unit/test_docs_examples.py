@@ -78,6 +78,12 @@ SETUPS = {
     ),
     "engine = Engine(root, generation=llm, decision=dm, tools=tools)": Setup(replies=(delegating("triage"),), intent="technical"),
     "from rfnry_engine import Workspace": Setup(replace={"/srv/tenants/acme/work": "work"}),
+    'sandboxed = Workspace("/srv/tenants/acme/work", shell=[': Setup(replace={"/srv/tenants/acme/work": "work"}),
+    'contained = Workspace("/srv/tenants/acme/work", timeout=600, shell=[': Setup(replace={"/srv/tenants/acme/work": "work"}),
+    "async def approve(agent, call):": Setup(
+        replies=(Reply(tool_calls=[ToolCall(id="s1", name="Shell", args={"command": "echo hi"})], stop_reason="tool_use"),),
+        replace={"/srv/tenants/acme/work": "work"},
+    ),
 }
 
 
@@ -168,6 +174,10 @@ def memory_tools(memory: object, corpus_id: str) -> Tools:
     return Tools([Tool("recall", "Recall a fact", body=recall)])
 
 
+async def ask_a_person(agent: str, call: ToolCall) -> bool:
+    return call.name == "Shell" and call.args == {"command": "echo hi"}
+
+
 async def context(tmp_path: Path, setup: Setup) -> dict[str, Any]:
     root = tmp_path / "agents"
     tree(root)
@@ -187,6 +197,7 @@ async def context(tmp_path: Path, setup: Setup) -> dict[str, Any]:
         "run": await recorded.run("support", "acme", "My invoice was charged twice."),
         "decision": await recorded.run("frontdesk", "acme", "It is down"),
         "last_watermark": None,
+        "ask_a_person": ask_a_person,
         "hashlib": hashlib, "checkout": lambda commit: shutil.copytree(root, tmp_path / "versions" / commit, dirs_exist_ok=True),
     }
 
