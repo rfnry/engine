@@ -7,8 +7,18 @@ SIBLING = ROOT.parent / "memory"
 SRC = "packages/python/src"
 
 BLOCKS = {
-    "parts and messages": ("rfnry_engine/models.py", "rfnry_memory/models.py", "class Text(BaseModel):", "    is_error: bool = False\n"),
-    "tools": ("rfnry_engine/tools/tools.py", "rfnry_memory/tools.py", "Result = ", "if n not in names})\n"),
+    "parts and messages": (
+        "rfnry_engine/models.py",
+        "rfnry_memory/models.py",
+        "class Text(BaseModel):",
+        "    is_error: bool = False\n",
+    ),
+    "tools": (
+        "rfnry_engine/tools/tools.py",
+        "rfnry_memory/tools.py",
+        "Result = ",
+        "if n not in names})\n",
+    ),
 }
 
 

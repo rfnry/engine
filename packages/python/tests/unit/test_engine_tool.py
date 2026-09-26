@@ -11,7 +11,10 @@ from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import TOOLS, Fixed, Scripted, text_reply
 
-TRIAGE: dict[str, Answer] = {"urgent": CheckAnswer(probability=0.9), "severity": ScoreAnswer(score=3, probabilities=[0, 0, 0, 1])}
+TRIAGE: dict[str, Answer] = {
+    "urgent": CheckAnswer(probability=0.9),
+    "severity": ScoreAnswer(score=3, probabilities=[0, 0, 0, 1]),
+}
 
 
 class Recorded:
@@ -23,7 +26,9 @@ class Recorded:
 
 
 def calling(name: str, text: str) -> Reply:
-    return Reply(tool_calls=[ToolCall(id="c1", name=name, args={"input": text})], stop_reason="tool_use")
+    return Reply(
+        tool_calls=[ToolCall(id="c1", name=name, args={"input": text})], stop_reason="tool_use"
+    )
 
 
 async def test_a_generation_agent_as_a_tool_replies_and_records(fixtures: Path) -> None:
@@ -32,7 +37,9 @@ async def test_a_generation_agent_as_a_tool_replies_and_records(fixtures: Path) 
     engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=recorder)
     billing = engine.tool("billing", scope="acme", context="Acme is on the enterprise plan.")
     [definition] = billing.definitions()
-    assert definition["name"] == "billing" and definition["description"] == "Answers billing questions"
+    assert (
+        definition["name"] == "billing" and definition["description"] == "Answers billing questions"
+    )
     assert definition["input_schema"]["required"] == ["input"]
     assert await billing.dispatch("billing", {"input": "Charged twice"}) == "Refunded."
     [run] = recorder.runs
@@ -56,7 +63,9 @@ async def test_the_tool_composes_and_refuses_bad_calls(fixtures: Path) -> None:
     async def ping(args: dict[str, Any]) -> str:
         return "pong"
 
-    surface = engine.tool("billing", scope="acme", name="consult") + Tools([Tool("ping", "Ping", body=ping)])
+    surface = engine.tool("billing", scope="acme", name="consult") + Tools(
+        [Tool("ping", "Ping", body=ping)]
+    )
     assert surface.names == ["consult", "ping"]
     with pytest.raises(InputError, match="^tools: invalid arguments for consult"):
         await surface.dispatch("consult", {})
@@ -69,10 +78,14 @@ async def test_the_tool_composes_and_refuses_bad_calls(fixtures: Path) -> None:
 
 
 async def test_inside_a_run_it_is_its_own_top_level_run(fixtures: Path) -> None:
-    llm = Scripted(calling("consult", "Charged twice"), text_reply("Refunded."), text_reply("Done."))
+    llm = Scripted(
+        calling("consult", "Charged twice"), text_reply("Refunded."), text_reply("Done.")
+    )
     recorder = Recorded()
     engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=recorder)
-    run = await engine.run("support", "acme", "Help", tools=engine.tool("billing", scope="acme", name="consult"))
+    run = await engine.run(
+        "support", "acme", "Help", tools=engine.tool("billing", scope="acme", name="consult")
+    )
     assert isinstance(run, Generation) and run.reply == "Done." and run.children == []
     assert run.steps[0].result == "Refunded." and run.steps[0].child_run_id is None
     assert [r.agent for r in recorder.runs] == ["billing", "support"]

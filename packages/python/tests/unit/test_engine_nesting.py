@@ -14,11 +14,17 @@ from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import TOOLS, Fixed, Scripted, text_reply
 
-TRIAGE: dict[str, Answer] = {"urgent": CheckAnswer(probability=0.9), "severity": ScoreAnswer(score=3, probabilities=[0, 0, 0, 1])}
+TRIAGE: dict[str, Answer] = {
+    "urgent": CheckAnswer(probability=0.9),
+    "severity": ScoreAnswer(score=3, probabilities=[0, 0, 0, 1]),
+}
 
 
 def _delegate(agent: str, text: str, call_id: str = "d1") -> Reply:
-    return Reply(tool_calls=[ToolCall(id=call_id, name="Delegate", args={"agent": agent, "input": text})], stop_reason="tool_use")
+    return Reply(
+        tool_calls=[ToolCall(id=call_id, name="Delegate", args={"agent": agent, "input": text})],
+        stop_reason="tool_use",
+    )
 
 
 async def test_delegate_tool_exists_only_when_agents_are_named(fixtures: Path) -> None:
@@ -41,13 +47,21 @@ async def test_generation_agent_consults_a_decision_agent(fixtures: Path) -> Non
     run = await engine.run("support", "acme", "It is down")
     assert isinstance(run, Generation) and len(run.children) == 1
     child = run.children[0]
-    assert isinstance(child, Decision) and child.agent == "triage" and child.parent_run_id == run.run_id
+    assert (
+        isinstance(child, Decision)
+        and child.agent == "triage"
+        and child.parent_run_id == run.run_id
+    )
     assert run.steps[0].child_run_id == child.run_id
     assert json.loads(str(run.steps[0].result))["urgent"]["probability"] == 0.9
 
 
 async def test_the_whole_chain_frontdesk_support_triage(fixtures: Path) -> None:
-    intent = {"intent": ChoiceAnswer(choice="technical", probabilities={"technical": 0.9, "billing": 0.05, "other": 0.05})}
+    intent = {
+        "intent": ChoiceAnswer(
+            choice="technical", probabilities={"technical": 0.9, "billing": 0.05, "other": 0.05}
+        )
+    }
     answers: list[Any] = [intent, TRIAGE]
     dm = Fixed(lambda state: answers.pop(0))
     llm = Scripted(_delegate("triage", "It is down"), text_reply("Handled."))
@@ -61,8 +75,12 @@ async def test_a_loop_is_an_error_result_not_a_crash(tmp_path: Path) -> None:
     for name in ("a", "b"):
         (tmp_path / name).mkdir()
         other = "b" if name == "a" else "a"
-        (tmp_path / name / "AGENT.md").write_text(f"---\nname: {name}\nkind: generation\nagents: [{other}]\n---\nhi\n")
-    llm = Scripted(_delegate("b", "go"), _delegate("a", "back"), text_reply("b done"), text_reply("a done"))
+        (tmp_path / name / "AGENT.md").write_text(
+            f"---\nname: {name}\nkind: generation\nagents: [{other}]\n---\nhi\n"
+        )
+    llm = Scripted(
+        _delegate("b", "go"), _delegate("a", "back"), text_reply("b done"), text_reply("a done")
+    )
     run = await Engine(tmp_path, generation=llm).run("a", "acme", "start")
     assert isinstance(run, Generation)
     child = run.children[0]
@@ -72,7 +90,9 @@ async def test_a_loop_is_an_error_result_not_a_crash(tmp_path: Path) -> None:
 
 async def test_depth_is_capped(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nname: a\nkind: generation\nagents: [b]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nagents: [b]\n---\nhi\n"
+    )
     (tmp_path / "b").mkdir()
     (tmp_path / "b" / "AGENT.md").write_text("---\nname: b\nkind: generation\n---\nhi\n")
     llm = Scripted(_delegate("b", "go"), text_reply("a done"))
@@ -83,11 +103,15 @@ async def test_depth_is_capped(tmp_path: Path) -> None:
 
 async def test_the_child_serves_the_same_tenant_with_its_context(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nname: a\nkind: generation\nagents: [b]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nagents: [b]\n---\nhi\n"
+    )
     (tmp_path / "b").mkdir()
     (tmp_path / "b" / "AGENT.md").write_text("---\nname: b\nkind: generation\n---\nhi\n")
     llm = Scripted(_delegate("b", "go"), text_reply("b done"), text_reply("a done"))
-    run = await Engine(tmp_path, generation=llm).run("a", "acme", "start", context="Acme is enterprise.")
+    run = await Engine(tmp_path, generation=llm).run(
+        "a", "acme", "start", context="Acme is enterprise."
+    )
     assert isinstance(run, Generation)
     child = run.children[0]
     assert isinstance(child, Generation) and child.scope == "acme"
@@ -104,7 +128,9 @@ async def test_dispatch_delegate_outside_a_run(fixtures: Path) -> None:
 
 async def test_dispatch_delegate_gives_the_child_the_tenant_tools(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nname: a\nkind: generation\nagents: [b]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nagents: [b]\n---\nhi\n"
+    )
     (tmp_path / "b").mkdir()
     (tmp_path / "b" / "AGENT.md").write_text("---\nname: b\nkind: generation\n---\nhi\n")
 
@@ -139,7 +165,9 @@ BAD_DELEGATIONS = [
 
 async def test_a_refused_delegation_reads_the_same_in_a_run_and_from_code(fixtures: Path) -> None:
     for args, message in BAD_DELEGATIONS:
-        call = Reply(tool_calls=[ToolCall(id="d", name="Delegate", args=args)], stop_reason="tool_use")
+        call = Reply(
+            tool_calls=[ToolCall(id="d", name="Delegate", args=args)], stop_reason="tool_use"
+        )
         llm = Scripted(call, text_reply("done"))
         engine = Engine(fixtures, generation=llm, decision=Fixed(TRIAGE), tools=TOOLS)
         run = await engine.run("support", "acme", "x")

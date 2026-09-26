@@ -164,7 +164,9 @@ async def test_delegated_children_are_asked_too(tmp_path: Path) -> None:
 
 async def test_a_routed_run_is_asked_too(tmp_path: Path) -> None:
     refunds, approver = Refunds(), Approver()
-    help_: dict[str, Answer] = {"intent": ChoiceAnswer(choice="help", probabilities={"help": 0.9, "other": 0.1})}
+    help_: dict[str, Answer] = {
+        "intent": ChoiceAnswer(choice="help", probabilities={"help": 0.9, "other": 0.1})
+    }
     engine = Engine(
         make_tree(tmp_path),
         generation=Scripted(use("refund", order="A-1"), text_reply("done")),

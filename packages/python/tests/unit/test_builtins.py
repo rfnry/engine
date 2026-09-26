@@ -71,7 +71,15 @@ def test_the_jail_refuses_dotdot_absolute_and_symlink_paths(escape: Path) -> Non
     jail = Jail(escape)
     assert jail.resolve("rules/inside.md") == escape.resolve() / "rules" / "inside.md"
     assert jail.resolve(".") == escape.resolve()
-    for path in ["..", "../outside/secret.md", "rules/../../outside/secret.md", "/etc/passwd", str(escape.parent / "outside" / "secret.md"), "link.md", "linked/secret.md"]:
+    for path in [
+        "..",
+        "../outside/secret.md",
+        "rules/../../outside/secret.md",
+        "/etc/passwd",
+        str(escape.parent / "outside" / "secret.md"),
+        "link.md",
+        "linked/secret.md",
+    ]:
         with pytest.raises(InputError, match="outside the agent directory"):
             jail.resolve(path)
 
@@ -86,8 +94,13 @@ async def test_no_builtin_reaches_through_a_symlink(escape: Path) -> None:
     with pytest.raises(InputError, match="outside the agent directory"):
         await tools.dispatch("LS", {"path": "linked"})
     assert await tools.dispatch("Grep", {"pattern": "secret"}) == "rules/inside.md"
-    assert await tools.dispatch("Grep", {"pattern": "secret", "mode": "content"}) == "rules/inside.md:1:secret inside"
-    assert str(await tools.dispatch("Glob", {"pattern": "**/*.md"})).splitlines() == ["rules/inside.md"]
+    assert (
+        await tools.dispatch("Grep", {"pattern": "secret", "mode": "content"})
+        == "rules/inside.md:1:secret inside"
+    )
+    assert str(await tools.dispatch("Glob", {"pattern": "**/*.md"})).splitlines() == [
+        "rules/inside.md"
+    ]
     for pattern in ["../outside/*.md", "/etc/*"]:
         with pytest.raises(InputError, match="inside the agent directory"):
             await tools.dispatch("Glob", {"pattern": pattern})
@@ -109,7 +122,10 @@ def mixed(tmp_path: Path) -> Path:
 async def test_read_refuses_binary_files(mixed: Path) -> None:
     tools = Tools(builtins(mixed))
     for path in ["blob.bin", "latin.txt"]:
-        with pytest.raises(InputError, match=r"^builtins: binary file: .*; Read returns UTF-8 text, images \(PNG, JPEG, GIF, WebP\) and PDFs$"):
+        with pytest.raises(
+            InputError,
+            match=r"^builtins: binary file: .*; Read returns UTF-8 text, images \(PNG, JPEG, GIF, WebP\) and PDFs$",
+        ):
             await tools.dispatch("Read", {"path": path})
     assert await tools.dispatch("Read", {"path": "notes.md"}) == "needle in text\n"
 
@@ -125,7 +141,13 @@ PDF = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n"
 def media(tmp_path: Path) -> Path:
     root = tmp_path / "agent"
     (root / "knowledge").mkdir(parents=True)
-    for name, data in {"diagram.png": PNG, "photo.jpg": JPEG, "anim.gif": GIF, "shot.webp": WEBP, "rates.pdf": PDF}.items():
+    for name, data in {
+        "diagram.png": PNG,
+        "photo.jpg": JPEG,
+        "anim.gif": GIF,
+        "shot.webp": WEBP,
+        "rates.pdf": PDF,
+    }.items():
         (root / "knowledge" / name).write_bytes(data)
     (root / "knowledge" / "notes.md").write_text("plain\n")
     return root
@@ -133,24 +155,42 @@ def media(tmp_path: Path) -> Path:
 
 async def test_read_returns_images_and_pdfs_as_parts(media: Path) -> None:
     tools = Tools(builtins(media))
-    assert await tools.dispatch("Read", {"path": "knowledge/diagram.png"}) == [Image(media_type="image/png", data=PNG)]
-    assert await tools.dispatch("Read", {"path": "knowledge/photo.jpg"}) == [Image(media_type="image/jpeg", data=JPEG)]
-    assert await tools.dispatch("Read", {"path": "knowledge/anim.gif"}) == [Image(media_type="image/gif", data=GIF)]
-    assert await tools.dispatch("Read", {"path": "knowledge/shot.webp"}) == [Image(media_type="image/webp", data=WEBP)]
-    assert await tools.dispatch("Read", {"path": "knowledge/rates.pdf"}) == [Document(media_type="application/pdf", name="rates.pdf", data=PDF)]
+    assert await tools.dispatch("Read", {"path": "knowledge/diagram.png"}) == [
+        Image(media_type="image/png", data=PNG)
+    ]
+    assert await tools.dispatch("Read", {"path": "knowledge/photo.jpg"}) == [
+        Image(media_type="image/jpeg", data=JPEG)
+    ]
+    assert await tools.dispatch("Read", {"path": "knowledge/anim.gif"}) == [
+        Image(media_type="image/gif", data=GIF)
+    ]
+    assert await tools.dispatch("Read", {"path": "knowledge/shot.webp"}) == [
+        Image(media_type="image/webp", data=WEBP)
+    ]
+    assert await tools.dispatch("Read", {"path": "knowledge/rates.pdf"}) == [
+        Document(media_type="application/pdf", name="rates.pdf", data=PDF)
+    ]
     assert await tools.dispatch("Read", {"path": "knowledge/notes.md"}) == "plain\n"
 
 
 async def test_read_refuses_offset_and_limit_on_media(media: Path) -> None:
     tools = Tools(builtins(media))
     for args in [{"offset": 1}, {"limit": 2}]:
-        with pytest.raises(InputError, match=r"^builtins: offset and limit select lines of a text file; knowledge/rates.pdf is a PDF$"):
+        with pytest.raises(
+            InputError,
+            match=r"^builtins: offset and limit select lines of a text file; knowledge/rates.pdf is a PDF$",
+        ):
             await tools.dispatch("Read", {"path": "knowledge/rates.pdf", **args})
-    with pytest.raises(InputError, match=r"^builtins: offset and limit select lines of a text file; knowledge/diagram.png is an image$"):
+    with pytest.raises(
+        InputError,
+        match=r"^builtins: offset and limit select lines of a text file; knowledge/diagram.png is an image$",
+    ):
         await tools.dispatch("Read", {"path": "knowledge/diagram.png", "offset": 3})
 
 
-async def test_read_refuses_media_over_the_size_cap(media: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_read_refuses_media_over_the_size_cap(
+    media: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(builtins_module, "_MAX_BYTES", 10)
     tools = Tools(builtins(media))
     for path in ["knowledge/diagram.png", "knowledge/rates.pdf"]:
@@ -172,10 +212,20 @@ async def test_grep_skips_media_and_glob_and_ls_list_it(media: Path) -> None:
     tools = Tools(builtins(media))
     assert await tools.dispatch("Grep", {"pattern": "PDF|PNG|plain"}) == "knowledge/notes.md"
     assert str(await tools.dispatch("Glob", {"pattern": "knowledge/*"})).splitlines() == [
-        "knowledge/anim.gif", "knowledge/diagram.png", "knowledge/notes.md", "knowledge/photo.jpg", "knowledge/rates.pdf", "knowledge/shot.webp",
+        "knowledge/anim.gif",
+        "knowledge/diagram.png",
+        "knowledge/notes.md",
+        "knowledge/photo.jpg",
+        "knowledge/rates.pdf",
+        "knowledge/shot.webp",
     ]
     assert str(await tools.dispatch("LS", {"path": "knowledge"})).splitlines() == [
-        "anim.gif", "diagram.png", "notes.md", "photo.jpg", "rates.pdf", "shot.webp",
+        "anim.gif",
+        "diagram.png",
+        "notes.md",
+        "photo.jpg",
+        "rates.pdf",
+        "shot.webp",
     ]
 
 
@@ -184,7 +234,10 @@ async def test_media_needs_both_its_extension_and_its_signature(tmp_path: Path) 
     (tmp_path / "scan.bin").write_bytes(PNG)
     (tmp_path / "broken.png").write_bytes(b"\x00\x01not a png")
     tools = Tools(builtins(tmp_path))
-    assert await tools.dispatch("Read", {"path": "about.md"}) == "%PDF-1.7 is a version of the format\n"
+    assert (
+        await tools.dispatch("Read", {"path": "about.md"})
+        == "%PDF-1.7 is a version of the format\n"
+    )
     for path in ["scan.bin", "broken.png"]:
         with pytest.raises(InputError, match="binary file"):
             await tools.dispatch("Read", {"path": path})
@@ -192,7 +245,11 @@ async def test_media_needs_both_its_extension_and_its_signature(tmp_path: Path) 
 
 def test_read_tells_the_model_it_reads_text_images_and_pdfs() -> None:
     [read] = [d for d in _tools().definitions() if d["name"] == "Read"]
-    assert "text" in read["description"] and "images" in read["description"] and "PDFs" in read["description"]
+    assert (
+        "text" in read["description"]
+        and "images" in read["description"]
+        and "PDFs" in read["description"]
+    )
 
 
 async def test_grep_skips_binary_files(mixed: Path) -> None:
@@ -200,7 +257,9 @@ async def test_grep_skips_binary_files(mixed: Path) -> None:
     assert await tools.dispatch("Grep", {"pattern": "needle"}) == "notes.md"
 
 
-async def test_grep_returns_promptly_on_catastrophic_backtracking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_grep_returns_promptly_on_catastrophic_backtracking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(builtins_module, "_GREP_SECONDS", 0.5)
     root = tmp_path / "agent"
     root.mkdir()
@@ -211,17 +270,25 @@ async def test_grep_returns_promptly_on_catastrophic_backtracking(tmp_path: Path
     assert time.monotonic() - started < 3
 
 
-async def test_grep_stops_at_its_byte_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_grep_stops_at_its_byte_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(builtins_module, "_GREP_BYTES", 250)
     root = tmp_path / "agent"
     root.mkdir()
     for index in range(5):
         (root / f"f{index}.md").write_text("needle\n" + "x" * 93)
     result = str(await Tools(builtins(root)).dispatch("Grep", {"pattern": "needle"}))
-    assert result.splitlines() == ["f0.md", "f1.md", "[truncated: scan budget of 250 bytes reached]"]
+    assert result.splitlines() == [
+        "f0.md",
+        "f1.md",
+        "[truncated: scan budget of 250 bytes reached]",
+    ]
 
 
-async def test_grep_skips_files_over_the_size_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_grep_skips_files_over_the_size_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(builtins_module, "_MAX_BYTES", 50)
     root = tmp_path / "agent"
     root.mkdir()
@@ -233,7 +300,9 @@ async def test_grep_skips_files_over_the_size_cap(tmp_path: Path, monkeypatch: p
 async def test_read_selects_lines_by_offset_and_limit(tmp_path: Path) -> None:
     (tmp_path / "notes.md").write_text("one\ntwo\nthree\nfour\n")
     tools = Tools(builtins(tmp_path))
-    assert await tools.dispatch("Read", {"path": "notes.md", "offset": 1, "limit": 2}) == "two\nthree"
+    assert (
+        await tools.dispatch("Read", {"path": "notes.md", "offset": 1, "limit": 2}) == "two\nthree"
+    )
     assert await tools.dispatch("Read", {"path": "notes.md", "offset": 2}) == "three\nfour"
     assert await tools.dispatch("Read", {"path": "notes.md", "limit": 1}) == "one"
     with pytest.raises(InputError, match="limit"):

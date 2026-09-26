@@ -52,7 +52,14 @@ def judge_state(row: RunRow) -> dict[str, Any]:
     return {
         "input": without_media(body["input"]),
         "reply": body["reply"],
-        "steps": [{"tool": s["tool"], "args": without_media(s["args"]), "result": without_media(s["result"])} for s in body["steps"]],
+        "steps": [
+            {
+                "tool": s["tool"],
+                "args": without_media(s["args"]),
+                "result": without_media(s["result"]),
+            }
+            for s in body["steps"]
+        ],
     }
 
 
@@ -91,15 +98,21 @@ def teacher_answers(questions: dict[str, Question], taught: TeacherAnswers) -> d
             if key not in question.options:
                 raise ModelError(f"judge: teacher chose {key!r}, not an option of {question_id!r}")
             answers[question_id] = ChoiceAnswer(
-                choice=key, probabilities={k: 1.0 if k == key else 0.0 for k in question.options}, confidence=1.0
+                choice=key,
+                probabilities={k: 1.0 if k == key else 0.0 for k in question.options},
+                confidence=1.0,
             )
         elif isinstance(question, Score):
             index = int(value)
             if not 0 <= index < len(question.levels):
                 raise ModelError(f"judge: teacher gave level {index} for {question_id!r}")
             answers[question_id] = ScoreAnswer(
-                score=float(index), probabilities=[1.0 if i == index else 0.0 for i in range(len(question.levels))], confidence=1.0
+                score=float(index),
+                probabilities=[1.0 if i == index else 0.0 for i in range(len(question.levels))],
+                confidence=1.0,
             )
         else:
-            answers[question_id] = CheckAnswer(probability=1.0 if bool(value) else 0.0, confidence=1.0)
+            answers[question_id] = CheckAnswer(
+                probability=1.0 if bool(value) else 0.0, confidence=1.0
+            )
     return answers

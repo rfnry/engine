@@ -35,7 +35,9 @@ def _raises(path: Path) -> list[tuple[int, str, str | None]]:
             continue
         exc = node.exc
         first = exc.args[0] if isinstance(exc, ast.Call) and exc.args else None
-        found.append((node.lineno, ast.unparse(exc), _leading(first) if first is not None else None))
+        found.append(
+            (node.lineno, ast.unparse(exc), _leading(first) if first is not None else None)
+        )
     return found
 
 
@@ -83,5 +85,10 @@ def test_every_log_message_is_lowercase() -> None:
 
 
 def test_the_allowlist_names_only_raises_that_exist() -> None:
-    present = {_key(path, source) for path in _sources() for _, source, text in _raises(path) if text is None}
+    present = {
+        _key(path, source)
+        for path in _sources()
+        for _, source, text in _raises(path)
+        if text is None
+    }
     assert set(ALLOWED) <= present

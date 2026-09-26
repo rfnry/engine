@@ -22,7 +22,13 @@ async def boom(args: dict[str, Any]) -> str:
 
 class Foreign:
     def definitions(self) -> list[dict[str, Any]]:
-        return [{"name": "far", "description": "From another package", "input_schema": {"type": "object", "properties": {}}}]
+        return [
+            {
+                "name": "far",
+                "description": "From another package",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        ]
 
     async def dispatch(self, name: str, args: dict[str, Any]) -> str | dict[str, Any]:
         return {"seen": name}
@@ -37,7 +43,9 @@ def test_a_tool_defines_itself_from_its_args_model() -> None:
 
 
 async def test_tools_dispatch_validates_and_routes() -> None:
-    tools = Tools([Tool("echo", "Echo text", body=echo, args=EchoArgs), Tool("boom", "Boom", body=boom)])
+    tools = Tools(
+        [Tool("echo", "Echo text", body=echo, args=EchoArgs), Tool("boom", "Boom", body=boom)]
+    )
     assert [d["name"] for d in tools.definitions()] == ["echo", "boom"]
     assert "echo" in tools and "ghost" not in tools and tools.names == ["echo", "boom"]
     assert await tools.dispatch("echo", {"text": "ab", "times": 2}) == "abab"

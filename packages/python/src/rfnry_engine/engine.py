@@ -119,7 +119,9 @@ def _history(value: Sequence[object] | None) -> list[Message]:
     try:
         return HISTORY.validate_python(list(value or []), from_attributes=True)
     except ValidationError as exc:
-        raise InputError(f"engine: history does not fit the contract: {exc.errors(include_url=False)}") from exc
+        raise InputError(
+            f"engine: history does not fit the contract: {exc.errors(include_url=False)}"
+        ) from exc
 
 
 def _tags(value: Mapping[str, str] | None) -> dict[str, str]:
@@ -131,11 +133,17 @@ def _tags(value: Mapping[str, str] | None) -> dict[str, str]:
         raise InputError(f"engine: tags hold at most {MAX_TAGS} entries; got {len(value)}")
     for key, item in value.items():
         if not isinstance(key, str) or not isinstance(item, str):
-            raise InputError(f"engine: tags must be a mapping of strings to strings; got {key!r}: {item!r}")
+            raise InputError(
+                f"engine: tags must be a mapping of strings to strings; got {key!r}: {item!r}"
+            )
         if not key or len(key) > MAX_TAG_KEY:
-            raise InputError(f"engine: tags need a key of 1 to {MAX_TAG_KEY} characters; got {key!r}")
+            raise InputError(
+                f"engine: tags need a key of 1 to {MAX_TAG_KEY} characters; got {key!r}"
+            )
         if len(item) > MAX_TAG_VALUE:
-            raise InputError(f"engine: tags need a value of at most {MAX_TAG_VALUE} characters; {key!r} has {len(item)}")
+            raise InputError(
+                f"engine: tags need a value of at most {MAX_TAG_VALUE} characters; {key!r} has {len(item)}"
+            )
     return dict(value)
 
 
@@ -157,7 +165,9 @@ def _state(spec: AgentSpec, value: State) -> State:
 
 
 def _assistant(reply: Reply) -> Message:
-    return Message(role="assistant", content=reply.text, tool_calls=reply.tool_calls, reasoning=reply.reasoning)
+    return Message(
+        role="assistant", content=reply.text, tool_calls=reply.tool_calls, reasoning=reply.reasoning
+    )
 
 
 def _now() -> datetime:
@@ -178,7 +188,9 @@ class Engine:
         tool_timeout: float | None = 30.0,
     ) -> None:
         if tool_timeout is not None and tool_timeout <= 0:
-            raise ConfigurationError("engine: tool_timeout must be positive, or None for no deadline")
+            raise ConfigurationError(
+                "engine: tool_timeout must be positive, or None for no deadline"
+            )
         if max_steps <= 0:
             raise ConfigurationError("engine: max_steps must be positive")
         if max_depth <= 0:
@@ -202,7 +214,9 @@ class Engine:
     @property
     def agents(self) -> dict[str, AgentInfo]:
         return {
-            name: AgentInfo(name=name, kind=spec.kind, description=spec.description, agents=spec.agents)
+            name: AgentInfo(
+                name=name, kind=spec.kind, description=spec.description, agents=spec.agents
+            )
             for name, spec in self._agents.items()
         }
 
@@ -237,8 +251,16 @@ class Engine:
         if task is not None and spec.kind == "decision":
             raise InputError(f"engine: decision agent {agent!r} takes no task")
         options = _Options(
-            task=task, history=_history(history), context=context, expect=expect,
-            on_event=on_event, tools=tools, workspace=workspace, stop=stop, inbox=inbox, tags=_tags(tags),
+            task=task,
+            history=_history(history),
+            context=context,
+            expect=expect,
+            on_event=on_event,
+            tools=tools,
+            workspace=workspace,
+            stop=stop,
+            inbox=inbox,
+            tags=_tags(tags),
             approve=approve,
         )
         run = await self._run(spec, scope, input, options, None)
@@ -269,7 +291,14 @@ class Engine:
 
         async def body(args: dict[str, Any]) -> Result:
             run = await self.run(
-                agent, scope, args["input"], context=context, tools=tools, workspace=workspace, tags=tagged, approve=approve
+                agent,
+                scope,
+                args["input"],
+                context=context,
+                tools=tools,
+                workspace=workspace,
+                tags=tagged,
+                approve=approve,
             )
             if isinstance(run, Generation):
                 return run.reply
@@ -301,7 +330,9 @@ class Engine:
     ) -> Decision:
         model_ = self.decision
         if model_ is None:
-            raise ConfigurationError(f"engine: agent {spec.name!r} is a decision agent; no decision model was configured")
+            raise ConfigurationError(
+                f"engine: agent {spec.name!r} is a decision agent; no decision model was configured"
+            )
         self._check_routes(spec, set())
         state = _state(spec, input)
         run_id = uuid4().hex
@@ -319,10 +350,19 @@ class Engine:
             if target is not None and (floor is None or answer.confidence >= floor):
                 routed = await self._run(self._agents[target], scope, input, options, run_id)
         return Decision(
-            run_id=run_id, parent_run_id=parent_run_id, agent=spec.name, scope=scope, tags=dict(options.tags), at=at,
-            duration_ms=int((time.monotonic() - started) * 1000), model=decided.model,
-            state=state, questions=questions, answers=answers,
-            usage=decided.usage or Usage(), routed_to=routed,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            agent=spec.name,
+            scope=scope,
+            tags=dict(options.tags),
+            at=at,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            model=decided.model,
+            state=state,
+            questions=questions,
+            answers=answers,
+            usage=decided.usage or Usage(),
+            routed_to=routed,
         )
 
     def _check_routes(self, spec: AgentSpec, seen: set[str]) -> None:
@@ -330,7 +370,9 @@ class Engine:
         for target in spec.route.to.values() if spec.route is not None else []:
             routed = self._agents[target]
             if routed.kind == "generation" and self.generation is None:
-                raise ConfigurationError(f"engine: agent {spec.name!r} routes to generation agent {target!r}; no generation model was configured")
+                raise ConfigurationError(
+                    f"engine: agent {spec.name!r} routes to generation agent {target!r}; no generation model was configured"
+                )
             if routed.kind == "decision" and target not in seen:
                 self._check_routes(routed, seen)
 
@@ -344,20 +386,36 @@ class Engine:
     ) -> Generation:
         model_ = self.generation
         if model_ is None:
-            raise ConfigurationError(f"engine: agent {spec.name!r} is a generation agent; no generation model was configured")
+            raise ConfigurationError(
+                f"engine: agent {spec.name!r} is a generation agent; no generation model was configured"
+            )
         run_id = uuid4().hex
         started = time.monotonic()
         at = _now()
-        expect, on_event, stop, inbox = options.expect, options.on_event, options.stop, options.inbox
+        expect, on_event, stop, inbox = (
+            options.expect,
+            options.on_event,
+            options.stop,
+            options.inbox,
+        )
         surface = EngineTools(
-            self, agent=spec.name, scope=scope, tools=options.tools, workspace=options.workspace, tags=options.tags,
+            self,
+            agent=spec.name,
+            scope=scope,
+            tools=options.tools,
+            workspace=options.workspace,
+            tags=options.tags,
             approve=options.approve,
         )
-        bounded_by_workspace = WORKSPACE_TOOLS if spec.workspace and options.workspace is not None else frozenset()
+        bounded_by_workspace = (
+            WORKSPACE_TOOLS if spec.workspace and options.workspace is not None else frozenset()
+        )
         specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
         if expect is not None:
             if OUTPUT_TOOL in surface:
-                raise ConfigurationError(f"engine: a tool named {OUTPUT_TOOL!r} collides with expect=")
+                raise ConfigurationError(
+                    f"engine: a tool named {OUTPUT_TOOL!r} collides with expect="
+                )
             specs.append(
                 ToolSpec(
                     name=OUTPUT_TOOL,
@@ -367,7 +425,12 @@ class Engine:
             )
         targets = [self._agents[name] for name in spec.agents]
         system = await asyncio.to_thread(
-            build_bundle, spec, task=options.task, tools=specs, agents=targets, context=options.context
+            build_bundle,
+            spec,
+            task=options.task,
+            tools=specs,
+            agents=targets,
+            context=options.context,
         )
         messages = [*options.history, Message(role="user", content=_content(input))]
         sent = list(messages)
@@ -394,7 +457,9 @@ class Engine:
             try:
                 args = permit(spec, call.args)
                 forwarded = replace(options, task=None, history=[], expect=None, inbox=None)
-                child = await self._run(self._agents[args.agent], scope, args.input, forwarded, run_id)
+                child = await self._run(
+                    self._agents[args.agent], scope, args.input, forwarded, run_id
+                )
             except Exception as exc:
                 return f"{type(exc).__name__}: {exc}", True, None, False
             children.append(child)
@@ -403,14 +468,18 @@ class Engine:
             return child_result(child), False, child.run_id, False
 
         async def call_tool(call: ToolCall) -> Step:
-            await emit(ToolCallStarted(run_id=run_id, agent=spec.name, call_id=call.id, tool=call.name))
+            await emit(
+                ToolCallStarted(run_id=run_id, agent=spec.name, call_id=call.id, tool=call.name)
+            )
             began = time.monotonic()
             child_run_id: str | None = None
             stopped = False
             content: Content
             approved = None if options.approve is None else await options.approve(spec.name, call)
             if approved is not None and not isinstance(approved, bool):
-                raise ConfigurationError(f"engine: approve must return True or False; got {approved!r}")
+                raise ConfigurationError(
+                    f"engine: approve must return True or False; got {approved!r}"
+                )
             if approved is False:
                 content, is_error = f"NotApproved: {call.name} was not approved", True
             elif spec.agents and call.name == DELEGATE_TOOL:
@@ -429,22 +498,49 @@ class Engine:
                         content = f"{type(exc).__name__}: {exc}"
                     is_error = True
             step = Step(
-                tool=call.name, args=call.args, result=content, is_error=is_error, at=_now(),
-                duration_ms=int((time.monotonic() - began) * 1000), child_run_id=child_run_id, stopped=stopped,
+                tool=call.name,
+                args=call.args,
+                result=content,
+                is_error=is_error,
+                at=_now(),
+                duration_ms=int((time.monotonic() - began) * 1000),
+                child_run_id=child_run_id,
+                stopped=stopped,
                 approved=approved,
             )
-            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, tool=call.name, is_error=is_error))
+            await emit(
+                ToolResultReady(
+                    run_id=run_id,
+                    agent=spec.name,
+                    call_id=call.id,
+                    tool=call.name,
+                    is_error=is_error,
+                )
+            )
             return step
 
         def answer(call: ToolCall, step: Step) -> None:
-            messages.append(Message(role="tool", tool_call_id=call.id, content=step.result, is_error=step.is_error))
+            messages.append(
+                Message(
+                    role="tool", tool_call_id=call.id, content=step.result, is_error=step.is_error
+                )
+            )
             steps.append(step)
 
         async def cut(call: ToolCall, began: float) -> Step:
-            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, tool=call.name, is_error=True))
+            await emit(
+                ToolResultReady(
+                    run_id=run_id, agent=spec.name, call_id=call.id, tool=call.name, is_error=True
+                )
+            )
             return Step(
-                tool=call.name, args=call.args, result=STOPPED, is_error=True, at=_now(),
-                duration_ms=int((time.monotonic() - began) * 1000), stopped=True,
+                tool=call.name,
+                args=call.args,
+                result=STOPPED,
+                is_error=True,
+                at=_now(),
+                duration_ms=int((time.monotonic() - began) * 1000),
+                stopped=True,
             )
 
         async def run_batch(batch: list[ToolCall]) -> bool:
@@ -452,7 +548,11 @@ class Engine:
             tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
             stopped = await wait(tasks, stop)
             if stopped:
-                delegated = [t for c, t in zip(batch, tasks, strict=True) if spec.agents and c.name == DELEGATE_TOOL]
+                delegated = [
+                    t
+                    for c, t in zip(batch, tasks, strict=True)
+                    if spec.agents and c.name == DELEGATE_TOOL
+                ]
                 await cancel([t for t in tasks if t not in delegated and not t.done()])
                 if delegated:
                     await asyncio.wait(delegated)
@@ -467,15 +567,35 @@ class Engine:
 
         async def ask() -> Reply:
             if streaming:
-                return as_reply(await cast(StreamingGenerationModel, model_).generate_stream(system, messages, specs, delta))
+                return as_reply(
+                    await cast(StreamingGenerationModel, model_).generate_stream(
+                        system, messages, specs, delta
+                    )
+                )
             return as_reply(await model_.generate(system, messages, specs))
 
         def finish(reply_text: str, stopped: Stopped | None = None) -> Generation:
             return Generation(
-                run_id=run_id, parent_run_id=parent_run_id, agent=spec.name, scope=scope, tags=dict(options.tags),
-                task=options.task, at=at, duration_ms=int((time.monotonic() - started) * 1000), model=model,
-                input=input, system=system, messages=sent, conversation=list(messages), tools=specs, steps=steps, calls=calls,
-                reply=reply_text, usage=usage, children=children, stopped=stopped,
+                run_id=run_id,
+                parent_run_id=parent_run_id,
+                agent=spec.name,
+                scope=scope,
+                tags=dict(options.tags),
+                task=options.task,
+                at=at,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                model=model,
+                input=input,
+                system=system,
+                messages=sent,
+                conversation=list(messages),
+                tools=specs,
+                steps=steps,
+                calls=calls,
+                reply=reply_text,
+                usage=usage,
+                children=children,
+                stopped=stopped,
             )
 
         for index in range(self.max_steps):
@@ -504,8 +624,14 @@ class Engine:
             messages.append(_assistant(reply))
             if reply.stop_reason != "tool_use" or not reply.tool_calls:
                 return finish(reply.text)
-            output = next((c for c in reply.tool_calls if expect is not None and c.name == OUTPUT_TOOL), None)
-            before = reply.tool_calls if output is None else reply.tool_calls[: reply.tool_calls.index(output)]
+            output = next(
+                (c for c in reply.tool_calls if expect is not None and c.name == OUTPUT_TOOL), None
+            )
+            before = (
+                reply.tool_calls
+                if output is None
+                else reply.tool_calls[: reply.tool_calls.index(output)]
+            )
             stopped = await run_batch(before)
             if output is None or expect is None:
                 continue
@@ -515,12 +641,34 @@ class Engine:
             try:
                 parsed = expect.model_validate(output.args)
             except ValidationError as exc:
-                errors = f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}"
-                messages.append(Message(role="tool", tool_call_id=output.id, content=errors, is_error=True))
-                steps.append(Step(tool=OUTPUT_TOOL, args=output.args, result=errors, is_error=True, at=_now(), duration_ms=0))
+                errors = (
+                    f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}"
+                )
+                messages.append(
+                    Message(role="tool", tool_call_id=output.id, content=errors, is_error=True)
+                )
+                steps.append(
+                    Step(
+                        tool=OUTPUT_TOOL,
+                        args=output.args,
+                        result=errors,
+                        is_error=True,
+                        at=_now(),
+                        duration_ms=0,
+                    )
+                )
                 await run_batch(reply.tool_calls[reply.tool_calls.index(output) + 1 :])
                 continue
             messages.append(Message(role="tool", tool_call_id=output.id, content="accepted"))
-            steps.append(Step(tool=OUTPUT_TOOL, args=output.args, result="accepted", is_error=False, at=_now(), duration_ms=0))
+            steps.append(
+                Step(
+                    tool=OUTPUT_TOOL,
+                    args=output.args,
+                    result="accepted",
+                    is_error=False,
+                    at=_now(),
+                    duration_ms=0,
+                )
+            )
             return finish(parsed.model_dump_json())
         raise RunawayError(f"engine: run exceeded {self.max_steps} steps")

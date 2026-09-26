@@ -20,7 +20,9 @@ if TYPE_CHECKING:
 
 DELEGATE_TOOL = "Delegate"
 
-_stack: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar("delegation_stack", default=())
+_stack: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "delegation_stack", default=()
+)
 
 
 class DelegateArgs(BaseModel):
@@ -44,7 +46,9 @@ async def enter(name: str, max_depth: int) -> AsyncIterator[None]:
     if name in stack:
         raise DelegationLoopError(f"delegate: loop at {' -> '.join([*stack, name])}")
     if len(stack) >= max_depth:
-        raise DelegationDepthError(f"delegate: depth {max_depth} exceeded at {' -> '.join([*stack, name])}")
+        raise DelegationDepthError(
+            f"delegate: depth {max_depth} exceeded at {' -> '.join([*stack, name])}"
+        )
     token = _stack.set((*stack, name))
     try:
         yield
@@ -55,7 +59,10 @@ async def enter(name: str, max_depth: int) -> AsyncIterator[None]:
 def delegate_schema(spec: AgentSpec) -> dict[str, Any]:
     return {
         "type": "object",
-        "properties": {"agent": {"type": "string", "enum": list(spec.agents)}, "input": {"type": "string"}},
+        "properties": {
+            "agent": {"type": "string", "enum": list(spec.agents)},
+            "input": {"type": "string"},
+        },
         "required": ["agent", "input"],
     }
 
@@ -83,7 +90,20 @@ def delegate_tool(
     async def body(args: dict[str, Any]) -> str:
         parsed = permit(spec, args)
         return child_result(
-            await engine.run(parsed.agent, scope, parsed.input, tools=tools, workspace=workspace, tags=tags, approve=approve)
+            await engine.run(
+                parsed.agent,
+                scope,
+                parsed.input,
+                tools=tools,
+                workspace=workspace,
+                tags=tags,
+                approve=approve,
+            )
         )
 
-    return Tool(DELEGATE_TOOL, delegate_description(engine, spec), body=body, input_schema=delegate_schema(spec))
+    return Tool(
+        DELEGATE_TOOL,
+        delegate_description(engine, spec),
+        body=body,
+        input_schema=delegate_schema(spec),
+    )

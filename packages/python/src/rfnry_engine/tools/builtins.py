@@ -113,11 +113,15 @@ class _Directory:
             else:
                 part, kind = Image(media_type=media_type, data=data), "an image"
             if a.offset or a.limit is not None:
-                raise InputError(f"builtins: offset and limit select lines of a text file; {a.path} is {kind}")
+                raise InputError(
+                    f"builtins: offset and limit select lines of a text file; {a.path} is {kind}"
+                )
             return [part]
         text = _decoded(data)
         if text is None:
-            raise InputError(f"builtins: binary file: {a.path}; Read returns UTF-8 text, images (PNG, JPEG, GIF, WebP) and PDFs")
+            raise InputError(
+                f"builtins: binary file: {a.path}; Read returns UTF-8 text, images (PNG, JPEG, GIF, WebP) and PDFs"
+            )
         if a.offset or a.limit is not None:
             lines = text.splitlines()
             end = a.offset + a.limit if a.limit is not None else len(lines)
@@ -148,9 +152,13 @@ class _Directory:
 
         def search(text: str) -> bool:
             try:
-                return pattern.search(text, timeout=max(deadline - time.monotonic(), 0.0)) is not None
+                return (
+                    pattern.search(text, timeout=max(deadline - time.monotonic(), 0.0)) is not None
+                )
             except TimeoutError as exc:
-                raise InputError(f"builtins: pattern took longer than {budget:g}s; simplify it or narrow path and glob") from exc
+                raise InputError(
+                    f"builtins: pattern took longer than {budget:g}s; simplify it or narrow path and glob"
+                ) from exc
 
         base = self.jail.resolve(a.path) if a.path else self.root
         lines: list[str] = []
@@ -183,12 +191,16 @@ class _Directory:
             notes.append(f"[truncated to {a.head_limit} of {len(lines)}]")
         if exhausted:
             notes.append(f"[truncated: scan budget of {_GREP_BYTES} bytes reached]")
-        return "\n".join(lines[: a.head_limit] or ["no matches found"]) + "".join(f"\n{note}" for note in notes)
+        return "\n".join(lines[: a.head_limit] or ["no matches found"]) + "".join(
+            f"\n{note}" for note in notes
+        )
 
     def glob(self, args: dict[str, Any]) -> str:
         a = GlobArgs.model_validate(args)
         if a.pattern.startswith("/") or ".." in a.pattern.split("/"):
-            raise InputError("builtins: pattern must be relative and stay inside the agent directory")
+            raise InputError(
+                "builtins: pattern must be relative and stay inside the agent directory"
+            )
         entries = list(islice(self.root.glob(a.pattern), _MAX_WALK + 1))
         truncated = len(entries) > _MAX_WALK
         matches = sorted(
@@ -204,7 +216,9 @@ class _Directory:
         target = self.jail.resolve(a.path) if a.path else self.root
         if not target.is_dir():
             raise InputError(f"builtins: not a directory: {a.path}")
-        entries = [p for p in sorted(target.iterdir(), key=lambda p: p.name) if not p.name.startswith(".")]
+        entries = [
+            p for p in sorted(target.iterdir(), key=lambda p: p.name) if not p.name.startswith(".")
+        ]
         if not entries:
             return "(empty)"
         shown = [f"{p.name}/" if p.is_dir() else p.name for p in entries[: a.limit]]
@@ -232,9 +246,34 @@ def builtins(root: Path) -> list[Tool]:
         return body
 
     return [
-        Tool("Read", "Read a file in the agent directory: text, images (PNG, JPEG, GIF, WebP) and PDFs, which you see as they are. Optional offset/limit select lines of a text file.", body=threaded(directory.read), args=ReadArgs),
-        Tool("Grep", "Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines.", body=threaded(directory.grep), args=GrepArgs),
-        Tool("Glob", "Find files by glob pattern, e.g. '**/*.md'. Paths are relative to the agent directory.", body=threaded(directory.glob), args=GlobArgs),
-        Tool("LS", "List a directory inside the agent directory.", body=threaded(directory.ls), args=LSArgs),
-        Tool("Skill", "Load a skill's body by name from skills/.", body=threaded(directory.skill), args=SkillArgs),
+        Tool(
+            "Read",
+            "Read a file in the agent directory: text, images (PNG, JPEG, GIF, WebP) and PDFs, which you see as they are. Optional offset/limit select lines of a text file.",
+            body=threaded(directory.read),
+            args=ReadArgs,
+        ),
+        Tool(
+            "Grep",
+            "Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines.",
+            body=threaded(directory.grep),
+            args=GrepArgs,
+        ),
+        Tool(
+            "Glob",
+            "Find files by glob pattern, e.g. '**/*.md'. Paths are relative to the agent directory.",
+            body=threaded(directory.glob),
+            args=GlobArgs,
+        ),
+        Tool(
+            "LS",
+            "List a directory inside the agent directory.",
+            body=threaded(directory.ls),
+            args=LSArgs,
+        ),
+        Tool(
+            "Skill",
+            "Load a skill's body by name from skills/.",
+            body=threaded(directory.skill),
+            args=SkillArgs,
+        ),
     ]

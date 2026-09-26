@@ -30,7 +30,9 @@ def make_tree(tmp_path: Path, extra: dict[str, str] | None = None) -> Path:
     root = tmp_path / "agents"
     for name, front in {**AGENTS, **(extra or {})}.items():
         (root / name).mkdir(parents=True)
-        (root / name / "AGENT.md").write_text(f"---\nname: {name}\n{front}\n---\nYou are {name}.\n", encoding="utf-8")
+        (root / name / "AGENT.md").write_text(
+            f"---\nname: {name}\n{front}\n---\nYou are {name}.\n", encoding="utf-8"
+        )
         if "kind: decision" in front:
             (root / name / "questions").mkdir()
             (root / name / "questions" / "intent.md").write_text(INTENT, encoding="utf-8")
@@ -52,7 +54,9 @@ def work(tmp_path: Path) -> Workspace:
     return Workspace(root)
 
 
-async def test_an_agent_without_the_flag_never_sees_the_workspace(tmp_path: Path, work: Workspace) -> None:
+async def test_an_agent_without_the_flag_never_sees_the_workspace(
+    tmp_path: Path, work: Workspace
+) -> None:
     llm = Scripted(text_reply("hi"), text_reply("hi"))
     engine = Engine(make_tree(tmp_path), generation=llm)
     await engine.run("chat", "acme", "x", workspace=work)
@@ -68,7 +72,9 @@ async def test_an_agent_with_the_flag_sees_the_three_tools(tmp_path: Path, work:
     assert {"Shell", "Write", "Edit"} <= set(names(llm, 0))
 
 
-async def test_a_flagged_agent_without_a_workspace_is_refused_before_the_model(tmp_path: Path) -> None:
+async def test_a_flagged_agent_without_a_workspace_is_refused_before_the_model(
+    tmp_path: Path,
+) -> None:
     llm = Scripted(text_reply("never"))
     engine = Engine(make_tree(tmp_path), generation=llm)
     with pytest.raises(ConfigurationError, match="workspace"):
@@ -153,7 +159,9 @@ async def test_the_engine_tool_timeout_leaves_workspace_tools_to_their_own(
     assert json.loads(str(run.steps[0].result))["stdout"] == "done\n"
 
 
-async def test_delegation_passes_the_workspace_to_a_child_that_declares_it(tmp_path: Path, work: Workspace) -> None:
+async def test_delegation_passes_the_workspace_to_a_child_that_declares_it(
+    tmp_path: Path, work: Workspace
+) -> None:
     llm = Scripted(
         use(ToolCall(id="d", name="Delegate", args={"agent": "coder", "input": "make it"})),
         use(ToolCall(id="s", name="Shell", args={"command": "echo hi > made.txt"})),
@@ -167,7 +175,9 @@ async def test_delegation_passes_the_workspace_to_a_child_that_declares_it(tmp_p
     assert "Shell" not in names(llm, 0) and "Shell" in names(llm, 1)
 
 
-async def test_delegating_to_a_flagged_child_without_a_workspace_is_a_tool_error(tmp_path: Path) -> None:
+async def test_delegating_to_a_flagged_child_without_a_workspace_is_a_tool_error(
+    tmp_path: Path,
+) -> None:
     llm = Scripted(
         use(ToolCall(id="d", name="Delegate", args={"agent": "coder", "input": "make it"})),
         text_reply("could not"),
@@ -179,11 +189,18 @@ async def test_delegating_to_a_flagged_child_without_a_workspace_is_a_tool_error
 
 
 async def test_a_routed_target_receives_the_workspace(tmp_path: Path, work: Workspace) -> None:
-    llm = Scripted(use(ToolCall(id="s", name="Shell", args={"command": "echo routed > r.txt"})), text_reply("done"))
-    decision = Fixed({"intent": ChoiceAnswer(choice="code", probabilities={"code": 0.9, "talk": 0.1})})
+    llm = Scripted(
+        use(ToolCall(id="s", name="Shell", args={"command": "echo routed > r.txt"})),
+        text_reply("done"),
+    )
+    decision = Fixed(
+        {"intent": ChoiceAnswer(choice="code", probabilities={"code": 0.9, "talk": 0.1})}
+    )
     engine = Engine(make_tree(tmp_path), generation=llm, decision=decision)
     run = await engine.run("desk", "acme", "build it", workspace=work)
-    assert isinstance(run, Decision) and run.routed_to is not None and run.routed_to.agent == "coder"
+    assert (
+        isinstance(run, Decision) and run.routed_to is not None and run.routed_to.agent == "coder"
+    )
     assert (work.root / "r.txt").read_text() == "routed\n"
 
 
@@ -193,7 +210,9 @@ async def test_a_duplicate_shell_is_refused(tmp_path: Path, work: Workspace) -> 
 
     engine = Engine(make_tree(tmp_path), generation=Scripted(text_reply("never")))
     with pytest.raises(ConfigurationError, match="Shell"):
-        await engine.run("coder", "acme", "x", tools=Tools([Tool("Shell", body=body)]), workspace=work)
+        await engine.run(
+            "coder", "acme", "x", tools=Tools([Tool("Shell", body=body)]), workspace=work
+        )
 
 
 async def test_engine_tools_carry_the_workspace(tmp_path: Path, work: Workspace) -> None:

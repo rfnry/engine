@@ -19,10 +19,22 @@ def test_sections_in_order_with_missing_ones_skipped() -> None:
     agents = load_tree(FIXTURES)
     tools = [ToolSpec(name="Read", description="Read a file", input_schema={})]
     bundle = build_bundle(
-        agents["support"], task="triage", tools=tools, agents=[agents["triage"]], context="Plan: Team"
+        agents["support"],
+        task="triage",
+        tools=tools,
+        agents=[agents["triage"]],
+        context="Plan: Team",
     )
     assert _labels(bundle) == [
-        "AGENT", "INDEX", "TASK", "RULES", "SKILLS", "TOOLS", "KNOWLEDGE", "AGENTS", "CONTEXT",
+        "AGENT",
+        "INDEX",
+        "TASK",
+        "RULES",
+        "SKILLS",
+        "TOOLS",
+        "KNOWLEDGE",
+        "AGENTS",
+        "CONTEXT",
     ]
     assert "Decide whether this message needs a person." in bundle
     assert "- Read: Read a file" in bundle

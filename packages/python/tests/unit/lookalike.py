@@ -113,7 +113,13 @@ class Decided(BaseModel):
 
 class Photos:
     def definitions(self) -> list[dict[str, Any]]:
-        return [{"name": "photo", "description": "The photo", "input_schema": {"type": "object", "properties": {}}}]
+        return [
+            {
+                "name": "photo",
+                "description": "The photo",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        ]
 
     async def dispatch(self, name: str, args: dict[str, Any]) -> str | dict[str, Any] | list[Part]:
         return [Text(text="the photo"), Image(media_type="image/png", data=b"png")]

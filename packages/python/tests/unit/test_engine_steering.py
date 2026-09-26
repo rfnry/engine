@@ -25,7 +25,9 @@ AGENTS = {
     "lead": "kind: generation\ndescription: Leads\nagents: [chat]",
     "desk": "kind: decision\ndescription: Sorts\nroute:\n  by: intent\n  to: {talk: chat}",
 }
-INTENT = "---\ntype: choice\noptions:\n  talk: Just talk\n  other: Anything else\n---\nWhat is this?\n"
+INTENT = (
+    "---\ntype: choice\noptions:\n  talk: Just talk\n  other: Anything else\n---\nWhat is this?\n"
+)
 STOPPED = "stopped by the user"
 
 
@@ -33,7 +35,9 @@ def make_tree(tmp_path: Path) -> Path:
     root = tmp_path / "agents"
     for name, front in AGENTS.items():
         (root / name).mkdir(parents=True)
-        (root / name / "AGENT.md").write_text(f"---\nname: {name}\n{front}\n---\nYou are {name}.\n", encoding="utf-8")
+        (root / name / "AGENT.md").write_text(
+            f"---\nname: {name}\n{front}\n---\nYou are {name}.\n", encoding="utf-8"
+        )
         if "kind: decision" in front:
             (root / name / "questions").mkdir()
             (root / name / "questions" / "intent.md").write_text(INTENT, encoding="utf-8")
@@ -169,10 +173,14 @@ async def test_stop_now_cancels_a_slow_tool_and_answers_it(tmp_path: Path) -> No
 
 async def test_after_step_lets_the_running_tool_finish_then_ends(tmp_path: Path) -> None:
     slow = Slow(0.2)
-    llm = Paced(Reply(text="Working on it.", tool_calls=[call("slow", "c1")], stop_reason="tool_use"))
+    llm = Paced(
+        Reply(text="Working on it.", tool_calls=[call("slow", "c1")], stop_reason="tool_use")
+    )
     engine = Engine(make_tree(tmp_path), generation=llm)
     stop = Stop()
-    task = asyncio.create_task(engine.run("chat", "acme", "work", tools=Tools([Tool("slow", body=slow)]), stop=stop))
+    task = asyncio.create_task(
+        engine.run("chat", "acme", "work", tools=Tools([Tool("slow", body=slow)]), stop=stop)
+    )
     await slow.started.wait()
     stop.after_step()
     run = await asyncio.wait_for(task, 2)
@@ -198,7 +206,9 @@ async def test_now_after_after_step_upgrades_the_stop(tmp_path: Path) -> None:
     llm = Paced(use(call("slow", "c1")))
     engine = Engine(make_tree(tmp_path), generation=llm)
     stop = Stop()
-    task = asyncio.create_task(engine.run("chat", "acme", "x", tools=Tools([Tool("slow", body=slow)]), stop=stop))
+    task = asyncio.create_task(
+        engine.run("chat", "acme", "x", tools=Tools([Tool("slow", body=slow)]), stop=stop)
+    )
     await slow.started.wait()
     stop.after_step()
     stop.now()
@@ -223,7 +233,9 @@ async def test_a_stopped_run_is_recorded_and_continues_cleanly(tmp_path: Path) -
     assert row is not None
     stored = Generation.model_validate(row.body)
     assert stored.stopped == "now" and stored.steps[0].stopped
-    await refinery.review("acme", run.run_id, Review(stance="objection", correction="Do it differently."))
+    await refinery.review(
+        "acme", run.run_id, Review(stance="objection", correction="Do it differently.")
+    )
     after = await engine.run("chat", "acme", "go on", history=run.conversation, tools=tools)
     assert isinstance(after, Generation) and after.stopped is None
     sent = llm.calls[1]
@@ -266,7 +278,9 @@ async def test_inbox_items_land_at_the_next_boundary_in_order(tmp_path: Path) ->
     llm = Paced(use(call("send", "c1")), text_reply("Checked both."))
     engine = Engine(make_tree(tmp_path), generation=llm)
     inbox.put_nowait("queued before")
-    run = await engine.run("chat", "acme", "work", tools=Tools([Tool("send", body=sending)]), inbox=inbox)
+    run = await engine.run(
+        "chat", "acme", "work", tools=Tools([Tool("send", body=sending)]), inbox=inbox
+    )
     assert isinstance(run, Generation)
     assert llm.calls[0] == [Message(role="user", content="work")]
     assert llm.calls[1][-4:] == [
@@ -303,7 +317,9 @@ async def test_inbox_with_after_step_pending_drains_nothing(tmp_path: Path) -> N
 
     llm = Paced(use(call("send", "c1")))
     engine = Engine(make_tree(tmp_path), generation=llm)
-    run = await engine.run("chat", "acme", "x", tools=Tools([Tool("send", body=sending)]), inbox=inbox, stop=stop)
+    run = await engine.run(
+        "chat", "acme", "x", tools=Tools([Tool("send", body=sending)]), inbox=inbox, stop=stop
+    )
     assert isinstance(run, Generation) and run.stopped == "after_step"
     assert run.conversation[-1].role == "tool" and inbox.get_nowait() == "wait"
 
@@ -321,19 +337,32 @@ async def test_a_delegated_child_observes_the_stop(tmp_path: Path) -> None:
     run = await asyncio.wait_for(task, 2)
     assert isinstance(run, Generation) and run.stopped == "now"
     child = run.children[0]
-    assert isinstance(child, Generation) and child.stopped == "now" and child.parent_run_id == run.run_id
+    assert (
+        isinstance(child, Generation)
+        and child.stopped == "now"
+        and child.parent_run_id == run.run_id
+    )
     step = run.steps[0]
-    assert (step.result, step.is_error, step.stopped, step.child_run_id) == (STOPPED, True, True, child.run_id)
+    assert (step.result, step.is_error, step.stopped, step.child_run_id) == (
+        STOPPED,
+        True,
+        True,
+        child.run_id,
+    )
     assert inbox.get_nowait() == "for the lead"
 
 
 async def test_a_routed_run_shares_the_stop_and_the_inbox(tmp_path: Path) -> None:
-    decide = Fixed({"intent": ChoiceAnswer(choice="talk", probabilities={"talk": 0.9, "other": 0.1})})
+    decide = Fixed(
+        {"intent": ChoiceAnswer(choice="talk", probabilities={"talk": 0.9, "other": 0.1})}
+    )
     llm = Paced(use(call("fast", "c1")), text_reply("ok"))
     engine = Engine(make_tree(tmp_path), generation=llm, decision=decide)
     inbox: asyncio.Queue[Any] = asyncio.Queue()
     inbox.put_nowait("steer")
-    run = await engine.run("desk", "acme", "hi", tools=Tools([Tool("fast", body=fast)]), inbox=inbox)
+    run = await engine.run(
+        "desk", "acme", "hi", tools=Tools([Tool("fast", body=fast)]), inbox=inbox
+    )
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     assert run.routed_to.conversation[-2] == Message(role="user", content="steer")
     stop = Stop()
@@ -386,7 +415,9 @@ async def test_stop_now_answers_a_pending_output_call(tmp_path: Path) -> None:
     engine = Engine(make_tree(tmp_path), generation=llm)
     stop = Stop()
     tools = Tools([Tool("slow", body=slow)])
-    task = asyncio.create_task(engine.run("chat", "acme", "x", tools=tools, expect=Verdict, stop=stop))
+    task = asyncio.create_task(
+        engine.run("chat", "acme", "x", tools=tools, expect=Verdict, stop=stop)
+    )
     await slow.started.wait()
     stop.now()
     run = await asyncio.wait_for(task, 2)

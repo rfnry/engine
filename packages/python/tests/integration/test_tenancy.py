@@ -13,7 +13,12 @@ FIXTURES = Path(__file__).parents[1] / "fixtures" / "agents"
 
 async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     refinery = Refinery(storage)
-    engine = Engine(FIXTURES, generation=Scripted(text_reply("MARKER-A"), text_reply("plain-b")), refinery=refinery, tools=TOOLS)
+    engine = Engine(
+        FIXTURES,
+        generation=Scripted(text_reply("MARKER-A"), text_reply("plain-b")),
+        refinery=refinery,
+        tools=TOOLS,
+    )
     a = await engine.run("billing", "tenant-a", "hello")
     b = await engine.run("billing", "tenant-b", "hello")
     await refinery.review("tenant-a", a.run_id, Review(correction="MARKER-A-CORRECTION"))
@@ -28,7 +33,9 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     assert all(key.startswith("tenant-b/") for key in bucket.objects)
     labeled = await refinery.label("tenant-b", engine, judge="judge")
     assert set(labeled.errors) <= {b.run_id} and a.run_id not in labeled.errors
-    read = await EngineTools(engine, agent="support", scope="tenant-b").dispatch("Read", {"path": "rules/refunds.md"})
+    read = await EngineTools(engine, agent="support", scope="tenant-b").dispatch(
+        "Read", {"path": "rules/refunds.md"}
+    )
     assert "MARKER-A" not in str(read)
 
 
@@ -40,5 +47,19 @@ async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
     assert not await refinery.verify_absent("tenant-a")
     assert await refinery.delete_scope("tenant-a") == 2
     assert await refinery.verify_absent("tenant-a")
-    await storage.put_run("tenant-a", RunRow(scope="tenant-a", run_id="orphan", parent_run_id=None, agent="x", kind="generation", task=None, at=run.at, duration_ms=0, model=None, body={}))
+    await storage.put_run(
+        "tenant-a",
+        RunRow(
+            scope="tenant-a",
+            run_id="orphan",
+            parent_run_id=None,
+            agent="x",
+            kind="generation",
+            task=None,
+            at=run.at,
+            duration_ms=0,
+            model=None,
+            body={},
+        ),
+    )
     assert not await refinery.verify_absent("tenant-a")

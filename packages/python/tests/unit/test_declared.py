@@ -25,21 +25,32 @@ class NowArgs(BaseModel):
 
 
 def _code() -> dict[str, Tool]:
-    return {"lookup_order": Tool("lookup_order", body=lookup), "now": Tool("now", "The current UTC time", body=now, args=NowArgs)}
+    return {
+        "lookup_order": Tool("lookup_order", body=lookup),
+        "now": Tool("now", "The current UTC time", body=now, args=NowArgs),
+    }
 
 
 def test_contract_takes_the_tree_shape_and_adoption_takes_the_code_shape() -> None:
     support = load_tree(FIXTURES)["support"]
     tools = Tools(declared_tools(support, _code()))
     contract = next(d for d in tools.definitions() if d["name"] == "lookup_order")
-    assert contract["description"].startswith("Fetch an order by id") and contract["input_schema"]["required"] == ["order_id"]
+    assert contract["description"].startswith("Fetch an order by id") and contract["input_schema"][
+        "required"
+    ] == ["order_id"]
     adopted = next(d for d in tools.definitions() if d["name"] == "now")
-    assert adopted["description"] == "The current UTC time" and "zone" in adopted["input_schema"]["properties"]
+    assert (
+        adopted["description"] == "The current UTC time"
+        and "zone" in adopted["input_schema"]["properties"]
+    )
 
 
 async def test_contract_validates_against_the_declared_fields() -> None:
     tools = Tools(declared_tools(load_tree(FIXTURES)["support"], _code()))
-    assert await tools.dispatch("lookup_order", {"order_id": "A-1"}) == {"order": "A-1", "given": ["order_id"]}
+    assert await tools.dispatch("lookup_order", {"order_id": "A-1"}) == {
+        "order": "A-1",
+        "given": ["order_id"],
+    }
     with pytest.raises(InputError, match="order_id"):
         await tools.dispatch("lookup_order", {})
     with pytest.raises(InputError, match="extra"):
@@ -53,7 +64,9 @@ def test_check_declarations_refuses_missing_bodies_and_undeclared_tools() -> Non
     with pytest.raises(ConfigurationError, match="lookup_order"):
         check_declarations(agents, {"now": _code()["now"]}, bodies=True)
     with pytest.raises(ConfigurationError, match="weather"):
-        check_declarations(agents, {**_code(), "weather": Tool("weather", "Forecast", body=now)}, bodies=True)
+        check_declarations(
+            agents, {**_code(), "weather": Tool("weather", "Forecast", body=now)}, bodies=True
+        )
     with pytest.raises(ConfigurationError, match="description"):
         check_declarations(agents, {**_code(), "now": Tool("now", body=now)}, bodies=True)
 

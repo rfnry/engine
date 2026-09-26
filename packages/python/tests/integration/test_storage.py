@@ -19,13 +19,40 @@ from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 
 
-def _run(scope: str, run_id: str, *, agent: str = "support", kind: str = "generation", at: datetime | None = None, parent: str | None = None) -> RunRow:
-    return RunRow(scope=scope, run_id=run_id, parent_run_id=parent, agent=agent, kind=kind, task=None,
-                  at=at or datetime.now(UTC), duration_ms=1, model="m", body={"reply": run_id, "nested": {"n": [1, 2]}})
+def _run(
+    scope: str,
+    run_id: str,
+    *,
+    agent: str = "support",
+    kind: str = "generation",
+    at: datetime | None = None,
+    parent: str | None = None,
+) -> RunRow:
+    return RunRow(
+        scope=scope,
+        run_id=run_id,
+        parent_run_id=parent,
+        agent=agent,
+        kind=kind,
+        task=None,
+        at=at or datetime.now(UTC),
+        duration_ms=1,
+        model="m",
+        body={"reply": run_id, "nested": {"n": [1, 2]}},
+    )
 
 
-def _label(scope: str, label_id: str, run_id: str, *, source: str = "human", at: datetime | None = None) -> LabelRow:
-    return LabelRow(scope=scope, label_id=label_id, run_id=run_id, source=source, at=at or datetime.now(UTC), body={"source": source})
+def _label(
+    scope: str, label_id: str, run_id: str, *, source: str = "human", at: datetime | None = None
+) -> LabelRow:
+    return LabelRow(
+        scope=scope,
+        label_id=label_id,
+        run_id=run_id,
+        source=source,
+        at=at or datetime.now(UTC),
+        body={"source": source},
+    )
 
 
 async def test_put_get_upsert_roundtrip(storage: Storage) -> None:
@@ -41,7 +68,9 @@ async def test_put_get_upsert_roundtrip(storage: Storage) -> None:
 async def test_runs_filters_order_and_limit(storage: Storage) -> None:
     t0 = datetime.now(UTC)
     await storage.put_run("a", _run("a", "old", at=t0 - timedelta(minutes=2)))
-    await storage.put_run("a", _run("a", "mid", agent="billing", kind="decision", at=t0 - timedelta(minutes=1)))
+    await storage.put_run(
+        "a", _run("a", "mid", agent="billing", kind="decision", at=t0 - timedelta(minutes=1))
+    )
     await storage.put_run("a", _run("a", "new", at=t0))
     assert [r.run_id for r in await storage.runs("a")] == ["new", "mid", "old"]
     assert [r.run_id for r in await storage.runs("a", kind="generation")] == ["new", "old"]
@@ -50,7 +79,11 @@ async def test_runs_filters_order_and_limit(storage: Storage) -> None:
     assert [r.run_id for r in await storage.runs("a", limit=None)] == ["new", "mid", "old"]
     await storage.put_label("a", _label("a", "l1", "new", source="judge"))
     assert [r.run_id for r in await storage.runs("a", unlabeled_by="judge")] == ["mid", "old"]
-    assert [r.run_id for r in await storage.runs("a", unlabeled_by="teacher")] == ["new", "mid", "old"]
+    assert [r.run_id for r in await storage.runs("a", unlabeled_by="teacher")] == [
+        "new",
+        "mid",
+        "old",
+    ]
 
 
 async def test_labels_filters_and_order(storage: Storage) -> None:
@@ -74,7 +107,10 @@ async def test_runs_by_id_and_labels_since_find_late_labels(storage: Storage) ->
     late = {label.run_id for label in await storage.labels("a", since=t0)}
     assert late == {"r1"}
     assert [r.run_id for r in await storage.runs("a", run_ids=sorted(late))] == ["r1"]
-    assert [r.run_id for r in await storage.runs("a", run_ids=["r1", "r2", "ghost"])] == ["r2", "r1"]
+    assert [r.run_id for r in await storage.runs("a", run_ids=["r1", "r2", "ghost"])] == [
+        "r2",
+        "r1",
+    ]
     assert await storage.runs("a", run_ids=[]) == []
     assert [r.scope for r in await storage.runs("b", run_ids=["r1", "r2"])] == ["b"]
 
@@ -96,7 +132,13 @@ async def test_delete_and_count(storage: Storage) -> None:
 
 
 async def test_bodies_round_trip_exactly(storage: Storage) -> None:
-    body = {"zeta": 1, "a": {"refund": "r", "no": "n", "billing": "b"}, "text": "a\x00b", "big": 1e16, "tiny": 1.5e-7}
+    body = {
+        "zeta": 1,
+        "a": {"refund": "r", "no": "n", "billing": "b"},
+        "text": "a\x00b",
+        "big": 1e16,
+        "tiny": 1.5e-7,
+    }
     await storage.put_run("a", _run("a", "r1").model_copy(update={"body": body}))
     await storage.put_label("a", _label("a", "l1", "r1").model_copy(update={"body": body}))
     got = await storage.get_run("a", "r1")
@@ -121,11 +163,32 @@ async def test_a_body_with_parts_round_trips(storage: Storage) -> None:
     raw = bytes(range(256))
     conversation = [
         Message(role="user", content=[Text(text="look"), Image(media_type="image/png", data=raw)]),
-        Message(role="assistant", tool_calls=[ToolCall(id="c1", name="read_pdf", args={"path": "a.pdf"})]),
-        Message(role="tool", tool_call_id="c1", content=[Document(media_type="application/pdf", name="a.pdf", url="https://x/a.pdf")]),
+        Message(
+            role="assistant",
+            tool_calls=[ToolCall(id="c1", name="read_pdf", args={"path": "a.pdf"})],
+        ),
+        Message(
+            role="tool",
+            tool_call_id="c1",
+            content=[Document(media_type="application/pdf", name="a.pdf", url="https://x/a.pdf")],
+        ),
     ]
     body = {"conversation": [m.model_dump(mode="json") for m in conversation]}
-    await storage.put_run("a", RunRow(scope="a", run_id="p", parent_run_id=None, agent="support", kind="generation", task=None, at=datetime.now(UTC), duration_ms=1, model="m", body=body))
+    await storage.put_run(
+        "a",
+        RunRow(
+            scope="a",
+            run_id="p",
+            parent_run_id=None,
+            agent="support",
+            kind="generation",
+            task=None,
+            at=datetime.now(UTC),
+            duration_ms=1,
+            model="m",
+            body=body,
+        ),
+    )
     got = await storage.get_run("a", "p")
     assert got is not None and got.body == body
     assert [Message.model_validate(m) for m in got.body["conversation"]] == conversation
@@ -134,16 +197,35 @@ async def test_a_body_with_parts_round_trips(storage: Storage) -> None:
 async def test_a_generation_with_its_tools_round_trips(storage: Storage) -> None:
     at = datetime.now(UTC)
     run = Generation(
-        run_id="g", agent="support", scope="a", at=at, duration_ms=1, model="m", input="hi", system="s",
+        run_id="g",
+        agent="support",
+        scope="a",
+        at=at,
+        duration_ms=1,
+        model="m",
+        input="hi",
+        system="s",
         messages=[Message(role="user", content="hi")],
         conversation=[
             Message(role="user", content="hi"),
-            Message(role="assistant", tool_calls=[ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"})]),
+            Message(
+                role="assistant",
+                tool_calls=[ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"})],
+            ),
             Message(role="tool", tool_call_id="c1", content='{"order": "A-1"}'),
             Message(role="assistant", content="Found it."),
         ],
-        tools=[ToolSpec(name="lookup_order", description="Fetch an order", input_schema={"type": "object", "properties": {"order_id": {"type": "string"}}})],
-        steps=[], calls=2, reply="Found it.", usage=Usage(),
+        tools=[
+            ToolSpec(
+                name="lookup_order",
+                description="Fetch an order",
+                input_schema={"type": "object", "properties": {"order_id": {"type": "string"}}},
+            )
+        ],
+        steps=[],
+        calls=2,
+        reply="Found it.",
+        usage=Usage(),
     )
     await Refinery(storage).record(run)
     got = await storage.get_run("a", "g")
@@ -157,14 +239,35 @@ async def test_a_generation_with_its_tools_round_trips(storage: Storage) -> None
 async def test_tags_round_trip_and_old_bodies_read_as_no_tags(storage: Storage) -> None:
     at = datetime.now(UTC)
     decision = Decision(
-        run_id="d", agent="triage", scope="a", at=at, duration_ms=1, model="d", state="hi",
-        questions={"urgent": Check(instructions="Urgent?")}, answers={"urgent": CheckAnswer(probability=0.9)},
-        usage=Usage(), tags={"arm": "b", "commit": "a81d07b"},
+        run_id="d",
+        agent="triage",
+        scope="a",
+        at=at,
+        duration_ms=1,
+        model="d",
+        state="hi",
+        questions={"urgent": Check(instructions="Urgent?")},
+        answers={"urgent": CheckAnswer(probability=0.9)},
+        usage=Usage(),
+        tags={"arm": "b", "commit": "a81d07b"},
     )
     run = Generation(
-        run_id="g", agent="support", scope="a", at=at, duration_ms=1, model="m", input="hi", system="s",
-        messages=[Message(role="user", content="hi")], conversation=[Message(role="user", content="hi")],
-        steps=[], calls=1, reply="ok", usage=Usage(), children=[decision], tags={"arm": "b", "commit": "a81d07b"},
+        run_id="g",
+        agent="support",
+        scope="a",
+        at=at,
+        duration_ms=1,
+        model="m",
+        input="hi",
+        system="s",
+        messages=[Message(role="user", content="hi")],
+        conversation=[Message(role="user", content="hi")],
+        steps=[],
+        calls=1,
+        reply="ok",
+        usage=Usage(),
+        children=[decision],
+        tags={"arm": "b", "commit": "a81d07b"},
     )
     await Refinery(storage).record(run)
     for run_id, kind in (("g", Generation), ("d", Decision)):

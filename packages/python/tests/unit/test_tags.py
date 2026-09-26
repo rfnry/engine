@@ -23,7 +23,10 @@ from .fakes import (
     text_reply,
 )
 
-TRIAGE: dict[str, Answer] = {"urgent": CheckAnswer(probability=0.9), "severity": ScoreAnswer(score=3, probabilities=[0, 0, 0, 1])}
+TRIAGE: dict[str, Answer] = {
+    "urgent": CheckAnswer(probability=0.9),
+    "severity": ScoreAnswer(score=3, probabilities=[0, 0, 0, 1]),
+}
 TAGS = {"commit": "4f2c9e1-sentinel", "arm-sentinel": "b"}
 
 
@@ -36,11 +39,18 @@ class Recorded:
 
 
 def _delegate(agent: str, text: str) -> Reply:
-    return Reply(tool_calls=[ToolCall(id="d1", name="Delegate", args={"agent": agent, "input": text})], stop_reason="tool_use")
+    return Reply(
+        tool_calls=[ToolCall(id="d1", name="Delegate", args={"agent": agent, "input": text})],
+        stop_reason="tool_use",
+    )
 
 
 def _technical(state: object) -> dict[str, Answer]:
-    return {"intent": ChoiceAnswer(choice="technical", probabilities={"technical": 0.9, "billing": 0.05, "other": 0.05})}
+    return {
+        "intent": ChoiceAnswer(
+            choice="technical", probabilities={"technical": 0.9, "billing": 0.05, "other": 0.05}
+        )
+    }
 
 
 async def test_a_generation_run_carries_its_tags(fixtures: Path) -> None:
@@ -64,8 +74,18 @@ async def test_tags_never_reach_a_model(fixtures: Path) -> None:
     engine = Engine(fixtures, generation=llm, decision=dm, tools=TOOLS)
     await engine.run("support", "acme", "It is down", tags=TAGS)
     sent = json.dumps(
-        [[system, [m.model_dump(mode="json") for m in messages], [t.model_dump(mode="json") for t in tools]] for system, messages, tools in llm.calls]
-        + [[state, {k: q.model_dump(mode="json") for k, q in questions.items()}] for state, questions in dm.calls]
+        [
+            [
+                system,
+                [m.model_dump(mode="json") for m in messages],
+                [t.model_dump(mode="json") for t in tools],
+            ]
+            for system, messages, tools in llm.calls
+        ]
+        + [
+            [state, {k: q.model_dump(mode="json") for k, q in questions.items()}]
+            for state, questions in dm.calls
+        ]
     )
     assert len(llm.calls) == 2 and len(dm.calls) == 1
     for word in ("sentinel", "tags"):
@@ -73,7 +93,12 @@ async def test_tags_never_reach_a_model(fixtures: Path) -> None:
 
 
 async def test_delegated_children_inherit_the_tags(fixtures: Path) -> None:
-    engine = Engine(fixtures, generation=Scripted(_delegate("triage", "It is down"), text_reply("ok")), decision=Fixed(TRIAGE), tools=TOOLS)
+    engine = Engine(
+        fixtures,
+        generation=Scripted(_delegate("triage", "It is down"), text_reply("ok")),
+        decision=Fixed(TRIAGE),
+        tools=TOOLS,
+    )
     run = await engine.run("support", "acme", "It is down", tags=TAGS)
     assert isinstance(run, Generation)
     [child] = run.children
@@ -92,7 +117,9 @@ async def test_routed_runs_and_their_children_inherit_the_tags(fixtures: Path) -
 
 async def test_an_agent_as_a_tool_tags_the_runs_it_starts(fixtures: Path) -> None:
     recorder = Recorded()
-    engine = Engine(fixtures, generation=Scripted(text_reply("Refunded.")), tools=TOOLS, refinery=recorder)
+    engine = Engine(
+        fixtures, generation=Scripted(text_reply("Refunded.")), tools=TOOLS, refinery=recorder
+    )
     consult = engine.tool("billing", scope="acme", tags=TAGS)
     await consult.dispatch("billing", {"input": "Charged twice"})
     [run] = recorder.runs
@@ -103,7 +130,13 @@ async def test_an_agent_as_a_tool_tags_the_runs_it_starts(fixtures: Path) -> Non
 
 async def test_engine_tools_tag_a_dispatched_delegate(fixtures: Path) -> None:
     recorder = Recorded()
-    engine = Engine(fixtures, generation=Scripted(text_reply("ok")), decision=Fixed(TRIAGE), tools=TOOLS, refinery=recorder)
+    engine = Engine(
+        fixtures,
+        generation=Scripted(text_reply("ok")),
+        decision=Fixed(TRIAGE),
+        tools=TOOLS,
+        refinery=recorder,
+    )
     surface = EngineTools(engine, agent="support", scope="acme", tags=TAGS)
     await surface.dispatch("Delegate", {"agent": "triage", "input": "It is down"})
     [run] = recorder.runs
@@ -121,7 +154,15 @@ async def test_engine_tools_tag_a_dispatched_delegate(fixtures: Path) -> None:
         {f"k{i}": "x" for i in range(33)},
         ["arm", "b"],
     ],
-    ids=["empty-key", "int-value", "int-key", "long-key", "long-value", "too-many", "not-a-mapping"],
+    ids=[
+        "empty-key",
+        "int-value",
+        "int-key",
+        "long-key",
+        "long-value",
+        "too-many",
+        "not-a-mapping",
+    ],
 )
 async def test_invalid_tags_are_refused_before_any_model_call(fixtures: Path, tags: Any) -> None:
     llm = Scripted()
@@ -166,7 +207,10 @@ async def test_a_run_stored_before_tags_exports_empty_tags() -> None:
     for run_id in (generation.run_id, decision.run_id):
         row = await storage.get_run("acme", run_id)
         assert row is not None
-        await storage.put_run("acme", row.model_copy(update={"body": {k: v for k, v in row.body.items() if k != "tags"}}))
+        await storage.put_run(
+            "acme",
+            row.model_copy(update={"body": {k: v for k, v in row.body.items() if k != "tags"}}),
+        )
     bucket = MemoryBucket()
     exported = await refinery.export("acme", bucket)
     assert exported.rows == {"generation": 1, "preference": 1, "decision": 1}

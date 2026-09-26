@@ -35,7 +35,12 @@ from .fakes import TOOLS, Fixed, Scripted, Streaming
 class Adapter:
     def __init__(self) -> None:
         self.replies = [
-            other.Reply(tool_calls=[other.ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})], stop_reason="tool_use"),
+            other.Reply(
+                tool_calls=[
+                    other.ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})
+                ],
+                stop_reason="tool_use",
+            ),
             other.Reply(text="done", usage=other.Usage(input=3, output=1), model="m"),
         ]
 
@@ -47,7 +52,9 @@ class Adapter:
     ) -> other.Reply:
         return self.replies.pop(0)
 
-    async def decide(self, state: State, questions: Mapping[str, Question | other.Question]) -> other.Decided:
+    async def decide(
+        self, state: State, questions: Mapping[str, Question | other.Question]
+    ) -> other.Decided:
         answers: dict[str, other.Answer] = {
             "urgent": other.CheckAnswer(probability=0.9),
             "severity": other.ScoreAnswer(score=1, probabilities=[0, 1, 0, 0]),
@@ -55,7 +62,9 @@ class Adapter:
         return other.Decided(answers=answers, usage=other.Usage(input=7), model="d")
 
 
-async def test_an_adapter_typed_against_lookalike_classes_runs_in_the_engine(fixtures: Path) -> None:
+async def test_an_adapter_typed_against_lookalike_classes_runs_in_the_engine(
+    fixtures: Path,
+) -> None:
     adapter = Adapter()
     engine = Engine(fixtures, generation=adapter, decision=adapter, tools=TOOLS)
     generation = await engine.run("support", "acme", "x")
@@ -88,34 +97,68 @@ async def test_parts_from_another_library_are_read_by_their_fields(fixtures: Pat
         Reply(text="A cat."),
     )
     engine = Engine(fixtures, generation=llm, tools=TOOLS)
-    run = await engine.run("billing", "acme", [other.Text(text="And this?"), other.Image(media_type="image/png", url="https://x/c.png")], tools=other.Photos())
+    run = await engine.run(
+        "billing",
+        "acme",
+        [other.Text(text="And this?"), other.Image(media_type="image/png", url="https://x/c.png")],
+        tools=other.Photos(),
+    )
     assert isinstance(run, Generation)
-    assert llm.calls[0][1][-1].content == [Text(text="And this?"), Image(media_type="image/png", url="https://x/c.png")]
-    assert llm.calls[1][1][-1].content == [Text(text="the photo"), Image(media_type="image/png", data=b"png")]
+    assert llm.calls[0][1][-1].content == [
+        Text(text="And this?"),
+        Image(media_type="image/png", url="https://x/c.png"),
+    ]
+    assert llm.calls[1][1][-1].content == [
+        Text(text="the photo"),
+        Image(media_type="image/png", data=b"png"),
+    ]
 
 
 async def test_history_from_another_library_is_read_by_its_fields(fixtures: Path) -> None:
     llm = Scripted(Reply(text="Still a cat."))
     engine = Engine(fixtures, generation=llm, tools=TOOLS)
     history = [
-        other.Message(role="user", content=[other.Text(text="And this?"), other.Image(media_type="image/png", url="https://x/c.png")]),
-        other.Message(role="assistant", content="A cat.", tool_calls=[other.ToolCall(id="c1", name="Read")]),
-        {"role": "user", "content": [other.Text(text="Sure?"), other.Image(media_type="image/png", data=b"png")]},
+        other.Message(
+            role="user",
+            content=[
+                other.Text(text="And this?"),
+                other.Image(media_type="image/png", url="https://x/c.png"),
+            ],
+        ),
+        other.Message(
+            role="assistant", content="A cat.", tool_calls=[other.ToolCall(id="c1", name="Read")]
+        ),
+        {
+            "role": "user",
+            "content": [other.Text(text="Sure?"), other.Image(media_type="image/png", data=b"png")],
+        },
     ]
     run = await engine.run("billing", "acme", "Look again.", history=history)
     assert isinstance(run, Generation)
     sent = llm.calls[0][1]
-    assert sent[0] == Message(role="user", content=[Text(text="And this?"), Image(media_type="image/png", url="https://x/c.png")])
-    assert sent[1] == Message(role="assistant", content="A cat.", tool_calls=[ToolCall(id="c1", name="Read")])
+    assert sent[0] == Message(
+        role="user",
+        content=[Text(text="And this?"), Image(media_type="image/png", url="https://x/c.png")],
+    )
+    assert sent[1] == Message(
+        role="assistant", content="A cat.", tool_calls=[ToolCall(id="c1", name="Read")]
+    )
     assert sent[2].content == [Text(text="Sure?"), Image(media_type="image/png", data=b"png")]
     assert run.conversation[:3] == sent[:3]
 
 
-async def test_a_malformed_part_from_another_library_in_history_is_an_input_error(fixtures: Path) -> None:
+async def test_a_malformed_part_from_another_library_in_history_is_an_input_error(
+    fixtures: Path,
+) -> None:
     engine = Engine(fixtures, generation=Scripted(Reply(text="x")), tools=TOOLS)
-    missing = other.Message.model_construct(role="user", content=[other.Text.model_construct(type="text")])
+    missing = other.Message.model_construct(
+        role="user", content=[other.Text.model_construct(type="text")]
+    )
     with pytest.raises(InputError, match=r"^engine: history does not fit the contract"):
         await engine.run("billing", "acme", "x", history=[missing])
-    both = {"role": "user", "content": [other.Image(media_type="image/png", data=b"png", url="https://x/c.png")]}
+    both = {
+        "role": "user",
+        "content": [other.Image(media_type="image/png", data=b"png", url="https://x/c.png")],
+    }
     with pytest.raises(InputError, match=r"^models: image carries data or url, not both"):
         await engine.run("billing", "acme", "x", history=[both])

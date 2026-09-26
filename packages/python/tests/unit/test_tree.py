@@ -36,7 +36,9 @@ def test_generation_agent_carries_body_agents_tools_tasks() -> None:
 def test_a_tool_file_is_a_contract_or_a_name(tmp_path: Path) -> None:
     (tmp_path / "a" / "tools").mkdir(parents=True)
     (tmp_path / "a" / "AGENT.md").write_text("---\nname: a\nkind: generation\n---\n")
-    (tmp_path / "a" / "tools" / "x.md").write_text("---\nname: x\ninput: {q: {type: string}}\n---\n")
+    (tmp_path / "a" / "tools" / "x.md").write_text(
+        "---\nname: x\ninput: {q: {type: string}}\n---\n"
+    )
     with pytest.raises(ConfigurationError, match="description"):
         load_agent(tmp_path / "a")
 
@@ -85,12 +87,20 @@ def test_question_with_one_option_is_refused(tmp_path: Path) -> None:
     (tmp_path / "d").mkdir()
     (tmp_path / "d" / "questions").mkdir()
     (tmp_path / "d" / "AGENT.md").write_text("---\nname: d\nkind: decision\n---\n")
-    (tmp_path / "d" / "questions" / "q.md").write_text("---\ntype: choice\noptions: {x: X}\n---\n?\n")
+    (tmp_path / "d" / "questions" / "q.md").write_text(
+        "---\ntype: choice\noptions: {x: X}\n---\n?\n"
+    )
     with pytest.raises(ConfigurationError):
         load_agent(tmp_path / "d")
 
 
-def _agent(root: Path, name: str, front: str, questions: dict[str, str] | None = None, tools: tuple[str, ...] = ()) -> None:
+def _agent(
+    root: Path,
+    name: str,
+    front: str,
+    questions: dict[str, str] | None = None,
+    tools: tuple[str, ...] = (),
+) -> None:
     (root / name).mkdir(parents=True)
     (root / name / "AGENT.md").write_text(f"---\nname: {name}\n{front}---\n")
     for qid, text in (questions or {}).items():
@@ -110,9 +120,19 @@ CHECK = "---\ntype: check\n---\nIs it?\n"
     [
         ("kind: decision\n", {}, (), "decision agent 'a' has no questions/"),
         ("kind: decision\n", {"q": CHECK}, ("t",), "decision agent 'a' cannot declare tools/"),
-        ("kind: decision\nworkspace: true\n", {"q": CHECK}, (), "decision agent 'a' cannot declare workspace: true"),
+        (
+            "kind: decision\nworkspace: true\n",
+            {"q": CHECK},
+            (),
+            "decision agent 'a' cannot declare workspace: true",
+        ),
         ("kind: generation\n", {"q": CHECK}, (), "generation agent 'a' cannot declare questions/"),
-        ("kind: generation\nroute: {by: q, to: {x: a}}\n", {}, (), "generation agent 'a' cannot declare route:"),
+        (
+            "kind: generation\nroute: {by: q, to: {x: a}}\n",
+            {},
+            (),
+            "generation agent 'a' cannot declare route:",
+        ),
     ],
 )
 def test_each_kind_holds_only_what_it_can_use(
@@ -126,7 +146,10 @@ def test_each_kind_holds_only_what_it_can_use(
 @pytest.mark.parametrize(
     ("front", "message"),
     [
-        ("kind: decision\nroute: {by: urgent, to: {x: b}}\n", "route of 'a' must name a choice question"),
+        (
+            "kind: decision\nroute: {by: urgent, to: {x: b}}\n",
+            "route of 'a' must name a choice question",
+        ),
         ("kind: decision\nroute: {by: q, to: {z: b}}\n", "route of 'a' maps unknown option 'z'"),
         ("kind: decision\nagents: [ghost]\n", "agent 'a' names unknown agent 'ghost'"),
     ],

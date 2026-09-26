@@ -67,7 +67,9 @@ async def test_shell_runs_in_the_root(ws: Workspace) -> None:
     assert (ws.root / "made.txt").read_text() == "hi\n"
 
 
-async def test_the_default_environment_does_not_leak_the_service(ws: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_default_environment_does_not_leak_the_service(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("SERVICE_SECRET", "s3cret")
     result = await shell(Workspace(ws.root), 'echo "[$SERVICE_SECRET]"; echo "$HOME"')
     assert result["stdout"] == f"[]\n{ws.root}\n"
@@ -145,12 +147,17 @@ async def test_write_refuses_a_directory(ws: Workspace) -> None:
 
 async def test_edit_replaces_exactly_one_occurrence(ws: Workspace) -> None:
     (ws.root / "f.txt").write_bytes(b"x = 1\r\ny = 2\n")
-    assert await tool(ws, "Edit").call({"path": "f.txt", "old": "x = 1", "new": "x = 3"}) == "edited f.txt"
+    assert (
+        await tool(ws, "Edit").call({"path": "f.txt", "old": "x = 1", "new": "x = 3"})
+        == "edited f.txt"
+    )
     assert (ws.root / "f.txt").read_bytes() == b"x = 3\r\ny = 2\n"
 
 
 @pytest.mark.parametrize(("content", "count"), [("a = 1\n", 0), ("x\nx\n", 2)])
-async def test_edit_refuses_zero_or_several_matches(ws: Workspace, content: str, count: int) -> None:
+async def test_edit_refuses_zero_or_several_matches(
+    ws: Workspace, content: str, count: int
+) -> None:
     (ws.root / "f.txt").write_text(content)
     with pytest.raises(InputError, match=f"appears {count} times"):
         await tool(ws, "Edit").call({"path": "f.txt", "old": "x", "new": "y"})
@@ -244,6 +251,7 @@ async def test_write_and_edit_are_bounded_by_the_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     slow = Workspace(tmp_path, timeout=0.2)
+
     def late(args: dict[str, Any]) -> str:
         time.sleep(1)
         return "late"

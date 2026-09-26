@@ -81,7 +81,9 @@ def _kill(pid: int) -> None:
         os.killpg(pid, signal.SIGKILL)
 
 
-def _bounded(handler: Callable[[dict[str, Any]], str], name: str, timeout: float) -> Callable[[dict[str, Any]], Awaitable[str]]:
+def _bounded(
+    handler: Callable[[dict[str, Any]], str], name: str, timeout: float
+) -> Callable[[dict[str, Any]], Awaitable[str]]:
     async def body(args: dict[str, Any]) -> str:
         try:
             async with asyncio.timeout(timeout):
@@ -116,15 +118,27 @@ class Workspace:
         self.env = (
             dict(env)
             if env is not None
-            else {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(self.root), "LANG": "C.UTF-8"}
+            else {
+                "PATH": os.environ.get("PATH", os.defpath),
+                "HOME": str(self.root),
+                "LANG": "C.UTF-8",
+            }
         )
         if shell is None:
             bash = shutil.which("bash", path=self.env.get("PATH"))
             if bash is None:
-                raise ConfigurationError("workspace: bash was not found; pass shell=, such as ['sh', '-c']")
+                raise ConfigurationError(
+                    "workspace: bash was not found; pass shell=, such as ['sh', '-c']"
+                )
             shell = [bash, "-c"]
-        elif isinstance(shell, str) or not shell or not all(isinstance(part, str) and part for part in shell):
-            raise ConfigurationError("workspace: shell must be a non-empty list of strings, such as ['bash', '-c']")
+        elif (
+            isinstance(shell, str)
+            or not shell
+            or not all(isinstance(part, str) and part for part in shell)
+        ):
+            raise ConfigurationError(
+                "workspace: shell must be a non-empty list of strings, such as ['bash', '-c']"
+            )
         self.shell = list(shell)
         self.timeout = timeout
         self.output_bytes = output_bytes
@@ -139,8 +153,18 @@ class Workspace:
         )
         return [
             Tool("Shell", shell, body=self._shell, args=ShellArgs),
-            Tool("Write", "Write a file in the workspace with exactly this content, creating parent directories.", body=_bounded(self._write, "Write", self.timeout), args=WriteArgs),
-            Tool("Edit", "Replace one exact occurrence of old with new in a workspace file.", body=_bounded(self._edit, "Edit", self.timeout), args=EditArgs),
+            Tool(
+                "Write",
+                "Write a file in the workspace with exactly this content, creating parent directories.",
+                body=_bounded(self._write, "Write", self.timeout),
+                args=WriteArgs,
+            ),
+            Tool(
+                "Edit",
+                "Replace one exact occurrence of old with new in a workspace file.",
+                body=_bounded(self._edit, "Edit", self.timeout),
+                args=EditArgs,
+            ),
         ]
 
     async def _shell(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -148,8 +172,13 @@ class Workspace:
         loop = asyncio.get_running_loop()
         transport, capture = await loop.subprocess_exec(
             lambda: _Capture(loop, self.output_bytes),
-            *self.shell, command, cwd=self.root, env=self.env,
-            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            *self.shell,
+            command,
+            cwd=self.root,
+            env=self.env,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
         pid = transport.get_pid()
@@ -207,6 +236,8 @@ class Workspace:
             raise InputError(f"workspace: not a UTF-8 text file: {a.path}") from None
         count = text.count(a.old)
         if count != 1:
-            raise InputError(f"workspace: old appears {count} times in {a.path}; it must appear exactly once")
+            raise InputError(
+                f"workspace: old appears {count} times in {a.path}; it must appear exactly once"
+            )
         target.write_bytes(text.replace(a.old, a.new, 1).encode("utf-8"))
         return f"edited {target.relative_to(self.root)}"

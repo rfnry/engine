@@ -31,7 +31,9 @@ class EngineTools(Tools):
         items: list[Tool | ToolsLike] = [*builtins(spec.root), *declared_tools(spec, engine.tools)]
         if spec.workspace:
             if workspace is None:
-                raise ConfigurationError(f"engine_tools: agent {agent!r} declares workspace: true; pass workspace= to the run")
+                raise ConfigurationError(
+                    f"engine_tools: agent {agent!r} declares workspace: true; pass workspace= to the run"
+                )
             items.extend(workspace.tools())
         if spec.agents:
             items.append(delegate_tool(engine, spec, scope, tools, workspace, tags, approve))

@@ -34,7 +34,9 @@ from .fakes import TOOLS, Scripted, Streaming, text_reply
 
 
 def _tool_use(*calls: ToolCall) -> Reply:
-    return Reply(text="", tool_calls=list(calls), stop_reason="tool_use", usage=Usage(input=10, output=1))
+    return Reply(
+        text="", tool_calls=list(calls), stop_reason="tool_use", usage=Usage(input=10, output=1)
+    )
 
 
 def engine_for(fixtures: Path, llm: Any, **kwargs: Any) -> Engine:
@@ -53,7 +55,13 @@ async def test_plain_reply_is_the_record(fixtures: Path) -> None:
     assert run.system.startswith("<<<AGENT>>>\nYou are billing.")
     assert run.scope == "acme" and run.agent == "billing" and run.steps == []
     system, messages, tools = llm.calls[0]
-    assert messages == run.messages and [t.name for t in tools] == ["Read", "Grep", "Glob", "LS", "Skill"]
+    assert messages == run.messages and [t.name for t in tools] == [
+        "Read",
+        "Grep",
+        "Glob",
+        "LS",
+        "Skill",
+    ]
 
 
 async def test_the_tree_decides_what_the_model_sees(fixtures: Path) -> None:
@@ -78,7 +86,8 @@ async def test_tool_loop_runs_tools_and_feeds_results_back(fixtures: Path) -> No
     second_messages = llm.calls[1][1]
     assert second_messages[-1].role == "tool" and second_messages[-1].tool_call_id == "c1"
     assert second_messages[-2] == Message(
-        role="assistant", tool_calls=[ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})]
+        role="assistant",
+        tool_calls=[ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})],
     )
 
 
@@ -86,19 +95,28 @@ async def test_unknown_tool_is_an_error_result_and_the_loop_continues(fixtures: 
     llm = Scripted(_tool_use(ToolCall(id="c1", name="Ghost", args={})), text_reply("ok"))
     run = await engine_for(fixtures, llm).run("support", "acme", "x")
     assert isinstance(run, Generation)
-    assert run.steps[0].is_error and run.steps[0].result == "InputError: tools: unknown tool 'Ghost'"
+    assert (
+        run.steps[0].is_error and run.steps[0].result == "InputError: tools: unknown tool 'Ghost'"
+    )
     assert llm.calls[1][1][-1].is_error
 
 
 async def test_tool_messages_say_whether_the_step_failed(fixtures: Path) -> None:
     llm = Scripted(
-        _tool_use(ToolCall(id="g", name="Ghost", args={}), ToolCall(id="r", name="Read", args={"path": "rules/refunds.md"})),
+        _tool_use(
+            ToolCall(id="g", name="Ghost", args={}),
+            ToolCall(id="r", name="Read", args={"path": "rules/refunds.md"}),
+        ),
         _tool_use(ToolCall(id="o", name="Output", args={})),
         _tool_use(ToolCall(id="o2", name="Output", args={"refund": True, "reason": "dup"})),
     )
     await engine_for(fixtures, llm).run("support", "acme", "x", expect=Verdict)
     tool_messages = [m for m in llm.calls[2][1] if m.role == "tool"]
-    assert [(m.tool_call_id, m.is_error) for m in tool_messages] == [("g", True), ("r", False), ("o", True)]
+    assert [(m.tool_call_id, m.is_error) for m in tool_messages] == [
+        ("g", True),
+        ("r", False),
+        ("o", True),
+    ]
     assert Message(role="user", content="hi").is_error is False
 
 
@@ -106,7 +124,9 @@ async def test_call_tools_reach_the_model_for_that_run_only(fixtures: Path) -> N
     async def ping(args: dict[str, Any]) -> str:
         return "pong"
 
-    llm = Scripted(_tool_use(ToolCall(id="p", name="ping", args={})), text_reply("ok"), text_reply("ok"))
+    llm = Scripted(
+        _tool_use(ToolCall(id="p", name="ping", args={})), text_reply("ok"), text_reply("ok")
+    )
     engine = engine_for(fixtures, llm)
     run = await engine.run("billing", "acme", "x", tools=Tools([Tool("ping", "Ping", body=ping)]))
     assert isinstance(run, Generation) and run.steps[0].result == "pong"
@@ -193,17 +213,31 @@ async def test_a_slow_call_tool_times_out_and_the_run_continues(fixtures: Path) 
     )
     engine = engine_for(fixtures, llm, tool_timeout=0.05)
     started = time.monotonic()
-    run = await engine.run("billing", "acme", "x", tools=Tools([Tool("slow", "Slow", body=_slow), Tool("ping", "Ping", body=ping)]))
+    run = await engine.run(
+        "billing",
+        "acme",
+        "x",
+        tools=Tools([Tool("slow", "Slow", body=_slow), Tool("ping", "Ping", body=ping)]),
+    )
     assert time.monotonic() - started < 2
     assert isinstance(run, Generation) and run.reply == "carried on"
-    assert run.steps[0].is_error and run.steps[0].result == "TimeoutError: slow timed out after 0.05s"
+    assert (
+        run.steps[0].is_error and run.steps[0].result == "TimeoutError: slow timed out after 0.05s"
+    )
     assert not run.steps[1].is_error and run.steps[1].result == "pong"
     assert llm.calls[1][1][-2].content == "TimeoutError: slow timed out after 0.05s"
 
 
 async def test_a_slow_declared_tool_times_out(fixtures: Path) -> None:
-    llm = Scripted(_tool_use(ToolCall(id="l", name="lookup_order", args={"order_id": "1"})), text_reply("ok"))
-    engine = Engine(fixtures, generation=llm, tools=[Tool("lookup_order", body=_slow), TOOLS[1]], tool_timeout=0.05)
+    llm = Scripted(
+        _tool_use(ToolCall(id="l", name="lookup_order", args={"order_id": "1"})), text_reply("ok")
+    )
+    engine = Engine(
+        fixtures,
+        generation=llm,
+        tools=[Tool("lookup_order", body=_slow), TOOLS[1]],
+        tool_timeout=0.05,
+    )
     run = await engine.run("support", "acme", "x")
     assert isinstance(run, Generation)
     assert run.steps[0].result == "TimeoutError: lookup_order timed out after 0.05s"
@@ -214,7 +248,9 @@ async def test_a_tool_raising_its_own_timeout_is_not_the_deadline(fixtures: Path
         raise TimeoutError("upstream gave up")
 
     llm = Scripted(_tool_use(ToolCall(id="g", name="gives_up", args={})), text_reply("ok"))
-    run = await engine_for(fixtures, llm).run("billing", "acme", "x", tools=Tools([Tool("gives_up", "Gives up", body=gives_up)]))
+    run = await engine_for(fixtures, llm).run(
+        "billing", "acme", "x", tools=Tools([Tool("gives_up", "Gives up", body=gives_up)])
+    )
     assert isinstance(run, Generation) and run.steps[0].result == "TimeoutError: upstream gave up"
 
 
@@ -225,7 +261,9 @@ async def test_the_deadline_defaults_to_thirty_seconds_and_none_disables_it(fixt
 
     assert engine_for(fixtures, Scripted()).tool_timeout == 30.0
     llm = Scripted(_tool_use(ToolCall(id="n", name="nap", args={})), text_reply("ok"))
-    run = await engine_for(fixtures, llm, tool_timeout=None).run("billing", "acme", "x", tools=Tools([Tool("nap", "Nap", body=nap)]))
+    run = await engine_for(fixtures, llm, tool_timeout=None).run(
+        "billing", "acme", "x", tools=Tools([Tool("nap", "Nap", body=nap)])
+    )
     assert isinstance(run, Generation) and run.steps[0].result == "rested"
     for bad in (0, -1.0):
         with pytest.raises(ConfigurationError, match="tool_timeout"):
@@ -260,14 +298,19 @@ class ForeignReply(BaseModel):
 
 async def test_a_foreign_reply_is_accepted_by_its_fields(fixtures: Path) -> None:
     llm = Scripted(
-        ForeignReply(tool_calls=[ForeignCall(id="c1", name="Read", args={"path": "rules/refunds.md"})], stop_reason="tool_use"),  # type: ignore[arg-type]
+        ForeignReply(
+            tool_calls=[ForeignCall(id="c1", name="Read", args={"path": "rules/refunds.md"})],
+            stop_reason="tool_use",
+        ),  # type: ignore[arg-type]
         ForeignReply(text="done", usage=ForeignUsage(input=3, output=1), model="m9"),  # type: ignore[arg-type]
     )
     run = await engine_for(fixtures, llm).run("support", "acme", "x")
     assert isinstance(run, Generation) and run.reply == "done" and run.model == "m9"
     assert run.steps[0].tool == "Read" and run.usage == Usage(input=3, output=1)
     with pytest.raises(ModelError):
-        await engine_for(fixtures, Scripted(ForeignReply(stop_reason="later"))).run("support", "acme", "x")  # type: ignore[arg-type]
+        await engine_for(fixtures, Scripted(ForeignReply(stop_reason="later"))).run(  # type: ignore[arg-type]
+            "support", "acme", "x"
+        )
 
 
 async def test_a_run_returns_the_conversation_to_continue_from(fixtures: Path) -> None:
@@ -294,7 +337,10 @@ async def test_a_run_returns_the_conversation_to_continue_from(fixtures: Path) -
         Message(
             role="assistant",
             content="Checking.",
-            tool_calls=[ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"}), ToolCall(id="c2", name="Ghost")],
+            tool_calls=[
+                ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"}),
+                ToolCall(id="c2", name="Ghost"),
+            ],
             reasoning={"thought": "read the rule"},
         ),
         Message(role="tool", tool_call_id="c1", content=first.steps[0].result),
@@ -302,18 +348,26 @@ async def test_a_run_returns_the_conversation_to_continue_from(fixtures: Path) -
         Message(role="assistant", content="Refund in full."),
     ]
 
-    second = await engine.run("support", "acme", "And the second charge?", history=first.conversation)
+    second = await engine.run(
+        "support", "acme", "And the second charge?", history=first.conversation
+    )
     assert isinstance(second, Generation)
-    assert llm.calls[2][1] == [*first.conversation, Message(role="user", content="And the second charge?")]
+    assert llm.calls[2][1] == [
+        *first.conversation,
+        Message(role="user", content="And the second charge?"),
+    ]
     assert second.conversation[-1] == Message(role="assistant", content="Done.")
 
 
 async def test_a_typed_run_closes_its_output_call_in_the_conversation(fixtures: Path) -> None:
-    llm = Scripted(_tool_use(ToolCall(id="o1", name="Output", args={"refund": True, "reason": "dup"})))
+    llm = Scripted(
+        _tool_use(ToolCall(id="o1", name="Output", args={"refund": True, "reason": "dup"}))
+    )
     run = await engine_for(fixtures, llm).run("support", "acme", "x", expect=Verdict)
     assert isinstance(run, Generation)
     assert run.conversation[-2] == Message(
-        role="assistant", tool_calls=[ToolCall(id="o1", name="Output", args={"refund": True, "reason": "dup"})]
+        role="assistant",
+        tool_calls=[ToolCall(id="o1", name="Output", args={"refund": True, "reason": "dup"})],
     )
     assert run.conversation[-1] == Message(role="tool", tool_call_id="o1", content="accepted")
 
@@ -326,11 +380,21 @@ async def test_a_tool_named_output_collides_with_expect(fixtures: Path) -> None:
         refund: bool
 
     engine = engine_for(fixtures, Scripted(text_reply("x")))
-    with pytest.raises(ConfigurationError, match="^engine: a tool named 'Output' collides with expect=$"):
-        await engine.run("billing", "acme", "x", expect=Verdict, tools=Tools([Tool("Output", "Clash", body=ping)]))
+    with pytest.raises(
+        ConfigurationError, match="^engine: a tool named 'Output' collides with expect=$"
+    ):
+        await engine.run(
+            "billing",
+            "acme",
+            "x",
+            expect=Verdict,
+            tools=Tools([Tool("Output", "Clash", body=ping)]),
+        )
 
 
-async def test_a_failed_recording_is_logged_and_the_run_returned(fixtures: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_a_failed_recording_is_logged_and_the_run_returned(
+    fixtures: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     class Broken:
         async def record(self, run: Run) -> None:
             raise RuntimeError("database down")
@@ -355,13 +419,25 @@ async def test_parts_as_input_are_the_first_user_message(fixtures: Path) -> None
     assert first.input == parts and first.messages == [Message(role="user", content=parts)]
     second = await engine.run("billing", "acme", "Which colour?", history=first.conversation)
     assert isinstance(second, Generation)
-    assert llm.calls[1][1] == [Message(role="user", content=parts), Message(role="assistant", content="A cat."), Message(role="user", content="Which colour?")]
+    assert llm.calls[1][1] == [
+        Message(role="user", content=parts),
+        Message(role="assistant", content="A cat."),
+        Message(role="user", content="Which colour?"),
+    ]
     assert llm.calls[1][1][0].content[1] == Image(media_type="image/png", data=PNG)
 
 
 async def test_parts_in_history_reach_the_model_as_they_are(fixtures: Path) -> None:
     llm = Scripted(text_reply("ok"))
-    history = [Message(role="user", content=[Text(text="the invoice"), Document(media_type="application/pdf", url="https://x/i.pdf")])]
+    history = [
+        Message(
+            role="user",
+            content=[
+                Text(text="the invoice"),
+                Document(media_type="application/pdf", url="https://x/i.pdf"),
+            ],
+        )
+    ]
     await engine_for(fixtures, llm).run("billing", "acme", "and?", history=history)
     assert llm.calls[0][1][0] == history[0]
 
@@ -371,7 +447,9 @@ async def test_a_tool_that_returns_parts_hands_them_to_the_model(fixtures: Path)
         return [Text(text="the photo"), Image(media_type="image/png", data=PNG)]
 
     llm = Scripted(_tool_use(ToolCall(id="p", name="photo", args={})), text_reply("A cat."))
-    run = await engine_for(fixtures, llm).run("billing", "acme", "x", tools=Tools([Tool("photo", body=photo)]))
+    run = await engine_for(fixtures, llm).run(
+        "billing", "acme", "x", tools=Tools([Tool("photo", body=photo)])
+    )
     assert isinstance(run, Generation)
     returned: list[Part] = [Text(text="the photo"), Image(media_type="image/png", data=PNG)]
     assert llm.calls[1][1][-1] == Message(role="tool", tool_call_id="p", content=returned)
@@ -391,7 +469,9 @@ async def test_a_list_of_values_is_still_json_state(fixtures: Path) -> None:
     assert llm.calls[0][1][-1] == Message(role="user", content='[1, "two"]')
 
 
-async def test_read_hands_the_model_an_image_and_a_pdf_from_its_folder(fixtures: Path, tmp_path: Path) -> None:
+async def test_read_hands_the_model_an_image_and_a_pdf_from_its_folder(
+    fixtures: Path, tmp_path: Path
+) -> None:
     root = tmp_path / "agents"
     shutil.copytree(fixtures, root)
     png, pdf = b"\x89PNG\r\n\x1a\nbody", b"%PDF-1.7 rates"
@@ -413,4 +493,6 @@ async def test_read_hands_the_model_an_image_and_a_pdf_from_its_folder(fixtures:
         Message(role="tool", tool_call_id="i", content=image),
         Message(role="tool", tool_call_id="d", content=document),
     ]
-    assert [s.result for s in run.steps] == [image, document] and not any(s.is_error for s in run.steps)
+    assert [s.result for s in run.steps] == [image, document] and not any(
+        s.is_error for s in run.steps
+    )

@@ -87,23 +87,27 @@ def _question(path: Path) -> Question:
 
 
 def _tool_decl(path: Path) -> ToolDecl:
-    front, body = parse_frontmatter_doc(
-        _read(path), model=ToolFront, source=path, label="tool"
-    )
+    front, body = parse_frontmatter_doc(_read(path), model=ToolFront, source=path, label="tool")
     if front.name != path.stem:
         raise ConfigurationError(f"tree: tool {front.name!r} must live in {front.name}.md: {path}")
     if front.description is None:
         if front.input is not None or body.strip():
-            raise ConfigurationError(f"tree: tool file {path} adopts a code tool by name, so it takes no input or description; give it a description to make it a contract")
+            raise ConfigurationError(
+                f"tree: tool file {path} adopts a code tool by name, so it takes no input or description; give it a description to make it a contract"
+            )
         return ToolDecl(name=front.name, description=None, input=None)
-    description = front.description if not body.strip() else f"{front.description}\n\n{body.strip()}"
+    description = (
+        front.description if not body.strip() else f"{front.description}\n\n{body.strip()}"
+    )
     return ToolDecl(name=front.name, description=description, input=dict(front.input or {}))
 
 
 def _markdown_files(directory: Path) -> list[Path]:
     if not directory.is_dir():
         return []
-    return sorted(p for p in directory.iterdir() if p.suffix == ".md" and not p.name.startswith(("_", ".")))
+    return sorted(
+        p for p in directory.iterdir() if p.suffix == ".md" and not p.name.startswith(("_", "."))
+    )
 
 
 def load_agent(directory: Path) -> AgentSpec:
@@ -114,7 +118,9 @@ def load_agent(directory: Path) -> AgentSpec:
         label="agent",
     )
     if front.name != directory.name:
-        raise ConfigurationError(f"tree: agent {front.name!r} must live in a directory named {front.name!r}: {directory}")
+        raise ConfigurationError(
+            f"tree: agent {front.name!r} must live in a directory named {front.name!r}: {directory}"
+        )
     questions = {p.stem: _question(p) for p in _markdown_files(directory / "questions")}
     tools = {p.stem: _tool_decl(p) for p in _markdown_files(directory / "tools")}
     tasks = [p.stem for p in _markdown_files(directory / "tasks")]
@@ -123,7 +129,9 @@ def load_agent(directory: Path) -> AgentSpec:
     if front.kind == "decision" and tools:
         raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare tools/")
     if front.kind == "decision" and front.workspace:
-        raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare workspace: true")
+        raise ConfigurationError(
+            f"tree: decision agent {front.name!r} cannot declare workspace: true"
+        )
     if front.kind == "generation" and questions:
         raise ConfigurationError(f"tree: generation agent {front.name!r} cannot declare questions/")
     if front.kind == "generation" and front.route is not None:
@@ -162,7 +170,9 @@ def validate_tree(agents: dict[str, AgentSpec]) -> None:
     for spec in agents.values():
         for target in spec.agents:
             if target not in agents:
-                raise ConfigurationError(f"tree: agent {spec.name!r} names unknown agent {target!r}")
+                raise ConfigurationError(
+                    f"tree: agent {spec.name!r} names unknown agent {target!r}"
+                )
         if spec.route is None:
             continue
         question = spec.questions.get(spec.route.by)
@@ -170,6 +180,10 @@ def validate_tree(agents: dict[str, AgentSpec]) -> None:
             raise ConfigurationError(f"tree: route of {spec.name!r} must name a choice question")
         for option, target in spec.route.to.items():
             if option not in question.options:
-                raise ConfigurationError(f"tree: route of {spec.name!r} maps unknown option {option!r}")
+                raise ConfigurationError(
+                    f"tree: route of {spec.name!r} maps unknown option {option!r}"
+                )
             if target not in agents:
-                raise ConfigurationError(f"tree: route of {spec.name!r} points at unknown agent {target!r}")
+                raise ConfigurationError(
+                    f"tree: route of {spec.name!r} points at unknown agent {target!r}"
+                )

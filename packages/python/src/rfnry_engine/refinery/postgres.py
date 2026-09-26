@@ -38,16 +38,27 @@ def _json(value: Any) -> dict[str, Any]:
 
 def _run(record: Any) -> RunRow:
     return RunRow(
-        scope=record["scope"], run_id=record["run_id"], parent_run_id=record["parent_run_id"], agent=record["agent"],
-        kind=record["kind"], task=record["task"], at=record["at"], duration_ms=record["duration_ms"],
-        model=record["model"], body=_json(record["body"]),
+        scope=record["scope"],
+        run_id=record["run_id"],
+        parent_run_id=record["parent_run_id"],
+        agent=record["agent"],
+        kind=record["kind"],
+        task=record["task"],
+        at=record["at"],
+        duration_ms=record["duration_ms"],
+        model=record["model"],
+        body=_json(record["body"]),
     )
 
 
 def _label(record: Any) -> LabelRow:
     return LabelRow(
-        scope=record["scope"], label_id=record["label_id"], run_id=record["run_id"], source=record["source"],
-        at=record["at"], body=_json(record["body"]),
+        scope=record["scope"],
+        label_id=record["label_id"],
+        run_id=record["run_id"],
+        source=record["source"],
+        at=record["at"],
+        body=_json(record["body"]),
     )
 
 
@@ -82,14 +93,24 @@ class PostgresStorage:
                 "ON CONFLICT (scope, run_id) DO UPDATE SET parent_run_id = EXCLUDED.parent_run_id, agent = EXCLUDED.agent, "
                 "kind = EXCLUDED.kind, task = EXCLUDED.task, at = EXCLUDED.at, duration_ms = EXCLUDED.duration_ms, "
                 "model = EXCLUDED.model, body = EXCLUDED.body",
-                row.scope, row.run_id, row.parent_run_id, row.agent, row.kind, row.task, row.at,
-                row.duration_ms, row.model, json.dumps(row.body),
+                row.scope,
+                row.run_id,
+                row.parent_run_id,
+                row.agent,
+                row.kind,
+                row.task,
+                row.at,
+                row.duration_ms,
+                row.model,
+                json.dumps(row.body),
             )
 
     async def get_run(self, scope: str, run_id: str) -> RunRow | None:
         async with self._guard("get_run"), self._pool.acquire() as conn:
             record = await conn.fetchrow(
-                f"SELECT {_RUN_COLUMNS} FROM engine_runs WHERE scope = $1 AND run_id = $2", scope, run_id
+                f"SELECT {_RUN_COLUMNS} FROM engine_runs WHERE scope = $1 AND run_id = $2",
+                scope,
+                run_id,
             )
         return _run(record) if record is not None else None
 
@@ -140,7 +161,12 @@ class PostgresStorage:
                 f"INSERT INTO engine_labels ({_LABEL_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6::json) "
                 "ON CONFLICT (scope, label_id) DO UPDATE SET run_id = EXCLUDED.run_id, source = EXCLUDED.source, "
                 "at = EXCLUDED.at, body = EXCLUDED.body",
-                row.scope, row.label_id, row.run_id, row.source, row.at, json.dumps(row.body),
+                row.scope,
+                row.label_id,
+                row.run_id,
+                row.source,
+                row.at,
+                json.dumps(row.body),
             )
 
     async def labels(
@@ -162,7 +188,11 @@ class PostgresStorage:
         if since is not None:
             params.append(since)
             conditions.append(f"at > ${len(params)}")
-        sql = f"SELECT {_LABEL_COLUMNS} FROM engine_labels WHERE " + " AND ".join(conditions) + ' ORDER BY at ASC, label_id COLLATE "C" ASC'
+        sql = (
+            f"SELECT {_LABEL_COLUMNS} FROM engine_labels WHERE "
+            + " AND ".join(conditions)
+            + ' ORDER BY at ASC, label_id COLLATE "C" ASC'
+        )
         async with self._guard("labels"), self._pool.acquire() as conn:
             records = await conn.fetch(sql, *params)
         return [_label(record) for record in records]
@@ -176,5 +206,7 @@ class PostgresStorage:
     async def count_scope(self, scope: str) -> int:
         async with self._guard("count_scope"), self._pool.acquire() as conn:
             runs = await conn.fetchval("SELECT count(*) FROM engine_runs WHERE scope = $1", scope)
-            labels = await conn.fetchval("SELECT count(*) FROM engine_labels WHERE scope = $1", scope)
+            labels = await conn.fetchval(
+                "SELECT count(*) FROM engine_labels WHERE scope = $1", scope
+            )
         return int(runs) + int(labels)

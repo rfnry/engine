@@ -133,7 +133,9 @@ class Refinery:
         runs = await self.storage.runs(scope, since=since, limit=None)
         if since is not None:
             fresh = {run.run_id for run in runs}
-            relabeled = {row.run_id for row in await self.storage.labels(scope, since=since)} - fresh
+            relabeled = {
+                row.run_id for row in await self.storage.labels(scope, since=since)
+            } - fresh
             if relabeled:
                 runs += await self.storage.runs(scope, run_ids=sorted(relabeled), limit=None)
         if not runs:
@@ -165,39 +167,78 @@ class Refinery:
             if not rows:
                 continue
             key = export_key(scope, agent, dataset, stamp)
-            await bucket.put(key, ("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n").encode("utf-8"))
+            await bucket.put(
+                key,
+                ("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n").encode("utf-8"),
+            )
             keys.append(key)
             counts[dataset] = counts.get(dataset, 0) + len(rows)
         return Exported(keys=keys, rows=counts, watermark=max(stamps))
 
     async def label(
-        self, scope: str, engine: Engine, *, judge: str | None = None, teacher: str | None = None, limit: int = 500
+        self,
+        scope: str,
+        engine: Engine,
+        *,
+        judge: str | None = None,
+        teacher: str | None = None,
+        limit: int = 500,
     ) -> Labeled:
         labelers = {name for name in (judge, teacher) if name is not None}
         result = Labeled()
         if judge is not None:
-            for row in await self.storage.runs(scope, kind="generation", unlabeled_by="judge", limit=limit):
+            for row in await self.storage.runs(
+                scope, kind="generation", unlabeled_by="judge", limit=limit
+            ):
                 if row.agent in labelers:
                     continue
                 try:
                     run = await engine.run(judge, scope, judge_state(row), record=False)
                     if not isinstance(run, Decision):
-                        raise ConfigurationError(f"refinery: judge {judge!r} must be a decision agent")
-                    await self._put(Label(label_id=uuid4().hex, run_id=row.run_id, scope=scope, at=datetime.now(UTC), source="judge", answers=run.answers))
+                        raise ConfigurationError(
+                            f"refinery: judge {judge!r} must be a decision agent"
+                        )
+                    await self._put(
+                        Label(
+                            label_id=uuid4().hex,
+                            run_id=row.run_id,
+                            scope=scope,
+                            at=datetime.now(UTC),
+                            source="judge",
+                            answers=run.answers,
+                        )
+                    )
                     result.judged += 1
                 except Exception as exc:
                     result.errors[row.run_id] = f"{type(exc).__name__}: {exc}"
         if teacher is not None:
-            for row in await self.storage.runs(scope, kind="decision", unlabeled_by="teacher", limit=limit):
+            for row in await self.storage.runs(
+                scope, kind="decision", unlabeled_by="teacher", limit=limit
+            ):
                 if row.agent in labelers:
                     continue
                 try:
-                    run = await engine.run(teacher, scope, teacher_prompt(row), expect=TeacherAnswers, record=False)
+                    run = await engine.run(
+                        teacher, scope, teacher_prompt(row), expect=TeacherAnswers, record=False
+                    )
                     if not isinstance(run, Generation):
-                        raise ConfigurationError(f"refinery: teacher {teacher!r} must be a generation agent")
+                        raise ConfigurationError(
+                            f"refinery: teacher {teacher!r} must be a generation agent"
+                        )
                     questions = Decision.model_validate(row.body).questions
-                    answers = teacher_answers(questions, TeacherAnswers.model_validate_json(run.reply))
-                    await self._put(Label(label_id=uuid4().hex, run_id=row.run_id, scope=scope, at=datetime.now(UTC), source="teacher", answers=answers))
+                    answers = teacher_answers(
+                        questions, TeacherAnswers.model_validate_json(run.reply)
+                    )
+                    await self._put(
+                        Label(
+                            label_id=uuid4().hex,
+                            run_id=row.run_id,
+                            scope=scope,
+                            at=datetime.now(UTC),
+                            source="teacher",
+                            answers=answers,
+                        )
+                    )
                     result.taught += 1
                 except Exception as exc:
                     result.errors[row.run_id] = f"{type(exc).__name__}: {exc}"

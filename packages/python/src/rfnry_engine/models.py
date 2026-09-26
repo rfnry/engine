@@ -178,14 +178,18 @@ def as_decided(value: object) -> Decided:
             return Decided.model_validate({"answers": value}, from_attributes=True)
         return Decided.model_validate(value, from_attributes=True)
     except ValidationError as exc:
-        raise ModelError(f"models: the decision model's answers do not fit the contract: {exc.errors(include_url=False)}") from exc
+        raise ModelError(
+            f"models: the decision model's answers do not fit the contract: {exc.errors(include_url=False)}"
+        ) from exc
 
 
 def as_reply(value: object) -> Reply:
     try:
         return Reply.model_validate(value, from_attributes=True)
     except ValidationError as exc:
-        raise ModelError(f"models: the generation model's reply does not fit the contract: {exc.errors(include_url=False)}") from exc
+        raise ModelError(
+            f"models: the generation model's reply does not fit the contract: {exc.errors(include_url=False)}"
+        ) from exc
 
 
 def confidence(probabilities: list[float]) -> float:
@@ -202,7 +206,9 @@ def settle(questions: dict[str, Question], answers: dict[str, Answer]) -> dict[s
         if answer is None:
             raise ModelError(f"models: no answer for question {qid!r}")
         if answer.type != question.type:
-            raise ModelError(f"models: answer to {qid!r} is {answer.type}, question is {question.type}")
+            raise ModelError(
+                f"models: answer to {qid!r} is {answer.type}, question is {question.type}"
+            )
         if isinstance(answer, ChoiceAnswer) and isinstance(question, Choice):
             if set(answer.probabilities) != set(question.options):
                 raise ModelError(f"models: probabilities for {qid!r} do not cover the options")

@@ -22,7 +22,9 @@ def _schema(decl: ToolDecl) -> dict[str, Any]:
     fields = decl.input or {}
     return {
         "type": "object",
-        "properties": {name: {"type": f.type, "description": f.description} for name, f in fields.items()},
+        "properties": {
+            name: {"type": f.type, "description": f.description} for name, f in fields.items()
+        },
         "required": [name for name, f in fields.items() if f.required],
     }
 
@@ -40,17 +42,31 @@ def declared_tools(spec: AgentSpec, code: dict[str, Tool]) -> list[Tool]:
     for name, decl in spec.tools.items():
         implementation = code.get(name)
         if implementation is None or implementation.body is None:
-            raise ConfigurationError(f"declared: agent {spec.name!r} declares tool {name!r} but no Tool with a body was given")
+            raise ConfigurationError(
+                f"declared: agent {spec.name!r} declares tool {name!r} but no Tool with a body was given"
+            )
         if decl.description is None:
             if not implementation.description:
-                raise ConfigurationError(f"declared: agent {spec.name!r} adopts tool {name!r} by name, but the Tool has no description")
+                raise ConfigurationError(
+                    f"declared: agent {spec.name!r} adopts tool {name!r} by name, but the Tool has no description"
+                )
             tools.append(implementation)
             continue
-        tools.append(Tool(name, decl.description, body=implementation.body, args=_args_model(decl), input_schema=_schema(decl)))
+        tools.append(
+            Tool(
+                name,
+                decl.description,
+                body=implementation.body,
+                args=_args_model(decl),
+                input_schema=_schema(decl),
+            )
+        )
     return tools
 
 
-def check_declarations(agents: dict[str, AgentSpec], code: dict[str, Tool], *, bodies: bool) -> None:
+def check_declarations(
+    agents: dict[str, AgentSpec], code: dict[str, Tool], *, bodies: bool
+) -> None:
     declared: set[str] = set()
     for spec in agents.values():
         if bodies:

@@ -36,7 +36,9 @@ from rfnry_engine import (
 from .fakes import lookup_order
 
 DOCS = Path(__file__).parents[4] / "docs" / "engine.md"
-BLOCKS: list[tuple[str, str]] = re.findall(r"```(\w*)\n(.*?)```", DOCS.read_text(encoding="utf-8"), re.S)
+BLOCKS: list[tuple[str, str]] = re.findall(
+    r"```(\w*)\n(.*?)```", DOCS.read_text(encoding="utf-8"), re.S
+)
 PYTHON = [body for lang, body in BLOCKS if lang == "python"]
 MARKDOWN = [body for lang, body in BLOCKS if lang in ("markdown", "")]
 
@@ -74,14 +76,32 @@ class Setup:
 
 SETUPS = {
     "class Verdict(BaseModel):": Setup(
-        replies=(Reply(tool_calls=[ToolCall(id="o1", name="Output", args={"refund": True, "reason": "dup"})], stop_reason="tool_use"),)
+        replies=(
+            Reply(
+                tool_calls=[
+                    ToolCall(id="o1", name="Output", args={"refund": True, "reason": "dup"})
+                ],
+                stop_reason="tool_use",
+            ),
+        )
     ),
-    "engine = Engine(root, generation=llm, decision=dm, tools=tools)": Setup(replies=(delegating("triage"),), intent="technical"),
+    "engine = Engine(root, generation=llm, decision=dm, tools=tools)": Setup(
+        replies=(delegating("triage"),), intent="technical"
+    ),
     "from rfnry_engine import Workspace": Setup(replace={"/srv/tenants/acme/work": "work"}),
-    'sandboxed = Workspace("/srv/tenants/acme/work", shell=[': Setup(replace={"/srv/tenants/acme/work": "work"}),
-    'contained = Workspace("/srv/tenants/acme/work", timeout=600, shell=[': Setup(replace={"/srv/tenants/acme/work": "work"}),
+    'sandboxed = Workspace("/srv/tenants/acme/work", shell=[': Setup(
+        replace={"/srv/tenants/acme/work": "work"}
+    ),
+    'contained = Workspace("/srv/tenants/acme/work", timeout=600, shell=[': Setup(
+        replace={"/srv/tenants/acme/work": "work"}
+    ),
     "async def approve(agent, call):": Setup(
-        replies=(Reply(tool_calls=[ToolCall(id="s1", name="Shell", args={"command": "echo hi"})], stop_reason="tool_use"),),
+        replies=(
+            Reply(
+                tool_calls=[ToolCall(id="s1", name="Shell", args={"command": "echo hi"})],
+                stop_reason="tool_use",
+            ),
+        ),
         replace={"/srv/tenants/acme/work": "work"},
     ),
 }
@@ -101,9 +121,14 @@ class Answering:
 
     def answer(self, qid: str, question: Question) -> Any:
         if isinstance(question, Choice):
-            chosen = self.intent if self.intent in question.options else next(iter(question.options))
+            chosen = (
+                self.intent if self.intent in question.options else next(iter(question.options))
+            )
             rest = (1.0 - 0.9) / (len(question.options) - 1)
-            return ChoiceAnswer(choice=chosen, probabilities={o: 0.9 if o == chosen else rest for o in question.options})
+            return ChoiceAnswer(
+                choice=chosen,
+                probabilities={o: 0.9 if o == chosen else rest for o in question.options},
+            )
         if isinstance(question, Score):
             rest = (1.0 - 0.9) / (len(question.levels) - 1)
             return ScoreAnswer(score=0, probabilities=[0.9, *[rest] * (len(question.levels) - 1)])
@@ -145,7 +170,10 @@ def tree(root: Path) -> None:
     write(root / "judge/AGENT.md", agent("judge", "decision"))
     write(root / "judge/questions/grounded.md", question("check"))
     write(root / "judge/questions/rule.md", question("check"))
-    write(root / "judge/questions/done.md", question("score", "levels: [Not addressed, Partly, Fully, Fully and confirmed]\n"))
+    write(
+        root / "judge/questions/done.md",
+        question("score", "levels: [Not addressed, Partly, Fully, Fully and confirmed]\n"),
+    )
 
 
 class InvoiceArgs(BaseModel):
@@ -183,22 +211,40 @@ async def context(tmp_path: Path, setup: Setup) -> dict[str, Any]:
     tree(root)
     (tmp_path / "work").mkdir()
     refinery = Refinery(InMemoryStorage())
-    recorded = Engine(root, generation=Model(), decision=Answering("billing"), tools=TOOLS, refinery=refinery)
+    recorded = Engine(
+        root, generation=Model(), decision=Answering("billing"), tools=TOOLS, refinery=refinery
+    )
     llm, dm = Model(*setup.replies), Answering(setup.intent)
     return {
         **{name: getattr(rfnry_engine, name) for name in rfnry_engine.__all__},
-        "Path": Path, "BaseModel": BaseModel, "asyncio": asyncio,
-        "root": root, "llm": llm, "dm": dm, "refinery": refinery,
+        "Path": Path,
+        "BaseModel": BaseModel,
+        "asyncio": asyncio,
+        "root": root,
+        "llm": llm,
+        "dm": dm,
+        "refinery": refinery,
         "engine": Engine(root, generation=llm, decision=dm, tools=TOOLS, refinery=refinery),
-        "tools": list(TOOLS), "InvoiceArgs": InvoiceArgs, "fetch_invoice": fetch_invoice, "invoices": Invoices(),
-        "lookup_order": lookup_order, "png": b"\x89PNG\r\n\x1a\n", "wav": b"RIFF",
-        "MemoryTools": memory_tools, "memory": object(),
-        "message": "My invoice was charged twice.", "text": "It is down", "history": [],
+        "tools": list(TOOLS),
+        "InvoiceArgs": InvoiceArgs,
+        "fetch_invoice": fetch_invoice,
+        "invoices": Invoices(),
+        "lookup_order": lookup_order,
+        "png": b"\x89PNG\r\n\x1a\n",
+        "wav": b"RIFF",
+        "MemoryTools": memory_tools,
+        "memory": object(),
+        "message": "My invoice was charged twice.",
+        "text": "It is down",
+        "history": [],
         "run": await recorded.run("support", "acme", "My invoice was charged twice."),
         "decision": await recorded.run("frontdesk", "acme", "It is down"),
         "last_watermark": None,
         "ask_a_person": ask_a_person,
-        "hashlib": hashlib, "checkout": lambda commit: shutil.copytree(root, tmp_path / "versions" / commit, dirs_exist_ok=True),
+        "hashlib": hashlib,
+        "checkout": lambda commit: shutil.copytree(
+            root, tmp_path / "versions" / commit, dirs_exist_ok=True
+        ),
     }
 
 
@@ -216,7 +262,9 @@ def test_every_named_block_is_in_the_docs() -> None:
     assert set(ILLUSTRATIVE) | set(SIGNATURES) | set(SETUPS) <= set(lines)
 
 
-@pytest.mark.parametrize("block", [b for b in PYTHON if first_line(b) in SIGNATURES], ids=first_line)
+@pytest.mark.parametrize(
+    "block", [b for b in PYTHON if first_line(b) in SIGNATURES], ids=first_line
+)
 def test_signature_blocks_match_the_code(block: str) -> None:
     documented = dict(re.findall(r"def (\w+)\(([^)]*)\)", block))
     classes = SIGNATURES[first_line(block)]
@@ -226,13 +274,16 @@ def test_signature_blocks_match_the_code(block: str) -> None:
             params = re.sub(r"\[[^\[\]]*\]", "", params)
         names = [p.split(":")[0].split("=")[0].strip() for p in params.split(",") if p.strip()]
         expected = [
-            ("*" if p.kind is p.VAR_POSITIONAL else "") + p.name for p in inspect.signature(real).parameters.values()
+            ("*" if p.kind is p.VAR_POSITIONAL else "") + p.name
+            for p in inspect.signature(real).parameters.values()
         ]
         assert names == expected, method
 
 
 @pytest.mark.parametrize("block", runnable())
-async def test_docs_example_runs(block: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_docs_example_runs(
+    block: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     setup = SETUPS.get(first_line(block), Setup())
     for old, new in setup.replace.items():

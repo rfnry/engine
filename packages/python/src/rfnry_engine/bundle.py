@@ -34,7 +34,13 @@ def build_bundle(
         ("TASK", _task(spec, task)),
         ("RULES", _read(spec.root / "rules" / "_index.md")),
         ("SKILLS", _read(spec.root / "skills" / "_index.md")),
-        ("TOOLS", "\n".join(f"- {t.name}: {t.description.splitlines()[0] if t.description else ''}" for t in tools)),
+        (
+            "TOOLS",
+            "\n".join(
+                f"- {t.name}: {t.description.splitlines()[0] if t.description else ''}"
+                for t in tools
+            ),
+        ),
         ("KNOWLEDGE", _read(spec.root / "knowledge" / "_index.md")),
         ("AGENTS", "\n".join(f"- {a.name}: {a.description}" for a in agents)),
         ("CONTEXT", (context or "").strip()),
