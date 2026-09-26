@@ -84,7 +84,9 @@ them is accepted as it is.
 
 Structured output is always a forced tool call, so an adapter needs nothing beyond tool support. An
 adapter that also implements `generate_stream(system, messages, tools, on_delta)` streams text when
-the caller asks for events.
+the caller asks for events. An adapter that has `media_types`, the file types its model takes —
+`{"image/*", "application/pdf"}` — lets `Load` refuse the rest with an error the model can act on,
+instead of the next model call failing; without it, `Load` hands the model any file.
 
 A decision model answers three kinds of question:
 
@@ -164,11 +166,12 @@ You are the support desk for Acme. Be brief, be exact, cite the rule you are app
 
 At boot the model receives `AGENT.md`, `INDEX.md`, the three `_index.md` files, the list of tools it
 has, the descriptions of the agents it may call, the task if one was named, and any context the
-caller passes. Everything else it reads when it needs it, with the `Read`, `Grep`, `Glob`, `LS` and
-`Skill` tools, and it can read only inside its own directory. `Read` returns a text file as text
-and an image (PNG, JPEG, GIF, WebP) or a PDF as a part, which the model sees as it is — a price
-list, a diagram, a scanned form sits in `knowledge/` as it came, with no parser in between and
-nothing loaded until the model asks. Write the maps with full paths —
+caller passes. Everything else it reads when it needs it, with the `Read`, `Grep`, `Glob`, `LS`,
+`Skill` and `Load` tools, and it can read only inside its own directory. `Read` returns a text file
+as text. `Load` hands the model any other file as it is — an image, a PDF, a recording, a
+spreadsheet — so a price list, a diagram or a scanned form sits in `knowledge/` as it came, the
+model reads it with its own understanding of images and documents, there is no parser in between,
+and nothing is loaded until the model asks. Write the maps with full paths —
 `rules/refunds.md`, not `refunds.md` — because a model opens exactly what the map names.
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its
 `kind`, `description` and the `agents` it may call.
@@ -436,7 +439,8 @@ run = await engine.run("coder", scope="acme", input="make the failing test pass"
 The agent then has three more tools. `Shell(command)` runs a command and returns `exit_code`,
 `stdout`, `stderr` and `timed_out`. `Write(path, content)` writes a file exactly, and
 `Edit(path, old, new)` replaces one exact occurrence — helpers that send only what changes and leave
-a clean step in the record; the shell can do both too. Each command starts fresh in the directory,
+a clean step in the record; the shell can do both too. `Load` takes `where="workspace"` to hand
+the model a file from the directory, so an agent looks at the chart it just plotted. Each command starts fresh in the directory,
 so a `cd` or a variable does not carry over, and the tool's description tells the model so, along
 with its shell and its limits.
 
@@ -667,7 +671,7 @@ class Tools:
     def without(self, *names) -> Tools
 ```
 
-An agent's tools are declared in its directory. `Read Grep Glob LS Skill` come with every generation agent,
+An agent's tools are declared in its directory. `Read Grep Glob LS Skill Load` come with every generation agent,
 `Delegate` comes with `agents:`; everything else is a file under `tools/`:
 
 ```markdown
@@ -689,7 +693,7 @@ The first declares the contract the model sees and leaves the body to code. The 
 code tool as it is — description and schema included. Bodies and code tools go on the engine, one
 list for the whole tree. A body returns a string, a dict (the model reads it as JSON) or a list of
 parts, which reach the model as the tool result — a PDF the model reads itself, an image it looks
-at. `Read` already does that for files in the agent's directory; a tool does it for what lives
+at. `Load` already does that for files in the agent's directory; a tool does it for what lives
 elsewhere, such as your own store:
 
 ```python
@@ -719,13 +723,16 @@ put its own limit on that work: cancelling the await does not stop the thread. A
 `Shell`, `Write` and `Edit` keep the workspace's own `timeout` instead. `Delegate` has no
 deadline. The child run it starts is bounded by its own tool calls and `max_steps`.
 
-The builtins are bounded whatever the deadline. `Read` returns UTF-8 text, images and PDFs — a
-file is an image or a PDF when both its extension and its first bytes say so — and refuses any
-other binary file; `offset` and `limit` select lines, so on an image or a PDF they are an
-`InputError`. `Grep` searches text only and skips the rest; `Glob` and `LS` list every file. Neither
-`Read` nor `Grep` reads a file over 5 MB, text or media. `Grep` stops after scanning 50 MB and
+The builtins are bounded whatever the deadline. `Read` returns UTF-8 text and refuses anything else
+with a pointer to `Load`; `offset` and `limit` select lines. `Load` takes any file up to 20 MB and
+hands it over as an image, audio or a document part, whichever its type says. The type comes from
+the file's name, and for PNG, JPEG, GIF, WebP and PDF the first bytes must agree — a `.png` that is
+not one is refused rather than sent — while a file with no known name is typed by its bytes or sent
+as `application/octet-stream`. What the model can take is the adapter's `media_types`, and past
+that the vendor's. `Grep` searches text only and skips the rest; `Glob` and `LS` list every file.
+Neither `Read` nor `Grep` reads a file over 5 MB. `Grep` stops after scanning 50 MB and
 notes the cut. A search that runs past 10 s in one call is an `InputError` the model can act on. `Glob` and
-`Grep` walk at most 100,000 entries. For other formats, declare a tool. A tool that reads the
+`Grep` walk at most 100,000 entries. A tool that reads the
 agent's directory itself resolves paths with `Jail`, which refuses one that leaves the directory,
 as the builtins do.
 

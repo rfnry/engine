@@ -61,6 +61,7 @@ async def test_plain_reply_is_the_record(fixtures: Path) -> None:
         "Glob",
         "LS",
         "Skill",
+        "Load",
     ]
 
 
@@ -469,7 +470,7 @@ async def test_a_list_of_values_is_still_json_state(fixtures: Path) -> None:
     assert llm.calls[0][1][-1] == Message(role="user", content='[1, "two"]')
 
 
-async def test_read_hands_the_model_an_image_and_a_pdf_from_its_folder(
+async def test_load_hands_the_model_an_image_and_a_pdf_from_its_folder(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tmp_path / "agents"
@@ -480,8 +481,8 @@ async def test_read_hands_the_model_an_image_and_a_pdf_from_its_folder(
     (root / "billing" / "knowledge" / "rates.pdf").write_bytes(pdf)
     llm = Scripted(
         _tool_use(
-            ToolCall(id="i", name="Read", args={"path": "knowledge/diagram.png"}),
-            ToolCall(id="d", name="Read", args={"path": "knowledge/rates.pdf"}),
+            ToolCall(id="i", name="Load", args={"path": "knowledge/diagram.png"}),
+            ToolCall(id="d", name="Load", args={"path": "knowledge/rates.pdf"}),
         ),
         text_reply("Express is $25."),
     )
@@ -495,4 +496,26 @@ async def test_read_hands_the_model_an_image_and_a_pdf_from_its_folder(
     ]
     assert [s.result for s in run.steps] == [image, document] and not any(
         s.is_error for s in run.steps
+    )
+
+
+class PicturesOnly(Scripted):
+    media_types = {"image/*"}
+
+
+async def test_the_model_adapter_says_which_files_load_may_hand_it(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tmp_path / "agents"
+    shutil.copytree(fixtures, root)
+    (root / "billing" / "knowledge").mkdir()
+    (root / "billing" / "knowledge" / "rates.pdf").write_bytes(b"%PDF-1.7 rates")
+    llm = PicturesOnly(
+        _tool_use(ToolCall(id="d", name="Load", args={"path": "knowledge/rates.pdf"})),
+        text_reply("I cannot open that file."),
+    )
+    run = await engine_for(root, llm).run("billing", "acme", "What does express cost?")
+    assert isinstance(run, Generation) and run.steps[0].is_error
+    assert run.steps[0].result == (
+        "InputError: builtins: the model does not take application/pdf files: knowledge/rates.pdf"
     )

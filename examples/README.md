@@ -19,7 +19,7 @@ vendor's blocks, in user turns and in tool results alike.
 | `decision_alone` | a decision agent with no generation model: a choice, a score and a check, each with written criteria |
 | `decision_routes_to_llm` | a decision agent routing to generation agents with `min_confidence`; `routed_to` |
 | `nested_agents` | an agent delegating to a generation agent and a decision agent; `Delegate` steps and `children` |
-| `agent_knows_its_folder` | a support desk with a policy rule set, a flat skill and a folder skill, a task, a declared tool and an adopted one — `Read` hands the model a PDF price list and a PNG locker map from `knowledge/` as they are, a `Document` and an `Image` |
+| `agent_knows_its_folder` | a support desk with a policy rule set, a flat skill and a folder skill, a task, a declared tool and an adopted one — `Load` hands the model a PDF price list and a PNG locker map from `knowledge/` as they are, a `Document` and an `Image`, with no parser in between |
 | `structured_and_streaming` | `on_event=` printing text as it streams; `expect=` a pydantic model |
 | `multi_tenancy` | two tenants on one tree: `context=`, per-tenant `run(tools=)`, rows per scope, `delete_scope` |
 | `customer_support_refining` | runs tagged with an experiment arm (`tags=`, carried by every exported row), review, outcome, a judge with `yes`/`no` criteria and a teacher, conflicts, export of the three datasets as JSONL files into `datasets/` — one real row of each in [`datasets/sample/`](customer_support_refining/datasets/sample/) — then a few lines each turning them into TRL `messages`+`tools` (SFT) and `prompt`/`chosen`/`rejected` (DPO), loaded back with Hugging Face `datasets`, and an OpenAI-style chat fine-tuning JSONL |
@@ -42,7 +42,7 @@ vendor's blocks, in user turns and in tool results alike.
 | `tasks/<name>.md`, chosen with `run(task=)` | `agent_knows_its_folder` |
 | `tools/<name>.md` — a contract with `input:`, or a name-only adoption of a code tool | `agent_knows_its_folder`, `tool_timeout` |
 | `knowledge/_index.md` at boot; any other file (`.csv`, `.txt`, `notes/`) read with `Read` and `Grep` | `same_agent_two_vendors`, `tools_without_a_model` |
-| `knowledge/*.pdf` and `knowledge/*.png` — `Read` returns them as parts the model sees natively | `agent_knows_its_folder` |
+| `knowledge/*.pdf` and `knowledge/*.png` — `Load` hands them over as parts the model reads natively; the example's `AnthropicProvider` declares the `media_types` it takes | `agent_knows_its_folder` |
 | `questions/*.md` — `choice` with `options:`, `score` with `levels:`, `check` with `yes:`/`no:` | `decision_alone`, `customer_support_refining`, `decision_vs_generation` |
 | `route:` with `min_confidence` | `decision_routes_to_llm` |
 | `agents:` — delegation through `Delegate` | `nested_agents` |

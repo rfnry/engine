@@ -9,7 +9,7 @@ import pytest
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError
-from rfnry_engine.models import ChoiceAnswer, Reply, ToolCall
+from rfnry_engine.models import ChoiceAnswer, Image, Reply, ToolCall
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
@@ -224,3 +224,21 @@ async def test_engine_tools_carry_the_workspace(tmp_path: Path, work: Workspace)
     tools = EngineTools(engine, agent="coder", scope="acme", workspace=work)
     result = await tools.dispatch("Shell", {"command": "echo via-dispatch"})
     assert isinstance(result, dict) and result["stdout"] == "via-dispatch\n"
+
+
+async def test_an_agent_loads_the_chart_it_made_in_its_workspace(
+    tmp_path: Path, work: Workspace
+) -> None:
+    png = b"\x89PNG\r\n\x1a\nchart"
+    (work.root / "chart.png").write_bytes(png)
+    llm = Scripted(
+        use(ToolCall(id="1", name="Load", args={"path": "chart.png", "where": "workspace"})),
+        text_reply("the line goes up"),
+    )
+    engine = Engine(make_tree(tmp_path), generation=llm)
+    run = await engine.run("coder", "acme", "x", workspace=work)
+    assert isinstance(run, Generation) and run.steps[0].result == [
+        Image(media_type="image/png", data=png)
+    ]
+    [load] = [t for t in llm.calls[0][2] if t.name == "Load"]
+    assert load.input_schema["properties"]["where"]["enum"] == ["folder", "workspace"]

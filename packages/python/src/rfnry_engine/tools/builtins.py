@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 import time
+from collections.abc import Collection
+from fnmatch import fnmatch
 from itertools import islice
 from pathlib import Path
 from typing import Any, Literal
@@ -12,22 +15,31 @@ from pydantic import BaseModel, Field
 from rfnry_engine.errors import InputError
 from rfnry_engine.frontmatter import strip_frontmatter
 from rfnry_engine.jail import Jail
-from rfnry_engine.models import Document, Image, Part
+from rfnry_engine.models import Audio, Document, Image, Part
 from rfnry_engine.tools.tools import Result, Tool
 
 _MAX_BYTES = 5 * 1024 * 1024
+_LOAD_BYTES = 20 * 1024 * 1024
 _MAX_WALK = 100_000
 _HEAD_LIMIT = 250
 _GREP_BYTES = 50 * 1024 * 1024
 _GREP_SECONDS = 10.0
 _SNIFF = 8192
-_MEDIA_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"}
 
 
 class ReadArgs(BaseModel):
     path: str
     offset: int = Field(default=0, ge=0)
     limit: int | None = Field(default=None, ge=1)
+
+
+class LoadArgs(BaseModel):
+    path: str
+
+
+class LoadAnywhereArgs(BaseModel):
+    path: str
+    where: Literal["folder", "workspace"] = "folder"
 
 
 class GrepArgs(BaseModel):
@@ -60,20 +72,36 @@ def _text(path: Path) -> str | None:
     return _decoded(path.read_bytes())
 
 
-def _media_type(path: Path, data: bytes) -> str | None:
-    if path.suffix.lower() not in _MEDIA_SUFFIXES:
-        return None
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if data.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
+_SIGNATURES = {
+    "image/png": (b"\x89PNG\r\n\x1a\n",),
+    "image/jpeg": (b"\xff\xd8\xff",),
+    "image/gif": (b"GIF87a", b"GIF89a"),
+    "application/pdf": (b"%PDF-",),
+}
+
+
+def _signed(data: bytes) -> str | None:
     if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
         return "image/webp"
-    if data.startswith(b"%PDF-"):
-        return "application/pdf"
-    return None
+    return next((kind for kind, marks in _SIGNATURES.items() if data.startswith(marks)), None)
+
+
+def _media_type(path: Path, data: bytes) -> str:
+    named = mimetypes.guess_type(path.name)[0]
+    signed = _signed(data)
+    if named is None:
+        return signed or "application/octet-stream"
+    if (named in _SIGNATURES or named == "image/webp") and signed != named:
+        raise InputError(f"builtins: {path.name} is not the {named} its name says")
+    return named
+
+
+def _part(path: Path, data: bytes, media_type: str) -> Part:
+    if media_type.startswith("image/"):
+        return Image(media_type=media_type, data=data)
+    if media_type.startswith("audio/"):
+        return Audio(media_type=media_type, data=data)
+    return Document(media_type=media_type, name=path.name, data=data)
 
 
 def _decoded(data: bytes) -> str | None:
@@ -104,23 +132,10 @@ class _Directory:
             raise InputError(f"builtins: not a file: {a.path}")
         if target.stat().st_size > _MAX_BYTES:
             raise InputError(f"builtins: file exceeds {_MAX_BYTES} bytes: {a.path}")
-        data = target.read_bytes()
-        media_type = _media_type(target, data)
-        if media_type is not None:
-            part: Part
-            if media_type == "application/pdf":
-                part, kind = Document(media_type=media_type, name=target.name, data=data), "a PDF"
-            else:
-                part, kind = Image(media_type=media_type, data=data), "an image"
-            if a.offset or a.limit is not None:
-                raise InputError(
-                    f"builtins: offset and limit select lines of a text file; {a.path} is {kind}"
-                )
-            return [part]
-        text = _decoded(data)
+        text = _decoded(target.read_bytes())
         if text is None:
             raise InputError(
-                f"builtins: binary file: {a.path}; Read returns UTF-8 text, images (PNG, JPEG, GIF, WebP) and PDFs"
+                f"builtins: {a.path} is not a text file; Load gives you the file itself"
             )
         if a.offset or a.limit is not None:
             lines = text.splitlines()
@@ -248,7 +263,7 @@ def builtins(root: Path) -> list[Tool]:
     return [
         Tool(
             "Read",
-            "Read a file in the agent directory: text, images (PNG, JPEG, GIF, WebP) and PDFs, which you see as they are. Optional offset/limit select lines of a text file.",
+            "Read a text file in the agent directory. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.",
             body=threaded(directory.read),
             args=ReadArgs,
         ),
@@ -277,3 +292,43 @@ def builtins(root: Path) -> list[Tool]:
             args=SkillArgs,
         ),
     ]
+
+
+def load_tool(
+    folder: Path, workspace: Path | None = None, media_types: Collection[str] | None = None
+) -> Tool:
+    places = {"folder": Jail(folder)}
+    if workspace is not None:
+        places["workspace"] = Jail(workspace)
+
+    def load(args: dict[str, Any]) -> list[Part]:
+        a = LoadAnywhereArgs.model_validate(args)
+        target = places[a.where].resolve(a.path)
+        if not target.is_file():
+            raise InputError(f"builtins: not a file: {a.path}")
+        if target.stat().st_size > _LOAD_BYTES:
+            raise InputError(f"builtins: file exceeds {_LOAD_BYTES} bytes: {a.path}")
+        data = target.read_bytes()
+        media_type = _media_type(target, data)
+        if media_types is not None and not any(fnmatch(media_type, t) for t in media_types):
+            raise InputError(f"builtins: the model does not take {media_type} files: {a.path}")
+        return [_part(target, data, media_type)]
+
+    async def body(args: dict[str, Any]) -> Result:
+        parts: list[Part] = await asyncio.to_thread(load, args)
+        return parts
+
+    if workspace is None:
+        return Tool(
+            "Load",
+            "Load a file from the agent directory as it is, such as an image, a PDF or audio, so you see or hear it yourself.",
+            body=body,
+            args=LoadArgs,
+        )
+    return Tool(
+        "Load",
+        "Load a file as it is, such as an image, a PDF or audio, so you see or hear it yourself. "
+        "where is 'folder' for the agent directory or 'workspace' for your workspace.",
+        body=body,
+        args=LoadAnywhereArgs,
+    )

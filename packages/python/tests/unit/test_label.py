@@ -253,7 +253,7 @@ async def test_the_judge_sees_media_as_placeholders_never_base64(fixtures: Path)
     assert row.body["steps"][0]["result"][1]["name"] == "policy.pdf"
 
 
-async def test_the_judge_sees_media_read_from_the_folder_as_placeholders(
+async def test_the_judge_sees_media_loaded_from_the_folder_as_placeholders(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tmp_path / "agents"
@@ -265,8 +265,8 @@ async def test_the_judge_sees_media_read_from_the_folder_as_placeholders(
     refinery = Refinery(InMemoryStorage())
     dm = Fixed(JUDGEMENT)
     reads = [
-        ToolCall(id="i", name="Read", args={"path": "knowledge/diagram.png"}),
-        ToolCall(id="d", name="Read", args={"path": "knowledge/rates.pdf"}),
+        ToolCall(id="i", name="Load", args={"path": "knowledge/diagram.png"}),
+        ToolCall(id="d", name="Load", args={"path": "knowledge/rates.pdf"}),
     ]
     llm = Scripted(Reply(tool_calls=reads, stop_reason="tool_use"), text_reply("Express is $25."))
     engine = Engine(root, generation=llm, decision=dm, refinery=refinery, tools=TOOLS)
@@ -276,12 +276,12 @@ async def test_the_judge_sees_media_read_from_the_folder_as_placeholders(
     state = dm.calls[0][0]
     assert isinstance(state, dict) and state["steps"] == [
         {
-            "tool": "Read",
+            "tool": "Load",
             "args": {"path": "knowledge/diagram.png"},
             "result": ["[image: image/png]"],
         },
         {
-            "tool": "Read",
+            "tool": "Load",
             "args": {"path": "knowledge/rates.pdf"},
             "result": ['[document: application/pdf, "rates.pdf"]'],
         },
