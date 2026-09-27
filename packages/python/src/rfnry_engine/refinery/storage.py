@@ -14,6 +14,7 @@ class RunRow(BaseModel):
     kind: str
     task: str | None
     at: datetime
+    recorded: datetime
     duration_ms: int
     model: str | None
     body: dict[str, Any]

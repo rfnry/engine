@@ -1,9 +1,18 @@
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
-from unit.fakes import TOOLS, Desk, Scripted, delegate_triage, text_reply
+from unit.fakes import (
+    TOOLS,
+    Desk,
+    MemoryBucket,
+    Scripted,
+    delegate_triage,
+    generation_record,
+    text_reply,
+)
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import NotFoundError, StorageError
@@ -36,8 +45,10 @@ def _run(
     agent: str = "support",
     kind: str = "generation",
     at: datetime | None = None,
+    recorded: datetime | None = None,
     parent: str | None = None,
 ) -> RunRow:
+    at = at or datetime.now(UTC)
     return RunRow(
         scope=scope,
         run_id=run_id,
@@ -45,7 +56,8 @@ def _run(
         agent=agent,
         kind=kind,
         task=None,
-        at=at or datetime.now(UTC),
+        at=at,
+        recorded=recorded or at,
         duration_ms=1,
         model="m",
         body={"reply": run_id, "nested": {"n": [1, 2]}},
@@ -94,6 +106,33 @@ async def test_runs_filters_order_and_limit(storage: Storage) -> None:
         "mid",
         "old",
     ]
+
+
+async def test_runs_since_selects_what_was_recorded_after_it(storage: Storage) -> None:
+    t0 = datetime.now(UTC)
+    await storage.put_run(
+        "a", _run("a", "long", at=t0 - timedelta(minutes=5), recorded=t0 + timedelta(seconds=1))
+    )
+    await storage.put_run("a", _run("a", "quick", at=t0, recorded=t0))
+    assert [r.run_id for r in await storage.runs("a", since=t0)] == ["long"]
+    got = await storage.get_run("a", "long")
+    assert got is not None and got.recorded == t0 + timedelta(seconds=1)
+    assert got.at == t0 - timedelta(minutes=5)
+
+
+async def test_an_export_finds_a_run_recorded_after_its_watermark(storage: Storage) -> None:
+    refinery = Refinery(storage)
+    long, quick = generation_record(scope="a"), generation_record(scope="a")
+    await refinery.record(quick)
+    first = await refinery.export("a", MemoryBucket())
+    await refinery.record(long)
+    assert first.watermark is not None and long.at < first.watermark
+    bucket = MemoryBucket()
+    second = await refinery.export("a", bucket, since=first.watermark)
+    assert second.rows == {"generation": 1}
+    [data] = bucket.objects.values()
+    assert [json.loads(line)["run_id"] for line in data.decode().splitlines()] == [long.run_id]
+    assert (await refinery.export("a", MemoryBucket(), since=second.watermark)).rows == {}
 
 
 async def test_labels_filters_and_order(storage: Storage) -> None:
@@ -194,6 +233,7 @@ async def test_a_body_with_parts_round_trips(storage: Storage) -> None:
             kind="generation",
             task=None,
             at=datetime.now(UTC),
+            recorded=datetime.now(UTC),
             duration_ms=1,
             model="m",
             body=body,

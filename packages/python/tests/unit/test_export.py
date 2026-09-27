@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 from datetime import UTC, datetime, timedelta
@@ -12,8 +13,17 @@ from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Outcome, Review
 from rfnry_engine.refinery.refinery import Refinery, flatten
 from rfnry_engine.refinery.storage import RunRow
+from rfnry_engine.tools.tools import Tool
 
-from .fakes import TOOLS, MemoryBucket, Scripted, decision_record, generation_record, text_reply
+from .fakes import (
+    TOOLS,
+    MemoryBucket,
+    Scripted,
+    decision_record,
+    generation_record,
+    lookup_order,
+    text_reply,
+)
 
 
 def test_holdout_is_derived_deterministic_and_roughly_twenty_percent() -> None:
@@ -47,7 +57,10 @@ async def test_export_writes_three_datasets_with_labels_and_holdout() -> None:
     exported = await refinery.export("acme", bucket)
     assert exported.rows == {"generation": 1, "preference": 1, "decision": 1}
     labels = await refinery.storage.labels("acme")
-    assert exported.watermark == max([generation.at, decision.at, *(label.at for label in labels)])
+    runs = await refinery.storage.runs("acme")
+    assert exported.watermark == max(
+        [*(run.recorded for run in runs), *(label.at for label in labels)]
+    )
     keys = sorted(bucket.objects)
     assert [k.split("/")[:3] for k in keys] == [
         ["acme", "frontdesk", "decision"],
@@ -104,6 +117,41 @@ async def test_export_since_the_watermark_is_incremental() -> None:
         second.rows["generation"] == 1
         and _lines(next(iter(bucket.objects.values())))[0]["run_id"] == later.run_id
     )
+    assert (await refinery.export("acme", MemoryBucket(), since=second.watermark)).rows == {}
+
+
+async def test_a_run_still_working_at_an_export_is_in_the_next_one(fixtures: Path) -> None:
+    started, gate = asyncio.Event(), asyncio.Event()
+
+    async def slow(args: dict[str, Any]) -> str:
+        started.set()
+        await gate.wait()
+        return "2026-09-22T00:00:00Z"
+
+    class Model:
+        async def generate(self, system: str, messages: list[Message], tools: list[Any]) -> Reply:
+            if messages[-1].content == "long":
+                return Reply(tool_calls=[ToolCall(id="c1", name="now")], stop_reason="tool_use")
+            return text_reply("answer")
+
+    refinery = Refinery(InMemoryStorage())
+    engine = Engine(
+        fixtures,
+        generation=Model(),
+        tools=[Tool("lookup_order", body=lookup_order), Tool("now", "The time", body=slow)],
+        refinery=refinery,
+    )
+    long = asyncio.create_task(engine.run("support", "acme", "long"))
+    await started.wait()
+    await engine.run("support", "acme", "quick")
+    first = await refinery.export("acme", MemoryBucket())
+    gate.set()
+    late = await long
+    assert first.watermark is not None and late.at < first.watermark
+    bucket = MemoryBucket()
+    second = await refinery.export("acme", bucket, since=first.watermark)
+    assert second.rows == {"generation": 1}
+    assert [row["run_id"] for row in _lines(next(iter(bucket.objects.values())))] == [late.run_id]
     assert (await refinery.export("acme", MemoryBucket(), since=second.watermark)).rows == {}
 
 
@@ -181,7 +229,9 @@ async def test_export_reads_every_run_without_a_cap() -> None:
     runs = await storage.runs("acme", limit=None)
     assert len(runs) == 3 and len(await storage.runs("acme", limit=100_000)) == 2
     exported = await refinery.export("acme", MemoryBucket())
-    assert exported.rows == {"generation": 3} and exported.watermark == max(r.at for r in runs)
+    assert exported.rows == {"generation": 3} and exported.watermark == max(
+        r.recorded for r in runs
+    )
 
 
 async def test_a_run_with_parts_is_recorded_and_exported_with_its_bytes_as_base64() -> None:
@@ -305,7 +355,7 @@ async def test_a_run_stored_before_tools_were_recorded_still_loads_and_exports()
     storage = InMemoryStorage()
     refinery = Refinery(storage)
     run = generation_record()
-    [stored] = flatten(run)
+    [stored] = flatten(run, datetime.now(UTC))
     old = {key: value for key, value in stored.body.items() if key != "tools"}
     await storage.put_run("acme", stored.model_copy(update={"body": old}))
     assert Generation.model_validate(old).tools == []

@@ -60,6 +60,7 @@ async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
             kind="generation",
             task=None,
             at=run.at,
+            recorded=run.at,
             duration_ms=0,
             model=None,
             body={},
@@ -105,7 +106,7 @@ async def test_nothing_of_one_customer_survives_its_erasure(storage: Storage) ->
     assert any(b"plain-82" in data for data in bucket.objects.values())
     with pytest.raises(NotFoundError):
         await refinery.review("desk", gone.run_id, Review(stance="approval"))
-    stray = next(row for row in flatten(gone) if row.run_id == gone.routed_to.run_id)
+    stray = next(row for row in flatten(gone, gone.at) if row.run_id == gone.routed_to.run_id)
     await storage.put_run("desk", stray)
     assert not await refinery.verify_absent("desk", run_ids=[gone.run_id])
     assert not await refinery.verify_absent("desk", tags={"customer": "c-81"})

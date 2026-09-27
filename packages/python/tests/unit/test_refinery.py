@@ -37,6 +37,7 @@ async def test_record_flattens_children_into_rows() -> None:
         parent.run_id: None,
         child.run_id: parent.run_id,
     }
+    assert len({r.recorded for r in rows}) == 1 and rows[0].recorded >= parent.at
     stored = await storage.get_run("acme", parent.run_id)
     assert stored is not None and stored.body["children"] == [] and stored.kind == "generation"
 

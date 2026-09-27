@@ -642,10 +642,11 @@ exported.keys, exported.rows, exported.watermark
 ```
 
 Keys are `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, so repeated exports add
-files and never overwrite. `since` selects every run that is new or got a label after it, written in full
-with all its labels; the watermark covers both, so a review of a run you already exported reaches the
-next export. Rows are keyed by `run_id`: when a run appears again, its latest row supersedes the
-earlier ones — dedupe by `run_id`, keep the latest.
+files and never overwrite. `since` selects every run recorded or labeled after it, written in full
+with all its labels. A run is recorded when it ends, so a long run still working at one export is in
+the next, whenever it started; the watermark covers both, so a review of a run you already exported
+reaches the next export. Rows are keyed by `run_id`: when a run appears again, its latest row
+supersedes the earlier ones — dedupe by `run_id`, keep the latest.
 
 Every row carries `"holdout": true|false` — the rows kept aside so any measurement on them is
 honest. It is derived from a hash of the run id (`holdout_percent=20` by default), so a run's flag
@@ -840,7 +841,9 @@ through it is still refused.
 The refinery is the only part of the library that stores anything. Two storages ship: `InMemoryStorage()`
 for tests and small things, `PostgresStorage(pool)` for everything else, taking an asyncpg pool you
 built. `initialize()` creates two tables, `engine_runs` and `engine_labels`, and is safe to run
-again. The tables are prefixed so the same database can hold rfnry-memory's:
+again. A run's row keeps `at`, when the run started, and `recorded`, when the refinery stored it —
+one stamp for a run and every child run under it — and `runs(since=)` reads `recorded`. The tables
+are prefixed so the same database can hold rfnry-memory's:
 
 ```python
 pool = await asyncpg.create_pool(dsn)

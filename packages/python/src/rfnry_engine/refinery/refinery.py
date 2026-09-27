@@ -27,7 +27,7 @@ from rfnry_engine.refinery.labels import Conflict, Exported, Label, Labeled, Out
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 
 
-def flatten(run: Run) -> list[RunRow]:
+def flatten(run: Run, recorded: datetime) -> list[RunRow]:
     body = run.model_dump(mode="json")
     children: list[Run] = []
     if isinstance(run, Generation):
@@ -44,13 +44,14 @@ def flatten(run: Run) -> list[RunRow]:
         kind=run.kind,
         task=run.task if isinstance(run, Generation) else None,
         at=run.at,
+        recorded=recorded,
         duration_ms=run.duration_ms,
         model=run.model,
         body=body,
     )
     rows = [row]
     for child in children:
-        rows.extend(flatten(child))
+        rows.extend(flatten(child, recorded))
     return rows
 
 
@@ -91,7 +92,7 @@ class Refinery:
         await self.storage.initialize()
 
     async def record(self, run: Run) -> None:
-        for row in flatten(run):
+        for row in flatten(run, datetime.now(UTC)):
             await self.storage.put_run(row.scope, row)
 
     async def run(self, scope: str, run_id: str) -> Run:
@@ -177,7 +178,7 @@ class Refinery:
         if not runs:
             return Exported(keys=[], rows={}, watermark=since)
         labels: dict[str, list[Label]] = {}
-        stamps = [run.at for run in runs]
+        stamps = [run.recorded for run in runs]
         for row in await self.storage.labels(scope, run_ids=[r.run_id for r in runs]):
             labels.setdefault(row.run_id, []).append(label_of(row))
             stamps.append(row.at)

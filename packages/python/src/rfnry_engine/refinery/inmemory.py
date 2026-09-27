@@ -51,7 +51,7 @@ class InMemoryStorage:
             if s == scope
             and (wanted is None or row.run_id in wanted)
             and (kind is None or row.kind == kind)
-            and (since is None or row.at > since)
+            and (since is None or row.recorded > since)
             and row.run_id not in labeled
         ]
         rows.sort(key=lambda r: (r.at, r.run_id), reverse=True)

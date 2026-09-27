@@ -14,11 +14,12 @@ _DDL = [
     CREATE TABLE IF NOT EXISTS engine_runs (
         scope TEXT NOT NULL, run_id TEXT NOT NULL, parent_run_id TEXT NULL,
         agent TEXT NOT NULL, kind TEXT NOT NULL, task TEXT NULL,
-        at TIMESTAMPTZ NOT NULL, duration_ms INTEGER NOT NULL, model TEXT NULL,
-        body JSON NOT NULL,
+        at TIMESTAMPTZ NOT NULL, recorded TIMESTAMPTZ NOT NULL,
+        duration_ms INTEGER NOT NULL, model TEXT NULL, body JSON NOT NULL,
         PRIMARY KEY (scope, run_id))
     """,
     "CREATE INDEX IF NOT EXISTS ix_engine_runs_scope_at ON engine_runs (scope, at)",
+    "CREATE INDEX IF NOT EXISTS ix_engine_runs_scope_recorded ON engine_runs (scope, recorded)",
     """
     CREATE TABLE IF NOT EXISTS engine_labels (
         scope TEXT NOT NULL, label_id TEXT NOT NULL, run_id TEXT NOT NULL,
@@ -28,7 +29,9 @@ _DDL = [
     "CREATE INDEX IF NOT EXISTS ix_engine_labels_scope_run ON engine_labels (scope, run_id)",
 ]
 
-_RUN_COLUMNS = "scope, run_id, parent_run_id, agent, kind, task, at, duration_ms, model, body"
+_RUN_COLUMNS = (
+    "scope, run_id, parent_run_id, agent, kind, task, at, recorded, duration_ms, model, body"
+)
 _LABEL_COLUMNS = "scope, label_id, run_id, source, at, body"
 
 
@@ -45,6 +48,7 @@ def _run(record: Any) -> RunRow:
         kind=record["kind"],
         task=record["task"],
         at=record["at"],
+        recorded=record["recorded"],
         duration_ms=record["duration_ms"],
         model=record["model"],
         body=_json(record["body"]),
@@ -117,10 +121,10 @@ class PostgresStorage:
             raise StorageError("postgres: row scope does not match the call scope")
         async with self._guard("put_run"), self._pool.acquire() as conn:
             await conn.execute(
-                f"INSERT INTO engine_runs ({_RUN_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::json) "
+                f"INSERT INTO engine_runs ({_RUN_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::json) "
                 "ON CONFLICT (scope, run_id) DO UPDATE SET parent_run_id = EXCLUDED.parent_run_id, agent = EXCLUDED.agent, "
-                "kind = EXCLUDED.kind, task = EXCLUDED.task, at = EXCLUDED.at, duration_ms = EXCLUDED.duration_ms, "
-                "model = EXCLUDED.model, body = EXCLUDED.body",
+                "kind = EXCLUDED.kind, task = EXCLUDED.task, at = EXCLUDED.at, recorded = EXCLUDED.recorded, "
+                "duration_ms = EXCLUDED.duration_ms, model = EXCLUDED.model, body = EXCLUDED.body",
                 row.scope,
                 row.run_id,
                 row.parent_run_id,
@@ -128,6 +132,7 @@ class PostgresStorage:
                 row.kind,
                 row.task,
                 row.at,
+                row.recorded,
                 row.duration_ms,
                 row.model,
                 json.dumps(row.body),
@@ -162,7 +167,7 @@ class PostgresStorage:
             conditions.append(f"r.kind = ${len(params)}")
         if since is not None:
             params.append(since)
-            conditions.append(f"r.at > ${len(params)}")
+            conditions.append(f"r.recorded > ${len(params)}")
         if unlabeled_by is not None:
             params.append(unlabeled_by)
             conditions.append(
