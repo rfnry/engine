@@ -1,4 +1,5 @@
 import base64
+import math
 
 import pytest
 from pydantic import ValidationError
@@ -64,6 +65,24 @@ def test_settle_rejects_contract_violations() -> None:
         settle(q, {"intent": ChoiceAnswer(choice="a", probabilities={"a": 0.9, "b": 0.9})})
     with pytest.raises(ModelError):
         settle(q, {"intent": CheckAnswer(probability=0.5)})
+
+
+def test_settle_refuses_probabilities_outside_zero_and_one() -> None:
+    q: dict[str, Question] = {
+        "pick": Choice(instructions="Which?", options={"a": "A", "b": "B"}),
+        "level": Score(instructions="How bad?", levels=["low", "high"]),
+    }
+    level = ScoreAnswer(score=0, probabilities=[0.5, 0.5])
+    pick = ChoiceAnswer(choice="a", probabilities={"a": 0.5, "b": 0.5})
+    wrong: list[dict[str, Answer]] = [
+        {"pick": ChoiceAnswer(choice="a", probabilities={"a": 1.5, "b": -0.5}), "level": level},
+        {"pick": ChoiceAnswer(choice="a", probabilities={"a": math.nan, "b": 0.5}), "level": level},
+        {"pick": pick, "level": ScoreAnswer(score=0, probabilities=[math.inf, -math.inf])},
+        {"pick": pick, "level": ScoreAnswer(score=0, probabilities=[math.nan, math.nan])},
+    ]
+    for answers in wrong:
+        with pytest.raises(ModelError, match="^models: probabilities for '(pick|level)' must lie"):
+            settle(q, answers)
 
 
 def test_questions_need_two_options_or_levels() -> None:
