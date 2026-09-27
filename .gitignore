@@ -3,9 +3,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
 dist/
 .env*
 examples/**/uv.lock
 examples/**/datasets/*
 !examples/**/datasets/sample/
-.coverage

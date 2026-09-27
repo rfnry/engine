@@ -3,6 +3,7 @@ name = "rfnry-engine"
 version = "0.1.0"
 description = "Markdown agents on generation and decision models, with a refinery that turns runs into datasets"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
 authors = [{name = "rfnry", email = "contact@rfnry.dev"}]
 dependencies = [
