@@ -187,7 +187,7 @@ runs. It is the whole observability payload; hand it to your own telemetry:
 run.run_id, run.model, run.calls, run.usage.input, run.usage.output, run.duration_ms
 for step in run.steps:
     step.tool, step.args, step.is_error, step.duration_ms, step.child_run_id
-run.children                                         # runs made through Delegate
+run.children                                         # runs made through Delegate, in step order
 ```
 
 Keep the conversation yourself and pass it back. `run.conversation` is the history you passed, the
@@ -277,6 +277,41 @@ when the run ends stays there — the engine never starts a run; you do, with th
 input. A decision run never reads the inbox: its questions are one call, and a stop or an inbox
 rides to the run it routes to. "Pause, please" is a message in the inbox: the model reads it at the
 next boundary and wraps up in its own words.
+
+A run that ended continues from its record, on any process, after any restart. With a refinery
+attached every run is recorded with its conversation: keep the run id beside what you showed — a
+message's metadata, say — read the run back and pass its conversation on:
+
+```python
+last = await refinery.run("acme", run.run_id)
+next = await engine.run("support", scope="acme", input="And the second charge?", history=last.conversation)
+```
+
+`refinery.run(scope, run_id)` returns the run as `engine.run` returned it, its delegated and routed
+runs back in place; a child's id returns that child and the runs under it. A run id the scope does
+not have is a `NotFoundError`. A deploy is a stop: on SIGTERM, ask every run in flight to stop after its step.
+Each ends at its next boundary and is recorded with `stopped="after_step"`; the next message, on
+whichever task takes it, reads the run back and continues:
+
+```python
+import signal
+
+running = set()
+
+async def answer(message):
+    stop = Stop()
+    running.add(stop)
+    try:
+        return await engine.run("support", scope="acme", input=message, stop=stop)
+    finally:
+        running.discard(stop)
+
+def shutdown():
+    for stop in running:
+        stop.after_step()
+
+asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, shutdown)
+```
 
 Rewinding is slicing. Cut `run.conversation` just before a `role="user"` message and pass it as the
 next run's `history`; files the agent changed in a `Workspace` are yours to restore — a snapshot per
@@ -546,7 +581,8 @@ with it — evaluate, improve prompts and rules, train or distill models, audit 
 label and what really happened, and the three levels of improvement they feed.
 
 Attach a refinery and every run is recorded. A recording that fails is logged as a warning and never
-fails the run.
+fails the run. `refinery.run(scope, run_id)` reads a recorded run back, its delegated and routed
+runs in place, to continue it anywhere — see [Running an agent](#running-an-agent).
 
 ```python
 refinery = Refinery(PostgresStorage(pool))

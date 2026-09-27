@@ -7,12 +7,21 @@ import pytest
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError
-from rfnry_engine.models import Answer, CheckAnswer, ChoiceAnswer, Reply, ScoreAnswer, ToolCall
+from rfnry_engine.models import (
+    Answer,
+    CheckAnswer,
+    ChoiceAnswer,
+    Question,
+    Reply,
+    ScoreAnswer,
+    State,
+    ToolCall,
+)
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Fixed, Scripted, text_reply
+from .fakes import TOOLS, Desk, Fixed, Scripted, delegate_triage, text_reply
 
 TRIAGE: dict[str, Answer] = {
     "urgent": CheckAnswer(probability=0.9),
@@ -176,3 +185,25 @@ async def test_a_refused_delegation_reads_the_same_in_a_run_and_from_code(fixtur
         with pytest.raises(InputError) as raised:
             await EngineTools(engine, agent="support", scope="acme").dispatch("Delegate", args)
         assert run.steps[0].result == f"InputError: {raised.value}"
+
+
+async def test_children_follow_their_steps_whatever_order_they_finish_in(fixtures: Path) -> None:
+    finished: list[State] = []
+
+    class SlowFirst(Desk):
+        async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer]:
+            if state == "slow":
+                await asyncio.sleep(0.02)
+            finished.append(state)
+            return await super().decide(state, questions)
+
+    both = delegate_triage("d1", "slow").tool_calls + delegate_triage("d2", "fast").tool_calls
+    llm = Scripted(Reply(tool_calls=both, stop_reason="tool_use"), text_reply("Both triaged."))
+    engine = Engine(fixtures, generation=llm, decision=SlowFirst(), tools=TOOLS)
+    run = await engine.run("support", "acme", "Two tickets")
+    assert isinstance(run, Generation) and finished == ["fast", "slow"]
+    assert [child.run_id for child in run.children] == [step.child_run_id for step in run.steps]
+    assert [child.state for child in run.children if isinstance(child, Decision)] == [
+        "slow",
+        "fast",
+    ]

@@ -436,6 +436,7 @@ class Engine:
         sent = list(messages)
         steps: list[Step] = []
         children: list[Run] = []
+        delegated: dict[str, Run] = {}
         usage = Usage()
         calls = 0
         model: str | None = None
@@ -462,7 +463,7 @@ class Engine:
                 )
             except Exception as exc:
                 return f"{type(exc).__name__}: {exc}", True, None, False
-            children.append(child)
+            delegated[child.run_id] = child
             if isinstance(child, Generation) and child.stopped is not None:
                 return STOPPED, True, child.run_id, True
             return child_result(child), False, child.run_id, False
@@ -526,6 +527,8 @@ class Engine:
                 )
             )
             steps.append(step)
+            if step.child_run_id is not None:
+                children.append(delegated.pop(step.child_run_id))
 
         async def cut(call: ToolCall, began: float) -> Step:
             await emit(

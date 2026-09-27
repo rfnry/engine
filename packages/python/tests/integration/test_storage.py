@@ -1,15 +1,20 @@
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
+from unit.fakes import TOOLS, Desk, Scripted, delegate_triage, text_reply
 
-from rfnry_engine.errors import StorageError
+from rfnry_engine.engine import Engine
+from rfnry_engine.errors import NotFoundError, StorageError
 from rfnry_engine.models import (
     Check,
     CheckAnswer,
     Document,
     Image,
     Message,
+    Part,
+    Reply,
     Text,
     ToolCall,
     ToolSpec,
@@ -18,6 +23,10 @@ from rfnry_engine.models import (
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
+from rfnry_engine.stop import Stop
+from rfnry_engine.tools.tools import Tool
+
+FIXTURES = Path(__file__).parents[1] / "fixtures" / "agents"
 
 
 def _run(
@@ -395,3 +404,43 @@ async def test_delete_runs_takes_descendants_and_labels_in_its_scope(storage: St
     assert await storage.count_scope("b") == 3
     assert await storage.delete_runs("b", run_ids=["r1-child"]) == 1
     assert [r.run_id for r in await storage.runs("b")] == ["r1"]
+
+
+async def test_a_recorded_tree_reads_back_as_it_ran(storage: Storage) -> None:
+    refinery = Refinery(storage)
+    stop = Stop()
+
+    async def lookup(args: dict[str, Any]) -> list[Part]:
+        stop.after_step()
+        return [Text(text="a\x00b"), Image(media_type="image/png", data=bytes(range(256)))]
+
+    both = delegate_triage("d1", "one").tool_calls + delegate_triage("d2", "two").tool_calls
+    engine = Engine(
+        FIXTURES,
+        generation=Scripted(
+            Reply(tool_calls=both, stop_reason="tool_use"),
+            Reply(
+                tool_calls=[ToolCall(id="c1", name="lookup_order", args={"order_id": "😀"})],
+                stop_reason="tool_use",
+            ),
+            text_reply("Continued."),
+        ),
+        decision=Desk(),
+        tools=[Tool("lookup_order", body=lookup), TOOLS[1]],
+        refinery=refinery,
+    )
+    run = await engine.run("frontdesk", "a", "It is down", tags={"customer": "c-81"}, stop=stop)
+    assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
+    support = run.routed_to
+    assert support.stopped == "after_step" and len(support.children) == 2
+    got = await refinery.run("a", run.run_id)
+    assert got.model_dump() == run.model_dump() and got == run
+    assert await refinery.run("a", support.run_id) == support
+    assert await refinery.run("a", support.children[1].run_id) == support.children[1]
+    with pytest.raises(NotFoundError, match=f"^refinery: run '{run.run_id}' was not found$"):
+        await refinery.run("b", run.run_id)
+    last = await refinery.run("a", support.run_id)
+    assert isinstance(last, Generation)
+    after = await engine.run("support", "a", "Go on.", history=last.conversation)
+    assert isinstance(after, Generation) and after.reply == "Continued."
+    assert after.messages == [*support.conversation, Message(role="user", content="Go on.")]

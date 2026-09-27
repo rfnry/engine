@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from rfnry_engine.engine import Engine
@@ -53,6 +54,22 @@ def flatten(run: Run) -> list[RunRow]:
     return rows
 
 
+def unflatten(row: RunRow, rows: list[RunRow]) -> dict[str, Any]:
+    body = dict(row.body)
+    named = [step.get("child_run_id") for step in body.get("steps", [])]
+    order = {run_id: index for index, run_id in enumerate(named) if run_id is not None}
+    children = sorted(
+        (child for child in rows if child.parent_run_id == row.run_id),
+        key=lambda child: order.get(child.run_id, len(order)),
+    )
+    nested = [unflatten(child, rows) for child in children]
+    if row.kind == "generation":
+        body["children"] = nested
+    else:
+        body["routed_to"] = nested[0] if nested else None
+    return body
+
+
 def label_of(row: LabelRow) -> Label:
     return Label.model_validate(row.body)
 
@@ -76,6 +93,16 @@ class Refinery:
     async def record(self, run: Run) -> None:
         for row in flatten(run):
             await self.storage.put_run(row.scope, row)
+
+    async def run(self, scope: str, run_id: str) -> Run:
+        rows = await self.storage.run_tree(scope, run_ids=[run_id])
+        root = next((row for row in rows if row.run_id == run_id), None)
+        if root is None:
+            raise NotFoundError(f"refinery: run {run_id!r} was not found")
+        body = unflatten(root, rows)
+        if root.kind == "generation":
+            return Generation.model_validate(body)
+        return Decision.model_validate(body)
 
     async def _run_row(self, scope: str, run_id: str) -> RunRow:
         row = await self.storage.get_run(scope, run_id)

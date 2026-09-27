@@ -1,13 +1,17 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, NotFoundError
+from rfnry_engine.models import Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Outcome, Review
 from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.stop import Stop
+from rfnry_engine.tools.tools import Tool
 
 from .fakes import (
     TOOLS,
@@ -185,3 +189,67 @@ async def test_delete_runs_and_verify_absent_take_exactly_one_selector() -> None
         with pytest.raises(InputError, match="^refinery: tags must hold at least one tag$"):
             await verb("acme", tags={})
     assert await refinery.verify_absent("acme")
+
+
+async def test_a_recorded_run_reads_back_as_engine_run_returned_it(fixtures: Path) -> None:
+    refinery = Refinery(InMemoryStorage())
+    engine = desk(fixtures, refinery, customers=1)
+    run = await engine.run("frontdesk", "acme", "It is down", tags={"customer": "c-81"})
+    assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
+    support = run.routed_to
+    [triage] = support.children
+    got = await refinery.run("acme", run.run_id)
+    assert got.model_dump() == run.model_dump() and got == run
+    assert await refinery.run("acme", support.run_id) == support
+    assert await refinery.run("acme", triage.run_id) == triage
+
+
+async def test_delegated_children_read_back_in_the_order_of_their_steps(fixtures: Path) -> None:
+    refinery = Refinery(InMemoryStorage())
+    calls = [delegate_triage(f"d{n}", f"ticket {n}").tool_calls[0] for n in range(3)]
+    llm = Scripted(
+        Reply(tool_calls=calls[:2], stop_reason="tool_use"),
+        Reply(tool_calls=calls[2:], stop_reason="tool_use"),
+        text_reply("All triaged."),
+    )
+    engine = Engine(fixtures, generation=llm, decision=Desk(), tools=TOOLS, refinery=refinery)
+    run = await engine.run("support", "acme", "Three tickets")
+    assert isinstance(run, Generation) and len(run.children) == 3
+    got = await refinery.run("acme", run.run_id)
+    assert got.model_dump() == run.model_dump()
+
+
+async def test_a_stopped_run_read_back_continues_the_next_run(fixtures: Path) -> None:
+    stop = Stop()
+
+    async def lookup(args: dict[str, Any]) -> list[Part]:
+        stop.after_step()
+        return [Text(text=args["order_id"]), Image(media_type="image/png", data=bytes(range(256)))]
+
+    lookup_call = ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"})
+    llm = Scripted(
+        Reply(tool_calls=[lookup_call], stop_reason="tool_use"),
+        text_reply("The second charge is refunded."),
+    )
+    refinery = Refinery(InMemoryStorage())
+    tools = [Tool("lookup_order", body=lookup), TOOLS[1]]
+    engine = Engine(fixtures, generation=llm, tools=tools, refinery=refinery)
+    run = await engine.run("support", "acme", "Charged twice.", stop=stop)
+    assert isinstance(run, Generation) and run.stopped == "after_step"
+    last = await refinery.run("acme", run.run_id)
+    assert isinstance(last, Generation) and last.model_dump() == run.model_dump()
+    after = await engine.run("support", "acme", "And the second charge?", history=last.conversation)
+    question = Message(role="user", content="And the second charge?")
+    assert llm.calls[1][1] == [*run.conversation, question]
+    assert isinstance(after, Generation) and after.reply == "The second charge is refunded."
+
+
+async def test_a_run_reads_back_only_in_its_own_scope() -> None:
+    refinery = Refinery(InMemoryStorage())
+    run = generation_record(scope="a")
+    await refinery.record(run)
+    assert await refinery.run("a", run.run_id) == run
+    with pytest.raises(NotFoundError, match=f"^refinery: run '{run.run_id}' was not found$"):
+        await refinery.run("b", run.run_id)
+    with pytest.raises(NotFoundError, match="^refinery: run 'ghost' was not found$"):
+        await refinery.run("a", "ghost")
