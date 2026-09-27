@@ -143,6 +143,25 @@ async def test_stopping_now_ends_a_wait_for_approval(tmp_path: Path) -> None:
     assert run.steps[0].stopped and run.steps[0].approved is None
 
 
+async def test_stopping_now_ends_a_wait_for_approval_of_a_delegate(tmp_path: Path) -> None:
+    stop, asked, never = Stop(), asyncio.Event(), asyncio.Event()
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        asked.set()
+        await never.wait()
+        return True
+
+    llm = Scripted(use("Delegate", agent="desk", input="x"), text_reply("never"))
+    engine = Engine(make_tree(tmp_path), generation=llm)
+    running = asyncio.create_task(engine.run("lead", "acme", "x", approve=approve, stop=stop))
+    await asyncio.wait_for(asked.wait(), 5)
+    stop.now()
+    run = await asyncio.wait_for(running, 5)
+    assert isinstance(run, Generation) and run.stopped == "now" and run.children == []
+    [step] = run.steps
+    assert step.tool == "Delegate" and step.stopped and step.approved is None
+
+
 async def test_delegated_children_are_asked_too(tmp_path: Path) -> None:
     refunds, approver = Refunds(), Approver()
     llm = Scripted(

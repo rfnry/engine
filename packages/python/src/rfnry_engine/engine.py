@@ -476,7 +476,13 @@ class Engine:
             child_run_id: str | None = None
             stopped = False
             content: Content
-            approved = None if options.approve is None else await options.approve(spec.name, call)
+            approved = None
+            if options.approve is not None:
+                asking = asyncio.ensure_future(options.approve(spec.name, call))
+                if await wait([asking], stop):
+                    await cancel([asking])
+                    return await cut(call, began)
+                approved = asking.result()
             if approved is not None and not isinstance(approved, bool):
                 raise ConfigurationError(
                     f"engine: approve must return True or False; got {approved!r}"
