@@ -92,6 +92,8 @@ class Refinery:
         await self.storage.initialize()
 
     async def record(self, run: Run) -> None:
+        if not run.scope:
+            raise InputError("refinery: scope is required")
         for row in flatten(run, datetime.now(UTC)):
             await self.storage.put_run(row.scope, row)
 
@@ -126,6 +128,8 @@ class Refinery:
         return label
 
     async def review(self, scope: str, run_id: str, review: Review) -> Label:
+        if not scope:
+            raise InputError("refinery: scope is required")
         row = await self._run_row(scope, run_id)
         if row.kind == "generation" and isinstance(review.correction, dict):
             raise InputError("refinery: a generation run takes a text correction")
@@ -143,6 +147,8 @@ class Refinery:
         )
 
     async def outcome(self, scope: str, run_id: str, outcome: Outcome) -> Label:
+        if not scope:
+            raise InputError("refinery: scope is required")
         await self._run_row(scope, run_id)
         return await self._put(
             Label(
@@ -156,6 +162,8 @@ class Refinery:
         )
 
     async def conflicts(self, scope: str) -> list[Conflict]:
+        if not scope:
+            raise InputError("refinery: scope is required")
         rows = await self.storage.labels(scope, source="human")
         return find_conflicts([label_of(row) for row in rows])
 
@@ -167,6 +175,8 @@ class Refinery:
         since: datetime | None = None,
         holdout_percent: int = HOLDOUT_PERCENT,
     ) -> Exported:
+        if not scope:
+            raise InputError("refinery: scope is required")
         runs = await self.storage.runs(scope, since=since, limit=None)
         if since is not None:
             fresh = {run.run_id for run in runs}
@@ -221,6 +231,8 @@ class Refinery:
         teacher: str | None = None,
         limit: int = 500,
     ) -> Labeled:
+        if not scope:
+            raise InputError("refinery: scope is required")
         labelers = {name for name in (judge, teacher) if name is not None}
         result = Labeled()
         if judge is not None:
@@ -282,6 +294,8 @@ class Refinery:
         return result
 
     async def delete_scope(self, scope: str) -> int:
+        if not scope:
+            raise InputError("refinery: scope is required")
         return await self.storage.delete_scope(scope)
 
     async def delete_runs(
@@ -303,6 +317,8 @@ class Refinery:
         run_ids: list[str] | None = None,
         tags: dict[str, str] | None = None,
     ) -> bool:
+        if not scope:
+            raise InputError("refinery: scope is required")
         if run_ids is None and tags is None:
             return await self.storage.count_scope(scope) == 0
         check_selector("verify_absent", run_ids, tags)

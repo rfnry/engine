@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 
@@ -58,3 +58,9 @@ def test_the_engine_refuses_undeclared_and_bodiless_tools(fixtures: Path) -> Non
         )
     with pytest.raises(ConfigurationError, match="lookup_order"):
         Engine(fixtures, generation=Scripted(), tools=[Tool("lookup_order"), TOOLS[1]])
+
+
+def test_engine_tools_need_a_scope(fixtures: Path) -> None:
+    engine = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+    with pytest.raises(InputError, match="^engine_tools: scope is required$"):
+        EngineTools(engine, agent="support", scope="")

@@ -16,6 +16,7 @@ from rfnry_engine.tools.tools import Tool
 from .fakes import (
     TOOLS,
     Desk,
+    MemoryBucket,
     Scripted,
     decision_record,
     delegate_triage,
@@ -254,3 +255,24 @@ async def test_a_run_reads_back_only_in_its_own_scope() -> None:
         await refinery.run("b", run.run_id)
     with pytest.raises(NotFoundError, match="^refinery: run 'ghost' was not found$"):
         await refinery.run("a", "ghost")
+
+
+async def test_every_refinery_verb_needs_a_scope(fixtures: Path) -> None:
+    refinery = Refinery(InMemoryStorage())
+    run = generation_record()
+    await refinery.record(run)
+    engine = Engine(fixtures, generation=Scripted(), tools=TOOLS, refinery=refinery)
+    verbs = [
+        refinery.record(generation_record(scope="")),
+        refinery.review("", run.run_id, Review(stance="approval")),
+        refinery.outcome("", run.run_id, Outcome(status="failed")),
+        refinery.conflicts(""),
+        refinery.export("", MemoryBucket()),
+        refinery.label("", engine, judge="judge"),
+        refinery.delete_scope(""),
+        refinery.verify_absent(""),
+    ]
+    for verb in verbs:
+        with pytest.raises(InputError, match="^refinery: scope is required$"):
+            await verb
+    assert await refinery.storage.count_scope("") == 0

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING
 
-from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.models import ToolCall
 from rfnry_engine.tools.builtins import builtins, load_tool
 from rfnry_engine.tools.declared import declared_tools
@@ -27,6 +27,8 @@ class EngineTools(Tools):
         tags: Mapping[str, str] | None = None,
         approve: Callable[[str, ToolCall], Awaitable[bool]] | None = None,
     ) -> None:
+        if not scope:
+            raise InputError("engine_tools: scope is required")
         spec = engine._spec(agent)
         if spec.workspace and workspace is None:
             raise ConfigurationError(
