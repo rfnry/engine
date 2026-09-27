@@ -626,7 +626,10 @@ labeled = await refinery.label("acme", engine, judge="judge", teacher="teacher")
 labeled.judged, labeled.taught, labeled.errors
 ```
 
-Every label carries its source. A judge's score is exported as a judge's score, never as a person's.
+A run that could not be labeled — the model failed, or the teacher answered a choice with no
+option, a score with no level index, a check with anything but true or false — is named in
+`labeled.errors` with why, and stays unlabeled for the next call. Every label carries its source. A
+judge's score is exported as a judge's score, never as a person's.
 
 Export writes datasets to any object with a `put(key, bytes)`:
 

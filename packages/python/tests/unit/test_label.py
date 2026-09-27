@@ -175,6 +175,26 @@ def test_teacher_answers_are_validated_against_the_questions() -> None:
             {"intent": "a", "severity": 2, "urgent": True},
             "^judge: teacher gave level 2 for 'severity'$",
         ),
+        (
+            {"intent": "a", "severity": 0, "urgent": "false"},
+            "^judge: teacher gave 'false', not true or false for 'urgent'$",
+        ),
+        (
+            {"intent": "a", "severity": 0, "urgent": 1.0},
+            "^judge: teacher gave 1.0, not true or false for 'urgent'$",
+        ),
+        (
+            {"intent": "a", "severity": 0.7, "urgent": True},
+            "^judge: teacher gave 0.7, not a level of 'severity'$",
+        ),
+        (
+            {"intent": "a", "severity": True, "urgent": True},
+            "^judge: teacher gave True, not a level of 'severity'$",
+        ),
+        (
+            {"intent": "a", "severity": "1", "urgent": True},
+            "^judge: teacher gave '1', not a level of 'severity'$",
+        ),
     ]
     for given, message in cases:
         with pytest.raises(ModelError, match=message):

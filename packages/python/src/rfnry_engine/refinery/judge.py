@@ -103,6 +103,8 @@ def teacher_answers(questions: dict[str, Question], taught: TeacherAnswers) -> d
                 confidence=1.0,
             )
         elif isinstance(question, Score):
+            if isinstance(value, bool | str) or not float(value).is_integer():
+                raise ModelError(f"judge: teacher gave {value!r}, not a level of {question_id!r}")
             index = int(value)
             if not 0 <= index < len(question.levels):
                 raise ModelError(f"judge: teacher gave level {index} for {question_id!r}")
@@ -112,7 +114,9 @@ def teacher_answers(questions: dict[str, Question], taught: TeacherAnswers) -> d
                 confidence=1.0,
             )
         else:
-            answers[question_id] = CheckAnswer(
-                probability=1.0 if bool(value) else 0.0, confidence=1.0
-            )
+            if not isinstance(value, bool):
+                raise ModelError(
+                    f"judge: teacher gave {value!r}, not true or false for {question_id!r}"
+                )
+            answers[question_id] = CheckAnswer(probability=1.0 if value else 0.0, confidence=1.0)
     return answers
