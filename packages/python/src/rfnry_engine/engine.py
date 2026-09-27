@@ -645,7 +645,8 @@ class Engine:
             if output is None or expect is None:
                 continue
             if stopped:
-                answer(output, await cut(output, time.monotonic()))
+                for call in reply.tool_calls[reply.tool_calls.index(output) :]:
+                    answer(call, await cut(call, time.monotonic()))
                 return finish(said, "now")
             try:
                 parsed = expect.model_validate(output.args)

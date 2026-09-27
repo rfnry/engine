@@ -424,3 +424,25 @@ async def test_stop_now_answers_a_pending_output_call(tmp_path: Path) -> None:
     assert isinstance(run, Generation) and run.stopped == "now" and run.reply == ""
     assert [(s.tool, s.stopped) for s in run.steps] == [("slow", True), ("Output", True)]
     assert answered(run.conversation)
+
+
+async def test_stop_now_answers_the_calls_after_a_pending_output_too(tmp_path: Path) -> None:
+    slow = Slow(30.0)
+    llm = Paced(use(call("slow", "c1"), call("Output", "o1", ok=True), call("LS", "l1")))
+    engine = Engine(make_tree(tmp_path), generation=llm)
+    stop = Stop()
+    task = asyncio.create_task(
+        engine.run(
+            "chat", "acme", "x", tools=Tools([Tool("slow", body=slow)]), expect=Verdict, stop=stop
+        )
+    )
+    await slow.started.wait()
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert [(s.tool, s.stopped) for s in run.steps] == [
+        ("slow", True),
+        ("Output", True),
+        ("LS", True),
+    ]
+    assert answered(run.conversation)
