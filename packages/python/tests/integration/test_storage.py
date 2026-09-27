@@ -484,3 +484,24 @@ async def test_a_recorded_tree_reads_back_as_it_ran(storage: Storage) -> None:
     after = await engine.run("support", "a", "Go on.", history=last.conversation)
     assert isinstance(after, Generation) and after.reply == "Continued."
     assert after.messages == [*support.conversation, Message(role="user", content="Go on.")]
+
+
+async def test_a_tree_reads_back_with_its_one_record_stamp(storage: Storage) -> None:
+    refinery = Refinery(storage)
+    engine = Engine(
+        FIXTURES,
+        generation=Scripted(delegate_triage(), text_reply("Handled.")),
+        decision=Desk(),
+        tools=TOOLS,
+        refinery=refinery,
+    )
+    run = await engine.run("frontdesk", "a", "It is down")
+    rows = await storage.run_tree("a", run_ids=[run.run_id])
+    [stamp] = {row.recorded for row in rows}
+    assert len(rows) == 3 and stamp >= run.at
+    for row in rows:
+        stored = await storage.get_run("a", row.run_id)
+        assert stored is not None and stored.recorded == stamp
+    assert await refinery.run("a", run.run_id) == run
+    assert {row.recorded for row in await storage.run_tree("a", run_ids=[run.run_id])} == {stamp}
+    assert (await refinery.export("a", MemoryBucket())).watermark == stamp
