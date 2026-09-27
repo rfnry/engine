@@ -6,6 +6,13 @@ from rfnry_engine.errors import StorageError
 from rfnry_engine.refinery.storage import LabelRow, RunRow
 
 
+def _tagged(row: RunRow, tags: dict[str, str]) -> bool:
+    held = row.body.get("tags")
+    return isinstance(held, dict) and all(
+        key in held and held[key] == value for key, value in tags.items()
+    )
+
+
 class InMemoryStorage:
     def __init__(self) -> None:
         self._runs: dict[tuple[str, str], RunRow] = {}
@@ -74,6 +81,52 @@ class InMemoryStorage:
         ]
         rows.sort(key=lambda r: (r.at, r.label_id))
         return rows
+
+    def _tree(
+        self, scope: str, run_ids: list[str] | None, tags: dict[str, str] | None
+    ) -> list[RunRow]:
+        rows = [row for (s, _), row in self._runs.items() if s == scope]
+        wanted = set(run_ids) if run_ids is not None else None
+        found = {
+            row.run_id
+            for row in rows
+            if (wanted is None or row.run_id in wanted or row.parent_run_id in wanted)
+            and (tags is None or _tagged(row, tags))
+        }
+        grown = found
+        while grown:
+            grown = {row.run_id for row in rows if row.parent_run_id in grown} - found
+            found |= grown
+        return sorted((row for row in rows if row.run_id in found), key=lambda r: (r.at, r.run_id))
+
+    async def run_tree(
+        self,
+        scope: str,
+        *,
+        run_ids: list[str] | None = None,
+        tags: dict[str, str] | None = None,
+    ) -> list[RunRow]:
+        return self._tree(scope, run_ids, tags)
+
+    async def delete_runs(
+        self,
+        scope: str,
+        *,
+        run_ids: list[str] | None = None,
+        tags: dict[str, str] | None = None,
+    ) -> int:
+        found = {row.run_id for row in self._tree(scope, run_ids, tags)}
+        labeled = found | set(run_ids or [])
+        label_keys = [
+            key
+            for key, label in self._labels.items()
+            if key[0] == scope and label.run_id in labeled
+        ]
+        for key in label_keys:
+            del self._labels[key]
+        for run_id in found:
+            del self._runs[(scope, run_id)]
+        return len(label_keys) + len(found)
 
     async def delete_scope(self, scope: str) -> int:
         run_keys = [key for key in self._runs if key[0] == scope]

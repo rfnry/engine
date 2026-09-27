@@ -58,6 +58,22 @@ class Storage(Protocol):
         since: datetime | None = None,
     ) -> list[LabelRow]: ...
 
+    async def run_tree(
+        self,
+        scope: str,
+        *,
+        run_ids: list[str] | None = None,
+        tags: dict[str, str] | None = None,
+    ) -> list[RunRow]: ...
+
+    async def delete_runs(
+        self,
+        scope: str,
+        *,
+        run_ids: list[str] | None = None,
+        tags: dict[str, str] | None = None,
+    ) -> int: ...
+
     async def delete_scope(self, scope: str) -> int: ...
 
     async def count_scope(self, scope: str) -> int: ...

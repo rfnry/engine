@@ -66,6 +66,34 @@ def _count(status: str) -> int:
     return int(status.rsplit(" ", 1)[-1])
 
 
+def _as_jsonb(text: str) -> str:
+    return f"replace(replace({text}, '\\ud', '\\u0'), '\\u0000', '\\ufffd')::jsonb"
+
+
+def _tree(
+    scope: str, run_ids: list[str] | None, tags: dict[str, str] | None
+) -> tuple[str, list[Any]]:
+    conditions = ["scope = $1"]
+    params: list[Any] = [scope]
+    if run_ids is not None:
+        params.append(list(run_ids))
+        conditions.append(
+            f"(run_id = ANY(${len(params)}::text[]) OR parent_run_id = ANY(${len(params)}::text[]))"
+        )
+    if tags is not None:
+        params.append(json.dumps(tags))
+        conditions.append(
+            f"({_as_jsonb('body::text')} -> 'tags') @> {_as_jsonb(f'${len(params)}::text')}"
+        )
+    sql = (
+        "WITH RECURSIVE tree(run_id) AS (SELECT run_id FROM engine_runs WHERE "
+        + " AND ".join(conditions)
+        + " UNION SELECT r.run_id FROM engine_runs r JOIN tree t ON r.parent_run_id = t.run_id "
+        "WHERE r.scope = $1) "
+    )
+    return sql, params
+
+
 class PostgresStorage:
     def __init__(self, pool: Any) -> None:
         self._pool = pool
@@ -196,6 +224,46 @@ class PostgresStorage:
         async with self._guard("labels"), self._pool.acquire() as conn:
             records = await conn.fetch(sql, *params)
         return [_label(record) for record in records]
+
+    async def run_tree(
+        self,
+        scope: str,
+        *,
+        run_ids: list[str] | None = None,
+        tags: dict[str, str] | None = None,
+    ) -> list[RunRow]:
+        tree, params = _tree(scope, run_ids, tags)
+        sql = (
+            tree + f"SELECT {_RUN_COLUMNS} FROM engine_runs WHERE scope = $1 "
+            'AND run_id IN (SELECT run_id FROM tree) ORDER BY at ASC, run_id COLLATE "C" ASC'
+        )
+        async with self._guard("run_tree"), self._pool.acquire() as conn:
+            records = await conn.fetch(sql, *params)
+        return [_run(record) for record in records]
+
+    async def delete_runs(
+        self,
+        scope: str,
+        *,
+        run_ids: list[str] | None = None,
+        tags: dict[str, str] | None = None,
+    ) -> int:
+        tree, params = _tree(scope, run_ids, tags)
+        async with self._guard("delete_runs"), self._pool.acquire() as conn, conn.transaction():
+            found = [
+                r["run_id"] for r in await conn.fetch(tree + "SELECT run_id FROM tree", *params)
+            ]
+            labels = await conn.execute(
+                "DELETE FROM engine_labels WHERE scope = $1 AND run_id = ANY($2::text[])",
+                scope,
+                found + list(run_ids or []),
+            )
+            runs = await conn.execute(
+                "DELETE FROM engine_runs WHERE scope = $1 AND run_id = ANY($2::text[])",
+                scope,
+                found,
+            )
+        return _count(labels) + _count(runs)
 
     async def delete_scope(self, scope: str) -> int:
         async with self._guard("delete_scope"), self._pool.acquire() as conn, conn.transaction():

@@ -818,6 +818,23 @@ refinery = Refinery(rfnry_engine.PostgresStorage(pool))
 of every table, and no read accepts its absence. Tools pinned to a tenant are passed on the call.
 `refinery.delete_scope(scope)` removes everything; `refinery.verify_absent(scope)` proves it.
 
+Inside a tenant, erase by tag or by run id. A support desk serves every customer in one scope; tag
+each run with its customer, and when one asks to be forgotten:
+
+```python
+run = await engine.run("support", scope="acme", input=message, tags={"customer": "c-81"})
+deleted = await refinery.delete_runs("acme", tags={"customer": "c-81"})
+deleted = await refinery.delete_runs("acme", run_ids=[run.run_id])
+await refinery.verify_absent("acme", tags={"customer": "c-81"})
+```
+
+`delete_runs` takes `run_ids` or `tags`, exactly one, and removes the runs they match, every run
+delegated or routed from them, and every label on any of them, in one transaction; it returns the
+number of rows removed. A tag matches by containment: `{"customer": "c-81"}` matches a run tagged
+`{"customer": "c-81", "arm": "b"}`. `verify_absent` takes the same selectors; without them it checks
+the whole scope. Datasets you exported before are files you hold — drop the customer's rows from
+them yourself; every row carries its run's tags.
+
 ## At a glance
 
 Everything the package exports, by role.
@@ -842,7 +859,8 @@ returns anything but `True` or `False`. `NotFoundError` for
 an agent the tree does not have or a run the refinery does not.
 `InputError` for a call the library refuses: an empty scope, a `task` for a decision agent, tags
 outside their limits, media given to a decision agent, a media part with both or neither of `data` and `url`, a
-correction of the wrong shape, a tool called with bad arguments or a path outside its directory. `ModelError` when an adapter breaks the contract — a
+correction of the wrong shape, a `delete_runs` or `verify_absent` given both `run_ids` and `tags` or
+an empty one, a `delete_runs` given neither, a tool called with bad arguments or a path outside its directory. `ModelError` when an adapter breaks the contract — a
 result whose fields do not fit, a missing answer, probabilities that do not cover the options or do not sum to 1. `RunawayError` when
 a loop exceeds `max_steps` (default 200). `DelegationLoopError` and `DelegationDepthError` for
 nesting: through `Delegate` they reach the model as tool errors, through a route they raise.

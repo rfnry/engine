@@ -185,6 +185,11 @@ whose state is the customer's message and whose truth a person set is training d
 new checkpoint replays the holdout before it replaces the old one, and the old one stays for
 rollback.
 
+A customer who asks to be forgotten is removed by tag: with every run tagged with its customer,
+`refinery.delete_runs(scope, tags={"customer": customer_id})` deletes their runs, the runs those
+started and every label on them — a dataset or a checkpoint built before still holds them, so
+rebuild it from a fresh export.
+
 Retrieval and training do different jobs. Facts that change — manuals, prices, procedures — belong
 in rfnry-memory, where a correction takes effect on the next question. Training teaches how to
 answer: the terms, the format, when to say the manuals do not cover it.

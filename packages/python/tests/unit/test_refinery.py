@@ -1,11 +1,23 @@
+from pathlib import Path
+
 import pytest
 
+from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, NotFoundError
+from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Outcome, Review
 from rfnry_engine.refinery.refinery import Refinery
 
-from .fakes import decision_record, generation_record
+from .fakes import (
+    TOOLS,
+    Desk,
+    Scripted,
+    decision_record,
+    delegate_triage,
+    generation_record,
+    text_reply,
+)
 
 
 async def test_record_flattens_children_into_rows() -> None:
@@ -79,3 +91,97 @@ async def test_scopes_never_mix_and_deletion_is_provable() -> None:
         await refinery.review("b", a.run_id, Review(stance="approval"))
     assert await refinery.delete_scope("a") == 2
     assert await refinery.verify_absent("a") and not await refinery.verify_absent("b")
+
+
+def desk(fixtures: Path, refinery: Refinery, customers: int) -> Engine:
+    replies = [delegate_triage(), text_reply("Handled.")] * customers
+    return Engine(
+        fixtures, generation=Scripted(*replies), decision=Desk(), tools=TOOLS, refinery=refinery
+    )
+
+
+def tree_ids(run: Run) -> set[str]:
+    children = run.children if isinstance(run, Generation) else [run.routed_to]
+    return {run.run_id}.union(*(tree_ids(child) for child in children if child is not None))
+
+
+async def test_delete_runs_by_tag_takes_the_routed_and_delegated_runs_and_their_labels(
+    fixtures: Path,
+) -> None:
+    storage = InMemoryStorage()
+    refinery = Refinery(storage)
+    engine = desk(fixtures, refinery, customers=2)
+    gone = await engine.run(
+        "frontdesk", "acme", "It is down", tags={"customer": "c-81", "arm": "b"}
+    )
+    kept = await engine.run("frontdesk", "acme", "It is down", tags={"customer": "c-82"})
+    assert isinstance(gone, Decision) and isinstance(gone.routed_to, Generation)
+    assert len(tree_ids(gone)) == len(tree_ids(kept)) == 3
+    await refinery.review("acme", gone.routed_to.run_id, Review(stance="objection"))
+    await refinery.outcome("acme", gone.run_id, Outcome(status="failed"))
+    await refinery.review("acme", kept.run_id, Review(stance="approval"))
+    assert not await refinery.verify_absent("acme", tags={"customer": "c-81"})
+    assert await refinery.delete_runs("acme", tags={"customer": "c-81"}) == 5
+    assert {row.run_id for row in await storage.runs("acme")} == tree_ids(kept)
+    assert [label.run_id for label in await storage.labels("acme")] == [kept.run_id]
+    assert await refinery.verify_absent("acme", tags={"customer": "c-81"})
+    assert await refinery.verify_absent("acme", run_ids=sorted(tree_ids(gone)))
+    assert not await refinery.verify_absent("acme", tags={"customer": "c-82"})
+    assert not await refinery.verify_absent("acme", run_ids=[kept.run_id])
+    assert not await refinery.verify_absent("acme")
+    assert await refinery.delete_runs("acme", tags={"customer": "c-81"}) == 0
+
+
+async def test_a_tag_matches_by_containment(fixtures: Path) -> None:
+    refinery = Refinery(InMemoryStorage())
+    engine = desk(fixtures, refinery, customers=1)
+    await engine.run("frontdesk", "acme", "It is down", tags={"customer": "c-81", "arm": "b"})
+    for absent in ({"customer": "c-81", "arm": "a"}, {"customer": "c-8"}, {"region": "eu"}):
+        assert await refinery.verify_absent("acme", tags=absent)
+    for present in ({"customer": "c-81"}, {"arm": "b"}, {"arm": "b", "customer": "c-81"}):
+        assert not await refinery.verify_absent("acme", tags=present)
+
+
+async def test_delete_runs_by_id_takes_that_run_and_its_descendants_only(fixtures: Path) -> None:
+    storage = InMemoryStorage()
+    refinery = Refinery(storage)
+    engine = desk(fixtures, refinery, customers=2)
+    first = await engine.run("frontdesk", "acme", "It is down")
+    second = await engine.run("frontdesk", "acme", "It is down")
+    assert isinstance(first, Decision) and isinstance(first.routed_to, Generation)
+    support = first.routed_to
+    assert await refinery.delete_runs("acme", run_ids=[support.run_id]) == 2
+    assert await refinery.verify_absent("acme", run_ids=[support.run_id])
+    assert await storage.get_run("acme", first.run_id) is not None
+    assert await refinery.delete_runs("acme", run_ids=[first.run_id, second.run_id]) == 4
+    assert await refinery.verify_absent("acme")
+
+
+async def test_delete_runs_never_reaches_another_scope(fixtures: Path) -> None:
+    storage = InMemoryStorage()
+    refinery = Refinery(storage)
+    engine = desk(fixtures, refinery, customers=2)
+    mine = await engine.run("frontdesk", "acme", "It is down", tags={"customer": "c-81"})
+    theirs = await engine.run("frontdesk", "globex", "It is down", tags={"customer": "c-81"})
+    await refinery.review("globex", theirs.run_id, Review(stance="approval"))
+    assert await refinery.delete_runs("acme", run_ids=[theirs.run_id]) == 0
+    assert await refinery.delete_runs("acme", tags={"customer": "c-81"}) == 3
+    assert await refinery.verify_absent("acme") and await refinery.verify_absent(
+        "acme", run_ids=[mine.run_id]
+    )
+    assert {row.run_id for row in await storage.runs("globex")} == tree_ids(theirs)
+    assert len(await storage.labels("globex")) == 1
+
+
+async def test_delete_runs_and_verify_absent_take_exactly_one_selector() -> None:
+    refinery = Refinery(InMemoryStorage())
+    with pytest.raises(InputError, match="^refinery: delete_runs takes run_ids or tags$"):
+        await refinery.delete_runs("acme")
+    for verb in (refinery.delete_runs, refinery.verify_absent):
+        with pytest.raises(InputError, match="takes run_ids or tags, not both$"):
+            await verb("acme", run_ids=["r1"], tags={"customer": "c-81"})
+        with pytest.raises(InputError, match="^refinery: run_ids must name at least one run$"):
+            await verb("acme", run_ids=[])
+        with pytest.raises(InputError, match="^refinery: tags must hold at least one tag$"):
+            await verb("acme", tags={})
+    assert await refinery.verify_absent("acme")

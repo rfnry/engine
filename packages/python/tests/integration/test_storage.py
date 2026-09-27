@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -278,3 +279,119 @@ async def test_tags_round_trip_and_old_bodies_read_as_no_tags(storage: Storage) 
         await storage.put_run("a", got.model_copy(update={"body": old}))
         again = await storage.get_run("a", run_id)
         assert again is not None and kind.model_validate(again.body).tags == {}
+
+
+def _tagged(
+    scope: str,
+    run_id: str,
+    tags: dict[str, str],
+    *,
+    parent: str | None = None,
+    at: datetime | None = None,
+    extra: dict[str, Any] | None = None,
+) -> RunRow:
+    row = _run(scope, run_id, parent=parent, at=at)
+    return row.model_copy(update={"body": {**row.body, **(extra or {}), "tags": tags}})
+
+
+async def test_run_tree_follows_parent_run_id_down_every_level(storage: Storage) -> None:
+    t0 = datetime.now(UTC)
+    rows = [
+        _run("a", "root", at=t0),
+        _run("a", "child", parent="root", at=t0 + timedelta(seconds=1)),
+        _run("a", "grandchild", parent="child", at=t0 + timedelta(seconds=2)),
+        _run("a", "second", parent="root", at=t0 + timedelta(seconds=3)),
+        _run("a", "other", at=t0 + timedelta(seconds=4)),
+        _run("b", "root", at=t0),
+        _run("b", "stranger", parent="root", at=t0),
+    ]
+    for row in rows:
+        await storage.put_run(row.scope, row)
+    tree = await storage.run_tree("a", run_ids=["root"])
+    assert [r.run_id for r in tree] == ["root", "child", "grandchild", "second"]
+    assert all(r.scope == "a" for r in tree) and tree[1].body == rows[1].body
+    assert [r.run_id for r in await storage.run_tree("a", run_ids=["child"])] == [
+        "child",
+        "grandchild",
+    ]
+    assert [r.run_id for r in await storage.run_tree("a", run_ids=["child", "other"])] == [
+        "child",
+        "grandchild",
+        "other",
+    ]
+    assert await storage.run_tree("a", run_ids=["ghost"]) == []
+    assert await storage.run_tree("a", run_ids=[]) == []
+    assert [r.run_id for r in await storage.run_tree("b", run_ids=["root"])] == [
+        "root",
+        "stranger",
+    ]
+
+
+async def test_run_tree_finds_orphans_and_survives_a_cycle(storage: Storage) -> None:
+    await storage.put_run("a", _run("a", "orphan", parent="gone"))
+    await storage.put_run("a", _run("a", "x", parent="y"))
+    await storage.put_run("a", _run("a", "y", parent="x"))
+    assert [r.run_id for r in await storage.run_tree("a", run_ids=["gone"])] == ["orphan"]
+    assert {r.run_id for r in await storage.run_tree("a", run_ids=["x"])} == {"x", "y"}
+
+
+async def test_run_tree_by_tags_is_containment_and_takes_descendants(storage: Storage) -> None:
+    t0 = datetime.now(UTC)
+    await storage.put_run("a", _tagged("a", "r1", {"customer": "c-81", "arm": "b"}, at=t0))
+    await storage.put_run("a", _run("a", "r1-child", parent="r1", at=t0 + timedelta(seconds=1)))
+    await storage.put_run("a", _tagged("a", "r2", {"customer": "c-82"}, at=t0))
+    await storage.put_run("a", _run("a", "untagged", at=t0))
+    await storage.put_run("b", _tagged("b", "r3", {"customer": "c-81"}, at=t0))
+
+    async def found(tags: dict[str, str]) -> list[str]:
+        return [r.run_id for r in await storage.run_tree("a", tags=tags)]
+
+    assert await found({"customer": "c-81"}) == ["r1", "r1-child"]
+    assert await found({"arm": "b", "customer": "c-81"}) == ["r1", "r1-child"]
+    assert await found({"customer": "c-81", "arm": "a"}) == []
+    assert await found({"customer": "c-8"}) == []
+    assert await found({"customer": "c-82"}) == ["r2"]
+    assert [r.run_id for r in await storage.run_tree("a", run_ids=["r1"], tags={"arm": "b"})] == [
+        "r1",
+        "r1-child",
+    ]
+
+
+async def test_tags_match_beside_bodies_json_cannot_hold(storage: Storage) -> None:
+    hostile = {"reply": "a\x00b \ud800 \udc00 퀀 \\u0000 \\\x00 \\ud800", "k\x00": "\x00"}
+    await storage.put_run("a", _tagged("a", "nul", {"customer": "c-81"}, extra=hostile))
+    await storage.put_run("a", _tagged("a", "emoji", {"customer": "😀", "hangul": "퀀"}))
+    await storage.put_run("a", _tagged("a", "other", {"customer": "😁"}))
+    assert [r.run_id for r in await storage.run_tree("a", tags={"customer": "c-81"})] == ["nul"]
+    assert [r.run_id for r in await storage.run_tree("a", tags={"customer": "😀"})] == ["emoji"]
+    assert [r.run_id for r in await storage.run_tree("a", tags={"hangul": "퀀"})] == ["emoji"]
+    got = await storage.get_run("a", "nul")
+    assert got is not None and got.body["reply"] == hostile["reply"]
+    assert await storage.delete_runs("a", tags={"customer": "c-81"}) == 1
+    assert {r.run_id for r in await storage.runs("a")} == {"emoji", "other"}
+
+
+async def test_delete_runs_takes_descendants_and_labels_in_its_scope(storage: Storage) -> None:
+    t0 = datetime.now(UTC)
+    await storage.put_run("a", _tagged("a", "r1", {"customer": "c-81"}, at=t0))
+    await storage.put_run("a", _run("a", "r1-child", parent="r1", at=t0))
+    await storage.put_run("a", _run("a", "r1-grandchild", parent="r1-child", at=t0))
+    await storage.put_run("a", _tagged("a", "r2", {"customer": "c-82"}, at=t0))
+    await storage.put_run("b", _tagged("b", "r1", {"customer": "c-81"}, at=t0))
+    await storage.put_run("b", _run("b", "r1-child", parent="r1", at=t0))
+    for scope, label_id, run_id in (
+        ("a", "l1", "r1"),
+        ("a", "l2", "r1-grandchild"),
+        ("a", "l3", "r2"),
+        ("a", "l4", "ghost"),
+        ("b", "l1", "r1"),
+    ):
+        await storage.put_label(scope, _label(scope, label_id, run_id))
+    assert await storage.delete_runs("a", tags={"customer": "c-81"}) == 5
+    assert [r.run_id for r in await storage.runs("a")] == ["r2"]
+    assert [label.label_id for label in await storage.labels("a")] == ["l3", "l4"]
+    assert await storage.delete_runs("a", run_ids=["ghost", "r2"]) == 3
+    assert await storage.count_scope("a") == 0
+    assert await storage.count_scope("b") == 3
+    assert await storage.delete_runs("b", run_ids=["r1-child"]) == 1
+    assert [r.run_id for r in await storage.runs("b")] == ["r1"]

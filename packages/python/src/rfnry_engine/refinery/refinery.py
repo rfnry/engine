@@ -57,6 +57,15 @@ def label_of(row: LabelRow) -> Label:
     return Label.model_validate(row.body)
 
 
+def check_selector(verb: str, run_ids: list[str] | None, tags: dict[str, str] | None) -> None:
+    if run_ids is not None and tags is not None:
+        raise InputError(f"refinery: {verb} takes run_ids or tags, not both")
+    if run_ids is not None and not run_ids:
+        raise InputError("refinery: run_ids must name at least one run")
+    if tags is not None and not tags:
+        raise InputError("refinery: tags must hold at least one tag")
+
+
 class Refinery:
     def __init__(self, storage: Storage) -> None:
         self.storage = storage
@@ -247,5 +256,28 @@ class Refinery:
     async def delete_scope(self, scope: str) -> int:
         return await self.storage.delete_scope(scope)
 
-    async def verify_absent(self, scope: str) -> bool:
-        return await self.storage.count_scope(scope) == 0
+    async def delete_runs(
+        self,
+        scope: str,
+        *,
+        run_ids: list[str] | None = None,
+        tags: dict[str, str] | None = None,
+    ) -> int:
+        if run_ids is None and tags is None:
+            raise InputError("refinery: delete_runs takes run_ids or tags")
+        check_selector("delete_runs", run_ids, tags)
+        return await self.storage.delete_runs(scope, run_ids=run_ids, tags=tags)
+
+    async def verify_absent(
+        self,
+        scope: str,
+        *,
+        run_ids: list[str] | None = None,
+        tags: dict[str, str] | None = None,
+    ) -> bool:
+        if run_ids is None and tags is None:
+            return await self.storage.count_scope(scope) == 0
+        check_selector("verify_absent", run_ids, tags)
+        if await self.storage.run_tree(scope, run_ids=run_ids, tags=tags):
+            return False
+        return run_ids is None or not await self.storage.labels(scope, run_ids=run_ids)

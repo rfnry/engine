@@ -9,11 +9,14 @@ from rfnry_engine.models import (
     Answer,
     Check,
     CheckAnswer,
+    ChoiceAnswer,
     Decided,
     Message,
     Question,
     Reply,
+    ScoreAnswer,
     State,
+    ToolCall,
     ToolSpec,
     Usage,
 )
@@ -145,3 +148,23 @@ class MemoryBucket:
 
     async def put(self, key: str, data: bytes) -> None:
         self.objects[key] = data
+
+
+class Desk:
+    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer]:
+        if "intent" in questions:
+            return {
+                "intent": ChoiceAnswer(
+                    choice="technical",
+                    probabilities={"technical": 0.9, "billing": 0.05, "other": 0.05},
+                )
+            }
+        return {
+            "urgent": CheckAnswer(probability=0.9),
+            "severity": ScoreAnswer(score=3, probabilities=[0, 0, 0, 1]),
+        }
+
+
+def delegate_triage(call_id: str = "d1", text: str = "It is down") -> Reply:
+    call = ToolCall(id=call_id, name="Delegate", args={"agent": "triage", "input": text})
+    return Reply(tool_calls=[call], stop_reason="tool_use")
