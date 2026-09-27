@@ -105,7 +105,7 @@ async def test_no_builtin_reaches_through_a_symlink(escape: Path) -> None:
         with pytest.raises(InputError, match="inside the agent directory"):
             await tools.dispatch("Glob", {"pattern": pattern})
     for name in ["leak", "../rules/inside", "../link"]:
-        with pytest.raises(InputError):
+        with pytest.raises(InputError, match=f"^builtins: skill outside skills/: {name}$"):
             await tools.dispatch("Skill", {"name": name})
 
 
@@ -249,7 +249,9 @@ async def test_load_reaches_the_workspace_when_the_run_has_one(media: Path, tmp_
     assert await both.dispatch("Load", {"path": "knowledge/rates.pdf"}) == [
         Document(media_type="application/pdf", name="rates.pdf", data=PDF)
     ]
-    with pytest.raises(InputError):
+    with pytest.raises(
+        InputError, match="^builtins: path outside the workspace: ../agent/knowledge/rates.pdf$"
+    ):
         await both.dispatch("Load", {"path": "../agent/knowledge/rates.pdf", "where": "workspace"})
 
 

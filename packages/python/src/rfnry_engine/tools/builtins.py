@@ -248,7 +248,10 @@ class _Directory:
         a = SkillArgs.model_validate(args)
         flat = self.root / "skills" / f"{a.name}.md"
         folder = self.root / "skills" / a.name / "SKILL.md"
-        target = Jail(self.root / "skills").resolve(flat if flat.is_file() else folder)
+        try:
+            target = Jail(self.root / "skills").resolve(flat if flat.is_file() else folder)
+        except InputError:
+            raise InputError(f"builtins: skill outside skills/: {a.name}") from None
         if not target.is_file():
             raise InputError(f"builtins: skill not found: {a.name}")
         return strip_frontmatter(target.read_text(encoding="utf-8")).lstrip("\n").rstrip()
@@ -307,7 +310,12 @@ def load_tool(
 
     def load(args: dict[str, Any]) -> list[Part]:
         a = LoadAnywhereArgs.model_validate(args)
-        target = places[a.where].resolve(a.path)
+        try:
+            target = places[a.where].resolve(a.path)
+        except InputError:
+            if a.where == "folder":
+                raise
+            raise InputError(f"builtins: path outside the workspace: {a.path}") from None
         if not target.is_file():
             raise InputError(f"builtins: not a file: {a.path}")
         if target.stat().st_size > _LOAD_BYTES:
