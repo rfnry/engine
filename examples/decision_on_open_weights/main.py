@@ -17,17 +17,17 @@ QUESTIONS = ["team", "urgent"]
 RECORDED = {
     "jev-1.13.0": {
         "kind": "vendor decision",
-        "accuracy": {"team": 25, "urgent": 20},
-        "latency": 875,
-        "usage": Usage(input=11829, output=1612),
-        "buckets": [(30, 30), (9, 14), (6, 8)],
+        "accuracy": {"team": 25, "urgent": 25},
+        "latency": 376,
+        "usage": Usage(input=13233, output=1612),
+        "buckets": [(36, 36), (10, 11), (4, 5)],
     },
     "claude-sonnet-5": {
         "kind": "vendor generation",
         "accuracy": {"team": 24, "urgent": 25},
-        "latency": 2731,
-        "usage": Usage(input=56670, output=3718),
-        "buckets": [(27, 28), (18, 18), (4, 6)],
+        "latency": 2321,
+        "usage": Usage(input=56670, output=3676),
+        "buckets": [(27, 27), (19, 20), (3, 5)],
     },
 }
 PASSAGES = {
@@ -128,7 +128,7 @@ async def main() -> None:
             cells.append(f"{right}/{asked} {right / asked:.0%}" if asked else "0/0 -")
         row(f"confidence {label}", *cells)
 
-    print("\nthe vendor columns are decision_vs_generation's run of 2026-09-27")
+    print("\nthe vendor columns are decision_vs_generation's run of 2026-09-28")
     print("confidence is the probability of the answer given; for the local models it is a")
     print("softmax over the option letters' log-probabilities, which nothing has calibrated\n")
     print("wrong at a confidence of 0.9 or more:")
