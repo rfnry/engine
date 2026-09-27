@@ -663,7 +663,9 @@ files and never overwrite. `since` selects every run recorded or labeled after i
 with all its labels. A run is recorded when it ends, so a long run still working at one export is in
 the next, whenever it started; the watermark covers both, so a review of a run you already exported
 reaches the next export. Rows are keyed by `run_id`: when a run appears again, its latest row
-supersedes the earlier ones — dedupe by `run_id`, keep the latest.
+supersedes the earlier ones — dedupe by `run_id`, keep the latest. Because of that you may pass a
+`since` a little before the last watermark: a run is stamped just before it is written, and
+services recording with their own clocks can disagree by a little.
 
 Every row carries `"holdout": true|false` — the rows kept aside so any measurement on them is
 honest. It is derived from a hash of the run id (`holdout_percent=20` by default), so a run's flag
