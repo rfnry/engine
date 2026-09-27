@@ -135,6 +135,12 @@ class Refinery:
             raise InputError("refinery: a generation run takes a text correction")
         if row.kind == "decision" and isinstance(review.correction, str):
             raise InputError("refinery: a decision run takes a correction per question id")
+        if isinstance(review.correction, dict):
+            unknown = sorted(set(review.correction) - set(row.body["questions"]))
+            if unknown:
+                raise InputError(
+                    f"refinery: run {run_id!r} asked no question {', '.join(map(repr, unknown))}"
+                )
         return await self._put(
             Label(
                 label_id=uuid4().hex,

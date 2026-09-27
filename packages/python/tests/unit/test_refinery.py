@@ -71,6 +71,13 @@ async def test_a_correction_must_match_the_run_kind() -> None:
         await refinery.review("acme", decision.run_id, Review(correction="text"))
     label = await refinery.review("acme", decision.run_id, Review(correction={"urgent": False}))
     assert label.review is not None and label.review.correction == {"urgent": False}
+    with pytest.raises(
+        InputError, match=f"^refinery: run '{decision.run_id}' asked no question 'urgnet'$"
+    ):
+        await refinery.review(
+            "acme", decision.run_id, Review(correction={"urgent": True, "urgnet": False})
+        )
+    assert len(await refinery.storage.labels("acme")) == 1
 
 
 async def test_review_needs_something_and_a_known_run() -> None:
