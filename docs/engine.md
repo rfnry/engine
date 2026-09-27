@@ -542,6 +542,8 @@ that takes hours is better refused now and continued later from `run.conversatio
 
 The refinery records and exports what your agents did, with every label and its source. What you do
 with it — evaluate, improve prompts and rules, train or distill models, audit — is yours.
+[`evaluation.md`](evaluation.md) is a guide to doing it: capturing the right answer, the correct
+label and what really happened, and the three levels of improvement they feed.
 
 Attach a refinery and every run is recorded. A recording that fails is logged as a warning and never
 fails the run.
