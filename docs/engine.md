@@ -213,6 +213,10 @@ part from another library is read by its fields.
 
 Pass `record=False` to run without the refinery recording it — a replay, an evaluation, a dry run.
 
+A run that raises instead of returning — the adapter broke the contract (`ModelError`), the loop
+passed `max_steps` (`RunawayError`) — returns no record, and nothing of it is recorded, child runs
+included; the exception is what you have.
+
 Pass `tags=` to mark a run with what you will group it by later — the commit of the tree, an
 experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64
 characters, values up to 256 — anything else is an `InputError`. The record and every exported row
@@ -586,9 +590,10 @@ with it — evaluate, improve prompts and rules, train or distill models, audit 
 [`evaluation.md`](evaluation.md) is a guide to doing it: capturing the right answer, the correct
 label and what really happened, and the three levels of improvement they feed.
 
-Attach a refinery and every run is recorded. A recording that fails is logged as a warning and never
-fails the run. `refinery.run(scope, run_id)` reads a recorded run back, its delegated and routed
-runs in place, to continue it anywhere — see [Running an agent](#running-an-agent).
+Attach a refinery and every run that returns is recorded; a run that raises is not. A recording
+that fails is logged as a warning and never fails the run. `refinery.run(scope, run_id)` reads a
+recorded run back, its delegated and routed runs in place, to continue it anywhere — see
+[Running an agent](#running-an-agent).
 
 ```python
 refinery = Refinery(PostgresStorage(pool))

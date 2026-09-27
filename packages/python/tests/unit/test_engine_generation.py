@@ -16,21 +16,26 @@ from rfnry_engine.errors import (
     RunawayError,
 )
 from rfnry_engine.models import (
+    Answer,
+    CheckAnswer,
     Document,
     Event,
     Image,
     Message,
     Part,
     Reply,
+    ScoreAnswer,
     Text,
     TextDelta,
     ToolCall,
     Usage,
 )
 from rfnry_engine.records import Generation, Run
+from rfnry_engine.refinery.inmemory import InMemoryStorage
+from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Scripted, Streaming, text_reply
+from .fakes import TOOLS, Fixed, Scripted, Streaming, text_reply
 
 
 def _tool_use(*calls: ToolCall) -> Reply:
@@ -195,6 +200,22 @@ async def test_runaway_loop_raises(fixtures: Path) -> None:
     engine = engine_for(fixtures, Scripted(call, call, call), max_steps=2)
     with pytest.raises(RunawayError):
         await engine.run("support", "acme", "x")
+
+
+async def test_a_run_that_raises_leaves_no_record_its_children_included(fixtures: Path) -> None:
+    triage: dict[str, Answer] = {
+        "urgent": CheckAnswer(probability=0.9),
+        "severity": ScoreAnswer(score=0, probabilities=[0.7, 0.1, 0.1, 0.1]),
+    }
+    delegate = ToolCall(id="d", name="Delegate", args={"agent": "triage", "input": "It is down"})
+    llm = Scripted(_tool_use(delegate), _tool_use(ToolCall(id="c", name="LS", args={})))
+    storage = InMemoryStorage()
+    engine = engine_for(
+        fixtures, llm, decision=Fixed(triage), refinery=Refinery(storage), max_steps=2
+    )
+    with pytest.raises(RunawayError):
+        await engine.run("support", "acme", "x")
+    assert await storage.count_scope("acme") == 0
 
 
 async def test_refusals(fixtures: Path) -> None:
