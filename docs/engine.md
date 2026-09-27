@@ -957,7 +957,7 @@ outside their limits, media given to a decision agent, a media part with both or
 correction of the wrong shape or for a question the run was not asked, a `delete_runs` or
 `verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, a
 tool called with bad arguments or a path outside its directory. `ModelError` when an adapter breaks the contract — a
-result whose fields do not fit, a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1. `RunawayError` when
+result whose fields do not fit, a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels. `RunawayError` when
 a loop exceeds `max_steps` (default 200). `DelegationLoopError` and `DelegationDepthError` for
 nesting: through `Delegate` they reach the model as tool errors, through a route they raise.
 `StorageError` for the database. Inside a run, a tool's error is the model's to read, never raised.

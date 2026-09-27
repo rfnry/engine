@@ -85,6 +85,14 @@ def test_settle_refuses_probabilities_outside_zero_and_one() -> None:
             settle(q, answers)
 
 
+def test_settle_refuses_a_score_outside_its_levels() -> None:
+    q: dict[str, Question] = {"level": Score(instructions="How bad?", levels=["low", "high"])}
+    assert settle(q, {"level": ScoreAnswer(score=1.0, probabilities=[0.2, 0.8])})["level"]
+    for score in (7.0, -0.5, math.nan, math.inf):
+        with pytest.raises(ModelError, match="^models: score for 'level' lies outside its levels$"):
+            settle(q, {"level": ScoreAnswer(score=score, probabilities=[0.2, 0.8])})
+
+
 def test_questions_need_two_options_or_levels() -> None:
     with pytest.raises(ValidationError):
         Choice(instructions="?", options={"only": "one"})
