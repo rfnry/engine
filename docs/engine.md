@@ -82,9 +82,9 @@ vendor's blocks, and refusing what the vendor cannot take, is the adapter's job.
 part: frames travel as images. Parts are matched by shape too, so another family library's copy of
 them is accepted as it is.
 
-Structured output is always a forced tool call, so an adapter needs nothing beyond tool support. An
-adapter that also implements `generate_stream(system, messages, tools, on_delta)` streams text when
-the caller asks for events. An adapter that has `media_types`, the file types its model takes —
+Structured output is a tool call — the model is offered an `Output` tool — so an adapter needs
+nothing beyond tool support. An adapter that also implements
+`generate_stream(system, messages, tools, on_delta)` streams text when the caller asks for events. An adapter that has `media_types`, the file types its model takes —
 `{"image/*", "application/pdf"}` — lets `Load` refuse the rest with an error the model can act on,
 instead of the next model call failing; without it, `Load` hands the model any file.
 
@@ -224,7 +224,10 @@ run = await engine.run("support", scope="acme", input=message, tags={"commit": "
 run.tags                                             # {"commit": "4f2c9e1", "arm": "b"}
 ```
 
-Ask for a typed reply and the model is made to produce one:
+Ask for a typed reply and the model is offered an `Output` tool shaped like it. When the model
+calls it with input that fits, the run ends and `run.reply` is that input as JSON; input that does
+not fit goes back to the model with what is wrong. A model that answers in text instead ends the
+run with that text as `run.reply`, which does not parse:
 
 ```python
 class Verdict(BaseModel):
