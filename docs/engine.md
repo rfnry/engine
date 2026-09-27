@@ -289,8 +289,8 @@ rides to the run it routes to. "Pause, please" is a message in the inbox: the mo
 next boundary and wraps up in its own words.
 
 A run that ended continues from its record, on any process, after any restart. With a refinery
-attached every run is recorded with its conversation: keep the run id beside what you showed — a
-message's metadata, say — read the run back and pass its conversation on:
+attached every run that returns is recorded with its conversation: keep the run id beside what you
+showed — a message's metadata, say — read the run back and pass its conversation on:
 
 ```python
 last = await refinery.run("acme", run.run_id)
