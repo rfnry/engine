@@ -15,7 +15,7 @@ def _task(spec: AgentSpec, task: str | None) -> str:
     if task is None:
         return ""
     path = spec.root / "tasks" / f"{task}.md"
-    if not path.is_file():
+    if task not in spec.tasks or not path.is_file():
         raise ConfigurationError(f"bundle: agent {spec.name!r} has no task {task!r}")
     return _read(path)
 

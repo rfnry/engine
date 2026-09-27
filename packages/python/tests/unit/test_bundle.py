@@ -53,3 +53,10 @@ def test_unknown_task_is_refused() -> None:
     agents = load_tree(FIXTURES)
     with pytest.raises(ConfigurationError, match="ghost"):
         build_bundle(agents["support"], task="ghost", tools=[], agents=[], context=None)
+
+
+@pytest.mark.parametrize("task", ["../AGENT", "../../billing/AGENT", "../rules/refunds"])
+def test_a_task_is_one_of_the_agents_tasks_never_a_path_out_of_them(task: str) -> None:
+    agents = load_tree(FIXTURES)
+    with pytest.raises(ConfigurationError, match=f"^bundle: agent 'support' has no task {task!r}$"):
+        build_bundle(agents["support"], task=task, tools=[], agents=[], context=None)
