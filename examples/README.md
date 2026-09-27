@@ -29,6 +29,7 @@ vendor's blocks, in user turns and in tool results alike.
 | `tools_without_a_model` | `EngineTools` driven by code: `dispatch`, `Delegate`, `Jail`, `+`, `only`, `without` |
 | `tool_timeout` | a slow tool cut off by `Engine(tool_timeout=)`, reported to the model as an error |
 | `decision_vs_generation` | the same 26 labelled routing questions — team and urgency — asked of a decision agent and of a generation agent with `expect=`; accuracy, latency, tokens, an estimated cost at assumed prices, accuracy per confidence bucket, and the cases where they disagree. A small illustrative sample, not a benchmark |
+| `decision_on_open_weights` | a decision model on open weights, with no vendor and no key: `LocalDecisionProvider` speaks to any OpenAI-compatible server that returns `top_logprobs` — Ollama, vLLM, llama.cpp's server — asking each question alone and in parallel as lettered options with `max_tokens=1`, the probabilities a softmax over the letters' log-probabilities. The 26 cases of `decision_vs_generation` on its router, on an 8 GB GPU, beside that example's run of Jev and Claude Sonnet 5: team 15/26 on `llama3.1:8b` and 20–21/26 on `qwen3:8b` against 25/26 and 24/26, urgency 11–13/26 and 16/26 against 20/26 and 25/26, 0.3–0.8 s a case, the local numbers moving by a case or two between runs; then rfnry-memory's judge on the same adapter, where `qwen3:8b` flags the forum post as an injection and the memo as contradicting the query. Raw log-probabilities from a general model are not calibrated — `qwen3:8b` gave 0.9 or more to 50 of its 52 answers and was right on 72% of them — and the refinery's `decision` dataset, each answer's probabilities beside what turned out true, is how to measure it |
 | `image_question` | `input=[Text(...), Image(...)]` answered on Claude and on Gemini; the same parts refused by a decision agent |
 
 ## The agent folder, file by file
@@ -63,6 +64,9 @@ uv run --env-file ../../../.env.examples main.py
 
 `postgres_refinery` reads `ENGINE_POSTGRES_URL`, defaulting to the development container on port 55435.
 `workspace_python` runs code the model writes; it does so in a fresh temporary directory.
+`decision_on_open_weights` needs no key: it reads `LOCAL_DECISION_URL`, defaulting to Ollama on
+port 11434, and runs the models named on its command line, `llama3.1:8b` and `qwen3:8b` when none
+is — `ollama pull` them first; Qwen3 answers with its thinking off (`reasoning_effort: "none"`).
 
 The live test tier uses `customer_support_refining/providers.py`. From `packages/python`:
 
