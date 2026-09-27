@@ -62,7 +62,8 @@ uv run --env-file ../../../.env.examples main.py
 `uv` builds each folder's environment on first run; the per-folder `uv.lock` files are ignored by git
 (`examples/**/uv.lock`). Lint an example with its own ruff: `uv run ruff format . && uv run ruff check .`.
 
-`postgres_refinery` reads `ENGINE_POSTGRES_URL`, defaulting to the development container on port 55435.
+`postgres_refinery` reads `ENGINE_POSTGRES_URL`, defaulting to the development container,
+`postgresql://engine:engine@127.0.0.1:55435/engine`.
 `workspace_python` runs code the model writes; it does so in a fresh temporary directory.
 `decision_on_open_weights` needs no key: it reads `LOCAL_DECISION_URL`, defaulting to Ollama on
 port 11434, and runs the models named on its command line, `llama3.1:8b` and `qwen3:8b` when none

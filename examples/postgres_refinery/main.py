@@ -6,7 +6,7 @@ from rfnry_engine import Engine, PostgresStorage, Refinery, Review
 
 from providers import AnthropicProvider
 
-DSN = os.environ.get("ENGINE_POSTGRES_URL", "postgresql://harness:harness@127.0.0.1:55435/harness")
+DSN = os.environ.get("ENGINE_POSTGRES_URL", "postgresql://engine:engine@127.0.0.1:55435/engine")
 
 
 async def main() -> None:

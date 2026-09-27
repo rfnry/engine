@@ -3,9 +3,8 @@ name = "postgres_refinery"
 version = "0"
 requires-python = ">=3.12"
 dependencies = [
-    "rfnry-engine",
+    "rfnry-engine[postgres]",
     "anthropic",
-    "asyncpg",
 ]
 
 [dependency-groups]
