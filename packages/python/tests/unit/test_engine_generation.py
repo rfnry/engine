@@ -153,6 +153,31 @@ async def test_expect_forces_a_typed_reply_and_retries_on_invalid(fixtures: Path
     assert retry_messages[-1].role == "tool" and "refund" in str(retry_messages[-1].content)
 
 
+async def test_calls_after_an_accepted_output_are_answered_but_never_run(
+    fixtures: Path,
+) -> None:
+    looked: list[dict[str, Any]] = []
+
+    async def lookup(args: dict[str, Any]) -> str:
+        looked.append(args)
+        return "found"
+
+    llm = Scripted(
+        _tool_use(
+            ToolCall(id="o", name="Output", args={"refund": True, "reason": "dup"}),
+            ToolCall(id="l", name="lookup_order", args={"order_id": "A-1"}),
+        )
+    )
+    engine = Engine(fixtures, generation=llm, tools=[Tool("lookup_order", body=lookup), TOOLS[1]])
+    run = await engine.run("support", "acme", "x", expect=Verdict)
+    assert isinstance(run, Generation) and looked == []
+    assert [(m.tool_call_id, m.is_error, m.content) for m in run.conversation[-2:]] == [
+        ("o", False, "accepted"),
+        ("l", True, "NotRun: lookup_order was not run; Output ended the run"),
+    ]
+    assert [(s.tool, s.is_error) for s in run.steps] == [("Output", False), ("lookup_order", True)]
+
+
 async def test_streaming_emits_deltas(fixtures: Path) -> None:
     llm = Streaming(text_reply("one two"))
     seen: list[Event] = []

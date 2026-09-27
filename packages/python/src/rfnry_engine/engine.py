@@ -679,5 +679,17 @@ class Engine:
                     duration_ms=0,
                 )
             )
+            for call in reply.tool_calls[reply.tool_calls.index(output) + 1 :]:
+                answer(
+                    call,
+                    Step(
+                        tool=call.name,
+                        args=call.args,
+                        result=f"NotRun: {call.name} was not run; {OUTPUT_TOOL} ended the run",
+                        is_error=True,
+                        at=_now(),
+                        duration_ms=0,
+                    ),
+                )
             return finish(parsed.model_dump_json())
         raise RunawayError(f"engine: run exceeded {self.max_steps} steps")

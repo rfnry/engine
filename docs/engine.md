@@ -235,6 +235,9 @@ run = await engine.run("support", scope="acme", input=message, expect=Verdict)
 verdict = Verdict.model_validate_json(run.reply)
 ```
 
+An accepted `Output` ends the run. A call the model made after it in the same turn is not run; it is
+answered with an error saying so, so every call in `run.conversation` has its result.
+
 Name a task to put `tasks/<task>.md` in front of the model, pass `context=` to add facts about this
 tenant that do not belong in the tree, and pass `on_event=` to receive text deltas, tool starts and
 tool results as they happen:
