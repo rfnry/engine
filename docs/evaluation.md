@@ -148,15 +148,17 @@ for row in held:
     reply = await candidate.run("support", scope="acme", input=question, history=history, record=False)
     reference = next(l["correction"] or row["reply"] for l in row["labels"] if l["source"] == "human")
     grade = await engine.run("grader", scope="acme", record=False,
-                             input={"question": question, "reference": reference, "reply": reply.reply})
+                             input={"reference": reference, "reply": reply.reply})
     grade.answers["matches"].probability
 ```
 
-`rows` are the lines of an exported generation file; `Message.model_validate` reads the stored
-input back as parts, so an image replays as an image and not as its base64 text. `grader` is a
-decision agent of yours whose check `matches` asks whether the reply says what the reference says. Its probability is a score; the rate across the holdout, next to the rate for the current version, is
-the comparison. When you would rather see it live, route a slice of traffic to the candidate with
-`tags={"arm": "candidate"}` and compare the golden labels the two arms collect.
+`rows` are the lines of an exported generation file; `Message.model_validate` reads the stored input
+back as parts, so an image replays as an image and not as its base64 text. `grader` is a decision
+agent of yours whose check `matches` asks whether the reply says what the reference says; it reads
+text, so it is given the two texts and not the question's parts. Its probability is a score; the
+rate across the holdout, next to the rate for the current version, is the comparison. When you would
+rather see it live, route a slice of traffic to the candidate with `tags={"arm": "candidate"}` and
+compare the golden labels the two arms collect.
 
 ### Level 2: choose models on evidence
 

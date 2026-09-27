@@ -94,4 +94,8 @@ async def test_the_holdout_replay_hands_the_candidate_the_parts_as_they_were(
     code = compile(block, "evaluation.md", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
     await eval(code, namespace)
     assert [m.content for m in candidate_model.seen] == [parts]
-    assert len(graded.calls) == 1
+    [(state, _)] = graded.calls
+    assert json.loads(json.dumps(state)) == {
+        "reference": "Refund it.",
+        "reply": "Refund the second charge.",
+    }
