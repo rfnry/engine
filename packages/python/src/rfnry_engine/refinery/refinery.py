@@ -98,6 +98,8 @@ class Refinery:
             await self.storage.put_run(row.scope, row)
 
     async def run(self, scope: str, run_id: str) -> Run:
+        if not scope:
+            raise InputError("refinery: scope is required")
         rows = await self.storage.run_tree(scope, run_ids=[run_id])
         root = next((row for row in rows if row.run_id == run_id), None)
         if root is None:
@@ -319,6 +321,8 @@ class Refinery:
         run_ids: list[str] | None = None,
         tags: dict[str, str] | None = None,
     ) -> int:
+        if not scope:
+            raise InputError("refinery: scope is required")
         if run_ids is None and tags is None:
             raise InputError("refinery: delete_runs takes run_ids or tags")
         check_selector("delete_runs", run_ids, tags)

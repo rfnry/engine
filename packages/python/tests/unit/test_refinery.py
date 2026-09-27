@@ -278,6 +278,9 @@ async def test_every_refinery_verb_needs_a_scope(fixtures: Path) -> None:
         refinery.label("", engine, judge="judge"),
         refinery.delete_scope(""),
         refinery.verify_absent(""),
+        refinery.verify_absent("", tags={"customer": "c-81"}),
+        refinery.delete_runs("", run_ids=[run.run_id]),
+        refinery.run("", run.run_id),
     ]
     for verb in verbs:
         with pytest.raises(InputError, match="^refinery: scope is required$"):
