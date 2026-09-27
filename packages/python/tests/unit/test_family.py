@@ -19,6 +19,19 @@ BLOCKS = {
         "Result = ",
         "if n not in names})\n",
     ),
+    "state": ("rfnry_engine/models.py", "rfnry_memory/models.py", "State = ", "list[Any]\n"),
+    "generation and decision contract": (
+        "rfnry_engine/models.py",
+        "rfnry_memory/models.py",
+        "class Usage(BaseModel):",
+        "    ) -> ReplyLike: ...\n",
+    ),
+    "decision model": (
+        "rfnry_engine/models.py",
+        "rfnry_memory/models.py",
+        "class DecisionModel(Protocol):",
+        "| DecidedLike: ...\n",
+    ),
 }
 
 
