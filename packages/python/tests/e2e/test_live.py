@@ -64,7 +64,7 @@ async def test_a_coder_writes_and_runs_code(adapters: Any, tmp_path: Path) -> No
         "coder",
         "live",
         "Write sum.py that prints the sum of 1..100, run it.",
-        workspace=Workspace(work),
+        workspace=Workspace(work, unsandboxed=True),
     )
     assert isinstance(run, Generation)
     assert {"Write", "Shell"} <= {s.tool for s in run.steps}

@@ -51,7 +51,7 @@ def names(llm: Scripted, index: int) -> list[str]:
 def work(tmp_path: Path) -> Workspace:
     root = tmp_path / "work"
     root.mkdir()
-    return Workspace(root)
+    return Workspace(root, unsandboxed=True)
 
 
 async def test_an_agent_without_the_flag_never_sees_the_workspace(
@@ -121,7 +121,9 @@ async def test_the_workspace_timeout_stops_a_shell_and_the_run_goes_on(tmp_path:
         text_reply("gave up"),
     )
     engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=None)
-    run = await engine.run("coder", "acme", "x", workspace=Workspace(root, timeout=0.5))
+    run = await engine.run(
+        "coder", "acme", "x", workspace=Workspace(root, unsandboxed=True, timeout=0.5)
+    )
     assert isinstance(run, Generation) and run.reply == "gave up"
     result = json.loads(str(run.steps[0].result))
     assert (

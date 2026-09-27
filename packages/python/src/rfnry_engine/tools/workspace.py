@@ -94,8 +94,16 @@ def _bounded(
     return body
 
 
-def _named(shell: list[str]) -> str:
-    return next((Path(part).name for part in reversed(shell) if not part.startswith("-")), shell[0])
+def _words(value: Sequence[str], name: str, example: str) -> list[str]:
+    if (
+        isinstance(value, str)
+        or not value
+        or not all(isinstance(part, str) and part for part in value)
+    ):
+        raise ConfigurationError(
+            f"workspace: {name} must be a non-empty list of strings, such as {example}"
+        )
+    return list(value)
 
 
 class Workspace:
@@ -103,7 +111,9 @@ class Workspace:
         self,
         root: Path | str,
         *,
-        shell: Sequence[str] | None = None,
+        sandbox: Sequence[str] | None = None,
+        unsandboxed: bool = False,
+        shell: Sequence[str] = ("bash", "-c"),
         timeout: float = 120.0,
         output_bytes: int = 30_000,
         env: dict[str, str] | None = None,
@@ -111,6 +121,13 @@ class Workspace:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"workspace: root is not a directory: {root}")
+        if sandbox is None and not unsandboxed:
+            raise ConfigurationError(
+                "workspace: the shell is not sandboxed; pass sandbox= (the engine documentation has "
+                "recipes), or unsandboxed=True when this machine holds nothing the model must not reach"
+            )
+        if sandbox is not None and unsandboxed:
+            raise ConfigurationError("workspace: pass sandbox= or unsandboxed=True, not both")
         if timeout <= 0:
             raise ConfigurationError("workspace: timeout must be positive")
         if output_bytes <= 0:
@@ -124,29 +141,19 @@ class Workspace:
                 "LANG": "C.UTF-8",
             }
         )
-        if shell is None:
-            bash = shutil.which("bash", path=self.env.get("PATH"))
-            if bash is None:
-                raise ConfigurationError(
-                    "workspace: bash was not found; pass shell=, such as ['sh', '-c']"
-                )
-            shell = [bash, "-c"]
-        elif (
-            isinstance(shell, str)
-            or not shell
-            or not all(isinstance(part, str) and part for part in shell)
-        ):
+        self.sandbox = [] if sandbox is None else _words(sandbox, "sandbox", "['bwrap', ...]")
+        self.shell = _words(shell, "shell", "['bash', '-c']")
+        if not self.sandbox and shutil.which(self.shell[0], path=self.env.get("PATH")) is None:
             raise ConfigurationError(
-                "workspace: shell must be a non-empty list of strings, such as ['bash', '-c']"
+                f"workspace: {self.shell[0]} was not found; pass shell=, such as ['sh', '-c']"
             )
-        self.shell = list(shell)
         self.timeout = timeout
         self.output_bytes = output_bytes
         self.jail = Jail(self.root)
 
     def tools(self) -> list[Tool]:
         shell = (
-            f"Run a {_named(self.shell)} command. It starts in the workspace directory, so relative paths work and "
+            f"Run a {Path(self.shell[0]).name} command. It starts in the workspace directory, so relative paths work and "
             "there is no need to search the filesystem for it. Each command starts fresh: a cd or a variable does not "
             f"carry over to the next one. A command is stopped after {self.timeout:g} seconds. Returns exit_code, "
             f"stdout, stderr and timed_out; stdout and stderr keep their first and last {self.output_bytes // 2} bytes."
@@ -172,6 +179,7 @@ class Workspace:
         loop = asyncio.get_running_loop()
         transport, capture = await loop.subprocess_exec(
             lambda: _Capture(loop, self.output_bytes),
+            *self.sandbox,
             *self.shell,
             command,
             cwd=self.root,

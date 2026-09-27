@@ -89,10 +89,10 @@ SETUPS = {
         replies=(delegating("triage"),), intent="technical"
     ),
     "from rfnry_engine import Workspace": Setup(replace={"/srv/tenants/acme/work": "work"}),
-    'sandboxed = Workspace("/srv/tenants/acme/work", shell=[': Setup(
+    'sandboxed = Workspace("/srv/tenants/acme/work", sandbox=[': Setup(
         replace={"/srv/tenants/acme/work": "work"}
     ),
-    'contained = Workspace("/srv/tenants/acme/work", timeout=600, shell=[': Setup(
+    'contained = Workspace("/srv/tenants/acme/work", timeout=600, sandbox=[': Setup(
         replace={"/srv/tenants/acme/work": "work"}
     ),
     "async def approve(agent, call):": Setup(

@@ -25,7 +25,7 @@ async def main() -> None:
     approve = ask_in_the_terminal if sys.argv[1:] == ["ask"] else None
 
     with tempfile.TemporaryDirectory() as work:
-        workspace = Workspace(work, timeout=60)
+        workspace = Workspace(work, unsandboxed=True, timeout=60)
         run = await engine.run(
             "coder", scope="demo", input=TASK, workspace=workspace, approve=approve
         )

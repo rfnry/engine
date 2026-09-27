@@ -437,8 +437,12 @@ workspace: true
 from rfnry_engine import Workspace
 
 run = await engine.run("coder", scope="acme", input="make the failing test pass",
-                       workspace=Workspace("/srv/tenants/acme/work", timeout=600))
+                       workspace=Workspace("/srv/tenants/acme/work", unsandboxed=True, timeout=600))
 ```
+
+Every workspace says whether its shell is sandboxed. `sandbox=` names the sandbox each command runs
+inside; `unsandboxed=True` says out loud that this machine holds nothing the model must not reach — a
+developer's laptop, a container of its own. A workspace with neither refuses to start.
 
 The agent then has three more tools. `Shell(command)` runs a command and returns `exit_code`,
 `stdout`, `stderr` and `timed_out`. `Write(path, content)` writes a file exactly, and
@@ -448,34 +452,35 @@ the model a file from the directory, so an agent looks at the chart it just plot
 so a `cd` or a variable does not carry over, and the tool's description tells the model so, along
 with its shell and its limits.
 
-`Workspace(root, shell=, timeout=, output_bytes=, env=)`:
+`Workspace(root, sandbox= or unsandboxed=True, shell=, timeout=, output_bytes=, env=)`:
 
 | argument | default | what it does |
 | --- | --- | --- |
-| `shell` | `["bash", "-c"]`, bash found on `PATH` | the command each `Shell` call runs inside, the command appended last; the model is told the name of its last program |
+| `sandbox` | none | the command each `Shell` call runs inside — bubblewrap, a container — before the shell |
+| `unsandboxed` | `False` | `True` runs the shell on the machine itself, reaching whatever the service's user can |
+| `shell` | `["bash", "-c"]` | the shell the command is given to, last; the model is told its name. Without a sandbox it must be on `PATH` |
 | `timeout` | `120` seconds | no `Shell`, `Write` or `Edit` call runs longer; a command still running is killed with everything it started, and the call returns what it printed with `timed_out: true` |
 | `output_bytes` | `30_000` | the cap on `stdout` and on `stderr`, each keeping its first and last half |
 | `env` | `PATH`, `HOME` (the directory), `LANG` | the only environment commands see, so the service's own keys never reach them |
 
 The workspace's `timeout` replaces `Engine(tool_timeout=)` for its three tools, so a ten-minute
-build and a thirty-second API call live in the same engine. Without bash on `PATH` the workspace is
-a `ConfigurationError` that says so; pass `shell=["sh", "-c"]` on a system that has only a POSIX
-shell, such as Alpine.
+build and a thirty-second API call live in the same engine. An unsandboxed workspace without bash on
+`PATH` is a `ConfigurationError` that says so; pass `shell=["sh", "-c"]` on a system that has only a
+POSIX shell, such as Alpine.
 
 `Write`, `Edit` and `Load` stay inside the directory: the engine runs them itself and refuses a path
 that leaves it. `Shell` reaches what the process running it can reach, so the real boundary is
-`shell=` or the machine. On Linux, bubblewrap — the sandbox Claude Code uses for its own shell —
+`sandbox=` or the machine. On Linux, bubblewrap — the sandbox Claude Code uses for its own shell —
 builds each command a world of its own: the system's programs read-only, this tenant's directory
 writable, an empty `/tmp`, and nothing else — no other tenant, no service configuration, no network —
 and it kills every process when the command ends:
 
 ```python
-sandboxed = Workspace("/srv/tenants/acme/work", shell=[
+sandboxed = Workspace("/srv/tenants/acme/work", sandbox=[
     "bwrap", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin",
     "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
     "--tmpfs", "/tmp", "--bind", "/srv/tenants/acme/work", "/srv/tenants/acme/work",
     "--chdir", "/srv/tenants/acme/work", "--unshare-all", "--die-with-parent", "--new-session",
-    "bash", "-c",
 ])
 ```
 
@@ -489,9 +494,9 @@ so the time limit goes inside the wrapper, and the container starts with `--init
 are reaped. Mount the directory at the same path, so `Write` and the shell see the same files:
 
 ```python
-contained = Workspace("/srv/tenants/acme/work", timeout=600, shell=[
+contained = Workspace("/srv/tenants/acme/work", timeout=600, sandbox=[
     "docker", "exec", "-i", "-w", "/srv/tenants/acme/work", "sandbox",
-    "timeout", "-s", "KILL", "600", "bash", "-c",
+    "timeout", "-s", "KILL", "600",
 ])
 ```
 
@@ -517,7 +522,7 @@ async def approve(agent, call):
     return await ask_a_person(agent, call)
 
 run = await engine.run("coder", scope="acme", input="make the failing test pass",
-                       workspace=Workspace("/srv/tenants/acme/work"), approve=approve)
+                       workspace=Workspace("/srv/tenants/acme/work", unsandboxed=True), approve=approve)
 ```
 
 Where the person is — a thread, a dashboard, a chat app — is yours; the engine only waits. "Allow
@@ -828,7 +833,8 @@ Everything the package exports, by role.
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
 `AGENT.md`, a tool declared without a body or given without a declaration, a run of an agent whose
 kind of model is absent, an unknown task, a missing workspace, a `Workspace` root that is not a
-directory, no bash on `PATH` and no `shell=`, a `shell` that is not a list of strings, a `max_steps`,
+directory, a `Workspace` with neither `sandbox=` nor `unsandboxed=True` or with both, an unsandboxed
+shell not on `PATH`, a `sandbox` or `shell` that is not a list of strings, a `max_steps`,
 `max_depth`, `tool_timeout`, `timeout` or `output_bytes` that is not positive, an `approve` that
 returns anything but `True` or `False`. `NotFoundError` for
 an agent the tree does not have or a run the refinery does not.

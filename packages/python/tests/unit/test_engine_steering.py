@@ -375,7 +375,7 @@ async def test_a_routed_run_shares_the_stop_and_the_inbox(tmp_path: Path) -> Non
 async def test_stop_now_kills_a_workspace_shell(tmp_path: Path) -> None:
     root = tmp_path / "work"
     root.mkdir()
-    work = Workspace(root)
+    work = Workspace(root, unsandboxed=True)
     llm = Paced(use(call("Shell", "c1", command="sleep 30 & echo $! > child.pid; wait")))
     engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=None)
     stop = Stop()

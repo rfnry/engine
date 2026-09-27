@@ -44,12 +44,12 @@ async def gone(pid: int) -> bool:
 def ws(tmp_path: Path) -> Workspace:
     root = tmp_path / "work"
     root.mkdir()
-    return Workspace(root)
+    return Workspace(root, unsandboxed=True)
 
 
 def test_root_must_be_a_directory(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError, match="not a directory"):
-        Workspace(tmp_path / "missing")
+        Workspace(tmp_path / "missing", unsandboxed=True)
 
 
 def test_three_tools_in_order(ws: Workspace) -> None:
@@ -71,12 +71,18 @@ async def test_the_default_environment_does_not_leak_the_service(
     ws: Workspace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("SERVICE_SECRET", "s3cret")
-    result = await shell(Workspace(ws.root), 'echo "[$SERVICE_SECRET]"; echo "$HOME"')
+    result = await shell(
+        Workspace(ws.root, unsandboxed=True), 'echo "[$SERVICE_SECRET]"; echo "$HOME"'
+    )
     assert result["stdout"] == f"[]\n{ws.root}\n"
 
 
 async def test_env_passes_through(ws: Workspace) -> None:
-    custom = Workspace(ws.root, env={"PATH": os.environ.get("PATH", os.defpath), "GREETING": "hi"})
+    custom = Workspace(
+        ws.root,
+        unsandboxed=True,
+        env={"PATH": os.environ.get("PATH", os.defpath), "GREETING": "hi"},
+    )
     assert (await shell(custom, 'echo "$GREETING"'))["stdout"] == "hi\n"
 
 
@@ -178,7 +184,7 @@ async def test_edit_refuses_empty_old_missing_file_and_binary(ws: Workspace) -> 
 def test_shell_tells_the_model_its_terms(tmp_path: Path) -> None:
     description = next(
         t.description
-        for t in Workspace(tmp_path, timeout=45, output_bytes=8000).tools()
+        for t in Workspace(tmp_path, unsandboxed=True, timeout=45, output_bytes=8000).tools()
         if t.name == "Shell"
     )
     assert description.startswith("Run a bash command. It starts in the workspace directory")
@@ -194,21 +200,39 @@ async def test_the_default_shell_is_bash(ws: Workspace) -> None:
     assert result["stdout"] == "2\n3\n" and result["exit_code"] == 0
 
 
-def test_a_missing_bash_is_refused_with_the_way_out(tmp_path: Path) -> None:
+def test_a_workspace_says_whether_its_shell_is_sandboxed(tmp_path: Path) -> None:
+    with pytest.raises(
+        ConfigurationError,
+        match=r"^workspace: the shell is not sandboxed; pass sandbox= \(the engine documentation has "
+        r"recipes\), or unsandboxed=True when this machine holds nothing the model must not reach$",
+    ):
+        Workspace(tmp_path)
+    with pytest.raises(
+        ConfigurationError, match=r"^workspace: pass sandbox= or unsandboxed=True, not both$"
+    ):
+        Workspace(tmp_path, sandbox=["bwrap"], unsandboxed=True)
+
+
+def test_a_missing_shell_is_refused_with_the_way_out(tmp_path: Path) -> None:
     with pytest.raises(
         ConfigurationError,
         match=r"^workspace: bash was not found; pass shell=, such as \['sh', '-c'\]$",
     ):
-        Workspace(tmp_path, env={"PATH": str(tmp_path)})
+        Workspace(tmp_path, unsandboxed=True, env={"PATH": str(tmp_path)})
 
 
-async def test_the_shell_can_be_chosen_and_wrapped(ws: Workspace) -> None:
-    posix = Workspace(ws.root, shell=["sh", "-c"])
+def test_inside_a_sandbox_the_shell_is_the_sandboxs_to_find(tmp_path: Path) -> None:
+    ws = Workspace(tmp_path, sandbox=["env"], env={"PATH": str(tmp_path)})
+    assert ws.sandbox == ["env"] and ws.shell == ["bash", "-c"]
+
+
+async def test_the_command_runs_inside_the_sandbox_in_the_chosen_shell(ws: Workspace) -> None:
+    posix = Workspace(ws.root, unsandboxed=True, shell=["sh", "-c"])
     assert (await shell(posix, "echo plain"))["stdout"] == "plain\n"
     assert next(t.description for t in posix.tools() if t.name == "Shell").startswith(
         "Run a sh command."
     )
-    wrapped = Workspace(ws.root, shell=["env", "WRAPPED=yes", "bash", "-c"])
+    wrapped = Workspace(ws.root, sandbox=["env", "WRAPPED=yes"])
     assert (await shell(wrapped, 'echo "$WRAPPED"'))["stdout"] == "yes\n"
     assert next(t.description for t in wrapped.tools() if t.name == "Shell").startswith(
         "Run a bash command."
@@ -219,6 +243,8 @@ async def test_the_shell_can_be_chosen_and_wrapped(ws: Workspace) -> None:
     ("kwargs", "message"),
     [
         ({"shell": "bash -c"}, "shell must be a non-empty list of strings"),
+        ({"sandbox": "bwrap", "unsandboxed": False}, "sandbox must be a non-empty list of strings"),
+        ({"sandbox": [], "unsandboxed": False}, "sandbox must be a non-empty list of strings"),
         ({"shell": []}, "shell must be a non-empty list of strings"),
         ({"shell": ["bash", ""]}, "shell must be a non-empty list of strings"),
         ({"timeout": 0}, "timeout must be positive"),
@@ -229,11 +255,11 @@ def test_a_workspace_that_cannot_work_is_refused(
     tmp_path: Path, kwargs: dict[str, Any], message: str
 ) -> None:
     with pytest.raises(ConfigurationError, match=f"^workspace: {message}"):
-        Workspace(tmp_path, **kwargs)
+        Workspace(tmp_path, **{"unsandboxed": True, **kwargs})
 
 
 async def test_the_timeout_stops_the_command_and_keeps_what_it_printed(tmp_path: Path) -> None:
-    quick = Workspace(tmp_path, timeout=0.5)
+    quick = Workspace(tmp_path, unsandboxed=True, timeout=0.5)
     began = time.monotonic()
     result = await shell(quick, "echo before; sleep 30 & echo $! > child.pid; wait")
     assert time.monotonic() - began < 5
@@ -242,7 +268,7 @@ async def test_the_timeout_stops_the_command_and_keeps_what_it_printed(tmp_path:
 
 
 async def test_output_bytes_sets_the_cap(tmp_path: Path) -> None:
-    small = Workspace(tmp_path, output_bytes=1000)
+    small = Workspace(tmp_path, unsandboxed=True, output_bytes=1000)
     out = (await shell(small, "head -c 50000 /dev/zero | tr '\\0' a"))["stdout"]
     assert len(out) < 1100 and "49000 bytes omitted" in out
 
@@ -250,7 +276,7 @@ async def test_output_bytes_sets_the_cap(tmp_path: Path) -> None:
 async def test_write_and_edit_are_bounded_by_the_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    slow = Workspace(tmp_path, timeout=0.2)
+    slow = Workspace(tmp_path, unsandboxed=True, timeout=0.2)
 
     def late(args: dict[str, Any]) -> str:
         time.sleep(1)
