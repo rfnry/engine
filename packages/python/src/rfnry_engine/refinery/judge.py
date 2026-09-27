@@ -84,6 +84,8 @@ def teacher_prompt(row: RunRow) -> str:
             lines.extend(f"  - {key}: {text}" for key, text in question["options"].items())
         if question["type"] == "score":
             lines.extend(f"  {index}: {level}" for index, level in enumerate(question["levels"]))
+        if question["type"] == "check":
+            lines.extend(f"  {key}: {question[key]}" for key in ("yes", "no") if question.get(key))
     return "\n".join(lines)
 
 

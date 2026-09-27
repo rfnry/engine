@@ -1,6 +1,7 @@
 import base64
 import json
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,9 +28,10 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import Generation
 from rfnry_engine.refinery.inmemory import InMemoryStorage
-from rfnry_engine.refinery.judge import TeacherAnswers, teacher_answers
+from rfnry_engine.refinery.judge import TeacherAnswers, teacher_answers, teacher_prompt
 from rfnry_engine.refinery.labels import Review
 from rfnry_engine.refinery.refinery import Refinery, label_of
+from rfnry_engine.refinery.storage import RunRow
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import TOOLS, Fixed, MemoryBucket, Scripted, text_reply
@@ -199,6 +201,36 @@ def test_teacher_answers_are_validated_against_the_questions() -> None:
     for given, message in cases:
         with pytest.raises(ModelError, match=message):
             teacher_answers(questions, TeacherAnswers(answers=given, rationale="r"))
+
+
+def test_the_teacher_reads_what_yes_and_no_mean_for_a_check() -> None:
+    questions = {
+        "urgent": Check(instructions="Is it urgent?", yes="The service is down", no="A workaround"),
+        "polite": Check(instructions="Is it polite?"),
+    }
+    now = datetime.now(UTC)
+    row = RunRow(
+        scope="acme",
+        run_id="r",
+        parent_run_id=None,
+        agent="triage",
+        kind="decision",
+        task=None,
+        at=now,
+        recorded=now,
+        duration_ms=0,
+        model=None,
+        body={
+            "state": "It is down",
+            "questions": {qid: q.model_dump(mode="json") for qid, q in questions.items()},
+        },
+    )
+    assert teacher_prompt(row).endswith(
+        "QUESTION urgent (check): Is it urgent?\n"
+        "  yes: The service is down\n"
+        "  no: A workaround\n"
+        "QUESTION polite (check): Is it polite?"
+    )
 
 
 async def test_a_teachers_answer_is_the_exported_truth_until_a_person_gives_one(
