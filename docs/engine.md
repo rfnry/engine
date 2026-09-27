@@ -365,7 +365,8 @@ How severe is the problem?
 ```
 
 A `check` may say with `yes:` and `no:` what each answer means; a `score` lists `levels:` in order;
-a `choice` lists `options:`, each key with what it means.
+a `choice` lists `options:`, each key with what it means. In frontmatter only `true` and `false` are
+booleans; `yes`, `no`, `on` and `off` are words, as a key or as a value.
 
 Run it with a state instead of a message. The state can be a string, an object or a list. A
 decision model reads text: a list of parts made only of `Text` is joined with newlines into the

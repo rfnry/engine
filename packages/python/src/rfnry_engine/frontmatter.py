@@ -9,6 +9,20 @@ from pydantic import BaseModel, ValidationError
 from rfnry_engine.errors import ConfigurationError
 
 _FRONTMATTER = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
+_BOOL = "tag:yaml.org,2002:bool"
+
+
+class _Loader(yaml.SafeLoader):
+    pass
+
+
+_Loader.yaml_implicit_resolvers = {
+    first: [(tag, pattern) for tag, pattern in resolvers if tag != _BOOL]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_Loader.add_implicit_resolver(
+    _BOOL, re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"), list("tTfF")
+)
 
 
 def split_frontmatter(raw: str) -> tuple[str, str] | None:
@@ -35,7 +49,7 @@ def parse_frontmatter_doc[T: BaseModel](
         raise ConfigurationError(f"frontmatter: missing in {source}")
     front_raw, body = split
     try:
-        data = yaml.safe_load(front_raw) or {}
+        data = yaml.load(front_raw, Loader=_Loader) or {}
     except yaml.YAMLError as exc:
         raise ConfigurationError(f"frontmatter: invalid YAML in {source}: {exc}") from exc
     try:

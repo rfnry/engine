@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError, ModelError
 from rfnry_engine.models import (
+    Check,
     CheckAnswer,
     ChoiceAnswer,
     Decided,
@@ -256,3 +257,24 @@ async def test_a_route_forwards_the_parts_to_its_target(fixtures: Path) -> None:
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     assert run.state == "The app crashes\non login" and run.routed_to.input == parts
     assert llm.calls[0][1][-1] == Message(role="user", content=parts)
+
+
+async def test_a_checks_yes_and_no_reach_the_decision_model(tmp_path: Path) -> None:
+    (tmp_path / "triage" / "questions").mkdir(parents=True)
+    (tmp_path / "triage" / "AGENT.md").write_text("---\nname: triage\nkind: decision\n---\n")
+    (tmp_path / "triage" / "questions" / "urgent.md").write_text(
+        "---\n"
+        "type: check\n"
+        "yes: The service is down or data is at risk\n"
+        "no: A question, a request, or a problem with a workaround\n"
+        "---\n"
+        "Does the message need a person right now?\n"
+    )
+    dm = Fixed({"urgent": CheckAnswer(probability=0.9)})
+    await Engine(tmp_path, decision=dm).run("triage", "acme", "It is down")
+    [(_, questions)] = dm.calls
+    assert questions["urgent"] == Check(
+        instructions="Does the message need a person right now?",
+        yes="The service is down or data is at risk",
+        no="A question, a request, or a problem with a workaround",
+    )

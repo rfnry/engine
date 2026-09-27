@@ -3,10 +3,11 @@ from pathlib import Path
 import pytest
 
 from rfnry_engine.errors import ConfigurationError
-from rfnry_engine.models import Choice, Score
+from rfnry_engine.models import Check, Choice, Score
 from rfnry_engine.tree import load_agent, load_tree, validate_tree
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "agents"
+EXAMPLES = Path(__file__).parents[4] / "examples"
 
 
 def test_load_tree_finds_every_agent_with_its_kind() -> None:
@@ -198,3 +199,42 @@ def test_an_unknown_frontmatter_key_is_refused_by_name(
         load_agent(tmp_path / "a")
     assert str(refused.value) == f"frontmatter: unknown key {key!r} in {path}"
     assert str(refused.value).endswith(where)
+
+
+def test_only_true_and_false_are_booleans_in_frontmatter(tmp_path: Path) -> None:
+    _agent(tmp_path, "a", "kind: generation\nworkspace: true\n")
+    (tmp_path / "a" / "tools").mkdir()
+    (tmp_path / "a" / "tools" / "t.md").write_text(
+        "---\nname: t\ndescription: T\ninput:\n"
+        "  q: {type: string, required: true}\n"
+        "  r: {type: string, required: yes}\n"
+        "  s: {type: string, required: False}\n"
+        "---\n"
+    )
+    spec = load_agent(tmp_path / "a")
+    assert spec.workspace is True and spec.tools["t"].input is not None
+    assert {k: f.required for k, f in spec.tools["t"].input.items()} == {
+        "q": True,
+        "r": True,
+        "s": False,
+    }
+    choice = "---\ntype: choice\noptions: {yes: Agrees, no: Disagrees, off: Unrelated}\n---\n?\n"
+    _agent(tmp_path, "d", "kind: decision\n", {"q": choice})
+    question = load_agent(tmp_path / "d").questions["q"]
+    assert isinstance(question, Choice)
+    assert question.options == {"yes": "Agrees", "no": "Disagrees", "off": "Unrelated"}
+
+
+def test_every_example_tree_loads_with_its_checks_criteria() -> None:
+    roots = sorted(EXAMPLES.glob("*/agents"))
+    assert roots
+    for root in roots:
+        agents = load_tree(root)
+        validate_tree(agents)
+        for spec in agents.values():
+            for qid, question in spec.questions.items():
+                if not isinstance(question, Check):
+                    continue
+                text = (spec.root / "questions" / f"{qid}.md").read_text(encoding="utf-8")
+                assert (question.yes is not None) == ("\nyes:" in text), (root, qid)
+                assert (question.no is not None) == ("\nno:" in text), (root, qid)
