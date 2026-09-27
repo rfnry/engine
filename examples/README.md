@@ -6,12 +6,12 @@ dependencies it needs.
 
 There is one provider per vendor — `AnthropicProvider`, `GoogleProvider`, `TypeSafeProvider`, and
 `VoyageProvider` in rfnry-memory's examples — and every folder that uses a vendor carries the same
-class, byte for byte, in both repositories; only the line importing the library's types differs. A
-folder may carry a method it does not call, such as `generate_stream`. Each creates one client and
-retries rate limits and overloads; the generation providers report cache usage and hand back the
-model's reasoning so a later turn can replay it. The generation providers translate the parts —
-`Text`, `Image`, `Document`, and `Audio` where the vendor takes it — and `Message.tool_calls` into the
-vendor's blocks, in user turns and in tool results alike.
+class, byte for byte, across the family's four libraries; only the line importing the library's
+types differs. A folder may carry a method it does not call, such as `generate_stream`. Each creates
+one client and retries rate limits and overloads; the generation providers report cache usage and
+hand back the model's reasoning so a later turn can replay it. The generation providers translate
+the parts — `Text`, `Image`, `Document`, and `Audio` where the vendor takes it — and
+`Message.tool_calls` into the vendor's blocks, in user turns and in tool results alike.
 
 | example | what it shows |
 | --- | --- |

@@ -860,7 +860,7 @@ for tests and small things, `PostgresStorage(pool)` for everything else, taking 
 built. `initialize()` creates two tables, `engine_runs` and `engine_labels`, and is safe to run
 again. A run's row keeps `at`, when the run started, and `recorded`, when the refinery stored it —
 one stamp for a run and every child run under it — and `runs(since=)` reads `recorded`. The tables
-are prefixed so the same database can hold rfnry-memory's:
+are prefixed `engine_` so one database can also hold rfnry-memory's and rfnry-thread's:
 
 ```python
 pool = await asyncpg.create_pool(dsn)
