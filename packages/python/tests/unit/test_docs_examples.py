@@ -269,6 +269,9 @@ def test_every_named_block_is_in_the_docs() -> None:
 def test_signature_blocks_match_the_code(block: str) -> None:
     documented = dict(re.findall(r"def (\w+)\(([^)]*)\)", block))
     classes = SIGNATURES[first_line(block)]
+    if getattr(classes[0], "_is_protocol", False):
+        members = {n for n, v in vars(classes[0]).items() if inspect.isfunction(v) and n[0] != "_"}
+        assert members <= set(documented), sorted(members - set(documented))
     for method, params in documented.items():
         real = next(getattr(c, method) for c in classes if hasattr(c, method))
         while re.search(r"\[[^\[\]]*\]", params):

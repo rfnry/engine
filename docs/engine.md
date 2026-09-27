@@ -887,6 +887,10 @@ class Storage(Protocol):
     async def put_label(self, scope: str, row: LabelRow) -> None
     async def labels(self, scope: str, *, run_ids: list[str] | None = None,
                      source: str | None = None, since: datetime | None = None) -> list[LabelRow]
+    async def run_tree(self, scope: str, *, run_ids: list[str] | None = None,
+                       tags: dict[str, str] | None = None) -> list[RunRow]  # oldest first
+    async def delete_runs(self, scope: str, *, run_ids: list[str] | None = None,
+                          tags: dict[str, str] | None = None) -> int        # the rows it removed
     async def delete_scope(self, scope: str) -> int                 # the rows it removed
     async def count_scope(self, scope: str) -> int
 
@@ -904,6 +908,10 @@ class Conflict(BaseModel): run_id, corrections
 A row's `body` is the run's record, or the label, as JSON, with a run's children and routed run
 left out: each is a row of its own, joined by `parent_run_id`. `runs` returns the newest first and
 `labels` the oldest first; `unlabeled_by="judge"` keeps the runs no label from that source names.
+`run_tree` returns the runs a selector matches — `run_ids`, or `tags` by containment — and every run
+under them, oldest first; `refinery.run` reads a run back from it. `delete_runs` removes the same
+runs and every label on them in one transaction, for `refinery.delete_runs`, which checks the
+selectors before it calls.
 `Exported.rows` counts the rows written per dataset; `Conflict.corrections` lists each correction
 as `(label_id, at, text)`, oldest first.
 
