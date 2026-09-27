@@ -233,6 +233,14 @@ class Refinery:
     ) -> Labeled:
         if not scope:
             raise InputError("refinery: scope is required")
+        agents = engine.agents
+        for role, name, kind in (("judge", judge, "decision"), ("teacher", teacher, "generation")):
+            if name is None:
+                continue
+            if name not in agents:
+                raise NotFoundError(f"refinery: {role} {name!r} was not found")
+            if agents[name].kind != kind:
+                raise ConfigurationError(f"refinery: {role} {name!r} must be a {kind} agent")
         labelers = {name for name in (judge, teacher) if name is not None}
         result = Labeled()
         if judge is not None:

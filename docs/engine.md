@@ -632,9 +632,11 @@ labeled = await refinery.label("acme", engine, judge="judge", teacher="teacher")
 labeled.judged, labeled.taught, labeled.errors
 ```
 
-A run that could not be labeled — the model failed, or the teacher answered a choice with no
-option, a score with no level index, a check with anything but true or false — is named in
-`labeled.errors` with why, and stays unlabeled for the next call. Every label carries its source. A
+A judge or teacher the tree does not have is a `NotFoundError`, and one of the wrong kind a
+`ConfigurationError`, before any run is labeled. A run that could not be labeled — the model
+failed, or the teacher answered a choice with no option, a score with no level index, a check with
+anything but true or false — is named in `labeled.errors` with why, and stays unlabeled for the
+next call. Every label carries its source. A
 judge's score is exported as a judge's score, never as a person's.
 
 Export writes datasets to any object with a `put(key, bytes)`:
@@ -905,8 +907,9 @@ absent, an unknown task, a missing workspace, a `Workspace` root that is not a
 directory, a `Workspace` with neither `sandbox=` nor `unsandboxed=True` or with both, an unsandboxed
 shell not on `PATH`, a `sandbox` or `shell` that is not a list of strings, a `max_steps`,
 `max_depth`, `tool_timeout`, `timeout` or `output_bytes` that is not positive, an `approve` that
-returns anything but `True` or `False`. `NotFoundError` for
-an agent the tree does not have or a run the refinery does not.
+returns anything but `True` or `False`, a judge that is not a decision agent or a teacher that is
+not a generation agent. `NotFoundError` for an agent the tree does not have — a judge or a teacher
+included — or a run the refinery does not.
 `InputError` for a call the library refuses: an empty scope, a `task` for a decision agent, tags
 outside their limits, media given to a decision agent, a media part with both or neither of `data` and `url`, a
 correction of the wrong shape, a `delete_runs` or `verify_absent` given both `run_ids` and `tags` or

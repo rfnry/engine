@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import ModelError
+from rfnry_engine.errors import ConfigurationError, ModelError, NotFoundError
 from rfnry_engine.models import (
     Answer,
     Audio,
@@ -133,23 +133,32 @@ async def test_judge_and_teacher_never_label_their_own_runs(fixtures: Path) -> N
     assert await storage.labels("acme") == []
 
 
-async def test_a_judge_or_teacher_of_the_wrong_kind_is_reported(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
-    llm = Scripted(text_reply("Refunded."), text_reply("not a judge"))
-    engine = Engine(
-        fixtures,
-        generation=llm,
-        decision=Fixed({**TRIAGE, **JUDGEMENT}),
-        refinery=refinery,
-        tools=TOOLS,
-    )
-    generation = await engine.run("billing", "acme", "x")
-    decision = await engine.run("triage", "acme", "x")
-    labeled = await refinery.label("acme", engine, judge="support", teacher="judge")
-    assert labeled.errors == {
-        generation.run_id: "ConfigurationError: refinery: judge 'support' must be a decision agent",
-        decision.run_id: "ConfigurationError: refinery: teacher 'judge' must be a generation agent",
-    }
+async def test_a_judge_or_teacher_the_tree_cannot_use_is_refused_before_any_run(
+    fixtures: Path,
+) -> None:
+    storage = InMemoryStorage()
+    refinery = Refinery(storage)
+    llm = Scripted(text_reply("Refunded."))
+    dm = Fixed({**TRIAGE, **JUDGEMENT})
+    engine = Engine(fixtures, generation=llm, decision=dm, refinery=refinery, tools=TOOLS)
+    await engine.run("billing", "acme", "x")
+    await engine.run("triage", "acme", "x")
+    refused: list[tuple[str | None, str | None, type[Exception], str]] = [
+        ("jduge", None, NotFoundError, "refinery: judge 'jduge' was not found"),
+        (None, "teachr", NotFoundError, "refinery: teacher 'teachr' was not found"),
+        ("support", None, ConfigurationError, "refinery: judge 'support' must be a decision agent"),
+        (
+            "judge",
+            "judge",
+            ConfigurationError,
+            "refinery: teacher 'judge' must be a generation agent",
+        ),
+    ]
+    for judge, teacher, error, message in refused:
+        with pytest.raises(error, match=f"^{message}$"):
+            await refinery.label("acme", engine, judge=judge, teacher=teacher)
+    assert (len(llm.calls), len(dm.calls)) == (1, 1)
+    assert await storage.labels("acme") == []
 
 
 def test_teacher_answers_are_validated_against_the_questions() -> None:
