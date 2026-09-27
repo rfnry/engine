@@ -308,8 +308,6 @@ Tools of one tool taking {"input": str}; its body is engine.run, recorded as a
 top-level run; it returns a generation agent's reply or a decision agent's answers.
 A Tools, not a Tool, so it composes with + and passes as a ToolsLike without
 changing the tools block shared with rfnry-memory. Not breaking.
-
-Claude-Session: https://claude.ai/code/session_01GevsYJaAyM8ARLvEnXsoAB
 ```
 
 Push to `origin main`. Then the senses design's §10 signature reads `-> Tools`, and its §7 example

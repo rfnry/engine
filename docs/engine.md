@@ -515,10 +515,10 @@ POSIX shell, such as Alpine.
 
 `Write`, `Edit` and `Load` stay inside the directory: the engine runs them itself and refuses a path
 that leaves it. `Shell` reaches what the process running it can reach, so the real boundary is
-`sandbox=` or the machine. On Linux, bubblewrap — the sandbox Claude Code uses for its own shell —
-builds each command a world of its own: the system's programs read-only, this tenant's directory
-writable, an empty `/tmp`, and nothing else — no other tenant, no service configuration, no network —
-and it kills every process when the command ends:
+`sandbox=` or the machine. On Linux, bubblewrap builds each command a world of its own: the
+system's programs read-only, this tenant's directory writable, an empty `/tmp`, and nothing else —
+no other tenant, no service configuration, no network — and it kills every process when the
+command ends:
 
 ```python
 sandboxed = Workspace("/srv/tenants/acme/work", sandbox=[
