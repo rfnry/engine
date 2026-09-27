@@ -943,7 +943,7 @@ Everything the package exports, by role.
 ## Errors
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
-`AGENT.md`, an unknown key in the frontmatter of an `AGENT.md` or a tool file
+`AGENT.md`, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
 (`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), a tool
 declared without a body or given without a declaration, a run of an agent whose kind of model is
 absent, an unknown task, a missing workspace, a `Workspace` root that is not a

@@ -32,6 +32,8 @@ class AgentFront(BaseModel):
 
 
 class QuestionFront(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["choice", "score", "check"]
     options: dict[str, str] | None = None
     levels: list[str] | None = None

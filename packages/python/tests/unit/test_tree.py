@@ -238,3 +238,12 @@ def test_every_example_tree_loads_with_its_checks_criteria() -> None:
                 text = (spec.root / "questions" / f"{qid}.md").read_text(encoding="utf-8")
                 assert (question.yes is not None) == ("\nyes:" in text), (root, qid)
                 assert (question.no is not None) == ("\nno:" in text), (root, qid)
+
+
+def test_an_unknown_key_in_a_question_is_refused_by_name(tmp_path: Path) -> None:
+    typo = "---\ntype: choice\noptoins: {x: X, y: Y}\n---\nWhich?\n"
+    _agent(tmp_path, "d", "kind: decision\n", {"q": typo})
+    with pytest.raises(ConfigurationError) as refused:
+        load_agent(tmp_path / "d")
+    path = tmp_path / "d" / "questions" / "q.md"
+    assert str(refused.value) == f"frontmatter: unknown key 'optoins' in {path}"
