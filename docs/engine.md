@@ -737,6 +737,7 @@ class Tools:
     def __add__(self, other) -> Tools                    # union; a duplicate name is refused
     def only(self, *names) -> Tools
     def without(self, *names) -> Tools
+    names: list[str]                                     # every tool's name, in order
 ```
 
 An agent's tools are declared in its directory. `Read Grep Glob LS Skill Load` come with every generation agent,
@@ -861,6 +862,42 @@ pool = await asyncpg.create_pool(dsn)
 memory = Memory(rfnry_memory.PostgresStorage(pool), embedding=emb)
 refinery = Refinery(rfnry_engine.PostgresStorage(pool))
 ```
+
+A storage is any object with the methods below. `scope` comes first in every one, and each reads
+and writes that scope only. `refinery.storage` is the storage the refinery was given, to read its
+rows back yourself, and `refinery.record(run)` stores a run and every child run under it — what an
+engine with a refinery does after each run not made with `record=False`:
+
+```python
+class Storage(Protocol):
+    async def initialize(self) -> None
+    async def put_run(self, scope: str, row: RunRow) -> None
+    async def get_run(self, scope: str, run_id: str) -> RunRow | None
+    async def runs(self, scope: str, *, run_ids: list[str] | None = None, kind: str | None = None,
+                   since: datetime | None = None, unlabeled_by: str | None = None,
+                   limit: int | None = 1000) -> list[RunRow]       # newest first
+    async def put_label(self, scope: str, row: LabelRow) -> None
+    async def labels(self, scope: str, *, run_ids: list[str] | None = None,
+                     source: str | None = None, since: datetime | None = None) -> list[LabelRow]
+    async def delete_scope(self, scope: str) -> int                 # the rows it removed
+    async def count_scope(self, scope: str) -> int
+
+class Refinery:
+    storage: Storage
+    async def record(self, run: Run) -> None
+
+class RunRow(BaseModel):   scope, run_id, parent_run_id, agent, kind, task, at, recorded, duration_ms, model, body
+class LabelRow(BaseModel): scope, label_id, run_id, source, at, body
+class Exported(BaseModel): keys, rows, watermark
+class Labeled(BaseModel):  judged, taught, errors
+class Conflict(BaseModel): run_id, corrections
+```
+
+A row's `body` is the run's record, or the label, as JSON, with a run's children and routed run
+left out: each is a row of its own, joined by `parent_run_id`. `runs` returns the newest first and
+`labels` the oldest first; `unlabeled_by="judge"` keeps the runs no label from that source names.
+`Exported.rows` counts the rows written per dataset; `Conflict.corrections` lists each correction
+as `(label_id, at, text)`, oldest first.
 
 ## Tenancy
 

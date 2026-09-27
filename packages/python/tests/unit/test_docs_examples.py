@@ -59,6 +59,7 @@ ILLUSTRATIVE = {
 SIGNATURES = {
     "class GenerationModel(Protocol):": (rfnry_engine.GenerationModel, rfnry_engine.DecisionModel),
     "class Tools:": (Tools,),
+    "class Storage(Protocol):": (rfnry_engine.Storage, Refinery),
 }
 
 
@@ -273,11 +274,15 @@ def test_signature_blocks_match_the_code(block: str) -> None:
         while re.search(r"\[[^\[\]]*\]", params):
             params = re.sub(r"\[[^\[\]]*\]", "", params)
         names = [p.split(":")[0].split("=")[0].strip() for p in params.split(",") if p.strip()]
-        expected = [
-            ("*" if p.kind is p.VAR_POSITIONAL else "") + p.name
-            for p in inspect.signature(real).parameters.values()
-        ]
+        expected: list[str] = []
+        for p in inspect.signature(real).parameters.values():
+            if p.kind is p.KEYWORD_ONLY and not any(e.startswith("*") for e in expected):
+                expected.append("*")
+            expected.append(("*" if p.kind is p.VAR_POSITIONAL else "") + p.name)
         assert names == expected, method
+    for name, listed in re.findall(r"^class (\w+)\(BaseModel\): +(.+)$", block, re.M):
+        fields = [field.strip() for field in listed.split(",")]
+        assert fields == list(getattr(rfnry_engine, name).model_fields), name
 
 
 @pytest.mark.parametrize("block", runnable())
