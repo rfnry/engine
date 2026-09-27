@@ -143,18 +143,19 @@ class _Directory:
             text = "\n".join(lines[a.offset : end])
         return text
 
-    def _files_under(self, base: Path, glob: str | None) -> list[Path]:
+    def _files_under(self, base: Path, glob: str | None) -> tuple[list[Path], bool]:
         if base.is_file():
-            return [base]
+            return [base], False
+        walked = list(islice(base.rglob("*"), _MAX_WALK + 1))
         found: list[Path] = []
-        for candidate in islice(base.rglob("*"), _MAX_WALK):
+        for candidate in walked[:_MAX_WALK]:
             rel = candidate.relative_to(self.root)
             if not candidate.is_file() or _hidden(rel) or not self._inside(candidate):
                 continue
             if glob is not None and not rel.match(glob):
                 continue
             found.append(candidate)
-        return sorted(found)
+        return sorted(found), len(walked) > _MAX_WALK
 
     def grep(self, args: dict[str, Any]) -> str:
         a = GrepArgs.model_validate(args)
@@ -179,7 +180,8 @@ class _Directory:
         lines: list[str] = []
         scanned = 0
         exhausted = False
-        for path in self._files_under(base, a.glob):
+        paths, walked_out = self._files_under(base, a.glob)
+        for path in paths:
             rel = path.relative_to(self.root)
             try:
                 size = path.stat().st_size
@@ -206,6 +208,8 @@ class _Directory:
             notes.append(f"[truncated to {a.head_limit} of {len(lines)}]")
         if exhausted:
             notes.append(f"[truncated: scan budget of {_GREP_BYTES} bytes reached]")
+        if walked_out:
+            notes.append(f"[truncated: walk exceeded {_MAX_WALK} entries]")
         return "\n".join(lines[: a.head_limit] or ["no matches found"]) + "".join(
             f"\n{note}" for note in notes
         )

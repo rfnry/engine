@@ -806,7 +806,7 @@ as `application/octet-stream`. What the model can take is the adapter's `media_t
 that the vendor's. `Grep` searches text only and skips the rest; `Glob` and `LS` list every file.
 Neither `Read` nor `Grep` reads a file over 5 MB. `Grep` stops after scanning 50 MB and
 notes the cut. A search that runs past 10 s in one call is an `InputError` the model can act on. `Glob` and
-`Grep` walk at most 100,000 entries. A tool that reads the
+`Grep` walk at most 100,000 entries and note the cut. A tool that reads the
 agent's directory itself resolves paths with `Jail`, which refuses one that leaves the directory,
 as the builtins do.
 

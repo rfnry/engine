@@ -301,6 +301,21 @@ async def test_grep_stops_at_its_byte_budget(
     ]
 
 
+async def test_grep_notes_when_it_stops_at_its_walk_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(builtins_module, "_MAX_WALK", 3)
+    root = tmp_path / "agent"
+    root.mkdir()
+    for index in range(3):
+        (root / f"f{index}.md").write_text("needle\n")
+    tools = Tools(builtins(root))
+    assert await tools.dispatch("Grep", {"pattern": "needle"}) == "f0.md\nf1.md\nf2.md"
+    (root / "f3.md").write_text("needle\n")
+    lines = str(await tools.dispatch("Grep", {"pattern": "needle"})).splitlines()
+    assert len(lines) == 4 and lines[-1] == "[truncated: walk exceeded 3 entries]"
+
+
 async def test_grep_skips_files_over_the_size_cap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
