@@ -41,5 +41,14 @@ def parse_frontmatter_doc[T: BaseModel](
     try:
         config = model.model_validate(data)
     except ValidationError as exc:
+        unknown = [
+            ".".join(str(part) for part in error["loc"])
+            for error in exc.errors()
+            if error["type"] == "extra_forbidden"
+        ]
+        if unknown:
+            raise ConfigurationError(
+                f"frontmatter: unknown key {', '.join(map(repr, unknown))} in {source}"
+            ) from exc
         raise ConfigurationError(f"frontmatter: invalid {label} {source}: {exc}") from exc
     return config, body.lstrip("\n")

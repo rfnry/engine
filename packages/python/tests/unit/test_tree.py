@@ -159,3 +159,42 @@ def test_routes_and_agents_must_resolve(tmp_path: Path, front: str, message: str
     _agent(tmp_path, "b", "kind: generation\n")
     with pytest.raises(ConfigurationError, match=f"^tree: {message}$"):
         validate_tree(load_tree(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("front", "tool", "key", "where"),
+    [
+        ("kind: generation\nagent: [b]\n", None, "agent", "AGENT.md"),
+        ("kind: generation\nworkpsace: true\n", None, "workpsace", "AGENT.md"),
+        (
+            "kind: decision\nroute: {by: q, to: {x: b}, min_confidance: 0.9}\n",
+            None,
+            "route.min_confidance",
+            "AGENT.md",
+        ),
+        (
+            "kind: generation\n",
+            "---\nname: t\ndescription: T\nsummary: S\n---\n",
+            "summary",
+            "t.md",
+        ),
+        (
+            "kind: generation\n",
+            "---\nname: t\ndescription: T\ninput:\n  q: {type: string, requried: true}\n---\n",
+            "input.q.requried",
+            "t.md",
+        ),
+    ],
+)
+def test_an_unknown_frontmatter_key_is_refused_by_name(
+    tmp_path: Path, front: str, tool: str | None, key: str, where: str
+) -> None:
+    _agent(tmp_path, "a", front, {"q": CHOICE} if "decision" in front else {})
+    if tool is not None:
+        (tmp_path / "a" / "tools").mkdir()
+        (tmp_path / "a" / "tools" / "t.md").write_text(tool)
+    path = tmp_path / "a" / ("tools/t.md" if tool is not None else "AGENT.md")
+    with pytest.raises(ConfigurationError) as refused:
+        load_agent(tmp_path / "a")
+    assert str(refused.value) == f"frontmatter: unknown key {key!r} in {path}"
+    assert str(refused.value).endswith(where)

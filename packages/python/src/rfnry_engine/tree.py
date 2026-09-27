@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.frontmatter import parse_frontmatter_doc
@@ -13,12 +13,16 @@ Kind = Literal["generation", "decision"]
 
 
 class RouteSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     by: str
     to: dict[str, str]
     min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class AgentFront(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     kind: Kind
     description: str = ""
@@ -36,12 +40,16 @@ class QuestionFront(BaseModel):
 
 
 class ToolField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["string", "number", "integer", "boolean", "object", "array"]
     description: str = ""
     required: bool = False
 
 
 class ToolFront(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     description: str | None = None
     input: dict[str, ToolField] | None = None
