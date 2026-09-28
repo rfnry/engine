@@ -354,7 +354,7 @@ class Engine:
 
 Loads the tree of agents under `root` and checks it against the models and tool bodies given; `tools` is one list for the whole tree, and `Recorder` is a protocol of `async def record(self, run: Run) -> None`, which a `Refinery` meets. `tool_timeout` is each tool call's deadline in seconds, `None` for none. `agents` maps each agent's name to its `AgentInfo`.
 
-Raises `ConfigurationError` when the tree cannot be used (no agent under `root`, a bad `AGENT.md`, question or tool file, an unknown frontmatter key, an agent in `agents:` or `route:` the tree does not have, a route not by a choice question), when a tool is given that no agent declares or, with a generation model, a declared tool has no body, when two tools share a name, or when `max_steps`, `max_depth` or `tool_timeout` is not positive. Raises `FileNotFoundError` when `root` does not exist.
+Raises `ConfigurationError` when `root` is not a directory, when the tree cannot be used (no agent under `root`, a bad `AGENT.md`, question or tool file, an unknown frontmatter key, an agent in `agents:` or `route:` the tree does not have, a route not by a choice question), when a tool is given that no agent declares or, with a generation model, a declared tool has no body, when two tools share a name, or when `max_steps`, `max_depth` or `tool_timeout` is not positive.
 
 ### `Engine.run`
 

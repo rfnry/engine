@@ -1,4 +1,5 @@
 import asyncio
+import re
 import shutil
 import time
 from pathlib import Path
@@ -322,6 +323,15 @@ def test_step_and_depth_caps_must_be_positive(fixtures: Path) -> None:
         for bad in (0, -1):
             with pytest.raises(ConfigurationError, match=f"^engine: {name} must be positive$"):
                 engine_for(fixtures, Scripted(), **{name: bad})
+
+
+def test_a_root_that_is_not_a_directory_is_refused_by_its_path(tmp_path: Path) -> None:
+    a_file = tmp_path / "AGENT.md"
+    a_file.write_text("---\nname: x\nkind: generation\n---\n", encoding="utf-8")
+    for root in (tmp_path / "missing", a_file, str(tmp_path / "missing")):
+        expected = f"^engine: root is not a directory: {re.escape(str(root))}$"
+        with pytest.raises(ConfigurationError, match=expected):
+            Engine(root, generation=Scripted())
 
 
 class ForeignCall(BaseModel):

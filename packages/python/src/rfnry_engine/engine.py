@@ -196,6 +196,8 @@ class Engine:
         if max_depth <= 0:
             raise ConfigurationError("engine: max_depth must be positive")
         self.root = Path(root).resolve()
+        if not self.root.is_dir():
+            raise ConfigurationError(f"engine: root is not a directory: {root}")
         self.generation = generation
         self.decision = decision
         self.tools: dict[str, Tool] = {}
