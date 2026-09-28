@@ -10,6 +10,8 @@ refinery records what your agents did and exports it as datasets, with every lab
 source — from people, the world and models. What you do with them — evaluate, improve prompts and
 rules, train or distill models, audit — is yours.
 
+Every public name, with its signature, is in [the API reference](api.md).
+
 ## Philosophy
 
 **The tree is the agent.** Everything a person needs to author, review or diff about an agent is a
