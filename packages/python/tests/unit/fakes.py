@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -12,7 +12,7 @@ from rfnry_engine.models import (
     ChoiceAnswer,
     Decided,
     Message,
-    Question,
+    QuestionLike,
     Reply,
     ScoreAnswer,
     State,
@@ -55,10 +55,10 @@ class Fixed:
         self, answers: dict[str, Answer] | Callable[[State], dict[str, Answer] | Decided]
     ) -> None:
         self.answers = answers
-        self.calls: list[tuple[State, dict[str, Question]]] = []
+        self.calls: list[tuple[State, dict[str, QuestionLike]]] = []
 
     async def decide(
-        self, state: State, questions: dict[str, Question]
+        self, state: State, questions: Mapping[str, QuestionLike]
     ) -> dict[str, Answer] | Decided:
         self.calls.append((state, dict(questions)))
         if callable(self.answers):
@@ -151,7 +151,9 @@ class MemoryBucket:
 
 
 class Desk:
-    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer]:
+    async def decide(
+        self, state: State, questions: Mapping[str, QuestionLike]
+    ) -> dict[str, Answer]:
         if "intent" in questions:
             return {
                 "intent": ChoiceAnswer(

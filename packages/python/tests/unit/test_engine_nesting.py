@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ from rfnry_engine.models import (
     Answer,
     CheckAnswer,
     ChoiceAnswer,
-    Question,
+    QuestionLike,
     Reply,
     ScoreAnswer,
     State,
@@ -191,7 +192,9 @@ async def test_children_follow_their_steps_whatever_order_they_finish_in(fixture
     finished: list[State] = []
 
     class SlowFirst(Desk):
-        async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Answer]:
+        async def decide(
+            self, state: State, questions: Mapping[str, QuestionLike]
+        ) -> dict[str, Answer]:
             if state == "slow":
                 await asyncio.sleep(0.02)
             finished.append(state)

@@ -4,6 +4,7 @@ import hashlib
 import inspect
 import re
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,17 +15,15 @@ from pydantic import BaseModel
 import rfnry_engine
 from rfnry_engine import (
     CheckAnswer,
-    Choice,
     ChoiceAnswer,
     Document,
     Engine,
     InMemoryStorage,
     Message,
     Part,
-    Question,
+    QuestionLike,
     Refinery,
     Reply,
-    Score,
     ScoreAnswer,
     State,
     Tool,
@@ -120,8 +119,8 @@ class Answering:
     def __init__(self, intent: str) -> None:
         self.intent = intent
 
-    def answer(self, qid: str, question: Question) -> Any:
-        if isinstance(question, Choice):
+    def answer(self, qid: str, question: QuestionLike) -> Any:
+        if question.type == "choice":
             chosen = (
                 self.intent if self.intent in question.options else next(iter(question.options))
             )
@@ -130,12 +129,12 @@ class Answering:
                 choice=chosen,
                 probabilities={o: 0.9 if o == chosen else rest for o in question.options},
             )
-        if isinstance(question, Score):
+        if question.type == "score":
             rest = (1.0 - 0.9) / (len(question.levels) - 1)
             return ScoreAnswer(score=0, probabilities=[0.9, *[rest] * (len(question.levels) - 1)])
         return CheckAnswer(probability=0.91)
 
-    async def decide(self, state: State, questions: dict[str, Question]) -> dict[str, Any]:
+    async def decide(self, state: State, questions: Mapping[str, QuestionLike]) -> dict[str, Any]:
         return {qid: self.answer(qid, question) for qid, question in questions.items()}
 
 

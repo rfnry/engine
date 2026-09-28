@@ -15,7 +15,7 @@ from rfnry_engine.models import (
     GenerationModel,
     Image,
     Message,
-    Question,
+    QuestionLike,
     Reply,
     ReplyLike,
     ScoreAnswer,
@@ -52,9 +52,7 @@ class Adapter:
     ) -> other.Reply:
         return self.replies.pop(0)
 
-    async def decide(
-        self, state: State, questions: Mapping[str, Question | other.Question]
-    ) -> other.Decided:
+    async def decide(self, state: State, questions: Mapping[str, QuestionLike]) -> other.Decided:
         answers: dict[str, other.Answer] = {
             "urgent": other.CheckAnswer(probability=0.9),
             "severity": other.ScoreAnswer(score=1, probabilities=[0, 1, 0, 0]),

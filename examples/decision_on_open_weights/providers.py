@@ -1,6 +1,7 @@
 import asyncio
 import json
 import math
+from collections.abc import Mapping
 from string import ascii_uppercase
 from typing import Any
 
@@ -10,7 +11,7 @@ from rfnry_engine import (
     CheckAnswer,
     ChoiceAnswer,
     Decided,
-    Question,
+    QuestionLike,
     ScoreAnswer,
     State,
     Usage,
@@ -37,7 +38,7 @@ class LocalDecisionProvider:
         self.attempts = attempts
         self.client = httpx.AsyncClient(timeout=120)
 
-    async def decide(self, state: State, questions: dict[str, Question]) -> Decided:
+    async def decide(self, state: State, questions: Mapping[str, QuestionLike]) -> Decided:
         asked = await asyncio.gather(*(self._ask(state, q) for q in questions.values()))
         return Decided(
             answers={qid: answer for qid, (answer, _, _) in zip(questions, asked, strict=True)},
@@ -45,7 +46,7 @@ class LocalDecisionProvider:
             model=asked[0][2] if asked else self.model,
         )
 
-    async def _ask(self, state: State, question: Question) -> tuple[Answer, Usage, str]:
+    async def _ask(self, state: State, question: QuestionLike) -> tuple[Answer, Usage, str]:
         options = self._options(question)
         if len(options) > len(ascii_uppercase):
             raise ValueError(f"local: {len(options)} options, more than the 26 letters")
@@ -65,7 +66,7 @@ class LocalDecisionProvider:
         spent = Usage(input=usage.get("prompt_tokens", 0), output=usage.get("completion_tokens", 0))
         return self._answer(question, probabilities), spent, data.get("model") or self.model
 
-    def _options(self, question: Question) -> list[str]:
+    def _options(self, question: QuestionLike) -> list[str]:
         if question.type == "choice":
             return [f"{key}: {meaning}" for key, meaning in question.options.items()]
         if question.type == "score":
@@ -112,7 +113,7 @@ class LocalDecisionProvider:
             return [1 / len(letters)] * len(letters)
         return [weight / total for weight in weights]
 
-    def _answer(self, question: Question, probabilities: list[float]) -> Answer:
+    def _answer(self, question: QuestionLike, probabilities: list[float]) -> Answer:
         if question.type == "choice":
             by_option = dict(zip(question.options, probabilities, strict=True))
             choice = max(by_option, key=lambda option: by_option[option])

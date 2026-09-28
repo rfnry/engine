@@ -82,10 +82,7 @@ async def test_tags_never_reach_a_model(fixtures: Path) -> None:
             ]
             for system, messages, tools in llm.calls
         ]
-        + [
-            [state, {k: q.model_dump(mode="json") for k, q in questions.items()}]
-            for state, questions in dm.calls
-        ]
+        + [[state, {k: repr(q) for k, q in questions.items()}] for state, questions in dm.calls]
     )
     assert len(llm.calls) == 2 and len(dm.calls) == 1
     for word in ("sentinel", "tags"):

@@ -43,14 +43,16 @@ class GenerationModel(Protocol):
     async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> ReplyLike: ...
 
 class DecisionModel(Protocol):
-    async def decide(self, state: State, questions: dict[str, Question]) -> Mapping[str, AnswerLike] | DecidedLike: ...
+    async def decide(self, state: State, questions: Mapping[str, QuestionLike]) -> Mapping[str, AnswerLike] | DecidedLike: ...
 ```
 
 Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLike` and `AnswerLike` are
 protocols over the fields of `Reply`, `Decided` and the answers below, and a result is read by those
-fields, not its class. An adapter typed against another library's copy of these contracts —
-rfnry-memory's — fits here unchanged, so one adapter serves both libraries; a result whose fields
-do not fit is a `ModelError`.
+fields, not its class. `QuestionLike` is the same over the questions a decision model is handed; an
+adapter branches on `question.type` and reads `options`, `levels` or `yes` and `no`. An adapter typed
+against another library's copy of these contracts — rfnry-memory's — fits here unchanged, so one
+adapter serves both libraries: annotated with `QuestionLike` from either library, it serves both,
+statically and at runtime. A result whose fields do not fit is a `ModelError`.
 
 `Message`, `ToolSpec`, `ToolCall` and `Reply` are the message shapes the loop exchanges with a
 generation model. An assistant turn is a `Message(role="assistant", content=…, tool_calls=[…])`:
@@ -944,7 +946,7 @@ Everything the package exports, by role.
 
 - **Run things:** `Engine`, `AgentInfo`, `Stop`.
 - **What a run returns:** `Generation`, `Decision`, `Run`, `Step`; events `TextDelta`, `ToolCallStarted`, `ToolResultReady`, `Event`.
-- **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; the shapes a result is read by, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
+- **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
 - **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Jail`, `Workspace`.
 - **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Bucket`, `is_holdout`.
 - **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`, `RunRow`, `LabelRow`.
