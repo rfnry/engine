@@ -185,6 +185,8 @@ class Refinery:
     ) -> Exported:
         if not scope:
             raise InputError("refinery: scope is required")
+        if not 0 <= holdout_percent <= 100:
+            raise InputError(f"refinery: holdout_percent must be 0-100, got {holdout_percent}")
         runs = await self.storage.runs(scope, since=since, limit=None)
         if since is not None:
             fresh = {run.run_id for run in runs}

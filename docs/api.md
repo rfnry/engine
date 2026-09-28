@@ -993,7 +993,7 @@ async def export(
 
 Writes every run recorded or labeled after `since`, with all its labels, to `bucket` as JSONL under `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, in the datasets `generation`, `preference` and `decision`. Every row carries `holdout`, from a hash of its run id and `holdout_percent`. Returns the keys, the rows per dataset and the watermark for the next `since`.
 
-Raises `InputError` when `scope` is empty, or when there are runs to write and `holdout_percent` is outside 0 to 100.
+Raises `InputError` when `scope` is empty or `holdout_percent` is outside 0 to 100, before anything is read or written.
 
 ### `Refinery.label`
 

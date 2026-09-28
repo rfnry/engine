@@ -5,7 +5,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from rfnry_engine.engine import Engine
+from rfnry_engine.errors import InputError
 from rfnry_engine.models import Document, Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Generation, Step
 from rfnry_engine.refinery.holdout import is_holdout
@@ -213,6 +216,18 @@ async def test_holdout_percent_marks_every_row_and_never_moves_between_exports()
         for bucket in (first, second)
     ]
     assert flags[0] == flags[1] == [is_holdout(run.run_id)] * 2
+
+
+async def test_a_holdout_percent_outside_0_to_100_is_refused_even_with_nothing_to_export() -> None:
+    empty, recorded = Refinery(InMemoryStorage()), Refinery(InMemoryStorage())
+    await recorded.record(generation_record(reply="Sorry, no."))
+    for refinery in (empty, recorded):
+        for bad in (-1, 101):
+            bucket = MemoryBucket()
+            expected = f"^refinery: holdout_percent must be 0-100, got {bad}$"
+            with pytest.raises(InputError, match=expected):
+                await refinery.export("acme", bucket, holdout_percent=bad)
+            assert bucket.objects == {}
 
 
 class Capped(InMemoryStorage):
