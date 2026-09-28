@@ -56,7 +56,7 @@ class ReplyLike(Protocol):
     reasoning: Any
 ```
 
-The shape a generation model's result is read by: the read-only fields of `Reply`. `ToolCallLike` and `UsageLike` are the same over the fields of `ToolCall` and `Usage`.
+The shape a generation model's result is read by: the read-only fields of `Reply`. `ToolCallLike` is a protocol of `id: str`, `name: str` and `args: dict[str, Any]`, `UsageLike` is one of `input`, `output`, `cache_creation` and `cache_read`, each an `int`, and `StopReason` is `Literal["end_turn", "tool_use", "max_tokens", "error"]`.
 
 ### `DecidedLike`
 
@@ -67,53 +67,23 @@ class DecidedLike(Protocol):
     model: str | None
 ```
 
-The shape a decision model's result is read by when it is more than the answers: the read-only fields of `Decided`.
+The shape a decision model's result is read by when it is more than the answers: the read-only fields of `Decided`. `UsageLike` is a protocol of `input`, `output`, `cache_creation` and `cache_read`, each an `int`.
 
 ### `AnswerLike`
 
 ```python
 AnswerLike = ChoiceAnswerLike | ScoreAnswerLike | CheckAnswerLike
-
-class ChoiceAnswerLike(Protocol):
-    type: Literal["choice"]
-    choice: str
-    probabilities: dict[str, float]
-
-class ScoreAnswerLike(Protocol):
-    type: Literal["score"]
-    score: float
-    probabilities: list[float]
-
-class CheckAnswerLike(Protocol):
-    type: Literal["check"]
-    probability: float
 ```
 
-The shape an answer is read by: the fields of `ChoiceAnswer`, `ScoreAnswer` or `CheckAnswer`, without `confidence`, which the engine computes.
+The shape an answer is read by: the fields of `ChoiceAnswer`, `ScoreAnswer` or `CheckAnswer` without `confidence`, which the engine computes. `ChoiceAnswerLike` is a protocol of `type: Literal["choice"]`, `choice: str` and `probabilities: dict[str, float]`; `ScoreAnswerLike` is one of `type: Literal["score"]`, `score: float` and `probabilities: list[float]`; `CheckAnswerLike` is one of `type: Literal["check"]` and `probability: float`.
 
 ### `QuestionLike`
 
 ```python
 QuestionLike = ChoiceLike | ScoreLike | CheckLike
-
-class ChoiceLike(Protocol):
-    type: Literal["choice"]
-    instructions: str
-    options: Mapping[str, str]
-
-class ScoreLike(Protocol):
-    type: Literal["score"]
-    instructions: str
-    levels: Sequence[str]
-
-class CheckLike(Protocol):
-    type: Literal["check"]
-    instructions: str
-    yes: str | None
-    no: str | None
 ```
 
-The shape of the questions a decision model is handed: the fields of `Choice`, `Score` or `Check`. An adapter branches on `question.type`; one annotated with `QuestionLike` from rfnry-engine or rfnry-memory serves both libraries.
+The shape of the questions a decision model is handed: the fields of `Choice`, `Score` or `Check`. `ChoiceLike` is a protocol of `type: Literal["choice"]`, `instructions: str` and `options: Mapping[str, str]`; `ScoreLike` is one of `type: Literal["score"]`, `instructions: str` and `levels: Sequence[str]`; `CheckLike` is one of `type: Literal["check"]`, `instructions: str`, `yes: str | None` and `no: str | None`. An adapter branches on `question.type`; one annotated with `QuestionLike` from rfnry-engine or rfnry-memory serves both libraries.
 
 ### `Message`
 
@@ -163,7 +133,7 @@ class Reply(BaseModel):
     reasoning: Any = None
 ```
 
-What a generation model returns. A reply whose `stop_reason` is `"tool_use"` and whose `tool_calls` is non-empty asks the engine to run those calls and call the model again; anything else is final. `stop_reason` is `"end_turn"`, `"tool_use"`, `"max_tokens"` or `"error"`.
+What a generation model returns. A reply whose `stop_reason` is `"tool_use"` and whose `tool_calls` is non-empty asks the engine to run those calls and call the model again; anything else is final. `StopReason` is `Literal["end_turn", "tool_use", "max_tokens", "error"]`.
 
 ### `Usage`
 
@@ -382,7 +352,7 @@ class Engine:
     agents: dict[str, AgentInfo]
 ```
 
-Loads the tree of agents under `root` and checks it against the models and tool bodies given; `tools` is one list for the whole tree, and `refinery` is anything with `async record(run)`, such as a `Refinery`. `tool_timeout` is each tool call's deadline in seconds, `None` for none. `agents` maps each agent's name to its `AgentInfo`.
+Loads the tree of agents under `root` and checks it against the models and tool bodies given; `tools` is one list for the whole tree, and `Recorder` is a protocol of `async def record(self, run: Run) -> None`, which a `Refinery` meets. `tool_timeout` is each tool call's deadline in seconds, `None` for none. `agents` maps each agent's name to its `AgentInfo`.
 
 Raises `ConfigurationError` when the tree cannot be used (no agent under `root`, a bad `AGENT.md`, question or tool file, an unknown frontmatter key, an agent in `agents:` or `route:` the tree does not have, a route not by a choice question), when a tool is given that no agent declares or, with a generation model, a declared tool has no body, when two tools share a name, or when `max_steps`, `max_depth` or `tool_timeout` is not positive. Raises `FileNotFoundError` when `root` does not exist.
 
@@ -410,7 +380,7 @@ async def run(
 ) -> Run: ...
 ```
 
-Runs `agent` for the tenant `scope` on `input` and returns its record: a `Generation` for a generation agent, a `Decision` for a decision agent. With a refinery attached, a run that returns is recorded unless `record=False`, and a recording that fails is logged, never raised. `on_event` is an async function of an `Event`, `tools` anything with `definitions()` and `dispatch(name, args)` riding this run only, and `approve` an async function of the agent's name and the `ToolCall` that returns `True` or `False`.
+Runs `agent` for the tenant `scope` on `input` and returns its record: a `Generation` for a generation agent, a `Decision` for a decision agent. With a refinery attached, a run that returns is recorded unless `record=False`, and a recording that fails is logged, never raised. `EventHandler` is `Callable[[Event], Awaitable[None]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets, and `tools` rides this run only; `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`, called with the agent's name and the call.
 
 Raises `InputError` when `scope` is empty, a decision agent is given a `task` or media, `tags` are outside their limits, `history` does not fit the contract, or `input` mixes parts with other values. Raises `NotFoundError` when the tree has no agent `agent`. Raises `ConfigurationError` when the model for the agent's kind is absent, a decision agent routes to a generation agent without a generation model, `task` is not in the agent's `tasks/`, an agent with `workspace: true` runs without a `workspace`, `tools` repeats a name the agent already has, a tool named `Output` collides with `expect`, or `approve` returns anything but `True` or `False`. Raises `ModelError` when an adapter's result does not fit the contract. Raises `RunawayError` when the loop passes `max_steps`. Raises `DelegationLoopError` or `DelegationDepthError` when a route loops or goes deeper than `max_depth`.
 
@@ -432,7 +402,7 @@ def tool(
 ) -> Tools: ...
 ```
 
-Returns a `Tools` of one tool that runs `agent` as a top-level run under `scope`, recorded like any run: named `name` or the agent's name, described by `description` or the agent's, taking `{"input": str}` and returning a generation agent's reply or a decision agent's answers as a dict. `context`, `tools`, `workspace`, `tags` and `approve` ride every call.
+Returns a `Tools` of one tool that runs `agent` as a top-level run under `scope`, recorded like any run: named `name` or the agent's name, described by `description` or the agent's, taking `{"input": str}` and returning a generation agent's reply or a decision agent's answers as a dict. `context`, `tools`, `workspace`, `tags` and `approve` ride every call. `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets; `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`.
 
 Raises `InputError` when `scope` is empty or `tags` are outside their limits. Raises `NotFoundError` when the tree has no agent `agent`. A call raises what `Engine.run` raises.
 
@@ -473,7 +443,7 @@ class AgentInfo(BaseModel):
     agents: list[str]
 ```
 
-An agent as the engine loaded it, in `Engine.agents`: its name, its `kind`, `"generation"` or `"decision"`, its description and the agents it may call.
+An agent as the engine loaded it, in `Engine.agents`: its name, its kind, its description and the agents it may call. `Kind` is `Literal["generation", "decision"]`.
 
 ### `Generation`
 
@@ -502,7 +472,7 @@ class Generation(BaseModel):
     stopped: Stopped | None = None
 ```
 
-The record of a generation run: when it started (`at`), the system prompt as sent, the messages as sent to the first model call, the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. An accepted `Output` makes `reply` its JSON. `stopped` is `"now"` or `"after_step"` for a stopped run, `None` for one that ended on its own.
+The record of a generation run: when it started (`at`), the system prompt as sent, the messages as sent to the first model call, the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. An accepted `Output` makes `reply` its JSON. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own.
 
 ### `Decision`
 
@@ -678,7 +648,7 @@ class Tool:
     input_schema: dict[str, Any] | None = None
 ```
 
-One tool: a name, a description, an input schema and a body. `body` is an async function of the arguments that returns a string, a dict or a list of parts; `args` validates the arguments and gives the schema unless `input_schema` does. In `Engine(tools=)` it is the body behind a tool an agent declares, and a declaration with only a name adopts its description and schema.
+One tool: a name, a description, an input schema and a body. `Body` is `Callable[[dict[str, Any]], Awaitable[Result]]`, an async function of the arguments, where `Result` is `str | dict[str, Any] | list[Part]`; `args` validates the arguments and gives the schema unless `input_schema` does. In `Engine(tools=)` it is the body behind a tool an agent declares, and a declaration with only a name adopts its description and schema.
 
 ### `Tool.schema`
 
@@ -702,7 +672,7 @@ Returns the tool as a model is offered it, `{name, description, input_schema}`.
 async def call(self, args: dict[str, Any]) -> Result: ...
 ```
 
-Validates `args` against `args` when the tool has one, awaits the body, and returns what it returns: a string, a dict or a list of parts.
+Validates `args` against `args` when the tool has one, awaits the body, and returns what it returns. `Result` is `str | dict[str, Any] | list[Part]`.
 
 Raises `ConfigurationError` when the tool has no body. Raises `InputError` when the arguments do not fit `args`.
 
@@ -719,7 +689,7 @@ class Tools:
     def __len__(self) -> int: ...
 ```
 
-A set of tools with unique names: what a model receives, and what code can call the same way. It takes `Tool`s and anything with `definitions()` and `dispatch(name, args)`, which is what `ToolsLike` names, such as another `Tools`. `names` lists the tools in order and `a + b` is the union.
+A set of tools with unique names: what a model receives, and what code can call the same way. It takes `Tool`s and anything else with its two verbs: `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which another `Tools` meets. `names` lists the tools in order and `a + b` is the union.
 
 Raises `ConfigurationError` when two tools share a name, on `+` as well.
 
@@ -737,7 +707,7 @@ Returns each tool as `{name, description, input_schema}`, in order.
 async def dispatch(self, name: str, args: dict[str, Any]) -> Result: ...
 ```
 
-Calls the tool `name` with `args` and returns its result: a string, a dict or a list of parts.
+Calls the tool `name` with `args` and returns its result. `Result` is `str | dict[str, Any] | list[Part]`.
 
 Raises `InputError` when there is no tool `name`. A tool's own errors pass through.
 
@@ -776,7 +746,7 @@ class EngineTools(Tools):
     ) -> None: ...
 ```
 
-The tools `agent` runs with under `scope`, as a `Tools` to drive without a model: the builtins, the tools it declares, the workspace's tools when it declares `workspace: true`, `Delegate` when it names `agents:`, and `tools`. A `Delegate` dispatched through it runs the child as a top-level run with this scope, `tools`, `workspace`, `tags` and `approve`.
+The tools `agent` runs with under `scope`, as a `Tools` to drive without a model: the builtins, the tools it declares, the workspace's tools when it declares `workspace: true`, `Delegate` when it names `agents:`, and `tools`. A `Delegate` dispatched through it runs the child as a top-level run with this scope, `tools`, `workspace`, `tags` and `approve`. `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets.
 
 Raises `InputError` when `scope` is empty. Raises `NotFoundError` when the tree has no agent `agent`. Raises `ConfigurationError` when the agent declares `workspace: true` and no `workspace` is given, a tool it declares has no body, or two tools share a name.
 
@@ -838,8 +808,11 @@ Returns the three tools an agent with `workspace: true` gets: `Shell(command)`, 
 @runtime_checkable
 class Storage(Protocol):
     async def initialize(self) -> None: ...
+
     async def put_run(self, scope: str, row: RunRow) -> None: ...
+
     async def get_run(self, scope: str, run_id: str) -> RunRow | None: ...
+
     async def runs(
         self,
         scope: str,
@@ -850,7 +823,9 @@ class Storage(Protocol):
         unlabeled_by: str | None = None,
         limit: int | None = 1000,
     ) -> list[RunRow]: ...
+
     async def put_label(self, scope: str, row: LabelRow) -> None: ...
+
     async def labels(
         self,
         scope: str,
@@ -859,6 +834,7 @@ class Storage(Protocol):
         source: str | None = None,
         since: datetime | None = None,
     ) -> list[LabelRow]: ...
+
     async def run_tree(
         self,
         scope: str,
@@ -866,6 +842,7 @@ class Storage(Protocol):
         run_ids: list[str] | None = None,
         tags: dict[str, str] | None = None,
     ) -> list[RunRow]: ...
+
     async def delete_runs(
         self,
         scope: str,
@@ -873,11 +850,13 @@ class Storage(Protocol):
         run_ids: list[str] | None = None,
         tags: dict[str, str] | None = None,
     ) -> int: ...
+
     async def delete_scope(self, scope: str) -> int: ...
+
     async def count_scope(self, scope: str) -> int: ...
 ```
 
-What the refinery stores through: any object with these methods. Every method but `initialize` takes `scope` first and reads and writes that scope only; the two storages below implement it, and each of their methods is described there.
+The one storage protocol, as the refinery calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods. Every method but `initialize` takes `scope` first and reads and writes that scope only: `initialize` creates what the storage needs and is safe to run again; `put_run` and `put_label` store a row, replacing the one with the same id; `get_run` returns a run or `None`; `runs` returns runs newest first by `at`, at most `limit` or all with `None`, narrowed by `run_ids`, `kind`, `since` (stored after it, by `recorded`) and `unlabeled_by`, which keeps the runs no label from that source names; `labels` returns labels oldest first, narrowed by `run_ids`, `source` and `since`; `run_tree` returns the runs `run_ids` or `tags` (by containment) match and every run under them, oldest first; `delete_runs` removes those runs and every label on them, and `delete_scope` every run and label in the scope, each returning the number of rows removed; `count_scope` counts the scope's runs and labels. Both storages raise `StorageError` when a row's scope is not the call's, and `PostgresStorage` raises it whenever the database refuses.
 
 ### `InMemoryStorage`
 
@@ -886,119 +865,7 @@ class InMemoryStorage:
     def __init__(self) -> None: ...
 ```
 
-A `Storage` in the process's memory, for tests and small things; it keeps nothing across a restart.
-
-### `InMemoryStorage.initialize`
-
-```python
-async def initialize(self) -> None: ...
-```
-
-Does nothing; there is nothing to create.
-
-### `InMemoryStorage.put_run`
-
-```python
-async def put_run(self, scope: str, row: RunRow) -> None: ...
-```
-
-Stores `row`, replacing the run with the same `run_id`.
-
-Raises `StorageError` when `row.scope` is not `scope`.
-
-### `InMemoryStorage.get_run`
-
-```python
-async def get_run(self, scope: str, run_id: str) -> RunRow | None: ...
-```
-
-Returns the run `run_id`, or `None` when the scope has none.
-
-### `InMemoryStorage.runs`
-
-```python
-async def runs(
-    self,
-    scope: str,
-    *,
-    run_ids: list[str] | None = None,
-    kind: str | None = None,
-    since: datetime | None = None,
-    unlabeled_by: str | None = None,
-    limit: int | None = 1000,
-) -> list[RunRow]: ...
-```
-
-Returns the scope's runs, newest first by `at`, at most `limit` of them, all with `None`. Each filter narrows them: `run_ids`, `kind`, `since` (stored after it, by `recorded`), and `unlabeled_by`, which keeps the runs no label from that source names.
-
-### `InMemoryStorage.put_label`
-
-```python
-async def put_label(self, scope: str, row: LabelRow) -> None: ...
-```
-
-Stores `row`, replacing the label with the same `label_id`.
-
-Raises `StorageError` when `row.scope` is not `scope`.
-
-### `InMemoryStorage.labels`
-
-```python
-async def labels(
-    self,
-    scope: str,
-    *,
-    run_ids: list[str] | None = None,
-    source: str | None = None,
-    since: datetime | None = None,
-) -> list[LabelRow]: ...
-```
-
-Returns the scope's labels, oldest first, narrowed by `run_ids`, `source` and `since`, which keeps the labels given after it.
-
-### `InMemoryStorage.run_tree`
-
-```python
-async def run_tree(
-    self,
-    scope: str,
-    *,
-    run_ids: list[str] | None = None,
-    tags: dict[str, str] | None = None,
-) -> list[RunRow]: ...
-```
-
-Returns the runs a selector matches, `run_ids` or `tags` by containment, and every run under them, oldest first.
-
-### `InMemoryStorage.delete_runs`
-
-```python
-async def delete_runs(
-    self,
-    scope: str,
-    *,
-    run_ids: list[str] | None = None,
-    tags: dict[str, str] | None = None,
-) -> int: ...
-```
-
-Removes the runs `run_tree` returns for the same selector and every label on them, and returns the number of rows removed.
-
-### `InMemoryStorage.delete_scope`
-
-```python
-async def delete_scope(self, scope: str) -> int: ...
-```
-
-Removes every run and label in the scope, and returns the number of rows removed.
-
-### `InMemoryStorage.count_scope`
-
-```python
-async def count_scope(self, scope: str) -> int: ...
-```
-
-Returns the number of runs and labels in the scope.
+Implements `Storage` in the process's memory, for tests and small things; `initialize` does nothing, and nothing outlives the object.
 
 ### `PostgresStorage`
 
@@ -1007,135 +874,7 @@ class PostgresStorage:
     def __init__(self, pool: Any) -> None: ...
 ```
 
-A `Storage` in Postgres, over an asyncpg pool you built. Its tables are `engine_runs` and `engine_labels`, so one database can hold other libraries' tables beside them.
-
-### `PostgresStorage.initialize`
-
-```python
-async def initialize(self) -> None: ...
-```
-
-Creates the tables `engine_runs` and `engine_labels` and their indexes when they do not exist; safe to run again.
-
-Raises `StorageError` when the database refuses.
-
-### `PostgresStorage.put_run`
-
-```python
-async def put_run(self, scope: str, row: RunRow) -> None: ...
-```
-
-Stores `row`, replacing the run with the same `run_id`.
-
-Raises `StorageError` when `row.scope` is not `scope`, or when the database refuses.
-
-### `PostgresStorage.get_run`
-
-```python
-async def get_run(self, scope: str, run_id: str) -> RunRow | None: ...
-```
-
-Returns the run `run_id`, or `None` when the scope has none.
-
-Raises `StorageError` when the database refuses.
-
-### `PostgresStorage.runs`
-
-```python
-async def runs(
-    self,
-    scope: str,
-    *,
-    run_ids: list[str] | None = None,
-    kind: str | None = None,
-    since: datetime | None = None,
-    unlabeled_by: str | None = None,
-    limit: int | None = 1000,
-) -> list[RunRow]: ...
-```
-
-Returns the scope's runs, newest first by `at`, at most `limit` of them, all with `None`. Each filter narrows them: `run_ids`, `kind`, `since` (stored after it, by `recorded`), and `unlabeled_by`, which keeps the runs no label from that source names.
-
-Raises `StorageError` when the database refuses.
-
-### `PostgresStorage.put_label`
-
-```python
-async def put_label(self, scope: str, row: LabelRow) -> None: ...
-```
-
-Stores `row`, replacing the label with the same `label_id`.
-
-Raises `StorageError` when `row.scope` is not `scope`, or when the database refuses.
-
-### `PostgresStorage.labels`
-
-```python
-async def labels(
-    self,
-    scope: str,
-    *,
-    run_ids: list[str] | None = None,
-    source: str | None = None,
-    since: datetime | None = None,
-) -> list[LabelRow]: ...
-```
-
-Returns the scope's labels, oldest first, narrowed by `run_ids`, `source` and `since`, which keeps the labels given after it.
-
-Raises `StorageError` when the database refuses.
-
-### `PostgresStorage.run_tree`
-
-```python
-async def run_tree(
-    self,
-    scope: str,
-    *,
-    run_ids: list[str] | None = None,
-    tags: dict[str, str] | None = None,
-) -> list[RunRow]: ...
-```
-
-Returns the runs a selector matches, `run_ids` or `tags` by containment, and every run under them, oldest first.
-
-Raises `StorageError` when the database refuses.
-
-### `PostgresStorage.delete_runs`
-
-```python
-async def delete_runs(
-    self,
-    scope: str,
-    *,
-    run_ids: list[str] | None = None,
-    tags: dict[str, str] | None = None,
-) -> int: ...
-```
-
-Removes the runs `run_tree` returns for the same selector and every label on them, in one transaction, and returns the number of rows removed.
-
-Raises `StorageError` when the database refuses.
-
-### `PostgresStorage.delete_scope`
-
-```python
-async def delete_scope(self, scope: str) -> int: ...
-```
-
-Removes every run and label in the scope, in one transaction, and returns the number of rows removed.
-
-Raises `StorageError` when the database refuses.
-
-### `PostgresStorage.count_scope`
-
-```python
-async def count_scope(self, scope: str) -> int: ...
-```
-
-Returns the number of runs and labels in the scope.
-
-Raises `StorageError` when the database refuses.
+Implements `Storage` in Postgres, over an asyncpg pool you built. `initialize` creates the tables `engine_runs` and `engine_labels` and their indexes, so one database can hold other libraries' tables beside them; `delete_runs` and `delete_scope` each run in one transaction.
 
 ### `RunRow`
 

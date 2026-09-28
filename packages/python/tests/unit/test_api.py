@@ -2,6 +2,7 @@ import ast
 import dataclasses
 import importlib
 import inspect
+import pkgutil
 import re
 from pathlib import Path
 from types import ModuleType
@@ -16,35 +17,75 @@ API = Path(__file__).parents[4] / "docs" / "api.md"
 TEXT = API.read_text(encoding="utf-8")
 GROUPS = ["Models", "Engine", "Records", "Tools", "Storage", "Errors"]
 HEADINGS: list[str] = re.findall(r"^### `(.+)`$", TEXT, re.M)
-BLOCKS = dict(re.findall(r"^### `([^`\n]+)`\n\n```python\n(.*?)```", TEXT, re.M | re.S))
+SECTIONS = re.findall(
+    r"^### `([^`\n]+)`\n\n```python\n(.*?)```\n(.*?)(?=^##)", f"{TEXT}\n## ", re.M | re.S
+)
+BLOCKS = {heading: block for heading, block, _ in SECTIONS}
+PROSE = {heading: prose for heading, _, prose in SECTIONS}
 HOME = {
     alias.asname or alias.name: node.module
     for node in ast.parse(inspect.getsource(rfnry_engine)).body
     if isinstance(node, ast.ImportFrom) and node.module is not None
     for alias in node.names
 }
+EXPORTED = {name: getattr(rfnry_engine, name) for name in rfnry_engine.__all__}
 EMPTY = inspect.Parameter.empty
 KINDS = inspect.Parameter
 
 
-def is_core(value: object) -> bool:
-    return (
-        inspect.isclass(value)
-        and not issubclass(value, BaseModel | BaseException)
-        and not getattr(value, "_is_protocol", False)
-    )
-
-
-CORE = {
-    n: getattr(rfnry_engine, n) for n in rfnry_engine.__all__ if is_core(getattr(rfnry_engine, n))
-}
+def is_protocol(value: object) -> bool:
+    return inspect.isclass(value) and bool(getattr(value, "_is_protocol", False))
 
 
 def verbs(cls: type) -> list[str]:
     return [n for n, v in vars(cls).items() if n[0] != "_" and inspect.isfunction(v)]
 
 
+def members(protocol: type) -> set[str]:
+    return {
+        n
+        for n, v in vars(protocol).items()
+        if n[0] != "_" and (inspect.isfunction(v) or isinstance(v, property))
+    }
+
+
+PROTOCOLS = [value for value in EXPORTED.values() if is_protocol(value)]
+
+
+def implemented(cls: type) -> list[type]:
+    return [p for p in PROTOCOLS if members(p) and members(p) <= set(vars(cls))]
+
+
+def is_class(value: object) -> bool:
+    return (
+        inspect.isclass(value)
+        and not issubclass(value, BaseModel | BaseException)
+        and not is_protocol(value)
+    )
+
+
+IMPLEMENTATIONS = {n: v for n, v in EXPORTED.items() if is_class(v) and implemented(v)}
+CORE = {n: v for n, v in EXPORTED.items() if is_class(v) and not implemented(v)}
 VERBS = [f"{name}.{verb}" for name, cls in CORE.items() for verb in verbs(cls)]
+
+
+def defined_at_top(module: ModuleType) -> set[str]:
+    names: set[str] = set()
+    for node in ast.parse(inspect.getsource(module)).body:
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(ast.unparse(target) for target in node.targets)
+    return names
+
+
+MODULES = [
+    importlib.import_module(info.name)
+    for info in pkgutil.walk_packages(rfnry_engine.__path__, "rfnry_engine.")
+]
+PRIVATE = {
+    name: module for module in MODULES for name in defined_at_top(module) if name not in EXPORTED
+}
 
 
 def normal(annotation: object) -> str:
@@ -124,7 +165,8 @@ def fields(cls: Any) -> dict[str, tuple[str, Any]]:
 
 def check_class(node: ast.ClassDef, cls: Any) -> None:
     ancestors = {klass.__name__ for klass in cls.__mro__}
-    assert all(ast.unparse(base) in ancestors for base in node.bases), node.name
+    bases = [ast.unparse(base) for base in node.bases]
+    assert all(base in ancestors and base[0] != "_" for base in bases), node.name
     attributes = {ast.unparse(s.target): s for s in node.body if isinstance(s, ast.AnnAssign)}
     methods = {s.name: s for s in node.body if isinstance(s, Function)}
     for name, method in methods.items():
@@ -149,11 +191,12 @@ def check_class(node: ast.ClassDef, cls: Any) -> None:
             assert f"self.{name} = " in inspect.getsource(cls), f"{node.name}.{name}"
 
 
-def alias(module: ModuleType, name: str) -> str:
-    for node in ast.parse(inspect.getsource(module)).body:
-        if isinstance(node, ast.Assign) and [ast.unparse(t) for t in node.targets] == [name]:
-            return ast.unparse(node.value)
-    raise AssertionError(f"{name} is not an alias in {module.__name__}")
+def aliases(module: ModuleType) -> dict[str, str]:
+    return {
+        ast.unparse(node.targets[0]): ast.unparse(node.value)
+        for node in ast.parse(inspect.getsource(module)).body
+        if isinstance(node, ast.Assign) and len(node.targets) == 1
+    }
 
 
 def defined(node: ast.stmt) -> str:
@@ -195,9 +238,40 @@ def test_the_entry_matches_the_code(heading: str) -> None:
     module = importlib.import_module(HOME[owner])
     for node in body:
         if isinstance(node, ast.Assign):
-            assert ast.unparse(node.value) == alias(module, defined(node)), heading
+            assert ast.unparse(node.value) == aliases(module).get(defined(node)), heading
         elif isinstance(node, ast.ClassDef):
             check_class(node, getattr(module, node.name))
         else:
             assert isinstance(node, Function), heading
             check_function(node, getattr(module, node.name))
+
+
+def test_the_storages_implement_exactly_their_protocol() -> None:
+    assert rfnry_engine.Storage in implemented(rfnry_engine.InMemoryStorage)
+    assert rfnry_engine.Storage in implemented(rfnry_engine.PostgresStorage)
+    for name, cls in IMPLEMENTATIONS.items():
+        promised = set[str]().union(*(members(protocol) for protocol in implemented(cls)))
+        assert sorted(verbs(cls)) == sorted(promised), name
+        for protocol in implemented(cls):
+            for verb in members(protocol):
+                real, declared = getattr(cls, verb), getattr(protocol, verb)
+                assert inspect.signature(real) == inspect.signature(declared), f"{name}.{verb}"
+                assert inspect.iscoroutinefunction(real) == inspect.iscoroutinefunction(declared)
+
+
+def used(block: str) -> set[str]:
+    tree = ast.parse(block)
+    names = {
+        n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+    }
+    return names - {defined(node) for node in tree.body}
+
+
+@pytest.mark.parametrize("heading", HEADINGS)
+def test_a_private_type_in_a_signature_is_spelled_out_in_the_prose(heading: str) -> None:
+    for name in sorted(used(BLOCKS[heading]) & set(PRIVATE)):
+        spelled = re.search(rf"`{name}` is (?:`([^`]+)`)?", PROSE[heading])
+        assert spelled is not None, f"{heading}: {name}"
+        value = aliases(PRIVATE[name]).get(name)
+        if value is not None:
+            assert spelled[1] is not None and normal(spelled[1]) == value, f"{heading}: {name}"
