@@ -149,9 +149,9 @@ def test_a_media_part_carries_data_or_url_not_both(kind: type[Image | Audio | Do
     kind(media_type="x/y", data=b"1")
     kind(media_type="x/y", url="https://x")
     name = kind.model_fields["type"].default
-    with pytest.raises(InputError, match=f"^models: {name} carries data or url, not both$"):
+    with pytest.raises(InputError, match=f"^models: {name} carries exactly one of data or url$"):
         kind(media_type="x/y", data=b"1", url="https://x")
-    with pytest.raises(InputError, match=f"^models: {name} carries data or url, not both$"):
+    with pytest.raises(InputError, match=f"^models: {name} carries exactly one of data or url$"):
         kind(media_type="x/y")
 
 

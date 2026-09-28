@@ -158,5 +158,5 @@ async def test_a_malformed_part_from_another_library_in_history_is_an_input_erro
         "role": "user",
         "content": [other.Image(media_type="image/png", data=b"png", url="https://x/c.png")],
     }
-    with pytest.raises(InputError, match=r"^models: image carries data or url, not both"):
+    with pytest.raises(InputError, match=r"^models: image carries exactly one of data or url"):
         await engine.run("billing", "acme", "x", history=[both])
