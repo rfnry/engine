@@ -379,13 +379,44 @@ def test_a_decision_agent_s_task_is_a_folder_not_a_file(tmp_path: Path) -> None:
         load_agent(tmp_path / "a")
 
 
-def test_a_routing_agent_declares_no_tasks(tmp_path: Path) -> None:
-    _agent(tmp_path, "a", "kind: decision\nroute: {by: q, to: {x: b}}\n", {"q": CHOICE})
-    (tmp_path / "a" / "tasks" / "grade").mkdir(parents=True)
-    (tmp_path / "a" / "tasks" / "grade" / "tone.md").write_text(CHECK)
-    message = "^tree: decision agent 'a' routes by its questions/, so it cannot declare tasks/$"
+def _task(root: Path, agent: str, task: str, qid: str, text: str = CHECK) -> None:
+    (root / agent / "tasks" / task).mkdir(parents=True, exist_ok=True)
+    (root / agent / "tasks" / task / f"{qid}.md").write_text(text)
+
+
+def test_a_task_adds_questions_so_it_repeats_no_id_of_questions(tmp_path: Path) -> None:
+    _agent(tmp_path, "a", "kind: decision\n", {"urgent": CHECK, "tone": CHECK})
+    _task(tmp_path, "a", "grade", "pick", CHOICE)
+    _task(tmp_path, "a", "grade", "tone")
+    _task(tmp_path, "a", "grade", "urgent")
+    message = "^tree: decision agent 'a' asks 'tone', 'urgent' in both questions/ and tasks/grade/$"
     with pytest.raises(ConfigurationError, match=message):
         load_agent(tmp_path / "a")
+
+
+def test_two_tasks_may_share_an_id_since_they_are_never_asked_together(tmp_path: Path) -> None:
+    _agent(tmp_path, "a", "kind: decision\n", {"urgent": CHECK})
+    _task(tmp_path, "a", "grade", "tone")
+    _task(tmp_path, "a", "sort", "tone", CHOICE)
+    spec = load_agent(tmp_path / "a")
+    assert isinstance(spec.task_questions["grade"]["tone"], Check)
+    assert isinstance(spec.task_questions["sort"]["tone"], Choice)
+
+
+def test_a_decision_agent_s_questions_may_all_live_in_tasks(tmp_path: Path) -> None:
+    _agent(tmp_path, "a", "kind: decision\n")
+    _task(tmp_path, "a", "grade", "tone")
+    spec = load_agent(tmp_path / "a")
+    assert spec.questions == {} and spec.tasks == ["grade"]
+
+
+def test_a_routing_agent_may_declare_tasks(tmp_path: Path) -> None:
+    _agent(tmp_path, "a", "kind: decision\nroute: {by: q, to: {x: b}}\n", {"q": CHOICE})
+    _agent(tmp_path, "b", "kind: generation\n")
+    _task(tmp_path, "a", "grade", "tone")
+    agents = load_tree(tmp_path)
+    validate_tree(agents)
+    assert agents["a"].tasks == ["grade"] and set(agents["a"].questions) == {"q"}
 
 
 @pytest.mark.parametrize(

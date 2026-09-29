@@ -288,8 +288,8 @@ verdict = Verdict.model_validate_json(run.reply)
 An accepted `Output` ends the run. A call the model made after it in the same turn is not run; it is
 answered with an error saying so, so every call in `run.conversation` has its result.
 
-Name a task to put `tasks/<task>.md` in front of the model — a decision agent's task is a set of
-questions instead, [below](#decision-agents) — pass `context=` to add facts about this
+Name a task to put `tasks/<task>.md` in front of the model — a decision agent's task adds a set of
+questions, [below](#decision-agents) — pass `context=` to add facts about this
 tenant that do not belong in the tree — the record keeps it as `run.context` — and pass `on_event=`
 to receive text deltas, tool starts and tool results as they happen:
 
@@ -470,15 +470,18 @@ run.runtime                           # ["product"]
 ```
 
 A runtime question holds what a question file holds — a choice needs two options, a score two
-levels, and structure is JSON — and one that does not, an id the folder already asks, or
+levels, and structure is JSON — and one that does not, an id the run already asks, or
 `questions=` given to a generation agent is an `InputError`. A decision agent may have no
 `questions/` at all and ask only what each run brings; a run with nothing to ask is an
 `InputError`.
 
-A decision agent's task is a named set of questions: `tasks/<task>/` holds question files as
-`questions/` does, and `task=` asks that set instead of `questions/`, runtime questions beside it.
-A task the agent does not have is a `NotFoundError`, as an agent the tree does not have is, for
-either kind of agent:
+A decision agent's task adds questions, as a generation agent's task adds instructions:
+`tasks/<task>/` holds question files as `questions/` does, and `task=` asks them beside
+`questions/`, which every run asks, and beside the runtime ones. One call asks an id once, so a
+task repeats no id of `questions/` — a `ConfigurationError` when the tree loads — while two tasks,
+never asked together, may share one. An agent may keep all its questions in tasks, and a run of it
+that names none and brings none has nothing to ask. A task the agent does not have is a
+`NotFoundError`, as an agent the tree does not have is, for either kind of agent:
 
 ```
 agents/
@@ -491,7 +494,7 @@ agents/
 
 ```python
 run = await engine.run("grader", scope="acme", input={"reply": "Thanks, all sorted!"}, task="tone")
-run.task, sorted(run.questions)       # "tone", ["polite", "register"]
+run.task, sorted(run.questions)       # "tone", ["grounded", "polite", "register"]
 ```
 
 `run.fingerprint.questions` is a short sha256 over the questions the run asked — the folder's, the
@@ -576,9 +579,9 @@ run.routed_to.agent                     # "support" — the generation agent tha
 run.routed_to.children[0].agent         # "triage" — the decision agent support consulted mid-task
 ```
 
-A route is by a question of the router's own folder, so a runtime question cannot drive it and a
-routing agent declares no `tasks/`; runtime questions are the router's, asked beside `intent` and
-not passed on. The run a route or a `Delegate` starts asks the questions of its own folder, so it
+A route is by a question of the router's `questions/`, which every run asks, so neither a task
+nor a runtime question can drive it; a router's task and runtime questions are its own, asked
+beside `intent` and not passed on. The run a route or a `Delegate` starts asks the questions of its own folder, so it
 must have some: a route or an `agents:` entry that reaches a decision agent with no `questions/` is
 a `ConfigurationError` when the tree loads.
 
@@ -1135,7 +1138,8 @@ Everything the package exports, by role.
 `AGENT.md`, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
 (`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), a question
 with instructions both in its frontmatter and in its body or in neither, a decision agent with a
-file straight in `tasks/` or a routing one with `tasks/`, a route or `agents:` entry that reaches a
+file straight in `tasks/` or a task that repeats an id of its `questions/`, a route or `agents:`
+entry that reaches a
 decision agent with no `questions/`, a tool
 declared without a body or given without a declaration, a run of an agent whose kind of model is
 absent, a missing workspace, a `Workspace` root that is not a
@@ -1148,7 +1152,7 @@ or a replay's agent in the candidate included — a task the agent does not have
 (`engine: agent 'support' has no task 'ghost'`), found when the run starts, or a run the refinery
 does not.
 `InputError` for a call the library refuses: an empty scope, tags
-outside their limits, runtime questions that do not fit, an id the folder already asks,
+outside their limits, runtime questions that do not fit, a runtime id the run already asks,
 `questions=` for a generation agent, a decision run with no question to ask, media the decision
 model does not declare, a media part with both or neither of `data` and `url`, a
 correction of the wrong shape or for a question the run was not asked, a `delete_runs` or

@@ -167,10 +167,12 @@ def load_agent(directory: Path) -> AgentSpec:
             )
         task_questions = {p.name: _questions(p) for p in _folders(directory / "tasks")}
         tasks = list(task_questions)
-    if front.kind == "decision" and front.route is not None and tasks:
-        raise ConfigurationError(
-            f"tree: decision agent {front.name!r} routes by its questions/, so it cannot declare tasks/"
-        )
+    for task, asked in task_questions.items():
+        clash = [qid for qid in asked if qid in questions]
+        if clash:
+            raise ConfigurationError(
+                f"tree: decision agent {front.name!r} asks {', '.join(map(repr, clash))} in both questions/ and tasks/{task}/"
+            )
     if front.kind == "decision" and tools:
         raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare tools/")
     if front.kind == "decision" and front.workspace:

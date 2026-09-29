@@ -217,31 +217,97 @@ async def test_a_delegated_decision_run_asks_its_folder(fixtures: Path) -> None:
     assert set(child.questions) == {"urgent", "severity"}
 
 
-async def test_a_task_asks_its_folder_instead_of_questions(tmp_path: Path) -> None:
+async def test_a_task_adds_its_questions_to_those_of_questions(tmp_path: Path) -> None:
     root = grader(tmp_path)
     dm = Answering()
     engine = Engine(root, decision=dm)
     run = await engine.run("grader", "acme", {"reply": "Thanks!"}, task="tone")
     assert isinstance(run, Decision) and run.task == "tone" and run.runtime == []
-    assert set(run.questions) == {"polite", "register"}
+    assert list(run.questions) == ["urgent", "polite", "register"]
     assert run.questions["register"] == Choice(
         instructions="Which register?",
         options={"formal": None, "casual": {"what": "Contractions, slang"}},
     )
     plain = await engine.run("grader", "acme", "x")
     assert isinstance(plain, Decision) and set(plain.questions) == {"urgent"} and plain.task is None
-    facts = await engine.run("grader", "acme", "x", task="facts", questions={"urgent": ANGRY})
-    assert isinstance(facts, Decision) and set(facts.questions) == {"grounded", "urgent"}
-    assert facts.runtime == ["urgent"] and facts.questions["urgent"] == ANGRY
-    with pytest.raises(
-        InputError, match="^engine: decision agent 'grader' already asks 'polite' from its folder$"
-    ):
-        await engine.run("grader", "acme", "x", task="tone", questions={"polite": ANGRY})
+    facts = await engine.run("grader", "acme", "x", task="facts", questions={"angry": ANGRY})
+    assert isinstance(facts, Decision) and list(facts.questions) == ["urgent", "grounded", "angry"]
+    assert facts.runtime == ["angry"] and facts.questions["angry"] == ANGRY
     assert [set(q) for _, q in dm.calls] == [
-        {"polite", "register"},
+        {"urgent", "polite", "register"},
         {"urgent"},
-        {"grounded", "urgent"},
+        {"urgent", "grounded", "angry"},
     ]
+
+
+@pytest.mark.parametrize(
+    ("task", "given", "clash"),
+    [
+        ("tone", {"polite": ANGRY}, "'polite'"),
+        ("tone", {"urgent": ANGRY, "register": AREA}, "'urgent', 'register'"),
+        (None, {"urgent": ANGRY}, "'urgent'"),
+    ],
+)
+async def test_a_runtime_id_may_not_repeat_one_the_run_asks_from_questions_or_its_task(
+    tmp_path: Path, task: str | None, given: dict[str, Question], clash: str
+) -> None:
+    dm = Answering()
+    message = f"^engine: decision agent 'grader' already asks {clash} from its folder$"
+    with pytest.raises(InputError, match=message):
+        await Engine(grader(tmp_path), decision=dm).run(
+            "grader", "acme", "x", task=task, questions=given
+        )
+    assert dm.calls == []
+
+
+async def test_a_runtime_id_may_repeat_one_of_a_task_the_run_does_not_name(
+    tmp_path: Path,
+) -> None:
+    run = await Engine(grader(tmp_path), decision=Answering()).run(
+        "grader", "acme", "x", task="facts", questions={"polite": ANGRY}
+    )
+    assert isinstance(run, Decision) and run.questions["polite"] == ANGRY
+
+
+async def test_an_agent_whose_questions_all_live_in_tasks_asks_them_by_task(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "tasked/AGENT.md", "---\nname: tasked\nkind: decision\n---\n")
+    write(tmp_path / "tasked/tasks/tone/polite.md", "---\ntype: check\n---\nPolite?\n")
+    dm = Answering()
+    engine = Engine(tmp_path, decision=dm)
+    run = await engine.run("tasked", "acme", "x", task="tone")
+    assert isinstance(run, Decision) and list(run.questions) == ["polite"]
+    alone = await engine.run("tasked", "acme", "x", questions={"angry": ANGRY})
+    assert isinstance(alone, Decision) and list(alone.questions) == ["angry"]
+    with pytest.raises(
+        InputError,
+        match="^engine: decision agent 'tasked' has no questions to ask; name a task or pass questions=$",
+    ):
+        await engine.run("tasked", "acme", "x")
+    assert len(dm.calls) == 2
+
+
+async def test_a_routing_agent_s_task_adds_to_its_questions_and_is_not_passed_on(
+    tmp_path: Path,
+) -> None:
+    write(
+        tmp_path / "desk/AGENT.md",
+        "---\nname: desk\nkind: decision\nroute: {by: team, to: {b: triage}}\n---\n",
+    )
+    write(tmp_path / "desk/questions/team.md", "---\ntype: choice\noptions: {a: A, b: B}\n---\n?\n")
+    write(tmp_path / "desk/tasks/audit/angry.md", "---\ntype: check\n---\nAngry?\n")
+    write(tmp_path / "triage/AGENT.md", "---\nname: triage\nkind: decision\n---\n")
+    write(tmp_path / "triage/questions/urgent.md", "---\ntype: check\n---\nUrgent?\n")
+    write(tmp_path / "triage/tasks/audit/risky.md", "---\ntype: check\n---\nRisky?\n")
+    dm = Answering()
+    run = await Engine(tmp_path, decision=dm).run("desk", "acme", "x", task="audit")
+    assert isinstance(run, Decision) and run.task == "audit"
+    assert list(run.questions) == ["team", "angry"]
+    routed = run.routed_to
+    assert isinstance(routed, Decision) and routed.agent == "triage" and routed.task is None
+    assert list(routed.questions) == ["urgent"]
+    assert [list(q) for _, q in dm.calls] == [["team", "angry"], ["urgent"]]
 
 
 async def test_an_unknown_task_is_not_found_as_an_unknown_agent_is(tmp_path: Path) -> None:

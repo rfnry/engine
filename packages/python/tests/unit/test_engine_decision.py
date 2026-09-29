@@ -179,7 +179,9 @@ async def test_foreign_answers_alone_are_accepted_and_still_validated(fixtures: 
         )
 
 
-async def test_a_routing_agent_has_no_tasks_so_a_task_run_of_it_is_refused(fixtures: Path) -> None:
+async def test_a_routing_agent_s_unknown_task_is_not_found_before_it_is_asked(
+    fixtures: Path,
+) -> None:
     dm = Fixed(_intent("other", 0.9))
     engine = Engine(fixtures, generation=Scripted(), decision=dm, tools=TOOLS)
     with pytest.raises(NotFoundError, match="^engine: agent 'frontdesk' has no task 'triage'$"):

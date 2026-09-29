@@ -682,7 +682,7 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
     again = await refinery.run("a", asked.run_id)
     assert again == asked and isinstance(again, Decision)
     assert again.task == "tone" and again.runtime == ["area"]
-    assert list(again.questions) == ["polite", "area"]
+    assert list(again.questions) == ["urgent", "polite", "area"]
     assert list(again.questions["area"].model_dump()["options"]) == ["returns", "delivery"]
     [row] = await storage.runs("a", run_ids=[asked.run_id])
     assert row.task == "tone"
@@ -695,7 +695,7 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
         for line in data.decode().splitlines()
     ]
     mine = [r for r in rows if r["run_id"] == asked.run_id]
-    assert {r["question_id"] for r in mine} == {"polite", "area"}
+    assert {r["question_id"] for r in mine} == {"urgent", "polite", "area"}
     assert all(r["task"] == "tone" for r in mine)
     assert all(r["fingerprint"] == asked.fingerprint.model_dump() for r in mine)
     dm = Answering()
@@ -708,7 +708,11 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
     ]
     assert [pair.recorded.run_id for pair in pairs] == [asked.run_id]
     [(_, sent)] = dm.calls
-    expected: dict[str, Any] = {"polite": Check(instructions="Polite?"), "area": AREA}
+    expected: dict[str, Any] = {
+        "urgent": Check(instructions="Due today?"),
+        "polite": Check(instructions="Polite?"),
+        "area": AREA,
+    }
     assert sent == expected
     assert plain.fingerprint is not None
     assert plain.fingerprint.questions != asked.fingerprint.questions

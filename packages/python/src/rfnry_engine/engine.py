@@ -370,7 +370,9 @@ class Engine:
                 f"engine: agent {spec.name!r} is a decision agent; no decision model was configured"
             )
         self._check_routes(spec, set())
-        folder = spec.questions if options.task is None else spec.task_questions[options.task]
+        folder = dict(spec.questions)
+        if options.task is not None:
+            folder.update(spec.task_questions[options.task])
         clash = [qid for qid in options.questions if qid in folder]
         if clash:
             raise InputError(
@@ -378,8 +380,9 @@ class Engine:
             )
         questions = {**folder, **options.questions}
         if not questions:
+            hint = "name a task or pass questions=" if spec.tasks else "pass questions="
             raise InputError(
-                f"engine: decision agent {spec.name!r} has no questions to ask; pass questions="
+                f"engine: decision agent {spec.name!r} has no questions to ask; {hint}"
             )
         state = _state(spec, input, getattr(model_, "media_types", None))
         run_id = uuid4().hex
@@ -394,7 +397,7 @@ class Engine:
             target = route.to.get(answer.choice) if isinstance(answer, ChoiceAnswer) else None
             floor = route.min_confidence
             if target is not None and (floor is None or answer.confidence >= floor):
-                forwarded = replace(options, questions={})
+                forwarded = replace(options, task=None, questions={})
                 routed = await self._run(self._agents[target], scope, input, forwarded, run_id)
         return Decision(
             run_id=run_id,

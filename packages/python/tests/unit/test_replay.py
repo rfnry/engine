@@ -583,6 +583,7 @@ async def test_a_decision_replay_re_asks_runtime_questions_as_recorded_and_the_f
     assert first.runtime == ["area"] and first.state == "x"
     assert second.task == "tone" and second.runtime == ["area"]
     assert second.questions == {
+        "urgent": Check(instructions="Must it be done today?"),
         "polite": Check(instructions="Must it be done today? Polite?"),
         "area": AREA,
     }
@@ -593,6 +594,29 @@ async def test_a_decision_replay_re_asks_runtime_questions_as_recorded_and_the_f
         assert recorded.fingerprint is not None and pair.candidate.fingerprint is not None
         assert recorded.fingerprint.agent != pair.candidate.fingerprint.agent
         assert recorded.fingerprint.questions != pair.candidate.fingerprint.questions
+
+
+async def test_a_routed_decision_replays_with_the_router_s_task_not_the_routed_run_s(
+    tmp_path: Path,
+) -> None:
+    for path, text in {
+        "desk/AGENT.md": "---\nname: desk\nkind: decision\nroute: {by: team, to: {b: grader}}\n---\n",
+        "desk/questions/team.md": "---\ntype: choice\noptions: {a: A, b: B}\n---\nWhich?\n",
+        "desk/tasks/audit/angry.md": "---\ntype: check\n---\nAngry?\n",
+    }.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text, encoding="utf-8")
+    graded(tmp_path)
+    refinery = Refinery(InMemoryStorage())
+    recorded = await Engine(tmp_path, decision=Answering(), refinery=refinery).run(
+        "desk", "acme", "x", task="audit"
+    )
+    assert isinstance(recorded, Decision) and isinstance(recorded.routed_to, Decision)
+    assert recorded.routed_to.task is None
+    dm = Answering()
+    [pair] = await collect(refinery.replay("acme", Engine(tmp_path, decision=dm), agent="desk"))
+    assert isinstance(pair.candidate, Decision) and pair.candidate.task == "audit"
+    assert [list(asked) for _, asked in dm.calls] == [["team", "angry"], ["urgent"]]
 
 
 async def test_a_runtime_question_the_candidate_s_folder_now_holds_fails_its_pair(
