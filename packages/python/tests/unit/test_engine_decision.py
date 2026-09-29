@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any, Literal
 
@@ -9,6 +10,7 @@ from rfnry_engine.errors import ConfigurationError, InputError, ModelError
 from rfnry_engine.models import (
     Check,
     CheckAnswer,
+    Choice,
     ChoiceAnswer,
     Decided,
     Image,
@@ -22,9 +24,11 @@ from rfnry_engine.models import (
     Usage,
 )
 from rfnry_engine.records import Decision, Generation
+from rfnry_engine.refinery.inmemory import InMemoryStorage
+from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Fixed, Scripted, text_reply
+from .fakes import TOOLS, Fixed, MemoryBucket, Scripted, sorter, text_reply
 
 
 def _intent(choice: str, p: float) -> dict[str, Any]:
@@ -278,3 +282,41 @@ async def test_a_checks_yes_and_no_reach_the_decision_model(tmp_path: Path) -> N
         yes="The service is down or data is at risk",
         no="A question, a request, or a problem with a workaround",
     )
+
+
+async def test_structured_questions_reach_the_model_the_record_and_the_export_as_written(
+    tmp_path: Path,
+) -> None:
+    dm = sorter(tmp_path)
+    refinery = Refinery(InMemoryStorage())
+    run = await Engine(tmp_path, decision=dm, refinery=refinery).run("sorter", "acme", "Hi")
+    [(_, asked)] = dm.calls
+    assert isinstance(run, Decision) and run.questions == asked
+    assert run.questions["team"] == Choice(
+        instructions={"question": "Which team handles `ticket`?", "ticket": {"id": 7}},
+        options={
+            "billing": {"what": "Charges", "not_for": "Delivery", "examples": ["charged twice"]},
+            "orders": ["Delivery", "Returns"],
+            "other": None,
+        },
+    )
+    assert run.questions["creds"] == Check(
+        instructions={"question": "Does `message` ask for a credential?", "inspect": "message"},
+        yes={"what": "Asks for a password", "examples": ["Reply with your PIN"]},
+    )
+    assert await refinery.run("acme", run.run_id) == run
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [key] = [k for k in bucket.objects if "/decision/" in k]
+    rows = {
+        row["question_id"]: row
+        for row in map(json.loads, bucket.objects[key].decode().splitlines())
+    }
+    assert {qid: row["question"] for qid, row in rows.items()} == {
+        qid: question.model_dump(mode="json") for qid, question in run.questions.items()
+    }
+    assert rows["team"]["question"]["options"]["other"] is None
+    assert rows["scope"]["question"]["levels"][0] == {
+        "summary": "One change",
+        "signals": ["a single fix"],
+    }

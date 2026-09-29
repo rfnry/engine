@@ -1,13 +1,17 @@
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Literal
 
 import pytest
+from pydantic import BaseModel
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError
 from rfnry_engine.models import (
     AnswerLike,
+    Check,
     CheckAnswer,
+    Choice,
     ChoiceAnswer,
     Decided,
     DecidedLike,
@@ -18,6 +22,7 @@ from rfnry_engine.models import (
     QuestionLike,
     Reply,
     ReplyLike,
+    Score,
     ScoreAnswer,
     State,
     StreamingGenerationModel,
@@ -87,6 +92,36 @@ def test_the_engine_classes_have_the_shapes_the_engine_reads() -> None:
     decision: DecisionModel = Fixed({})
     assert reply.tool_calls[0].name == "Read" and decided.answers and len(answers) == 3
     assert generation and streaming and decision
+
+
+class Plain(BaseModel):
+    type: Literal["check"] = "check"
+    instructions: str
+    yes: str | None = None
+    no: str | None = None
+
+
+def test_structured_questions_from_either_library_and_plain_ones_are_question_like() -> None:
+    questions: Mapping[str, QuestionLike] = {
+        "a": Choice(instructions={"question": "Kind?"}, options={"x": {"what": "X"}, "y": None}),
+        "b": Score(instructions=["Same?", {"note": "names"}], levels=[{"summary": "no"}, "yes"]),
+        "c": Check(instructions="Relevant?", yes=["on topic"], no={"what": "elsewhere"}),
+        "d": other.Choice(instructions={"question": "Kind?"}, options={"x": ["X"], "y": None}),
+        "e": other.Score(instructions="Same?", levels=[["no"], {"summary": "yes"}]),
+        "f": other.Check(instructions={"question": "Relevant?"}, no="elsewhere"),
+        "g": Plain(instructions="Relevant?", yes="on topic"),
+    }
+    read: dict[str, list[object]] = {}
+    for qid, question in questions.items():
+        if question.type == "choice":
+            read[qid] = [question.instructions, dict(question.options)]
+        elif question.type == "score":
+            read[qid] = [question.instructions, list(question.levels)]
+        else:
+            read[qid] = [question.instructions, question.yes, question.no]
+    assert read["a"] == [{"question": "Kind?"}, {"x": {"what": "X"}, "y": None}]
+    assert read["e"] == ["Same?", [["no"], {"summary": "yes"}]]
+    assert read["g"] == ["Relevant?", "on topic", None]
 
 
 async def test_parts_from_another_library_are_read_by_their_fields(fixtures: Path) -> None:

@@ -1,8 +1,10 @@
 import base64
+import json
 import math
+from datetime import date
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from rfnry_engine.errors import InputError, ModelError
 from rfnry_engine.models import (
@@ -170,3 +172,50 @@ def test_part_bytes_travel_as_base64_in_json() -> None:
         Audio.model_validate_json(Audio(media_type="audio/wav", data=raw).model_dump_json()).data
         == raw
     )
+
+
+STRUCTURED: dict[str, Question] = {
+    "team": Choice(
+        instructions={"question": "Which team handles `ticket`?", "ticket": {"id": 7}},
+        options={
+            "billing": {"what": "Charges", "not_for": "Delivery", "examples": ["charged twice"]},
+            "orders": ["Delivery", "Returns"],
+            "other": None,
+            "legal": "Contracts",
+        },
+    ),
+    "scope": Score(
+        instructions=["How focused is the change?", {"note": "count independent changes"}],
+        levels=[{"summary": "One change", "signals": ["a single fix"]}, ["Several"], "Many"],
+    ),
+    "credentials": Check(
+        instructions={"question": "Does `message` ask for a credential?", "inspect": "message"},
+        yes={"what": "Asks for a password or code", "examples": ["Reply with your PIN"]},
+        no=["No credential is requested", {"examples": ["Reset it in settings"]}],
+    ),
+}
+
+
+def test_questions_take_structure_and_round_trip_through_json() -> None:
+    adapter = TypeAdapter(dict[str, Question])
+    dumped = adapter.dump_json(STRUCTURED)
+    assert adapter.validate_json(dumped) == STRUCTURED
+    assert json.loads(dumped)["team"]["options"]["other"] is None
+    assert json.loads(dumped)["credentials"]["no"][1] == {"examples": ["Reset it in settings"]}
+    plain = Choice(instructions="Which?", options={"a": "A", "b": "B"})
+    assert plain.instructions == "Which?" and plain.options == {"a": "A", "b": "B"}
+    assert Check(instructions="Is it?").yes is None
+
+
+def test_structure_is_json_and_still_needs_two_options_or_levels() -> None:
+    with pytest.raises(ValidationError):
+        Choice(instructions="Which?", options={"only": {"what": "one"}})
+    with pytest.raises(ValidationError):
+        Score(instructions="How?", levels=[{"summary": "one"}])
+    for fields in [
+        {"type": "score", "instructions": "How?", "levels": ["low", None]},
+        {"type": "check", "instructions": {"since": date(2026, 1, 1)}},
+        {"type": "choice", "instructions": "Which?", "options": {"a": 1, "b": "B"}},
+    ]:
+        with pytest.raises(ValidationError):
+            TypeAdapter(Question).validate_python(fields)

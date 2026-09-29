@@ -109,6 +109,23 @@ probabilities; the calibration is worse, the code is the same. `decide` may retu
 alone, or a `Decided(answers, usage, model)` when the adapter can report what the call cost and
 which model answered; the record carries both.
 
+The instructions, what an option means, each level, and `yes` and `no` are strings, or JSON objects
+or lists when a question has parts of its own — the question beside the data it names in
+backticks, options told apart by what they cover and what they do not. An option may mean `None`
+when its key says enough. The record keeps the structure as it was asked, and the adapter passes it
+to its model as it is, or renders it where its model reads a prompt:
+
+```python
+Choice(
+    instructions={"question": "Which team should handle this message?", "focus": "The main request, not every topic"},
+    options={
+        "billing": {"what": "Charges, invoices, refunds", "not_for": "Delivery", "examples": ["I was charged twice"]},
+        "orders": {"what": "Delivery, cancellation, returns", "examples": ["Where is my package?"]},
+        "other": None,
+    },
+)
+```
+
 Fakes are enough to run everything in tests:
 
 ```python
@@ -392,6 +409,29 @@ A `check` may say with `yes:` and `no:` what each answer means; a `score` lists 
 a `choice` lists `options:`, each key with what it means. In frontmatter only `true` and `false` are
 booleans; `yes`, `no`, `on` and `off` are words, as a key or as a value.
 
+What an option means, a level, `yes` and `no` may each be a YAML object or list instead of a string,
+and an option left empty means `None`. Instructions with structure go in the frontmatter as
+`instructions:`, an object or a list, and replace the body; a question with instructions in both, or
+in neither, is a `ConfigurationError`:
+
+```markdown
+---
+type: choice
+instructions:
+  question: Which team should handle this message?
+  focus: The main request, not every topic the message mentions
+options:
+  billing:
+    what: Charges, invoices, refunds
+    not_for: Delivery or account access
+    examples: [I was charged twice, My refund never came]
+  orders:
+    what: Delivery, cancellation, returns
+    examples: [My package never arrived]
+  other:
+---
+```
+
 Run it with a state instead of a message. The state can be a string, an object or a list. A
 decision model reads text: a list of parts made only of `Text` is joined with newlines into the
 state, and any other part is an `InputError` before the model is called
@@ -654,8 +694,8 @@ agents/judge/
 ```
 
 A **teacher** is a generation agent that answers a decision agent's questions with a rationale, so
-a decision made without ground truth still gets one. Both run when you say so, over runs they have
-not labeled yet:
+a decision made without ground truth still gets one; it reads each question as the run asked it,
+structure written as compact JSON. Both run when you say so, over runs they have not labeled yet:
 
 ```python
 labeled = await refinery.label("acme", engine, judge="judge", teacher="teacher")
@@ -1021,7 +1061,8 @@ Everything the package exports, by role.
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
 `AGENT.md`, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
-(`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), a tool
+(`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), a question
+with instructions both in its frontmatter and in its body or in neither, a tool
 declared without a body or given without a declaration, a run of an agent whose kind of model is
 absent, an unknown task, a missing workspace, a `Workspace` root that is not a
 directory, a `Workspace` with neither `sandbox=` nor `unsandboxed=True` or with both, an unsandboxed

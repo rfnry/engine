@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 
 
 class Text(BaseModel):
@@ -62,21 +62,21 @@ class Reply(BaseModel):
 
 class Choice(BaseModel):
     type: Literal["choice"] = "choice"
-    instructions: str
-    options: dict[str, str]
+    instructions: str | dict[str, JsonValue] | list[JsonValue]
+    options: dict[str, str | dict[str, JsonValue] | list[JsonValue] | None]
 
 
 class Score(BaseModel):
     type: Literal["score"] = "score"
-    instructions: str
-    levels: list[str]
+    instructions: str | dict[str, JsonValue] | list[JsonValue]
+    levels: list[str | dict[str, JsonValue] | list[JsonValue]]
 
 
 class Check(BaseModel):
     type: Literal["check"] = "check"
-    instructions: str
-    yes: str | None = None
-    no: str | None = None
+    instructions: str | dict[str, JsonValue] | list[JsonValue]
+    yes: str | dict[str, JsonValue] | list[JsonValue] | None = None
+    no: str | dict[str, JsonValue] | list[JsonValue] | None = None
 
 
 Question = Choice | Score | Check

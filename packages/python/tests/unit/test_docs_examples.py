@@ -31,6 +31,7 @@ from rfnry_engine import (
     Tools,
     ToolSpec,
 )
+from rfnry_engine.tree import load_agent
 
 from .fakes import lookup_order
 
@@ -160,7 +161,10 @@ def tree(root: Path) -> None:
     for name in ("lookup_order", "fetch_invoice"):
         write(root / f"support/tools/{name}.md", markdown(f"name: {name}\n"))
     write(root / "frontdesk/AGENT.md", markdown("name: frontdesk"))
-    write(root / "frontdesk/questions/intent.md", markdown("type: choice"))
+    write(
+        root / "frontdesk/questions/intent.md",
+        markdown("Which department should handle this message?"),
+    )
     write(root / "coder/AGENT.md", markdown("name: coder").split("\n", 1)[1])
     write(root / "billing/AGENT.md", agent("billing", "generation"))
     write(root / "teacher/AGENT.md", agent("teacher", "generation"))
@@ -300,3 +304,13 @@ async def test_docs_example_runs(
     result = eval(code, namespace)
     if inspect.iscoroutine(result):
         await result
+
+
+@pytest.mark.parametrize(
+    "block", [b for b in MARKDOWN if b.startswith("---\ntype: ")], ids=lambda b: b.split("\n")[1]
+)
+def test_every_question_in_the_docs_loads(block: str, tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent("a", "decision"))
+    write(tmp_path / "a/questions/q.md", block)
+    question = load_agent(tmp_path / "a").questions["q"]
+    assert question.instructions and question.type in block.split("\n")[1]

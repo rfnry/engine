@@ -83,7 +83,7 @@ The shape an answer is read by: the fields of `ChoiceAnswer`, `ScoreAnswer` or `
 QuestionLike = ChoiceLike | ScoreLike | CheckLike
 ```
 
-The shape of the questions a decision model is handed: the fields of `Choice`, `Score` or `Check`. `ChoiceLike` is a protocol of `type: Literal["choice"]`, `instructions: str` and `options: Mapping[str, str]`; `ScoreLike` is one of `type: Literal["score"]`, `instructions: str` and `levels: Sequence[str]`; `CheckLike` is one of `type: Literal["check"]`, `instructions: str`, `yes: str | None` and `no: str | None`. An adapter branches on `question.type`; one annotated with `QuestionLike` from rfnry-engine or rfnry-memory serves both libraries.
+The shape of the questions a decision model is handed: the fields of `Choice`, `Score` or `Check`. `ChoiceLike` is a protocol of `type: Literal["choice"]`, `instructions: str | dict[str, JsonValue] | list[JsonValue]` and `options: Mapping[str, str | dict[str, JsonValue] | list[JsonValue] | None]`; `ScoreLike` is one of `type: Literal["score"]`, `instructions: str | dict[str, JsonValue] | list[JsonValue]` and `levels: Sequence[str | dict[str, JsonValue] | list[JsonValue]]`; `CheckLike` is one of `type: Literal["check"]`, `instructions: str | dict[str, JsonValue] | list[JsonValue]`, `yes: str | dict[str, JsonValue] | list[JsonValue] | None` and `no: str | dict[str, JsonValue] | list[JsonValue] | None`. An adapter branches on `question.type`; one annotated with `QuestionLike` from rfnry-engine or rfnry-memory serves both libraries.
 
 ### `Message`
 
@@ -231,34 +231,34 @@ What a run is given: a string, a JSON object or a list, a list of parts included
 ```python
 class Choice(BaseModel):
     type: Literal["choice"] = "choice"
-    instructions: str
-    options: dict[str, str]
+    instructions: str | dict[str, JsonValue] | list[JsonValue]
+    options: dict[str, str | dict[str, JsonValue] | list[JsonValue] | None]
 ```
 
-A question answered with one of `options`, each key with what it means. It takes at least two options.
+A question answered with one of `options`, each key with what it means, or `None` when the key says enough. It takes at least two options. `instructions` and what an option means are a string, or a JSON object or list for a question with parts or data of its own; `JsonValue` is pydantic's, any value JSON can hold.
 
 ### `Score`
 
 ```python
 class Score(BaseModel):
     type: Literal["score"] = "score"
-    instructions: str
-    levels: list[str]
+    instructions: str | dict[str, JsonValue] | list[JsonValue]
+    levels: list[str | dict[str, JsonValue] | list[JsonValue]]
 ```
 
-A question answered with a level, `levels` listed in order. It takes at least two levels.
+A question answered with a level, `levels` listed in order. It takes at least two levels. `instructions` and each level are a string, or a JSON object or list.
 
 ### `Check`
 
 ```python
 class Check(BaseModel):
     type: Literal["check"] = "check"
-    instructions: str
-    yes: str | None = None
-    no: str | None = None
+    instructions: str | dict[str, JsonValue] | list[JsonValue]
+    yes: str | dict[str, JsonValue] | list[JsonValue] | None = None
+    no: str | dict[str, JsonValue] | list[JsonValue] | None = None
 ```
 
-A yes-or-no question; `yes` and `no` may say what each answer means.
+A yes-or-no question; `yes` and `no` may say what each answer means. `instructions`, `yes` and `no` are a string, or a JSON object or list.
 
 ### `Question`
 

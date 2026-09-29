@@ -247,3 +247,88 @@ def test_an_unknown_key_in_a_question_is_refused_by_name(tmp_path: Path) -> None
         load_agent(tmp_path / "d")
     path = tmp_path / "d" / "questions" / "q.md"
     assert str(refused.value) == f"frontmatter: unknown key 'optoins' in {path}"
+
+
+def test_a_question_takes_structure_through_its_frontmatter(tmp_path: Path) -> None:
+    choice = (
+        "---\ntype: choice\n"
+        "instructions:\n  question: Which team handles `ticket`?\n  ticket: {id: 7, vip: true}\n"
+        "options:\n"
+        "  billing:\n    what: Charges\n    examples: [charged twice, yes, on]\n"
+        "  orders: [Delivery, Returns]\n"
+        "  other:\n"
+        "  legal: Contracts\n"
+        "---\n"
+    )
+    score = (
+        "---\ntype: score\nlevels:\n  - {summary: One change, signals: [a single fix]}\n"
+        "  - [Several]\n  - Many\n---\nHow focused is the change?\n"
+    )
+    check = (
+        "---\ntype: check\ninstructions:\n  - Does `message` ask for a credential?\n  - message\n"
+        "yes: {what: Asks for a password, examples: [Reply with your PIN]}\n"
+        "no: [No credential is requested]\n---\n"
+    )
+    _agent(tmp_path, "d", "kind: decision\n", {"team": choice, "scope": score, "creds": check})
+    assert load_agent(tmp_path / "d").questions == {
+        "creds": Check(
+            instructions=["Does `message` ask for a credential?", "message"],
+            yes={"what": "Asks for a password", "examples": ["Reply with your PIN"]},
+            no=["No credential is requested"],
+        ),
+        "scope": Score(
+            instructions="How focused is the change?",
+            levels=[{"summary": "One change", "signals": ["a single fix"]}, ["Several"], "Many"],
+        ),
+        "team": Choice(
+            instructions={
+                "question": "Which team handles `ticket`?",
+                "ticket": {"id": 7, "vip": True},
+            },
+            options={
+                "billing": {"what": "Charges", "examples": ["charged twice", "yes", "on"]},
+                "orders": ["Delivery", "Returns"],
+                "other": None,
+                "legal": "Contracts",
+            },
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (
+            "---\ntype: check\ninstructions:\n  question: Is it?\n---\nIs it?\n",
+            "gives instructions both in its frontmatter and in its body",
+        ),
+        ("---\ntype: check\n---\n\n", "gives no instructions, in its body or its frontmatter"),
+        (
+            "---\ntype: check\ninstructions: {}\n---\n",
+            "gives no instructions, in its body or its frontmatter",
+        ),
+    ],
+)
+def test_a_question_has_its_instructions_in_its_frontmatter_or_its_body(
+    tmp_path: Path, text: str, message: str
+) -> None:
+    _agent(tmp_path, "d", "kind: decision\n", {"q": text})
+    path = tmp_path / "d" / "questions" / "q.md"
+    with pytest.raises(ConfigurationError) as refused:
+        load_agent(tmp_path / "d")
+    assert str(refused.value) == f"tree: question {path} {message}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "---\ntype: check\ninstructions: Is it?\n---\n",
+        "---\ntype: score\nlevels: [low, ~]\n---\nHow?\n",
+        "---\ntype: score\nlevels: [low, 2]\n---\nHow?\n",
+        "---\ntype: choice\noptions: {a: A, b: 2026-01-01}\n---\nWhich?\n",
+    ],
+)
+def test_structure_in_frontmatter_is_an_object_or_a_list_of_json(tmp_path: Path, text: str) -> None:
+    _agent(tmp_path, "d", "kind: decision\n", {"q": text})
+    with pytest.raises(ConfigurationError, match="^frontmatter: invalid question "):
+        load_agent(tmp_path / "d")

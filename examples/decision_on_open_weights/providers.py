@@ -57,7 +57,7 @@ class LocalDecisionProvider:
         allowed = f"{', '.join(letters[:-1])} or {letters[-1]}"
         text = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False)
         prompt = (
-            f"{text}\n\nQuestion: {question.instructions}\n\n{listed}\n\n"
+            f"{text}\n\nQuestion: {self._shown(question.instructions)}\n\n{listed}\n\n"
             f"Answer with one letter: {allowed}."
         )
         data = await self._complete(prompt)
@@ -68,13 +68,21 @@ class LocalDecisionProvider:
 
     def _options(self, question: QuestionLike) -> list[str]:
         if question.type == "choice":
-            return [f"{key}: {meaning}" for key, meaning in question.options.items()]
+            return [
+                key if meaning is None else f"{key}: {self._shown(meaning)}"
+                for key, meaning in question.options.items()
+            ]
         if question.type == "score":
-            return list(question.levels)
+            return [self._shown(level) for level in question.levels]
         return [
-            f"yes: {question.yes}" if question.yes else "yes",
-            f"no: {question.no}" if question.no else "no",
+            f"yes: {self._shown(question.yes)}" if question.yes else "yes",
+            f"no: {self._shown(question.no)}" if question.no else "no",
         ]
+
+    def _shown(self, value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
     async def _complete(self, prompt: str) -> dict[str, Any]:
         body = {

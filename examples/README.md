@@ -11,7 +11,11 @@ types differs. A folder may carry a method it does not call, such as `generate_s
 one client and retries rate limits and overloads; the generation providers report cache usage and
 hand back the model's reasoning so a later turn can replay it. The generation providers translate
 the parts — `Text`, `Image`, `Document`, and `Audio` where the vendor takes it — and
-`Message.tool_calls` into the vendor's blocks, in user turns and in tool results alike.
+`Message.tool_calls` into the vendor's blocks, in user turns and in tool results alike. The decision
+providers take a question's structure as it is written: `TypeSafeProvider` sends instructions,
+options, levels, `yes` and `no` to the API unchanged, objects and lists included, and refuses more
+options or levels than the API takes before sending; `LocalDecisionProvider` writes them into its
+prompt, structure as compact JSON.
 
 | example | what it shows |
 | --- | --- |

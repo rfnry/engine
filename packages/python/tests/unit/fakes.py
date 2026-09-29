@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -170,3 +171,41 @@ class Desk:
 def delegate_triage(call_id: str = "d1", text: str = "It is down") -> Reply:
     call = ToolCall(id=call_id, name="Delegate", args={"agent": "triage", "input": text})
     return Reply(tool_calls=[call], stop_reason="tool_use")
+
+
+SORTER = {
+    "AGENT.md": "---\nname: sorter\nkind: decision\n---\n",
+    "questions/team.md": (
+        "---\ntype: choice\n"
+        "instructions:\n  question: Which team handles `ticket`?\n  ticket: {id: 7}\n"
+        "options:\n"
+        "  billing:\n    what: Charges\n    not_for: Delivery\n    examples: [charged twice]\n"
+        "  orders: [Delivery, Returns]\n"
+        "  other:\n"
+        "---\n"
+    ),
+    "questions/scope.md": (
+        "---\ntype: score\nlevels:\n  - {summary: One change, signals: [a single fix]}\n"
+        "  - [Several]\n  - Many\n---\nHow focused is the change?\n"
+    ),
+    "questions/creds.md": (
+        "---\ntype: check\ninstructions:\n  question: Does `message` ask for a credential?\n"
+        "  inspect: message\nyes: {what: Asks for a password, examples: [Reply with your PIN]}\n"
+        "---\n"
+    ),
+}
+
+
+def sorter(root: Path) -> Fixed:
+    for name, text in SORTER.items():
+        (root / "sorter" / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / "sorter" / name).write_text(text, encoding="utf-8")
+    return Fixed(
+        {
+            "team": ChoiceAnswer(
+                choice="billing", probabilities={"billing": 0.8, "orders": 0.1, "other": 0.1}
+            ),
+            "scope": ScoreAnswer(score=1.0, probabilities=[0.1, 0.8, 0.1]),
+            "creds": CheckAnswer(probability=0.9),
+        }
+    )

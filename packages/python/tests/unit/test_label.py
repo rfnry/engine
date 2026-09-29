@@ -242,6 +242,44 @@ def test_the_teacher_reads_what_yes_and_no_mean_for_a_check() -> None:
     )
 
 
+def test_the_teacher_reads_structure_as_compact_json_and_a_bare_option_as_its_key() -> None:
+    questions: dict[str, Question] = {
+        "team": Choice(
+            instructions={"question": "Which team handles `ticket`?", "ticket": {"id": 7}},
+            options={"billing": {"what": "Charges", "examples": ["charged twice"]}, "other": None},
+        ),
+        "scope": Score(instructions=["How focused?", "one change"], levels=["One", ["Several"]]),
+        "creds": Check(instructions="Asks for a credential?", yes={"what": "A password"}),
+    }
+    now = datetime.now(UTC)
+    row = RunRow(
+        scope="acme",
+        run_id="r",
+        parent_run_id=None,
+        agent="sorter",
+        kind="decision",
+        task=None,
+        at=now,
+        recorded=now,
+        duration_ms=0,
+        model=None,
+        body={
+            "state": "Hi",
+            "questions": {qid: q.model_dump(mode="json") for qid, q in questions.items()},
+        },
+    )
+    assert teacher_prompt(row).endswith(
+        'QUESTION team (choice): {"question":"Which team handles `ticket`?","ticket":{"id":7}}\n'
+        '  - billing: {"what":"Charges","examples":["charged twice"]}\n'
+        "  - other\n"
+        'QUESTION scope (score): ["How focused?","one change"]\n'
+        "  0: One\n"
+        '  1: ["Several"]\n'
+        "QUESTION creds (check): Asks for a credential?\n"
+        '  yes: {"what":"A password"}'
+    )
+
+
 async def test_a_teachers_answer_is_the_exported_truth_until_a_person_gives_one(
     fixtures: Path,
 ) -> None:

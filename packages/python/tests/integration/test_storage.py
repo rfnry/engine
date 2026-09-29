@@ -11,6 +11,7 @@ from unit.fakes import (
     Scripted,
     delegate_triage,
     generation_record,
+    sorter,
     text_reply,
 )
 
@@ -548,6 +549,30 @@ async def test_fingerprints_and_context_round_trip_and_old_bodies_read_as_none(
         for data in bucket.objects.values()
         for line in data.decode().splitlines()
     )
+
+
+async def test_structured_questions_round_trip_through_the_record_and_the_export(
+    storage: Storage, tmp_path: Path
+) -> None:
+    refinery = Refinery(storage)
+    dm = sorter(tmp_path)
+    run = await Engine(tmp_path, decision=dm, refinery=refinery).run("sorter", "a", "Hi")
+    assert isinstance(run, Decision)
+    [(_, asked)] = dm.calls
+    again = await refinery.run("a", run.run_id)
+    assert again == run and isinstance(again, Decision) and again.questions == asked
+    assert list(again.questions["team"].model_dump()["options"]) == ["billing", "orders", "other"]
+    bucket = MemoryBucket()
+    await refinery.export("a", bucket)
+    rows = [
+        json.loads(line)
+        for key, data in bucket.objects.items()
+        if "/decision/" in key
+        for line in data.decode().splitlines()
+    ]
+    assert {row["question_id"]: row["question"] for row in rows} == {
+        qid: question.model_dump(mode="json") for qid, question in run.questions.items()
+    }
 
 
 class Seeing:

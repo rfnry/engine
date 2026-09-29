@@ -68,6 +68,12 @@ class TeacherAnswers(BaseModel):
     rationale: str
 
 
+def shown(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
 def teacher_prompt(row: RunRow) -> str:
     body = row.body
     lines = [
@@ -79,13 +85,22 @@ def teacher_prompt(row: RunRow) -> str:
         "",
     ]
     for question_id, question in body["questions"].items():
-        lines.append(f"QUESTION {question_id} ({question['type']}): {question['instructions']}")
+        lines.append(
+            f"QUESTION {question_id} ({question['type']}): {shown(question['instructions'])}"
+        )
         if question["type"] == "choice":
-            lines.extend(f"  - {key}: {text}" for key, text in question["options"].items())
+            lines.extend(
+                f"  - {key}" if text is None else f"  - {key}: {shown(text)}"
+                for key, text in question["options"].items()
+            )
         if question["type"] == "score":
-            lines.extend(f"  {index}: {level}" for index, level in enumerate(question["levels"]))
+            lines.extend(
+                f"  {index}: {shown(level)}" for index, level in enumerate(question["levels"])
+            )
         if question["type"] == "check":
-            lines.extend(f"  {key}: {question[key]}" for key in ("yes", "no") if question.get(key))
+            lines.extend(
+                f"  {key}: {shown(question[key])}" for key in ("yes", "no") if question.get(key)
+            )
     return "\n".join(lines)
 
 

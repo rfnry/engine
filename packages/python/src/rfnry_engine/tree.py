@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.fingerprint import folder_fingerprint
@@ -36,10 +36,11 @@ class QuestionFront(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["choice", "score", "check"]
-    options: dict[str, str] | None = None
-    levels: list[str] | None = None
-    yes: str | None = None
-    no: str | None = None
+    instructions: dict[str, JsonValue] | list[JsonValue] | None = None
+    options: dict[str, str | dict[str, JsonValue] | list[JsonValue] | None] | None = None
+    levels: list[str | dict[str, JsonValue] | list[JsonValue]] | None = None
+    yes: str | dict[str, JsonValue] | list[JsonValue] | None = None
+    no: str | dict[str, JsonValue] | list[JsonValue] | None = None
 
 
 class ToolField(BaseModel):
@@ -87,7 +88,16 @@ def _question(path: Path) -> Question:
     front, body = parse_frontmatter_doc(
         _read(path), model=QuestionFront, source=path, label="question"
     )
-    instructions = body.strip()
+    written = body.strip()
+    if front.instructions is not None and written:
+        raise ConfigurationError(
+            f"tree: question {path} gives instructions both in its frontmatter and in its body"
+        )
+    instructions = front.instructions or written
+    if not instructions:
+        raise ConfigurationError(
+            f"tree: question {path} gives no instructions, in its body or its frontmatter"
+        )
     try:
         if front.type == "choice":
             return Choice(instructions=instructions, options=front.options or {})
