@@ -90,7 +90,7 @@ def _truth_value(answer: dict[str, Any]) -> Any:
 
 def _probabilities(answer: dict[str, Any]) -> Any:
     if answer["type"] == "check":
-        return {"yes": answer["probability"], "no": 1.0 - answer["probability"]}
+        return {"yes": answer["probability"], "no": round(1.0 - answer["probability"], 12)}
     return answer["probabilities"]
 
 

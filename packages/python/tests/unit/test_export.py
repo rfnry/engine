@@ -399,3 +399,14 @@ async def test_a_generation_row_carries_the_context_its_run_was_given() -> None:
     rows = {row["run_id"]: row for row in _lines(bucket.objects[key])}
     assert rows[given.run_id]["context"] == "Acme is on the enterprise plan."
     assert rows[bare.run_id]["context"] is None
+
+
+async def test_a_check_row_writes_its_no_without_float_noise() -> None:
+    refinery = Refinery(InMemoryStorage())
+    decision = decision_record(probability=0.33)
+    await refinery.record(decision)
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [key] = [k for k in bucket.objects if "/decision/" in k]
+    [row] = _lines(bucket.objects[key])
+    assert row["probabilities"] == {"yes": 0.33, "no": 0.67}
