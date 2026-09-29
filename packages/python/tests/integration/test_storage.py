@@ -29,7 +29,8 @@ from rfnry_engine.models import (
     ToolSpec,
     Usage,
 )
-from rfnry_engine.records import Decision, Generation
+from rfnry_engine.records import Decision, Fingerprint, Generation
+from rfnry_engine.refinery.labels import Outcome, Review
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 from rfnry_engine.stop import Stop
@@ -547,3 +548,80 @@ async def test_fingerprints_and_context_round_trip_and_old_bodies_read_as_none(
         for data in bucket.objects.values()
         for line in data.decode().splitlines()
     )
+
+
+class Seeing:
+    def __init__(self) -> None:
+        self.seen: list[list[Message]] = []
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        self.seen.append(list(messages))
+        return text_reply("Candidate.")
+
+
+async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
+    storage: Storage,
+) -> None:
+    refinery = Refinery(storage)
+    recorder = Engine(
+        FIXTURES,
+        generation=Scripted(
+            delegate_triage(), text_reply("Handled."), text_reply("Hi."), text_reply("Bye.")
+        ),
+        decision=Desk(),
+        tools=TOOLS,
+        refinery=refinery,
+    )
+    parts: list[Part] = [
+        Text(text="Charged twice?"),
+        Image(media_type="image/png", data=bytes(range(256))),
+    ]
+    history = [Message(role="user", content="Earlier"), Message(role="assistant", content="Ok.")]
+    first = await recorder.run(
+        "support",
+        "a",
+        list(parts),
+        history=history,
+        task="triage",
+        context="Acme is enterprise.",
+        tags={"arm": "a", "customer": "c-1"},
+    )
+    second = await recorder.run("support", "a", "Hello", tags={"arm": "b"})
+    third = await recorder.run("support", "a", {"order": "A-1"}, tags={"arm": "a"})
+    await refinery.review("a", second.run_id, Review(stance="approval"))
+    await refinery.outcome("a", third.run_id, Outcome(status="failed"))
+    counted = await storage.count_scope("a")
+    model = Seeing()
+    candidate = Engine(FIXTURES, generation=model, decision=Desk(), tools=TOOLS, refinery=refinery)
+
+    async def replayed(**selectors: Any) -> list[str]:
+        pairs = [p async for p in refinery.replay("a", candidate, agent="support", **selectors)]
+        return [pair.recorded.run_id for pair in pairs]
+
+    pairs = [p async for p in refinery.replay("a", candidate, agent="support")]
+    assert [pair.recorded.model_dump(mode="json") for pair in pairs] == [
+        run.model_dump(mode="json") for run in (first, second, third)
+    ]
+    assert [len(pair.labels) for pair in pairs] == [0, 1, 1]
+    assert all(isinstance(run, Generation) for run in (first, second, third))
+    assert model.seen == [
+        run.messages for run in (first, second, third) if isinstance(run, Generation)
+    ]
+    assert isinstance(model.seen[0][-1].content, list) and model.seen[0][-1].content == parts
+    candidate_first = pairs[0].candidate
+    assert isinstance(candidate_first, Generation) and isinstance(first, Generation)
+    assert candidate_first.task == "triage" and candidate_first.context == "Acme is enterprise."
+    assert candidate_first.fingerprint == first.fingerprint
+    assert await replayed(tags={"arm": "a"}) == [first.run_id, third.run_id]
+    assert await replayed(tags={"arm": "a", "customer": "c-1"}) == [first.run_id]
+    assert await replayed(labeled=True) == [second.run_id, third.run_id]
+    assert first.fingerprint is not None
+    assert await replayed(fingerprint=first.fingerprint) == [
+        r.run_id for r in (first, second, third)
+    ]
+    assert await replayed(fingerprint=Fingerprint(agent="0" * 16, tools="0" * 16)) == []
+    assert len(await replayed(holdout=True, holdout_percent=100)) == 3
+    assert await replayed(holdout=True, holdout_percent=0) == []
+    assert await replayed(limit=2) == [first.run_id, second.run_id]
+    assert await storage.count_scope("a") == counted
+    assert [p async for p in refinery.replay("b", candidate, agent="support")] == []

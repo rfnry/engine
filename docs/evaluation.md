@@ -131,41 +131,64 @@ is missing, which tool fails. The loop:
    ```
 
 3. Replay the holdout on the new folder and compare, as below. Promote the change when it wins.
+   The runs it records from then on carry the new folder's fingerprint, so the two versions never
+   mix in a later comparison.
 
 This works with any model, frontier or local, because nothing is trained.
 
 ### Replaying the holdout
 
 About one run in five is held out, by a hash of its run id, so it never moves between exports.
-Held-out runs with golden labels are your test set. Replay their inputs on a candidate — a new
-folder, a new model — without recording, and grade the replies against the right answers with a
-decision agent of your own:
+Held-out runs with golden labels are your test set. `refinery.replay` runs a candidate — an
+`Engine` on a new folder or a new model, with the same tools — on what each of them was given,
+records nothing, and yields the recorded run, its labels and the candidate's run side by side.
+Grade the candidate's replies against the right answers with a decision agent of your own:
 
 ```python
-held = [row for row in rows if row["holdout"] and any(l["source"] == "human" for l in row["labels"])]
-for row in held:
-    history, question = row["messages"][:-1], Message.model_validate(row["messages"][-1]).content
-    reply = await candidate.run("support", scope="acme", input=question, history=history, record=False)
-    reference = next(l["correction"] or row["reply"] for l in row["labels"] if l["source"] == "human")
+async def read_only(agent, call):
+    return call.name in {"Read", "Grep", "Glob", "LS", "Skill", "Load", "Delegate", "lookup_order"}
+
+grades, failures = [], []
+async for pair in refinery.replay("acme", candidate, agent="support", holdout=True, labeled=True,
+                                  approve=read_only):
+    if pair.candidate is None:
+        failures.append(pair.error)
+        continue
+    review = next((label.review for label in reversed(pair.labels) if label.review), None)
+    if review is None or not (review.correction or review.stance == "approval"):
+        continue
+    reference = review.correction or pair.recorded.reply
     grade = await engine.run("grader", scope="acme", record=False,
-                             input={"reference": reference, "reply": reply.reply})
-    grade.answers["matches"].probability
+                             input={"reference": reference, "reply": pair.candidate.reply})
+    grades.append(grade.answers["matches"].probability)
 ```
 
-`rows` are the lines of an exported generation file; `Message.model_validate` reads the stored input
-back as parts, so an image replays as an image and not as its base64 text. `grader` is a decision
-agent of yours whose check `matches` asks whether the reply says what the reference says; it reads
-text, so it is given the two texts and not the question's parts. Its probability is a score; the
-rate across the holdout, next to the rate for the current version, is the comparison. When you would
-rather see it live, route a slice of traffic to the candidate with `tags={"arm": "candidate"}` and
-compare the golden labels the two arms collect.
+**Replay runs the candidate's tools for real.** A tool that refunds refunds again; a tool that sends
+a message sends it. `read_only` lets through only the tools that read — the builtins, `Delegate`,
+whose runs it is asked about too, and a lookup — and the model reads any other call as refused; or
+build the candidate with bodies that only read.
+
+Each replay is given the recorded input — an image replays as an image — the history before it,
+the task and the context, so the candidate answers the question the recorded run answered. The
+latest review decides the reference: a person's correction is the right answer, an approval makes
+the recorded reply one, and a run labeled only by its outcome has no text to grade against, so it
+is skipped here and its outcome counted on its own. `grader` is a decision agent of yours whose
+check `matches` asks whether the reply says what the reference says; it reads text, so it is given
+the two texts and not the question's parts. Its probability is a score. The comparison is the mean
+over the pairs graded, next to the same number for the engine you run today replayed the same way,
+with `failures` counted as failures. `pair.recorded.fingerprint`
+and `pair.candidate.fingerprint` say what changed between the two: the folder, the tools, or
+neither. When you would rather see it live, route a slice of traffic to the candidate with
+`tags={"arm": "candidate"}` and compare the golden labels the two arms collect.
 
 ### Level 2: choose models on evidence
 
 When a new model ships, replay the same holdout with it. Build an engine on the candidate adapter —
-the same folder, the same tools — and compare the grade rate, `reply.usage` and `reply.duration_ms`
-against what you run today. The answer to "is the local model good enough for this task?" is a
-number measured on your own labeled questions, not a benchmark.
+the same folder, the same tools — and compare the grade rate, `pair.candidate.usage` and
+`pair.candidate.duration_ms` against what you run today. When the two fingerprints match, the model
+is the only thing that differs, and `pair.candidate.model` names it. The answer to "is the local
+model good enough for this task?" is a number measured on your own labeled questions, not a
+benchmark.
 
 ### Level 3: train your own models
 

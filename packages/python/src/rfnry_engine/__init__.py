@@ -50,7 +50,15 @@ from rfnry_engine.records import Decision, Fingerprint, Generation, Run, Step
 from rfnry_engine.refinery.export import Bucket
 from rfnry_engine.refinery.holdout import is_holdout
 from rfnry_engine.refinery.inmemory import InMemoryStorage
-from rfnry_engine.refinery.labels import Conflict, Exported, Label, Labeled, Outcome, Review
+from rfnry_engine.refinery.labels import (
+    Conflict,
+    Exported,
+    Label,
+    Labeled,
+    Outcome,
+    Replay,
+    Review,
+)
 from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
@@ -100,6 +108,7 @@ __all__ = [
     "Question",
     "QuestionLike",
     "Refinery",
+    "Replay",
     "Reply",
     "ReplyLike",
     "Review",

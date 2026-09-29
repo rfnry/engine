@@ -12,14 +12,17 @@ from rfnry_engine import (
     Image,
     InMemoryStorage,
     Message,
+    Outcome,
     Refinery,
     Reply,
     Review,
+    State,
     Text,
     ToolSpec,
+    is_holdout,
 )
 
-from .fakes import Fixed, MemoryBucket
+from .fakes import Fixed
 
 DOCS = Path(__file__).parents[4] / "docs" / "engine.md"
 GUIDE = Path(__file__).parents[4] / "docs" / "evaluation.md"
@@ -55,7 +58,7 @@ class Seeing:
         return Reply(text="Refund the second charge.")
 
 
-async def test_the_holdout_replay_hands_the_candidate_the_parts_as_they_were(
+async def test_the_holdout_replay_grades_the_candidate_on_what_each_run_was_given(
     tmp_path: Path,
 ) -> None:
     for path, text in {
@@ -67,35 +70,41 @@ async def test_the_holdout_replay_hands_the_candidate_the_parts_as_they_were(
         (tmp_path / path).write_text(text, encoding="utf-8")
     refinery = Refinery(InMemoryStorage())
     graded = Fixed({"matches": CheckAnswer(probability=0.9)})
-    engine = Engine(tmp_path, generation=Seeing(), decision=graded, refinery=refinery)
+    engine = Engine(tmp_path, generation=Seeing(), decision=graded)
+    held = [f"run-{i}" for i in range(200) if is_holdout(f"run-{i}")][:4]
+    kept = next(f"run-{i}" for i in range(200) if not is_holdout(f"run-{i}"))
     parts = [Text(text="Charged twice?"), Image(media_type="image/png", data=b"\x89PNG\r\n\x1a\n")]
-    run = await engine.run("support", "acme", parts)
-    await refinery.review("acme", run.run_id, Review(correction="Refund it."))
-    bucket = MemoryBucket()
-    await refinery.export("acme", bucket, holdout_percent=100)
-    rows = [
-        json.loads(line)
-        for key, data in bucket.objects.items()
-        if "/generation/" in key
-        for line in data.decode().splitlines()
-    ]
+    inputs: dict[str, State] = {
+        held[0]: list(parts),
+        held[1]: "Is it down?",
+        held[2]: "Where is A-1?",
+        held[3]: "Unlabeled.",
+        kept: "Hello",
+    }
+    for run_id, given in inputs.items():
+        run = await engine.run("support", "acme", given)
+        await refinery.record(run.model_copy(update={"run_id": run_id}))
+    await refinery.review("acme", held[0], Review(stance="approval"))
+    await refinery.review("acme", held[0], Review(correction="Refund it."))
+    await refinery.review("acme", held[1], Review(stance="approval"))
+    await refinery.outcome("acme", held[2], Outcome(status="succeeded"))
+    await refinery.review("acme", kept, Review(correction="Hi."))
     candidate_model = Seeing()
     namespace: dict[str, Any] = {
-        "rows": rows,
+        "refinery": refinery,
         "engine": engine,
         "candidate": Engine(tmp_path, generation=candidate_model),
-        "Message": Message,
     }
     [block] = [
         textwrap.dedent(b)
         for b in re.findall(r"```python\n(.*?)```", GUIDE.read_text(encoding="utf-8"), re.S)
-        if b.startswith("held = ")
+        if b.startswith("async def read_only")
     ]
     code = compile(block, "evaluation.md", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
     await eval(code, namespace)
-    assert [m.content for m in candidate_model.seen] == [parts]
-    [(state, _)] = graded.calls
-    assert json.loads(json.dumps(state)) == {
-        "reference": "Refund it.",
-        "reply": "Refund the second charge.",
-    }
+    assert [m.content for m in candidate_model.seen] == [parts, "Is it down?", "Where is A-1?"]
+    assert [json.loads(json.dumps(state)) for state, _ in graded.calls] == [
+        {"reference": "Refund it.", "reply": "Refund the second charge."},
+        {"reference": "Refund the second charge.", "reply": "Refund the second charge."},
+    ]
+    assert namespace["grades"] == [0.9, 0.9] and namespace["failures"] == []

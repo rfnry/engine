@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from collections import deque
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from rfnry_engine.engine import Engine
+from pydantic import BaseModel
+
+from rfnry_engine.engine import Approve, Engine
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
-from rfnry_engine.records import Decision, Generation, Run
+from rfnry_engine.records import Decision, Fingerprint, Generation, Run
 from rfnry_engine.refinery.conflicts import find_conflicts
 from rfnry_engine.refinery.export import (
     Bucket,
@@ -23,8 +28,20 @@ from rfnry_engine.refinery.judge import (
     teacher_answers,
     teacher_prompt,
 )
-from rfnry_engine.refinery.labels import Conflict, Exported, Label, Labeled, Outcome, Review
+from rfnry_engine.refinery.labels import (
+    Conflict,
+    Exported,
+    Label,
+    Labeled,
+    Outcome,
+    Replay,
+    Review,
+)
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
+from rfnry_engine.tools.tools import ToolsLike
+from rfnry_engine.tools.workspace import Workspace
+
+REPORTED = ("human", "world")
 
 
 def flatten(run: Run, recorded: datetime) -> list[RunRow]:
@@ -55,20 +72,35 @@ def flatten(run: Run, recorded: datetime) -> list[RunRow]:
     return rows
 
 
-def unflatten(row: RunRow, rows: list[RunRow]) -> dict[str, Any]:
+def children_of(rows: list[RunRow]) -> dict[str, list[RunRow]]:
+    under: dict[str, list[RunRow]] = {}
+    for row in rows:
+        if row.parent_run_id is not None:
+            under.setdefault(row.parent_run_id, []).append(row)
+    return under
+
+
+def unflatten(row: RunRow, under: dict[str, list[RunRow]]) -> dict[str, Any]:
     body = dict(row.body)
     named = [step.get("child_run_id") for step in body.get("steps", [])]
     order = {run_id: index for index, run_id in enumerate(named) if run_id is not None}
     children = sorted(
-        (child for child in rows if child.parent_run_id == row.run_id),
+        under.get(row.run_id, []),
         key=lambda child: order.get(child.run_id, len(order)),
     )
-    nested = [unflatten(child, rows) for child in children]
+    nested = [unflatten(child, under) for child in children]
     if row.kind == "generation":
         body["children"] = nested
     else:
         body["routed_to"] = nested[0] if nested else None
     return body
+
+
+def read_back(row: RunRow, under: dict[str, list[RunRow]]) -> Run:
+    body = unflatten(row, under)
+    if row.kind == "generation":
+        return Generation.model_validate(body)
+    return Decision.model_validate(body)
 
 
 def label_of(row: LabelRow) -> Label:
@@ -104,10 +136,7 @@ class Refinery:
         root = next((row for row in rows if row.run_id == run_id), None)
         if root is None:
             raise NotFoundError(f"refinery: run {run_id!r} was not found")
-        body = unflatten(root, rows)
-        if root.kind == "generation":
-            return Generation.model_validate(body)
-        return Decision.model_validate(body)
+        return read_back(root, children_of(rows))
 
     async def _run_row(self, scope: str, run_id: str) -> RunRow:
         row = await self.storage.get_run(scope, run_id)
@@ -310,6 +339,142 @@ class Refinery:
                 except Exception as exc:
                     result.errors[row.run_id] = f"{type(exc).__name__}: {exc}"
         return result
+
+    def replay(
+        self,
+        scope: str,
+        candidate: Engine,
+        *,
+        agent: str,
+        holdout: bool = False,
+        labeled: bool = False,
+        tags: dict[str, str] | None = None,
+        fingerprint: Fingerprint | None = None,
+        limit: int | None = None,
+        holdout_percent: int = HOLDOUT_PERCENT,
+        expect: type[BaseModel] | None = None,
+        approve: Approve | None = None,
+        tools: ToolsLike | None = None,
+        workspace: Workspace | None = None,
+        concurrency: int = 1,
+    ) -> AsyncGenerator[Replay, None]:
+        if not scope:
+            raise InputError("refinery: scope is required")
+        if not 0 <= holdout_percent <= 100:
+            raise InputError(f"refinery: holdout_percent must be 0-100, got {holdout_percent}")
+        if tags is not None:
+            check_selector("replay", None, tags)
+        if limit is not None and limit < 1:
+            raise InputError(f"refinery: limit must be at least 1, got {limit}")
+        if concurrency < 1:
+            raise InputError(f"refinery: concurrency must be at least 1, got {concurrency}")
+        if agent not in candidate.agents:
+            raise NotFoundError(f"refinery: the candidate has no agent {agent!r}")
+
+        async def rerun(run: Run) -> Run:
+            while isinstance(run, Decision) and run.routed_to is not None:
+                run = run.routed_to
+            if isinstance(run, Decision):
+                return await candidate.run(
+                    agent,
+                    scope,
+                    run.state,
+                    expect=expect,
+                    approve=approve,
+                    tools=tools,
+                    workspace=workspace,
+                    record=False,
+                )
+            sent = run.messages[-1].content if run.messages else None
+            return await candidate.run(
+                agent,
+                scope,
+                sent if isinstance(sent, list) else run.input,
+                task=run.task,
+                history=run.messages[:-1],
+                context=run.context,
+                expect=expect,
+                approve=approve,
+                tools=tools,
+                workspace=workspace,
+                record=False,
+            )
+
+        async def pair(recorded: Run, labels: list[Label]) -> Replay:
+            try:
+                run = await rerun(recorded)
+            except Exception as exc:
+                return Replay(
+                    recorded=recorded, labels=labels, error=f"{type(exc).__name__}: {exc}"
+                )
+            return Replay(recorded=recorded, labels=labels, candidate=run)
+
+        async def pairs() -> AsyncGenerator[Replay, None]:
+            chosen = await self._replayable(
+                scope,
+                agent,
+                holdout=holdout,
+                holdout_percent=holdout_percent,
+                labeled=labeled,
+                tags=tags,
+                fingerprint=fingerprint,
+                limit=limit,
+            )
+            running: deque[asyncio.Task[Replay]] = deque()
+
+            async def first() -> Replay:
+                done = await running[0]
+                running.popleft()
+                return done
+
+            try:
+                for recorded, labels in chosen:
+                    running.append(asyncio.ensure_future(pair(recorded, labels)))
+                    if len(running) == concurrency:
+                        yield await first()
+                while running:
+                    yield await first()
+            finally:
+                for task in running:
+                    task.cancel()
+                await asyncio.gather(*running, return_exceptions=True)
+
+        return pairs()
+
+    async def _replayable(
+        self,
+        scope: str,
+        agent: str,
+        *,
+        holdout: bool,
+        holdout_percent: int,
+        labeled: bool,
+        tags: dict[str, str] | None,
+        fingerprint: Fingerprint | None,
+        limit: int | None,
+    ) -> list[tuple[Run, list[Label]]]:
+        rows = await self.storage.run_tree(scope, tags=tags)
+        wanted = fingerprint.model_dump() if fingerprint is not None else None
+        tops = [
+            row
+            for row in rows
+            if row.parent_run_id is None
+            and row.agent == agent
+            and (not holdout or is_holdout(row.run_id, holdout_percent=holdout_percent))
+            and (wanted is None or row.body.get("fingerprint") == wanted)
+        ]
+        labels: dict[str, list[Label]] = {}
+        if tops:
+            for row in await self.storage.labels(scope, run_ids=[top.run_id for top in tops]):
+                labels.setdefault(row.run_id, []).append(label_of(row))
+        if labeled:
+            tops = [
+                top
+                for top in tops
+                if any(label.source in REPORTED for label in labels.get(top.run_id, []))
+            ]
+        under = children_of(rows)
+        return [(read_back(top, under), labels.get(top.run_id, [])) for top in tops[:limit]]
 
     async def delete_scope(self, scope: str) -> int:
         if not scope:

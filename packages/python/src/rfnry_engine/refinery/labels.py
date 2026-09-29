@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from rfnry_engine.models import Answer
+from rfnry_engine.records import Run
 
 
 class Review(BaseModel):
@@ -40,6 +41,13 @@ class Labeled(BaseModel):
     judged: int = 0
     taught: int = 0
     errors: dict[str, str] = Field(default_factory=dict)
+
+
+class Replay(BaseModel):
+    recorded: Run
+    labels: list[Label]
+    candidate: Run | None = None
+    error: str | None = None
 
 
 class Exported(BaseModel):

@@ -16,6 +16,7 @@ EXPECTED = {
     "Labeled",
     "Exported",
     "Conflict",
+    "Replay",
     "Generation",
     "Decision",
     "Run",

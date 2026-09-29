@@ -647,6 +647,18 @@ class Conflict(BaseModel):
 
 A run that carries two different human corrections: each as `(label_id, at, text)`, oldest first.
 
+### `Replay`
+
+```python
+class Replay(BaseModel):
+    recorded: Run
+    labels: list[Label]
+    candidate: Run | None = None
+    error: str | None = None
+```
+
+One pair from `Refinery.replay`: the recorded run as `Refinery.run` reads it back, every label on it oldest first, and the candidate's run on what the recorded run was given, never recorded. When the candidate failed, `candidate` is `None` and `error` is the failure as `"TypeName: message"`.
+
 ## Tools
 
 ### `Tool`
@@ -931,7 +943,7 @@ class Refinery:
     storage: Storage
 ```
 
-Records runs, stores labels on them and exports datasets, all through `storage`, which stays readable to read the rows back yourself. Passed as `Engine(refinery=)`, it records every run that returns. A storage's `StorageError` passes through every verb.
+Records runs, stores labels on them, exports datasets and replays recorded runs on a candidate, all through `storage`, which stays readable to read the rows back yourself. Passed as `Engine(refinery=)`, it records every run that returns. A storage's `StorageError` passes through every verb.
 
 ### `Refinery.initialize`
 
@@ -1025,6 +1037,33 @@ async def label(
 Runs `judge`, a decision agent, over the generation runs it has not labeled, and `teacher`, a generation agent, over the decision runs it has not labeled — at most `limit` runs each, their own runs skipped — and stores each answer as a label. A run that could not be labeled is named in `errors` and stays unlabeled for the next call.
 
 Raises `InputError` when `scope` is empty. Raises `NotFoundError` when the tree has no agent `judge` or `teacher`. Raises `ConfigurationError` when `judge` is not a decision agent or `teacher` not a generation agent; each check happens before any run is labeled.
+
+### `Refinery.replay`
+
+```python
+def replay(
+    self,
+    scope: str,
+    candidate: Engine,
+    *,
+    agent: str,
+    holdout: bool = False,
+    labeled: bool = False,
+    tags: dict[str, str] | None = None,
+    fingerprint: Fingerprint | None = None,
+    limit: int | None = None,
+    holdout_percent: int = 20,
+    expect: type[BaseModel] | None = None,
+    approve: Approve | None = None,
+    tools: ToolsLike | None = None,
+    workspace: Workspace | None = None,
+    concurrency: int = 1,
+) -> AsyncGenerator[Replay, None]: ...
+```
+
+Runs `candidate` on what the top-level runs of `agent` in `scope` were given and yields a `Replay` for each, oldest first by when the run started. `holdout` keeps the held-out runs, by the same hash and `holdout_percent` as `export`; `labeled` the runs with a `human` or `world` label; `tags` the runs whose tags contain these, as `delete_runs` matches; `fingerprint` the runs whose fingerprint equals it; `limit` the first so many. Each replay is `candidate.run(agent, scope, …, record=False)` with the recorded input — parts read back as parts — the history (the messages sent before the input), the task and the `context`; a decision run replays its state, and when its route reached a generation run, that run's input, history and context. `expect`, `approve`, `tools` and `workspace` are passed to every replay. `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets. The candidate's tools run for real. At most `concurrency` replays run at once, and while a pair is being read at most `concurrency - 1` run, so with the default a replay starts when its pair is asked for. Pairs are yielded in that order either way, and closing the generator cancels the replays still running. A candidate that raises yields its pair with `error` and the replay goes on. Nothing is recorded and no label is written.
+
+Raises `InputError` when `scope` is empty, `holdout_percent` is outside 0 to 100, `tags` is empty, or `limit` or `concurrency` is below 1. Raises `NotFoundError` when the candidate has no agent `agent`. Each check happens when `replay` is called, before anything is read; a storage's `StorageError` is raised by the first pair.
 
 ### `Refinery.delete_scope`
 

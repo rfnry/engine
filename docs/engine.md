@@ -726,6 +726,45 @@ right 80% of the time, and this is the table that says whether it was:
 `refinery.conflicts(scope)` lists runs that carry two different human corrections — a dataset can
 hold either, not both, and the library reports rather than guesses.
 
+Replay measures a candidate — a new folder, a new model, any `Engine` you built — on what your
+recorded runs were given. Each pair holds the recorded run, its labels and the candidate's run:
+
+```python
+candidate = Engine(root, generation=llm, decision=dm, tools=tools)
+
+async def read_only(agent, call):
+    return call.name in {"Read", "Grep", "Glob", "LS", "Skill", "Load", "Delegate", "lookup_order"}
+
+async for pair in refinery.replay("acme", candidate, agent="support", holdout=True, labeled=True,
+                                  approve=read_only):
+    pair.recorded.reply, pair.labels, pair.candidate.reply if pair.candidate else pair.error
+```
+
+> **Replay runs the candidate's tools for real.** A tool that refunds refunds again, a tool that
+> sends a message sends it, a `Shell` runs. Pass an `approve` that refuses every tool that changes
+> anything — `read_only` above lets through the builtins that read the agent's folder, `Delegate`,
+> whose runs it is asked about too, and a lookup — or build the candidate with bodies that only
+> read. A refused call reaches the model as `NotApproved`, as in any run.
+
+It replays the top-level runs of `agent` in the scope, oldest first. `holdout=True` keeps the
+held-out ones, by the same hash and `holdout_percent` as `export`; `labeled=True` those a person
+reviewed or the world reported on; `tags=` those whose tags contain these, as `delete_runs`
+matches; `fingerprint=` the runs one version produced — the `run.fingerprint` of any of them;
+`limit=` the first so many. Each is `candidate.run(agent, scope, …, record=False)` with the recorded input —
+parts as parts — the history sent before it, the task and the `context`, so the candidate sees
+what the recorded run saw. A decision run replays its state; when its route reached a generation
+run, that run's input, history and context go too. What a record does not keep is yours to pass
+again — `expect=`, `approve=`, and the `tools=` and `workspace=` the runs were given. The candidate
+delegates and routes as it does, so a run with children replays as one run. A run recorded before
+`context` was kept replays without it.
+
+`concurrency=4` keeps up to four replays going, and while you read a pair at most three more run;
+with the default of one, a replay starts when you ask for its pair. Pairs come in recorded order
+either way. A candidate that fails yields its pair with `error` — `"ModelError: …"` — and
+`candidate=None`, and the replay goes on. Nothing is recorded, no label is written, and nothing is
+graded: the pair holds both runs with their models and fingerprints, and what you compare is yours.
+[`evaluation.md`](evaluation.md) grades the replies with a decision agent.
+
 ### Agents kept in a repository
 
 The engine reads a folder; a new version of the agents is a new `Engine`. Keep the tree in a git
@@ -974,7 +1013,7 @@ Everything the package exports, by role.
 - **What a run returns:** `Generation`, `Decision`, `Run`, `Step`, `Fingerprint`; events `TextDelta`, `ToolCallStarted`, `ToolResultReady`, `Event`.
 - **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
 - **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Jail`, `Workspace`.
-- **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Bucket`, `is_holdout`.
+- **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Replay`, `Bucket`, `is_holdout`.
 - **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`, `RunRow`, `LabelRow`.
 - **Fail loudly:** `EngineException`, `ConfigurationError`, `NotFoundError`, `InputError`, `ModelError`, `RunawayError`, `DelegationLoopError`, `DelegationDepthError`, `StorageError`.
 
@@ -989,13 +1028,15 @@ directory, a `Workspace` with neither `sandbox=` nor `unsandboxed=True` or with 
 shell not on `PATH`, a `sandbox` or `shell` that is not a list of strings, a `max_steps`,
 `max_depth`, `tool_timeout`, `timeout` or `output_bytes` that is not positive, an `approve` that
 returns anything but `True` or `False`, a judge that is not a decision agent or a teacher that is
-not a generation agent. `NotFoundError` for an agent the tree does not have — a judge or a teacher
-included — or a run the refinery does not.
+not a generation agent. `NotFoundError` for an agent the tree does not have — a judge, a teacher
+or a replay's agent in the candidate included — or a run the refinery does not.
 `InputError` for a call the library refuses: an empty scope, a `task` for a decision agent, tags
 outside their limits, media given to a decision agent, a media part with both or neither of `data` and `url`, a
 correction of the wrong shape or for a question the run was not asked, a `delete_runs` or
-`verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, a
-tool called with bad arguments or a path outside its directory. `ModelError` when an adapter breaks the contract — a
+`verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an
+`export` or a `replay` given a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or
+a `limit` or `concurrency` below 1, a tool called with bad arguments or a path outside its
+directory. `ModelError` when an adapter breaks the contract — a
 result whose fields do not fit, a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels. `RunawayError` when
 a loop exceeds `max_steps` (default 200). `DelegationLoopError` and `DelegationDepthError` for
 nesting: through `Delegate` they reach the model as tool errors, through a route they raise.
