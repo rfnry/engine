@@ -220,6 +220,43 @@ Retrieval and training do different jobs. Facts that change — manuals, prices,
 in rfnry-memory, where a correction takes effect on the next question. Training teaches how to
 answer: the terms, the format, when to say the manuals do not cover it.
 
+## Deciding with evidence
+
+A comparison is worth what the decision it supports is worth. Each of these rules is cheap, and each
+one stops a specific mistake.
+
+**Write the rule before the numbers.** Decide what would make you ship before running the replay —
+"promote the new folder if the holdout grade rate rises by three points and outcome success does not
+fall" — and keep it with the run. A rule chosen after seeing the numbers fits the numbers. When the
+rule turns out to be ambiguous, measure every reading rather than pick the one that wins.
+
+**Name the denominator.** Every rate says what it is a share of: "71% of the 212 held-out runs with a
+human label", not "71%". When the population changes, rates over it stop being comparable even if the
+agent did not change. Put `n` next to every number.
+
+**Compare like with like.** A run carries the fingerprint of the agent it ran and of the tools it was
+offered, and its model; a memory corpus has a fingerprint of its own. Compare two versions on the
+same labeled runs, and name what differs between them: the folder, the tools, the model, the corpus.
+When two things changed, you measured both at once.
+
+**A slice does not speak for the whole.** A result on one tag, one route or the first fifty runs is a
+result about that slice. Report it as one, and never let it carry the verdict for the whole set.
+
+**Keep what failed.** A candidate that lost is a result. Keep its replay, its rule and its numbers,
+reproducible by name, so nobody tries the same change again from memory.
+
+**Measure what the system uses.** A metric computed over an input the system does not use invents
+failures the system does not have: retrieval scored on the raw ticket text when the agent searches
+with its own words, or a missing document counted against an answer the agent took from a tool.
+Score the recorded inputs — the queries the agent issued, the steps it took.
+
+**Know the noise before believing a difference.** Replay the same candidate twice. If its rate moves
+by three points between two runs of the same thing, a two-point win is noise. On a small labeled set,
+say how many cases a difference is.
+
+rfnry-memory's `retrieval_eval` example applies these rules to retrieval: its rule is printed before
+any query runs, every rate carries its `n`, and every table carries the corpus fingerprint.
+
 ## What to watch
 
 - **Approval and correction rates** per agent and per version: the share of runs people accepted,
