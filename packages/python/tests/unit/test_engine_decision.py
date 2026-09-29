@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import ConfigurationError, InputError, ModelError
+from rfnry_engine.errors import ConfigurationError, InputError, ModelError, NotFoundError
 from rfnry_engine.models import (
     Audio,
     Check,
@@ -182,9 +182,7 @@ async def test_foreign_answers_alone_are_accepted_and_still_validated(fixtures: 
 async def test_a_routing_agent_has_no_tasks_so_a_task_run_of_it_is_refused(fixtures: Path) -> None:
     dm = Fixed(_intent("other", 0.9))
     engine = Engine(fixtures, generation=Scripted(), decision=dm, tools=TOOLS)
-    with pytest.raises(
-        ConfigurationError, match="^engine: decision agent 'frontdesk' has no task 'triage'$"
-    ):
+    with pytest.raises(NotFoundError, match="^engine: agent 'frontdesk' has no task 'triage'$"):
         await engine.run("frontdesk", "acme", "x", task="triage")
     assert dm.calls == []
 

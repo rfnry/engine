@@ -349,6 +349,8 @@ class Engine:
         options: _Options,
         parent_run_id: str | None,
     ) -> Run:
+        if options.task is not None and options.task not in spec.tasks:
+            raise NotFoundError(f"engine: agent {spec.name!r} has no task {options.task!r}")
         async with enter(spec.name, self.max_depth):
             if spec.kind == "generation":
                 return await self._generation(spec, scope, input, options, parent_run_id)
@@ -368,13 +370,7 @@ class Engine:
                 f"engine: agent {spec.name!r} is a decision agent; no decision model was configured"
             )
         self._check_routes(spec, set())
-        folder = spec.questions
-        if options.task is not None:
-            if options.task not in spec.task_questions:
-                raise ConfigurationError(
-                    f"engine: decision agent {spec.name!r} has no task {options.task!r}"
-                )
-            folder = spec.task_questions[options.task]
+        folder = spec.questions if options.task is None else spec.task_questions[options.task]
         clash = [qid for qid in options.questions if qid in folder]
         if clash:
             raise InputError(

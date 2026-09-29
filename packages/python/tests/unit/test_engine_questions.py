@@ -5,7 +5,7 @@ import pytest
 from pydantic import BaseModel, JsonValue
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.errors import InputError, NotFoundError
 from rfnry_engine.models import Check, Choice, ChoiceAnswer, Question, Score
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.inmemory import InMemoryStorage
@@ -244,16 +244,12 @@ async def test_a_task_asks_its_folder_instead_of_questions(tmp_path: Path) -> No
     ]
 
 
-async def test_an_unknown_task_is_refused_as_for_a_generation_agent(tmp_path: Path) -> None:
+async def test_an_unknown_task_is_not_found_as_an_unknown_agent_is(tmp_path: Path) -> None:
     root = grader(tmp_path)
     dm = Answering()
-    with pytest.raises(
-        ConfigurationError, match="^engine: decision agent 'grader' has no task 'ghost'$"
-    ):
+    with pytest.raises(NotFoundError, match="^engine: agent 'grader' has no task 'ghost'$"):
         await Engine(root, decision=dm).run("grader", "acme", "x", task="ghost")
-    with pytest.raises(
-        ConfigurationError, match="^engine: decision agent 'blank' has no task 'tone'$"
-    ):
+    with pytest.raises(NotFoundError, match="^engine: agent 'blank' has no task 'tone'$"):
         await Engine(root, decision=dm).run("blank", "acme", "x", task="tone", questions=RUNTIME)
     assert dm.calls == []
 

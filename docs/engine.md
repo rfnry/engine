@@ -477,7 +477,8 @@ levels, and structure is JSON — and one that does not, an id the folder alread
 
 A decision agent's task is a named set of questions: `tasks/<task>/` holds question files as
 `questions/` does, and `task=` asks that set instead of `questions/`, runtime questions beside it.
-A task the agent does not have is a `ConfigurationError`, as for a generation agent:
+A task the agent does not have is a `NotFoundError`, as an agent the tree does not have is, for
+either kind of agent:
 
 ```
 agents/
@@ -1137,13 +1138,15 @@ with instructions both in its frontmatter and in its body or in neither, a decis
 file straight in `tasks/` or a routing one with `tasks/`, a route or `agents:` entry that reaches a
 decision agent with no `questions/`, a tool
 declared without a body or given without a declaration, a run of an agent whose kind of model is
-absent, an unknown task, a missing workspace, a `Workspace` root that is not a
+absent, a missing workspace, a `Workspace` root that is not a
 directory, a `Workspace` with neither `sandbox=` nor `unsandboxed=True` or with both, an unsandboxed
 shell not on `PATH`, a `sandbox` or `shell` that is not a list of strings, a `max_steps`,
 `max_depth`, `tool_timeout`, `timeout` or `output_bytes` that is not positive, an `approve` that
 returns anything but `True` or `False`, a judge that is not a decision agent or a teacher that is
 not a generation agent. `NotFoundError` for an agent the tree does not have — a judge, a teacher
-or a replay's agent in the candidate included — or a run the refinery does not.
+or a replay's agent in the candidate included — a task the agent does not have
+(`engine: agent 'support' has no task 'ghost'`), found when the run starts, or a run the refinery
+does not.
 `InputError` for a call the library refuses: an empty scope, tags
 outside their limits, runtime questions that do not fit, an id the folder already asks,
 `questions=` for a generation agent, a decision run with no question to ask, media the decision
