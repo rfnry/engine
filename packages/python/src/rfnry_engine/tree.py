@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.fingerprint import folder_fingerprint
 from rfnry_engine.frontmatter import parse_frontmatter_doc
 from rfnry_engine.models import Check, Choice, Question, Score
 
@@ -74,6 +75,7 @@ class AgentSpec(BaseModel):
     questions: dict[str, Question]
     tools: dict[str, ToolDecl]
     tasks: list[str]
+    fingerprint: str
     workspace: bool = False
 
 
@@ -146,8 +148,9 @@ def load_agent(directory: Path) -> AgentSpec:
         raise ConfigurationError(f"tree: generation agent {front.name!r} cannot declare questions/")
     if front.kind == "generation" and front.route is not None:
         raise ConfigurationError(f"tree: generation agent {front.name!r} cannot declare route:")
+    root = directory.resolve()
     return AgentSpec(
-        root=directory.resolve(),
+        root=root,
         name=front.name,
         kind=front.kind,
         description=front.description,
@@ -157,6 +160,7 @@ def load_agent(directory: Path) -> AgentSpec:
         questions=questions,
         tools=tools,
         tasks=tasks,
+        fingerprint=folder_fingerprint(root),
         workspace=front.workspace,
     )
 

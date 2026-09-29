@@ -456,9 +456,11 @@ class Generation(BaseModel):
     scope: str
     tags: dict[str, str] = {}
     task: str | None = None
+    context: str | None = None
     at: datetime
     duration_ms: int
     model: str | None
+    fingerprint: Fingerprint | None = None
     input: State
     system: str
     messages: list[Message]
@@ -472,7 +474,7 @@ class Generation(BaseModel):
     stopped: Stopped | None = None
 ```
 
-The record of a generation run: when it started (`at`), the system prompt as sent, the messages as sent to the first model call, the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. An accepted `Output` makes `reply` its JSON. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own.
+The record of a generation run: the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. An accepted `Output` makes `reply` its JSON. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. A run recorded before `context` or `fingerprint` was kept reads back with `None`.
 
 ### `Decision`
 
@@ -487,6 +489,7 @@ class Decision(BaseModel):
     at: datetime
     duration_ms: int
     model: str | None
+    fingerprint: Fingerprint | None = None
     state: State
     questions: dict[str, Question]
     answers: dict[str, Answer]
@@ -494,7 +497,7 @@ class Decision(BaseModel):
     routed_to: Run | None = None
 ```
 
-The record of a decision run: the state, the questions asked, an answer per question id with its `confidence`, and the usage and model the adapter reported. `routed_to` is the run its route started, if any.
+The record of a decision run: the state, the questions asked, an answer per question id with its `confidence`, the usage and model the adapter reported, and which agent folder produced it (`fingerprint`, whose `tools` is the fingerprint of no tools). `routed_to` is the run its route started, if any. A run recorded before `fingerprint` was kept reads back with `None`.
 
 ### `Run`
 
@@ -503,6 +506,16 @@ Run = Generation | Decision
 ```
 
 What `Engine.run` returns, told apart by `kind`.
+
+### `Fingerprint`
+
+```python
+class Fingerprint(BaseModel):
+    agent: str
+    tools: str
+```
+
+Which agent and which tools produced a run, each the first 16 hex characters of a sha256. `agent` covers every file in the agent's directory as the engine loaded it, by relative path and content, leaving out hidden files and folders (a name starting with `.`) and links that lead out of the directory; it is computed once, when the `Engine` is built. `tools` covers the tools the model was offered, `Run.tools` sorted by name as canonical JSON: the folder's, the code's, the run's `tools=` and `Output` when `expect=` asked for one. Neither covers the input, the history, `context`, `tags`, the model or the code behind a tool.
 
 ### `Step`
 
@@ -991,7 +1004,7 @@ async def export(
 ) -> Exported: ...
 ```
 
-Writes every run recorded or labeled after `since`, with all its labels, to `bucket` as JSONL under `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, in the datasets `generation`, `preference` and `decision`. Every row carries `holdout`, from a hash of its run id and `holdout_percent`. Returns the keys, the rows per dataset and the watermark for the next `since`.
+Writes every run recorded or labeled after `since`, with all its labels, to `bucket` as JSONL under `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, in the datasets `generation`, `preference` and `decision`. Every row carries `holdout`, from a hash of its run id and `holdout_percent`, and its run's `fingerprint` as `{"agent", "tools"}`, `null` for a run recorded before fingerprints were kept. Returns the keys, the rows per dataset and the watermark for the next `since`.
 
 Raises `InputError` when `scope` is empty or `holdout_percent` is outside 0 to 100, before anything is read or written.
 

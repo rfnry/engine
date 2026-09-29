@@ -20,6 +20,7 @@ EXPECTED = {
     "Decision",
     "Run",
     "Step",
+    "Fingerprint",
     "Stop",
     "Message",
     "ToolSpec",

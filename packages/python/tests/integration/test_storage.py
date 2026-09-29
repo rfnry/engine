@@ -505,3 +505,45 @@ async def test_a_tree_reads_back_with_its_one_record_stamp(storage: Storage) -> 
     assert await refinery.run("a", run.run_id) == run
     assert {row.recorded for row in await storage.run_tree("a", run_ids=[run.run_id])} == {stamp}
     assert (await refinery.export("a", MemoryBucket())).watermark == stamp
+
+
+async def test_fingerprints_and_context_round_trip_and_old_bodies_read_as_none(
+    storage: Storage,
+) -> None:
+    refinery = Refinery(storage)
+    engine = Engine(
+        FIXTURES,
+        generation=Scripted(delegate_triage(), text_reply("Handled.")),
+        decision=Desk(),
+        tools=TOOLS,
+        refinery=refinery,
+    )
+    run = await engine.run("frontdesk", "a", "It is down", context="Acme is enterprise.")
+    assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
+    assert run.fingerprint is not None and run.routed_to.fingerprint is not None
+    assert run.routed_to.context == "Acme is enterprise."
+    assert await refinery.run("a", run.run_id) == run
+    bucket = MemoryBucket()
+    await refinery.export("a", bucket)
+    rows = [
+        json.loads(line) for data in bucket.objects.values() for line in data.decode().splitlines()
+    ]
+    runs = {r.run_id: r for r in (run, run.routed_to, run.routed_to.children[0])}
+    assert len(rows) >= 3 and all(
+        row["fingerprint"] == runs[row["run_id"]].model_dump(mode="json")["fingerprint"]
+        for row in rows
+    )
+    for stored in await storage.run_tree("a", run_ids=[run.run_id]):
+        old = {k: v for k, v in stored.body.items() if k not in ("fingerprint", "context")}
+        await storage.put_run("a", stored.model_copy(update={"body": old}))
+    again = await refinery.run("a", run.run_id)
+    assert isinstance(again, Decision) and isinstance(again.routed_to, Generation)
+    assert again.fingerprint is None and again.routed_to.fingerprint is None
+    assert again.routed_to.context is None
+    bucket = MemoryBucket()
+    await refinery.export("a", bucket)
+    assert all(
+        json.loads(line)["fingerprint"] is None
+        for data in bucket.objects.values()
+        for line in data.decode().splitlines()
+    )

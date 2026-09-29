@@ -46,7 +46,7 @@ from rfnry_engine.models import (
     Usage,
     confidence,
 )
-from rfnry_engine.records import Decision, Generation, Run, Step
+from rfnry_engine.records import Decision, Fingerprint, Generation, Run, Step
 from rfnry_engine.refinery.export import Bucket
 from rfnry_engine.refinery.holdout import is_holdout
 from rfnry_engine.refinery.inmemory import InMemoryStorage
@@ -83,6 +83,7 @@ __all__ = [
     "EngineTools",
     "Event",
     "Exported",
+    "Fingerprint",
     "Generation",
     "GenerationModel",
     "InMemoryStorage",

@@ -194,6 +194,26 @@ for step in run.steps:
 run.children                                         # runs made through Delegate, in step order
 ```
 
+Every run says which agent and which tools produced it, beside the model that answered:
+
+```python
+run.fingerprint.agent                                # "3f9a1c0e5b7d2a41": the agent's folder
+run.fingerprint.tools                                # "a02c77e1f4b9d305": the tools it was offered
+```
+
+`fingerprint.agent` is a short sha256 over every file in the agent's directory, by relative path and
+content — the only directory an agent reads — leaving out hidden files and folders, as `LS`, `Glob`
+and `Grep` do, and links that lead out of it. The engine takes it once, when it loads the tree, so
+an edit shows in the next `Engine` built from the folder. `fingerprint.tools` is one over
+`run.tools` — each tool's name, description and schema — so it covers the tools the folder
+declares, the code tools it adopts, the `tools=` a run passes, `Output` when `expect=` asks for one,
+and in `Delegate`'s description the names and descriptions of the agents it may call. Neither sees
+what varies per run and is not the agent — the input, the history, `context=`, `tags=` — so two
+runs of an unchanged folder share it and any edit changes it. The model is `run.model`; the code
+behind a tool is yours to version. A decision run carries one too, its `tools` the fingerprint of no
+tools, and each delegated or routed run carries its own. A run recorded before fingerprints were
+kept reads back with `None`.
+
 Keep the conversation yourself and pass it back. `run.conversation` is the history you passed, the
 input, every assistant turn — its text in `content`, its calls in `tool_calls`, its `reasoning` as
 the model returned it — every tool result with its `is_error`, and the final assistant turn, so the
@@ -250,8 +270,8 @@ An accepted `Output` ends the run. A call the model made after it in the same tu
 answered with an error saying so, so every call in `run.conversation` has its result.
 
 Name a task to put `tasks/<task>.md` in front of the model, pass `context=` to add facts about this
-tenant that do not belong in the tree, and pass `on_event=` to receive text deltas, tool starts and
-tool results as they happen:
+tenant that do not belong in the tree — the record keeps it as `run.context` — and pass `on_event=`
+to receive text deltas, tool starts and tool results as they happen:
 
 ```python
 async def show(event):
@@ -678,12 +698,13 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | tags, system, messages, tools, conversation, steps, reply, stopped, usage, every label |
-| `preference` | human correction | tags, prompt, chosen (the correction), rejected (the reply) |
-| `decision` | question of a decision run | tags, state, question, answer, probabilities, confidence, truth, outcome |
+| `generation` | generation run | tags, model, fingerprint, system, messages, tools, conversation, steps, reply, stopped, usage, every label |
+| `preference` | human correction | tags, fingerprint, prompt, chosen (the correction), rejected (the reply) |
+| `decision` | question of a decision run | tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
 
 Every row carries its run's `tags`, `{}` for a run that had none or was recorded before tags were
-kept; group or filter the rows by them in your own code.
+kept, and its `fingerprint`, `{"agent": …, "tools": …}` or `null` for a run recorded before
+fingerprints were kept; group or filter the rows by them in your own code.
 
 The first two are a generation agent's episodes and the corrections people made to them. A
 generation row's `tools` is what the model was offered — `{name, description, input_schema}` each —
@@ -732,7 +753,10 @@ run = await engine.run("support", scope="acme", input=message, tags={"commit": c
 ```
 
 Tag each run with the commit it came from and the record, its delegated and routed runs, and every
-exported row say which version of the tree answered. The same tag is an A/B test: load two commits
+exported row say which version of the tree answered. The tag names a version; the fingerprint proves
+it. A tag says what you meant to load, and a checkout with an uncommitted edit carries the same tag;
+`run.fingerprint.agent` is taken from the files the engine read, so two runs are the same agent when
+their fingerprints match, whatever their tags say. The same tag is an A/B test: load two commits
 side by side, send each user to one by a stable hash of their id, tag the run with its arm, and
 group the exported rows by `tags["arm"]` to compare the labels and outcomes of whole versions of
 the tree.
@@ -947,7 +971,7 @@ them yourself; every row carries its run's tags.
 Everything the package exports, by role.
 
 - **Run things:** `Engine`, `AgentInfo`, `Stop`.
-- **What a run returns:** `Generation`, `Decision`, `Run`, `Step`; events `TextDelta`, `ToolCallStarted`, `ToolResultReady`, `Event`.
+- **What a run returns:** `Generation`, `Decision`, `Run`, `Step`, `Fingerprint`; events `TextDelta`, `ToolCallStarted`, `ToolResultReady`, `Event`.
 - **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
 - **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Jail`, `Workspace`.
 - **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Bucket`, `is_holdout`.

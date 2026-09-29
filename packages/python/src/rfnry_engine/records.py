@@ -21,6 +21,11 @@ class Step(BaseModel):
     approved: bool | None = None
 
 
+class Fingerprint(BaseModel):
+    agent: str
+    tools: str
+
+
 class Generation(BaseModel):
     kind: Literal["generation"] = "generation"
     run_id: str
@@ -29,9 +34,11 @@ class Generation(BaseModel):
     scope: str
     tags: dict[str, str] = Field(default_factory=dict)
     task: str | None = None
+    context: str | None = None
     at: datetime
     duration_ms: int
     model: str | None
+    fingerprint: Fingerprint | None = None
     input: State
     system: str
     messages: list[Message]
@@ -55,6 +62,7 @@ class Decision(BaseModel):
     at: datetime
     duration_ms: int
     model: str | None
+    fingerprint: Fingerprint | None = None
     state: State
     questions: dict[str, Question]
     answers: dict[str, Answer]

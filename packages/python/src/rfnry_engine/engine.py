@@ -20,6 +20,7 @@ from rfnry_engine.errors import (
     NotFoundError,
     RunawayError,
 )
+from rfnry_engine.fingerprint import tools_fingerprint
 from rfnry_engine.models import (
     ChoiceAnswer,
     Content,
@@ -42,7 +43,7 @@ from rfnry_engine.models import (
     as_reply,
     settle,
 )
-from rfnry_engine.records import Decision, Generation, Run, Step
+from rfnry_engine.records import Decision, Fingerprint, Generation, Run, Step
 from rfnry_engine.stop import Stop, Stopped, cancel, requested, wait
 from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import DELEGATE_TOOL, child_result, enter, permit
@@ -53,6 +54,7 @@ from rfnry_engine.tree import AgentSpec, Kind, load_tree, validate_tree
 
 OUTPUT_TOOL = "Output"
 STOPPED = "stopped by the user"
+NO_TOOLS = tools_fingerprint([])
 
 Approve = Callable[[str, ToolCall], Awaitable[bool]]
 
@@ -360,6 +362,7 @@ class Engine:
             at=at,
             duration_ms=int((time.monotonic() - started) * 1000),
             model=decided.model,
+            fingerprint=Fingerprint(agent=spec.fingerprint, tools=NO_TOOLS),
             state=state,
             questions=questions,
             answers=answers,
@@ -425,6 +428,7 @@ class Engine:
                     input_schema=expect.model_json_schema(),
                 )
             )
+        fingerprint = Fingerprint(agent=spec.fingerprint, tools=tools_fingerprint(specs))
         targets = [self._agents[name] for name in spec.agents]
         system = await asyncio.to_thread(
             build_bundle,
@@ -593,9 +597,11 @@ class Engine:
                 scope=scope,
                 tags=dict(options.tags),
                 task=options.task,
+                context=options.context,
                 at=at,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 model=model,
+                fingerprint=fingerprint,
                 input=input,
                 system=system,
                 messages=sent,
