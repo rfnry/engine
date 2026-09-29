@@ -698,7 +698,7 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | tags, model, fingerprint, system, messages, tools, conversation, steps, reply, stopped, usage, every label |
+| `generation` | generation run | task, context, tags, model, fingerprint, system, messages, tools, conversation, steps, reply, stopped, usage, every label |
 | `preference` | human correction | tags, fingerprint, prompt, chosen (the correction), rejected (the reply) |
 | `decision` | question of a decision run | tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
 

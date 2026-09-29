@@ -385,3 +385,17 @@ async def test_a_run_stored_before_tools_were_recorded_still_loads_and_exports()
     await refinery.export("acme", bucket)
     [row] = _lines(next(iter(bucket.objects.values())))
     assert row["tools"] == [] and row["conversation"] == []
+
+
+async def test_a_generation_row_carries_the_context_its_run_was_given() -> None:
+    refinery = Refinery(InMemoryStorage())
+    given = generation_record().model_copy(update={"context": "Acme is on the enterprise plan."})
+    bare = generation_record()
+    await refinery.record(given)
+    await refinery.record(bare)
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [key] = [k for k in bucket.objects if "/generation/" in k]
+    rows = {row["run_id"]: row for row in _lines(bucket.objects[key])}
+    assert rows[given.run_id]["context"] == "Acme is on the enterprise plan."
+    assert rows[bare.run_id]["context"] is None

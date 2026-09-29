@@ -37,6 +37,7 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
         "holdout": holdout,
         "agent": row.agent,
         "task": row.task,
+        "context": body.get("context"),
         "tags": body.get("tags", {}),
         "at": row.at.isoformat(),
         "model": row.model,
