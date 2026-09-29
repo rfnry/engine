@@ -712,3 +712,24 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
     assert sent == expected
     assert plain.fingerprint is not None
     assert plain.fingerprint.questions != asked.fingerprint.questions
+
+
+class Looking(Answering):
+    media_types = {"image/*"}
+
+
+async def test_a_state_of_parts_round_trips_as_parts_and_replays(
+    storage: Storage, tmp_path: Path
+) -> None:
+    refinery = Refinery(storage)
+    root = grader(tmp_path)
+    parts: list[Part] = [
+        Text(text="Urgent?"),
+        Image(media_type="image/png", data=bytes(range(256))),
+    ]
+    run = await Engine(root, decision=Looking(), refinery=refinery).run("grader", "a", parts)
+    again = await refinery.run("a", run.run_id)
+    assert again == run and isinstance(again, Decision) and again.state == parts
+    looking = Looking()
+    [pair] = [p async for p in refinery.replay("a", Engine(root, decision=looking), agent="grader")]
+    assert pair.error is None and looking.calls[0][0] == parts

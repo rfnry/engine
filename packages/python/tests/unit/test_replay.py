@@ -632,3 +632,25 @@ async def test_a_fingerprint_selects_decision_runs_by_all_three_parts(tmp_path: 
     assert runtime.fingerprint is not None
     unasked = runtime.fingerprint.model_copy(update={"questions": None})
     assert await collect(refinery.replay("acme", engine, agent="grader", fingerprint=unasked)) == []
+
+
+async def test_a_decision_run_with_media_replays_its_parts(tmp_path: Path) -> None:
+    class Seeing(Answering):
+        media_types = {"image/*"}
+
+    refinery = Refinery(InMemoryStorage())
+    recorder = Engine(graded(tmp_path), decision=Seeing(), refinery=refinery)
+    parts = [Text(text="Urgent?"), Image(media_type="image/png", data=b"\x89PNG\r\n\x1a\n")]
+    await recorder.run("grader", "acme", parts)
+    seeing = Seeing()
+    [pair] = await collect(
+        refinery.replay("acme", Engine(graded(tmp_path), decision=seeing), agent="grader")
+    )
+    assert isinstance(pair.candidate, Decision) and pair.candidate.state == parts
+    assert seeing.calls[0][0] == parts
+    [refused] = await collect(
+        refinery.replay("acme", Engine(graded(tmp_path), decision=Answering()), agent="grader")
+    )
+    assert refused.error == (
+        "InputError: engine: decision agent 'grader' takes text only; got image/png"
+    )

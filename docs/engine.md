@@ -107,7 +107,8 @@ formula for every adapter and every type, so a threshold means the same thing ev
 generation model can stand in as a decision model through an adapter that asks it for
 probabilities; the calibration is worse, the code is the same. `decide` may return the answers
 alone, or a `Decided(answers, usage, model)` when the adapter can report what the call cost and
-which model answered; the record carries both.
+which model answered; the record carries both. A decision adapter may carry `media_types` too, the
+media its model reads in a state; without it, its model is handed text.
 
 The instructions, what an option means, each level, and `yes` and `no` are strings, or JSON objects
 or lists when a question has parts of its own — the question beside the data it names in
@@ -499,9 +500,13 @@ model favours. Two runs that asked the same questions share it; a changed word, 
 changes it. A generation run's is `None`. With `fingerprint.agent` for the folder, it tells two
 versions of a decision apart even when the questions came at run time.
 
-A decision model reads text: a list of parts made only of `Text` is joined with newlines into the
-state, and any other part is an `InputError` before the model is called
-(`engine: decision agent 'triage' takes text only; got image`).
+The state is text unless the decision model reads more. An adapter that carries `media_types` —
+patterns such as `{"image/*", "application/pdf"}`, as a generation adapter's — takes a list of parts
+with that media as the state, parts as they are, and the record keeps them. A list of parts made
+only of `Text` is joined with newlines into the state, as it is for an adapter without
+`media_types`, which reads text only. A part the adapter does not declare is an `InputError` before
+the model is called, naming what it takes (`engine: decision agent 'triage' takes text only; got
+image/png`).
 
 Everything beyond the answers — weighing several, confirming with a person below a threshold,
 acting — is your code over the returned `Decision`. The library gives you the answers; it does
@@ -1141,8 +1146,8 @@ not a generation agent. `NotFoundError` for an agent the tree does not have — 
 or a replay's agent in the candidate included — or a run the refinery does not.
 `InputError` for a call the library refuses: an empty scope, tags
 outside their limits, runtime questions that do not fit, an id the folder already asks,
-`questions=` for a generation agent, a decision run with no question to ask, media given to a
-decision agent, a media part with both or neither of `data` and `url`, a
+`questions=` for a generation agent, a decision run with no question to ask, media the decision
+model does not declare, a media part with both or neither of `data` and `url`, a
 correction of the wrong shape or for a question the run was not asked, a `delete_runs` or
 `verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an
 `export` or a `replay` given a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or

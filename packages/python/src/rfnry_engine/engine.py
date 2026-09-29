@@ -4,9 +4,10 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Annotated, Any, Protocol, cast
 from uuid import uuid4
@@ -176,14 +177,21 @@ def _content(value: object) -> Content:
     return parts if parts is not None else json.dumps(value, ensure_ascii=False)
 
 
-def _state(spec: AgentSpec, value: State) -> State:
+def _state(spec: AgentSpec, value: State, media_types: Collection[str] | None) -> State:
     parts = _parts(value)
     if parts is None:
         return value
-    media = next((part for part in parts if not isinstance(part, Text)), None)
-    if media is not None:
-        raise InputError(f"engine: decision agent {spec.name!r} takes text only; got {media.type}")
-    return "\n".join(part.text for part in parts if isinstance(part, Text))
+    media = [part for part in parts if not isinstance(part, Text)]
+    if not media:
+        return "\n".join(part.text for part in parts if isinstance(part, Text))
+    takes = sorted(media_types or [])
+    for part in media:
+        if not any(fnmatch(part.media_type, pattern) for pattern in takes):
+            accepted = f"text and {', '.join(takes)}" if takes else "text only"
+            raise InputError(
+                f"engine: decision agent {spec.name!r} takes {accepted}; got {part.media_type}"
+            )
+    return parts
 
 
 def _assistant(reply: Reply) -> Message:
@@ -377,7 +385,7 @@ class Engine:
             raise InputError(
                 f"engine: decision agent {spec.name!r} has no questions to ask; pass questions="
             )
-        state = _state(spec, input)
+        state = _state(spec, input, getattr(model_, "media_types", None))
         run_id = uuid4().hex
         started = time.monotonic()
         at = _now()

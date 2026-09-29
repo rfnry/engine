@@ -42,7 +42,7 @@ class DecisionModel(Protocol):
     ) -> Mapping[str, AnswerLike] | DecidedLike: ...
 ```
 
-A model that answers typed questions about a state in one call: any object with this method, matched by shape. It returns an answer per question id, or a `Decided` when it can report what the call cost and which model answered. Answers that do not fit — a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels — make the run raise `ModelError`.
+A model that answers typed questions about a state in one call: any object with this method, matched by shape. It returns an answer per question id, or a `Decided` when it can report what the call cost and which model answered. An adapter may also carry `media_types`, the media its model reads in a state, such as `{"image/*"}`: a run's parts with that media reach it as the state, a list of parts; without it the state is text, and parts it does not declare are refused before it is called. Answers that do not fit — a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels — make the run raise `ModelError`.
 
 ### `ReplyLike`
 
@@ -383,7 +383,7 @@ async def run(
 
 Runs `agent` for the tenant `scope` on `input` and returns its record: a `Generation` for a generation agent, a `Decision` for a decision agent. A generation agent's `task` puts `tasks/<task>.md` in its system prompt; a decision agent's asks the questions in `tasks/<task>/` instead of `questions/`. `questions` are a decision agent's runtime questions, read by their fields and asked with the folder's in the same call; the routed run does not get them. With a refinery attached, a run that returns is recorded unless `record=False`, and a recording that fails is logged, never raised. `EventHandler` is `Callable[[Event], Awaitable[None]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets, and `tools` rides this run only; `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`, called with the agent's name and the call.
 
-Raises `InputError` when `scope` is empty, a generation agent is given `questions`, a runtime question does not fit the contract or has an empty id or one the folder already asks, a decision run has no question to ask, a decision agent is given media, `tags` are outside their limits, `history` does not fit the contract, or `input` mixes parts with other values. Raises `NotFoundError` when the tree has no agent `agent`. Raises `ConfigurationError` when the model for the agent's kind is absent, a decision agent routes to a generation agent without a generation model, `task` is not in the agent's `tasks/`, an agent with `workspace: true` runs without a `workspace`, `tools` repeats a name the agent already has, a tool named `Output` collides with `expect`, or `approve` returns anything but `True` or `False`. Raises `ModelError` when an adapter's result does not fit the contract. Raises `RunawayError` when the loop passes `max_steps`. Raises `DelegationLoopError` or `DelegationDepthError` when a route loops or goes deeper than `max_depth`.
+Raises `InputError` when `scope` is empty, a generation agent is given `questions`, a runtime question does not fit the contract or has an empty id or one the folder already asks, a decision run has no question to ask, a decision agent is given media its model does not declare in `media_types`, `tags` are outside their limits, `history` does not fit the contract, or `input` mixes parts with other values. Raises `NotFoundError` when the tree has no agent `agent`. Raises `ConfigurationError` when the model for the agent's kind is absent, a decision agent routes to a generation agent without a generation model, `task` is not in the agent's `tasks/`, an agent with `workspace: true` runs without a `workspace`, `tools` repeats a name the agent already has, a tool named `Output` collides with `expect`, or `approve` returns anything but `True` or `False`. Raises `ModelError` when an adapter's result does not fit the contract. Raises `RunawayError` when the loop passes `max_steps`. Raises `DelegationLoopError` or `DelegationDepthError` when a route loops or goes deeper than `max_depth`.
 
 ### `Engine.tool`
 
@@ -500,7 +500,7 @@ class Decision(BaseModel):
     routed_to: Run | None = None
 ```
 
-The record of a decision run: the task it was given, the state, every question asked, from the folder or the task and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported, and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. A run recorded before `task`, `runtime` or `fingerprint` was kept reads back with `None`, `[]` and `None`.
+The record of a decision run: the task it was given, the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder or the task and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported, and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. A run recorded before `task`, `runtime` or `fingerprint` was kept reads back with `None`, `[]` and `None`.
 
 ### `Run`
 
@@ -1163,7 +1163,7 @@ An agent the tree does not have, a judge or a teacher included, or a run the ref
 class InputError(EngineException): ...
 ```
 
-A call the library refuses: an empty scope, tags outside their limits, runtime questions that do not fit or that the folder already asks, `questions` given to a generation agent, a decision run with nothing to ask, media given to a decision agent, a media part with both or neither of `data` and `url`, a correction of the wrong shape, a tool called with bad arguments or a path outside its directory.
+A call the library refuses: an empty scope, tags outside their limits, runtime questions that do not fit or that the folder already asks, `questions` given to a generation agent, a decision run with nothing to ask, media a decision model does not declare, a media part with both or neither of `data` and `url`, a correction of the wrong shape, a tool called with bad arguments or a path outside its directory.
 
 ### `ModelError`
 

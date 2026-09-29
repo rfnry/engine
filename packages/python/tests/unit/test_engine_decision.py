@@ -8,11 +8,13 @@ from pydantic import BaseModel
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError, ModelError
 from rfnry_engine.models import (
+    Audio,
     Check,
     CheckAnswer,
     Choice,
     ChoiceAnswer,
     Decided,
+    Document,
     Image,
     Message,
     Part,
@@ -28,7 +30,7 @@ from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Fixed, MemoryBucket, Scripted, sorter, text_reply
+from .fakes import TOOLS, Answering, Fixed, MemoryBucket, Scripted, sorter, text_reply
 
 
 def _intent(choice: str, p: float) -> dict[str, Any]:
@@ -235,7 +237,7 @@ async def test_a_decision_agent_refuses_media_before_the_model_is_called(fixture
     engine = Engine(fixtures, decision=dm, tools=TOOLS)
     parts = [Text(text="Is this down?"), Image(media_type="image/png", url="https://x/screen.png")]
     with pytest.raises(
-        InputError, match="^engine: decision agent 'triage' takes text only; got image$"
+        InputError, match="^engine: decision agent 'triage' takes text only; got image/png$"
     ):
         await engine.run("triage", "acme", parts)
     assert dm.calls == []
@@ -324,3 +326,71 @@ async def test_structured_questions_reach_the_model_the_record_and_the_export_as
         "summary": "One change",
         "signals": ["a single fix"],
     }
+
+
+class Seeing(Answering):
+    media_types = {"image/*", "audio/wav"}
+
+
+async def test_media_the_decision_model_declares_is_passed_as_the_state_as_parts(
+    tmp_path: Path,
+) -> None:
+    sorter(tmp_path)
+    seeing = Seeing()
+    refinery = Refinery(InMemoryStorage())
+    engine = Engine(tmp_path, decision=seeing, refinery=refinery)
+    parts: list[Part] = [
+        Text(text="Which team handles this screenshot?"),
+        Image(media_type="image/png", data=b"\x89PNG\r\n\x1a\n"),
+        Audio(media_type="audio/wav", url="https://x/call.wav"),
+    ]
+    run = await engine.run("sorter", "acme", parts)
+    [(state, _)] = seeing.calls
+    assert state == parts and isinstance(run, Decision) and run.state == parts
+    read = await refinery.run("acme", run.run_id)
+    assert read == run and isinstance(read, Decision) and read.state == parts
+    assert isinstance(read.state, list) and isinstance(read.state[1], Image)
+    joined = await engine.run("sorter", "acme", [Text(text="Plain"), Text(text="text")])
+    assert isinstance(joined, Decision) and joined.state == "Plain\ntext"
+
+
+async def test_a_list_state_without_media_reads_back_as_it_was_given(tmp_path: Path) -> None:
+    sorter(tmp_path)
+    refinery = Refinery(InMemoryStorage())
+    engine = Engine(tmp_path, decision=Seeing(), refinery=refinery)
+    given: list[Any] = [{"type": "text", "text": "a dict, not a part"}, 1]
+    shaped: list[Any] = [{"type": "text", "text": "a dict shaped like a part"}]
+    for state in (given, shaped):
+        run = await engine.run("sorter", "acme", state)
+        read = await refinery.run("acme", run.run_id)
+        assert isinstance(read, Decision) and read.state == state
+        assert isinstance(read.state, list) and isinstance(read.state[0], dict)
+
+
+@pytest.mark.parametrize(
+    ("model", "part", "message"),
+    [
+        (
+            Answering(),
+            Image(media_type="image/png", url="https://x/a.png"),
+            "^engine: decision agent 'sorter' takes text only; got image/png$",
+        ),
+        (
+            Seeing(),
+            Document(media_type="application/pdf", url="https://x/a.pdf"),
+            "^engine: decision agent 'sorter' takes text and audio/wav, image/\\*; got application/pdf$",
+        ),
+        (
+            Seeing(),
+            Audio(media_type="audio/mpeg", url="https://x/a.mp3"),
+            "^engine: decision agent 'sorter' takes text and audio/wav, image/\\*; got audio/mpeg$",
+        ),
+    ],
+)
+async def test_media_the_decision_model_does_not_declare_is_refused_naming_what_it_takes(
+    tmp_path: Path, model: Answering, part: Part, message: str
+) -> None:
+    sorter(tmp_path)
+    with pytest.raises(InputError, match=message):
+        await Engine(tmp_path, decision=model).run("sorter", "acme", [Text(text="x"), part])
+    assert model.calls == []
