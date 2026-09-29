@@ -7,10 +7,12 @@ from typing import Any
 import pytest
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import InputError
+from rfnry_engine.errors import InputError, NotFoundError
 from rfnry_engine.models import (
     Answer,
+    Check,
     CheckAnswer,
+    Choice,
     ChoiceAnswer,
     QuestionLike,
     Reply,
@@ -19,10 +21,22 @@ from rfnry_engine.models import (
     ToolCall,
 )
 from rfnry_engine.records import Decision, Generation
+from rfnry_engine.tools.delegate import QUESTION
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Desk, Fixed, Scripted, delegate_triage, text_reply
+from .fakes import (
+    PICK,
+    TOOLS,
+    Answering,
+    Desk,
+    Fixed,
+    Scripted,
+    delegate_triage,
+    delegating,
+    lead,
+    text_reply,
+)
 
 TRIAGE: dict[str, Answer] = {
     "urgent": CheckAnswer(probability=0.9),
@@ -46,7 +60,8 @@ async def test_delegate_tool_exists_only_when_agents_are_named(fixtures: Path) -
     assert "Delegate" not in [t.name for t in llm.calls[1][2]]
     spec = next(t for t in llm.calls[0][2] if t.name == "Delegate")
     assert spec.input_schema["properties"]["agent"]["enum"] == ["triage"]
-    assert "triage: Judges urgency" in spec.description
+    assert list(spec.input_schema["properties"]) == ["agent", "input", "questions"]
+    assert "- triage (decision agent): Judges urgency" in spec.description
     assert "Delegate" in EngineTools(engine, agent="support", scope="acme")
     assert "Delegate" not in EngineTools(engine, agent="billing", scope="acme")
 
@@ -167,25 +182,162 @@ async def test_delegate_is_not_bound_by_the_tool_deadline(fixtures: Path) -> Non
     assert run.children[0].agent == "triage"
 
 
-BAD_DELEGATIONS = [
-    ({"agent": "billing", "input": "x"}, "delegate: agent 'support' may not delegate to 'billing'"),
-    ({"agent": "triage"}, "delegate: invalid arguments: "),
+BAD_DELEGATIONS: list[tuple[dict[str, Any], type[Exception], str]] = [
+    (
+        {"agent": "writer", "input": "x", "task": "ghost"},
+        NotFoundError,
+        "engine: agent 'writer' has no task 'ghost'",
+    ),
+    (
+        {"agent": "grader", "input": "x", "task": "apology"},
+        NotFoundError,
+        "engine: agent 'grader' has no task 'apology'",
+    ),
+    (
+        {"agent": "writer", "input": "x", "questions": {"area": PICK}},
+        InputError,
+        "engine: generation agent 'writer' takes no questions",
+    ),
+    (
+        {"agent": "blank", "input": "x", "questions": {"area": {**PICK, "options": {"a": None}}}},
+        InputError,
+        "engine: questions do not fit the contract: ",
+    ),
+    (
+        {"agent": "blank", "input": "x", "questions": {"area": {"type": "check"}}},
+        InputError,
+        "engine: questions do not fit the contract: ",
+    ),
+    (
+        {"agent": "grader", "input": "x", "task": "tone", "questions": {"polite": PICK}},
+        InputError,
+        "engine: decision agent 'grader' already asks 'polite' from its folder",
+    ),
+    (
+        {"agent": "blank", "input": "x"},
+        InputError,
+        "engine: decision agent 'blank' has no questions to ask; pass questions=",
+    ),
+    (
+        {"agent": "blank", "input": "x", "questions": "Which area?"},
+        InputError,
+        "delegate: invalid arguments: ",
+    ),
+    (
+        {"agent": "support", "input": "x"},
+        InputError,
+        "delegate: agent 'lead' may not delegate to 'support'",
+    ),
+    ({"agent": "blank"}, InputError, "delegate: invalid arguments: "),
 ]
 
 
-async def test_a_refused_delegation_reads_the_same_in_a_run_and_from_code(fixtures: Path) -> None:
-    for args, message in BAD_DELEGATIONS:
-        call = Reply(
-            tool_calls=[ToolCall(id="d", name="Delegate", args=args)], stop_reason="tool_use"
-        )
-        llm = Scripted(call, text_reply("done"))
-        engine = Engine(fixtures, generation=llm, decision=Fixed(TRIAGE), tools=TOOLS)
-        run = await engine.run("support", "acme", "x")
-        assert isinstance(run, Generation) and run.steps[0].is_error and run.children == []
-        assert str(run.steps[0].result).startswith(f"InputError: {message}")
-        with pytest.raises(InputError) as raised:
-            await EngineTools(engine, agent="support", scope="acme").dispatch("Delegate", args)
-        assert run.steps[0].result == f"InputError: {raised.value}"
+@pytest.mark.parametrize(("args", "error", "message"), BAD_DELEGATIONS)
+async def test_a_refused_delegation_is_a_tool_error_the_same_in_a_run_and_from_code(
+    tmp_path: Path, args: dict[str, Any], error: type[Exception], message: str
+) -> None:
+    root = lead(tmp_path)
+    llm = Scripted(delegating(**args) if "input" in args else _bare(args), text_reply("done"))
+    dm = Answering()
+    engine = Engine(root, generation=llm, decision=dm)
+    run = await engine.run("lead", "acme", "x")
+    assert isinstance(run, Generation) and run.reply == "done" and run.children == []
+    assert run.steps[0].is_error and run.steps[0].child_run_id is None
+    assert str(run.steps[0].result).startswith(f"{error.__name__}: {message}")
+    with pytest.raises(error) as raised:
+        await EngineTools(engine, agent="lead", scope="acme").dispatch("Delegate", args)
+    assert run.steps[0].result == f"{error.__name__}: {raised.value}"
+    assert dm.calls == [] and len(llm.calls) == 2
+
+
+def _bare(args: dict[str, Any]) -> Reply:
+    return Reply(tool_calls=[ToolCall(id="d", name="Delegate", args=args)], stop_reason="tool_use")
+
+
+async def test_delegate_offers_a_task_and_questions_only_when_a_target_takes_them(
+    tmp_path: Path,
+) -> None:
+    root = lead(tmp_path)
+    (root / "plain/AGENT.md").parent.mkdir()
+    (root / "plain/AGENT.md").write_text(
+        "---\nname: plain\nkind: generation\ndescription: Plain\nagents: [writer]\n---\nHi\n"
+    )
+    engine = Engine(root, generation=Scripted(), decision=Answering())
+    [offered] = EngineTools(engine, agent="lead", scope="acme").only("Delegate").definitions()
+    schema = offered["input_schema"]
+    assert schema["required"] == ["agent", "input"]
+    assert schema["properties"]["task"] == {
+        "type": "string",
+        "enum": ["tone", "apology"],
+        "description": "A task of the agent, to run it with",
+    }
+    assert schema["properties"]["questions"]["additionalProperties"] == QUESTION
+    assert offered["description"] == (
+        "Hand an input to another agent and get its reply.\n"
+        "- grader (decision agent; tasks: tone): Grades replies\n"
+        "- writer (tasks: apology): Writes replies\n"
+        "- blank (decision agent): Answers what it is asked"
+    )
+    [plain] = EngineTools(engine, agent="plain", scope="acme").only("Delegate").definitions()
+    assert list(plain["input_schema"]["properties"]) == ["agent", "input", "task"]
+
+
+async def test_an_adapter_that_edits_the_offered_schema_changes_no_later_run(
+    tmp_path: Path,
+) -> None:
+    engine = Engine(lead(tmp_path), generation=Scripted(), decision=Answering())
+    [first] = EngineTools(engine, agent="lead", scope="acme").only("Delegate").definitions()
+    asked = first["input_schema"]["properties"]["questions"]["additionalProperties"]
+    asked["additionalProperties"] = False
+    asked["properties"]["levels"]["items"]["type"].append("number")
+    [second] = EngineTools(engine, agent="lead", scope="acme").only("Delegate").definitions()
+    assert second["input_schema"]["properties"]["questions"]["additionalProperties"] == QUESTION
+    assert "additionalProperties" not in QUESTION
+    assert QUESTION["properties"]["levels"]["items"]["type"] == ["string", "object", "array"]
+
+
+async def test_a_generation_agent_asks_a_decision_agent_a_question_it_composed(
+    tmp_path: Path,
+) -> None:
+    llm = Scripted(delegating("blank", "Charged twice", questions={"area": PICK}), text_reply("ok"))
+    dm = Answering()
+    run = await Engine(lead(tmp_path), generation=llm, decision=dm).run("lead", "acme", "x")
+    assert isinstance(run, Generation) and not run.steps[0].is_error
+    [child] = run.children
+    assert isinstance(child, Decision) and child.agent == "blank" and child.runtime == ["area"]
+    assert child.questions == {"area": Choice.model_validate(PICK)} and child.task is None
+    assert json.loads(str(run.steps[0].result))["area"]["choice"] == "orders"
+    assert run.steps[0].args["questions"] == {"area": PICK}
+    assert dm.calls == [("Charged twice", {"area": Choice.model_validate(PICK)})]
+
+
+async def test_delegate_names_a_task_for_either_kind_and_adds_questions_to_it(
+    tmp_path: Path,
+) -> None:
+    angry = {"type": "check", "instructions": "Is `message` angry?", "yes": ["Insults", "Caps"]}
+    llm = Scripted(
+        Reply(
+            tool_calls=[
+                *delegating(
+                    "grader", "Sorry!", "g", task="tone", questions={"angry": angry}
+                ).tool_calls,
+                *delegating("writer", "Late parcel", "w", task="apology").tool_calls,
+            ],
+            stop_reason="tool_use",
+        ),
+        text_reply("Apologised."),
+        text_reply("done"),
+    )
+    run = await Engine(lead(tmp_path), generation=llm, decision=Answering()).run(
+        "lead", "acme", "x"
+    )
+    assert isinstance(run, Generation) and [s.is_error for s in run.steps] == [False, False]
+    graded, written = run.children
+    assert isinstance(graded, Decision) and graded.task == "tone" and graded.runtime == ["angry"]
+    assert list(graded.questions) == ["urgent", "polite", "angry"]
+    assert graded.questions["angry"] == Check.model_validate(angry)
+    assert isinstance(written, Generation) and written.task == "apology"
+    assert "<<<TASK>>>\nApologise first." in written.system and written.reply == "Apologised."
 
 
 async def test_children_follow_their_steps_whatever_order_they_finish_in(fixtures: Path) -> None:

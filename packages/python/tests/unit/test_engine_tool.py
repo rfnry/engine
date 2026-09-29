@@ -5,11 +5,12 @@ import pytest
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
-from rfnry_engine.models import Answer, CheckAnswer, Reply, ScoreAnswer, ToolCall
-from rfnry_engine.records import Generation, Run
+from rfnry_engine.models import Answer, CheckAnswer, Choice, Reply, ScoreAnswer, ToolCall
+from rfnry_engine.records import Decision, Generation, Run
+from rfnry_engine.tools.delegate import QUESTION
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Fixed, Scripted, text_reply
+from .fakes import PICK, TOOLS, Answering, Fixed, Scripted, lead, text_reply
 
 TRIAGE: dict[str, Answer] = {
     "urgent": CheckAnswer(probability=0.9),
@@ -98,3 +99,56 @@ async def test_the_loop_guard_holds_across_the_tool(fixtures: Path) -> None:
     run = await engine.run("billing", "acme", "hi", tools=engine.tool("billing", scope="acme"))
     assert isinstance(run, Generation) and run.steps[0].is_error
     assert run.steps[0].result == "DelegationLoopError: delegate: loop at billing -> billing"
+
+
+async def test_a_decision_agent_as_a_tool_takes_a_task_and_questions_of_the_caller(
+    tmp_path: Path,
+) -> None:
+    recorder = Recorded()
+    engine = Engine(lead(tmp_path), decision=Answering(), refinery=recorder)
+    grader = engine.tool("grader", scope="acme")
+    [definition] = grader.definitions()
+    schema = definition["input_schema"]
+    assert list(schema["properties"]) == ["input", "task", "questions"]
+    assert schema["required"] == ["input"] and schema["properties"]["task"]["enum"] == ["tone"]
+    assert schema["properties"]["questions"]["additionalProperties"] == QUESTION
+    answers = await grader.dispatch(
+        "grader", {"input": "Thanks!", "task": "tone", "questions": {"area": PICK}}
+    )
+    assert isinstance(answers, dict) and list(answers) == ["urgent", "polite", "area"]
+    assert answers["area"]["choice"] == "orders"
+    [run] = recorder.runs
+    assert isinstance(run, Decision) and run.task == "tone" and run.runtime == ["area"]
+    assert run.questions["area"] == Choice.model_validate(PICK)
+    blank = engine.tool("blank", scope="acme")
+    assert list(blank.definitions()[0]["input_schema"]["properties"]) == ["input", "questions"]
+    assert set(await blank.dispatch("blank", {"input": "x", "questions": {"area": PICK}})) == {
+        "area"
+    }
+    with pytest.raises(InputError, match="^engine: questions do not fit the contract: "):
+        await blank.dispatch("blank", {"input": "x", "questions": {"area": {"type": "score"}}})
+    with pytest.raises(
+        InputError,
+        match="^engine: decision agent 'blank' has no questions to ask; pass questions=$",
+    ):
+        await blank.dispatch("blank", {"input": "x"})
+
+
+async def test_a_generation_agent_as_a_tool_takes_a_task_it_has(tmp_path: Path) -> None:
+    llm = Scripted(text_reply("Sorry, it is late."))
+    recorder = Recorded()
+    engine = Engine(lead(tmp_path), generation=llm, decision=Answering(), refinery=recorder)
+    writer = engine.tool("writer", scope="acme")
+    properties = writer.definitions()[0]["input_schema"]["properties"]
+    assert list(properties) == ["input", "task"] and properties["task"]["enum"] == ["apology"]
+    await writer.dispatch("writer", {"input": "Late parcel", "task": "apology"})
+    [run] = recorder.runs
+    assert isinstance(run, Generation) and run.task == "apology"
+    assert "<<<TASK>>>\nApologise first." in llm.calls[0][0]
+    with pytest.raises(NotFoundError, match="^engine: agent 'writer' has no task 'tone'$"):
+        await writer.dispatch("writer", {"input": "x", "task": "tone"})
+    with pytest.raises(InputError, match="^engine: generation agent 'writer' takes no questions$"):
+        await writer.dispatch("writer", {"input": "x", "questions": {"area": PICK}})
+    lead_ = engine.tool("lead", scope="acme")
+    assert list(lead_.definitions()[0]["input_schema"]["properties"]) == ["input"]
+    assert len(llm.calls) == 1

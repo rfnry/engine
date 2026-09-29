@@ -231,3 +231,35 @@ def sorter(root: Path) -> Fixed:
             "creds": CheckAnswer(probability=0.9),
         }
     )
+
+
+PICK: dict[str, Any] = {
+    "type": "choice",
+    "instructions": {"question": "Which area is `message` about?", "message": "Charged twice"},
+    "options": {"billing": {"what": "Charges", "examples": ["charged twice"]}, "orders": None},
+}
+
+LEAD = {
+    "lead/AGENT.md": (
+        "---\nname: lead\nkind: generation\ndescription: Leads the desk\n"
+        "agents: [grader, writer, blank]\n---\nLead the desk.\n"
+    ),
+    "grader/AGENT.md": "---\nname: grader\nkind: decision\ndescription: Grades replies\n---\n",
+    "grader/questions/urgent.md": "---\ntype: check\n---\nUrgent?\n",
+    "grader/tasks/tone/polite.md": "---\ntype: check\n---\nPolite?\n",
+    "writer/AGENT.md": "---\nname: writer\nkind: generation\ndescription: Writes replies\n---\nWrite.\n",
+    "writer/tasks/apology.md": "Apologise first.\n",
+    "blank/AGENT.md": "---\nname: blank\nkind: decision\ndescription: Answers what it is asked\n---\n",
+}
+
+
+def lead(root: Path) -> Path:
+    for name, text in LEAD.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text, encoding="utf-8")
+    return root
+
+
+def delegating(agent: str, text: str = "x", call_id: str = "d1", **extra: Any) -> Reply:
+    call = ToolCall(id=call_id, name="Delegate", args={"agent": agent, "input": text, **extra})
+    return Reply(tool_calls=[call], stop_reason="tool_use")

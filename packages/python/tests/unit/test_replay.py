@@ -33,13 +33,16 @@ from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Workspace
 
 from .fakes import (
+    PICK,
     TOOLS,
     Answering,
     Desk,
     Fixed,
     Scripted,
     delegate_triage,
+    delegating,
     generation_record,
+    lead,
     text_reply,
 )
 
@@ -678,3 +681,38 @@ async def test_a_decision_run_with_media_replays_its_parts(tmp_path: Path) -> No
     assert refused.error == (
         "InputError: engine: decision agent 'grader' takes text only; got image/png"
     )
+
+
+async def test_a_parent_whose_child_was_given_a_task_and_questions_replays_as_one_run(
+    tmp_path: Path,
+) -> None:
+    refinery = Refinery(InMemoryStorage())
+    asked = delegating("grader", "Sorry!", task="tone", questions={"area": PICK})
+    recorder = Engine(
+        lead(tmp_path),
+        generation=Scripted(asked, text_reply("Graded.")),
+        decision=Answering(),
+        refinery=refinery,
+    )
+    recorded = await recorder.run("lead", "acme", "Grade this")
+    read = await refinery.run("acme", recorded.run_id)
+    assert read == recorded and isinstance(read, Generation)
+    [child] = read.children
+    assert isinstance(child, Decision) and child.task == "tone" and child.runtime == ["area"]
+    assert read.steps[0].args == {
+        "agent": "grader",
+        "input": "Sorry!",
+        "task": "tone",
+        "questions": {"area": PICK},
+    }
+    llm = Scripted(delegating("grader", "Sorry!", questions={"area": PICK}), text_reply("Again."))
+    dm = Answering()
+    [pair] = await collect(
+        refinery.replay("acme", Engine(tmp_path, generation=llm, decision=dm), agent="lead")
+    )
+    assert pair.error is None and isinstance(pair.candidate, Generation)
+    assert pair.candidate.reply == "Again." and pair.candidate.task is None
+    [again] = pair.candidate.children
+    assert isinstance(again, Decision) and again.task is None and again.runtime == ["area"]
+    assert [list(q) for _, q in dm.calls] == [["urgent", "area"]]
+    assert pair.candidate.fingerprint == recorded.fingerprint

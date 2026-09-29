@@ -347,3 +347,41 @@ async def test_runtime_questions_and_a_task_are_recorded_and_read_back(tmp_path:
     assert read.questions["how_bad"] == HOW_BAD and read.questions["area"] == AREA
     [row] = await refinery.storage.runs("acme")
     assert row.task == "tone"
+
+
+def desk(root: Path, to: str) -> Path:
+    write(
+        root / "desk/AGENT.md",
+        f"---\nname: desk\nkind: decision\nroute: {{by: team, to: {to}}}\n---\n",
+    )
+    write(root / "desk/questions/team.md", "---\ntype: choice\noptions: {a: A, b: B}\n---\n?\n")
+    write(root / "desk/tasks/audit/angry.md", "---\ntype: check\n---\nAngry?\n")
+    write(root / "tasked/AGENT.md", "---\nname: tasked\nkind: decision\n---\n")
+    write(root / "tasked/tasks/tone/polite.md", "---\ntype: check\n---\nPolite?\n")
+    write(root / "writer/AGENT.md", "---\nname: writer\nkind: generation\n---\nWrite.\n")
+    write(root / "writer/tasks/apology.md", "Apologise first.\n")
+    return root
+
+
+async def test_a_route_entry_runs_its_decision_target_with_the_task_it_names(
+    tmp_path: Path,
+) -> None:
+    dm = Answering()
+    engine = Engine(desk(tmp_path, "{b: {agent: tasked, task: tone}}"), decision=dm)
+    run = await engine.run("desk", "acme", "x", task="audit", questions={"sure": ANGRY})
+    assert isinstance(run, Decision) and run.task == "audit" and run.runtime == ["sure"]
+    routed = run.routed_to
+    assert isinstance(routed, Decision) and routed.agent == "tasked" and routed.task == "tone"
+    assert list(routed.questions) == ["polite"] and routed.runtime == []
+    assert [list(q) for _, q in dm.calls] == [["team", "angry", "sure"], ["polite"]]
+
+
+async def test_a_route_entry_runs_its_generation_target_with_the_task_it_names(
+    tmp_path: Path,
+) -> None:
+    llm = Scripted(text_reply("Sorry."))
+    root = desk(tmp_path, "{b: {agent: writer, task: apology}, a: writer}")
+    run = await Engine(root, generation=llm, decision=Answering()).run("desk", "acme", "x")
+    assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
+    assert run.routed_to.task == "apology" and run.routed_to.reply == "Sorry."
+    assert "<<<TASK>>>\nApologise first." in llm.calls[0][0]

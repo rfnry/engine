@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator
 
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.fingerprint import folder_fingerprint
@@ -13,12 +13,29 @@ from rfnry_engine.models import Check, Choice, Question, Score
 Kind = Literal["generation", "decision"]
 
 
+class RouteTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent: str
+    task: str | None = None
+
+
 class RouteSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     by: str
-    to: dict[str, str]
+    to: dict[str, RouteTarget]
     min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    @field_validator("to", mode="before")
+    @classmethod
+    def _a_name_is_an_agent(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        return {
+            option: {"agent": target} if isinstance(target, str) else target
+            for option, target in value.items()
+        }
 
 
 class AgentFront(BaseModel):
@@ -218,12 +235,9 @@ def load_tree(root: Path) -> dict[str, AgentSpec]:
 
 def validate_tree(agents: dict[str, AgentSpec]) -> None:
     for spec in agents.values():
-        for target in spec.agents:
-            if target not in agents:
-                raise ConfigurationError(
-                    f"tree: agent {spec.name!r} names unknown agent {target!r}"
-                )
-            _answerable(spec, agents[target])
+        for name in spec.agents:
+            if name not in agents:
+                raise ConfigurationError(f"tree: agent {spec.name!r} names unknown agent {name!r}")
         if spec.route is None:
             continue
         question = spec.questions.get(spec.route.by)
@@ -234,15 +248,17 @@ def validate_tree(agents: dict[str, AgentSpec]) -> None:
                 raise ConfigurationError(
                     f"tree: route of {spec.name!r} maps unknown option {option!r}"
                 )
-            if target not in agents:
+            routed = agents.get(target.agent)
+            if routed is None:
                 raise ConfigurationError(
-                    f"tree: route of {spec.name!r} points at unknown agent {target!r}"
+                    f"tree: route of {spec.name!r} points at unknown agent {target.agent!r}"
                 )
-            _answerable(spec, agents[target])
-
-
-def _answerable(spec: AgentSpec, target: AgentSpec) -> None:
-    if target.kind == "decision" and not target.questions:
-        raise ConfigurationError(
-            f"tree: agent {spec.name!r} reaches decision agent {target.name!r}, which has no questions/ of its own"
-        )
+            if target.task is not None and target.task not in routed.tasks:
+                raise ConfigurationError(
+                    f"tree: route of {spec.name!r} points at agent {target.agent!r}, which has no task {target.task!r}"
+                )
+            tasked = None if target.task is None else routed.task_questions.get(target.task)
+            if routed.kind == "decision" and not routed.questions and not tasked:
+                raise ConfigurationError(
+                    f"tree: route of {spec.name!r} gives decision agent {target.agent!r} nothing to ask: it has no questions/ and the route names no task with questions"
+                )

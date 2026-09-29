@@ -225,7 +225,7 @@ and `Grep` do, and links that lead out of it. The engine takes it once, when it 
 an edit shows in the next `Engine` built from the folder. `fingerprint.tools` is one over
 `run.tools` — each tool's name, description and schema — so it covers the tools the folder
 declares, the code tools it adopts, the `tools=` a run passes, `Output` when `expect=` asks for one,
-and in `Delegate`'s description the names and descriptions of the agents it may call. Neither sees
+and in `Delegate` the agents it may call — their names, descriptions, kinds and tasks. Neither sees
 what varies per run and is not the agent — the input, the history, `context=`, `tags=` — so two
 runs of an unchanged folder share it and any edit changes it. The model is `run.model`; the code
 behind a tool is yours to version. A decision run carries one too, its `tools` the fingerprint of no
@@ -519,11 +519,41 @@ not make the call.
 ### Nesting
 
 `agents:` in a generation agent's frontmatter gives it a `Delegate` tool listing those agents by
-name and description. The model calls it with an agent and an input; the child runs under the same
-scope and its reply — text for a generation agent, answers for a decision agent — comes back as the
-tool result. The child's record is attached to the parent's `children`, and the step that called it
-carries the child's `run_id`. A decision agent used this way is how a generation agent asks a fast,
-calibrated question mid-task: is this destructive, which skill applies, is the user done.
+name, description, kind and tasks. The model calls it with an agent and an input; the child runs
+under the same scope and its reply — text for a generation agent, answers for a decision agent —
+comes back as the tool result. The child's record is attached to the parent's `children`, and the
+step that called it carries the child's `run_id`. A decision agent used this way is how a
+generation agent asks a fast, calibrated question mid-task: is this destructive, which skill
+applies, is the user done.
+
+The model can also name one of the target's `task`s, of either kind, and give a decision agent
+`questions` it composes itself — ids to questions of the three types, written as JSON, structure
+included — asked beside the agent's own in the same call. A question that occurs to the model
+mid-task is answered with probabilities instead of guessed at, and a decision agent with no
+questions of its own is worth delegating to. The model sends:
+
+```json
+{"agent": "triage", "input": "The March invoice shows the same $49 charge twice.",
+ "questions": {"refund": {"type": "check", "instructions": "Does the customer ask for money back?"},
+               "cause": {"type": "choice", "instructions": "What caused the second charge?",
+                         "options": {"duplicate": "The same payment taken twice",
+                                     "plan_change": "A prorated change of plan", "other": null}}}}
+```
+
+```python
+run = await engine.run("support", scope="acme", input="I was charged twice in March. Refund one.")
+child = run.children[0]
+child.runtime                             # ["refund", "cause"]
+child.answers["refund"].probability       # 0.91
+child.answers["cause"].choice             # "duplicate"
+```
+
+The child records its task and its runtime questions as any run does, and the step keeps what the
+model sent. `Delegate` offers `task` only when a target has tasks and `questions` only when one is
+a decision agent, and its schema describes the question object once, for all three types. A task
+the target does not have, questions for a generation agent, a question that does not fit, an id the
+target already asks, or a decision run with nothing to ask reaches the model as a tool error it can
+read and act on, and the run goes on.
 
 Depth is capped (`max_depth`, default 5) and a cycle is refused; both are reported to the model as
 tool errors, and the run continues.
@@ -581,9 +611,21 @@ run.routed_to.children[0].agent         # "triage" — the decision agent suppor
 
 A route is by a question of the router's `questions/`, which every run asks, so neither a task
 nor a runtime question can drive it; a router's task and runtime questions are its own, asked
-beside `intent` and not passed on. The run a route or a `Delegate` starts asks the questions of its own folder, so it
-must have some: a route or an `agents:` entry that reaches a decision agent with no `questions/` is
-a `ConfigurationError` when the tree loads.
+beside `intent` and not passed on. A route entry names an agent, or an agent and one of its tasks,
+which the routed run is given — a generation agent's instructions or a decision agent's questions:
+
+```yaml
+route:
+  by: intent
+  to:
+    billing: billing
+    technical: {agent: support, task: triage}
+```
+
+The task must be one its agent has, and a decision agent a route reaches must have something to
+ask — `questions/`, or questions in the task the entry names; either is a `ConfigurationError` when
+the tree loads, since that tree cannot work. A decision agent reached through `Delegate` needs
+neither, since the model can name a task or bring the questions.
 
 One message, four model calls, one record. With only `generation=` the same tree runs its
 generation agents and refuses the decision ones; with only `decision=` the reverse, and a decision
@@ -1016,12 +1058,15 @@ combined = MemoryTools(memory, corpus_id="acme") + surface.only("Read", "Grep")
 ```
 
 A `Delegate` dispatched this way runs the child as its own top-level run, with the scope, `tools=`,
-`workspace=` and `tags=` given to `EngineTools` — what a `Delegate` inside a run would give it.
+`workspace=` and `tags=` given to `EngineTools` and the `task` and `questions` it is called with —
+what a `Delegate` inside a run would give it. A refusal raises here, where inside a run the model
+reads it.
 
 An agent is itself a tool. `engine.tool(agent, scope=...)` gives any runtime — a live voice model,
 a loop of your own — one tool that runs the agent: named for the agent and described by its
-`AGENT.md` unless you say otherwise, taking `{"input": str}`, returning a generation agent's reply
-or a decision agent's answers as a dict:
+`AGENT.md` unless you say otherwise, taking `{"input": str}` — and, as `Delegate` does, a `task`
+when the agent has tasks and `questions` when it is a decision agent — returning a generation
+agent's reply or a decision agent's answers as a dict:
 
 ```python
 consult = engine.tool("billing", scope="acme", name="consult", description="Ask the billing desk.",
@@ -1138,9 +1183,8 @@ Everything the package exports, by role.
 `AGENT.md`, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
 (`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), a question
 with instructions both in its frontmatter and in its body or in neither, a decision agent with a
-file straight in `tasks/` or a task that repeats an id of its `questions/`, a route or `agents:`
-entry that reaches a
-decision agent with no `questions/`, a tool
+file straight in `tasks/` or a task that repeats an id of its `questions/`, a route entry that
+names a task its agent does not have or gives a decision agent nothing to ask, a tool
 declared without a body or given without a declaration, a run of an agent whose kind of model is
 absent, a missing workspace, a `Workspace` root that is not a
 directory, a `Workspace` with neither `sandbox=` nor `unsandboxed=True` or with both, an unsandboxed

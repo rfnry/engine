@@ -5,13 +5,16 @@ from typing import Any
 
 import pytest
 from unit.fakes import (
+    PICK,
     TOOLS,
     Answering,
     Desk,
     MemoryBucket,
     Scripted,
     delegate_triage,
+    delegating,
     generation_record,
+    lead,
     sorter,
     text_reply,
 )
@@ -716,6 +719,29 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
     assert sent == expected
     assert plain.fingerprint is not None
     assert plain.fingerprint.questions != asked.fingerprint.questions
+
+
+async def test_a_delegated_child_keeps_its_task_and_runtime_questions(
+    storage: Storage, tmp_path: Path
+) -> None:
+    refinery = Refinery(storage)
+    asked = delegating("grader", "Sorry!", task="tone", questions={"area": PICK})
+    engine = Engine(
+        lead(tmp_path),
+        generation=Scripted(asked, text_reply("Graded.")),
+        decision=Answering(),
+        refinery=refinery,
+    )
+    run = await engine.run("lead", "a", "Grade this")
+    assert isinstance(run, Generation)
+    [child] = run.children
+    assert await refinery.run("a", run.run_id) == run
+    again = await refinery.run("a", child.run_id)
+    assert again == child and isinstance(again, Decision)
+    assert again.task == "tone" and again.runtime == ["area"]
+    assert list(again.questions) == ["urgent", "polite", "area"]
+    [row] = await storage.runs("a", run_ids=[child.run_id])
+    assert row.task == "tone" and row.parent_run_id == run.run_id
 
 
 class Looking(Answering):

@@ -2,6 +2,7 @@ import ast
 import asyncio
 import hashlib
 import inspect
+import json
 import re
 import shutil
 from collections.abc import Mapping
@@ -31,7 +32,8 @@ from rfnry_engine import (
     Tools,
     ToolSpec,
 )
-from rfnry_engine.tree import load_agent
+from rfnry_engine.records import Decision
+from rfnry_engine.tree import load_agent, load_tree, validate_tree
 
 from .fakes import lookup_order
 
@@ -68,6 +70,11 @@ def delegating(agent: str) -> Reply:
     return Reply(tool_calls=[call], stop_reason="tool_use")
 
 
+COMPOSED = json.loads(next(body for lang, body in BLOCKS if lang == "json" and "questions" in body))
+ASKS = 'run = await engine.run("support", scope="acme", input="I was charged twice in March. Refund one.")'
+ROUTE = next(body for lang, body in BLOCKS if lang == "yaml" and "task:" in body)
+
+
 @dataclass
 class Setup:
     replies: tuple[Reply, ...] = ()
@@ -88,6 +95,14 @@ SETUPS = {
     ),
     "engine = Engine(root, generation=llm, decision=dm, tools=tools)": Setup(
         replies=(delegating("triage"),), intent="technical"
+    ),
+    ASKS: Setup(
+        replies=(
+            Reply(
+                tool_calls=[ToolCall(id="d1", name="Delegate", args=COMPOSED)],
+                stop_reason="tool_use",
+            ),
+        )
     ),
     "from rfnry_engine import Workspace": Setup(replace={"/srv/tenants/acme/work": "work"}),
     'sandboxed = Workspace("/srv/tenants/acme/work", sandbox=[': Setup(
@@ -321,3 +336,27 @@ def test_every_question_in_the_docs_loads(block: str, tmp_path: Path) -> None:
     write(tmp_path / "a/questions/q.md", block)
     question = load_agent(tmp_path / "a").questions["q"]
     assert question.instructions and question.type in block.split("\n")[1]
+
+
+async def test_the_question_the_model_composes_reaches_the_decision_agent(tmp_path: Path) -> None:
+    namespace = await context(tmp_path, SETUPS[ASKS])
+    block = next(block for block in PYTHON if first_line(block) == ASKS)
+    await eval(compile(block, "engine.md", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT), namespace)
+    child = namespace["child"]
+    assert isinstance(child, Decision) and child.runtime == ["refund", "cause"]
+    assert list(child.questions) == ["severity", "urgent", "refund", "cause"]
+    refund, cause = child.answers["refund"], child.answers["cause"]
+    assert isinstance(refund, CheckAnswer) and refund.probability == 0.91
+    assert isinstance(cause, ChoiceAnswer) and cause.choice == "duplicate"
+    assert namespace["run"].steps[0].args == COMPOSED
+
+
+def test_the_route_entry_with_a_task_loads(tmp_path: Path) -> None:
+    root = tmp_path / "agents"
+    tree(root)
+    front = markdown("name: frontdesk").split("route:")[0]
+    write(root / "frontdesk/AGENT.md", f"{front}{ROUTE}---\n")
+    agents = load_tree(root)
+    validate_tree(agents)
+    route = agents["frontdesk"].route
+    assert route is not None and route.to["technical"].task == "triage"

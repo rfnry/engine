@@ -49,7 +49,14 @@ from rfnry_engine.models import (
 from rfnry_engine.records import Decision, Fingerprint, Generation, Run, Step
 from rfnry_engine.stop import Stop, Stopped, cancel, requested, wait
 from rfnry_engine.tools.declared import check_declarations
-from rfnry_engine.tools.delegate import DELEGATE_TOOL, child_result, enter, permit
+from rfnry_engine.tools.delegate import (
+    DELEGATE_TOOL,
+    AgentArgs,
+    child_result,
+    enter,
+    permit,
+    run_arguments,
+)
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import WORKSPACE_TOOLS, Workspace
@@ -85,10 +92,6 @@ class AgentInfo(BaseModel):
     kind: Kind
     description: str
     agents: list[str]
-
-
-class AgentInput(BaseModel):
-    input: str = Field(description="What to hand the agent")
 
 
 class Recorder(Protocol):
@@ -145,6 +148,12 @@ def _questions(value: Mapping[str, QuestionLike] | None) -> dict[str, Question]:
     if not all(asked):
         raise InputError("engine: a question id must be a non-empty string")
     return asked
+
+
+def _asked(spec: AgentSpec, questions: Mapping[str, QuestionLike] | None) -> dict[str, Question]:
+    if questions is not None and spec.kind == "generation":
+        raise InputError(f"engine: generation agent {spec.name!r} takes no questions")
+    return _questions(questions)
 
 
 def _tags(value: Mapping[str, str] | None) -> dict[str, str]:
@@ -281,8 +290,7 @@ class Engine:
         if not scope:
             raise InputError("engine: scope is required")
         spec = self._spec(agent)
-        if questions is not None and spec.kind == "generation":
-            raise InputError(f"engine: generation agent {agent!r} takes no questions")
+        asked = _asked(spec, questions)
         options = _Options(
             task=task,
             history=_history(history),
@@ -295,7 +303,7 @@ class Engine:
             inbox=inbox,
             tags=_tags(tags),
             approve=approve,
-            questions=_questions(questions),
+            questions=asked,
         )
         run = await self._run(spec, scope, input, options, None)
         if record and self.refinery is not None:
@@ -328,6 +336,8 @@ class Engine:
                 agent,
                 scope,
                 args["input"],
+                task=args.get("task"),
+                questions=args.get("questions"),
                 context=context,
                 tools=tools,
                 workspace=workspace,
@@ -339,7 +349,17 @@ class Engine:
             return {qid: answer.model_dump() for qid, answer in run.answers.items()}
 
         described = spec.description if description is None else description
-        return Tools([Tool(name or spec.name, described, body=body, args=AgentInput)])
+        schema = {
+            "type": "object",
+            "properties": {
+                "input": {"type": "string", "description": "What to hand the agent"},
+                **run_arguments([spec]),
+            },
+            "required": ["input"],
+        }
+        return Tools(
+            [Tool(name or spec.name, described, body=body, args=AgentArgs, input_schema=schema)]
+        )
 
     async def _run(
         self,
@@ -397,8 +417,10 @@ class Engine:
             target = route.to.get(answer.choice) if isinstance(answer, ChoiceAnswer) else None
             floor = route.min_confidence
             if target is not None and (floor is None or answer.confidence >= floor):
-                forwarded = replace(options, task=None, questions={})
-                routed = await self._run(self._agents[target], scope, input, forwarded, run_id)
+                forwarded = replace(options, task=target.task, questions={})
+                routed = await self._run(
+                    self._agents[target.agent], scope, input, forwarded, run_id
+                )
         return Decision(
             run_id=run_id,
             parent_run_id=parent_run_id,
@@ -423,12 +445,12 @@ class Engine:
     def _check_routes(self, spec: AgentSpec, seen: set[str]) -> None:
         seen.add(spec.name)
         for target in spec.route.to.values() if spec.route is not None else []:
-            routed = self._agents[target]
+            routed = self._agents[target.agent]
             if routed.kind == "generation" and self.generation is None:
                 raise ConfigurationError(
-                    f"engine: agent {spec.name!r} routes to generation agent {target!r}; no generation model was configured"
+                    f"engine: agent {spec.name!r} routes to generation agent {target.agent!r}; no generation model was configured"
                 )
-            if routed.kind == "decision" and target not in seen:
+            if routed.kind == "decision" and target.agent not in seen:
                 self._check_routes(routed, seen)
 
     async def _generation(
@@ -513,10 +535,16 @@ class Engine:
                 return STOPPED, True, None, True
             try:
                 args = permit(spec, call.args)
-                forwarded = replace(options, task=None, history=[], expect=None, inbox=None)
-                child = await self._run(
-                    self._agents[args.agent], scope, args.input, forwarded, run_id
+                target = self._agents[args.agent]
+                forwarded = replace(
+                    options,
+                    task=args.task,
+                    questions=_asked(target, args.questions),
+                    history=[],
+                    expect=None,
+                    inbox=None,
                 )
+                child = await self._run(target, scope, args.input, forwarded, run_id)
             except Exception as exc:
                 return f"{type(exc).__name__}: {exc}", True, None, False
             delegated[child.run_id] = child

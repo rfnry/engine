@@ -419,17 +419,77 @@ def test_a_routing_agent_may_declare_tasks(tmp_path: Path) -> None:
     assert agents["a"].tasks == ["grade"] and set(agents["a"].questions) == {"q"}
 
 
-@pytest.mark.parametrize(
-    "front",
-    ["kind: generation\nagents: [b]\n", "kind: decision\nroute: {by: q, to: {x: b}}\n"],
-)
-def test_a_route_or_a_delegation_reaches_only_a_decision_agent_with_questions_of_its_own(
-    tmp_path: Path, front: str
-) -> None:
-    _agent(tmp_path, "a", front, {"q": CHOICE} if "decision" in front else {})
+def test_a_delegate_target_needs_no_questions_of_its_own(tmp_path: Path) -> None:
+    _agent(tmp_path, "a", "kind: generation\nagents: [b, c]\n")
     _agent(tmp_path, "b", "kind: decision\n")
-    (tmp_path / "b" / "tasks" / "grade").mkdir(parents=True)
-    (tmp_path / "b" / "tasks" / "grade" / "tone.md").write_text(CHECK)
-    message = "^tree: agent 'a' reaches decision agent 'b', which has no questions/ of its own$"
+    _agent(tmp_path, "c", "kind: decision\n")
+    _task(tmp_path, "c", "grade", "tone")
+    validate_tree(load_tree(tmp_path))
+
+
+def _router(root: Path, to: str) -> None:
+    _agent(root, "a", f"kind: decision\nroute: {{by: q, to: {to}}}\n", {"q": CHOICE})
+    _agent(root, "b", "kind: decision\n")
+    _task(root, "b", "grade", "tone")
+    (root / "b" / "tasks" / "empty").mkdir()
+    _agent(root, "g", "kind: generation\n")
+    (root / "g" / "tasks").mkdir()
+    (root / "g" / "tasks" / "billing.md").write_text("Answer the billing question.\n")
+
+
+@pytest.mark.parametrize(
+    "to",
+    [
+        "{x: b}",
+        "{x: {agent: b}}",
+        "{x: {agent: b, task: empty}}",
+    ],
+)
+def test_a_route_to_a_decision_agent_that_could_never_ask_anything_is_refused(
+    tmp_path: Path, to: str
+) -> None:
+    _router(tmp_path, to)
+    message = (
+        "^tree: route of 'a' gives decision agent 'b' nothing to ask: it has no questions/ "
+        "and the route names no task with questions$"
+    )
     with pytest.raises(ConfigurationError, match=message):
         validate_tree(load_tree(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("to", "agent", "task"),
+    [("{x: {agent: b, task: ghost}}", "b", "ghost"), ("{x: {agent: g, task: tone}}", "g", "tone")],
+)
+def test_a_route_names_only_a_task_its_agent_has(
+    tmp_path: Path, to: str, agent: str, task: str
+) -> None:
+    _router(tmp_path, to)
+    message = f"^tree: route of 'a' points at agent '{agent}', which has no task '{task}'$"
+    with pytest.raises(ConfigurationError, match=message):
+        validate_tree(load_tree(tmp_path))
+
+
+def test_a_route_entry_is_an_agent_or_an_agent_with_one_of_its_tasks(tmp_path: Path) -> None:
+    _router(tmp_path, "{x: {agent: b, task: grade}, y: {agent: g, task: billing}}")
+    agents = load_tree(tmp_path)
+    validate_tree(agents)
+    route = agents["a"].route
+    assert route is not None
+    assert {option: (t.agent, t.task) for option, t in route.to.items()} == {
+        "x": ("b", "grade"),
+        "y": ("g", "billing"),
+    }
+    named = load_tree(FIXTURES)["frontdesk"].route
+    assert named is not None
+    assert {option: (t.agent, t.task) for option, t in named.to.items()} == {
+        "billing": ("billing", None),
+        "technical": ("support", None),
+    }
+
+
+def test_a_route_entry_with_an_unknown_key_names_it(tmp_path: Path) -> None:
+    _router(tmp_path, "{x: {agent: b, tsak: grade}}")
+    message = "^frontmatter: unknown key 'route.to.x.tsak' in "
+    with pytest.raises(ConfigurationError, match=message):
+        load_agent(tmp_path / "a")
