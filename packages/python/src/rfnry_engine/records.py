@@ -24,6 +24,7 @@ class Step(BaseModel):
 class Fingerprint(BaseModel):
     agent: str
     tools: str
+    questions: str | None = None
 
 
 class Generation(BaseModel):
@@ -59,12 +60,14 @@ class Decision(BaseModel):
     agent: str
     scope: str
     tags: dict[str, str] = Field(default_factory=dict)
+    task: str | None = None
     at: datetime
     duration_ms: int
     model: str | None
     fingerprint: Fingerprint | None = None
     state: State
     questions: dict[str, Question]
+    runtime: list[str] = Field(default_factory=list)
     answers: dict[str, Answer]
     usage: Usage
     routed_to: Run | None = None

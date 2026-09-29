@@ -354,7 +354,7 @@ class Engine:
 
 Loads the tree of agents under `root` and checks it against the models and tool bodies given; `tools` is one list for the whole tree, and `Recorder` is a protocol of `async def record(self, run: Run) -> None`, which a `Refinery` meets. `tool_timeout` is each tool call's deadline in seconds, `None` for none. `agents` maps each agent's name to its `AgentInfo`.
 
-Raises `ConfigurationError` when `root` is not a directory, when the tree cannot be used (no agent under `root`, a bad `AGENT.md`, question or tool file, an unknown frontmatter key, an agent in `agents:` or `route:` the tree does not have, a route not by a choice question), when a tool is given that no agent declares or, with a generation model, a declared tool has no body, when two tools share a name, or when `max_steps`, `max_depth` or `tool_timeout` is not positive.
+Raises `ConfigurationError` when `root` is not a directory, when the tree cannot be used (no agent under `root`, a bad `AGENT.md`, question or tool file, an unknown frontmatter key, an agent in `agents:` or `route:` the tree does not have or a decision agent there with no `questions/`, a route not by a choice question of the router's `questions/`, a decision agent with a file straight in `tasks/` or a routing one with `tasks/`), when a tool is given that no agent declares or, with a generation model, a declared tool has no body, when two tools share a name, or when `max_steps`, `max_depth` or `tool_timeout` is not positive.
 
 ### `Engine.run`
 
@@ -366,6 +366,7 @@ async def run(
     input: State,
     *,
     task: str | None = None,
+    questions: Mapping[str, QuestionLike] | None = None,
     history: Sequence[object] | None = None,
     context: str | None = None,
     expect: type[BaseModel] | None = None,
@@ -380,9 +381,9 @@ async def run(
 ) -> Run: ...
 ```
 
-Runs `agent` for the tenant `scope` on `input` and returns its record: a `Generation` for a generation agent, a `Decision` for a decision agent. With a refinery attached, a run that returns is recorded unless `record=False`, and a recording that fails is logged, never raised. `EventHandler` is `Callable[[Event], Awaitable[None]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets, and `tools` rides this run only; `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`, called with the agent's name and the call.
+Runs `agent` for the tenant `scope` on `input` and returns its record: a `Generation` for a generation agent, a `Decision` for a decision agent. A generation agent's `task` puts `tasks/<task>.md` in its system prompt; a decision agent's asks the questions in `tasks/<task>/` instead of `questions/`. `questions` are a decision agent's runtime questions, read by their fields and asked with the folder's in the same call; the routed run does not get them. With a refinery attached, a run that returns is recorded unless `record=False`, and a recording that fails is logged, never raised. `EventHandler` is `Callable[[Event], Awaitable[None]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets, and `tools` rides this run only; `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`, called with the agent's name and the call.
 
-Raises `InputError` when `scope` is empty, a decision agent is given a `task` or media, `tags` are outside their limits, `history` does not fit the contract, or `input` mixes parts with other values. Raises `NotFoundError` when the tree has no agent `agent`. Raises `ConfigurationError` when the model for the agent's kind is absent, a decision agent routes to a generation agent without a generation model, `task` is not in the agent's `tasks/`, an agent with `workspace: true` runs without a `workspace`, `tools` repeats a name the agent already has, a tool named `Output` collides with `expect`, or `approve` returns anything but `True` or `False`. Raises `ModelError` when an adapter's result does not fit the contract. Raises `RunawayError` when the loop passes `max_steps`. Raises `DelegationLoopError` or `DelegationDepthError` when a route loops or goes deeper than `max_depth`.
+Raises `InputError` when `scope` is empty, a generation agent is given `questions`, a runtime question does not fit the contract or has an empty id or one the folder already asks, a decision run has no question to ask, a decision agent is given media, `tags` are outside their limits, `history` does not fit the contract, or `input` mixes parts with other values. Raises `NotFoundError` when the tree has no agent `agent`. Raises `ConfigurationError` when the model for the agent's kind is absent, a decision agent routes to a generation agent without a generation model, `task` is not in the agent's `tasks/`, an agent with `workspace: true` runs without a `workspace`, `tools` repeats a name the agent already has, a tool named `Output` collides with `expect`, or `approve` returns anything but `True` or `False`. Raises `ModelError` when an adapter's result does not fit the contract. Raises `RunawayError` when the loop passes `max_steps`. Raises `DelegationLoopError` or `DelegationDepthError` when a route loops or goes deeper than `max_depth`.
 
 ### `Engine.tool`
 
@@ -486,18 +487,20 @@ class Decision(BaseModel):
     agent: str
     scope: str
     tags: dict[str, str] = {}
+    task: str | None = None
     at: datetime
     duration_ms: int
     model: str | None
     fingerprint: Fingerprint | None = None
     state: State
     questions: dict[str, Question]
+    runtime: list[str] = []
     answers: dict[str, Answer]
     usage: Usage
     routed_to: Run | None = None
 ```
 
-The record of a decision run: the state, the questions asked, an answer per question id with its `confidence`, the usage and model the adapter reported, and which agent folder produced it (`fingerprint`, whose `tools` is the fingerprint of no tools). `routed_to` is the run its route started, if any. A run recorded before `fingerprint` was kept reads back with `None`.
+The record of a decision run: the task it was given, the state, every question asked, from the folder or the task and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported, and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. A run recorded before `task`, `runtime` or `fingerprint` was kept reads back with `None`, `[]` and `None`.
 
 ### `Run`
 
@@ -513,9 +516,10 @@ What `Engine.run` returns, told apart by `kind`.
 class Fingerprint(BaseModel):
     agent: str
     tools: str
+    questions: str | None = None
 ```
 
-Which agent and which tools produced a run, each the first 16 hex characters of a sha256. `agent` covers every file in the agent's directory as the engine loaded it, by relative path and content, leaving out hidden files and folders (a name starting with `.`) and links that lead out of the directory; it is computed once, when the `Engine` is built. `tools` covers the tools the model was offered, `Run.tools` sorted by name as canonical JSON: the folder's, the code's, the run's `tools=` and `Output` when `expect=` asked for one. Neither covers the input, the history, `context`, `tags`, the model or the code behind a tool.
+Which agent, which tools and which questions produced a run, each the first 16 hex characters of a sha256. `agent` covers every file in the agent's directory as the engine loaded it, by relative path and content, leaving out hidden files and folders (a name starting with `.`) and links that lead out of the directory; it is computed once, when the `Engine` is built. `tools` covers the tools the model was offered, `Run.tools` sorted by name as canonical JSON: the folder's, the code's, the run's `tools=` and `Output` when `expect=` asked for one. `questions` covers the questions a decision run asked, `Decision.questions` as JSON ordered by question id, each question's fields in order and its options and levels as given, runtime questions included; it is `None` for a generation run and for a run recorded before it was kept. None covers the input, the history, `context`, `tags`, the model or the code behind a tool.
 
 ### `Step`
 
@@ -1061,7 +1065,7 @@ def replay(
 ) -> AsyncGenerator[Replay, None]: ...
 ```
 
-Runs `candidate` on what the top-level runs of `agent` in `scope` were given and yields a `Replay` for each, oldest first by when the run started. `holdout` keeps the held-out runs, by the same hash and `holdout_percent` as `export`; `labeled` the runs with a `human` or `world` label; `tags` the runs whose tags contain these, as `delete_runs` matches; `fingerprint` the runs whose fingerprint equals it; `limit` the first so many. Each replay is `candidate.run(agent, scope, …, record=False)` with the recorded input — parts read back as parts — the history (the messages sent before the input), the task and the `context`; a decision run replays its state, and when its route reached a generation run, that run's input, history and context. `expect`, `approve`, `tools` and `workspace` are passed to every replay. `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets. The candidate's tools run for real. At most `concurrency` replays run at once, and while a pair is being read at most `concurrency - 1` run, so with the default a replay starts when its pair is asked for. Pairs are yielded in that order either way, and closing the generator cancels the replays still running. A candidate that raises yields its pair with `error` and the replay goes on. Nothing is recorded and no label is written.
+Runs `candidate` on what the top-level runs of `agent` in `scope` were given and yields a `Replay` for each, oldest first by when the run started. `holdout` keeps the held-out runs, by the same hash and `holdout_percent` as `export`; `labeled` the runs with a `human` or `world` label; `tags` the runs whose tags contain these, as `delete_runs` matches; `fingerprint` the runs whose fingerprint equals it, all three parts; `limit` the first so many. Each replay is `candidate.run(agent, scope, …, record=False)` with the recorded input — parts read back as parts — the history (the messages sent before the input), the task and the `context`; a decision run replays its state, its task and its runtime questions as recorded, the rest of its questions coming from the candidate's folder, and when its route reached a generation run, that run's input, history and context. `expect`, `approve`, `tools` and `workspace` are passed to every replay. `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets. The candidate's tools run for real. At most `concurrency` replays run at once, and while a pair is being read at most `concurrency - 1` run, so with the default a replay starts when its pair is asked for. Pairs are yielded in that order either way, and closing the generator cancels the replays still running. A candidate that raises yields its pair with `error` and the replay goes on. Nothing is recorded and no label is written.
 
 Raises `InputError` when `scope` is empty, `holdout_percent` is outside 0 to 100, `tags` is empty, or `limit` or `concurrency` is below 1. Raises `NotFoundError` when the candidate has no agent `agent`. Each check happens when `replay` is called, before anything is read; a storage's `StorageError` is raised by the first pair.
 
@@ -1159,7 +1163,7 @@ An agent the tree does not have, a judge or a teacher included, or a run the ref
 class InputError(EngineException): ...
 ```
 
-A call the library refuses: an empty scope, tags outside their limits, media given to a decision agent, a media part with both or neither of `data` and `url`, a correction of the wrong shape, a tool called with bad arguments or a path outside its directory.
+A call the library refuses: an empty scope, tags outside their limits, runtime questions that do not fit or that the folder already asks, `questions` given to a generation agent, a decision run with nothing to ask, media given to a decision agent, a media part with both or neither of `data` and `url`, a correction of the wrong shape, a tool called with bad arguments or a path outside its directory.
 
 ### `ModelError`
 

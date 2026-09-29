@@ -119,7 +119,6 @@ CHECK = "---\ntype: check\n---\nIs it?\n"
 @pytest.mark.parametrize(
     ("front", "questions", "tools", "message"),
     [
-        ("kind: decision\n", {}, (), "decision agent 'a' has no questions/"),
         ("kind: decision\n", {"q": CHECK}, ("t",), "decision agent 'a' cannot declare tools/"),
         (
             "kind: decision\nworkspace: true\n",
@@ -332,3 +331,74 @@ def test_structure_in_frontmatter_is_an_object_or_a_list_of_json(tmp_path: Path,
     _agent(tmp_path, "d", "kind: decision\n", {"q": text})
     with pytest.raises(ConfigurationError, match="^frontmatter: invalid question "):
         load_agent(tmp_path / "d")
+
+
+def test_a_decision_agent_may_have_no_questions_of_its_own(tmp_path: Path) -> None:
+    _agent(tmp_path, "a", "kind: decision\n")
+    spec = load_agent(tmp_path / "a")
+    assert spec.questions == {} and spec.tasks == [] and spec.task_questions == {}
+
+
+def test_a_decision_agent_s_tasks_are_folders_of_questions(tmp_path: Path) -> None:
+    _agent(tmp_path, "a", "kind: decision\n", {"urgent": CHECK})
+    for task, qid, text in (
+        ("grade", "tone", CHECK),
+        ("grade", "pick", CHOICE),
+        ("sort", "q", CHECK),
+    ):
+        (tmp_path / "a" / "tasks" / task).mkdir(parents=True, exist_ok=True)
+        (tmp_path / "a" / "tasks" / task / f"{qid}.md").write_text(text)
+    (tmp_path / "a" / "tasks" / "_drafts").mkdir()
+    (tmp_path / "a" / "tasks" / "_drafts" / "x.md").write_text(CHECK)
+    (tmp_path / "a" / "tasks" / "_index.md").write_text("grade, sort\n")
+    spec = load_agent(tmp_path / "a")
+    assert spec.tasks == ["grade", "sort"] and set(spec.questions) == {"urgent"}
+    assert {task: sorted(qs) for task, qs in spec.task_questions.items()} == {
+        "grade": ["pick", "tone"],
+        "sort": ["q"],
+    }
+    assert isinstance(spec.task_questions["grade"]["pick"], Choice)
+
+
+def test_a_bad_question_in_a_task_is_refused_like_any_question_file(tmp_path: Path) -> None:
+    _agent(tmp_path, "a", "kind: decision\n")
+    (tmp_path / "a" / "tasks" / "grade").mkdir(parents=True)
+    (tmp_path / "a" / "tasks" / "grade" / "q.md").write_text(
+        "---\ntype: choice\noptions: {x: X}\n---\n?\n"
+    )
+    with pytest.raises(ConfigurationError, match="^tree: invalid question .*q.md"):
+        load_agent(tmp_path / "a")
+
+
+def test_a_decision_agent_s_task_is_a_folder_not_a_file(tmp_path: Path) -> None:
+    _agent(tmp_path, "a", "kind: decision\n", {"q": CHECK})
+    (tmp_path / "a" / "tasks").mkdir()
+    (tmp_path / "a" / "tasks" / "grade.md").write_text("Grade it.\n")
+    message = "^tree: decision agent 'a' keeps each task's questions in tasks/<task>/; got tasks/grade.md$"
+    with pytest.raises(ConfigurationError, match=message):
+        load_agent(tmp_path / "a")
+
+
+def test_a_routing_agent_declares_no_tasks(tmp_path: Path) -> None:
+    _agent(tmp_path, "a", "kind: decision\nroute: {by: q, to: {x: b}}\n", {"q": CHOICE})
+    (tmp_path / "a" / "tasks" / "grade").mkdir(parents=True)
+    (tmp_path / "a" / "tasks" / "grade" / "tone.md").write_text(CHECK)
+    message = "^tree: decision agent 'a' routes by its questions/, so it cannot declare tasks/$"
+    with pytest.raises(ConfigurationError, match=message):
+        load_agent(tmp_path / "a")
+
+
+@pytest.mark.parametrize(
+    "front",
+    ["kind: generation\nagents: [b]\n", "kind: decision\nroute: {by: q, to: {x: b}}\n"],
+)
+def test_a_route_or_a_delegation_reaches_only_a_decision_agent_with_questions_of_its_own(
+    tmp_path: Path, front: str
+) -> None:
+    _agent(tmp_path, "a", front, {"q": CHOICE} if "decision" in front else {})
+    _agent(tmp_path, "b", "kind: decision\n")
+    (tmp_path / "b" / "tasks" / "grade").mkdir(parents=True)
+    (tmp_path / "b" / "tasks" / "grade" / "tone.md").write_text(CHECK)
+    message = "^tree: agent 'a' reaches decision agent 'b', which has no questions/ of its own$"
+    with pytest.raises(ConfigurationError, match=message):
+        validate_tree(load_tree(tmp_path))

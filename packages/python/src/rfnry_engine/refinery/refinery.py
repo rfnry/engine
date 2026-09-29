@@ -59,7 +59,7 @@ def flatten(run: Run, recorded: datetime) -> list[RunRow]:
         parent_run_id=run.parent_run_id,
         agent=run.agent,
         kind=run.kind,
-        task=run.task if isinstance(run, Generation) else None,
+        task=run.task,
         at=run.at,
         recorded=recorded,
         duration_ms=run.duration_ms,
@@ -101,6 +101,11 @@ def read_back(row: RunRow, under: dict[str, list[RunRow]]) -> Run:
     if row.kind == "generation":
         return Generation.model_validate(body)
     return Decision.model_validate(body)
+
+
+def printed(row: RunRow) -> Fingerprint | None:
+    body = row.body.get("fingerprint")
+    return None if body is None else Fingerprint.model_validate(body)
 
 
 def label_of(row: LabelRow) -> Label:
@@ -371,7 +376,13 @@ class Refinery:
         if agent not in candidate.agents:
             raise NotFoundError(f"refinery: the candidate has no agent {agent!r}")
 
-        async def rerun(run: Run) -> Run:
+        async def rerun(recorded: Run) -> Run:
+            asked = (
+                {qid: recorded.questions[qid] for qid in recorded.runtime}
+                if isinstance(recorded, Decision) and recorded.runtime
+                else None
+            )
+            run = recorded
             while isinstance(run, Decision) and run.routed_to is not None:
                 run = run.routed_to
             if isinstance(run, Decision):
@@ -379,6 +390,8 @@ class Refinery:
                     agent,
                     scope,
                     run.state,
+                    task=run.task,
+                    questions=asked,
                     expect=expect,
                     approve=approve,
                     tools=tools,
@@ -391,6 +404,7 @@ class Refinery:
                 scope,
                 sent if isinstance(sent, list) else run.input,
                 task=run.task,
+                questions=asked,
                 history=run.messages[:-1],
                 context=run.context,
                 expect=expect,
@@ -454,14 +468,13 @@ class Refinery:
         limit: int | None,
     ) -> list[tuple[Run, list[Label]]]:
         rows = await self.storage.run_tree(scope, tags=tags)
-        wanted = fingerprint.model_dump() if fingerprint is not None else None
         tops = [
             row
             for row in rows
             if row.parent_run_id is None
             and row.agent == agent
             and (not holdout or is_holdout(row.run_id, holdout_percent=holdout_percent))
-            and (wanted is None or row.body.get("fingerprint") == wanted)
+            and (fingerprint is None or printed(row) == fingerprint)
         ]
         labels: dict[str, list[Label]] = {}
         if tops:

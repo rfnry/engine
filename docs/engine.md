@@ -228,8 +228,9 @@ and in `Delegate`'s description the names and descriptions of the agents it may 
 what varies per run and is not the agent — the input, the history, `context=`, `tags=` — so two
 runs of an unchanged folder share it and any edit changes it. The model is `run.model`; the code
 behind a tool is yours to version. A decision run carries one too, its `tools` the fingerprint of no
-tools, and each delegated or routed run carries its own. A run recorded before fingerprints were
-kept reads back with `None`.
+tools and its `questions` the questions it asked ([Decision agents](#decision-agents)), and each
+delegated or routed run carries its own. A run recorded before fingerprints were kept reads back
+with `None`.
 
 Keep the conversation yourself and pass it back. `run.conversation` is the history you passed, the
 input, every assistant turn — its text in `content`, its calls in `tool_calls`, its `reasoning` as
@@ -286,7 +287,8 @@ verdict = Verdict.model_validate_json(run.reply)
 An accepted `Output` ends the run. A call the model made after it in the same turn is not run; it is
 answered with an error saying so, so every call in `run.conversation` has its result.
 
-Name a task to put `tasks/<task>.md` in front of the model, pass `context=` to add facts about this
+Name a task to put `tasks/<task>.md` in front of the model — a decision agent's task is a set of
+questions instead, [below](#decision-agents) — pass `context=` to add facts about this
 tenant that do not belong in the tree — the record keeps it as `run.context` — and pass `on_event=`
 to receive text deltas, tool starts and tool results as they happen:
 
@@ -378,7 +380,10 @@ await refinery.review("acme", run.run_id, Review(stance="objection", correction=
 
 ### Decision agents
 
-A decision agent is a directory of questions:
+A decision model is a discriminative model: given a state and questions whose answers you define,
+it returns the probability of each answer — as a generation model is generative, producing text.
+What you use the answers for is yours: classify, score, check, extract among candidates, annotate,
+grade, route. A decision agent is a directory of questions, asked together in one call:
 
 ```
 agents/
@@ -432,10 +437,7 @@ options:
 ---
 ```
 
-Run it with a state instead of a message. The state can be a string, an object or a list. A
-decision model reads text: a list of parts made only of `Text` is joined with newlines into the
-state, and any other part is an `InputError` before the model is called
-(`engine: decision agent 'triage' takes text only; got image`).
+Run it with a state: a string, an object or a list.
 
 ```python
 engine = Engine(root=Path("agents"), decision=dm)
@@ -446,12 +448,63 @@ run.answers["severity"].score         # 3.0
 run.answers["severity"].confidence    # 0.87
 ```
 
-Every question in the directory is answered in the same call, in parallel and in isolation: adding
-a question changes neither the others' answers nor, noticeably, the latency. An engine with only a
-decision model needs no tool bodies; the tree's generation agents are the ones it cannot run.
+Every question is answered in the same call, in parallel and in isolation: adding a question
+changes neither the others' answers nor, noticeably, the latency. An engine with only a decision
+model needs no tool bodies; the tree's generation agents are the ones it cannot run.
+
+Some answer spaces are known only when the run starts: the children of the node a walk chose last,
+the candidates a search returned, the skills an agent has today. Pass those questions as
+`questions=`, ids to `Choice`, `Score` or `Check` — or anything with their fields — and they are
+asked with the folder's, in the same call. The record keeps every question asked, and
+`run.runtime` names the ids that came at run time:
+
+```python
+products = Choice(
+    instructions="Which product is the message about?",
+    options={"desk-120": {"what": "Standing desk, 120 cm"}, "desk-160": {"what": "Standing desk, 160 cm"}},
+)
+run = await engine.run("triage", scope="acme", input=text, questions={"product": products})
+run.answers["product"].choice, run.answers["urgent"].probability
+run.runtime                           # ["product"]
+```
+
+A runtime question holds what a question file holds — a choice needs two options, a score two
+levels, and structure is JSON — and one that does not, an id the folder already asks, or
+`questions=` given to a generation agent is an `InputError`. A decision agent may have no
+`questions/` at all and ask only what each run brings; a run with nothing to ask is an
+`InputError`.
+
+A decision agent's task is a named set of questions: `tasks/<task>/` holds question files as
+`questions/` does, and `task=` asks that set instead of `questions/`, runtime questions beside it.
+A task the agent does not have is a `ConfigurationError`, as for a generation agent:
+
+```
+agents/
+  grader/
+    AGENT.md
+    questions/grounded.md
+    tasks/tone/polite.md
+    tasks/tone/register.md
+```
+
+```python
+run = await engine.run("grader", scope="acme", input={"reply": "Thanks, all sorted!"}, task="tone")
+run.task, sorted(run.questions)       # "tone", ["polite", "register"]
+```
+
+`run.fingerprint.questions` is a short sha256 over the questions the run asked — the folder's, the
+task's and the runtime ones alike — as JSON ordered by question id, each question's fields as they
+were asked and its options and levels in their order, since the order can change which answer a
+model favours. Two runs that asked the same questions share it; a changed word, option or order
+changes it. A generation run's is `None`. With `fingerprint.agent` for the folder, it tells two
+versions of a decision apart even when the questions came at run time.
+
+A decision model reads text: a list of parts made only of `Text` is joined with newlines into the
+state, and any other part is an `InputError` before the model is called
+(`engine: decision agent 'triage' takes text only; got image`).
 
 Everything beyond the answers — weighing several, confirming with a person below a threshold,
-escalating — is your code over the returned `Decision`. The library gives you the answers; it does
+acting — is your code over the returned `Decision`. The library gives you the answers; it does
 not make the call.
 
 ### Nesting
@@ -468,6 +521,11 @@ tool errors, and the run continues.
 
 ### Both kinds together
 
+The two kinds call each other. A generation agent asks a decision agent through `Delegate`, as in
+[Nesting](#nesting), and a decision agent can hand its run to another agent by one of its answers:
+a route. One choice question in `questions/`, one table from its options to agents, an optional
+confidence floor:
+
 ```
 agents/
   frontdesk/    kind: decision   route: {by: intent, to: {billing: billing, technical: support}}
@@ -475,8 +533,6 @@ agents/
   billing/      kind: generation
   triage/       kind: decision   questions: urgent (check), severity (score)
 ```
-
-A decision agent can route. One choice question, one table, an optional confidence floor:
 
 ```markdown
 ---
@@ -502,8 +558,8 @@ Which department should handle this message?
 ```
 
 When the chosen option maps to an agent and confidence clears the floor, that agent runs with
-everything the run was given — the same input, parts included, `history`, `context`, `expect`, `tools`, `workspace`,
-`on_event`, `stop`, `inbox` and `tags`; a decision agent itself takes no `task`. The routed run is attached:
+everything the run was given — the same input, parts included, `history`, `context`, `expect`,
+`tools`, `workspace`, `on_event`, `stop`, `inbox` and `tags` — and the routed run is attached:
 
 ```python
 engine = Engine(root, generation=llm, decision=dm, tools=tools)
@@ -513,6 +569,12 @@ run.answers["intent"].choice            # "technical"
 run.routed_to.agent                     # "support" — the generation agent that answered
 run.routed_to.children[0].agent         # "triage" — the decision agent support consulted mid-task
 ```
+
+A route is by a question of the router's own folder, so a runtime question cannot drive it and a
+routing agent declares no `tasks/`; runtime questions are the router's, asked beside `intent` and
+not passed on. The run a route or a `Delegate` starts asks the questions of its own folder, so it
+must have some: a route or an `agents:` entry that reaches a decision agent with no `questions/` is
+a `ConfigurationError` when the tree loads.
 
 One message, four model calls, one record. With only `generation=` the same tree runs its
 generation agents and refuses the decision ones; with only `decision=` the reverse, and a decision
@@ -740,11 +802,12 @@ datasets:
 | --- | --- | --- |
 | `generation` | generation run | task, context, tags, model, fingerprint, system, messages, tools, conversation, steps, reply, stopped, usage, every label |
 | `preference` | human correction | tags, fingerprint, prompt, chosen (the correction), rejected (the reply) |
-| `decision` | question of a decision run | tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
+| `decision` | question of a decision run | task, tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
 
 Every row carries its run's `tags`, `{}` for a run that had none or was recorded before tags were
-kept, and its `fingerprint`, `{"agent": …, "tools": …}` or `null` for a run recorded before
-fingerprints were kept; group or filter the rows by them in your own code.
+kept, and its `fingerprint`, `{"agent": …, "tools": …, "questions": …}` or `null` for a run recorded
+before fingerprints were kept — `questions` is `null` for a generation run and for a decision run
+recorded before it was kept; group or filter the rows by them in your own code.
 
 The first two are a generation agent's episodes and the corrections people made to them. A
 generation row's `tools` is what the model was offered — `{name, description, input_schema}` each —
@@ -789,11 +852,14 @@ async for pair in refinery.replay("acme", candidate, agent="support", holdout=Tr
 It replays the top-level runs of `agent` in the scope, oldest first. `holdout=True` keeps the
 held-out ones, by the same hash and `holdout_percent` as `export`; `labeled=True` those a person
 reviewed or the world reported on; `tags=` those whose tags contain these, as `delete_runs`
-matches; `fingerprint=` the runs one version produced — the `run.fingerprint` of any of them;
-`limit=` the first so many. Each is `candidate.run(agent, scope, …, record=False)` with the recorded input —
-parts as parts — the history sent before it, the task and the `context`, so the candidate sees
-what the recorded run saw. A decision run replays its state; when its route reached a generation
-run, that run's input, history and context go too. What a record does not keep is yours to pass
+matches; `fingerprint=` the runs one version produced — the `run.fingerprint` of any of them, its
+`agent`, `tools` and `questions` all equal; `limit=` the first so many. Each is
+`candidate.run(agent, scope, …, record=False)` with the recorded input — parts as parts — the
+history sent before it, the task and the `context`, so the candidate sees what the recorded run
+saw. A decision run replays its state and its task, and asks its runtime questions again as they
+were recorded while the questions of its folder come from the candidate's folder — a runtime id the
+candidate's folder now asks fails that pair; when its route reached a generation run, that run's
+input, history and context go too. What a record does not keep is yours to pass
 again — `expect=`, `approve=`, and the `tools=` and `workspace=` the runs were given. The candidate
 delegates and routes as it does, so a run with children replays as one run. A run recorded before
 `context` was kept replays without it.
@@ -1062,7 +1128,9 @@ Everything the package exports, by role.
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
 `AGENT.md`, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
 (`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), a question
-with instructions both in its frontmatter and in its body or in neither, a tool
+with instructions both in its frontmatter and in its body or in neither, a decision agent with a
+file straight in `tasks/` or a routing one with `tasks/`, a route or `agents:` entry that reaches a
+decision agent with no `questions/`, a tool
 declared without a body or given without a declaration, a run of an agent whose kind of model is
 absent, an unknown task, a missing workspace, a `Workspace` root that is not a
 directory, a `Workspace` with neither `sandbox=` nor `unsandboxed=True` or with both, an unsandboxed
@@ -1071,8 +1139,10 @@ shell not on `PATH`, a `sandbox` or `shell` that is not a list of strings, a `ma
 returns anything but `True` or `False`, a judge that is not a decision agent or a teacher that is
 not a generation agent. `NotFoundError` for an agent the tree does not have — a judge, a teacher
 or a replay's agent in the candidate included — or a run the refinery does not.
-`InputError` for a call the library refuses: an empty scope, a `task` for a decision agent, tags
-outside their limits, media given to a decision agent, a media part with both or neither of `data` and `url`, a
+`InputError` for a call the library refuses: an empty scope, tags
+outside their limits, runtime questions that do not fit, an id the folder already asks,
+`questions=` for a generation agent, a decision run with no question to ask, media given to a
+decision agent, a media part with both or neither of `data` and `url`, a
 correction of the wrong shape or for a question the run was not asked, a `delete_runs` or
 `verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an
 `export` or a `replay` given a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or

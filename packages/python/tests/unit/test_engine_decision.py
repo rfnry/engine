@@ -177,10 +177,14 @@ async def test_foreign_answers_alone_are_accepted_and_still_validated(fixtures: 
         )
 
 
-async def test_a_decision_agent_takes_no_task(fixtures: Path) -> None:
-    engine = Engine(fixtures, decision=Fixed(_intent("other", 0.9)), tools=TOOLS)
-    with pytest.raises(InputError, match="^engine: decision agent 'frontdesk' takes no task$"):
+async def test_a_routing_agent_has_no_tasks_so_a_task_run_of_it_is_refused(fixtures: Path) -> None:
+    dm = Fixed(_intent("other", 0.9))
+    engine = Engine(fixtures, generation=Scripted(), decision=dm, tools=TOOLS)
+    with pytest.raises(
+        ConfigurationError, match="^engine: decision agent 'frontdesk' has no task 'triage'$"
+    ):
         await engine.run("frontdesk", "acme", "x", task="triage")
+    assert dm.calls == []
 
 
 class Verdict(BaseModel):

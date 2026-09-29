@@ -171,6 +171,13 @@ def tree(root: Path) -> None:
     write(root / "triage/AGENT.md", agent("triage", "decision"))
     write(root / "triage/questions/urgent.md", markdown("type: check"))
     write(root / "triage/questions/severity.md", markdown("type: score"))
+    write(root / "grader/AGENT.md", agent("grader", "decision"))
+    write(root / "grader/questions/grounded.md", question("check"))
+    write(root / "grader/tasks/tone/polite.md", question("check"))
+    write(
+        root / "grader/tasks/tone/register.md",
+        question("choice", "options: {formal: Formal, casual: Casual}\n"),
+    )
     write(root / "judge/AGENT.md", agent("judge", "decision"))
     write(root / "judge/questions/grounded.md", question("check"))
     write(root / "judge/questions/rule.md", question("check"))

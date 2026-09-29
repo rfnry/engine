@@ -67,6 +67,28 @@ class Fixed:
         return dict(self.answers)
 
 
+def answer_to(question: QuestionLike) -> Answer:
+    if question.type == "choice":
+        *rest, last = question.options
+        share = 0.2 / len(rest)
+        return ChoiceAnswer(choice=last, probabilities={**dict.fromkeys(rest, share), last: 0.8})
+    if question.type == "score":
+        n = len(question.levels)
+        return ScoreAnswer(score=(n - 1) / 2, probabilities=[1 / n] * n)
+    return CheckAnswer(probability=0.9)
+
+
+class Answering:
+    def __init__(self) -> None:
+        self.calls: list[tuple[State, dict[str, QuestionLike]]] = []
+
+    async def decide(
+        self, state: State, questions: Mapping[str, QuestionLike]
+    ) -> dict[str, Answer]:
+        self.calls.append((state, dict(questions)))
+        return {qid: answer_to(question) for qid, question in questions.items()}
+
+
 def text_reply(text: str, **kwargs: Any) -> Reply:
     return Reply(text=text, stop_reason="end_turn", **kwargs)
 

@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.models import Message, Reply, ToolCall
+from rfnry_engine.models import Check, Choice, Message, Question, Reply, Score, ToolCall
 from rfnry_engine.records import Decision, Fingerprint, Generation
 from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Review
@@ -17,6 +17,7 @@ from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import (
     TOOLS,
+    Answering,
     Desk,
     MemoryBucket,
     Scripted,
@@ -29,6 +30,12 @@ from .fakes import (
 )
 
 NO_TOOLS = hashlib.sha256(b"[]").hexdigest()[:16]
+
+
+def asked(questions: dict[str, Question]) -> str:
+    ordered = {qid: questions[qid].model_dump(mode="json") for qid in sorted(questions)}
+    canonical = json.dumps(ordered, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
 def tree(fixtures: Path, tmp_path: Path) -> Path:
@@ -197,7 +204,9 @@ async def test_a_decision_run_and_every_nested_run_carry_their_own(fixtures: Pat
     assert isinstance(parent, Generation) and parent.fingerprint is not None
     [child] = parent.children
     assert isinstance(child, Decision) and child.fingerprint is not None
-    assert child.fingerprint == Fingerprint(agent=by_hand(fixtures / "triage"), tools=NO_TOOLS)
+    assert child.fingerprint == Fingerprint(
+        agent=by_hand(fixtures / "triage"), tools=NO_TOOLS, questions=asked(child.questions)
+    )
     assert parent.fingerprint.agent == by_hand(fixtures / "support")
     routed = await engine(fixtures).run("frontdesk", "acme", "It is down")
     assert isinstance(routed, Decision) and routed.fingerprint is not None
@@ -270,3 +279,110 @@ async def test_a_tool_call_does_not_move_the_fingerprint(fixtures: Path) -> None
     )
     called = await engine_.run("support", "acme", "Where is A-1?")
     assert called.fingerprint == (await generation(fixtures)).fingerprint
+
+
+AREA = Choice(
+    instructions={"question": "Which area?", "within": "orders"},
+    options={"delivery": {"what": "Parcels", "examples": ["Where is it?"]}, "returns": None},
+)
+
+
+def triage(fixtures: Path, root: Path | None = None) -> Engine:
+    return Engine(root or fixtures, decision=Answering())
+
+
+async def test_a_decision_run_s_questions_part_is_the_questions_it_asked(fixtures: Path) -> None:
+    folder = await triage(fixtures).run("triage", "acme", "It is down")
+    both = await triage(fixtures).run("triage", "acme", "It is down", questions={"area": AREA})
+    assert isinstance(folder, Decision) and isinstance(both, Decision)
+    assert folder.fingerprint is not None and both.fingerprint is not None
+    assert folder.fingerprint.questions == asked(folder.questions)
+    assert both.fingerprint.questions == asked(both.questions)
+    assert len(folder.fingerprint.questions or "") == 16
+    assert folder.fingerprint.questions != both.fingerprint.questions
+    assert folder.fingerprint.agent == both.fingerprint.agent
+    assert folder.fingerprint.tools == both.fingerprint.tools == NO_TOOLS
+
+
+async def test_the_questions_part_is_stable_across_runs_loads_and_the_order_questions_come_in(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    other = Check(instructions="Is the customer angry?")
+    loaded = triage(fixtures)
+    first = await loaded.run("triage", "acme", "a", questions={"area": AREA, "angry": other})
+    again = await loaded.run("triage", "acme", "b", questions={"angry": other, "area": AREA})
+    elsewhere = await triage(fixtures, root).run(
+        "triage", "acme", "c", questions={"area": AREA.model_copy(), "angry": other}
+    )
+    assert first.fingerprint is not None and first.fingerprint.questions is not None
+    assert first.fingerprint == again.fingerprint == elsewhere.fingerprint
+
+
+def _print(run: object) -> str | None:
+    assert isinstance(run, Decision) and run.fingerprint is not None
+    return run.fingerprint.questions
+
+
+async def test_the_questions_part_changes_with_a_question_its_options_or_their_order(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    engine_ = triage(fixtures, root)
+    base = _print(await engine_.run("triage", "acme", "x", questions={"area": AREA}))
+    variants = [
+        AREA.model_copy(update={"options": dict(reversed(list(AREA.options.items())))}),
+        AREA.model_copy(update={"options": {**AREA.options, "returns": "Sending it back"}}),
+        AREA.model_copy(update={"instructions": {"within": "orders", "question": "Which area?"}}),
+        AREA.model_copy(update={"instructions": "Which area?"}),
+    ]
+    prints = [
+        _print(await engine_.run("triage", "acme", "x", questions={"area": variant}))
+        for variant in variants
+    ]
+    renamed = _print(await engine_.run("triage", "acme", "x", questions={"zone": AREA}))
+    assert len({base, *prints, renamed}) == 6
+    (root / "triage/questions/urgent.md").write_text("---\ntype: check\n---\nIs it urgent?\n")
+    edited = triage(fixtures, root)
+    assert _print(await edited.run("triage", "acme", "x", questions={"area": AREA})) != base
+    levels = Score(instructions="How bad?", levels=["Mild", "Severe"])
+    reordered = Score(instructions="How bad?", levels=["Severe", "Mild"])
+    assert _print(
+        await engine_.run("triage", "acme", "x", questions={"area": AREA, "bad": levels})
+    ) != _print(
+        await engine_.run("triage", "acme", "x", questions={"area": AREA, "bad": reordered})
+    )
+
+
+async def test_a_generation_run_has_no_questions_part(fixtures: Path) -> None:
+    run = await generation(fixtures)
+    assert run.fingerprint is not None and run.fingerprint.questions is None
+
+
+async def test_the_questions_part_is_recorded_exported_and_old_rows_read_back_without_it(
+    fixtures: Path,
+) -> None:
+    storage = InMemoryStorage()
+    refinery = Refinery(storage)
+    run = await Engine(fixtures, decision=Desk(), refinery=refinery).run("triage", "acme", "x")
+    assert isinstance(run, Decision) and run.fingerprint is not None
+    assert (await refinery.run("acme", run.run_id)).fingerprint == run.fingerprint
+    old = decision_record(run_id="old")
+    [stored] = flatten(old, datetime.now(UTC))
+    body = {**stored.body, "fingerprint": {"agent": "a" * 16, "tools": NO_TOOLS}}
+    await storage.put_run("acme", stored.model_copy(update={"body": body}))
+    read = await refinery.run("acme", "old")
+    assert read.fingerprint == Fingerprint(agent="a" * 16, tools=NO_TOOLS, questions=None)
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    rows = {
+        row["run_id"]: row
+        for data in bucket.objects.values()
+        for row in map(json.loads, data.decode().splitlines())
+    }
+    assert rows[run.run_id]["fingerprint"] == {
+        "agent": run.fingerprint.agent,
+        "tools": NO_TOOLS,
+        "questions": run.fingerprint.questions,
+    }
+    assert rows["old"]["fingerprint"] == {"agent": "a" * 16, "tools": NO_TOOLS, "questions": None}

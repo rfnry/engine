@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from unit.fakes import (
     TOOLS,
+    Answering,
     Desk,
     MemoryBucket,
     Scripted,
@@ -20,6 +21,7 @@ from rfnry_engine.errors import NotFoundError, StorageError
 from rfnry_engine.models import (
     Check,
     CheckAnswer,
+    Choice,
     Document,
     Image,
     Message,
@@ -650,3 +652,63 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     assert await replayed(limit=2) == [first.run_id, second.run_id]
     assert await storage.count_scope("a") == counted
     assert [p async for p in refinery.replay("b", candidate, agent="support")] == []
+
+
+AREA = Choice(
+    instructions={"question": "Which area?", "within": "orders"},
+    options={"returns": None, "delivery": {"what": "Parcels", "examples": ["Late"]}},
+)
+
+
+def grader(root: Path, urgent: str = "Is it urgent?") -> Path:
+    for path, text in {
+        "grader/AGENT.md": "---\nname: grader\nkind: decision\n---\n",
+        "grader/questions/urgent.md": f"---\ntype: check\n---\n{urgent}\n",
+        "grader/tasks/tone/polite.md": "---\ntype: check\n---\nPolite?\n",
+    }.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text, encoding="utf-8")
+    return root
+
+
+async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_replay(
+    storage: Storage, tmp_path: Path
+) -> None:
+    refinery = Refinery(storage)
+    engine = Engine(grader(tmp_path / "old"), decision=Answering(), refinery=refinery)
+    asked = await engine.run("grader", "a", "x", task="tone", questions={"area": AREA})
+    plain = await engine.run("grader", "a", "y")
+    assert isinstance(asked, Decision) and asked.fingerprint is not None
+    again = await refinery.run("a", asked.run_id)
+    assert again == asked and isinstance(again, Decision)
+    assert again.task == "tone" and again.runtime == ["area"]
+    assert list(again.questions) == ["polite", "area"]
+    assert list(again.questions["area"].model_dump()["options"]) == ["returns", "delivery"]
+    [row] = await storage.runs("a", run_ids=[asked.run_id])
+    assert row.task == "tone"
+    bucket = MemoryBucket()
+    await refinery.export("a", bucket)
+    rows = [
+        json.loads(line)
+        for key, data in bucket.objects.items()
+        if "/decision/" in key
+        for line in data.decode().splitlines()
+    ]
+    mine = [r for r in rows if r["run_id"] == asked.run_id]
+    assert {r["question_id"] for r in mine} == {"polite", "area"}
+    assert all(r["task"] == "tone" for r in mine)
+    assert all(r["fingerprint"] == asked.fingerprint.model_dump() for r in mine)
+    dm = Answering()
+    candidate = Engine(grader(tmp_path / "new", "Due today?"), decision=dm)
+    pairs = [
+        p
+        async for p in refinery.replay(
+            "a", candidate, agent="grader", fingerprint=asked.fingerprint
+        )
+    ]
+    assert [pair.recorded.run_id for pair in pairs] == [asked.run_id]
+    [(_, sent)] = dm.calls
+    expected: dict[str, Any] = {"polite": Check(instructions="Polite?"), "area": AREA}
+    assert sent == expected
+    assert plain.fingerprint is not None
+    assert plain.fingerprint.questions != asked.fingerprint.questions

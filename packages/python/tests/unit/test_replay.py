@@ -12,7 +12,9 @@ from pydantic import BaseModel
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, NotFoundError
 from rfnry_engine.models import (
+    Check,
     CheckAnswer,
+    Choice,
     Image,
     Message,
     Reply,
@@ -30,7 +32,16 @@ from rfnry_engine.refinery.storage import LabelRow
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Workspace
 
-from .fakes import TOOLS, Desk, Fixed, Scripted, delegate_triage, generation_record, text_reply
+from .fakes import (
+    TOOLS,
+    Answering,
+    Desk,
+    Fixed,
+    Scripted,
+    delegate_triage,
+    generation_record,
+    text_reply,
+)
 
 BASE = datetime(2026, 9, 1, tzinfo=UTC)
 
@@ -531,3 +542,93 @@ async def test_a_bad_call_is_refused_before_anything_is_read(fixtures: Path) -> 
         refinery.replay("acme", engine, agent="support", tags={})
     with pytest.raises(NotFoundError, match="^refinery: the candidate has no agent 'ghost'$"):
         refinery.replay("acme", engine, agent="ghost")
+
+
+def graded(root: Path, urgent: str = "Is it urgent?") -> Path:
+    for path, text in {
+        "grader/AGENT.md": "---\nname: grader\nkind: decision\n---\n",
+        "grader/questions/urgent.md": f"---\ntype: check\n---\n{urgent}\n",
+        "grader/tasks/tone/polite.md": f"---\ntype: check\n---\n{urgent} Polite?\n",
+    }.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text, encoding="utf-8")
+    return root
+
+
+AREA = Choice(
+    instructions={"question": "Which area?", "within": "orders"},
+    options={"delivery": {"what": "Parcels", "examples": ["Late"]}, "returns": None},
+)
+
+
+async def test_a_decision_replay_re_asks_runtime_questions_as_recorded_and_the_folder_from_the_candidate(
+    tmp_path: Path,
+) -> None:
+    refinery = Refinery(InMemoryStorage())
+    recorder = Engine(graded(tmp_path / "old"), decision=Answering(), refinery=refinery)
+    asked = await recorder.run("grader", "acme", "x", questions={"area": AREA})
+    tasked = await recorder.run("grader", "acme", "y", task="tone", questions={"area": AREA})
+    plain = await recorder.run("grader", "acme", "z")
+    dm = Answering()
+    candidate_ = Engine(graded(tmp_path / "new", "Must it be done today?"), decision=dm)
+    pairs = await collect(refinery.replay("acme", candidate_, agent="grader"))
+    assert [pair.error for pair in pairs] == [None, None, None]
+    first, second, third = (pair.candidate for pair in pairs)
+    assert isinstance(first, Decision) and isinstance(second, Decision)
+    assert isinstance(third, Decision)
+    assert first.questions == {
+        "urgent": Check(instructions="Must it be done today?"),
+        "area": AREA,
+    }
+    assert first.runtime == ["area"] and first.state == "x"
+    assert second.task == "tone" and second.runtime == ["area"]
+    assert second.questions == {
+        "polite": Check(instructions="Must it be done today? Polite?"),
+        "area": AREA,
+    }
+    assert third.runtime == [] and set(third.questions) == {"urgent"}
+    assert [call[1] for call in dm.calls] == [first.questions, second.questions, third.questions]
+    for recorded, pair in zip((asked, tasked, plain), pairs, strict=True):
+        assert isinstance(recorded, Decision) and isinstance(pair.candidate, Decision)
+        assert recorded.fingerprint is not None and pair.candidate.fingerprint is not None
+        assert recorded.fingerprint.agent != pair.candidate.fingerprint.agent
+        assert recorded.fingerprint.questions != pair.candidate.fingerprint.questions
+
+
+async def test_a_runtime_question_the_candidate_s_folder_now_holds_fails_its_pair(
+    tmp_path: Path,
+) -> None:
+    refinery = Refinery(InMemoryStorage())
+    recorder = Engine(graded(tmp_path / "old"), decision=Answering(), refinery=refinery)
+    await recorder.run("grader", "acme", "x", questions={"area": AREA})
+    root = graded(tmp_path / "new")
+    (root / "grader/questions/area.md").write_text("---\ntype: check\n---\nOrders?\n")
+    [pair] = await collect(
+        refinery.replay("acme", Engine(root, decision=Answering()), agent="grader")
+    )
+    assert pair.candidate is None
+    assert pair.error == (
+        "InputError: engine: decision agent 'grader' already asks 'area' from its folder"
+    )
+
+
+async def test_a_fingerprint_selects_decision_runs_by_all_three_parts(tmp_path: Path) -> None:
+    refinery = Refinery(InMemoryStorage())
+    recorder = Engine(graded(tmp_path), decision=Answering(), refinery=refinery)
+    folder = await recorder.run("grader", "acme", "x")
+    runtime = await recorder.run("grader", "acme", "x", questions={"area": AREA})
+    again = await recorder.run("grader", "acme", "y", questions={"area": AREA})
+    tasked = await recorder.run("grader", "acme", "x", task="tone")
+    prints = [run.fingerprint for run in (folder, runtime, tasked)]
+    assert all(p is not None for p in prints)
+    assert len({p.agent for p in prints if p is not None}) == 1
+    assert len({p.questions for p in prints if p is not None}) == 3
+    engine = Engine(graded(tmp_path), decision=Answering())
+    for run, expected in ((folder, [folder]), (runtime, [runtime, again]), (tasked, [tasked])):
+        pairs = await collect(
+            refinery.replay("acme", engine, agent="grader", fingerprint=run.fingerprint)
+        )
+        assert [pair.recorded.run_id for pair in pairs] == [r.run_id for r in expected]
+    assert runtime.fingerprint is not None
+    unasked = runtime.fingerprint.model_copy(update={"questions": None})
+    assert await collect(refinery.replay("acme", engine, agent="grader", fingerprint=unasked)) == []

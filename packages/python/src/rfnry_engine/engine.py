@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Annotated, Any, Protocol, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
@@ -20,7 +20,7 @@ from rfnry_engine.errors import (
     NotFoundError,
     RunawayError,
 )
-from rfnry_engine.fingerprint import tools_fingerprint
+from rfnry_engine.fingerprint import questions_fingerprint, tools_fingerprint
 from rfnry_engine.models import (
     ChoiceAnswer,
     Content,
@@ -29,6 +29,8 @@ from rfnry_engine.models import (
     GenerationModel,
     Message,
     Part,
+    Question,
+    QuestionLike,
     Reply,
     State,
     StreamingGenerationModel,
@@ -74,6 +76,7 @@ class _Options:
     inbox: asyncio.Queue[Any] | None = None
     tags: dict[str, str] = field(default_factory=dict)
     approve: Approve | None = None
+    questions: Mapping[str, Question] = field(default_factory=dict)
 
 
 class AgentInfo(BaseModel):
@@ -93,6 +96,7 @@ class Recorder(Protocol):
 
 PART = TypeAdapter[Part](Part)
 HISTORY = TypeAdapter(list[Message])
+QUESTIONS = TypeAdapter(dict[str, Annotated[Question, Field(discriminator="type")]])
 PART_TYPES = ("text", "image", "audio", "document")
 MAX_TAGS = 32
 MAX_TAG_KEY = 64
@@ -124,6 +128,22 @@ def _history(value: Sequence[object] | None) -> list[Message]:
         raise InputError(
             f"engine: history does not fit the contract: {exc.errors(include_url=False)}"
         ) from exc
+
+
+def _questions(value: Mapping[str, QuestionLike] | None) -> dict[str, Question]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise InputError("engine: questions must map question ids to questions")
+    try:
+        asked = QUESTIONS.validate_python(dict(value), from_attributes=True)
+    except ValidationError as exc:
+        raise InputError(
+            f"engine: questions do not fit the contract: {exc.errors(include_url=False)}"
+        ) from exc
+    if not all(asked):
+        raise InputError("engine: a question id must be a non-empty string")
+    return asked
 
 
 def _tags(value: Mapping[str, str] | None) -> dict[str, str]:
@@ -237,6 +257,7 @@ class Engine:
         input: State,
         *,
         task: str | None = None,
+        questions: Mapping[str, QuestionLike] | None = None,
         history: Sequence[object] | None = None,
         context: str | None = None,
         expect: type[BaseModel] | None = None,
@@ -252,8 +273,8 @@ class Engine:
         if not scope:
             raise InputError("engine: scope is required")
         spec = self._spec(agent)
-        if task is not None and spec.kind == "decision":
-            raise InputError(f"engine: decision agent {agent!r} takes no task")
+        if questions is not None and spec.kind == "generation":
+            raise InputError(f"engine: generation agent {agent!r} takes no questions")
         options = _Options(
             task=task,
             history=_history(history),
@@ -266,6 +287,7 @@ class Engine:
             inbox=inbox,
             tags=_tags(tags),
             approve=approve,
+            questions=_questions(questions),
         )
         run = await self._run(spec, scope, input, options, None)
         if record and self.refinery is not None:
@@ -338,11 +360,27 @@ class Engine:
                 f"engine: agent {spec.name!r} is a decision agent; no decision model was configured"
             )
         self._check_routes(spec, set())
+        folder = spec.questions
+        if options.task is not None:
+            if options.task not in spec.task_questions:
+                raise ConfigurationError(
+                    f"engine: decision agent {spec.name!r} has no task {options.task!r}"
+                )
+            folder = spec.task_questions[options.task]
+        clash = [qid for qid in options.questions if qid in folder]
+        if clash:
+            raise InputError(
+                f"engine: decision agent {spec.name!r} already asks {', '.join(map(repr, clash))} from its folder"
+            )
+        questions = {**folder, **options.questions}
+        if not questions:
+            raise InputError(
+                f"engine: decision agent {spec.name!r} has no questions to ask; pass questions="
+            )
         state = _state(spec, input)
         run_id = uuid4().hex
         started = time.monotonic()
         at = _now()
-        questions = dict(spec.questions)
         decided = as_decided(await model_.decide(state, questions))
         answers = settle(questions, decided.answers)
         routed: Run | None = None
@@ -352,19 +390,24 @@ class Engine:
             target = route.to.get(answer.choice) if isinstance(answer, ChoiceAnswer) else None
             floor = route.min_confidence
             if target is not None and (floor is None or answer.confidence >= floor):
-                routed = await self._run(self._agents[target], scope, input, options, run_id)
+                forwarded = replace(options, questions={})
+                routed = await self._run(self._agents[target], scope, input, forwarded, run_id)
         return Decision(
             run_id=run_id,
             parent_run_id=parent_run_id,
             agent=spec.name,
             scope=scope,
             tags=dict(options.tags),
+            task=options.task,
             at=at,
             duration_ms=int((time.monotonic() - started) * 1000),
             model=decided.model,
-            fingerprint=Fingerprint(agent=spec.fingerprint, tools=NO_TOOLS),
+            fingerprint=Fingerprint(
+                agent=spec.fingerprint, tools=NO_TOOLS, questions=questions_fingerprint(questions)
+            ),
             state=state,
             questions=questions,
+            runtime=list(options.questions),
             answers=answers,
             usage=decided.usage or Usage(),
             routed_to=routed,

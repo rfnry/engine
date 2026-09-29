@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from rfnry_engine.errors import InputError
 from rfnry_engine.jail import Jail
-from rfnry_engine.models import ToolSpec
+from rfnry_engine.models import Question, ToolSpec
 
 SHORT = 16
 
@@ -42,6 +43,15 @@ def tools_fingerprint(tools: list[ToolSpec]) -> str:
     canonical = json.dumps(
         [tool.model_dump(mode="json") for tool in sorted(tools, key=lambda tool: tool.name)],
         sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:SHORT]
+
+
+def questions_fingerprint(questions: Mapping[str, Question]) -> str:
+    canonical = json.dumps(
+        {qid: questions[qid].model_dump(mode="json") for qid in sorted(questions)},
         separators=(",", ":"),
         ensure_ascii=False,
     )

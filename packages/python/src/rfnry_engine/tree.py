@@ -78,6 +78,7 @@ class AgentSpec(BaseModel):
     tasks: list[str]
     fingerprint: str
     workspace: bool = False
+    task_questions: dict[str, dict[str, Question]] = Field(default_factory=dict)
 
 
 def _read(path: Path) -> str:
@@ -132,6 +133,18 @@ def _markdown_files(directory: Path) -> list[Path]:
     )
 
 
+def _folders(directory: Path) -> list[Path]:
+    if not directory.is_dir():
+        return []
+    return sorted(
+        p for p in directory.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))
+    )
+
+
+def _questions(directory: Path) -> dict[str, Question]:
+    return {p.stem: _question(p) for p in _markdown_files(directory)}
+
+
 def load_agent(directory: Path) -> AgentSpec:
     front, body = parse_frontmatter_doc(
         _read(directory / "AGENT.md"),
@@ -143,11 +156,21 @@ def load_agent(directory: Path) -> AgentSpec:
         raise ConfigurationError(
             f"tree: agent {front.name!r} must live in a directory named {front.name!r}: {directory}"
         )
-    questions = {p.stem: _question(p) for p in _markdown_files(directory / "questions")}
+    questions = _questions(directory / "questions")
     tools = {p.stem: _tool_decl(p) for p in _markdown_files(directory / "tools")}
     tasks = [p.stem for p in _markdown_files(directory / "tasks")]
-    if front.kind == "decision" and not questions:
-        raise ConfigurationError(f"tree: decision agent {front.name!r} has no questions/")
+    task_questions: dict[str, dict[str, Question]] = {}
+    if front.kind == "decision":
+        if tasks:
+            raise ConfigurationError(
+                f"tree: decision agent {front.name!r} keeps each task's questions in tasks/<task>/; got tasks/{tasks[0]}.md"
+            )
+        task_questions = {p.name: _questions(p) for p in _folders(directory / "tasks")}
+        tasks = list(task_questions)
+    if front.kind == "decision" and front.route is not None and tasks:
+        raise ConfigurationError(
+            f"tree: decision agent {front.name!r} routes by its questions/, so it cannot declare tasks/"
+        )
     if front.kind == "decision" and tools:
         raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare tools/")
     if front.kind == "decision" and front.workspace:
@@ -172,6 +195,7 @@ def load_agent(directory: Path) -> AgentSpec:
         tasks=tasks,
         fingerprint=folder_fingerprint(root),
         workspace=front.workspace,
+        task_questions=task_questions,
     )
 
 
@@ -197,6 +221,7 @@ def validate_tree(agents: dict[str, AgentSpec]) -> None:
                 raise ConfigurationError(
                     f"tree: agent {spec.name!r} names unknown agent {target!r}"
                 )
+            _answerable(spec, agents[target])
         if spec.route is None:
             continue
         question = spec.questions.get(spec.route.by)
@@ -211,3 +236,11 @@ def validate_tree(agents: dict[str, AgentSpec]) -> None:
                 raise ConfigurationError(
                     f"tree: route of {spec.name!r} points at unknown agent {target!r}"
                 )
+            _answerable(spec, agents[target])
+
+
+def _answerable(spec: AgentSpec, target: AgentSpec) -> None:
+    if target.kind == "decision" and not target.questions:
+        raise ConfigurationError(
+            f"tree: agent {spec.name!r} reaches decision agent {target.name!r}, which has no questions/ of its own"
+        )

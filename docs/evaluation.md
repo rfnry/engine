@@ -178,7 +178,14 @@ the two texts and not the question's parts. Its probability is a score. The comp
 over the pairs graded, next to the same number for the engine you run today replayed the same way,
 with `failures` counted as failures. `pair.recorded.fingerprint`
 and `pair.candidate.fingerprint` say what changed between the two: the folder, the tools, or
-neither. When you would rather see it live, route a slice of traffic to the candidate with
+neither.
+
+A decision agent replays the same way, and its fingerprint has a third part. `fingerprint.questions`
+covers the questions a run asked — a word, an option or their order changed changes it — so two
+versions of a classifier are told apart even when its questions come at run time, as a taxonomy's
+levels or a list of candidates do. A replay asks the runtime questions again as recorded and the
+folder's from the candidate, so a changed folder question shows in `questions` and in `agent`, and
+the same runtime questions on a new model show in neither. When you would rather see it live, route a slice of traffic to the candidate with
 `tags={"arm": "candidate"}` and compare the golden labels the two arms collect.
 
 ### Level 2: choose models on evidence
@@ -234,8 +241,9 @@ rule turns out to be ambiguous, measure every reading rather than pick the one t
 human label", not "71%". When the population changes, rates over it stop being comparable even if the
 agent did not change. Put `n` next to every number.
 
-**Compare like with like.** A run carries the fingerprint of the agent it ran and of the tools it was
-offered, and its model; a memory corpus has a fingerprint of its own. Compare two versions on the
+**Compare like with like.** A run carries the fingerprint of the agent it ran, of the tools it was
+offered and, for a decision run, of the questions it asked, and its model; a memory corpus has a
+fingerprint of its own. Compare two versions on the
 same labeled runs, and name what differs between them: the folder, the tools, the model, the corpus.
 When two things changed, you measured both at once.
 
