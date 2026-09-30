@@ -78,7 +78,7 @@ async def test_generation_agent_consults_a_decision_agent(fixtures: Path) -> Non
         and child.parent_run_id == run.run_id
     )
     assert run.steps[0].child_run_id == child.run_id
-    assert json.loads(str(run.steps[0].result))["urgent"]["probability"] == 0.9
+    assert json.loads(str(run.steps[0].result))["answers"]["urgent"]["probability"] == 0.9
 
 
 async def test_the_whole_chain_frontdesk_support_triage(fixtures: Path) -> None:
@@ -148,7 +148,7 @@ async def test_dispatch_delegate_outside_a_run(fixtures: Path) -> None:
     engine = Engine(fixtures, generation=Scripted(), decision=Fixed(TRIAGE), tools=TOOLS)
     tools = EngineTools(engine, agent="support", scope="acme")
     result = await tools.dispatch("Delegate", {"agent": "triage", "input": "It is down"})
-    assert isinstance(result, str) and json.loads(result)["urgent"]["probability"] == 0.9
+    assert isinstance(result, str) and json.loads(result)["answers"]["urgent"]["probability"] == 0.9
 
 
 async def test_dispatch_delegate_gives_the_child_the_tenant_tools(tmp_path: Path) -> None:
@@ -306,7 +306,7 @@ async def test_a_generation_agent_asks_a_decision_agent_a_question_it_composed(
     [child] = run.children
     assert isinstance(child, Decision) and child.agent == "blank" and child.runtime == ["area"]
     assert child.questions == {"area": Choice.model_validate(PICK)} and child.task is None
-    assert json.loads(str(run.steps[0].result))["area"]["choice"] == "orders"
+    assert json.loads(str(run.steps[0].result))["answers"]["area"]["choice"] == "orders"
     assert run.steps[0].args["questions"] == {"area": PICK}
     assert dm.calls == [("Charged twice", {"area": Choice.model_validate(PICK)})]
 

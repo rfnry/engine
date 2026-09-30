@@ -520,8 +520,9 @@ not make the call.
 
 `agents:` in a generation agent's frontmatter gives it a `Delegate` tool listing those agents by
 name, description, kind and tasks. The model calls it with an agent and an input; the child runs
-under the same scope and its reply — text for a generation agent, answers for a decision agent —
-comes back as the tool result. The child's record is attached to the parent's `children`, and the
+under the same scope and its reply — text for a generation agent; for a decision agent its answers,
+and the routed run's reply when it routed, as `engine.tool` returns them — comes back as the tool
+result. The child's record is attached to the parent's `children`, and the
 step that called it carries the child's `run_id`. A decision agent used this way is how a
 generation agent asks a fast, calibrated question mid-task: is this destructive, which skill
 applies, is the user done.
@@ -1072,10 +1073,15 @@ agent's reply or a decision agent's answers as a dict:
 consult = engine.tool("billing", scope="acme", name="consult", description="Ask the billing desk.",
                       context="Acme is on the enterprise plan.")
 reply = await consult.dispatch("consult", {"input": "Was I charged twice?"})
-answers = await engine.tool("triage", scope="acme").dispatch("triage", {"input": "It is down"})
-answers["urgent"]["probability"]                           # 0.91
+triaged = await engine.tool("triage", scope="acme").dispatch("triage", {"input": "It is down"})
+triaged["answers"]["urgent"]["probability"]                # 0.91
 surface = consult + MemoryTools(memory, corpus_id="acme")
 ```
+
+A generation agent's tool returns its reply. A decision agent's returns `{"answers": {…}}`, and when it
+routed, also `"routed_to": {"agent": …, "reply": …}` — the routed run's result, nested the same way
+when the target is itself a decision agent — so a caller that consults a routing agent gets the
+answer it routed to, not only the answers.
 
 It is a `Tools` of one, so it adds to any other. Each call is a top-level run under the scope it
 was made with, recorded like any run; `context=`, `tools=`, `workspace=` and `tags=` ride every call.

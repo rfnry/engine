@@ -56,6 +56,7 @@ from rfnry_engine.tools.delegate import (
     enter,
     permit,
     run_arguments,
+    run_result,
 )
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
@@ -344,9 +345,7 @@ class Engine:
                 tags=tagged,
                 approve=approve,
             )
-            if isinstance(run, Generation):
-                return run.reply
-            return {qid: answer.model_dump() for qid, answer in run.answers.items()}
+            return run_result(run)
 
         described = spec.description if description is None else description
         schema = {

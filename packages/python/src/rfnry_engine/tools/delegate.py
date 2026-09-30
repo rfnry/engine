@@ -135,10 +135,22 @@ def delegate_description(engine: Engine, spec: AgentSpec) -> str:
     return f"Hand an input to another agent and get its reply.\n{lines}"
 
 
+def run_result(run: Any) -> str | dict[str, Any]:
+    if isinstance(run, Generation):
+        return run.reply
+    result: dict[str, Any] = {"answers": {k: v.model_dump() for k, v in run.answers.items()}}
+    if run.routed_to is not None:
+        routed = run_result(run.routed_to)
+        result["routed_to"] = {
+            "agent": run.routed_to.agent,
+            **({"reply": routed} if isinstance(routed, str) else routed),
+        }
+    return result
+
+
 def child_result(child: Any) -> str:
-    if isinstance(child, Generation):
-        return child.reply
-    return json.dumps({k: v.model_dump() for k, v in child.answers.items()}, ensure_ascii=False)
+    result = run_result(child)
+    return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
 
 
 def delegate_tool(

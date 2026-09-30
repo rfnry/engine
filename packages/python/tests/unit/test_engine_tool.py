@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any
 
@@ -5,9 +6,17 @@ import pytest
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
-from rfnry_engine.models import Answer, CheckAnswer, Choice, Reply, ScoreAnswer, ToolCall
+from rfnry_engine.models import (
+    Answer,
+    CheckAnswer,
+    Choice,
+    ChoiceAnswer,
+    Reply,
+    ScoreAnswer,
+    ToolCall,
+)
 from rfnry_engine.records import Decision, Generation, Run
-from rfnry_engine.tools.delegate import QUESTION
+from rfnry_engine.tools.delegate import QUESTION, child_result
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import PICK, TOOLS, Answering, Fixed, Scripted, lead, text_reply
@@ -53,8 +62,10 @@ async def test_a_decision_agent_as_a_tool_returns_its_answers(fixtures: Path) ->
     engine = Engine(fixtures, decision=Fixed(TRIAGE))
     judge = engine.tool("triage", scope="acme", name="judge", description="Judge urgency.")
     assert judge.names == ["judge"] and judge.definitions()[0]["description"] == "Judge urgency."
-    answers = await judge.dispatch("judge", {"input": "It is down"})
-    assert isinstance(answers, dict) and set(answers) == {"urgent", "severity"}
+    result = await judge.dispatch("judge", {"input": "It is down"})
+    assert isinstance(result, dict) and list(result) == ["answers"]
+    answers = result["answers"]
+    assert set(answers) == {"urgent", "severity"}
     assert answers["urgent"]["probability"] == 0.9 and answers["severity"]["score"] == 3
 
 
@@ -112,19 +123,20 @@ async def test_a_decision_agent_as_a_tool_takes_a_task_and_questions_of_the_call
     assert list(schema["properties"]) == ["input", "task", "questions"]
     assert schema["required"] == ["input"] and schema["properties"]["task"]["enum"] == ["tone"]
     assert schema["properties"]["questions"]["additionalProperties"] == QUESTION
-    answers = await grader.dispatch(
+    result = await grader.dispatch(
         "grader", {"input": "Thanks!", "task": "tone", "questions": {"area": PICK}}
     )
-    assert isinstance(answers, dict) and list(answers) == ["urgent", "polite", "area"]
+    assert isinstance(result, dict)
+    answers = result["answers"]
+    assert list(answers) == ["urgent", "polite", "area"]
     assert answers["area"]["choice"] == "orders"
     [run] = recorder.runs
     assert isinstance(run, Decision) and run.task == "tone" and run.runtime == ["area"]
     assert run.questions["area"] == Choice.model_validate(PICK)
     blank = engine.tool("blank", scope="acme")
     assert list(blank.definitions()[0]["input_schema"]["properties"]) == ["input", "questions"]
-    assert set(await blank.dispatch("blank", {"input": "x", "questions": {"area": PICK}})) == {
-        "area"
-    }
+    asked = await blank.dispatch("blank", {"input": "x", "questions": {"area": PICK}})
+    assert isinstance(asked, dict) and set(asked["answers"]) == {"area"}
     with pytest.raises(InputError, match="^engine: questions do not fit the contract: "):
         await blank.dispatch("blank", {"input": "x", "questions": {"area": {"type": "score"}}})
     with pytest.raises(
@@ -152,3 +164,44 @@ async def test_a_generation_agent_as_a_tool_takes_a_task_it_has(tmp_path: Path) 
     lead_ = engine.tool("lead", scope="acme")
     assert list(lead_.definitions()[0]["input_schema"]["properties"]) == ["input"]
     assert len(llm.calls) == 1
+
+
+def _intent(choice: str, p: float) -> dict[str, Answer]:
+    rest = (1 - p) / 2
+    others = [o for o in ("billing", "technical", "other") if o != choice]
+    return {
+        "intent": ChoiceAnswer(
+            choice=choice, probabilities={choice: p, others[0]: rest, others[1]: rest}
+        )
+    }
+
+
+async def test_a_routing_agent_as_a_tool_returns_the_reply_it_routed_to(fixtures: Path) -> None:
+    llm = Scripted(text_reply("Support here."))
+    engine = Engine(
+        fixtures, generation=llm, decision=Fixed(_intent("technical", 0.8)), tools=TOOLS
+    )
+    result = await engine.tool("frontdesk", scope="acme").dispatch(
+        "frontdesk", {"input": "The app crashes"}
+    )
+    assert isinstance(result, dict) and result["answers"]["intent"]["choice"] == "technical"
+    assert result["routed_to"] == {"agent": "support", "reply": "Support here."}
+
+
+async def test_a_routing_agent_that_did_not_route_returns_its_answers_only(fixtures: Path) -> None:
+    engine = Engine(
+        fixtures, generation=Scripted(), decision=Fixed(_intent("technical", 0.5)), tools=TOOLS
+    )
+    result = await engine.tool("frontdesk", scope="acme").dispatch("frontdesk", {"input": "x"})
+    assert isinstance(result, dict) and list(result) == ["answers"]
+
+
+async def test_a_delegated_routing_agent_hands_back_the_reply_it_routed_to(fixtures: Path) -> None:
+    llm = Scripted(text_reply("Support here."))
+    engine = Engine(
+        fixtures, generation=llm, decision=Fixed(_intent("technical", 0.8)), tools=TOOLS
+    )
+    run = await engine.run("frontdesk", "acme", "The app crashes")
+    handed = json.loads(child_result(run))
+    assert handed["answers"]["intent"]["choice"] == "technical"
+    assert handed["routed_to"] == {"agent": "support", "reply": "Support here."}
