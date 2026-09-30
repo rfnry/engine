@@ -11,7 +11,7 @@ PLANTS = json.loads((ROOT / "data" / "plants.json").read_text())["plants"]
 engine = Engine(ROOT / "agents", generation=AnthropicProvider())
 
 
-async def ask(plant: str, question: str) -> dict:
+async def run(plant: str, question: str) -> dict:
     facts = json.dumps(PLANTS[plant], indent=2, ensure_ascii=False)
-    run = await engine.run("maintenance", scope=plant, input=question, context=facts)
-    return {"reply": run.reply, "run_id": run.run_id}
+    engine_run = await engine.run("maintenance", scope=plant, input=question, context=facts)
+    return {"reply": engine_run.reply, "run_id": engine_run.run_id}

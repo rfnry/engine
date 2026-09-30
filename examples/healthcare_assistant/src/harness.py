@@ -10,14 +10,14 @@ CALLBACK = "Triage is not sure who should take this: a nurse will call the patie
 engine = Engine(ROOT / "agents", generation=generation(), decision=decision())
 
 
-async def intake(clinic: str, message: str) -> dict:
-    run = await engine.run("triage", scope=clinic, input={"message": message})
-    routed = run.routed_to
+async def run(clinic: str, message: str) -> dict:
+    engine_run = await engine.run("triage", scope=clinic, input={"message": message})
+    routed = engine_run.routed_to
     return {
         "answers": {
-            qid: answer.model_dump(exclude={"type"}) for qid, answer in run.answers.items()
+            qid: answer.model_dump(exclude={"type"}) for qid, answer in engine_run.answers.items()
         },
         "routed_to": routed.agent if routed else None,
         "reply": routed.reply if routed else CALLBACK,
-        "run_id": run.run_id,
+        "run_id": engine_run.run_id,
     }

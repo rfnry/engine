@@ -1,3 +1,9 @@
+# personal_assistant
+
+## Description
+
+A personal assistant for one person's home, receipts and paperwork. It shows multimodal input: a photo or a PDF comes in as a multipart upload and goes to the agent next to the question. Look at the `Text`, `Image` and `Document` parts passed as `input=` to `engine.run(...)` in `src/harness.py`, and `attachment` in `src/utils.py`, which turns the upload into one.
+
 ## Running
 
 ```bash

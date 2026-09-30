@@ -1,3 +1,9 @@
+# factory_assistant
+
+## Description
+
+A maintenance assistant for technicians across two plants of one manufacturer. It shows tenants: the `X-Tenant` header becomes the run's `scope`, and each plant's own lines, contacts, parts on hand and recent work go in as `context`. Look at `engine.run("maintenance", scope=plant, context=facts)` in `src/harness.py`.
+
 ## Running
 
 ```bash

@@ -1,3 +1,9 @@
+# accounting_assistant
+
+## Description
+
+A bookkeeping assistant for an accounting firm's accountants, working on a client's ledger. It shows a workspace with a shell, and approvals: the agent writes and runs scripts in a folder of its own, and an accountant allows every shell command before it runs. Look at `engine.run(..., workspace=Workspace(work, unsandboxed=True), approve=approve)` in `src/harness.py`.
+
 ## Running
 
 ```bash

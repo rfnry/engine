@@ -19,7 +19,7 @@ class Ask(BaseModel):
 async def ask(body: Ask, firm: Tenant) -> dict:
     if body.contract not in harness.CONTRACTS:
         raise HTTPException(404, f"there is no contract {body.contract}")
-    return await harness.ask(firm, body.contract, body.question)
+    return await harness.run(firm, body.contract, body.question)
 
 
 @router.post("/runs/{run_id}/review")

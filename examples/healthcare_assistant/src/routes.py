@@ -15,4 +15,4 @@ class Intake(BaseModel):
 
 @router.post("/intake")
 async def intake(body: Intake, clinic: Tenant) -> dict:
-    return await harness.intake(clinic, body.message)
+    return await harness.run(clinic, body.message)

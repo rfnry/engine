@@ -1,3 +1,9 @@
+# customer_assistant
+
+## Description
+
+The support desk of an online home-goods store, answering customers about their orders. It shows the basic agent: a folder of markdown under `agents/support` and a code tool, answering in one reply or streaming it as it is written. Look at `Engine(..., tools=[Tool("lookup_order", body=lookup_order)])` and `engine.run(..., history=, on_event=)` in `src/harness.py`, where `TextDelta` events feed the stream.
+
 ## Running
 
 ```bash

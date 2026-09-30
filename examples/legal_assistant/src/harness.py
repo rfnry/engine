@@ -15,9 +15,11 @@ datasets = Folder(ROOT / "datasets")
 watermarks: dict[str, datetime | None] = {}
 
 
-async def ask(firm: str, contract: str, question: str) -> dict:
-    run = await engine.run("reviewer", scope=firm, input=question, context=CONTRACTS[contract])
-    return {"reply": run.reply, "run_id": run.run_id}
+async def run(firm: str, contract: str, question: str) -> dict:
+    engine_run = await engine.run(
+        "reviewer", scope=firm, input=question, context=CONTRACTS[contract]
+    )
+    return {"reply": engine_run.reply, "run_id": engine_run.run_id}
 
 
 async def review(firm: str, run_id: str, feedback: Review) -> dict:

@@ -1,3 +1,9 @@
+# legal_assistant
+
+## Description
+
+A contract reviewer for a law firm's lawyers, checking a contract against the firm's playbook. It shows the refinery: every run is recorded, a lawyer's review becomes a label on it, and the firm exports datasets with every label and its source. Look at `Refinery(InMemoryStorage())` passed to `Engine(..., refinery=)`, `refinery.review(...)` and `refinery.export(..., since=)` in `src/harness.py`.
+
 ## Running
 
 ```bash

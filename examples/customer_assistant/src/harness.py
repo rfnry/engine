@@ -18,29 +18,9 @@ engine = Engine(
 sessions: dict[str, list[Message]] = {}
 
 
-async def ask(question: str, session: str | None) -> dict:
-    run = await answer(question, session)
-    return {"reply": run.reply, "run_id": run.run_id}
-
-
-async def ask_stream(question: str, session: str | None) -> AsyncIterator[dict]:
-    deltas: asyncio.Queue[str | None] = asyncio.Queue()
-
-    async def on_event(event: Event) -> None:
-        if isinstance(event, TextDelta):
-            deltas.put_nowait(event.text)
-
-    work = asyncio.create_task(answer(question, session, on_event))
-    work.add_done_callback(lambda _: deltas.put_nowait(None))
-    while (text := await deltas.get()) is not None:
-        yield {"text": text}
-    run = await work
-    yield {"done": True, "run_id": run.run_id}
-
-
-async def answer(question: str, session: str | None, on_event=None):
+async def run(question: str, session: str | None, on_event=None) -> dict:
     history = sessions.get(session, []) if session else []
-    run = await engine.run(
+    engine_run = await engine.run(
         "support",
         scope="acme-home",
         input=question,
@@ -49,5 +29,20 @@ async def answer(question: str, session: str | None, on_event=None):
         on_event=on_event,
     )
     if session:
-        sessions[session] = run.conversation
-    return run
+        sessions[session] = engine_run.conversation
+    return {"reply": engine_run.reply, "run_id": engine_run.run_id}
+
+
+async def run_stream(question: str, session: str | None) -> AsyncIterator[dict]:
+    deltas: asyncio.Queue[str | None] = asyncio.Queue()
+
+    async def on_event(event: Event) -> None:
+        if isinstance(event, TextDelta):
+            deltas.put_nowait(event.text)
+
+    work = asyncio.create_task(run(question, session, on_event))
+    work.add_done_callback(lambda _: deltas.put_nowait(None))
+    while (text := await deltas.get()) is not None:
+        yield {"text": text}
+    result = await work
+    yield {"done": True, "run_id": result["run_id"]}

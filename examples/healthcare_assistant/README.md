@@ -1,3 +1,9 @@
+# healthcare_assistant
+
+## Description
+
+A triage assistant for a clinic's staff, reading each patient message before a person does. It shows decision models: a decision agent answers typed questions with probabilities and routes the message to a generation agent that drafts for the staff, unless its confidence is under the floor. Look at `Engine(..., generation=, decision=)`, `engine_run.answers` and `engine_run.routed_to` in `src/harness.py`, and the `route:` block with its `min_confidence` in `agents/triage/AGENT.md`.
+
 ## Running
 
 ```bash

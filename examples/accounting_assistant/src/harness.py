@@ -26,7 +26,7 @@ waiting: dict[str, tuple[Task, asyncio.Future[bool]]] = {}
 working: set[asyncio.Task] = set()
 
 
-async def start(request: str) -> dict:
+async def run(request: str) -> dict:
     task = Task(id=uuid4().hex[:8])
     tasks[task.id] = task
     work = ROOT / ".work" / task.id
@@ -41,20 +41,20 @@ async def start(request: str) -> dict:
         task.pending[approval_id] = call.args["command"]
         return await waiting[approval_id][1]
 
-    async def run() -> None:
+    async def bookkeep() -> None:
         try:
-            done = await engine.run(
+            engine_run = await engine.run(
                 "bookkeeper",
                 scope="acme-books",
                 input=request,
                 workspace=Workspace(work, unsandboxed=True),
                 approve=approve,
             )
-            task.status, task.reply, task.run_id = "done", done.reply, done.run_id
+            task.status, task.reply, task.run_id = "done", engine_run.reply, engine_run.run_id
         except Exception as error:
             task.status, task.reply = "failed", str(error)
 
-    job = asyncio.create_task(run())
+    job = asyncio.create_task(bookkeep())
     working.add(job)
     job.add_done_callback(working.discard)
     return await settled(task)

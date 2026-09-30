@@ -16,7 +16,7 @@ class Approval(BaseModel):
 
 @router.post("/tasks")
 async def start(body: NewTask) -> dict:
-    return await harness.start(body.task)
+    return await harness.run(body.task)
 
 
 @router.get("/tasks/{task_id}")

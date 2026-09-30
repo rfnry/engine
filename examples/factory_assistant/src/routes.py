@@ -17,4 +17,4 @@ class Ask(BaseModel):
 async def ask(body: Ask, plant: Tenant) -> dict:
     if plant not in harness.PLANTS:
         raise HTTPException(404, f"there is no plant {plant}")
-    return await harness.ask(plant, body.question)
+    return await harness.run(plant, body.question)
