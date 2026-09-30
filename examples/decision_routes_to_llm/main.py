@@ -1,7 +1,6 @@
 import asyncio
 
-from rfnry_engine import Engine
-
+from harness import build, receive
 from providers import AnthropicProvider, TypeSafeProvider
 
 MESSAGES = [
@@ -12,10 +11,10 @@ MESSAGES = [
 
 
 async def main() -> None:
-    engine = Engine("agents", generation=AnthropicProvider(), decision=TypeSafeProvider())
+    engine = build(AnthropicProvider(), TypeSafeProvider())
 
     for message in MESSAGES:
-        run = await engine.run("frontdesk", scope="demo", input=message)
+        run = await receive(engine, message)
         intent = run.answers["intent"]
         print(f"> {message}\n  intent {intent.choice} (confidence {intent.confidence:.2f})")
         if run.routed_to:

@@ -1,23 +1,15 @@
 import asyncio
 
-from rfnry_engine import Engine
-
+from harness import build, sort
 from providers import TypeSafeProvider
 
 MESSAGE = "We were charged twice this month and nobody answers the chat. Get me a manager."
 
 
 async def main() -> None:
-    engine = Engine("agents", decision=TypeSafeProvider())
+    engine = build(TypeSafeProvider())
 
-    run = await engine.run(
-        "inbox",
-        scope="demo",
-        input={
-            "message": MESSAGE,
-            "plan": "enterprise",
-        },
-    )
+    run = await sort(engine, MESSAGE, plan="enterprise")
 
     department = run.answers["department"]
     urgency = run.answers["urgency"]

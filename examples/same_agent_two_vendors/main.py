@@ -1,7 +1,6 @@
 import asyncio
 
-from rfnry_engine import Engine
-
+from harness import ask, build
 from providers import AnthropicProvider, GoogleProvider
 
 QUESTION = (
@@ -12,8 +11,8 @@ QUESTION = (
 
 async def main() -> None:
     for model in (AnthropicProvider(), GoogleProvider()):
-        engine = Engine("agents", generation=model)
-        run = await engine.run("concierge", scope="demo", input=QUESTION)
+        engine = build(model)
+        run = await ask(engine, QUESTION)
         print(f"{run.model}")
         print(f"  tools: {[f'{s.tool} {s.args}' for s in run.steps]}")
         usage = run.usage

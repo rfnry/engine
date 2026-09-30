@@ -1,18 +1,15 @@
 import asyncio
 
-from rfnry_engine import Engine
-
+from harness import build, edit
 from providers import AnthropicProvider, TypeSafeProvider
 
 
 async def main() -> None:
-    engine = Engine("agents", generation=AnthropicProvider(), decision=TypeSafeProvider())
+    engine = build(AnthropicProvider(), TypeSafeProvider())
     for info in engine.agents.values():
         print(f"{info.name:7} {info.kind:10} calls {info.agents}")
 
-    run = await engine.run(
-        "editor", scope="demo", input="Apologise to Dana: her order arrived four days late."
-    )
+    run = await edit(engine, "Apologise to Dana: her order arrived four days late.")
 
     for step in run.steps:
         print(f"\n{step.tool} {step.args} -> child {step.child_run_id}\n  {step.result}")

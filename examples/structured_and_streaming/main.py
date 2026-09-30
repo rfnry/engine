@@ -1,15 +1,9 @@
 import asyncio
 
-from pydantic import BaseModel
-from rfnry_engine import Engine, TextDelta, ToolCallStarted
+from rfnry_engine import TextDelta, ToolCallStarted
 
+from harness import build, decide, explain
 from providers import AnthropicProvider
-
-
-class Verdict(BaseModel):
-    refund: bool
-    amount: float
-    reason: str
 
 
 async def show(event):
@@ -20,19 +14,13 @@ async def show(event):
 
 
 async def main() -> None:
-    engine = Engine("agents", generation=AnthropicProvider())
+    engine = build(AnthropicProvider())
     request = "Order A-1 for $40 shows up twice on my card statement."
 
-    await engine.run(
-        "reviewer",
-        scope="demo",
-        input=f"Explain your decision to the customer: {request}",
-        on_event=show,
-    )
+    await explain(engine, request, show)
     print("\n")
 
-    run = await engine.run("reviewer", scope="demo", input=request, expect=Verdict, on_event=show)
-    verdict = Verdict.model_validate_json(run.reply)
+    verdict = await decide(engine, request, show)
     print(f"\nrefund={verdict.refund} amount={verdict.amount} reason={verdict.reason!r}")
 
 

@@ -5,52 +5,11 @@ import sys
 import time
 from pathlib import Path
 
-from rfnry_engine import Choice, Decision, Engine, Usage
-
+from harness import AT_ONCE, LEVELS, build, classify_all, grade
 from providers import LocalDecisionProvider, TypeSafeProvider
 
-TAXONOMY = json.loads(Path("taxonomy.json").read_text())
 ITEMS = json.loads(Path("items.json").read_text())
-CRITERIA = ("what", "not_for", "examples")
 URL = os.environ.get("LOCAL_DECISION_URL", "http://localhost:11434/v1")
-AT_ONCE = 6
-LEVELS = (
-    "the in-scope items the check let through",
-    "those right at level 1",
-    "those right at level 2",
-)
-
-
-def topic(path: list[str], children: dict) -> Choice:
-    return Choice(
-        instructions={
-            "question": "Which of these is `message` about?",
-            "within": " > ".join(path) or "everything this store's support desk handles",
-            "focus": "The sender's main request, not every topic the message mentions",
-        },
-        options={
-            key: {field: node[field] for field in CRITERIA if field in node}
-            for key, node in children.items()
-        },
-    )
-
-
-async def walk(engine: Engine, message: str) -> tuple[list[str] | None, list[Decision]]:
-    children, path, runs = TAXONOMY, [], []
-    while children:
-        run = await engine.run(
-            "classifier",
-            scope="demo",
-            input={"message": message},
-            questions={"topic": topic(path, children)},
-        )
-        runs.append(run)
-        if not path and run.answers["in_scope"].probability < 0.5:
-            return None, runs
-        chosen = run.answers["topic"].choice
-        path.append(chosen)
-        children = children[chosen].get("children", {})
-    return path, runs
 
 
 def shown(path: list[str] | None) -> str:
@@ -66,37 +25,26 @@ async def main() -> None:
         decision = LocalDecisionProvider(sys.argv[2] if len(sys.argv) > 2 else "llama3.1:8b", URL)
     else:
         decision = TypeSafeProvider()
-    engine = Engine("agents", decision=decision)
-    gate = asyncio.Semaphore(AT_ONCE)
-
-    async def classify(item: dict) -> tuple[list[str] | None, list[Decision]]:
-        async with gate:
-            return await walk(engine, item["message"])
+    engine = build(decision)
 
     started = time.monotonic()
-    results = await asyncio.gather(*(classify(item) for item in ITEMS))
+    results = await classify_all(engine, ITEMS)
     wall = time.monotonic() - started
-    said = [got for got, _ in results]
-    labels = [item["path"] for item in ITEMS]
-    runs = [run for _, walked in results for run in walked]
+    graded = grade(results, ITEMS)
+    runs = graded["runs"]
     model = runs[0].model or getattr(decision, "model", "")
 
     print(f"decision_taxonomy · {model} · {len(ITEMS)} synthetic messages, labelled by hand")
     print("each call asks the folder's in_scope check and one runtime question, topic, whose")
     print("options are the children of the node chosen last\n")
 
-    scoped = sum((got is None) == (label is None) for got, label in zip(said, labels, strict=True))
+    scoped, exact = graded["scoped"], graded["exact"]
     print(f"in scope   {rate(scoped, len(ITEMS))}   the check on each item's first call")
-    passed = [(got, label) for got, label in zip(said, labels, strict=True) if got and label]
-    for depth, of in enumerate(LEVELS):
-        reached = [(got, label) for got, label in passed if got[:depth] == label[:depth]]
-        right = sum(got[depth] == label[depth] for got, label in reached)
-        print(f"level {depth + 1}    {rate(right, len(reached))}   of {of}")
-    exact = sum(got == label for got, label in zip(said, labels, strict=True))
+    for depth, ((right, reached), of) in enumerate(zip(graded["levels"], LEVELS, strict=True)):
+        print(f"level {depth + 1}    {rate(right, reached)}   of {of}")
     print(f"end to end {rate(exact, len(ITEMS))}   a leaf, or out of scope, against the label\n")
 
-    usage = sum((run.usage for run in runs), Usage())
-    mean = sum(run.duration_ms for run in runs) / len(runs)
+    usage, mean = graded["usage"], graded["mean"]
     print(f"{len(runs)} calls, {mean:.0f} ms each on average, {AT_ONCE} items at a time, ", end="")
     print(f"{wall:.1f} s in all · {usage.input} tokens in, {usage.output} out\n")
 

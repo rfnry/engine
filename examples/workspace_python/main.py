@@ -3,8 +3,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from rfnry_engine import Engine, ToolCall, Workspace
+from rfnry_engine import ToolCall
 
+from harness import build, code
 from providers import AnthropicProvider
 
 TASK = """Write stats.py with median(xs) and mode(xs), and test_stats.py that checks both
@@ -21,14 +22,11 @@ async def ask_in_the_terminal(agent: str, call: ToolCall) -> bool:
 
 
 async def main() -> None:
-    engine = Engine("agents", generation=AnthropicProvider())
+    engine = build(AnthropicProvider())
     approve = ask_in_the_terminal if sys.argv[1:] == ["ask"] else None
 
     with tempfile.TemporaryDirectory() as work:
-        workspace = Workspace(work, unsandboxed=True, timeout=60)
-        run = await engine.run(
-            "coder", scope="demo", input=TASK, workspace=workspace, approve=approve
-        )
+        run = await code(engine, TASK, work, approve)
         for step in run.steps:
             target = step.args.get("path") or step.args.get("command")
             print(f"{step.tool:5} {target}  {step.result[:80]!r}")
