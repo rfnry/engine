@@ -18,15 +18,15 @@ curl -s localhost:8000/ask -H 'content-type: application/json' -H 'X-Tenant: fir
 ```
 
 ```json
-{"reply": "No — Clause 4 is not acceptable. It's a one-sided indemnity, with Customer (our client) alone defending and indemnifying Supplier for any claim relating to the Agreement or Services. Our playbook requires a mutual indemnity, each party indemnifying the other only for third-party claims caused by its own breach.\n\nRedline: Replace clause 4 with mutual indemnification language — each party defends, indemnifies and holds harmless the other from third-party claims arising from its own breach of the Agreement, negligence, or willful misconduct, deleting the one-way obligation on Customer.", "run_id": "50ccff9d9b244cf199add5987ffa6ecd"}
+{"reply": "No — Clause 4 is one-sided: it makes Customer solely indemnify Supplier for any claim relating to the Agreement or Services, with no reciprocal protection.\n\nPlaybook position: indemnity should be mutual, each party indemnifying the other only for third-party claims caused by its own breach. A customer-only, broad \"any claim... relating to\" indemnity is high risk and unacceptable.\n\nRedline: Replace Clause 4 with mutual indemnification — each party defends and indemnifies the other against third-party claims arising from its own breach of the Agreement, negligence, or willful misconduct; delete the one-sided \"arising out of or relating to this Agreement or the Services\" scope for Customer.", "run_id": "1235d019a80d4ac98242d914a7d95aa7"}
 ```
 
 ```bash
-curl -s localhost:8000/runs/50ccff9d9b244cf199add5987ffa6ecd/review -H 'content-type: application/json' -H 'X-Tenant: firm-acme' -d '{"stance": "objection", "comment": "Right call, but keep the redline to the playbook: breach only, and leave the cap alone.", "correction": "No. Clause 4 is a one-way indemnity from our client, a high risk under the playbook, and it reaches any claim relating to the Agreement. Redline clause 4 to: Each party shall defend, indemnify and hold harmless the other party against any third-party claim, loss or expense arising out of its own breach of this Agreement."}'
+curl -s localhost:8000/runs/1235d019a80d4ac98242d914a7d95aa7/review -H 'content-type: application/json' -H 'X-Tenant: firm-acme' -d '{"stance": "objection", "comment": "Right call, but keep the redline to the playbook: breach only.", "correction": "No. Clause 4 is a one-way indemnity from our client, a high risk under the playbook, and it reaches any claim relating to the Agreement. Redline clause 4 to: Each party shall defend, indemnify and hold harmless the other party against any third-party claim, loss or expense arising out of its own breach of this Agreement."}'
 ```
 
 ```json
-{"label_id": "b2acac606159495c94d75fb81ade752a", "run_id": "50ccff9d9b244cf199add5987ffa6ecd", "scope": "firm-acme", "at": "2026-09-30T15:53:00.098782Z", "source": "human", "review": {"stance": "objection", "comment": "Right call, but keep the redline to the playbook: breach only, and leave the cap alone.", "correction": "No. Clause 4 is a one-way indemnity from our client, a high risk under the playbook, and it reaches any claim relating to the Agreement. Redline clause 4 to: Each party shall defend, indemnify and hold harmless the other party against any third-party claim, loss or expense arising out of its own breach of this Agreement."}}
+{"label_id": "d58b5a0d7fe24f1b8c0c23cfe6cf3e04", "run_id": "1235d019a80d4ac98242d914a7d95aa7", "scope": "firm-acme", "at": "2026-09-30T15:54:56.375064Z", "source": "human", "review": {"stance": "objection", "comment": "Right call, but keep the redline to the playbook: breach only.", "correction": "No. Clause 4 is a one-way indemnity from our client, a high risk under the playbook, and it reaches any claim relating to the Agreement. Redline clause 4 to: Each party shall defend, indemnify and hold harmless the other party against any third-party claim, loss or expense arising out of its own breach of this Agreement."}}
 ```
 
 ```bash
@@ -34,5 +34,5 @@ curl -s -X POST localhost:8000/export -H 'X-Tenant: firm-acme'
 ```
 
 ```json
-{"keys": ["firm-acme/reviewer/generation/20260930T155300105750Z.jsonl", "firm-acme/reviewer/preference/20260930T155300105750Z.jsonl"], "rows": {"generation": 1, "preference": 1}, "watermark": "2026-09-30T15:53:00.098782Z"}
+{"keys": ["firm-acme/reviewer/generation/20260930T155456384618Z.jsonl", "firm-acme/reviewer/preference/20260930T155456384618Z.jsonl"], "rows": {"generation": 1, "preference": 1}, "watermark": "2026-09-30T15:54:56.375064Z"}
 ```
