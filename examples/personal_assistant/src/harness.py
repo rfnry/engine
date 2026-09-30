@@ -1,10 +1,13 @@
 from datetime import date
+from pathlib import Path
 
 from rfnry_engine import Document, Engine, Image, Message, Text
 
 from providers import AnthropicProvider
 
-engine = Engine("agents", generation=AnthropicProvider())
+ROOT = Path(__file__).resolve().parent.parent
+
+engine = Engine(ROOT / "agents", generation=AnthropicProvider())
 sessions: dict[str, list[Message]] = {}
 
 

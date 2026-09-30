@@ -52,7 +52,7 @@ def providers(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     monkeypatch.setitem(sys.modules, "anthropic", anthropic)
     monkeypatch.setitem(sys.modules, "anthropic.types", types)
     spec = importlib.util.spec_from_file_location(
-        "healthcare_providers", EXAMPLES / "healthcare_assistant" / "providers.py"
+        "healthcare_providers", EXAMPLES / "healthcare_assistant" / "src" / "providers.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

@@ -2,7 +2,7 @@
 
 ```bash
 export ANTHROPIC_API_KEY=...
-uv run main.py
+uv run src/main.py
 ```
 
 ## Example
@@ -12,7 +12,7 @@ curl -s localhost:8000/ask -H 'content-type: application/json' -d '{"question": 
 ```
 
 ```json
-{"reply": "Hi Dana, I'm sorry for the delay — your order is in transit with Acme Freight, tracking number AF-5520-1187, and it's running past its promised delivery date of 9/28. As an apology, we'll add a $10 credit to your account for your next order. Thanks for your patience!", "run_id": "d4cb96cd3aa74490892e8511cd05164a"}
+{"reply": "Hi Dana, your order is with Acme Freight, tracking number AF-5520-1187, currently in transit. I'm sorry it's past its promised delivery date of 9/28 — as an apology, we've added a $10 credit to your account for your next order. Thanks for your patience!", "run_id": "5bf046b4e6504986aa3b66f872aff896"}
 ```
 
 ```bash
@@ -20,7 +20,7 @@ curl -s localhost:8000/ask -H 'content-type: application/json' -d '{"question": 
 ```
 
 ```json
-{"reply": "Yes, Dana — once the side table is delivered, you can return it within 30 days for a full refund back to your Visa ending 4242, paid once we receive it back. Since it hasn't been delivered yet, just reach out again once it arrives to start the return.", "run_id": "1fa02986273f4dcf976fa1ea1a71d841"}
+{"reply": "Since the order hasn't been delivered yet, it isn't eligible for a return quite yet — but once it arrives, you can return the oak side table within 30 days for a full refund back to your Visa ending 4242. Just reach out once you've received it and want to send it back.", "run_id": "459c1f538a20439bbc5439f97ab42768"}
 ```
 
 ```bash
@@ -28,15 +28,15 @@ curl -sN localhost:8000/ask/stream -H 'content-type: application/json' -d '{"que
 ```
 
 ```text
-data: {"text": "H"}
+data: {"text": "Hi S"}
 
-data: {"text": "i Sam, I"}
+data: {"text": "am, I"}
 
 data: {"text": " can confirm your"}
 
 …
 
-data: {"text": " needed on your end."}
+data: {"text": " within five business days."}
 
-data: {"done": true, "run_id": "757607fbf3544dfcb7dff91f2dcecb70"}
+data: {"done": true, "run_id": "2b1928811ccd4de89efc9f8a8119ee2e"}
 ```

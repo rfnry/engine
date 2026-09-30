@@ -2,7 +2,7 @@
 
 ```bash
 export ANTHROPIC_API_KEY=...
-uv run main.py
+uv run src/main.py
 ```
 
 ## Example
@@ -12,21 +12,21 @@ curl -s localhost:8000/tasks -H 'content-type: application/json' -d '{"task": "T
 ```
 
 ```json
-{"id": "d4609775", "status": "running", "pending": {"e6a07943": "cd $(dirname $(find / -name ledger.csv 2>/dev/null|head -1)) 2>/dev/null; cd - >/dev/null; python3 process.py"}, "reply": null, "run_id": null}
+{"id": "9c3f9519", "status": "running", "pending": {"bb2560c5": "head -5 ledger.csv; wc -l ledger.csv"}, "reply": null, "run_id": null}
 ```
 
 ```bash
-curl -s localhost:8000/approvals/e6a07943 -H 'content-type: application/json' -d '{"allow": false}'
+curl -s localhost:8000/approvals/bb2560c5 -H 'content-type: application/json' -d '{"allow": true}'
 ```
 
 ```json
-{"id": "d4609775", "status": "running", "pending": {"308e8652": "python3 process.py"}, "reply": null, "run_id": null}
+{"id": "9c3f9519", "status": "running", "pending": {"a5aba7f9": "python3 process.py; echo ---; cat expenses.csv"}, "reply": null, "run_id": null}
 ```
 
 ```bash
-curl -s localhost:8000/approvals/308e8652 -H 'content-type: application/json' -d '{"allow": true}'
+curl -s localhost:8000/approvals/a5aba7f9 -H 'content-type: application/json' -d '{"allow": true}'
 ```
 
 ```json
-{"id": "d4609775", "status": "done", "pending": {}, "reply": "I totaled September expenses by account and wrote them to expenses.csv:\n\n- bank fees: 18.00\n- equipment: 845.00\n- ingredients: 1766.50\n- marketing: 160.00\n- payroll: 6240.00\n- rent: 2400.00\n- repairs: 420.00\n- software: 258.00\n- utilities: 484.45\n\nDuplicate flagged: lines 6 and 7 (both \"Acme Cloud, INV-2291, -129.00\") — same counterparty, reference, and amount. Neither row was deleted, per the rule; the software total above includes both entries as they appear in the ledger.\n\nFile written: expenses.csv (also process.py, the script used).", "run_id": "022fd9808313421bb28cee47843d3d40"}
+{"id": "9c3f9519", "status": "done", "pending": {}, "reply": "I totaled September expenses by account into expenses.csv (accounts and their totals, positive dollars, rounded to cents):\n\n- bank fees: 18.00\n- equipment: 845.00\n- ingredients: 1766.50\n- marketing: 160.00\n- payroll: 6240.00\n- rent: 2400.00\n- repairs: 420.00\n- software: 258.00\n- utilities: 484.45\n\nDuplicate check: lines 6 and 7 in ledger.csv have the same counterparty, reference, and amount — flagging for your review, no rows deleted.\n\nFiles written: expenses.csv, process.py (the script used to generate it).", "run_id": "3c9d46c0cac2459d82382efb36d5a73a"}
 ```

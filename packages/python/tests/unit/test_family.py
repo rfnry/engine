@@ -61,10 +61,16 @@ def classes(path: Path) -> dict[str, str]:
     }
 
 
+def providers(library: str) -> list[Path]:
+    examples = ROOT.parent / library / "examples"
+    found = [*examples.glob("*/providers.py"), *examples.glob("*/src/providers.py")]
+    return sorted(path for path in found if ".venv" not in path.parts)
+
+
 def test_every_provider_class_is_byte_identical_in_every_example_that_carries_it() -> None:
     copies: dict[str, set[str]] = {}
     for library in FAMILY:
-        for path in sorted((ROOT.parent / library / "examples").glob("*/providers.py")):
+        for path in providers(library):
             for name, text in classes(path).items():
                 copies.setdefault(name, set()).add(text)
     assert {"TypeSafeProvider", "AnthropicProvider"} <= set(copies)

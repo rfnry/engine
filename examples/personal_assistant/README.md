@@ -2,7 +2,7 @@
 
 ```bash
 export ANTHROPIC_API_KEY=...
-uv run main.py
+uv run src/main.py
 ```
 
 ## Example
@@ -12,7 +12,7 @@ curl -s localhost:8000/ask -F question="My dishwasher is leaking. Is it still un
 ```
 
 ```json
-{"reply": "Yes — your dishwasher (Acme DW-450, serial AX-99812) is still under warranty until 2027-04-02, and leaks are explicitly covered.\n\nCall Acme Appliances service at 1-800-555-0142, quoting serial AX-99812. Keep the dishwasher off/unplugged until the technician arrives.", "run_id": "c866d12417134cd5bfbfca3b5af64d7c"}
+{"reply": "Yes — your Acme DW-450 dishwasher (serial AX-99812) is under warranty until 2027-04-02, and leaks are explicitly covered.\n\nCall Acme Appliances service at 1-800-555-0142, quoting serial AX-99812. Keep the dishwasher switched off until the technician arrives.", "run_id": "96a8b6622005439cbeb9f49fa4123d54"}
 ```
 
 ```bash
@@ -20,7 +20,7 @@ curl -s localhost:8000/ask -F question="And if the washing machine breaks too?" 
 ```
 
 ```json
-{"reply": "The washing machine (Acme WM-700, serial WX-30317) is no longer under warranty — it ended 2025-06-15. You'd need to pay for repair out of pocket or contact Acme Appliances service (1-800-555-0142) for a paid service call.", "run_id": "65a6b0c10435424a92c1911592c4d823"}
+{"reply": "Bad news there — the washing machine (Acme WM-700, serial WX-30317) warranty ended 2025-06-15, so it's no longer covered. Any repair would be out of pocket; you'd need to arrange a technician yourself rather than claim through Acme.", "run_id": "948ac8698fec4ed9be93f4c3a6e3fbfe"}
 ```
 
 ```bash
@@ -28,5 +28,5 @@ curl -s localhost:8000/ask -F question="The shelf said avocados were 2 for 3 dol
 ```
 
 ```json
-{"reply": "No. You were charged $1.75 each (4 for $7.00), not the 2-for-$3 price ($1.50 each). At the 2-for-$3 rate, 4 avocados should cost $6.00, so you were overcharged $1.00.", "run_id": "116af7748f73413086b77d2c70d12555"}
+{"reply": "No. You bought 4 avocados at $1.75 each = $7.00. At \"2 for $3\" (i.e. $1.50 each), 4 should cost $6.00. You were overcharged $1.00.", "run_id": "117a8f96075d481fb40815ed78c140e2"}
 ```

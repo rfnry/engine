@@ -1,14 +1,19 @@
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import date
+from pathlib import Path
 
 from rfnry_engine import Engine, Event, Message, TextDelta, Tool
 
 from providers import AnthropicProvider
 from tools import lookup_order
 
+ROOT = Path(__file__).resolve().parent.parent
+
 engine = Engine(
-    "agents", generation=AnthropicProvider(), tools=[Tool("lookup_order", body=lookup_order)]
+    ROOT / "agents",
+    generation=AnthropicProvider(),
+    tools=[Tool("lookup_order", body=lookup_order)],
 )
 sessions: dict[str, list[Message]] = {}
 

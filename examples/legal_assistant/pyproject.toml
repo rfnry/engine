@@ -5,7 +5,6 @@ requires-python = ">=3.12"
 dependencies = [
     "rfnry-engine",
     "anthropic",
-    "httpx",
     "fastapi",
     "uvicorn",
 ]
@@ -26,4 +25,4 @@ line-length = 100
 select = ["E", "F", "I", "W", "B", "UP", "SIM"]
 
 [tool.ruff.lint.isort]
-known-local-folder = ["harness", "providers"]
+known-local-folder = ["harness", "providers", "routes", "utils"]

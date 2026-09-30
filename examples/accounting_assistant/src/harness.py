@@ -8,6 +8,8 @@ from rfnry_engine import Engine, ToolCall, Workspace
 
 from providers import AnthropicProvider
 
+ROOT = Path(__file__).resolve().parent.parent
+
 
 @dataclass
 class Task:
@@ -18,7 +20,7 @@ class Task:
     run_id: str | None = None
 
 
-engine = Engine("agents", generation=AnthropicProvider())
+engine = Engine(ROOT / "agents", generation=AnthropicProvider())
 tasks: dict[str, Task] = {}
 waiting: dict[str, tuple[Task, asyncio.Future[bool]]] = {}
 working: set[asyncio.Task] = set()
@@ -27,9 +29,9 @@ working: set[asyncio.Task] = set()
 async def start(request: str) -> dict:
     task = Task(id=uuid4().hex[:8])
     tasks[task.id] = task
-    work = Path(".work") / task.id
+    work = ROOT / ".work" / task.id
     work.mkdir(parents=True)
-    shutil.copy("data/ledger.csv", work / "ledger.csv")
+    shutil.copy(ROOT / "data" / "ledger.csv", work / "ledger.csv")
 
     async def approve(agent: str, call: ToolCall) -> bool:
         if call.name != "Shell":

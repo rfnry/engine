@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
 
-ORDERS = json.loads(Path("data/orders.json").read_text())["orders"]
+ROOT = Path(__file__).resolve().parent.parent
+ORDERS = json.loads((ROOT / "data" / "orders.json").read_text())["orders"]
 
 
 async def lookup_order(args: dict) -> dict:

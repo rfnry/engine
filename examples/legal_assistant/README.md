@@ -2,33 +2,31 @@
 
 ```bash
 export ANTHROPIC_API_KEY=...
-export DECISION_API_KEY=...
-# optional: export LOCAL_DECISION_MODEL=llama3.1:8b
-uv run main.py
+uv run src/main.py
 ```
 
 ## Example
 
 ```bash
-curl -s localhost:8000/classify -H 'content-type: application/json' -H 'X-Tenant: firm-acme' -d '{"clause": "Supplier may terminate this Agreement for convenience on thirty (30) days'"'"' written notice."}'
+curl -s localhost:8000/ask -H 'content-type: application/json' -H 'X-Tenant: firm-acme' -d '{"contract": "northwind-msa", "question": "Is the indemnity acceptable for our client?"}'
 ```
 
 ```json
-{"path": ["termination", "convenience"], "levels": [{"kind": "termination", "confidence": 1.0, "run_id": "e8a41a3f2cd34eaaa3d0bb8d4f17eeff"}, {"kind": "convenience", "confidence": 1.0, "run_id": "fa7550b2ba9d4781aaf3d5526c83c107"}]}
+{"reply": "No, Clause 4 is not acceptable and is a high-risk departure from our playbook.\n\n- Playbook requires a mutual indemnity: each party indemnifies for third-party claims caused by its own breach.\n- Clause 4 imposes a one-way indemnity from Customer to Supplier, and it's uncapped and not limited to Supplier's breach (\"arising out of or relating to this Agreement or the Services\").\n\nRedline: Make it mutual — each party defends/indemnifies the other only against third-party claims arising from its own breach, negligence, or willful misconduct, and cross-reference/carve into the liability cap in Clause 5.", "run_id": "4bb4f5bc5747475889e2599f211a84ea"}
 ```
 
 ```bash
-curl -s localhost:8000/review -H 'content-type: application/json' -H 'X-Tenant: firm-acme' -d '{"contract": "northwind-msa"}'
+curl -s localhost:8000/runs/4bb4f5bc5747475889e2599f211a84ea/review -H 'content-type: application/json' -H 'X-Tenant: firm-acme' -d '{"stance": "objection", "comment": "Right call, but keep the redline to the playbook: breach only, and leave the cap alone.", "correction": "No. Clause 4 is a one-way indemnity from our client, a high risk under the playbook, and it reaches any claim relating to the Agreement. Redline clause 4 to: Each party shall defend, indemnify and hold harmless the other party against any third-party claim, loss or expense arising out of its own breach of this Agreement."}'
 ```
 
 ```json
-{"issues": [{"clause": 2, "kind": "Payment", "risk": "low", "problem": "Invoices are due in 15 days and late interest is 2% per month, both worse than the playbook's minimum 30-day payment term and 1%/month interest cap.", "redline": "Replace with: Customer shall pay each invoice within thirty (30) days of its date. Overdue amounts bear interest at one percent (1%) per month until paid."}, …, {"clause": 4, "kind": "Indemnity", "risk": "high", "problem": "The indemnity runs only from Customer to Supplier and is not limited to claims caused by Customer's breach, contrary to the playbook's requirement of a mutual indemnity tied to each party's own breach.", "redline": "Replace with: Each party shall defend, indemnify and hold harmless the other party against any third-party claim, loss or expense arising out of its own breach of this Agreement."}, …], "asked": [{"agent": "clauses", "task": "risk", "run_id": "929ce2961e9642299545ea03294877be"}, {"agent": "clauses", "task": "risk", "run_id": "1cc80afae76e4869ac828f21121a6fe5"}, …], "run_id": "9357398faa934c28ae2f702aa98ddcab"}
+{"label_id": "53450b95227c4e1cabf4b1a61c95c1ae", "run_id": "4bb4f5bc5747475889e2599f211a84ea", "scope": "firm-acme", "at": "2026-09-30T13:41:25.298067Z", "source": "human", "review": {"stance": "objection", "comment": "Right call, but keep the redline to the playbook: breach only, and leave the cap alone.", "correction": "No. Clause 4 is a one-way indemnity from our client, a high risk under the playbook, and it reaches any claim relating to the Agreement. Redline clause 4 to: Each party shall defend, indemnify and hold harmless the other party against any third-party claim, loss or expense arising out of its own breach of this Agreement."}}
 ```
 
 ```bash
-curl -s localhost:8000/runs/9357398faa934c28ae2f702aa98ddcab/review -H 'content-type: application/json' -H 'X-Tenant: firm-acme' -d '{"stance": "approval", "comment": "Right calls. Send the redlines for clauses 4 to 6 first."}'
+curl -s -X POST localhost:8000/export -H 'X-Tenant: firm-acme'
 ```
 
 ```json
-{"label_id": "cfc23251223147548353731d90a7456f", "run_id": "9357398faa934c28ae2f702aa98ddcab", "scope": "firm-acme", "at": "2026-09-30T04:43:58.455088Z", "source": "human", "review": {"stance": "approval", "comment": "Right calls. Send the redlines for clauses 4 to 6 first."}}
+{"keys": ["firm-acme/reviewer/generation/20260930T134125305850Z.jsonl", "firm-acme/reviewer/preference/20260930T134125305850Z.jsonl"], "rows": {"generation": 1, "preference": 1}, "watermark": "2026-09-30T13:41:25.298067Z"}
 ```
