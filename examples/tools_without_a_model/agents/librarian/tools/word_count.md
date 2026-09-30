@@ -1,3 +1,0 @@
----
-name: word_count
----

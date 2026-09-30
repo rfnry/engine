@@ -1,4 +1,0 @@
-- refunds.md — duplicate charges, other refunds, and what needs a supervisor
-- delays.md — what a late order is owed
-- privacy.md — what you may repeat back to a customer
-- tone.md — how to write

@@ -1,1 +1,0 @@
-- rules/shipping.md — how to quote a delivery: where the numbers come from and what to add

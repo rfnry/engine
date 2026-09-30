@@ -8,7 +8,7 @@ import pytest
 from rfnry_engine.models import Choice
 
 EXAMPLES = Path(__file__).parents[4] / "examples"
-TAXONOMY = EXAMPLES / "decision_taxonomy"
+TAXONOMY = EXAMPLES / "legal_assistant" / "data" / "taxonomy.json"
 
 
 @pytest.mark.parametrize(
@@ -32,11 +32,9 @@ def leaves(children: dict[str, Any], path: tuple[str, ...] = ()) -> set[tuple[st
     return found
 
 
-def test_the_taxonomy_example_labels_its_items_with_leaves_of_its_taxonomy() -> None:
-    taxonomy = json.loads((TAXONOMY / "taxonomy.json").read_text(encoding="utf-8"))
-    items = json.loads((TAXONOMY / "items.json").read_text(encoding="utf-8"))
-    known = leaves(taxonomy)
-    labelled = [tuple(item["path"]) for item in items if item["path"] is not None]
-    assert len(known) == 18 and set(labelled) == known
-    assert all(len(path) == 3 for path in known)
-    assert sum(item["path"] is None for item in items) == 6
+def test_every_level_of_the_legal_taxonomy_is_a_choice_with_structured_criteria() -> None:
+    taxonomy = json.loads(TAXONOMY.read_text(encoding="utf-8"))
+    known = leaves(taxonomy["children"])
+    assert len(known) == 11
+    assert {len(path) for path in known} == {1, 2, 3}
+    assert ("liability", "limitation", "cap") in known and ("general",) in known

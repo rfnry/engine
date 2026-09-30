@@ -1,2 +1,0 @@
-- goodwill_credit — offer a credit for a late order
-- escalate — hand the conversation to a person, with a handoff note

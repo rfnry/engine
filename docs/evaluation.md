@@ -262,8 +262,8 @@ Score the recorded inputs — the queries the agent issued, the steps it took.
 by three points between two runs of the same thing, a two-point win is noise. On a small labeled set,
 say how many cases a difference is.
 
-rfnry-memory's `retrieval_eval` example applies these rules to retrieval: its rule is printed before
-any query runs, every rate carries its `n`, and every table carries the corpus fingerprint.
+Applied to retrieval, these rules mean printing the rule before any query runs, giving every rate its
+`n`, and stamping every table with the fingerprint of the corpus it was measured on.
 
 ## What to watch
 

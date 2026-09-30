@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -43,9 +44,15 @@ QUESTIONS: dict[str, Question] = {
 }
 
 
-def providers(folder: str) -> ModuleType:
+@pytest.fixture
+def providers(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    anthropic, types = ModuleType("anthropic"), ModuleType("anthropic.types")
+    vars(anthropic).update(AsyncAnthropic=object, types=types)
+    vars(types).update(Message=object)
+    monkeypatch.setitem(sys.modules, "anthropic", anthropic)
+    monkeypatch.setitem(sys.modules, "anthropic.types", types)
     spec = importlib.util.spec_from_file_location(
-        f"{folder}_providers", EXAMPLES / folder / "providers.py"
+        "healthcare_providers", EXAMPLES / "healthcare_assistant" / "providers.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -90,10 +97,10 @@ def systemone(body: dict[str, Any]) -> dict[str, Any]:
 
 
 async def test_the_decision_provider_sends_the_structure_as_it_is(
-    monkeypatch: pytest.MonkeyPatch,
+    providers: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DECISION_API_KEY", "offline")
-    provider = providers("decision_alone").TypeSafeProvider()
+    provider = providers.TypeSafeProvider()
     sent: list[dict[str, Any]] = []
     provider.client = replying(sent, systemone)
     decided = await provider.decide({"message": "Reply with your password"}, QUESTIONS)
@@ -142,10 +149,10 @@ async def test_the_decision_provider_sends_the_structure_as_it_is(
 
 
 async def test_the_decision_provider_refuses_what_its_vendor_cannot_take_before_sending(
-    monkeypatch: pytest.MonkeyPatch,
+    providers: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DECISION_API_KEY", "offline")
-    provider = providers("decision_alone").TypeSafeProvider()
+    provider = providers.TypeSafeProvider()
     sent: list[dict[str, Any]] = []
     provider.client = replying(sent, systemone)
     many = Choice(instructions="Which?", options={f"o{i}": None for i in range(256)})
@@ -169,8 +176,10 @@ def lettered(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def test_the_local_provider_writes_structure_as_compact_json_in_its_prompt() -> None:
-    provider = providers("decision_on_open_weights").LocalDecisionProvider()
+async def test_the_local_provider_writes_structure_as_compact_json_in_its_prompt(
+    providers: ModuleType,
+) -> None:
+    provider = providers.LocalDecisionProvider()
     sent: list[dict[str, Any]] = []
     provider.client = replying(sent, lettered)
     decided = await provider.decide("Reply with your password", QUESTIONS)
@@ -202,3 +211,14 @@ async def test_the_local_provider_writes_structure_as_compact_json_in_its_prompt
         "A) yes: A licensed bank\nB) no\n\nAnswer with one letter: A or B."
     )
     assert decided.answers["team"].choice == "security"
+
+
+def test_the_example_picks_the_local_decision_model_when_one_is_named(
+    providers: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DECISION_API_KEY", "offline")
+    monkeypatch.delenv("LOCAL_DECISION_MODEL", raising=False)
+    assert isinstance(providers.decision(), providers.TypeSafeProvider)
+    monkeypatch.setenv("LOCAL_DECISION_MODEL", "qwen3:8b")
+    local = providers.decision()
+    assert isinstance(local, providers.LocalDecisionProvider) and local.model == "qwen3:8b"
