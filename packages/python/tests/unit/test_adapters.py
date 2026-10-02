@@ -14,6 +14,7 @@ from rfnry_engine.models import (
     CheckAnswer,
     Choice,
     ChoiceAnswer,
+    Message,
     Question,
     Score,
     ScoreAnswer,
@@ -222,3 +223,15 @@ def test_the_example_picks_the_local_decision_model_when_one_is_named(
     monkeypatch.setenv("LOCAL_DECISION_MODEL", "qwen3:8b")
     local = providers.decision()
     assert isinstance(local, providers.LocalDecisionProvider) and local.model == "qwen3:8b"
+
+
+def test_the_generation_provider_sends_an_effort_only_when_it_has_one(
+    providers: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "offline")
+    monkeypatch.setattr(providers, "AsyncAnthropic", lambda **_: None)
+    asked = [Message(role="user", content="Where is A-1?")]
+    low = providers.AnthropicProvider()._request("Be brief.", asked, [])
+    unset = providers.AnthropicProvider(effort=None)._request("Be brief.", asked, [])
+    assert low.pop("output_config") == {"effort": "low"}
+    assert "output_config" not in unset and unset == low
