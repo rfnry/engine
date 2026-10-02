@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -37,7 +38,7 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import Decision, Fingerprint, Generation
 from rfnry_engine.refinery.labels import Outcome, Review
-from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.refinery import Refinery, label_of
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool
@@ -169,6 +170,52 @@ async def test_runs_by_id_and_labels_since_find_late_labels(storage: Storage) ->
     ]
     assert await storage.runs("a", run_ids=[]) == []
     assert [r.scope for r in await storage.runs("b", run_ids=["r1", "r2"])] == ["b"]
+
+
+async def test_put_label_keeps_the_first_row_under_an_id_and_returns_it(
+    storage: Storage,
+) -> None:
+    t0 = datetime.now(UTC)
+    first = _label("a", "m1", "r1", at=t0)
+    assert await storage.put_label("a", first) == first
+    again = _label("a", "m1", "r2", source="world", at=t0 + timedelta(seconds=1))
+    assert await storage.put_label("a", again.model_copy(update={"body": {"n": 2}})) == first
+    assert await storage.labels("a") == [first]
+    other = _label("b", "m1", "r2", source="world")
+    assert await storage.put_label("b", other) == other
+    assert await storage.labels("a") == [first] and await storage.labels("b") == [other]
+
+
+async def test_puts_racing_on_one_label_id_store_one_row(storage: Storage) -> None:
+    t0 = datetime.now(UTC)
+    rows = [
+        _label("a", "m1", f"r{i}", at=t0 + timedelta(seconds=i)).model_copy(
+            update={"body": {"i": i}}
+        )
+        for i in range(20)
+    ]
+    stored = await asyncio.gather(*(storage.put_label("a", row) for row in rows))
+    assert len({row.label_id for row in stored}) == 1 and all(row == stored[0] for row in stored)
+    assert stored[0] in rows and await storage.labels("a") == [stored[0]]
+
+
+async def test_reviews_racing_on_one_label_id_store_one_label(storage: Storage) -> None:
+    run = generation_record(scope="a")
+    await Refinery(storage).record(run)
+    reviews = [Review(stance="objection", correction=f"Refund {i}.") for i in range(10)]
+    labels = await asyncio.gather(
+        *(
+            Refinery(storage).review("a", run.run_id, review, label_id="message-81")
+            for review in reviews
+        ),
+        Refinery(storage).outcome("a", run.run_id, Outcome(status="failed"), label_id="message-82"),
+        Refinery(storage).outcome("a", run.run_id, Outcome(status="failed"), label_id="message-82"),
+    )
+    reviewed, outcomes = labels[:10], labels[10:]
+    assert all(label == reviewed[0] for label in reviewed) and reviewed[0].review in reviews
+    assert outcomes[0] == outcomes[1] and outcomes[0].label_id == "message-82"
+    stored = sorted(await storage.labels("a"), key=lambda row: row.label_id)
+    assert [label_of(row) for row in stored] == [reviewed[0], outcomes[0]]
 
 
 async def test_scope_mismatch_is_refused(storage: Storage) -> None:

@@ -186,14 +186,13 @@ class PostgresStorage:
             records = await conn.fetch(sql, *params)
         return [_run(record) for record in records]
 
-    async def put_label(self, scope: str, row: LabelRow) -> None:
+    async def put_label(self, scope: str, row: LabelRow) -> LabelRow:
         if row.scope != scope:
             raise StorageError("postgres: row scope does not match the call scope")
         async with self._guard("put_label"), self._pool.acquire() as conn:
-            await conn.execute(
+            inserted = await conn.fetchval(
                 f"INSERT INTO engine_labels ({_LABEL_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6::json) "
-                "ON CONFLICT (scope, label_id) DO UPDATE SET run_id = EXCLUDED.run_id, source = EXCLUDED.source, "
-                "at = EXCLUDED.at, body = EXCLUDED.body",
+                "ON CONFLICT (scope, label_id) DO NOTHING RETURNING true",
                 row.scope,
                 row.label_id,
                 row.run_id,
@@ -201,6 +200,14 @@ class PostgresStorage:
                 row.at,
                 json.dumps(row.body),
             )
+            if inserted:
+                return row
+            record = await conn.fetchrow(
+                f"SELECT {_LABEL_COLUMNS} FROM engine_labels WHERE scope = $1 AND label_id = $2",
+                scope,
+                row.label_id,
+            )
+            return _label(record)
 
     async def labels(
         self,

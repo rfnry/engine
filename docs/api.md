@@ -853,7 +853,7 @@ class Storage(Protocol):
         limit: int | None = 1000,
     ) -> list[RunRow]: ...
 
-    async def put_label(self, scope: str, row: LabelRow) -> None: ...
+    async def put_label(self, scope: str, row: LabelRow) -> LabelRow: ...
 
     async def labels(
         self,
@@ -885,7 +885,7 @@ class Storage(Protocol):
     async def count_scope(self, scope: str) -> int: ...
 ```
 
-The one storage protocol, as the refinery calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods. Every method but `initialize` takes `scope` first and reads and writes that scope only: `initialize` creates what the storage needs and is safe to run again; `put_run` and `put_label` store a row, replacing the one with the same id; `get_run` returns a run or `None`; `runs` returns runs newest first by `at`, at most `limit` or all with `None`, narrowed by `run_ids`, `kind`, `since` (stored after it, by `recorded`) and `unlabeled_by`, which keeps the runs no label from that source names; `labels` returns labels oldest first, narrowed by `run_ids`, `source` and `since`; `run_tree` returns the runs `run_ids` or `tags` (by containment) match and every run under them, oldest first; `delete_runs` removes those runs and every label on them, and `delete_scope` every run and label in the scope, each returning the number of rows removed; `count_scope` counts the scope's runs and labels. Both storages raise `StorageError` when a row's scope is not the call's, and `PostgresStorage` raises it whenever the database refuses.
+The one storage protocol, as the refinery calls it; `InMemoryStorage` and `PostgresStorage` implement exactly these methods. Every method but `initialize` takes `scope` first and reads and writes that scope only: `initialize` creates what the storage needs and is safe to run again; `put_run` stores a row, replacing the one with the same id; `put_label` stores a row unless the scope already holds a label with its id, which it never replaces, and returns the row stored under that id, so calls racing on one id all get the same row; `get_run` returns a run or `None`; `runs` returns runs newest first by `at`, at most `limit` or all with `None`, narrowed by `run_ids`, `kind`, `since` (stored after it, by `recorded`) and `unlabeled_by`, which keeps the runs no label from that source names; `labels` returns labels oldest first, narrowed by `run_ids`, `source` and `since`; `run_tree` returns the runs `run_ids` or `tags` (by containment) match and every run under them, oldest first; `delete_runs` removes those runs and every label on them, and `delete_scope` every run and label in the scope, each returning the number of rows removed; `count_scope` counts the scope's runs and labels. Both storages raise `StorageError` when a row's scope is not the call's, and `PostgresStorage` raises it whenever the database refuses.
 
 ### `InMemoryStorage`
 
@@ -903,7 +903,7 @@ class PostgresStorage:
     def __init__(self, pool: Any) -> None: ...
 ```
 
-Implements `Storage` in Postgres, over an asyncpg pool you built. `initialize` creates the tables `engine_runs` and `engine_labels` and their indexes, so one database can hold other libraries' tables beside them; `delete_runs` and `delete_scope` each run in one transaction.
+Implements `Storage` in Postgres, over an asyncpg pool you built. `initialize` creates the tables `engine_runs` and `engine_labels` and their indexes, so one database can hold other libraries' tables beside them; `delete_runs` and `delete_scope` each run in one transaction; `put_label` inserts unless the id is taken and then reads the stored row back, so processes racing on one id store one row and all get it.
 
 ### `RunRow`
 
@@ -980,22 +980,36 @@ Raises `InputError` when `scope` is empty. Raises `NotFoundError` when the scope
 ### `Refinery.review`
 
 ```python
-async def review(self, scope: str, run_id: str, review: Review) -> Label: ...
+async def review(
+    self,
+    scope: str,
+    run_id: str,
+    review: Review,
+    *,
+    label_id: str | None = None,
+) -> Label: ...
 ```
 
-Stores a person's review of the run and returns the label, with `source="human"`.
+Stores a person's review of the run and returns the label, with `source="human"`. Without `label_id` the label gets a fresh id. With it the label is stored under `label_id`, once: when the scope already holds a label with that id on this run, that stored label is returned and nothing is written, so the same call made again — after a crash, or by every process that heard the same event, at the same moment or not — stores one label.
 
-Raises `InputError` when `scope` is empty, or when the correction does not fit the run: a dict for a generation run, a string for a decision run, or a question id the run was not asked. Raises `NotFoundError` when the scope has no run `run_id`.
+Raises `InputError` when `scope` or `label_id` is empty, when the correction does not fit the run — a dict for a generation run, a string for a decision run, or a question id the run was not asked — or when the scope's label `label_id` is on another run. Raises `NotFoundError` when the scope has no run `run_id`.
 
 ### `Refinery.outcome`
 
 ```python
-async def outcome(self, scope: str, run_id: str, outcome: Outcome) -> Label: ...
+async def outcome(
+    self,
+    scope: str,
+    run_id: str,
+    outcome: Outcome,
+    *,
+    label_id: str | None = None,
+) -> Label: ...
 ```
 
-Stores what the world reported about the run and returns the label, with `source="world"`.
+Stores what the world reported about the run and returns the label, with `source="world"`. `label_id` works as in `Refinery.review`: the label is stored under it once, and a later call with it on the same run returns the stored label and writes nothing.
 
-Raises `InputError` when `scope` is empty. Raises `NotFoundError` when the scope has no run `run_id`.
+Raises `InputError` when `scope` or `label_id` is empty, or when the scope's label `label_id` is on another run. Raises `NotFoundError` when the scope has no run `run_id`.
 
 ### `Refinery.conflicts`
 

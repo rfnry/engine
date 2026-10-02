@@ -57,10 +57,10 @@ class InMemoryStorage:
         rows.sort(key=lambda r: (r.at, r.run_id), reverse=True)
         return rows[:limit]
 
-    async def put_label(self, scope: str, row: LabelRow) -> None:
+    async def put_label(self, scope: str, row: LabelRow) -> LabelRow:
         if row.scope != scope:
             raise StorageError("inmemory: row scope does not match the call scope")
-        self._labels[(scope, row.label_id)] = row
+        return self._labels.setdefault((scope, row.label_id), row)
 
     async def labels(
         self,

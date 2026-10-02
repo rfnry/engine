@@ -798,6 +798,13 @@ The world reports whether the action worked:
 await refinery.outcome("acme", run.run_id, Outcome(status="failed", detail="Customer escalated."))
 ```
 
+Each call stores a new label. An app that labels from events more than one process hears — a staff
+reply every replica of a backend receives — or that retries after a crash passes `label_id=`, an id
+derived from the event such as the message id:
+`refinery.review("acme", run.run_id, review, label_id=message.id)`. The first call stores the label
+under it; every later call with that id on the same run, racing or not, returns that label and
+writes nothing, and one on another run is an `InputError`.
+
 And models label what people did not. A **judge** is a decision agent in your tree whose questions
 are about an episode; it sees the input, the reply and every tool call with its result, with each image,
 audio or document replaced by a placeholder naming it — `[image: image/jpeg]`, `[document: application/pdf, "policy.pdf"]` —
@@ -1121,7 +1128,7 @@ class Storage(Protocol):
     async def runs(self, scope: str, *, run_ids: list[str] | None = None, kind: str | None = None,
                    since: datetime | None = None, unlabeled_by: str | None = None,
                    limit: int | None = 1000) -> list[RunRow]       # newest first
-    async def put_label(self, scope: str, row: LabelRow) -> None
+    async def put_label(self, scope: str, row: LabelRow) -> LabelRow  # the row under its id; never replaces one
     async def labels(self, scope: str, *, run_ids: list[str] | None = None,
                      source: str | None = None, since: datetime | None = None) -> list[LabelRow]
     async def run_tree(self, scope: str, *, run_ids: list[str] | None = None,

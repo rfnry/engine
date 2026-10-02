@@ -112,6 +112,14 @@ def label_of(row: LabelRow) -> Label:
     return Label.model_validate(row.body)
 
 
+def as_label_id(label_id: str | None) -> str:
+    if label_id is None:
+        return uuid4().hex
+    if not label_id:
+        raise InputError("refinery: label_id must not be empty")
+    return label_id
+
+
 def check_selector(verb: str, run_ids: list[str] | None, tags: dict[str, str] | None) -> None:
     if run_ids is not None and tags is not None:
         raise InputError(f"refinery: {verb} takes run_ids or tags, not both")
@@ -150,7 +158,7 @@ class Refinery:
         return row
 
     async def _put(self, label: Label) -> Label:
-        await self.storage.put_label(
+        stored = await self.storage.put_label(
             label.scope,
             LabelRow(
                 scope=label.scope,
@@ -161,11 +169,18 @@ class Refinery:
                 body=label.model_dump(mode="json"),
             ),
         )
-        return label
+        if stored.run_id != label.run_id:
+            raise InputError(
+                f"refinery: label {label.label_id!r} already labels run {stored.run_id!r}"
+            )
+        return label_of(stored)
 
-    async def review(self, scope: str, run_id: str, review: Review) -> Label:
+    async def review(
+        self, scope: str, run_id: str, review: Review, *, label_id: str | None = None
+    ) -> Label:
         if not scope:
             raise InputError("refinery: scope is required")
+        label_id = as_label_id(label_id)
         row = await self._run_row(scope, run_id)
         if row.kind == "generation" and isinstance(review.correction, dict):
             raise InputError("refinery: a generation run takes a text correction")
@@ -179,7 +194,7 @@ class Refinery:
                 )
         return await self._put(
             Label(
-                label_id=uuid4().hex,
+                label_id=label_id,
                 run_id=run_id,
                 scope=scope,
                 at=datetime.now(UTC),
@@ -188,13 +203,16 @@ class Refinery:
             )
         )
 
-    async def outcome(self, scope: str, run_id: str, outcome: Outcome) -> Label:
+    async def outcome(
+        self, scope: str, run_id: str, outcome: Outcome, *, label_id: str | None = None
+    ) -> Label:
         if not scope:
             raise InputError("refinery: scope is required")
+        label_id = as_label_id(label_id)
         await self._run_row(scope, run_id)
         return await self._put(
             Label(
-                label_id=uuid4().hex,
+                label_id=label_id,
                 run_id=run_id,
                 scope=scope,
                 at=datetime.now(UTC),

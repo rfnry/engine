@@ -9,7 +9,7 @@ from rfnry_engine.models import Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Outcome, Review
-from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.refinery import Refinery, label_of
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool
 
@@ -58,6 +58,53 @@ async def test_review_and_outcome_become_labels_with_their_source() -> None:
     assert {labels[0].label_id, labels[1].label_id} == {review.label_id, outcome.label_id}
     world = next(label for label in labels if label.source == "world")
     assert world.body["outcome"]["status"] == "failed"
+
+
+async def test_a_label_id_stores_one_label_however_often_it_is_given() -> None:
+    refinery = Refinery(InMemoryStorage())
+    run, other = generation_record(), decision_record()
+    await refinery.record(run)
+    await refinery.record(other)
+    first = await refinery.review(
+        "acme", run.run_id, Review(stance="objection", correction="Refund in full."), label_id="m1"
+    )
+    assert first.label_id == "m1" and first.source == "human"
+    again = await refinery.review("acme", run.run_id, Review(stance="approval"), label_id="m1")
+    assert again == first
+    world = await refinery.outcome("acme", run.run_id, Outcome(status="failed"), label_id="m2")
+    assert world.label_id == "m2" and world.source == "world"
+    later = await refinery.outcome("acme", run.run_id, Outcome(status="succeeded"), label_id="m2")
+    assert later == world
+    with pytest.raises(
+        InputError, match=f"^refinery: label 'm1' already labels run '{run.run_id}'$"
+    ):
+        await refinery.review("acme", other.run_id, Review(stance="approval"), label_id="m1")
+    with pytest.raises(
+        InputError, match=f"^refinery: label 'm2' already labels run '{run.run_id}'$"
+    ):
+        await refinery.outcome("acme", other.run_id, Outcome(status="failed"), label_id="m2")
+    stored = await refinery.storage.labels("acme")
+    assert sorted(row.label_id for row in stored) == ["m1", "m2"]
+    assert [row.body for row in stored if row.label_id == "m1"] == [first.model_dump(mode="json")]
+    with pytest.raises(InputError, match="^refinery: label_id must not be empty$"):
+        await refinery.review("acme", run.run_id, Review(stance="approval"), label_id="")
+    with pytest.raises(InputError, match="^refinery: label_id must not be empty$"):
+        await refinery.outcome("acme", run.run_id, Outcome(status="failed"), label_id="")
+    fresh = [await refinery.review("acme", run.run_id, Review(stance="approval")) for _ in "ab"]
+    assert fresh[0].label_id != fresh[1].label_id
+    assert len(await refinery.storage.labels("acme")) == 4
+
+
+async def test_a_label_id_belongs_to_its_scope() -> None:
+    refinery = Refinery(InMemoryStorage())
+    a, b = generation_record(scope="a"), generation_record(scope="b")
+    await refinery.record(a)
+    await refinery.record(b)
+    in_a = await refinery.review("a", a.run_id, Review(stance="approval"), label_id="m1")
+    in_b = await refinery.review("b", b.run_id, Review(stance="objection"), label_id="m1")
+    assert (in_a.scope, in_a.run_id) == ("a", a.run_id)
+    assert (in_b.scope, in_b.run_id) == ("b", b.run_id)
+    assert [label_of(row) for row in await refinery.storage.labels("b")] == [in_b]
 
 
 async def test_a_correction_must_match_the_run_kind() -> None:
