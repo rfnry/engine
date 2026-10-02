@@ -2,6 +2,8 @@ import asyncio
 import re
 import shutil
 import time
+from collections.abc import Awaitable, Callable
+from itertools import groupby
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,7 @@ from rfnry_engine.models import (
     ScoreAnswer,
     Text,
     ToolCall,
+    ToolSpec,
     Usage,
 )
 from rfnry_engine.records import Event, Generation, Run, TextDelta
@@ -192,6 +195,43 @@ async def test_streaming_emits_deltas(fixtures: Path) -> None:
     run = await engine_for(fixtures, llm).run("support", "acme", "x", on_event=collect)
     assert [e.text for e in seen if isinstance(e, TextDelta)] == ["one ", "two "]
     assert all(e.run_id == run.run_id for e in seen)
+
+
+class Faithful(Scripted):
+    async def generate_stream(
+        self,
+        system: str,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> Reply:
+        reply = await self.generate(system, messages, tools)
+        for piece in re.findall(r"\S+\s*", reply.text):
+            await on_delta(piece)
+        return reply
+
+
+@pytest.mark.parametrize("model", [Scripted, Faithful])
+async def test_each_delta_names_its_turn_and_the_reply_is_the_last_turns_text(
+    fixtures: Path, model: type[Scripted]
+) -> None:
+    lookup = ToolCall(id="c", name="lookup_order", args={"order_id": "A-1"})
+    llm = model(
+        Reply(text="Let me look that up.", tool_calls=[lookup], stop_reason="tool_use"),
+        text_reply("A-1 shipped today."),
+    )
+    seen: list[Event] = []
+
+    async def collect(event: Event) -> None:
+        seen.append(event)
+
+    run = await engine_for(fixtures, llm).run("support", "acme", "Where is A-1?", on_event=collect)
+    assert isinstance(run, Generation)
+    order = [e.turn if isinstance(e, TextDelta) else type(e).__name__ for e in seen]
+    assert [kind for kind, _ in groupby(order)] == [0, "ToolCallStarted", "ToolResultReady", 1]
+    deltas = [e for e in seen if isinstance(e, TextDelta)]
+    assert "".join(e.text for e in deltas if e.turn == 0) == "Let me look that up."
+    assert "".join(e.text for e in deltas if e.turn == 1) == run.reply == "A-1 shipped today."
 
 
 async def test_runaway_loop_raises(fixtures: Path) -> None:

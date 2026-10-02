@@ -38,6 +38,7 @@ class Step(BaseModel):
 class TextDelta(BaseModel):
     run_id: str
     agent: str
+    turn: int
     text: str
 
 

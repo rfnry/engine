@@ -307,6 +307,11 @@ A `ToolCallStarted` carries the call's `args`, and a `ToolResultReady` its `step
 the run records, sent however the call ended — a result, an error, a refusal, a delegation, a stop —
 so a step can be shown, in a conversation or anywhere, while the run goes on.
 
+Every model call is a turn, and a `TextDelta` carries the `turn` that said it, from 0. Text of a
+turn that ends in tool calls — "Let me look that up." — is said beside them; a run that ends in
+text replies with its last turn's text, so `run.reply` is that text and nothing said before it. A
+delegated or routed run sends its own `run_id` and counts its own turns.
+
 A person can stop or steer a run while it works. Pass `stop=Stop()` and call `stop.now()` to cancel
 the model call in flight and every tool still running, or `stop.after_step()` to let the current
 tool calls finish and end before the next model call. Pass `inbox=asyncio.Queue()` and put a string

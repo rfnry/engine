@@ -544,10 +544,11 @@ One tool call of a generation run: the tool, its arguments, its result, whether 
 class TextDelta(BaseModel):
     run_id: str
     agent: str
+    turn: int
     text: str
 ```
 
-Text from the model, sent to `on_event` as it is produced; from a model that does not stream, the whole text of each reply.
+Text from the model, sent to `on_event` as it is produced; from a model that does not stream, the whole text of each reply. `turn` is the model call of the run that said it, from 0: text of a turn that ended in tool calls was said beside them, and a run that ends in text replies with its last turn's text. A delegated or routed run sends its own `run_id` and counts its own turns.
 
 ### `ToolCallStarted`
 

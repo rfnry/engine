@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from rfnry_engine import Event, Stop, ToolCallStarted, ToolResultReady
+from rfnry_engine import Event, Stop, TextDelta, ToolCallStarted, ToolResultReady
 from rfnry_engine.engine import Engine
 from rfnry_engine.models import Reply, ToolCall
 from rfnry_engine.records import Generation
@@ -152,3 +152,24 @@ async def test_a_call_cut_off_by_stop_sends_its_stopped_step(tmp_path: Path) -> 
     assert isinstance(run, Generation) and run.stopped == "now"
     check(run, calls, collect.of(run.run_id))
     assert [(s.result, s.is_error, s.stopped) for s in run.steps] == [(STOPPED, True, True)] * 2
+
+
+async def test_a_childs_text_carries_its_own_run_and_its_own_turns(tmp_path: Path) -> None:
+    delegate = ToolCall(id="d", name="Delegate", args={"agent": "chat", "input": "Say hi"})
+    llm = Scripted(
+        Reply(text="Asking chat.", tool_calls=[delegate], stop_reason="tool_use"),
+        text_reply("Hi from chat."),
+        text_reply("Chat says hi."),
+    )
+    collect = Collect()
+    run = await Engine(make_tree(tmp_path), generation=llm).run(
+        "lead", "acme", "Greet", on_event=collect
+    )
+    assert isinstance(run, Generation) and run.reply == "Chat says hi."
+    [child] = run.children
+    said = [(e.run_id, e.agent, e.turn, e.text) for e in collect.events if isinstance(e, TextDelta)]
+    assert said == [
+        (run.run_id, "lead", 0, "Asking chat."),
+        (child.run_id, "chat", 0, "Hi from chat."),
+        (run.run_id, "lead", 1, "Chat says hi."),
+    ]

@@ -533,7 +533,7 @@ class Engine:
 
         async def delta(text: str) -> None:
             streamed.append(text)
-            await emit(TextDelta(run_id=run_id, agent=spec.name, text=text))
+            await emit(TextDelta(run_id=run_id, agent=spec.name, turn=turn, text=text))
 
         async def delegate(call: ToolCall) -> tuple[Content, bool, str | None, bool]:
             if requested(stop) == "now":
@@ -693,11 +693,11 @@ class Engine:
                 stopped=stopped,
             )
 
-        for index in range(self.max_steps):
+        for turn in range(self.max_steps):
             mode = requested(stop)
             if mode is not None:
                 return finish(said, mode)
-            if index:
+            if turn:
                 drain()
             streamed.clear()
             asking = asyncio.ensure_future(ask())
