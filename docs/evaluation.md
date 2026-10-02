@@ -258,9 +258,28 @@ failures the system does not have: retrieval scored on the raw ticket text when 
 with its own words, or a missing document counted against an answer the agent took from a tool.
 Score the recorded inputs — the queries the agent issued, the steps it took.
 
-**Know the noise before believing a difference.** Replay the same candidate twice. If its rate moves
-by three points between two runs of the same thing, a two-point win is noise. On a small labeled set,
-say how many cases a difference is.
+**Know the noise before believing a difference.** Replay the engine you run today with `repeat=3`:
+each held-out run is answered three times, and the three attempts come one after another. If the
+count of passing runs moves by three between attempts of the same thing, a candidate that passes two
+more is noise. With `passes(pair)` your grade of one pair, true or false — the grader above over a
+threshold, a failed pair a fail:
+
+```python
+graded = {}
+async for pair in refinery.replay("acme", engine, agent="support", holdout=True, labeled=True,
+                                  approve=read_only, repeat=3):
+    graded.setdefault(pair.recorded.run_id, {})[pair.attempt] = await passes(pair)
+
+moved = sum(len(set(grades.values())) > 1 for grades in graded.values())
+passing = [sum(grades[attempt] for grades in graded.values()) for attempt in range(3)]
+swing = max(passing) - min(passing)
+```
+
+`moved` counts the runs whose grade differs across attempts; `swing` is how far the count of passing
+runs moves between the best attempt and the worst. The arithmetic is yours, because the metric is: a
+rate, a mean score or a count of outcomes is read across attempts the same way. A candidate replays
+with `repeat=` too, so its own spread shows beside the one it is compared against. On a small
+labeled set, say how many cases a difference is.
 
 Applied to retrieval, these rules mean printing the rule before any query runs, giving every rate its
 `n`, and stamping every table with the fingerprint of the corpus it was measured on.

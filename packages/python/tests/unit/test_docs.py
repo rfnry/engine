@@ -108,3 +108,54 @@ async def test_the_holdout_replay_grades_the_candidate_on_what_each_run_was_give
         {"reference": "Refund the second charge.", "reply": "Refund the second charge."},
     ]
     assert namespace["grades"] == [0.9, 0.9] and namespace["failures"] == []
+
+
+class Wavering:
+    def __init__(self, *replies: str) -> None:
+        self.replies = list(replies)
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        return Reply(text=self.replies.pop(0))
+
+
+async def test_the_noise_recipe_counts_what_moved_and_the_swing(tmp_path: Path) -> None:
+    (tmp_path / "support").mkdir()
+    (tmp_path / "support/AGENT.md").write_text(
+        "---\nname: support\nkind: generation\n---\nYou help.\n", encoding="utf-8"
+    )
+    refinery = Refinery(InMemoryStorage())
+    held = [f"run-{i}" for i in range(200) if is_holdout(f"run-{i}")][:3]
+    recorder = Engine(tmp_path, generation=Wavering("a", "b", "c"))
+    for run_id in held:
+        run = await recorder.run("support", "acme", "Charged twice?")
+        await refinery.record(run.model_copy(update={"run_id": run_id}))
+        await refinery.review("acme", run_id, Review(stance="approval"))
+    replies = ["yes", "no", "yes", "yes", "yes", "yes", "no", "no", "yes"]
+
+    async def read_only(agent: str, call: Any) -> bool:
+        return True
+
+    async def passes(pair: Any) -> bool:
+        return pair.candidate is not None and pair.candidate.reply == "yes"
+
+    namespace: dict[str, Any] = {
+        "refinery": refinery,
+        "engine": Engine(tmp_path, generation=Wavering(*replies)),
+        "read_only": read_only,
+        "passes": passes,
+    }
+    [block] = [
+        textwrap.dedent(b)
+        for b in re.findall(r"```python\n(.*?)```", GUIDE.read_text(encoding="utf-8"), re.S)
+        if b.startswith("graded = {}")
+    ]
+    code = compile(block, "evaluation.md", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+    await eval(code, namespace)
+    assert namespace["graded"] == {
+        held[0]: {0: True, 1: False, 2: True},
+        held[1]: {0: True, 1: True, 2: True},
+        held[2]: {0: False, 1: False, 2: True},
+    }
+    assert namespace["moved"] == 2
+    assert namespace["passing"] == [2, 1, 3]
+    assert namespace["swing"] == 2

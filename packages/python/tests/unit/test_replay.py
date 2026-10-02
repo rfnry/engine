@@ -308,6 +308,74 @@ async def test_a_candidate_that_fails_yields_its_error_and_the_replay_goes_on(
     assert missing.error.startswith("ConfigurationError: engine: agent 'support'")
 
 
+async def test_repeat_replays_each_recorded_run_that_many_times_one_after_another(
+    fixtures: Path,
+) -> None:
+    refinery = Refinery(InMemoryStorage())
+    for i in range(2):
+        await put(refinery, generation_record(), f"r{i}", i)
+    llm = Scripted(*(text_reply(word) for word in ("one", "two", "three", "four", "five", "six")))
+    pairs = await collect(
+        refinery.replay("acme", candidate(fixtures, llm), agent="support", repeat=3)
+    )
+    assert [(pair.recorded.run_id, pair.attempt) for pair in pairs] == [
+        ("r0", 0),
+        ("r0", 1),
+        ("r0", 2),
+        ("r1", 0),
+        ("r1", 1),
+        ("r1", 2),
+    ]
+    assert pairs[0].recorded == pairs[1].recorded == pairs[2].recorded
+    assert pairs[0].labels == pairs[1].labels == pairs[2].labels
+    runs = [pair.candidate for pair in pairs]
+    assert all(isinstance(run, Generation) for run in runs)
+    assert [run.reply for run in runs if isinstance(run, Generation)] == [
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+    ]
+    assert len({run.run_id for run in runs if run is not None}) == 6
+    assert len(llm.calls) == 6
+    once = await collect(refinery.replay("acme", candidate(fixtures), agent="support"))
+    assert [(pair.recorded.run_id, pair.attempt) for pair in once] == [("r0", 0), ("r1", 0)]
+
+
+async def test_limit_counts_recorded_runs_not_attempts(fixtures: Path) -> None:
+    refinery = Refinery(InMemoryStorage())
+    for i in range(3):
+        await put(refinery, generation_record(), f"r{i}", i)
+    pairs = await collect(
+        refinery.replay("acme", candidate(fixtures), agent="support", limit=2, repeat=2)
+    )
+    assert [(pair.recorded.run_id, pair.attempt) for pair in pairs] == [
+        ("r0", 0),
+        ("r0", 1),
+        ("r1", 0),
+        ("r1", 1),
+    ]
+
+
+async def test_an_attempt_that_fails_yields_its_error_and_the_other_attempts_go_on(
+    fixtures: Path,
+) -> None:
+    refinery = Refinery(InMemoryStorage())
+    await put(refinery, generation_record(), "r0", 0)
+    pairs = await collect(
+        refinery.replay("acme", candidate(fixtures, Flaky()), agent="support", repeat=3)
+    )
+    assert [pair.attempt for pair in pairs] == [0, 1, 2]
+    assert [pair.error for pair in pairs] == [None, "RuntimeError: the vendor is down", None]
+    assert pairs[1].candidate is None
+    assert [pair.candidate.reply for pair in pairs if isinstance(pair.candidate, Generation)] == [
+        "reply 1",
+        "reply 3",
+    ]
+
+
 async def test_a_decision_run_replays_its_state_and_what_its_route_was_given(
     fixtures: Path,
 ) -> None:
@@ -467,6 +535,32 @@ async def test_concurrency_bounds_the_runs_in_flight_and_order_holds(fixtures: P
     assert gate.most == 2
 
 
+async def test_concurrency_bounds_every_attempt_together_and_order_holds(fixtures: Path) -> None:
+    refinery = Refinery(InMemoryStorage())
+    await recorded_inputs(refinery, ["a", "b"])
+    gate = Gate()
+    pairs = refinery.replay(
+        "acme", candidate(fixtures, gate), agent="support", concurrency=3, repeat=2
+    )
+    got: list[tuple[str, int, str]] = []
+
+    async def consume() -> None:
+        async for pair in pairs:
+            assert isinstance(pair.candidate, Generation)
+            got.append((pair.recorded.run_id, pair.attempt, pair.candidate.reply))
+
+    task = asyncio.create_task(consume())
+    await until(lambda: gate.running == 3)
+    gate.release.setdefault("b", asyncio.Event()).set()
+    await until(lambda: gate.finished == 1)
+    await asyncio.sleep(0.01)
+    assert got == [] and gate.started == 3
+    gate.release.setdefault("a", asyncio.Event()).set()
+    await asyncio.wait_for(task, 5)
+    assert got == [("r0", 0, "re: a"), ("r0", 1, "re: a"), ("r1", 0, "re: b"), ("r1", 1, "re: b")]
+    assert gate.most == 3 and gate.started == 4
+
+
 async def test_one_at_a_time_runs_the_next_only_when_the_last_is_taken(fixtures: Path) -> None:
     refinery = Refinery(InMemoryStorage())
     await recorded_inputs(refinery, ["a", "b", "c"])
@@ -541,6 +635,8 @@ async def test_a_bad_call_is_refused_before_anything_is_read(fixtures: Path) -> 
         refinery.replay("acme", engine, agent="support", limit=0)
     with pytest.raises(InputError, match="^refinery: concurrency must be at least 1, got 0$"):
         refinery.replay("acme", engine, agent="support", concurrency=0)
+    with pytest.raises(InputError, match="^refinery: repeat must be at least 1, got 0$"):
+        refinery.replay("acme", engine, agent="support", repeat=0)
     with pytest.raises(InputError, match="^refinery: tags must hold at least one tag$"):
         refinery.replay("acme", engine, agent="support", tags={})
     with pytest.raises(NotFoundError, match="^refinery: the candidate has no agent 'ghost'$"):

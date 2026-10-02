@@ -46,6 +46,7 @@ class Labeled(BaseModel):
 class Replay(BaseModel):
     recorded: Run
     labels: list[Label]
+    attempt: int = 0
     candidate: Run | None = None
     error: str | None = None
 

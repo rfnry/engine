@@ -658,11 +658,12 @@ A run that carries two different human corrections: each as `(label_id, at, text
 class Replay(BaseModel):
     recorded: Run
     labels: list[Label]
+    attempt: int = 0
     candidate: Run | None = None
     error: str | None = None
 ```
 
-One pair from `Refinery.replay`: the recorded run as `Refinery.run` reads it back, every label on it oldest first, and the candidate's run on what the recorded run was given, never recorded. When the candidate failed, `candidate` is `None` and `error` is the failure as `"TypeName: message"`.
+One pair from `Refinery.replay`: the recorded run as `Refinery.run` reads it back, every label on it oldest first, which of the `repeat` replays of that run this is, from 0, and the candidate's run on what the recorded run was given, never recorded. When the candidate failed, `candidate` is `None` and `error` is the failure as `"TypeName: message"`.
 
 ## Tools
 
@@ -1077,12 +1078,13 @@ def replay(
     tools: ToolsLike | None = None,
     workspace: Workspace | None = None,
     concurrency: int = 1,
+    repeat: int = 1,
 ) -> AsyncGenerator[Replay, None]: ...
 ```
 
-Runs `candidate` on what the top-level runs of `agent` in `scope` were given and yields a `Replay` for each, oldest first by when the run started. `holdout` keeps the held-out runs, by the same hash and `holdout_percent` as `export`; `labeled` the runs with a `human` or `world` label; `tags` the runs whose tags contain these, as `delete_runs` matches; `fingerprint` the runs whose fingerprint equals it, all three parts; `limit` the first so many. Each replay is `candidate.run(agent, scope, …, record=False)` with the recorded input — parts read back as parts — the history (the messages sent before the input), the task and the `context`; a decision run replays its state, its task and its runtime questions as recorded, the rest of its questions coming from the candidate's folder, and when its route reached a generation run, that run's input, history and context. `expect`, `approve`, `tools` and `workspace` are passed to every replay. `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets. The candidate's tools run for real. At most `concurrency` replays run at once, and while a pair is being read at most `concurrency - 1` run, so with the default a replay starts when its pair is asked for. Pairs are yielded in that order either way, and closing the generator cancels the replays still running. A candidate that raises yields its pair with `error` and the replay goes on. Nothing is recorded and no label is written.
+Runs `candidate` on what the top-level runs of `agent` in `scope` were given and yields a `Replay` for each, oldest first by when the run started. `holdout` keeps the held-out runs, by the same hash and `holdout_percent` as `export`; `labeled` the runs with a `human` or `world` label; `tags` the runs whose tags contain these, as `delete_runs` matches; `fingerprint` the runs whose fingerprint equals it, all three parts; `limit` the first so many. Each replay is `candidate.run(agent, scope, …, record=False)` with the recorded input — parts read back as parts — the history (the messages sent before the input), the task and the `context`; a decision run replays its state, its task and its runtime questions as recorded, the rest of its questions coming from the candidate's folder, and when its route reached a generation run, that run's input, history and context. `expect`, `approve`, `tools` and `workspace` are passed to every replay. `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets. The candidate's tools run for real. Each run is replayed `repeat` times, each attempt a run of its own yielded as a pair of its own whose `attempt` counts from 0; the attempts of a run come one after another, in attempt order, and `limit` counts recorded runs, not attempts. At most `concurrency` replays run at once, attempts included, and while a pair is being read at most `concurrency - 1` run, so with the default a replay starts when its pair is asked for. Pairs are yielded in that order either way, and closing the generator cancels the replays still running. A candidate that raises yields its pair with `error` and the replay goes on, the other attempts of the same run included. Nothing is recorded and no label is written.
 
-Raises `InputError` when `scope` is empty, `holdout_percent` is outside 0 to 100, `tags` is empty, or `limit` or `concurrency` is below 1. Raises `NotFoundError` when the candidate has no agent `agent`. Each check happens when `replay` is called, before anything is read; a storage's `StorageError` is raised by the first pair.
+Raises `InputError` when `scope` is empty, `holdout_percent` is outside 0 to 100, `tags` is empty, or `limit`, `concurrency` or `repeat` is below 1. Raises `NotFoundError` when the candidate has no agent `agent`. Each check happens when `replay` is called, before anything is read; a storage's `StorageError` is raised by the first pair.
 
 ### `Refinery.delete_scope`
 

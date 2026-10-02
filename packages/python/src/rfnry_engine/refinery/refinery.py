@@ -380,6 +380,7 @@ class Refinery:
         tools: ToolsLike | None = None,
         workspace: Workspace | None = None,
         concurrency: int = 1,
+        repeat: int = 1,
     ) -> AsyncGenerator[Replay, None]:
         if not scope:
             raise InputError("refinery: scope is required")
@@ -391,6 +392,8 @@ class Refinery:
             raise InputError(f"refinery: limit must be at least 1, got {limit}")
         if concurrency < 1:
             raise InputError(f"refinery: concurrency must be at least 1, got {concurrency}")
+        if repeat < 1:
+            raise InputError(f"refinery: repeat must be at least 1, got {repeat}")
         if agent not in candidate.agents:
             raise NotFoundError(f"refinery: the candidate has no agent {agent!r}")
 
@@ -432,14 +435,17 @@ class Refinery:
                 record=False,
             )
 
-        async def pair(recorded: Run, labels: list[Label]) -> Replay:
+        async def pair(recorded: Run, labels: list[Label], attempt: int) -> Replay:
             try:
                 run = await rerun(recorded)
             except Exception as exc:
                 return Replay(
-                    recorded=recorded, labels=labels, error=f"{type(exc).__name__}: {exc}"
+                    recorded=recorded,
+                    labels=labels,
+                    attempt=attempt,
+                    error=f"{type(exc).__name__}: {exc}",
                 )
-            return Replay(recorded=recorded, labels=labels, candidate=run)
+            return Replay(recorded=recorded, labels=labels, attempt=attempt, candidate=run)
 
         async def pairs() -> AsyncGenerator[Replay, None]:
             chosen = await self._replayable(
@@ -461,9 +467,10 @@ class Refinery:
 
             try:
                 for recorded, labels in chosen:
-                    running.append(asyncio.ensure_future(pair(recorded, labels)))
-                    if len(running) == concurrency:
-                        yield await first()
+                    for attempt in range(repeat):
+                        running.append(asyncio.ensure_future(pair(recorded, labels, attempt)))
+                        if len(running) == concurrency:
+                            yield await first()
                 while running:
                     yield await first()
             finally:

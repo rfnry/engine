@@ -938,11 +938,15 @@ again — `expect=`, `approve=`, and the `tools=` and `workspace=` the runs were
 delegates and routes as it does, so a run with children replays as one run. A run recorded before
 `context` was kept replays without it.
 
-`concurrency=4` keeps up to four replays going, and while you read a pair at most three more run;
-with the default of one, a replay starts when you ask for its pair. Pairs come in recorded order
-either way. A candidate that fails yields its pair with `error` — `"ModelError: …"` — and
-`candidate=None`, and the replay goes on. Nothing is recorded, no label is written, and nothing is
-graded: the pair holds both runs with their models and fingerprints, and what you compare is yours.
+`repeat=3` replays each run three times: each attempt is a run of its own and a pair of its own,
+`pair.attempt` counts them from 0, and the three come one after another; `limit=` still counts
+recorded runs. A model samples, so the same candidate on the same input can answer differently, and
+the attempts show how much. `concurrency=4` keeps up to four replays going, attempts included, and
+while you read a pair at most three more run; with the default of one, a replay starts when you ask
+for its pair. Pairs come in recorded order either way. A candidate that fails yields its pair with
+`error` — `"ModelError: …"` — and `candidate=None`, and the replay goes on, the run's other
+attempts included. Nothing is recorded, no label is written, and nothing is graded: the pair holds
+both runs with their models and fingerprints, and what you compare is yours.
 [`evaluation.md`](evaluation.md) grades the replies with a decision agent.
 
 ### Agents kept in a repository
@@ -1230,7 +1234,7 @@ model does not declare, a media part with both or neither of `data` and `url`, a
 correction of the wrong shape or for a question the run was not asked, a `delete_runs` or
 `verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an
 `export` or a `replay` given a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or
-a `limit` or `concurrency` below 1, a tool called with bad arguments or a path outside its
+a `limit`, `concurrency` or `repeat` below 1, a tool called with bad arguments or a path outside its
 directory. `ModelError` when an adapter breaks the contract — a
 result whose fields do not fit, a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels. `RunawayError` when
 a loop exceeds `max_steps` (default 200). `DelegationLoopError` and `DelegationDepthError` for
