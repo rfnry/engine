@@ -220,6 +220,11 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _declared(model: object) -> str | None:
+    named = getattr(model, "model", None)
+    return named if isinstance(named, str) and named else None
+
+
 class Engine:
     def __init__(
         self,
@@ -435,7 +440,7 @@ class Engine:
             task=options.task,
             at=at,
             duration_ms=int((time.monotonic() - started) * 1000),
-            model=decided.model,
+            model=decided.model or _declared(model_),
             fingerprint=Fingerprint(
                 agent=spec.fingerprint, tools=NO_TOOLS, questions=questions_fingerprint(questions)
             ),
@@ -522,7 +527,7 @@ class Engine:
         delegated: dict[str, Run] = {}
         usage = Usage()
         calls = 0
-        model: str | None = None
+        model = _declared(model_)
         streaming = on_event is not None and hasattr(model_, "generate_stream")
         streamed: list[str] = []
         said = ""

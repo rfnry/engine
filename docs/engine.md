@@ -90,7 +90,8 @@ Structured output is a tool call — the model is offered an `Output` tool — s
 nothing beyond tool support. An adapter that also implements
 `generate_stream(system, messages, tools, on_delta)` streams text when the caller asks for events. An adapter that has `media_types`, the file types its model takes —
 `{"image/*", "application/pdf"}` — lets `Load` refuse the rest with an error the model can act on,
-instead of the next model call failing; without it, `Load` hands the model any file.
+instead of the next model call failing; without it, `Load` hands the model any file. An adapter that
+has `model`, the name of the model it calls, names the run's model before any reply does.
 
 A decision model answers three kinds of question:
 
@@ -107,8 +108,9 @@ formula for every adapter and every type, so a threshold means the same thing ev
 generation model can stand in as a decision model through an adapter that asks it for
 probabilities; the calibration is worse, the code is the same. `decide` may return the answers
 alone, or a `Decided(answers, usage, model)` when the adapter can report what the call cost and
-which model answered; the record carries both. A decision adapter may carry `media_types` too, the
-media its model reads in a state; without it, its model is handed text.
+which model answered; the record carries both, and the adapter's `model` attribute when the call
+reports no model. A decision adapter may carry `media_types` too, the media its model reads in a
+state; without it, its model is handed text.
 
 The instructions, what an option means, each level, and `yes` and `no` are strings, or JSON objects
 or lists when a question has parts of its own — the question beside the data it names in
@@ -211,6 +213,10 @@ for step in run.steps:
     step.tool, step.args, step.is_error, step.duration_ms, step.child_run_id
 run.children                                         # runs made through Delegate, in step order
 ```
+
+`run.model` is the model the replies reported, the resolved one — a dated snapshot, say. When no
+reply reported one — a run stopped during its first model call — it is the adapter's `model`
+attribute, if it has one that is a non-empty string, and `None` otherwise.
 
 Every run says which agent and which tools produced it, beside the model that answered:
 

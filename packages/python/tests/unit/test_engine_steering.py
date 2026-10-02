@@ -125,8 +125,30 @@ async def test_stop_now_cancels_a_slow_model_call(tmp_path: Path) -> None:
     run = await asyncio.wait_for(task, 2)
     assert isinstance(run, Generation)
     assert run.stopped == "now" and run.reply == "" and run.steps == [] and run.calls == 0
-    assert run.conversation == [Message(role="user", content="hi")]
+    assert run.conversation == [Message(role="user", content="hi")] and run.model is None
     assert await refinery.storage.get_run("acme", run.run_id) is not None
+
+
+class Named(Paced):
+    def __init__(self, model: object, *script: Reply | tuple[float, Reply]) -> None:
+        super().__init__(*script)
+        self.model = model
+
+
+@pytest.mark.parametrize(("declared", "recorded"), [("m-1", "m-1"), ("", None), (7, None)])
+async def test_a_run_stopped_in_its_first_call_records_the_model_its_adapter_declares(
+    tmp_path: Path, declared: object, recorded: str | None
+) -> None:
+    llm = Named(declared, (30.0, text_reply("never")))
+    stop = Stop()
+    task = asyncio.create_task(
+        Engine(make_tree(tmp_path), generation=llm).run("chat", "acme", "hi", stop=stop)
+    )
+    await llm.entered.wait()
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert isinstance(run, Generation) and run.stopped == "now" and run.calls == 0
+    assert run.model == recorded
 
 
 async def test_stop_now_keeps_the_streamed_text(tmp_path: Path) -> None:

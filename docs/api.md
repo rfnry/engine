@@ -14,7 +14,7 @@ class GenerationModel(Protocol):
     ) -> ReplyLike: ...
 ```
 
-A model that writes text and calls tools: any object with this method, matched by shape. It returns a `Reply`, or anything with its fields; a result whose fields do not fit makes the run raise `ModelError`. An adapter may also carry `media_types`, the file types its model takes, such as `{"image/*", "application/pdf"}`, so `Load` refuses the rest.
+A model that writes text and calls tools: any object with this method, matched by shape. It returns a `Reply`, or anything with its fields; a result whose fields do not fit makes the run raise `ModelError`. An adapter may also carry `media_types`, the file types its model takes, such as `{"image/*", "application/pdf"}`, so `Load` refuses the rest, and `model`, the name of the model it calls, a `str` the run records as its model when no reply reports one.
 
 ### `StreamingGenerationModel`
 
@@ -42,7 +42,7 @@ class DecisionModel(Protocol):
     ) -> Mapping[str, AnswerLike] | DecidedLike: ...
 ```
 
-A model that answers typed questions about a state in one call: any object with this method, matched by shape. It returns an answer per question id, or a `Decided` when it can report what the call cost and which model answered. An adapter may also carry `media_types`, the media its model reads in a state, such as `{"image/*"}`: a run's parts with that media reach it as the state, a list of parts; without it the state is text, and parts it does not declare are refused before it is called. Answers that do not fit — a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels — make the run raise `ModelError`.
+A model that answers typed questions about a state in one call: any object with this method, matched by shape. It returns an answer per question id, or a `Decided` when it can report what the call cost and which model answered. An adapter may also carry `model`, the name of the model it calls, a `str` the run records as its model when the call reports none, and `media_types`, the media its model reads in a state, such as `{"image/*"}`: a run's parts with that media reach it as the state, a list of parts; without it the state is text, and parts it does not declare are refused before it is called. Answers that do not fit — a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels — make the run raise `ModelError`.
 
 ### `ReplyLike`
 
@@ -475,7 +475,7 @@ class Generation(BaseModel):
     stopped: Stopped | None = None
 ```
 
-The record of a generation run: the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. An accepted `Output` makes `reply` its JSON. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. A run recorded before `context` or `fingerprint` was kept reads back with `None`.
+The record of a generation run: the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. `model` is the model the replies reported; when none did, as in a run stopped during its first model call, it is the adapter's `model` attribute if that is a non-empty string, else `None`. An accepted `Output` makes `reply` its JSON. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. A run recorded before `context` or `fingerprint` was kept reads back with `None`.
 
 ### `Decision`
 
@@ -500,7 +500,7 @@ class Decision(BaseModel):
     routed_to: Run | None = None
 ```
 
-The record of a decision run: the task it was given, the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder or the task and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported, and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. A run recorded before `task`, `runtime` or `fingerprint` was kept reads back with `None`, `[]` and `None`.
+The record of a decision run: the task it was given, the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder or the task and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported — its `model` attribute, a non-empty string, when the call reports no model — and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. A run recorded before `task`, `runtime` or `fingerprint` was kept reads back with `None`, `[]` and `None`.
 
 ### `Run`
 

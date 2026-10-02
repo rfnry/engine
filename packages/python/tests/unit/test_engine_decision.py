@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError, ModelError, NotFoundError
 from rfnry_engine.models import (
+    Answer,
     Audio,
     Check,
     CheckAnswer,
@@ -98,6 +99,26 @@ async def test_decided_carries_usage_and_model(fixtures: Path) -> None:
 
     run = await Engine(fixtures, decision=Fixed(decide), tools=TOOLS).run("triage", "acme", "x")
     assert isinstance(run, Decision) and run.usage == Usage(input=40) and run.model == "d1"
+
+
+class Declaring(Fixed):
+    model = "d"
+
+
+async def test_a_decision_run_names_its_adapter_s_model_when_the_call_reports_none(
+    fixtures: Path,
+) -> None:
+    answers: dict[str, Answer] = {
+        "urgent": CheckAnswer(probability=0.2),
+        "severity": ScoreAnswer(score=0, probabilities=[1, 0, 0, 0]),
+    }
+    engine = Engine(fixtures, decision=Declaring(answers), tools=TOOLS)
+    reported = Engine(
+        fixtures, decision=Declaring(lambda _: Decided(answers=answers, model="d1")), tools=TOOLS
+    )
+    silent = Engine(fixtures, decision=Fixed(answers), tools=TOOLS)
+    models = [(await e.run("triage", "acme", "x")).model for e in (engine, reported, silent)]
+    assert models == ["d", "d1", None]
 
 
 async def test_a_decision_only_engine_runs_a_mixed_tree_without_tool_bodies(fixtures: Path) -> None:

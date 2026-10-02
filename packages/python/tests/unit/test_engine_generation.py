@@ -72,6 +72,17 @@ async def test_plain_reply_is_the_record(fixtures: Path) -> None:
     ]
 
 
+class Declaring(Scripted):
+    model = "m"
+
+
+async def test_a_reply_s_model_wins_over_the_one_its_adapter_declares(fixtures: Path) -> None:
+    llm = Declaring(text_reply("a", model="m-2026-09-01"), text_reply("b"))
+    reported = await engine_for(fixtures, llm).run("billing", "acme", "x")
+    unreported = await engine_for(fixtures, llm).run("billing", "acme", "y")
+    assert reported.model == "m-2026-09-01" and unreported.model == "m"
+
+
 async def test_the_tree_decides_what_the_model_sees(fixtures: Path) -> None:
     llm = Scripted(text_reply("ok"), text_reply("ok"))
     engine = engine_for(fixtures, llm)
