@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any, Literal
 
@@ -32,6 +33,31 @@ class Step(BaseModel):
     child_run_id: str | None = None
     stopped: bool = False
     approved: bool | None = None
+
+
+class TextDelta(BaseModel):
+    run_id: str
+    agent: str
+    text: str
+
+
+class ToolCallStarted(BaseModel):
+    run_id: str
+    agent: str
+    call_id: str
+    tool: str
+    args: dict[str, Any]
+
+
+class ToolResultReady(BaseModel):
+    run_id: str
+    agent: str
+    call_id: str
+    step: Step
+
+
+Event = TextDelta | ToolCallStarted | ToolResultReady
+EventHandler = Callable[[Event], Awaitable[None]]
 
 
 class Fingerprint(BaseModel):

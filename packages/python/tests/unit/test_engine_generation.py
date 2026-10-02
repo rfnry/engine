@@ -20,18 +20,16 @@ from rfnry_engine.models import (
     Answer,
     CheckAnswer,
     Document,
-    Event,
     Image,
     Message,
     Part,
     Reply,
     ScoreAnswer,
     Text,
-    TextDelta,
     ToolCall,
     Usage,
 )
-from rfnry_engine.records import Generation, Run
+from rfnry_engine.records import Event, Generation, Run, TextDelta
 from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.tools.tools import Tool, Tools

@@ -303,6 +303,10 @@ run = await engine.run("support", scope="acme", input=message, task="triage",
                        on_event=show)
 ```
 
+A `ToolCallStarted` carries the call's `args`, and a `ToolResultReady` its `step`: the same `Step`
+the run records, sent however the call ended — a result, an error, a refusal, a delegation, a stop —
+so a step can be shown, in a conversation or anywhere, while the run goes on.
+
 A person can stop or steer a run while it works. Pass `stop=Stop()` and call `stop.now()` to cancel
 the model call in flight and every tool still running, or `stop.after_step()` to let the current
 tool calls finish and end before the next model call. Pass `inbox=asyncio.Queue()` and put a string

@@ -361,28 +361,3 @@ class DecisionModel(Protocol):
     async def decide(
         self, state: State, questions: Mapping[str, QuestionLike]
     ) -> Mapping[str, AnswerLike] | DecidedLike: ...
-
-
-class TextDelta(BaseModel):
-    run_id: str
-    agent: str
-    text: str
-
-
-class ToolCallStarted(BaseModel):
-    run_id: str
-    agent: str
-    call_id: str
-    tool: str
-
-
-class ToolResultReady(BaseModel):
-    run_id: str
-    agent: str
-    call_id: str
-    tool: str
-    is_error: bool
-
-
-Event = TextDelta | ToolCallStarted | ToolResultReady
-EventHandler = Callable[[Event], Awaitable[None]]

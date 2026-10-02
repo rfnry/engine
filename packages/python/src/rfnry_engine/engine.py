@@ -26,7 +26,6 @@ from rfnry_engine.models import (
     ChoiceAnswer,
     Content,
     DecisionModel,
-    EventHandler,
     GenerationModel,
     Message,
     Part,
@@ -36,17 +35,24 @@ from rfnry_engine.models import (
     State,
     StreamingGenerationModel,
     Text,
-    TextDelta,
     ToolCall,
-    ToolCallStarted,
-    ToolResultReady,
     ToolSpec,
     Usage,
     as_decided,
     as_reply,
     settle,
 )
-from rfnry_engine.records import Decision, Fingerprint, Generation, Run, Step
+from rfnry_engine.records import (
+    Decision,
+    EventHandler,
+    Fingerprint,
+    Generation,
+    Run,
+    Step,
+    TextDelta,
+    ToolCallStarted,
+    ToolResultReady,
+)
 from rfnry_engine.stop import Stop, Stopped, cancel, requested, wait
 from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import (
@@ -553,7 +559,13 @@ class Engine:
 
         async def call_tool(call: ToolCall) -> Step:
             await emit(
-                ToolCallStarted(run_id=run_id, agent=spec.name, call_id=call.id, tool=call.name)
+                ToolCallStarted(
+                    run_id=run_id,
+                    agent=spec.name,
+                    call_id=call.id,
+                    tool=call.name,
+                    args=call.args,
+                )
             )
             began = time.monotonic()
             child_run_id: str | None = None
@@ -598,15 +610,7 @@ class Engine:
                 stopped=stopped,
                 approved=approved,
             )
-            await emit(
-                ToolResultReady(
-                    run_id=run_id,
-                    agent=spec.name,
-                    call_id=call.id,
-                    tool=call.name,
-                    is_error=is_error,
-                )
-            )
+            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step))
             return step
 
         def answer(call: ToolCall, step: Step) -> None:
@@ -620,12 +624,7 @@ class Engine:
                 children.append(delegated.pop(step.child_run_id))
 
         async def cut(call: ToolCall, began: float) -> Step:
-            await emit(
-                ToolResultReady(
-                    run_id=run_id, agent=spec.name, call_id=call.id, tool=call.name, is_error=True
-                )
-            )
-            return Step(
+            step = Step(
                 tool=call.name,
                 args=call.args,
                 result=STOPPED,
@@ -634,6 +633,8 @@ class Engine:
                 duration_ms=int((time.monotonic() - began) * 1000),
                 stopped=True,
             )
+            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step))
+            return step
 
         async def run_batch(batch: list[ToolCall]) -> bool:
             began = time.monotonic()

@@ -557,9 +557,10 @@ class ToolCallStarted(BaseModel):
     agent: str
     call_id: str
     tool: str
+    args: dict[str, Any]
 ```
 
-Sent to `on_event` when a tool call starts, before any approval.
+Sent to `on_event` when a tool call starts, before any approval, with the arguments the model gave it.
 
 ### `ToolResultReady`
 
@@ -568,11 +569,10 @@ class ToolResultReady(BaseModel):
     run_id: str
     agent: str
     call_id: str
-    tool: str
-    is_error: bool
+    step: Step
 ```
 
-Sent to `on_event` when a tool call has its result, with whether it failed.
+Sent to `on_event` when a tool call is done: `step` is the `Step` the run records for it, equal to its entry in `Generation.steps`, sent on every way a call ends — a result, an error, a timeout, a call `approve` refused, a delegation, a call `Stop.now()` cut off.
 
 ### `Event`
 
