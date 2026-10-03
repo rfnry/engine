@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -18,6 +19,31 @@ class Task:
     pending: dict[str, str] = field(default_factory=dict)
     reply: str | None = None
     run_id: str | None = None
+
+
+IMAGE = os.environ.get("WORKSPACE_IMAGE")
+TIMEOUT = 120
+
+
+def workspace(work: Path) -> Workspace:
+    if IMAGE is None:
+        return Workspace(work, unsandboxed=True)
+    path = str(work)
+    return Workspace(
+        work,
+        timeout=TIMEOUT,
+        env={
+            "PATH": os.environ["PATH"],
+            "DOCKER_CONFIG": os.environ.get("DOCKER_CONFIG", str(Path.home() / ".docker")),
+        },
+        sandbox=[
+            *("docker", "run", "--rm", "-i", "--init", "--network", "none", "--cap-drop", "ALL"),
+            *("--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp"),
+            *("--memory", "1g", "--cpus", "1", "--pids-limit", "256"),
+            *("--user", f"{os.getuid()}:{os.getgid()}", "-e", f"HOME={path}"),
+            *("-v", f"{path}:{path}", "-w", path, IMAGE, "timeout", "-s", "KILL", str(TIMEOUT)),
+        ],
+    )
 
 
 engine = Engine(ROOT / "agents", generation=AnthropicProvider())
@@ -47,7 +73,7 @@ async def run(request: str) -> dict:
                 "bookkeeper",
                 scope="acme-books",
                 input=request,
-                workspace=Workspace(work, unsandboxed=True),
+                workspace=workspace(work),
                 approve=approve,
             )
             task.status, task.reply, task.run_id = "done", engine_run.reply, engine_run.run_id

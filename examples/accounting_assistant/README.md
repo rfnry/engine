@@ -2,12 +2,14 @@
 
 ## Description
 
-A bookkeeping assistant for an accounting firm's accountants, working on a client's ledger. It shows a workspace with a shell, and approvals: the agent writes and runs scripts in a folder of its own, and an accountant allows every shell command before it runs. Look at `engine.run(..., workspace=Workspace(work, unsandboxed=True), approve=approve)` in `src/harness.py`.
+A bookkeeping assistant for an accounting firm's accountants, working on a client's ledger. It shows a workspace with a shell, and approvals: the agent writes and runs scripts in a folder of its own, and an accountant allows every shell command before it runs. With `WORKSPACE_IMAGE` set, each command runs in a fresh container of that image that sees only the folder. Look at `engine.run(..., workspace=workspace(work), approve=approve)` and `workspace` in `src/harness.py`.
 
 ## Running
 
 ```bash
 export ANTHROPIC_API_KEY=...
+# optional, a container per command: docker build -t acme-books:1 .
+# optional: export WORKSPACE_IMAGE=acme-books:1
 uv run src/main.py
 ```
 
