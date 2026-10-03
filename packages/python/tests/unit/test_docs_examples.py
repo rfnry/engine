@@ -31,6 +31,7 @@ from rfnry_engine import (
     ToolCall,
     Tools,
     ToolSpec,
+    Workspace,
 )
 from rfnry_engine.records import Decision
 from rfnry_engine.tree import load_agent, load_tree, validate_tree
@@ -106,9 +107,6 @@ SETUPS = {
     ),
     "from rfnry_engine import Workspace": Setup(replace={"/srv/tenants/acme/work": "work"}),
     'sandboxed = Workspace("/srv/tenants/acme/work", sandbox=[': Setup(
-        replace={"/srv/tenants/acme/work": "work"}
-    ),
-    'contained = Workspace("/srv/tenants/acme/work", timeout=600,': Setup(
         replace={"/srv/tenants/acme/work": "work"}
     ),
     "async def approve(agent, call):": Setup(
@@ -267,6 +265,7 @@ async def context(tmp_path: Path, setup: Setup) -> dict[str, Any]:
         "decision": await recorded.run("frontdesk", "acme", "It is down"),
         "last_watermark": None,
         "ask_a_person": ask_a_person,
+        "workspace": Workspace(tmp_path / "work", unsandboxed=True),
         "hashlib": hashlib,
         "checkout": lambda commit: shutil.copytree(
             root, tmp_path / "versions" / commit, dirs_exist_ok=True

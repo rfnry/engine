@@ -653,14 +653,13 @@ about an agent changes when the other kind of model is absent — only which age
 > `Workspace` gives the model a real shell, and **a shell is not confined by its directory**. Without
 > a sandbox it can do anything the user running the service can do: read every other tenant's
 > workspace, read the service's configuration and any secret on disk, reach the database and the
-> network, delete things. A document an agent reads can tell it to try. In a service that holds more
-> than one tenant, or anything the model must not see, run every command inside a sandbox with
-> `sandbox=` — the recipes are below — or run the service where there is nothing else to reach. Keep
+> network, delete things. A document an agent reads can tell it to try. Run every command inside a
+> sandbox with `sandbox=` — a container per command, as below, is the default to reach for — and keep
 > the agent directory outside the workspace.
 
 A workspace is a directory where an agent writes code, runs it, reads what happened and tries again —
 the loop a coding assistant runs in a developer's terminal. An agent opts in with one line in its
-`AGENT.md`, and a run supplies the directory:
+`AGENT.md`, and a run supplies the directory and the sandbox its commands run in:
 
 ```
 agents/coder/AGENT.md
@@ -675,13 +674,26 @@ workspace: true
 ```python
 from rfnry_engine import Workspace
 
-run = await engine.run("coder", scope="acme", input="make the failing test pass",
-                       workspace=Workspace("/srv/tenants/acme/work", unsandboxed=True, timeout=600))
+workspace = Workspace("/srv/tenants/acme/work", timeout=600,
+    env={"PATH": "/usr/bin:/bin", "DOCKER_CONFIG": "/etc/acme/docker"},
+    sandbox=["docker", "run", "--rm", "-i", "--init", "--network", "none",
+             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp",
+             "--memory", "1g", "--cpus", "1", "--pids-limit", "256", "--user", "1000:1000",
+             "-e", "HOME=/srv/tenants/acme/work",
+             "-v", "/srv/tenants/acme/work:/srv/tenants/acme/work", "-w", "/srv/tenants/acme/work",
+             "acme/workspace:1", "timeout", "-s", "KILL", "600"])
+
+run = await engine.run("coder", scope="acme", input="make the failing test pass", workspace=workspace)
 ```
 
-Every workspace says whether its shell is sandboxed. `sandbox=` names the sandbox each command runs
-inside; `unsandboxed=True` says out loud that this machine holds nothing the model must not reach — a
-developer's laptop, a container of its own. A workspace with neither refuses to start.
+Each command gets a fresh container from an image you build — a world of its own: no network, no
+other tenant, nothing of the service — and `--rm` removes it when the command ends. The model sees
+none of this: it has the same tools, and its command runs inside.
+
+Every workspace says whether its shell is sandboxed. `sandbox=` names the command each shell call
+runs inside — this container, or bubblewrap below; `Workspace(root, unsandboxed=True)` says out loud
+that this machine holds nothing the model must not reach — a developer's laptop. A workspace with
+neither refuses to start.
 
 The agent then has three more tools. `Shell(command)` runs a command and returns `exit_code`,
 `stdout`, `stderr` and `timed_out`. `Write(path, content)` writes a file exactly, and
@@ -695,12 +707,12 @@ with its shell and its limits.
 
 | argument | default | what it does |
 | --- | --- | --- |
-| `sandbox` | none | the command each `Shell` call runs inside — bubblewrap, a container — before the shell |
+| `sandbox` | none | the command each `Shell` call runs inside — a container, bubblewrap — before the shell |
 | `unsandboxed` | `False` | `True` runs the shell on the machine itself, reaching whatever the service's user can |
 | `shell` | `["bash", "-c"]` | the shell the command is given to, last; the model is told its name. Without a sandbox it must be on `PATH` |
 | `timeout` | `120` seconds | the limit on each `Shell`, `Write` and `Edit` call; a command still running is sent SIGTERM, then killed a second later with everything it started, and the call returns what it printed with `timed_out: true` |
 | `output_bytes` | `30_000` | the cap on `stdout` and on `stderr`, each keeping its first and last half |
-| `env` | `PATH`, `HOME` (the directory), `LANG` | the only environment commands see, so the service's own keys never reach them |
+| `env` | `PATH`, `HOME` (the directory), `LANG` | the only environment the sandbox's command sees, so the service's own keys never reach it |
 
 The workspace's `timeout` replaces `Engine(tool_timeout=)` for its three tools, so a ten-minute
 build and a thirty-second API call live in the same engine. An unsandboxed workspace without bash on
@@ -709,10 +721,39 @@ POSIX shell, such as Alpine.
 
 `Write`, `Edit` and `Load` stay inside the directory: the engine runs them itself and refuses a path
 that leaves it. `Shell` reaches what the process running it can reach, so the real boundary is
-`sandbox=` or the machine. On Linux, bubblewrap builds each command a world of its own: the
-system's programs read-only, this tenant's directory writable, an empty `/tmp`, and nothing else —
-no other tenant, no service configuration, no network — and it kills every process when the
-command ends:
+`sandbox=` or the machine.
+
+In the container above, the image is the toolchain: a Dockerfile of yours with what your agents
+need — Python, Go, a C++ compiler. The directory is mounted at the same path, so `Write` and the
+shell see the same files, and `--user` is the user that owns it, so a file written on either side
+stays editable on both. `env=` is the environment of the `docker` client, not of the command. The
+client reads its configuration from `$HOME/.docker`, and the default `HOME` is the workspace: a
+command that wrote `.docker/config.json` there put `HTTP_PROXY` into the next command's container.
+So `DOCKER_CONFIG` points outside the workspace, and the command's own variables go in with `-e`.
+Podman reads `$HOME/.config/containers/containers.conf` the same way, and that file can add mounts.
+
+The client passes the engine's SIGTERM on to the container, so the timeout and `stop.now()` stop
+it. SIGKILL stops only the client, so a command that ignores SIGTERM would keep its container
+running; `timeout -s KILL` inside ends it at the same limit. Each command takes about a quarter of
+a second to start.
+
+The caps bound one command; how many run at once is yours to cap — a semaphore around runs — and
+`--cgroup-parent` can put every workspace container under one slice, where a limit on the slice
+bounds them all. A container shares the host's kernel; for code from many tenants, the gVisor
+runtime (`--runtime runsc`) is the stronger boundary. The Docker socket is root on the host, so a
+service that can reach it is as good as root; rootless Docker, or Podman — `podman run` takes the
+same flags — avoids that.
+
+A container kept for a tenant or a conversation keeps what commands installed between them: start
+it with `--init`, and enter it with `docker exec -i -w /srv/tenants/acme/work acme-work timeout -s KILL 600`.
+The engine's signals do not reach inside `docker exec`, so that time limit is the only one that
+stops a command, `stop.now()` leaves a command running until then, and starting and removing the
+container is yours.
+
+Where Docker is not an option, on Linux, bubblewrap builds each command a world of its own from the
+host: the system's programs read-only, this tenant's directory writable, an empty `/tmp`, and
+nothing else — no other tenant, no service configuration, no network — and it kills every process
+when the command ends:
 
 ```python
 sandboxed = Workspace("/srv/tenants/acme/work", sandbox=[
@@ -733,49 +774,8 @@ service's user has a systemd user session,
 runs each command in a scope with those limits; `env=` then needs `XDG_RUNTIME_DIR` too, which
 `systemd-run` uses to find the session.
 
-A container works too. Each command gets a fresh one from an image you build — a world of its own,
-as with bubblewrap — and `--rm` removes it when the command ends:
-
-```python
-contained = Workspace("/srv/tenants/acme/work", timeout=600,
-    env={"PATH": "/usr/bin:/bin", "DOCKER_CONFIG": "/etc/acme/docker"},
-    sandbox=["docker", "run", "--rm", "-i", "--init", "--network", "none",
-             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp",
-             "--memory", "1g", "--cpus", "1", "--pids-limit", "256", "--user", "1000:1000",
-             "-e", "HOME=/srv/tenants/acme/work",
-             "-v", "/srv/tenants/acme/work:/srv/tenants/acme/work", "-w", "/srv/tenants/acme/work",
-             "acme/workspace:1", "timeout", "-s", "KILL", "600"])
-```
-
-The image is the toolchain: a Dockerfile of yours with what your agents need — Python, Go, a C++
-compiler. The directory is mounted at the same path, so `Write` and the shell see the same files,
-and `--user` is the user that owns it, so a file written on either side stays editable on both.
-`env=` is the environment of the `docker` client, not of the command. The client reads its
-configuration from `$HOME/.docker`, and the default `HOME` is the workspace: a command that wrote
-`.docker/config.json` there put `HTTP_PROXY` into the next command's container. So `DOCKER_CONFIG`
-points outside the workspace, and the command's own variables go in with `-e`. Podman reads
-`$HOME/.config/containers/containers.conf` the same way, and that file can add mounts.
-
-The client passes the engine's SIGTERM on to the container, so the timeout and `stop.now()` stop
-it. SIGKILL stops only the client, so a command that ignores SIGTERM would keep its container
-running; `timeout -s KILL` inside ends it at the same limit. Each command takes about a quarter of
-a second to start.
-
-The caps bound one command; how many run at once is yours to cap — a semaphore around runs — and
-`--cgroup-parent` can put every workspace container under one slice, where a limit on the slice
-bounds them all. A container shares the host's kernel; for code from many tenants, the gVisor
-runtime (`--runtime runsc`) is the stronger boundary. The Docker socket is root on the host, so a
-service that can reach it is as good as root; rootless Docker, or Podman — `podman run` takes the
-same flags — avoids that.
-
-A container kept for a tenant or a conversation keeps what commands installed between them: start
-it with `--init`, and enter it with `docker exec -i -w /srv/tenants/acme/work acme-work timeout -s KILL 600`.
-The engine's signals do not reach inside `docker exec`, so that time limit is the only one that
-stops a command, `stop.now()` leaves a command running until then, and starting and removing the
-container is yours.
-
 Without a sandbox, the kill reaches every process the command started except one that leaves its
-process group with `setsid`; the process namespace of bubblewrap or of a container closes that gap.
+process group with `setsid`; the process namespace of a container or of bubblewrap closes that gap.
 
 An agent without `workspace: true` never sees these tools, even when the run has a workspace; an
 agent with it, run without one, is a `ConfigurationError`, and so is a decision agent that declares
@@ -796,7 +796,7 @@ async def approve(agent, call):
     return await ask_a_person(agent, call)
 
 run = await engine.run("coder", scope="acme", input="make the failing test pass",
-                       workspace=Workspace("/srv/tenants/acme/work", unsandboxed=True), approve=approve)
+                       workspace=workspace, approve=approve)
 ```
 
 Where the person is — a thread, a dashboard, a chat app — is yours; the engine only waits. "Allow

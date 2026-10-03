@@ -21,13 +21,11 @@ class Task:
     run_id: str | None = None
 
 
-IMAGE = os.environ.get("WORKSPACE_IMAGE")
+IMAGE = "acme-books:1"
 TIMEOUT = 120
 
 
 def workspace(work: Path) -> Workspace:
-    if IMAGE is None:
-        return Workspace(work, unsandboxed=True)
     path = str(work)
     return Workspace(
         work,
