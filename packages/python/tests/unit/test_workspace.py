@@ -40,6 +40,14 @@ async def gone(pid: int) -> bool:
     return False
 
 
+async def appears(path: Path) -> None:
+    for _ in range(100):
+        if path.exists():
+            return
+        await asyncio.sleep(0.02)
+    pytest.fail(f"{path.name} never appeared")
+
+
 @pytest.fixture
 def ws(tmp_path: Path) -> Workspace:
     root = tmp_path / "work"
@@ -265,6 +273,72 @@ async def test_the_timeout_stops_the_command_and_keeps_what_it_printed(tmp_path:
     assert time.monotonic() - began < 5
     assert result["timed_out"] is True and result["stdout"] == "before\n"
     assert await gone(int((tmp_path / "child.pid").read_text()))
+
+
+async def test_the_timeout_sends_sigterm_first_so_a_command_can_clean_up(tmp_path: Path) -> None:
+    quick = Workspace(tmp_path, unsandboxed=True, timeout=0.5)
+    began = time.monotonic()
+    result = await shell(quick, "trap 'echo stopping; exit 0' TERM; echo started; sleep 30 & wait")
+    assert time.monotonic() - began < 1.4
+    assert result == {
+        "exit_code": 0,
+        "stdout": "started\nstopping\n",
+        "stderr": "",
+        "timed_out": True,
+    }
+
+
+async def test_a_command_that_ignores_sigterm_is_killed_a_second_later(tmp_path: Path) -> None:
+    quick = Workspace(tmp_path, unsandboxed=True, timeout=0.5)
+    began = time.monotonic()
+    result = await shell(quick, "trap '' TERM; sleep 30 & echo $! > child.pid; wait")
+    assert 1.4 < time.monotonic() - began < 4
+    assert result["timed_out"] is True and result["exit_code"] == -9
+    assert await gone(int((tmp_path / "child.pid").read_text()))
+
+
+async def test_a_cancelled_command_gets_sigterm_first(ws: Workspace) -> None:
+    task = asyncio.create_task(
+        shell(ws, "trap 'echo stopped > stopped.txt; exit 0' TERM; touch ready; sleep 30 & wait")
+    )
+    await appears(ws.root / "ready")
+    began = time.monotonic()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert time.monotonic() - began < 0.9
+    assert (ws.root / "stopped.txt").read_text() == "stopped\n"
+
+
+async def test_a_cancelled_command_that_ignores_sigterm_is_killed_a_second_later(
+    ws: Workspace,
+) -> None:
+    task = asyncio.create_task(
+        shell(ws, "trap '' TERM; sleep 30 & echo $! > child.pid; touch ready; wait")
+    )
+    await appears(ws.root / "ready")
+    began = time.monotonic()
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=5)
+    assert task in done and task.cancelled()
+    assert 0.9 < time.monotonic() - began < 3
+    assert await gone(int((ws.root / "child.pid").read_text()))
+
+
+async def test_a_second_cancel_kills_at_once(ws: Workspace) -> None:
+    task = asyncio.create_task(
+        shell(ws, "trap '' TERM; sleep 30 & echo $! > child.pid; touch ready; wait")
+    )
+    await appears(ws.root / "ready")
+    began = time.monotonic()
+    task.cancel()
+    await asyncio.sleep(0.2)
+    assert not task.done()
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=5)
+    assert task in done and task.cancelled()
+    assert time.monotonic() - began < 0.8
+    assert await gone(int((ws.root / "child.pid").read_text()))
 
 
 async def test_output_bytes_sets_the_cap(tmp_path: Path) -> None:

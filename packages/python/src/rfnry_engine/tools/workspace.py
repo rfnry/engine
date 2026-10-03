@@ -16,6 +16,7 @@ from rfnry_engine.jail import Jail
 from rfnry_engine.tools.tools import Tool
 
 WORKSPACE_TOOLS = frozenset({"Shell", "Write", "Edit"})
+GRACE = 1.0
 
 
 class ShellArgs(BaseModel):
@@ -76,9 +77,19 @@ class _Capture(asyncio.SubprocessProtocol):
         )
 
 
-def _kill(pid: int) -> None:
+def _signal(pid: int, sig: signal.Signals) -> None:
     with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(pid, signal.SIGKILL)
+        os.killpg(pid, sig)
+
+
+async def _stop(pid: int, exited: asyncio.Future[None]) -> None:
+    _signal(pid, signal.SIGTERM)
+    try:
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(GRACE):
+                await asyncio.shield(exited)
+    finally:
+        _signal(pid, signal.SIGKILL)
 
 
 def _bounded(
@@ -192,19 +203,18 @@ class Workspace:
         pid = transport.get_pid()
         timed_out = False
         try:
-            try:
-                async with asyncio.timeout(self.timeout):
+            async with asyncio.timeout(self.timeout):
+                await asyncio.shield(capture.exited)
+                _signal(pid, signal.SIGKILL)
+                await asyncio.shield(capture.closed)
+        except TimeoutError:
+            timed_out = not capture.exited.done()
+            await _stop(pid, capture.exited)
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(1.0):
                     await asyncio.shield(capture.exited)
-                    _kill(pid)
-                    await asyncio.shield(capture.closed)
-            except TimeoutError:
-                timed_out = not capture.exited.done()
-                _kill(pid)
-                with contextlib.suppress(TimeoutError):
-                    async with asyncio.timeout(1.0):
-                        await asyncio.shield(capture.exited)
         except BaseException:
-            _kill(pid)
+            await _stop(pid, capture.exited)
             raise
         finally:
             transport.close()

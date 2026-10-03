@@ -108,7 +108,7 @@ SETUPS = {
     'sandboxed = Workspace("/srv/tenants/acme/work", sandbox=[': Setup(
         replace={"/srv/tenants/acme/work": "work"}
     ),
-    'contained = Workspace("/srv/tenants/acme/work", timeout=600, sandbox=[': Setup(
+    'contained = Workspace("/srv/tenants/acme/work", timeout=600,': Setup(
         replace={"/srv/tenants/acme/work": "work"}
     ),
     "async def approve(agent, call):": Setup(

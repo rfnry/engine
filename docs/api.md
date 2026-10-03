@@ -819,7 +819,7 @@ class Workspace:
     ) -> None: ...
 ```
 
-A directory where an agent with `workspace: true` writes code and runs it, passed as `run(workspace=)`. It takes exactly one of `sandbox`, the command each `Shell` call runs inside, and `unsandboxed=True`; `timeout` bounds every `Shell`, `Write` and `Edit` call in seconds, `output_bytes` caps `stdout` and `stderr` each, and `env` is the only environment commands see, by default `PATH`, `HOME` set to the directory, and `LANG`.
+A directory where an agent with `workspace: true` writes code and runs it, passed as `run(workspace=)`. It takes exactly one of `sandbox`, the command each `Shell` call runs inside, and `unsandboxed=True`; `timeout` bounds every `Shell`, `Write` and `Edit` call in seconds, and a command still running at the limit, or when its call is cancelled, is sent SIGTERM and, a second later, SIGKILL with everything it started; `output_bytes` caps `stdout` and `stderr` each, and `env` is the only environment commands see, by default `PATH`, `HOME` set to the directory, and `LANG`.
 
 Raises `ConfigurationError` when `root` is not a directory, when neither or both of `sandbox` and `unsandboxed=True` are given, when `sandbox` or `shell` is not a non-empty list of strings, when `timeout` or `output_bytes` is not positive, or when an unsandboxed `shell` is not on `PATH`.
 
