@@ -12,6 +12,8 @@ It is a library, not a framework. The consumer brings the models, the storage co
 
 `docs/api.md` is the reference: every public name with its exact signature, what it returns and what it raises; a test keeps it in step with the code, and it changes in the same change as the public surface.
 
+Designs and implementation plans live only in `docs/plans/`, as `YYYY-MM-DD-<topic>-design.md` and `YYYY-MM-DD-<topic>-plan.md` — not in `docs/superpowers/`, not at the repo root. The folder is gitignored: plans are local working documents, not part of the library.
+
 ## Checklists
 
 ### Pre-change checklist
