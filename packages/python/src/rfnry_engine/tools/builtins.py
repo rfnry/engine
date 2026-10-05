@@ -13,9 +13,10 @@ import regex
 from pydantic import BaseModel, Field
 
 from rfnry_engine.errors import InputError
+from rfnry_engine.fingerprint import folder_files
 from rfnry_engine.frontmatter import strip_frontmatter
 from rfnry_engine.jail import Jail
-from rfnry_engine.models import Audio, Document, Image, Part
+from rfnry_engine.models import Audio, Document, Image, Part, Text
 from rfnry_engine.tools.tools import Result, Tool
 
 _MAX_BYTES = 5 * 1024 * 1024
@@ -25,6 +26,7 @@ _HEAD_LIMIT = 250
 _GREP_BYTES = 50 * 1024 * 1024
 _GREP_SECONDS = 10.0
 _SNIFF = 8192
+_BOOTED = ("knowledge", "rules", "skills")
 
 
 class ReadArgs(BaseModel):
@@ -111,6 +113,22 @@ def _decoded(data: bytes) -> str | None:
         return data.decode("utf-8")
     except UnicodeDecodeError:
         return None
+
+
+def boot_parts(root: Path) -> list[Part]:
+    parts: list[Part] = []
+    for name, path in folder_files(root):
+        folder, _, rest = name.partition("/")
+        if folder not in _BOOTED or rest in ("", "_index.md"):
+            continue
+        data = path.read_bytes()
+        text = _decoded(data)
+        if text is not None:
+            parts.append(Text(text=f"<<<{name}>>>\n{text}"))
+            continue
+        parts.append(Text(text=f"<<<{name}>>>"))
+        parts.append(_part(path, data, _media_type(path, data)))
+    return parts
 
 
 class _Directory:

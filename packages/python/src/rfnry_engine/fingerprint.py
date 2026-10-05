@@ -13,7 +13,7 @@ from rfnry_engine.models import Question, ToolSpec
 SHORT = 16
 
 
-def _readable(root: Path) -> list[tuple[str, Path]]:
+def folder_files(root: Path) -> list[tuple[str, Path]]:
     jail = Jail(root)
     found: list[tuple[str, Path]] = []
     for directory, folders, files in os.walk(root):
@@ -32,7 +32,7 @@ def _readable(root: Path) -> list[tuple[str, Path]]:
 
 def folder_fingerprint(root: Path) -> str:
     digest = hashlib.sha256()
-    for name, path in _readable(root):
+    for name, path in folder_files(root):
         with path.open("rb") as file:
             content = hashlib.file_digest(file, "sha256").digest()
         digest.update(name.encode("utf-8") + b"\0" + content)

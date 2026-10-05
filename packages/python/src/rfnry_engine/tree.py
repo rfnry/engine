@@ -5,10 +5,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator
 
-from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
 from rfnry_engine.frontmatter import parse_frontmatter_doc
-from rfnry_engine.models import Check, Choice, Question, Score
+from rfnry_engine.models import Check, Choice, Part, Question, Score
+from rfnry_engine.tools.builtins import boot_parts
 
 Kind = Literal["generation", "decision"]
 
@@ -47,6 +48,7 @@ class AgentFront(BaseModel):
     agents: list[str] = Field(default_factory=list)
     route: RouteSpec | None = None
     workspace: bool = False
+    boot: Literal["all"] | None = None
 
 
 class QuestionFront(BaseModel):
@@ -96,6 +98,7 @@ class AgentSpec(BaseModel):
     fingerprint: str
     workspace: bool = False
     task_questions: dict[str, dict[str, Question]] = Field(default_factory=dict)
+    boot: list[Part] = Field(default_factory=list)
 
 
 def _read(path: Path) -> str:
@@ -196,11 +199,19 @@ def load_agent(directory: Path) -> AgentSpec:
         raise ConfigurationError(
             f"tree: decision agent {front.name!r} cannot declare workspace: true"
         )
+    if front.kind == "decision" and front.boot is not None:
+        raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare boot: all")
     if front.kind == "generation" and questions:
         raise ConfigurationError(f"tree: generation agent {front.name!r} cannot declare questions/")
     if front.kind == "generation" and front.route is not None:
         raise ConfigurationError(f"tree: generation agent {front.name!r} cannot declare route:")
     root = directory.resolve()
+    try:
+        boot = boot_parts(root) if front.boot == "all" else []
+    except InputError as exc:
+        raise ConfigurationError(
+            f"tree: agent {front.name!r} cannot boot its folder: {exc}"
+        ) from exc
     return AgentSpec(
         root=root,
         name=front.name,
@@ -215,6 +226,7 @@ def load_agent(directory: Path) -> AgentSpec:
         fingerprint=folder_fingerprint(root),
         workspace=front.workspace,
         task_questions=task_questions,
+        boot=boot,
     )
 
 

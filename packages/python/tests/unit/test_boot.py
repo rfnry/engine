@@ -1,0 +1,354 @@
+import json
+import shutil
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from rfnry_engine.engine import Engine
+from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.models import (
+    Document,
+    GenerationModel,
+    Image,
+    Message,
+    Part,
+    Reply,
+    Text,
+    ToolCall,
+    ToolSpec,
+)
+from rfnry_engine.records import Generation
+from rfnry_engine.refinery.inmemory import InMemoryStorage
+from rfnry_engine.refinery.labels import Review
+from rfnry_engine.refinery.refinery import Refinery, flatten
+from rfnry_engine.tools.engine_tools import EngineTools
+
+from .fakes import (
+    TOOLS,
+    Answering,
+    MemoryBucket,
+    Scripted,
+    delegating,
+    generation_record,
+    lead,
+    text_reply,
+)
+
+PNG = b"\x89PNG\r\n\x1a\ndiagram"
+PDF = b"%PDF-1.7 \xe2\x28\xa1 rates"
+RULE = "A duplicate charge is refunded in full without approval.\n"
+
+
+def tree(fixtures: Path, tmp_path: Path) -> Path:
+    root = tmp_path / "agents"
+    shutil.copytree(fixtures, root)
+    return root
+
+
+def boot_all(folder: Path) -> None:
+    agent = folder / "AGENT.md"
+    text = agent.read_text(encoding="utf-8")
+    agent.write_text(text.replace("\n---\n", "\nboot: all\n---\n", 1), encoding="utf-8")
+
+
+def furnish(support: Path) -> None:
+    (support / "knowledge" / "diagram.png").write_bytes(PNG)
+    (support / "knowledge" / "rates.pdf").write_bytes(PDF)
+    (support / "rules" / "chargebacks").mkdir()
+    (support / "rules" / "chargebacks" / "disputed.md").write_text(
+        "A disputed charge waits for the bank.\n", encoding="utf-8"
+    )
+    (support / "rules" / ".draft.md").write_text("Not yet a rule.\n", encoding="utf-8")
+
+
+def engine(root: Path, llm: GenerationModel) -> Engine:
+    return Engine(root, generation=llm, decision=Answering(), tools=TOOLS)
+
+
+def booted(support: Path) -> list[Part]:
+    def text(name: str) -> Text:
+        return Text(text=f"<<<{name}>>>\n" + (support / name).read_text(encoding="utf-8"))
+
+    return [
+        Text(text="<<<knowledge/diagram.png>>>"),
+        Image(media_type="image/png", data=PNG),
+        text("knowledge/plans.md"),
+        Text(text="<<<knowledge/rates.pdf>>>"),
+        Document(media_type="application/pdf", name="rates.pdf", data=PDF),
+        text("rules/chargebacks/disputed.md"),
+        text("rules/refunds.md"),
+        text("skills/escalate.md"),
+    ]
+
+
+async def test_boot_all_puts_every_rule_skill_and_knowledge_file_before_the_model_in_path_order(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    support = root / "support"
+    furnish(support)
+    plain = Scripted(text_reply("ok"))
+    before = await engine(root, plain).run("support", "acme", "Charged twice.")
+    boot_all(support)
+    llm = Scripted(
+        Reply(tool_calls=[ToolCall(id="c", name="now", args={})], stop_reason="tool_use"),
+        text_reply("Refunded."),
+    )
+    run = await engine(root, llm).run("support", "acme", "Charged twice.")
+    assert isinstance(run, Generation) and isinstance(before, Generation)
+    parts = booted(support)
+    assert run.boot == parts and before.boot == []
+    first, second = llm.calls
+    assert first[0] == run.system == before.system
+    assert first[1] == [Message(role="user", content=parts), *run.messages]
+    assert second[1] == [Message(role="user", content=parts), *run.conversation[:-1]]
+    assert run.messages == [Message(role="user", content="Charged twice.")]
+    assert all(message.content != parts for message in run.conversation)
+    assert [t.name for t in first[2]] == [t.name for t in plain.calls[0][2]]
+    assert run.fingerprint is not None and before.fingerprint is not None
+    assert run.fingerprint.agent != before.fingerprint.agent
+
+
+async def test_a_binary_knowledge_file_goes_in_as_the_part_load_hands_over(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    support = root / "support"
+    furnish(support)
+    boot_all(support)
+    llm = Scripted(text_reply("ok"))
+    built = engine(root, llm)
+    run = await built.run("support", "acme", "What does express cost?")
+    assert isinstance(run, Generation)
+    surface = EngineTools(built, agent="support", scope="acme")
+    for name in ("knowledge/rates.pdf", "knowledge/diagram.png"):
+        loaded = await surface.dispatch("Load", {"path": name})
+        assert isinstance(loaded, list) and len(loaded) == 1
+        at = run.boot.index(Text(text=f"<<<{name}>>>"))
+        assert run.boot[at + 1 : at + 2] == loaded
+
+
+class RuleFollower:
+    def __init__(self) -> None:
+        self.calls: list[list[Message]] = []
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        self.calls.append(list(messages))
+        seen = [
+            part.text
+            for message in messages
+            if isinstance(message.content, list)
+            for part in message.content
+            if isinstance(part, Text)
+        ] + [m.content for m in messages if isinstance(m.content, str)]
+        if any("refunded in full without approval" in text for text in seen):
+            return text_reply("Refunded in full; no approval needed.")
+        read = ToolCall(id=f"r{len(self.calls)}", name="Read", args={"path": "rules/refunds.md"})
+        return Reply(tool_calls=[read], stop_reason="tool_use")
+
+
+async def test_a_run_applies_a_rule_held_only_in_its_file_without_reading_it(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    support = root / "support"
+    assert (support / "rules" / "refunds.md").read_text(encoding="utf-8") == RULE
+    assert "without approval" not in (support / "rules" / "_index.md").read_text(encoding="utf-8")
+    reading = RuleFollower()
+    on_demand = await engine(root, reading).run("support", "acme", "Charged twice.")
+    assert isinstance(on_demand, Generation)
+    assert [step.tool for step in on_demand.steps] == ["Read"]
+    boot_all(support)
+    booting = RuleFollower()
+    run = await engine(root, booting).run("support", "acme", "Charged twice.")
+    assert isinstance(run, Generation)
+    assert run.steps == [] and run.calls == 1
+    assert run.reply == "Refunded in full; no approval needed."
+
+
+async def test_without_boot_the_model_is_sent_exactly_what_it_was_sent_before(
+    fixtures: Path,
+) -> None:
+    llm = Scripted(text_reply("ok"))
+    history = [Message(role="user", content="hi"), Message(role="assistant", content="hello")]
+    await Engine(fixtures, generation=llm, tools=TOOLS).run(
+        "support",
+        "acme",
+        "Charged twice.",
+        task="triage",
+        context="Acme is on the enterprise plan.",
+        history=history,
+    )
+    [(system, messages, tools)] = llm.calls
+    assert system == (
+        "<<<AGENT>>>\nYou are the support desk. Be brief, cite the rule you apply.\n\n"
+        "<<<INDEX>>>\nrules/ holds what you must do; skills/ what you can do; knowledge/ what you know.\n\n"
+        "<<<TASK>>>\nDecide whether this message needs a person.\n\n"
+        "<<<RULES>>>\n- refunds.md — when a refund is owed\n\n"
+        "<<<SKILLS>>>\n- escalate — hand a conversation to a person\n\n"
+        "<<<TOOLS>>>\n"
+        "- Read: Read a text file in the agent directory. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.\n"
+        "- Grep: Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines.\n"
+        "- Glob: Find files by glob pattern, e.g. '**/*.md'. Paths are relative to the agent directory.\n"
+        "- LS: List a directory inside the agent directory.\n"
+        "- Skill: Load a skill's body by name from skills/.\n"
+        "- Load: Load a file from the agent directory as it is, such as an image, a PDF or audio, so you see or hear it yourself.\n"
+        "- lookup_order: Fetch an order by id\n"
+        "- now: The current UTC time\n"
+        "- Delegate: Hand an input to another agent and get its reply.\n\n"
+        "<<<KNOWLEDGE>>>\n- plans.md — the three plans\n\n"
+        "<<<AGENTS>>>\n- triage: Judges urgency and severity of a message\n\n"
+        "<<<CONTEXT>>>\nAcme is on the enterprise plan."
+    )
+    assert messages == [*history, Message(role="user", content="Charged twice.")]
+    assert [t.name for t in tools] == [
+        "Read",
+        "Grep",
+        "Glob",
+        "LS",
+        "Skill",
+        "Load",
+        "lookup_order",
+        "now",
+        "Delegate",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("front", "message"),
+    [
+        (
+            "kind: decision\nboot: all\n",
+            "^tree: decision agent 'a' cannot declare boot: all$",
+        ),
+        ("kind: generation\nboot: some\n", "^frontmatter: invalid agent .*AGENT.md"),
+    ],
+)
+def test_boot_is_all_and_a_decision_agent_cannot_declare_it(
+    tmp_path: Path, front: str, message: str
+) -> None:
+    (tmp_path / "a" / "questions").mkdir(parents=True)
+    (tmp_path / "a" / "AGENT.md").write_text(f"---\nname: a\n{front}---\n", encoding="utf-8")
+    (tmp_path / "a" / "questions" / "q.md").write_text("---\ntype: check\n---\nIs it?\n")
+    with pytest.raises(ConfigurationError, match=message):
+        Engine(tmp_path, generation=Scripted(), decision=Answering())
+
+
+def test_a_booted_file_that_is_not_the_type_its_name_says_is_refused_when_the_tree_loads(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    (root / "support" / "knowledge" / "diagram.png").write_bytes(b"\0not a png")
+    boot_all(root / "support")
+    with pytest.raises(
+        ConfigurationError,
+        match=r"^tree: agent 'support' cannot boot its folder: builtins: diagram.png is not the image/png its name says$",
+    ):
+        engine(root, Scripted())
+
+
+async def test_the_boot_is_read_when_the_tree_loads_as_the_fingerprint_is_taken(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    support = root / "support"
+    boot_all(support)
+    llm = Scripted(text_reply("a"), text_reply("b"))
+    loaded = engine(root, llm)
+    (support / "rules" / "refunds.md").write_text("Refunds need approval.\n", encoding="utf-8")
+    old = await loaded.run("support", "acme", "x")
+    new = await engine(root, Scripted(text_reply("c"))).run("support", "acme", "x")
+    assert isinstance(old, Generation) and isinstance(new, Generation)
+    assert Text(text=f"<<<rules/refunds.md>>>\n{RULE}") in old.boot
+    assert Text(text="<<<rules/refunds.md>>>\nRefunds need approval.\n") in new.boot
+    assert old.fingerprint != new.fingerprint
+
+
+async def test_a_conversation_passed_back_carries_no_second_copy_of_the_folder(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    boot_all(root / "support")
+    llm = Scripted(text_reply("Refunded."), text_reply("Done."))
+    built = engine(root, llm)
+    first = await built.run("support", "acme", "Charged twice.")
+    assert isinstance(first, Generation)
+    await built.run("support", "acme", "And the second?", history=first.conversation)
+    boot = Message(role="user", content=first.boot)
+    assert llm.calls[1][1] == [
+        boot,
+        *first.conversation,
+        Message(role="user", content="And the second?"),
+    ]
+
+
+async def test_a_delegated_agent_boots_its_own_folder_and_only_its_own(tmp_path: Path) -> None:
+    root = lead(tmp_path)
+    (root / "lead" / "rules").mkdir()
+    (root / "lead" / "rules" / "tone.md").write_text("Be kind.\n", encoding="utf-8")
+    (root / "writer" / "knowledge").mkdir()
+    (root / "writer" / "knowledge" / "style.md").write_text("Short words.\n", encoding="utf-8")
+    boot_all(root / "lead")
+    boot_all(root / "writer")
+    llm = Scripted(delegating("writer", "Draft it."), text_reply("Drafted."), text_reply("Sent."))
+    run = await Engine(root, generation=llm, decision=Answering()).run("lead", "acme", "Go.")
+    assert isinstance(run, Generation)
+    [child] = run.children
+    assert isinstance(child, Generation)
+    assert run.boot == [Text(text="<<<rules/tone.md>>>\nBe kind.\n")]
+    assert child.boot == [Text(text="<<<knowledge/style.md>>>\nShort words.\n")]
+    assert llm.calls[1][1] == [
+        Message(role="user", content=child.boot),
+        Message(role="user", content="Draft it."),
+    ]
+
+
+async def test_the_boot_is_recorded_read_back_exported_and_left_to_the_candidate_on_replay(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    support = root / "support"
+    furnish(support)
+    boot_all(support)
+    refinery = Refinery(InMemoryStorage())
+    history = [Message(role="user", content="hi"), Message(role="assistant", content="hello")]
+    built = Engine(root, generation=Scripted(text_reply("Sorry.")), tools=TOOLS, refinery=refinery)
+    run = await built.run("support", "acme", "Charged twice.", history=history)
+    assert isinstance(run, Generation)
+    assert await refinery.run("acme", run.run_id) == run
+    await refinery.review("acme", run.run_id, Review(correction="Refunded."))
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    rows = {
+        key.split("/")[2]: json.loads(data.decode().splitlines()[0])
+        for key, data in bucket.objects.items()
+    }
+    sent = [part.model_dump(mode="json") for part in run.boot]
+    assert rows["generation"]["boot"] == sent
+    assert rows["preference"]["prompt"]["boot"] == sent
+    candidate_model = Scripted(text_reply("Refunded."))
+    candidate = Engine(root, generation=candidate_model, tools=TOOLS)
+    async for pair in refinery.replay("acme", candidate, agent="support"):
+        assert pair.candidate is not None
+    [(_, messages, _)] = candidate_model.calls
+    assert messages == [
+        Message(role="user", content=run.boot),
+        *history,
+        Message(role="user", content="Charged twice."),
+    ]
+
+
+async def test_a_run_recorded_before_boot_was_kept_reads_back_and_exports_with_none() -> None:
+    storage = InMemoryStorage()
+    refinery = Refinery(storage)
+    run = generation_record()
+    [stored] = flatten(run, datetime.now(UTC))
+    old = {key: value for key, value in stored.body.items() if key != "boot"}
+    await storage.put_run("acme", stored.model_copy(update={"body": old}))
+    assert Generation.model_validate(old).boot == []
+    await refinery.review("acme", run.run_id, Review(correction="Better."))
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    rows = {key.split("/")[2]: json.loads(data) for key, data in bucket.objects.items()}
+    assert rows["generation"]["boot"] == [] and rows["preference"]["prompt"]["boot"] == []

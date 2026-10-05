@@ -205,10 +205,36 @@ and nothing is loaded until the model asks. Write the maps with full paths —
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its
 `kind`, `description` and the `agents` it may call.
 
+An agent that needs its whole folder on every run — a few house rules applied to thousands of
+documents — asks for it at boot:
+
+```markdown
+---
+name: tagger
+kind: generation
+description: Tags each incoming document by the house rules
+boot: all
+---
+Tag the document. Every rule applies to every document.
+```
+
+With `boot: all` the model also receives every other file under `rules/`, `skills/` and
+`knowledge/`, in the order of their paths, each under its path: a file `Read` reads as text, any
+other as the part `Load` hands over. The maps stay maps and the folder stays as it is; only when
+the files are read changes, so no turn goes to opening them. They travel as one user message ahead
+of the history, sent with every model call, and are read when the engine loads the tree, as the
+fingerprint is taken, so an edit shows in the next `Engine`. `run.boot` holds that message's parts;
+`run.messages` and `run.conversation` leave it out, so a conversation passed back does not send the
+folder twice and a replay boots from the candidate's folder. The tools stay as they are — `Read`,
+`Load` and `Skill` hand over what the model already holds. Each agent boots its own folder, a
+delegated or routed one included. A decision agent reads no files, so `boot:` on one is a
+`ConfigurationError` when the tree loads; so is a file `boot: all` would send that is not the type
+its name says — a `.png` that is not one.
+
 ### Running an agent
 
 `engine.run(agent, scope, input)` names the agent, the tenant and the input, and returns a record.
-For a generation agent that record is a `Generation`: the reply, the system prompt as sent, the messages as sent to the first model call, the whole conversation, the tools the model was offered (`run.tools`, each a `ToolSpec`), every tool
+For a generation agent that record is a `Generation`: the reply, the system prompt as sent, the files `boot: all` sent (`run.boot`), the messages as sent to the first model call, the whole conversation, the tools the model was offered (`run.tools`, each a `ToolSpec`), every tool
 call as a `Step` with its result and timing, the model calls and their summed usage, and any child
 runs. It is the whole observability payload; hand it to your own telemetry:
 
@@ -914,8 +940,8 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | task, context, tags, model, fingerprint, system, messages, tools, conversation, steps, reply, stopped, usage, every label |
-| `preference` | human correction | tags, fingerprint, prompt, chosen (the correction), rejected (the reply) |
+| `generation` | generation run | task, context, tags, model, fingerprint, system, boot, messages, tools, conversation, steps, reply, stopped, usage, every label |
+| `preference` | human correction | tags, fingerprint, prompt (system, boot, messages), chosen (the correction), rejected (the reply) |
 | `decision` | question of a decision run | task, tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
 
 Every row carries its run's `tags`, `{}` for a run that had none or was recorded before tags were
@@ -925,10 +951,11 @@ recorded before it was kept; group or filter the rows by them in your own code.
 
 The first two are a generation agent's episodes and the corrections people made to them. A
 generation row's `tools` is what the model was offered — `{name, description, input_schema}` each —
-and `conversation` is `run.conversation` in order: history, input, assistant turns with their
-`tool_calls` (`{id, name, args}`), tool results with `is_error`, the final reply. Together they fit
+`boot` the parts `boot: all` sent ahead of `messages`, `[]` without it, and `conversation` is
+`run.conversation` in order: history, input, assistant turns with their `tool_calls`
+(`{id, name, args}`), tool results with `is_error`, the final reply. Together they fit
 standard fine-tuning and eval formats with a few lines of mapping; the library writes no vendor's
-format. A run recorded before `tools` was kept exports `"tools": []`. Parts
+format. A run recorded before `tools` or `boot` was kept exports it as `[]`. Parts
 are written inline, their bytes as base64, so a row is self-contained; strip the media from a row
 you do not want it in. The third
 is a decision agent's answers beside what turned out true: a calibrated model is one whose 0.8 was
@@ -1253,7 +1280,8 @@ Everything the package exports, by role.
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
 `AGENT.md`, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
-(`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), a question
+(`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), a decision agent
+with `boot: all`, a file `boot: all` would send that is not the type its name says, a question
 with instructions both in its frontmatter and in its body or in neither, a decision agent with a
 file straight in `tasks/` or a task that repeats an id of its `questions/`, a route entry that
 names a task its agent does not have or gives a decision agent nothing to ask, a tool

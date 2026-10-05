@@ -82,6 +82,7 @@ class Generation(BaseModel):
     fingerprint: Fingerprint | None = None
     input: State
     system: str
+    boot: list[Part] = Field(default_factory=list)
     messages: list[Message]
     conversation: list[Message]
     tools: list[ToolSpec] = Field(default_factory=list)

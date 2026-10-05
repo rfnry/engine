@@ -520,6 +520,7 @@ class Engine:
             agents=targets,
             context=options.context,
         )
+        boot = [Message(role="user", content=list(spec.boot))] if spec.boot else []
         messages = [*options.history, Message(role="user", content=_content(input))]
         sent = list(messages)
         steps: list[Step] = []
@@ -664,13 +665,14 @@ class Engine:
                 inbox.task_done()
 
         async def ask() -> Reply:
+            sending = [*boot, *messages]
             if streaming:
                 return as_reply(
                     await cast(StreamingGenerationModel, model_).generate_stream(
-                        system, messages, specs, delta
+                        system, sending, specs, delta
                     )
                 )
-            return as_reply(await model_.generate(system, messages, specs))
+            return as_reply(await model_.generate(system, sending, specs))
 
         def finish(reply_text: str, stopped: Stopped | None = None) -> Generation:
             return Generation(
@@ -687,6 +689,7 @@ class Engine:
                 fingerprint=fingerprint,
                 input=input,
                 system=system,
+                boot=list(spec.boot),
                 messages=sent,
                 conversation=list(messages),
                 tools=specs,

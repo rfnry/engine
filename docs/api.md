@@ -354,7 +354,7 @@ class Engine:
 
 Loads the tree of agents under `root` and checks it against the models and tool bodies given; `tools` is one list for the whole tree, and `Recorder` is a protocol of `async def record(self, run: Run) -> None`, which a `Refinery` meets. `tool_timeout` is each tool call's deadline in seconds, `None` for none. `agents` maps each agent's name to its `AgentInfo`.
 
-Raises `ConfigurationError` when `root` is not a directory, when the tree cannot be used (no agent under `root`, a bad `AGENT.md`, question or tool file, an unknown frontmatter key, an agent in `agents:` or `route:` the tree does not have, a route entry naming a task its agent does not have or reaching a decision agent with nothing to ask — no `questions/` and no task with questions named — a route not by a choice question of the router's `questions/`, a decision agent with a file straight in `tasks/` or a task that repeats an id of its `questions/`), when a tool is given that no agent declares or, with a generation model, a declared tool has no body, when two tools share a name, or when `max_steps`, `max_depth` or `tool_timeout` is not positive.
+Raises `ConfigurationError` when `root` is not a directory, when the tree cannot be used (no agent under `root`, a bad `AGENT.md`, question or tool file, an unknown frontmatter key, an agent in `agents:` or `route:` the tree does not have, a route entry naming a task its agent does not have or reaching a decision agent with nothing to ask — no `questions/` and no task with questions named — a route not by a choice question of the router's `questions/`, a decision agent with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a decision agent with `boot: all`, a file `boot: all` would send that is not the type its name says), when a tool is given that no agent declares or, with a generation model, a declared tool has no body, when two tools share a name, or when `max_steps`, `max_depth` or `tool_timeout` is not positive.
 
 ### `Engine.run`
 
@@ -464,6 +464,7 @@ class Generation(BaseModel):
     fingerprint: Fingerprint | None = None
     input: State
     system: str
+    boot: list[Part] = []
     messages: list[Message]
     conversation: list[Message]
     tools: list[ToolSpec] = []
@@ -475,7 +476,7 @@ class Generation(BaseModel):
     stopped: Stopped | None = None
 ```
 
-The record of a generation run: the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. `model` is the model the replies reported; when none did, as in a run stopped during its first model call, it is the adapter's `model` attribute if that is a non-empty string, else `None`. An accepted `Output` makes `reply` its JSON. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. A run recorded before `context` or `fingerprint` was kept reads back with `None`.
+The record of a generation run: the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. `model` is the model the replies reported; when none did, as in a run stopped during its first model call, it is the adapter's `model` attribute if that is a non-empty string, else `None`. An accepted `Output` makes `reply` its JSON. `boot` is what `boot: all` sent, `[]` without it: in path order, a text file as a `Text` that starts with `<<<path>>>` on a line of its own, any other file as a `Text` of `<<<path>>>` followed by its part; every model call receives it as one user message ahead of the messages, and neither `messages` nor `conversation` holds it. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. A run recorded before `context` or `fingerprint` was kept reads back with `None`, and one recorded before `boot` was kept with `[]`.
 
 ### `Decision`
 

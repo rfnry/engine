@@ -100,7 +100,11 @@ async def test_export_writes_three_datasets_with_labels_and_holdout() -> None:
         "holdout": is_holdout(generation.run_id),
         "tags": {},
         "fingerprint": None,
-        "prompt": {"system": generation.system, "messages": generation_row["messages"]},
+        "prompt": {
+            "system": generation.system,
+            "boot": [],
+            "messages": generation_row["messages"],
+        },
         "chosen": "Refund in full.",
         "rejected": "Sorry, no.",
         "label_id": preference_row["label_id"],
