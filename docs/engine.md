@@ -1,6 +1,11 @@
 # rfnry-engine
 
-rfnry-engine runs agents that are directories of markdown.
+rfnry-engine is an agent harness with built-in dataset generation.
+
+It is the scaffolding that turns a model into an agent — the loop, the tools, delegation between
+agents — as a small library: an agent is a folder of markdown, running on a generation model, a
+decision model, or both. Opt-in, it records every run, gathers labels from people, the world and
+models, and exports datasets to evaluate, improve or train what comes next.
 
 An agent is one of two kinds. A **generation agent** puts a language model in a loop with tools
 until it has an answer. A **decision agent** asks a decision model a set of typed questions about a

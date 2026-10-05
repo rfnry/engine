@@ -1,7 +1,7 @@
 [project]
 name = "rfnry-engine"
 version = "0.1.0"
-description = "Markdown agents on generation and decision models, with a refinery that turns runs into datasets"
+description = "Agent harness with built-in dataset generation"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"

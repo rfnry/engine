@@ -2,7 +2,9 @@
 
 ## Description
 
-rfnry-engine runs agents that are directories of markdown. An agent is a **generation agent** — a language model in a tool-use loop — or a **decision agent** — typed questions answered in one call by a decision model — and agents nest in both directions. Opt-in, a refinery records every run, attaches labels from people, the world and models, and exports datasets with every label and its source — to evaluate, improve, train or audit, as the consumer chooses.
+rfnry-engine is an agent harness with built-in dataset generation.
+
+It is the scaffolding that turns a model into an agent — the loop, the tools, delegation between agents — as a small library: an agent is a folder of markdown, running on a generation model, a decision model, or both. Opt-in, it records every run, gathers labels from people, the world and models, and exports datasets to evaluate, improve or train what comes next.
 
 It is a library, not a framework. The consumer brings the models, the storage connection, the functions behind tools, the conversation history, the bucket and the telemetry. The library never writes to disk on its own — the only writes are a model's, inside a `Workspace` the consumer passes to a run — never owns a background loop, never sees a credential. Tenancy is by construction: every run names its scope, every stored row carries it, nothing reads across scopes.
 
