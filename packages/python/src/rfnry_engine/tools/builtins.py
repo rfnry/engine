@@ -13,7 +13,6 @@ import regex
 from pydantic import BaseModel, Field
 
 from rfnry_engine.errors import InputError
-from rfnry_engine.fingerprint import folder_files
 from rfnry_engine.frontmatter import strip_frontmatter
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Audio, Document, Image, Part, Text
@@ -115,20 +114,32 @@ def _decoded(data: bytes) -> str | None:
         return None
 
 
-def boot_parts(root: Path) -> list[Part]:
+def _handed(path: Path, data: bytes, shown: str, media_types: Collection[str] | None) -> Part:
+    media_type = _media_type(path, data)
+    if media_types is not None and not any(fnmatch(media_type, t) for t in media_types):
+        raise InputError(f"builtins: the model does not take {media_type} files: {shown}")
+    return _part(path, data, media_type)
+
+
+def boot_parts(
+    files: list[tuple[str, Path]], media_types: Collection[str] | None
+) -> tuple[list[Part], dict[str, bytes]]:
     parts: list[Part] = []
-    for name, path in folder_files(root):
+    read: dict[str, bytes] = {}
+    for name, path in files:
         folder, _, rest = name.partition("/")
         if folder not in _BOOTED or rest in ("", "_index.md"):
             continue
-        data = path.read_bytes()
-        text = _decoded(data)
-        if text is not None:
+        size = path.stat().st_size
+        if size > _LOAD_BYTES:
+            raise InputError(f"builtins: file exceeds {_LOAD_BYTES} bytes: {name}")
+        data = read[name] = path.read_bytes()
+        text = _decoded(data) if size <= _MAX_BYTES else None
+        if text is None:
+            parts += [Text(text=f"<<<{name}>>>"), _handed(path, data, name, media_types)]
+        else:
             parts.append(Text(text=f"<<<{name}>>>\n{text}"))
-            continue
-        parts.append(Text(text=f"<<<{name}>>>"))
-        parts.append(_part(path, data, _media_type(path, data)))
-    return parts
+    return parts, read
 
 
 class _Directory:
@@ -338,11 +349,7 @@ def load_tool(
             raise InputError(f"builtins: not a file: {a.path}")
         if target.stat().st_size > _LOAD_BYTES:
             raise InputError(f"builtins: file exceeds {_LOAD_BYTES} bytes: {a.path}")
-        data = target.read_bytes()
-        media_type = _media_type(target, data)
-        if media_types is not None and not any(fnmatch(media_type, t) for t in media_types):
-            raise InputError(f"builtins: the model does not take {media_type} files: {a.path}")
-        return [_part(target, data, media_type)]
+        return [_handed(target, target.read_bytes(), a.path, media_types)]
 
     async def body(args: dict[str, Any]) -> Result:
         parts: list[Part] = await asyncio.to_thread(load, args)

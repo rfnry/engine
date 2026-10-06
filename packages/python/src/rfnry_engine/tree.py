@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator
 
 from rfnry_engine.errors import ConfigurationError, InputError
-from rfnry_engine.fingerprint import folder_fingerprint
+from rfnry_engine.fingerprint import folder_files, folder_fingerprint
 from rfnry_engine.frontmatter import parse_frontmatter_doc
 from rfnry_engine.models import Check, Choice, Part, Question, Score
 from rfnry_engine.tools.builtins import boot_parts
@@ -165,7 +166,7 @@ def _questions(directory: Path) -> dict[str, Question]:
     return {p.stem: _question(p) for p in _markdown_files(directory)}
 
 
-def load_agent(directory: Path) -> AgentSpec:
+def load_agent(directory: Path, media_types: Collection[str] | None = None) -> AgentSpec:
     front, body = parse_frontmatter_doc(
         _read(directory / "AGENT.md"),
         model=AgentFront,
@@ -206,8 +207,9 @@ def load_agent(directory: Path) -> AgentSpec:
     if front.kind == "generation" and front.route is not None:
         raise ConfigurationError(f"tree: generation agent {front.name!r} cannot declare route:")
     root = directory.resolve()
+    files = folder_files(root)
     try:
-        boot = boot_parts(root) if front.boot == "all" else []
+        boot, read = boot_parts(files, media_types) if front.boot == "all" else ([], {})
     except InputError as exc:
         raise ConfigurationError(
             f"tree: agent {front.name!r} cannot boot its folder: {exc}"
@@ -223,20 +225,20 @@ def load_agent(directory: Path) -> AgentSpec:
         questions=questions,
         tools=tools,
         tasks=tasks,
-        fingerprint=folder_fingerprint(root),
+        fingerprint=folder_fingerprint(files, read),
         workspace=front.workspace,
         task_questions=task_questions,
         boot=boot,
     )
 
 
-def load_tree(root: Path) -> dict[str, AgentSpec]:
+def load_tree(root: Path, media_types: Collection[str] | None = None) -> dict[str, AgentSpec]:
     root = Path(root)
     if (root / "AGENT.md").is_file():
-        spec = load_agent(root)
+        spec = load_agent(root, media_types)
         return {spec.name: spec}
     agents = {
-        child.name: load_agent(child)
+        child.name: load_agent(child, media_types)
         for child in sorted(root.iterdir())
         if child.is_dir() and (child / "AGENT.md").is_file()
     }

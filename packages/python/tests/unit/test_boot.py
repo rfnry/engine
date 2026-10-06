@@ -1,12 +1,15 @@
 import json
+import mimetypes
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.fingerprint import tools_fingerprint
 from rfnry_engine.models import (
     Document,
     GenerationModel,
@@ -34,6 +37,7 @@ from .fakes import (
     lead,
     text_reply,
 )
+from .test_fingerprint import by_hand
 
 PNG = b"\x89PNG\r\n\x1a\ndiagram"
 PDF = b"%PDF-1.7 \xe2\x28\xa1 rates"
@@ -202,6 +206,7 @@ async def test_without_boot_the_model_is_sent_exactly_what_it_was_sent_before(
         "<<<CONTEXT>>>\nAcme is on the enterprise plan."
     )
     assert messages == [*history, Message(role="user", content="Charged twice.")]
+    assert tools_fingerprint(tools) == "c3e82fb70aab3171"
     assert [t.name for t in tools] == [
         "Read",
         "Grep",
@@ -339,7 +344,7 @@ async def test_the_boot_is_recorded_read_back_exported_and_left_to_the_candidate
     ]
 
 
-async def test_a_run_recorded_before_boot_was_kept_reads_back_and_exports_with_none() -> None:
+async def test_a_run_recorded_before_boot_was_kept_reads_back_and_exports_an_empty_boot() -> None:
     storage = InMemoryStorage()
     refinery = Refinery(storage)
     run = generation_record()
@@ -352,3 +357,91 @@ async def test_a_run_recorded_before_boot_was_kept_reads_back_and_exports_with_n
     await refinery.export("acme", bucket)
     rows = {key.split("/")[2]: json.loads(data) for key, data in bucket.objects.items()}
     assert rows["generation"]["boot"] == [] and rows["preference"]["prompt"]["boot"] == []
+
+
+class PicturesAndDocuments(Scripted):
+    media_types = {"image/*", "application/pdf"}
+
+
+async def refusal(root: Path, llm: GenerationModel, name: str, tool: str = "Load") -> str:
+    surface = EngineTools(engine(root, llm), agent="support", scope="acme")
+    with pytest.raises(InputError) as refused:
+        await surface.dispatch(tool, {"path": name})
+    return str(refused.value)
+
+
+async def test_a_file_over_load_s_cap_is_refused_when_the_tree_loads_with_load_s_message(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    with (root / "support" / "knowledge" / "archive.bin").open("wb") as file:
+        file.truncate(20 * 1024 * 1024 + 1)
+    load = await refusal(root, Scripted(), "knowledge/archive.bin")
+    assert load == "builtins: file exceeds 20971520 bytes: knowledge/archive.bin"
+    boot_all(root / "support")
+    with pytest.raises(ConfigurationError) as refused:
+        engine(root, Scripted())
+    assert str(refused.value) == f"tree: agent 'support' cannot boot its folder: {load}"
+
+
+async def test_a_text_file_over_read_s_cap_goes_in_as_load_hands_it(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    name = "knowledge/notes.txt"
+    (root / "support" / name).write_text("a" * (5 * 1024 * 1024 + 1), encoding="utf-8")
+    read = await refusal(root, Scripted(), name, tool="Read")
+    assert read == f"builtins: file exceeds 5242880 bytes: {name}"
+    boot_all(root / "support")
+    built = engine(root, Scripted(text_reply("ok")))
+    run = await built.run("support", "acme", "x")
+    assert isinstance(run, Generation)
+    loaded = await EngineTools(built, agent="support", scope="acme").dispatch(
+        "Load", {"path": name}
+    )
+    assert loaded == [
+        Document(
+            media_type="text/plain", name="notes.txt", data=(root / "support" / name).read_bytes()
+        )
+    ]
+    at = run.boot.index(Text(text=f"<<<{name}>>>"))
+    assert run.boot[at + 1 : at + 2] == loaded
+
+
+async def test_a_file_the_model_does_not_take_is_refused_when_the_tree_loads_with_load_s_message(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    name = "knowledge/greeting.wav"
+    (root / "support" / name).write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00")
+    load = await refusal(root, PicturesAndDocuments(), name)
+    kind = mimetypes.guess_type(name)[0]
+    assert load == f"builtins: the model does not take {kind} files: {name}"
+    boot_all(root / "support")
+    with pytest.raises(ConfigurationError) as refused:
+        engine(root, PicturesAndDocuments())
+    assert str(refused.value) == f"tree: agent 'support' cannot boot its folder: {load}"
+    assert engine(root, Scripted()).agents["support"].kind == "generation"
+
+
+def test_the_boot_and_the_fingerprint_come_from_one_read_of_each_file(
+    fixtures: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tree(fixtures, tmp_path)
+    support = (root / "support").resolve()
+    furnish(support)
+    boot_all(support)
+    opened: list[Path] = []
+    original = Path.open
+
+    def counting(self: Path, *args: Any, **kwargs: Any) -> Any:
+        opened.append(self)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", counting)
+    spec = engine(root, Scripted())._agents["support"]
+    monkeypatch.undo()
+    booted = ["knowledge/diagram.png", "knowledge/plans.md", "knowledge/rates.pdf"]
+    booted += ["rules/chargebacks/disputed.md", "rules/refunds.md", "skills/escalate.md"]
+    assert {name: opened.count(support / name) for name in booted} == dict.fromkeys(booted, 1)
+    assert spec.fingerprint == by_hand(support)

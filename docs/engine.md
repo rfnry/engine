@@ -65,7 +65,9 @@ statically and at runtime. A result whose fields do not fit is a `ModelError`.
 generation model. An assistant turn is a `Message(role="assistant", content=…, tool_calls=[…])`:
 its text in `content`, its calls as `ToolCall`s. A tool result is a
 `Message(role="tool", tool_call_id=…, content=…)` whose `is_error` says the call failed, for
-adapters whose vendor marks failed tool results. A `Reply`
+adapters whose vendor marks failed tool results. `messages` may hold consecutive
+`role="user"` messages — the boot ahead of the history, several messages from the inbox — so an
+adapter whose vendor needs alternating roles merges them. A `Reply`
 whose `stop_reason` is `"tool_use"` and whose `tool_calls` is non-empty means "run these and call
 me again"; anything else is final:
 
@@ -200,7 +202,8 @@ caller passes. Everything else it reads when it needs it, with the `Read`, `Grep
 as text. `Load` hands the model any other file as it is — an image, a PDF, a recording, a
 spreadsheet — so a price list, a diagram or a scanned form sits in `knowledge/` as it came, the
 model reads it with its own understanding of images and documents, there is no parser in between,
-and nothing is loaded until the model asks. Write the maps with full paths —
+and nothing is loaded until the model asks — unless the agent asks for its folder at boot, below.
+Write the maps with full paths —
 `rules/refunds.md`, not `refunds.md` — because a model opens exactly what the map names.
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its
 `kind`, `description` and the `agents` it may call.
@@ -219,8 +222,9 @@ Tag the document. Every rule applies to every document.
 ```
 
 With `boot: all` the model also receives every other file under `rules/`, `skills/` and
-`knowledge/`, in the order of their paths, each under its path: a file `Read` reads as text, any
-other as the part `Load` hands over. The maps stay maps and the folder stays as it is; only when
+`knowledge/`, sorted by relative path character by character — `knowledge/` before `rules/` before
+`skills/` — each under its path: what `Read` would return for it, and for a file `Read` refuses —
+over 5 MB, or not text — the part `Load` would hand over. The maps stay maps and the folder stays as it is; only when
 the files are read changes, so no turn goes to opening them. They travel as one user message ahead
 of the history, sent with every model call, and are read when the engine loads the tree, as the
 fingerprint is taken, so an edit shows in the next `Engine`. `run.boot` holds that message's parts;
@@ -228,8 +232,9 @@ fingerprint is taken, so an edit shows in the next `Engine`. `run.boot` holds th
 folder twice and a replay boots from the candidate's folder. The tools stay as they are — `Read`,
 `Load` and `Skill` hand over what the model already holds. Each agent boots its own folder, a
 delegated or routed one included. A decision agent reads no files, so `boot:` on one is a
-`ConfigurationError` when the tree loads; so is a file `boot: all` would send that is not the type
-its name says — a `.png` that is not one.
+`ConfigurationError` when the tree loads; so is a file neither `Read` nor `Load` would hand over —
+over 20 MB, of a type the generation model's `media_types` does not name, or not the type its name
+says — with `Load`'s own message.
 
 ### Running an agent
 
@@ -885,7 +890,9 @@ writes nothing, and one on another run is an `InputError`.
 And models label what people did not. A **judge** is a decision agent in your tree whose questions
 are about an episode; it sees the input, the reply and every tool call with its result, with each image,
 audio or document replaced by a placeholder naming it — `[image: image/jpeg]`, `[document: application/pdf, "policy.pdf"]` —
-while the recorded run and the exported datasets keep the media:
+while the recorded run and the exported datasets keep the media. A judge sees neither the system
+prompt nor `run.boot`, so a rule a booted agent never had to `Read` is not in front of it; ask about
+them in the question when they matter:
 
 ```
 agents/judge/
@@ -1281,7 +1288,8 @@ Everything the package exports, by role.
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
 `AGENT.md`, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
 (`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), a decision agent
-with `boot: all`, a file `boot: all` would send that is not the type its name says, a question
+with `boot: all`, a file `boot: all` would send that neither `Read` nor `Load` would hand over —
+over 20 MB, of a type the model's `media_types` does not name, or not the type its name says — a question
 with instructions both in its frontmatter and in its body or in neither, a decision agent with a
 file straight in `tasks/` or a task that repeats an id of its `questions/`, a route entry that
 names a task its agent does not have or gives a decision agent nothing to ask, a tool

@@ -260,7 +260,7 @@ class Engine:
         self.max_steps = max_steps
         self.max_depth = max_depth
         self.tool_timeout = tool_timeout
-        self._agents = load_tree(self.root)
+        self._agents = load_tree(self.root, getattr(generation, "media_types", None))
         validate_tree(self._agents)
         check_declarations(self._agents, self.tools, bodies=generation is not None)
 

@@ -30,11 +30,14 @@ def folder_files(root: Path) -> list[tuple[str, Path]]:
     return sorted(found, key=lambda item: item[0])
 
 
-def folder_fingerprint(root: Path) -> str:
+def folder_fingerprint(files: list[tuple[str, Path]], read: Mapping[str, bytes]) -> str:
     digest = hashlib.sha256()
-    for name, path in folder_files(root):
-        with path.open("rb") as file:
-            content = hashlib.file_digest(file, "sha256").digest()
+    for name, path in files:
+        if name in read:
+            content = hashlib.sha256(read[name]).digest()
+        else:
+            with path.open("rb") as file:
+                content = hashlib.file_digest(file, "sha256").digest()
         digest.update(name.encode("utf-8") + b"\0" + content)
     return digest.hexdigest()[:SHORT]
 
