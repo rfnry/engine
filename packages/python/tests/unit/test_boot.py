@@ -32,12 +32,12 @@ from .fakes import (
     Answering,
     MemoryBucket,
     Scripted,
+    by_hand,
     delegating,
     generation_record,
     lead,
     text_reply,
 )
-from .test_fingerprint import by_hand
 
 PNG = b"\x89PNG\r\n\x1a\ndiagram"
 PDF = b"%PDF-1.7 \xe2\x28\xa1 rates"

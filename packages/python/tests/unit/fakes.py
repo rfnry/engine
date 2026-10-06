@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -87,6 +88,19 @@ class Answering:
     ) -> dict[str, Answer]:
         self.calls.append((state, dict(questions)))
         return {qid: answer_to(question) for qid, question in questions.items()}
+
+
+def by_hand(folder: Path) -> str:
+    digest = hashlib.sha256()
+    files = sorted(
+        (path.relative_to(folder).as_posix(), path)
+        for path in folder.rglob("*")
+        if path.is_file()
+        and not any(part.startswith(".") for part in path.relative_to(folder).parts)
+    )
+    for name, path in files:
+        digest.update(name.encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()[:16]
 
 
 def text_reply(text: str, **kwargs: Any) -> Reply:

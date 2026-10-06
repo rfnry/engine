@@ -224,17 +224,17 @@ Tag the document. Every rule applies to every document.
 With `boot: all` the model also receives every other file under `rules/`, `skills/` and
 `knowledge/`, sorted by relative path character by character — `knowledge/` before `rules/` before
 `skills/` — each under its path: what `Read` would return for it, and for a file `Read` refuses —
-over 5 MB, or not text — the part `Load` would hand over. The maps stay maps and the folder stays as it is; only when
-the files are read changes, so no turn goes to opening them. They travel as one user message ahead
-of the history, sent with every model call, and are read when the engine loads the tree, as the
-fingerprint is taken, so an edit shows in the next `Engine`. `run.boot` holds that message's parts;
-`run.messages` and `run.conversation` leave it out, so a conversation passed back does not send the
-folder twice and a replay boots from the candidate's folder. The tools stay as they are — `Read`,
-`Load` and `Skill` hand over what the model already holds. Each agent boots its own folder, a
-delegated or routed one included. A decision agent reads no files, so `boot:` on one is a
-`ConfigurationError` when the tree loads; so is a file neither `Read` nor `Load` would hand over —
-over 20 MB, of a type the generation model's `media_types` does not name, or not the type its name
-says — with `Load`'s own message.
+over 5 MB, or not text — the part `Load` would hand over. The maps stay maps and the folder stays
+as it is; only when the files are read changes, so no turn goes to opening them. They travel as one
+user message ahead of the history, sent with every model call, and are read when the engine loads
+the tree, as the fingerprint is taken, so an edit shows in the next `Engine`. `run.boot` holds that
+message's parts; `run.messages` and `run.conversation` leave it out, so a conversation passed back
+does not send the folder twice and a replay boots from the candidate's folder. The tools stay as
+they are — `Read`, `Load` and `Skill` hand over what the model already holds. Each agent boots its
+own folder, a delegated or routed one included. A decision agent reads no files, so `boot:` on one
+is a `ConfigurationError` when the tree loads; so is a file neither `Read` nor `Load` would hand
+over — over 20 MB, of a type the generation model's `media_types` does not name, or not the type its
+name says — with `Load`'s own message.
 
 ### Running an agent
 
@@ -1289,10 +1289,10 @@ Everything the package exports, by role.
 `AGENT.md`, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
 (`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), a decision agent
 with `boot: all`, a file `boot: all` would send that neither `Read` nor `Load` would hand over —
-over 20 MB, of a type the model's `media_types` does not name, or not the type its name says — a question
-with instructions both in its frontmatter and in its body or in neither, a decision agent with a
-file straight in `tasks/` or a task that repeats an id of its `questions/`, a route entry that
-names a task its agent does not have or gives a decision agent nothing to ask, a tool
+over 20 MB, of a type the model's `media_types` does not name, or not the type its name says — a
+question with instructions both in its frontmatter and in its body or in neither, a decision agent
+with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a route entry
+that names a task its agent does not have or gives a decision agent nothing to ask, a tool
 declared without a body or given without a declaration, a run of an agent whose kind of model is
 absent, a missing workspace, a `Workspace` root that is not a
 directory, a `Workspace` with neither `sandbox=` nor `unsandboxed=True` or with both, an unsandboxed

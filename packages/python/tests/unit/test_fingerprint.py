@@ -21,6 +21,7 @@ from .fakes import (
     Desk,
     MemoryBucket,
     Scripted,
+    by_hand,
     decision_record,
     delegate_triage,
     generation_record,
@@ -53,19 +54,6 @@ async def generation(root: Path, *, tools: list[Tool] = TOOLS, **kwargs: Any) ->
     run = await engine(root, tools=tools).run("support", "acme", "hi", **kwargs)
     assert isinstance(run, Generation)
     return run
-
-
-def by_hand(folder: Path) -> str:
-    digest = hashlib.sha256()
-    files = sorted(
-        (path.relative_to(folder).as_posix(), path)
-        for path in folder.rglob("*")
-        if path.is_file()
-        and not any(part.startswith(".") for part in path.relative_to(folder).parts)
-    )
-    for name, path in files:
-        digest.update(name.encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest())
-    return digest.hexdigest()[:16]
 
 
 async def test_the_agent_fingerprint_is_every_file_of_its_folder_by_path_and_content(
