@@ -350,7 +350,9 @@ run = await engine.run("support", scope="acme", input=message, task="triage",
 
 A `ToolCallStarted` carries the call's `args`, and a `ToolResultReady` its `step`: the same `Step`
 the run records, sent however the call ended — a result, an error, a refusal, a delegation, a stop —
-so a step can be shown, in a conversation or anywhere, while the run goes on.
+so a step can be shown, in a conversation or anywhere, while the run goes on. A call the engine
+answers without running it sends neither: `Output`, a call after an accepted `Output`, a call in a
+reply that was cut short. Its step is in `run.steps`.
 
 Every model call is a turn, and a `TextDelta` carries the `turn` that said it, from 0. Text of a
 turn that ends in tool calls — "Let me look that up." — is said beside them; a run that ends in
