@@ -11,6 +11,7 @@ from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError
 from rfnry_engine.models import Document, Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Generation, Step
+from rfnry_engine.refinery.export import generation_row
 from rfnry_engine.refinery.holdout import is_holdout
 from rfnry_engine.refinery.labels import Outcome, Review
 from rfnry_engine.refinery.postgres import PostgresStorage
@@ -468,3 +469,11 @@ async def test_a_failed_run_is_in_no_dataset_even_with_a_correction(storage: Sto
     assert exported.rows == {"generation": 1}
     [key] = exported.keys
     assert [row["run_id"] for row in _lines(bucket.objects[key])] == [kept.run_id]
+
+
+async def test_a_run_recorded_before_start_was_kept_exports_start_zero(storage: Storage) -> None:
+    refinery = Refinery(storage)
+    await refinery.record(generation_record())
+    [row] = await storage.runs("acme")
+    old = row.model_copy(update={"body": {k: v for k, v in row.body.items() if k != "start"}})
+    assert generation_row(old, [], holdout=False)["start"] == 0

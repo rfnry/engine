@@ -844,15 +844,17 @@ async def test_start_prefix_and_usage_round_trip_and_old_bodies_read_without_the
     got = await storage.get_run("a", "w")
     assert got is not None and Generation.model_validate(got.body) == run
     bucket = MemoryBucket()
-    await refinery.export("a", bucket)
-    [data] = [value for key, value in bucket.objects.items() if "/generation/" in key]
+    exported = await refinery.export("a", bucket)
+    [key] = [k for k in exported.keys if k.startswith("a/support/generation/")]
+    data = bucket.objects[key]
     [row] = [json.loads(line) for line in data.splitlines()]
     assert row["start"] == 4 and row["conversation"][-1]["prefix"] == "0123456789abcdef"
     old = {key: value for key, value in got.body.items() if key != "start"}
-    old["conversation"] = [
-        {k: v for k, v in message.items() if k not in ("prefix", "usage")}
-        for message in got.body["conversation"]
-    ]
+    for listed in ("messages", "conversation"):
+        old[listed] = [
+            {k: v for k, v in message.items() if k not in ("prefix", "usage")}
+            for message in got.body[listed]
+        ]
     await storage.put_run("a", got.model_copy(update={"body": old}))
     again = await storage.get_run("a", "w")
     assert again is not None

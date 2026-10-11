@@ -1,5 +1,7 @@
+import asyncio
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -209,3 +211,51 @@ async def test_a_usage_or_prefix_from_elsewhere_reads_as_none(fixtures: Path) ->
         {"role": "assistant", "prefix": "0123456789abcdef", "usage": {"input": 3}}
     )
     assert kept.prefix == "0123456789abcdef" and kept.usage == Usage(input=3)
+
+
+async def test_reasoning_is_left_out_once_a_booted_file_changed(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tmp_path / "agents"
+    shutil.copytree(fixtures, root)
+    agent = root / "support" / "AGENT.md"
+    agent.write_text(
+        agent.read_text(encoding="utf-8").replace(
+            "agents: [triage]\n", "agents: [triage]\nboot: all\n"
+        ),
+        encoding="utf-8",
+    )
+    llm = Scripted(reading(), text_reply("Refund in full."), text_reply("ok"), text_reply("ok"))
+    first = await first_run(Engine(root, generation=llm, tools=TOOLS))
+    same = await Engine(root, generation=llm, tools=TOOLS).run(
+        "support", "acme", "Which?", history=first.conversation, context=CONTEXT
+    )
+    (root / "support" / "rules" / "refunds.md").write_text(
+        "A duplicate charge is refunded within 30 days.\n", encoding="utf-8"
+    )
+    moved = await Engine(root, generation=llm, tools=TOOLS).run(
+        "support", "acme", "Which?", history=first.conversation, context=CONTEXT
+    )
+    assert isinstance(same, Generation) and isinstance(moved, Generation)
+    assert same.messages[1].reasoning == THOUGHT and moved.messages[1].reasoning is None
+
+
+async def test_a_message_that_arrives_mid_run_is_under_the_next_prefix(fixtures: Path) -> None:
+    inbox: asyncio.Queue[Any] = asyncio.Queue()
+    inbox.put_nowait("It was order A-2, not A-1.")
+    noted = Reply(text="Noted.", reasoning=THOUGHT, stop_reason="end_turn")
+    llm = Scripted(reading(), noted, text_reply("ok"))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    first = await engine.run("support", "acme", "Charged twice.", context=CONTEXT, inbox=inbox)
+    assert isinstance(first, Generation)
+    assert [m.role for m in first.conversation] == [
+        "user",
+        "assistant",
+        "tool",
+        "user",
+        "assistant",
+    ]
+    second = await engine.run(
+        "support", "acme", "Thanks.", history=first.conversation, context=CONTEXT
+    )
+    assert isinstance(second, Generation) and second.messages[4].reasoning == THOUGHT
