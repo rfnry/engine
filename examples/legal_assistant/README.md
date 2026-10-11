@@ -13,6 +13,9 @@ export RFNRY_EXAMPLES_POSTGRES_URL=postgresql://harness:harness@127.0.0.1:55435/
 uv run src/main.py
 ```
 
+The refinery records every run in that database (`docker start rfnry-engine-pg` once the container
+exists).
+
 ## Example
 
 ```bash
