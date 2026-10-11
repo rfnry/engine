@@ -1,7 +1,9 @@
+import os
 from datetime import datetime
 from pathlib import Path
 
-from rfnry_engine import Engine, InMemoryStorage, Refinery, Review
+import asyncpg
+from rfnry_engine import Engine, PostgresStorage, Refinery, Review
 
 from providers import AnthropicProvider
 from utils import Folder
@@ -9,10 +11,18 @@ from utils import Folder
 ROOT = Path(__file__).resolve().parent.parent
 CONTRACTS = {path.stem: path.read_text() for path in (ROOT / "data" / "contracts").glob("*.md")}
 
-refinery = Refinery(InMemoryStorage())
-engine = Engine(ROOT / "agents", generation=AnthropicProvider(), refinery=refinery)
+refinery: Refinery
+engine: Engine
 datasets = Folder(ROOT / "datasets")
 watermarks: dict[str, datetime | None] = {}
+
+
+async def setup() -> None:
+    global refinery, engine
+    pool = await asyncpg.create_pool(os.environ["RFNRY_EXAMPLES_POSTGRES_URL"])
+    refinery = Refinery(PostgresStorage(pool))
+    await refinery.initialize()
+    engine = Engine(ROOT / "agents", generation=AnthropicProvider(), refinery=refinery)
 
 
 async def run(firm: str, contract: str, question: str) -> dict:

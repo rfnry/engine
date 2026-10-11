@@ -2,12 +2,14 @@
 
 ## Description
 
-A contract reviewer for a law firm's lawyers, checking a contract against the firm's playbook. It shows the refinery: every run is recorded, a lawyer's review becomes a label on it, and the firm exports datasets with every label and its source. Look at `Refinery(InMemoryStorage())` passed to `Engine(..., refinery=)`, `refinery.review(...)` and `refinery.export(..., since=)` in `src/harness.py`.
+A contract reviewer for a law firm's lawyers, checking a contract against the firm's playbook. It shows the refinery: every run is recorded, a lawyer's review becomes a label on it, and the firm exports datasets with every label and its source. Look at `Refinery(PostgresStorage(pool))` passed to `Engine(..., refinery=)`, `refinery.review(...)` and `refinery.export(..., since=)` in `src/harness.py`.
 
 ## Running
 
 ```bash
 export ANTHROPIC_API_KEY=...
+docker run -d --name rfnry-engine-pg -p 127.0.0.1:55435:5432 -e POSTGRES_USER=harness -e POSTGRES_PASSWORD=harness -e POSTGRES_DB=harness postgres:16-alpine
+export RFNRY_EXAMPLES_POSTGRES_URL=postgresql://harness:harness@127.0.0.1:55435/harness
 uv run src/main.py
 ```
 
