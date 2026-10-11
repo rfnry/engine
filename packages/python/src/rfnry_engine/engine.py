@@ -141,7 +141,8 @@ def _history(value: Sequence[object] | None) -> list[Message]:
         return HISTORY.validate_python(list(value or []), from_attributes=True)
     except ValidationError as exc:
         raise InputError(
-            f"engine: history does not fit the contract: {exc.errors(include_url=False)}"
+            "engine: history does not fit the contract: "
+            f"{exc.errors(include_url=False, include_input=False)}"
         ) from exc
 
 

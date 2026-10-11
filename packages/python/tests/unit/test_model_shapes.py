@@ -197,3 +197,11 @@ async def test_a_malformed_part_from_another_library_in_history_is_an_input_erro
     }
     with pytest.raises(InputError, match=r"^models: image carries exactly one of data or url"):
         await engine.run("billing", "acme", "x", history=[both])
+
+
+async def test_a_history_that_does_not_fit_is_refused_without_its_content(fixtures: Path) -> None:
+    engine = Engine(fixtures, generation=Scripted(Reply(text="x")), tools=TOOLS)
+    row = {"role": "user", "content": {"card": "4242"}}
+    with pytest.raises(InputError, match=r"^engine: history does not fit the contract") as caught:
+        await engine.run("billing", "acme", "x", history=[row])
+    assert "4242" not in str(caught.value)
