@@ -505,9 +505,11 @@ page in the order it happened — or, with `pattern`, the ones whose text matche
 It never reads what the model was given or anything after it. A page is 20 messages, at most 100;
 a search walks back at most `Engine(history_walk=10_000)` messages and a result holds at most
 `Engine(history_chars=100_000)` characters of text, each ending with where to go on; its deadline
-is `tool_timeout`, as every tool's, so a slow database gets the time you give it. No line in
-`AGENT.md` asks for it: it comes with `start=`, as `tools=` comes with the call. To send a window
-without it, pass the slice as the history and leave `start` at 0.
+is `tool_timeout`, as every tool's, so a slow database gets the time you give it. Images, PDFs and
+audio in a page are handed over as they are and do not count against `history_chars`, so a
+conversation heavy with media is read back with a lower `limit`. No line in `AGENT.md` asks for
+it: it comes with `start=`, as `tools=` comes with the call. To send a window without it, pass the
+slice as the history and leave `start` at 0.
 
 Reasoning goes back only where it was given. Some vendors bind a model's reasoning to the exact
 conversation it was given in and refuse it anywhere else. Every assistant message the engine makes

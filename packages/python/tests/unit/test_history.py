@@ -407,3 +407,65 @@ async def test_a_tool_named_history_is_refused_on_every_run(fixtures: Path, tmp_
     declared = Engine(tmp_path, generation=Scripted(), tools=[Tool("History", body=mine)])
     with pytest.raises(ConfigurationError, match=COLLIDES):
         await declared.run("desk", "acme", "x")
+
+
+async def test_history_never_shows_what_a_source_hands_back_past_stop(fixtures: Path) -> None:
+    class Unbounded(Kept):
+        async def read(self, start: int, stop: int | None = None) -> Sequence[object]:
+            return await super().read(start, None)
+
+    tools = surface(fixtures, Unbounded(two()), start=4)
+    assert positions(await tools.dispatch("History", {})) == [0, 1, 2, 3]
+    assert positions(await tools.dispatch("History", {"pattern": "A-1"})) == [0, 1, 2]
+
+
+async def test_a_page_past_the_end_of_a_source_says_where_to_read_further_back(
+    fixtures: Path,
+) -> None:
+    tools = surface(fixtures, Kept(looked_up()), start=50)
+    assert await tools.dispatch("History", {}) == (
+        "no messages between positions 30 and 50: pass before=30 to read further back"
+    )
+    assert await tools.dispatch("History", {"before": 30}) == (
+        "no messages between positions 10 and 30: pass before=10 to read further back"
+    )
+    assert positions(await tools.dispatch("History", {"before": 10})) == [0, 1, 2, 3]
+
+
+async def test_a_row_that_does_not_fit_is_refused_without_its_content(fixtures: Path) -> None:
+    class Odd(Kept):
+        async def read(self, start: int, stop: int | None = None) -> Sequence[object]:
+            return [{"content": "card 4242"}]
+
+    with pytest.raises(InputError, match=r"^history: the conversation does not fit") as caught:
+        await surface(fixtures, Odd([]), start=2).dispatch("History", {})
+    assert "4242" not in str(caught.value)
+
+
+async def test_a_cut_message_hands_over_no_empty_text(fixtures: Path) -> None:
+    long = Message(role="user", content=[Text(text="w" * 500), Text(text="v" * 10)])
+    conversation = [long, Message(role="user", content="now")]
+    cut = await surface(fixtures, conversation, start=1, history_chars=100).dispatch("History", {})
+    assert all(texts(cut)) and sum(len(t) for t in texts(cut)[:-1]) == 100
+    assert texts(cut)[-1] == "[position 0 cut at 100 characters]"
+
+
+async def test_a_search_reads_back_a_hundred_messages_at_a_time(fixtures: Path) -> None:
+    kept = Kept(
+        [Message(role="user", content="hit" if i % 10 == 0 else "miss") for i in range(250)]
+    )
+    tools = surface(fixtures, kept, start=250, history_walk=250)
+    result = await tools.dispatch("History", {"pattern": "hit", "limit": 20})
+    assert positions(result) == list(range(50, 250, 10))
+    assert texts(result)[-1] == "[searched back to position 50: pass before=50 to search further]"
+    assert kept.reads == [(150, 250), (50, 150)]
+
+
+async def test_a_search_cut_by_history_chars_resumes_at_the_first_position_shown(
+    fixtures: Path,
+) -> None:
+    conversation = [Message(role="user", content=f"hit {'x' * 100}") for _ in range(10)]
+    tools = surface(fixtures, conversation, start=10, history_chars=300)
+    result = await tools.dispatch("History", {"pattern": "hit"})
+    assert positions(result) == [8, 9]
+    assert texts(result)[-1] == "[searched back to position 8: pass before=8 to search further]"

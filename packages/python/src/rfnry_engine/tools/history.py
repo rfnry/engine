@@ -37,10 +37,11 @@ async def _read(history: Sequence[object] | HistoryLike, first: int, stop: int) 
         await history.read(first, stop) if isinstance(history, HistoryLike) else history[first:stop]
     )
     try:
-        return _MESSAGES.validate_python(list(found), from_attributes=True)
+        return _MESSAGES.validate_python(list(found)[: stop - first], from_attributes=True)
     except ValidationError as exc:
         raise InputError(
-            f"history: the conversation does not fit the contract: {exc.errors(include_url=False)}"
+            "history: the conversation does not fit the contract: "
+            f"{exc.errors(include_url=False, include_input=False)}"
         ) from exc
 
 
@@ -75,7 +76,8 @@ def _clip(parts: list[Part], chars: int) -> list[Part]:
     kept: list[Part] = []
     for part in parts:
         if isinstance(part, Text):
-            kept.append(Text(text=part.text[: max(chars, 0)]))
+            if chars > 0 and part.text:
+                kept.append(Text(text=part.text[:chars]))
             chars -= len(part.text)
         else:
             kept.append(part)
@@ -122,6 +124,11 @@ async def _reading(
     first = max(0, before - limit)
     page = await _read(history, first, before)
     if not page:
+        if first > 0:
+            return (
+                f"no messages between positions {first} and {before}: "
+                f"pass before={first} to read further back"
+            )
         return "no earlier messages"
     parts, shown = _page(list(enumerate(page, first)), chars)
     if shown > 0:
