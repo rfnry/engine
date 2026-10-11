@@ -2,7 +2,7 @@
 
 ## Description
 
-A personal assistant for one person's home, receipts and paperwork. It shows multimodal input: a photo or a PDF comes in as a multipart upload and goes to the agent next to the question. Look at the `Text`, `Image` and `Document` parts passed as `input=` to `engine.run(...)` in `src/harness.py`, and `attachment` in `src/utils.py`, which turns the upload into one.
+A personal assistant for one person's home, receipts and paperwork. It shows multimodal input: a photo or a PDF comes in as a multipart upload and goes to the agent next to the question. Look at the `Text`, `Image` and `Document` parts passed as `input=` to `engine.run(...)` in `src/harness.py`, and `attachment` in `src/utils.py`, which turns the upload into one. A session keeps its conversation and passes it with where to start (`window` in `src/harness.py`), so a long one sends only its recent turns and the agent reads further back with `History`; the date in `context=` restarts the model's cache once a day.
 
 ## Running
 

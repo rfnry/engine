@@ -519,6 +519,20 @@ still the same; otherwise the message goes without it, its text and calls as the
 `tools=`, another agent, another model and a replay never send reasoning a vendor would refuse.
 `prefix` and `usage` are the engine's record; no model sees them.
 
+Caching is the adapter's. An adapter that marks a cache point has every call of a window read from
+the cache what the last call sent; a new window restarts it, and so does any change ahead of the
+history — `context=`, `task=`, `tools=`, a new tree — so a date in `context=` restarts it once a
+day.
+
+A history the model cannot take is refused by its vendor: the adapter raises the vendor's error,
+`engine.run` raises it as it is, and nothing of that run is recorded — the tool calls it already
+made included. A model that runs out of room while it answers ends the run with the text it had,
+recorded like any other. The window's `budget` is what keeps either from happening.
+
+To measure on a long conversation, tag its runs with it — `tags={"conversation": "dana-1"}` — and
+`refinery.replay("acme", candidate, agent="support", tags={"conversation": "dana-1"})` replays them
+oldest first, each with the history it was sent.
+
 ### Decision agents
 
 A decision model is a discriminative model: given a state and questions whose answers you define,

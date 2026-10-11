@@ -2,7 +2,7 @@
 
 ## Description
 
-The support desk of an online home-goods store, answering customers about their orders. It shows the basic agent: a folder of markdown under `agents/support` and a code tool, answering in one reply or streaming it as it is written. Look at `Engine(..., tools=[Tool("lookup_order", body=lookup_order)])` and `engine.run(..., history=, on_event=)` in `src/harness.py`, where `TextDelta` events feed the stream.
+The support desk of an online home-goods store, answering customers about their orders. It shows the basic agent: a folder of markdown under `agents/support` and a code tool, answering in one reply or streaming it as it is written. Look at `Engine(..., tools=[Tool("lookup_order", body=lookup_order)])` and `engine.run(..., history=, start=, on_event=)` in `src/harness.py`, where `TextDelta` events feed the stream and `window` keeps a long session to its recent turns while the agent reads further back with `History`. The date in `context=` restarts the model's cache once a day.
 
 ## Running
 
