@@ -8,7 +8,16 @@ import pytest
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
-from rfnry_engine.models import HistoryLike, Image, Message, Reply, Text, ToolCall
+from rfnry_engine.models import (
+    Audio,
+    Document,
+    HistoryLike,
+    Image,
+    Message,
+    Reply,
+    Text,
+    ToolCall,
+)
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.refinery import Refinery
@@ -344,15 +353,39 @@ async def test_a_result_holds_at_most_history_chars_of_text_and_says_where_to_go
     assert texts(cut)[-1] == "[position 0 cut at 100 characters]"
 
 
-async def test_history_hands_over_media_as_the_parts_they_are(fixtures: Path) -> None:
-    image = Image(media_type="image/png", data=PNG)
+async def test_history_names_each_file_and_never_hands_it_over(fixtures: Path) -> None:
     conversation = [
-        Message(role="user", content=[Text(text="This one?"), image]),
-        Message(role="assistant", content="A receipt."),
+        Message(
+            role="user",
+            content=[
+                Text(text="This one?"),
+                Image(media_type="image/png", data=PNG),
+                Image(media_type="image/jpeg", url="https://files.acme.com/a1.jpg"),
+            ],
+        ),
+        Message(
+            role="tool",
+            tool_call_id="c1",
+            content=[
+                Document(media_type="application/pdf", name="rates.pdf", data=b"%PDF"),
+                Document(media_type="application/pdf", name="terms.pdf", url="https://x/t.pdf"),
+                Audio(media_type="audio/wav", data=b"RIFF"),
+            ],
+        ),
         Message(role="user", content="And now?"),
     ]
     result = await surface(fixtures, conversation, start=2).dispatch("History", {})
-    assert isinstance(result, list) and image in result
+    assert isinstance(result, list) and all(isinstance(part, Text) for part in result)
+    assert texts(result)[1:4] == [
+        "This one?",
+        "[image: image/png]",
+        "[image: image/jpeg, https://files.acme.com/a1.jpg]",
+    ]
+    assert texts(result)[5:] == [
+        '[document: application/pdf, "rates.pdf"]',
+        '[document: application/pdf, "terms.pdf", https://x/t.pdf]',
+        "[audio: audio/wav]",
+    ]
 
 
 async def test_an_invalid_pattern_is_an_error_the_model_reads(fixtures: Path) -> None:

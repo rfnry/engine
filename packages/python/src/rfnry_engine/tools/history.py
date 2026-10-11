@@ -10,7 +10,7 @@ import regex
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from rfnry_engine.errors import InputError
-from rfnry_engine.models import HistoryLike, Message, Part, Text
+from rfnry_engine.models import Audio, Document, HistoryLike, Image, Message, Part, Text
 from rfnry_engine.tools.tools import Result, Tool
 
 HISTORY_TOOL = "History"
@@ -19,7 +19,8 @@ _MESSAGES = TypeAdapter(list[Message])
 _DESCRIPTION = (
     "Read the earlier messages of this conversation, the ones before what you were given, each with "
     "its position. Pass the first position you read as before to read further back. With pattern, "
-    "only the messages whose text matches."
+    "only the messages whose text matches. An image, audio or document shows as a line naming it, "
+    "with its URL when it has one."
 )
 
 Found = list[tuple[int, Message]]
@@ -56,36 +57,42 @@ def _said(message: Message) -> str:
     return "\n".join([*texts, *calls])
 
 
-def _shown(position: int, message: Message) -> list[Part]:
+def _named(part: Image | Audio | Document) -> Text:
+    names = [part.media_type]
+    if isinstance(part, Document) and part.name is not None:
+        names.append(json.dumps(part.name, ensure_ascii=False))
+    if part.url is not None:
+        names.append(part.url)
+    return Text(text=f"[{part.type}: {', '.join(names)}]")
+
+
+def _shown(position: int, message: Message) -> list[Text]:
     header: dict[str, Any] = {"position": position, "role": message.role}
     if message.tool_calls:
         header["tool_calls"] = [call.model_dump() for call in message.tool_calls]
     if message.role == "tool":
         header |= {"tool_call_id": message.tool_call_id, "is_error": message.is_error}
-    parts: list[Part] = [Text(text=json.dumps(header, ensure_ascii=False))]
+    parts = [Text(text=json.dumps(header, ensure_ascii=False))]
     if isinstance(message.content, str):
         return [*parts, Text(text=message.content)] if message.content else parts
-    return [*parts, *message.content]
+    return [*parts, *(p if isinstance(p, Text) else _named(p) for p in message.content)]
 
 
-def _size(parts: list[Part]) -> int:
-    return sum(len(part.text) for part in parts if isinstance(part, Text))
+def _size(parts: list[Text]) -> int:
+    return sum(len(part.text) for part in parts)
 
 
-def _clip(parts: list[Part], chars: int) -> list[Part]:
-    kept: list[Part] = []
+def _clip(parts: list[Text], chars: int) -> list[Text]:
+    kept: list[Text] = []
     for part in parts:
-        if isinstance(part, Text):
-            if chars > 0 and part.text:
-                kept.append(Text(text=part.text[:chars]))
-            chars -= len(part.text)
-        else:
-            kept.append(part)
+        if chars > 0 and part.text:
+            kept.append(Text(text=part.text[:chars]))
+        chars -= len(part.text)
     return kept
 
 
 def _page(found: Found, chars: int) -> tuple[list[Part], int]:
-    shown: list[list[Part]] = []
+    shown: list[list[Text]] = []
     used = 0
     first = found[-1][0]
     for position, message in reversed(found):

@@ -505,12 +505,46 @@ page in the order it happened — or, with `pattern`, the ones whose text matche
 
 It never reads what the model was given or anything after it. A page is 20 messages, at most 100;
 a search walks back at most `Engine(history_walk=10_000)` messages and a result holds at most
-`Engine(history_chars=100_000)` characters of text, each ending with where to go on; its deadline
-is `tool_timeout`, as every tool's, so a slow database gets the time you give it. Images, PDFs and
-audio in a page are handed over as they are and do not count against `history_chars`, so a
-conversation heavy with media is read back with a lower `limit`. No line in `AGENT.md` asks for
-it: it comes with `start=`, as `tools=` comes with the call. To send a window without it, pass the
-slice as the history and leave `start` at 0.
+`Engine(history_chars=100_000)` characters, each ending with where to go on; its deadline is
+`tool_timeout`, as every tool's, so a slow database gets the time you give it. No line in
+`AGENT.md` asks for it: it comes with `start=`, as `tools=` comes with the call. To send a window
+without it, pass the slice as the history and leave `start` at 0.
+
+`History` never hands a file back. An image, audio or document shows as a line naming it, with its
+URL when it has one — `[image: image/jpeg, https://files.acme.com/a1.jpg]`,
+`[document: application/pdf, "rates.pdf"]` — and the model fetches what it wants to see again:
+`Load` for a file in the agent's directory or workspace, whose call is in the page above its
+result, or a tool of yours. A file is paid for on every call that holds it — an image by its
+pixels, a PDF by its pages — so one the model has read need not stay in your conversation either.
+Keep the line instead, and a tool that brings the file back:
+
+```python
+def forgotten(message):
+    if isinstance(message.content, str):
+        return message
+    named = [p if isinstance(p, Text) or p.url is None
+             else Text(text=f"[{p.type}: {p.media_type}, {p.url}]") for p in message.content]
+    return message.model_copy(update={"content": named})
+
+
+class SeeArgs(BaseModel):
+    url: str
+    media_type: str
+
+
+async def see(args):
+    return [Image(media_type=args["media_type"], url=args["url"])]
+
+
+look = Tools([Tool("See", "Look again at an image by its URL", body=see, args=SeeArgs)])
+conversation = [*history, *map(forgotten, run.added)]
+```
+
+Pass `tools=look` to each run. `See` hands the vendor the URL to download, so it must be one the
+vendor can reach; a document comes back as a `Document` the same way, and a file in your own store
+by its data, as `fetch_invoice` does under Tools. A file passed as data has nowhere to come back
+from, so `forgotten` keeps it. The turns after a file you swapped send their reasoning no more —
+what came before them changed — and the run goes on without it.
 
 Reasoning goes back only where it was given. Some vendors bind a model's reasoning to the exact
 conversation it was given in and refuse it anywhere else. Every assistant message the engine makes

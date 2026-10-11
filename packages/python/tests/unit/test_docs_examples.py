@@ -107,6 +107,21 @@ SETUPS = {
             ),
         )
     ),
+    "def forgotten(message):": Setup(
+        replace={
+            "map(forgotten, run.added)]": (
+                "map(forgotten, [*run.added, Message(role='user', content=["
+                "Text(text='This one?'), Image(media_type='image/jpeg', url='https://x/a.jpg'), "
+                "Image(media_type='image/png', data=png)])])]\n"
+                "assert conversation[-1].content[1:] == ["
+                "Text(text='[image: image/jpeg, https://x/a.jpg]'), "
+                "Image(media_type='image/png', data=png)]\n"
+                "assert conversation[:-1] == run.added\n"
+                "assert await see({'url': 'https://x/a.jpg', 'media_type': 'image/jpeg'}) == "
+                "[Image(media_type='image/jpeg', url='https://x/a.jpg')]"
+            )
+        }
+    ),
     "from rfnry_engine import Workspace": Setup(replace={"/srv/tenants/acme/work": "work"}),
     'sandboxed = Workspace("/srv/tenants/acme/work", sandbox=[': Setup(
         replace={"/srv/tenants/acme/work": "work"}
