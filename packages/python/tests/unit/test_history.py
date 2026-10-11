@@ -57,6 +57,31 @@ async def test_a_history_cut_at_a_message_the_person_sent_runs(fixtures: Path) -
     assert isinstance(run, Generation) and run.reply == "Still on its way."
 
 
+async def test_a_reply_that_repeats_a_call_id_is_closed_by_a_result_per_call(
+    fixtures: Path,
+) -> None:
+    calls = [
+        ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"}),
+        ToolCall(id="c1", name="lookup_order", args={"order_id": "A-2"}),
+    ]
+    twice = [
+        Message(role="user", content="Where are A-1 and A-2?"),
+        Message(role="assistant", tool_calls=calls),
+        Message(role="tool", tool_call_id="c1", content='{"order": "A-1"}'),
+        Message(role="tool", tool_call_id="c1", content='{"order": "A-2"}'),
+        Message(role="assistant", content="Both are on their way."),
+    ]
+    engine = Engine(fixtures, generation=Scripted(text_reply("Still.")), tools=TOOLS)
+    run = await engine.run("support", "acme", "And now?", history=twice)
+    assert isinstance(run, Generation) and run.reply == "Still."
+    with pytest.raises(InputError, match=BROKEN.replace("c7", "c1").format(1)):
+        await engine.run("support", "acme", "And now?", history=twice[:3])
+    both = [ToolCall(id="c7", name="now"), ToolCall(id="c1", name="now")]
+    open_two = [twice[0], Message(role="assistant", tool_calls=both)]
+    with pytest.raises(InputError, match=BROKEN.format(1)):
+        await engine.run("support", "acme", "And now?", history=open_two)
+
+
 class Kept:
     def __init__(self, messages: list[Message]) -> None:
         self.messages = messages
@@ -469,3 +494,23 @@ async def test_a_search_cut_by_history_chars_resumes_at_the_first_position_shown
     result = await tools.dispatch("History", {"pattern": "hit"})
     assert positions(result) == [8, 9]
     assert texts(result)[-1] == "[searched back to position 8: pass before=8 to search further]"
+
+
+async def test_a_history_given_as_a_generator_is_read_once(fixtures: Path) -> None:
+    chat = [
+        Message(role="user", content="hi"),
+        Message(role="assistant", content="hello"),
+        Message(role="user", content="Where is A-1?"),
+        Message(role="assistant", content="On its way."),
+    ]
+    llm = Scripted(calling_history(), text_reply("You said hi."))
+    once = (message for message in chat)
+    run = await Engine(fixtures, generation=llm, tools=TOOLS).run(
+        "support",
+        "acme",
+        "What did I say first?",
+        history=once,  # type: ignore[arg-type]
+        start=2,
+    )
+    assert isinstance(run, Generation) and run.messages[:-1] == chat[2:]
+    assert positions(run.steps[0].result) == [0, 1]

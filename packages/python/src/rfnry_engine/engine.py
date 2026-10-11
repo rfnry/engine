@@ -146,16 +146,21 @@ def _history(value: Sequence[object] | None) -> list[Message]:
 
 
 def _paired(history: list[Message], start: int) -> None:
-    calls: dict[str, int] = {}
+    calls: dict[str, list[tuple[int, int]]] = {}
     for position, message in enumerate(history, start):
-        if message.role == "tool" and calls.pop(message.tool_call_id or "", None) is None:
-            raise InputError(
-                f"engine: history breaks tool call {message.tool_call_id!r} from its result "
-                f"at position {position}; start at a message the person sent"
-            )
-        calls.update((call.id, position) for call in message.tool_calls)
-    if calls:
-        call_id, position = next(iter(calls.items()))
+        if message.role == "tool":
+            waiting = calls.get(message.tool_call_id or "")
+            if not waiting:
+                raise InputError(
+                    f"engine: history breaks tool call {message.tool_call_id!r} from its result "
+                    f"at position {position}; start at a message the person sent"
+                )
+            waiting.pop(0)
+        for order, call in enumerate(message.tool_calls):
+            calls.setdefault(call.id, []).append((position, order))
+    left = [(at, call_id) for call_id, open_at in calls.items() for at in open_at]
+    if left:
+        (position, _), call_id = min(left)
         raise InputError(
             f"engine: history breaks tool call {call_id!r} from its result "
             f"at position {position}; start at a message the person sent"
@@ -351,7 +356,8 @@ class Engine:
             raise InputError("engine: scope is required")
         spec = self._spec(agent)
         asked = _asked(spec, questions)
-        given = await _window(history, start)
+        held = history if history is None or isinstance(history, HistoryLike) else list(history)
+        given = await _window(held, start)
         _paired(given, start)
         options = _Options(
             task=task,
@@ -367,7 +373,7 @@ class Engine:
             approve=approve,
             questions=asked,
             start=start,
-            source=history,
+            source=held,
         )
         run = await self._run(spec, scope, input, options, None)
         if record and self.refinery is not None:
@@ -794,7 +800,7 @@ class Engine:
             if turn:
                 drain()
             streamed.clear()
-            after = marked()
+            after = await asyncio.to_thread(marked)
             asking = asyncio.ensure_future(ask())
             if await wait([asking], stop):
                 await cancel([asking])
