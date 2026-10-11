@@ -81,6 +81,9 @@ async def test_reasoning_goes_back_only_where_it_was_given(adapters: Any) -> Non
         context=today,
     )
     assert isinstance(first, Generation)
+    assert any(m.reasoning for m in first.conversation if m.role == "assistant"), (
+        "the live model returned no reasoning in the first run; the check would prove nothing"
+    )
     same = await engine.run(
         "support", "live", "Which rule did you apply?", history=first.conversation, context=today
     )
@@ -88,6 +91,9 @@ async def test_reasoning_goes_back_only_where_it_was_given(adapters: Any) -> Non
         "support", "live", "Which rule did you apply?", history=first.conversation, context=tomorrow
     )
     assert isinstance(same, Generation) and isinstance(moved, Generation)
+    assert any(m.reasoning for m in same.added if m.role == "assistant"), (
+        "the live model returned no reasoning in the second run; the cut check would prove nothing"
+    )
     conversation = [*first.conversation, *same.added]
     cut = await engine.run(
         "support",
@@ -101,4 +107,6 @@ async def test_reasoning_goes_back_only_where_it_was_given(adapters: Any) -> Non
     assert all(m.reasoning is None for m in moved.messages)
     assert all(m.reasoning is None for m in cut.messages)
     kept = [m.reasoning for m in first.conversation if m.role == "assistant"]
-    assert [m.reasoning for m in same.messages if m.role == "assistant"] == kept
+    assert [m.reasoning for m in same.messages if m.role == "assistant"] == kept, (
+        "reasoning given under the same history must go back unchanged"
+    )
