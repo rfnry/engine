@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from rfnry_engine.engine import Approve, Engine
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
+from rfnry_engine.models import HistoryLike
 from rfnry_engine.records import Decision, Fingerprint, Generation, Run
 from rfnry_engine.refinery.conflicts import find_conflicts
 from rfnry_engine.refinery.export import (
@@ -127,6 +128,15 @@ def check_selector(verb: str, run_ids: list[str] | None, tags: dict[str, str] | 
         raise InputError("refinery: run_ids must name at least one run")
     if tags is not None and not tags:
         raise InputError("refinery: tags must hold at least one tag")
+
+
+class _Before:
+    def __init__(self, source: HistoryLike, cut: int) -> None:
+        self.source, self.cut = source, cut
+
+    async def read(self, start: int, stop: int | None = None) -> Sequence[object]:
+        end = self.cut if stop is None else min(stop, self.cut)
+        return [] if start >= end else await self.source.read(start, end)
 
 
 class Refinery:
@@ -383,6 +393,7 @@ class Refinery:
         workspace: Workspace | None = None,
         concurrency: int = 1,
         repeat: int = 1,
+        conversation: Callable[[Run], Sequence[object] | HistoryLike] | None = None,
     ) -> AsyncGenerator[Replay, None]:
         if not scope:
             raise InputError("refinery: scope is required")
@@ -422,13 +433,21 @@ class Refinery:
                     record=False,
                 )
             sent = run.messages[-1].content if run.messages else None
+            history: Sequence[object] | HistoryLike = run.messages[:-1]
+            start = 0
+            if conversation is not None:
+                source = conversation(recorded)
+                cut = run.start + len(run.messages) - 1
+                history = _Before(source, cut) if isinstance(source, HistoryLike) else source[:cut]
+                start = run.start
             return await candidate.run(
                 agent,
                 scope,
                 sent if isinstance(sent, list) else run.input,
                 task=recorded.task,
                 questions=asked,
-                history=run.messages[:-1],
+                history=history,
+                start=start,
                 context=run.context,
                 expect=expect,
                 approve=approve,

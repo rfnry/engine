@@ -1,6 +1,7 @@
 import asyncio
 import json
 import shutil
+from collections.abc import Callable, Sequence
 from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +16,7 @@ from rfnry_engine.models import (
     Check,
     CheckAnswer,
     Choice,
+    HistoryLike,
     Image,
     Message,
     Reply,
@@ -42,6 +44,7 @@ from .fakes import (
     delegating,
     generation_record,
     lead,
+    said,
     text_reply,
 )
 
@@ -861,3 +864,110 @@ async def test_a_failed_run_is_replayed_and_its_pair_says_it_failed(
         [pair] = [p async for p in pairs]
     assert pair.recorded.error == "ModelError: anthropic: overloaded"
     assert isinstance(pair.candidate, Generation) and pair.candidate.reply == "Refunded."
+
+
+EARLIER = [
+    Message(role="user", content="Where is A-1?"),
+    Message(role="assistant", content="On its way."),
+    Message(role="user", content="And A-2?"),
+    Message(role="assistant", content="Delivered."),
+    Message(role="user", content="Charged twice for A-1."),
+    Message(role="assistant", content="Refunded."),
+]
+
+
+class Held:
+    def __init__(self, messages: list[Message]) -> None:
+        self.messages = messages
+        self.reads: list[tuple[int, int | None]] = []
+
+    async def read(self, start: int, stop: int | None = None) -> Sequence[object]:
+        self.reads.append((start, stop))
+        return self.messages[start:stop]
+
+
+async def replayed(
+    refinery: Refinery,
+    candidate: Engine,
+    agent: str,
+    conversation: Callable[[Run], Sequence[object] | HistoryLike],
+) -> Replay:
+    async with aclosing(
+        refinery.replay("acme", candidate, agent=agent, conversation=conversation)
+    ) as pairs:
+        [pair] = [p async for p in pairs]
+    return pair
+
+
+async def test_a_windowed_run_replays_with_its_conversation_and_history(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    recorder = Engine(
+        fixtures, generation=Scripted(text_reply("Still refunded.")), tools=TOOLS, refinery=refinery
+    )
+    recorded = await recorder.run("support", "acme", "Is it refunded?", history=EARLIER, start=4)
+    assert isinstance(recorded, Generation)
+    later = [Message(role="user", content="Later."), Message(role="assistant", content="Later.")]
+    whole = [*EARLIER, *recorded.added, *later]
+    window = said([*EARLIER[4:], Message(role="user", content="Is it refunded?")])
+    held = Held(whole)
+    for source in (whole, held):
+        llm = Scripted(text_reply("Yes."))
+        candidate = Engine(fixtures, generation=llm, tools=TOOLS)
+        pair = await replayed(refinery, candidate, "support", lambda run, kept=source: kept)
+        assert pair.error is None and isinstance(pair.candidate, Generation)
+        assert pair.candidate.start == 4
+        assert said(llm.calls[0][1]) == window
+        assert "History" in [spec.name for spec in llm.calls[0][2]]
+    assert held.reads == [(4, 6)]
+
+
+async def test_a_routed_run_replays_its_generation_run_with_the_conversation(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    recorder = Engine(
+        fixtures,
+        generation=Scripted(text_reply("Rebooted.")),
+        decision=Desk(),
+        tools=TOOLS,
+        refinery=refinery,
+    )
+    await recorder.run("frontdesk", "acme", "It is down again.", history=EARLIER, start=4)
+    llm = Scripted(text_reply("Try again."))
+    candidate = Engine(fixtures, generation=llm, decision=Desk(), tools=TOOLS)
+    pair = await replayed(refinery, candidate, "frontdesk", lambda run: EARLIER)
+    assert pair.error is None
+    assert said(llm.calls[0][1]) == said(
+        [*EARLIER[4:], Message(role="user", content="It is down again.")]
+    )
+
+
+async def test_a_conversation_that_raises_gives_the_pair_an_error(
+    fixtures: Path, storage: Storage
+) -> None:
+    def missing(run: Run) -> list[Message]:
+        raise LookupError("no conversation for this run")
+
+    refinery = Refinery(storage)
+    recorder = Engine(
+        fixtures, generation=Scripted(text_reply("Ok.")), tools=TOOLS, refinery=refinery
+    )
+    await recorder.run("support", "acme", "Hi.", history=EARLIER, start=4)
+    candidate = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+    pair = await replayed(refinery, candidate, "support", missing)
+    assert pair.error == "LookupError: no conversation for this run"
+
+
+async def test_a_conversation_shorter_than_the_recorded_start_gives_the_pair_an_error(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    recorder = Engine(
+        fixtures, generation=Scripted(text_reply("Ok.")), tools=TOOLS, refinery=refinery
+    )
+    await recorder.run("support", "acme", "Hi.", history=EARLIER, start=4)
+    candidate = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+    pair = await replayed(refinery, candidate, "support", lambda run: EARLIER[:2])
+    assert pair.error is not None and "start must be between 0 and 2; got 4" in pair.error

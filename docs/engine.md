@@ -582,7 +582,9 @@ happening.
 
 To measure on a long conversation, tag its runs with it — `tags={"conversation": "dana-1"}` — and
 `refinery.replay("acme", candidate, agent="support", tags={"conversation": "dana-1"})` replays them
-oldest first, each on what it was sent, with `start=0` and so without `History`.
+oldest first, each on what it was sent, with `start=0` and so without `History`. Pass
+`conversation=lambda run: Conversation(pool, run.tags["conversation"])` and each replays with the
+window it was given and `History` over what came before it, never past its own input.
 
 ### Decision agents
 
