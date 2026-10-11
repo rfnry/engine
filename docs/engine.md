@@ -575,9 +575,10 @@ day.
 
 A history the model cannot take is refused by its vendor: the adapter raises the vendor's error,
 `engine.run` raises it as it is, and the run is recorded as far as it got, with its `error` — the
-tool calls it already made included. A model that runs out of room while it answers ends the run with the text it had,
-recorded like any other; a tool call it had begun is answered `NotRun` and never run, so the
-conversation still passes back. The window's `budget` is what keeps either from happening.
+tool calls it already made included. A model that runs out of room while it answers ends the run
+with the text it had, recorded like any other; a tool call it had begun is answered `NotRun` and
+never run, so the conversation still passes back. The window's `budget` is what keeps either from
+happening.
 
 To measure on a long conversation, tag its runs with it — `tags={"conversation": "dana-1"}` — and
 `refinery.replay("acme", candidate, agent="support", tags={"conversation": "dana-1"})` replays them
@@ -1010,9 +1011,8 @@ label and what really happened, and the three levels of improvement they feed.
 
 Attach a refinery and every run is recorded when it ends — one that raises after its first model
 call too, as far as it got, with its error. A recording that fails is logged as a warning and
-never fails the run. `refinery.run(scope, run_id)` reads a
-recorded run back, its delegated and routed runs in place, to continue it anywhere — see
-[Running an agent](#running-an-agent).
+never fails the run. `refinery.run(scope, run_id)` reads a recorded run back, its delegated and
+routed runs in place, to continue it anywhere — see [Running an agent](#running-an-agent).
 
 ```python
 refinery = Refinery(PostgresStorage(pool))

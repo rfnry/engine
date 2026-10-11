@@ -854,8 +854,6 @@ class Engine:
                     return finish(partial or said, "now")
                 reply = asking.result()
                 ended = reply.stop_reason
-                if not streaming and reply.text:
-                    await delta(reply.text)
                 said = reply.text
                 calls += 1
                 if reply.usage is not None:
@@ -863,6 +861,8 @@ class Engine:
                 if reply.model:
                     model = reply.model
                 messages.append(_assistant(reply, after))
+                if not streaming and reply.text:
+                    await delta(reply.text)
                 if reply.stop_reason != "tool_use" or not reply.tool_calls:
                     for call in reply.tool_calls:
                         not_run(call, f"the reply ended with {reply.stop_reason}")
@@ -918,5 +918,6 @@ class Engine:
                 return finish(parsed.model_dump_json())
             raise RunawayError(f"engine: run exceeded {self.max_steps} steps")
         except Exception as exc:
+            children.extend(delegated.values())
             options.failed.append(finish("", error=exc))
             raise

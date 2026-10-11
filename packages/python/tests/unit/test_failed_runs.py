@@ -15,11 +15,12 @@ from rfnry_engine.models import (
     State,
     ToolCall,
     ToolSpec,
+    Usage,
 )
-from rfnry_engine.records import Decision, Event, Generation, Run
+from rfnry_engine.records import Decision, Event, Generation, Run, ToolResultReady
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Desk, Scripted, delegate_triage, lookup_order, text_reply
+from .fakes import TOOLS, Answering, Desk, Scripted, delegate_triage, lookup_order, text_reply
 
 
 class Kept:
@@ -191,8 +192,32 @@ async def test_an_event_handler_that_raises_fails_the_run_and_it_is_recorded(
         raise ConnectionResetError("the socket closed")
 
     kept = Kept()
-    engine = Engine(fixtures, generation=Scripted(text_reply("Done.")), tools=TOOLS, refinery=kept)
+    reply = text_reply("Done.", usage=Usage(input=10, output=5), model="m-1")
+    engine = Engine(fixtures, generation=Scripted(reply), tools=TOOLS, refinery=kept)
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "x", on_event=closed)
     [run] = kept.runs
     assert isinstance(run, Generation) and run.error == "ConnectionResetError: the socket closed"
+    assert run.calls == 1 and run.usage == Usage(input=10, output=5) and run.model == "m-1"
+    assert [m.role for m in run.conversation] == ["user", "assistant"]
+
+
+async def test_a_failed_run_keeps_the_children_that_already_ran(fixtures: Path) -> None:
+    async def closed(event: Event) -> None:
+        if isinstance(event, ToolResultReady):
+            raise ConnectionResetError("the socket closed")
+
+    kept = Kept()
+    engine = Engine(
+        fixtures,
+        generation=Scripted(delegate_triage()),
+        decision=Answering(),
+        tools=TOOLS,
+        refinery=kept,
+    )
+    with pytest.raises(ConnectionResetError):
+        await engine.run("support", "acme", "It is down", on_event=closed)
+    [run] = kept.runs
+    assert isinstance(run, Generation) and run.error == "ConnectionResetError: the socket closed"
+    [child] = run.children
+    assert isinstance(child, Decision) and child.agent == "triage" and child.error is None
