@@ -49,7 +49,7 @@ def without_media(value: Any) -> Any:
 
 def judge_state(row: RunRow) -> dict[str, Any]:
     body = row.body
-    return {
+    state = {
         "input": without_media(body["input"]),
         "reply": body["reply"],
         "steps": [
@@ -61,6 +61,7 @@ def judge_state(row: RunRow) -> dict[str, Any]:
             for s in body["steps"]
         ],
     }
+    return state if body.get("error") is None else {**state, "error": body["error"]}
 
 
 class TeacherAnswers(BaseModel):

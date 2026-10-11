@@ -33,7 +33,15 @@ from rfnry_engine.refinery.refinery import Refinery, label_of
 from rfnry_engine.refinery.storage import RunRow, Storage
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Fixed, MemoryBucket, Scripted, text_reply
+from .fakes import (
+    TOOLS,
+    Fixed,
+    MemoryBucket,
+    Scripted,
+    decision_record,
+    generation_record,
+    text_reply,
+)
 
 JPEG = b"\xff\xd8\xff\xe0jpeg"
 PDF = b"%PDF-1.7 policy"
@@ -387,3 +395,51 @@ async def test_the_judge_sees_media_loaded_from_the_folder_as_placeholders(
     ]
     for encoded in (base64.b64encode(png).decode(), base64.b64encode(pdf).decode()):
         assert encoded not in json.dumps(state)
+
+
+async def test_the_judge_is_told_a_run_failed(fixtures: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
+    dm = Fixed(JUDGEMENT)
+    engine = Engine(fixtures, generation=Scripted(), decision=dm, tools=TOOLS)
+    failed = generation_record(agent="billing", reply="").model_copy(
+        update={"error": "ModelError: anthropic: overloaded"}
+    )
+    await refinery.record(failed)
+    labeled = await refinery.label("acme", engine, judge="judge")
+    assert labeled.judged == 1 and labeled.errors == {}
+    state = dm.calls[0][0]
+    assert isinstance(state, dict) and state["error"] == "ModelError: anthropic: overloaded"
+    assert state["reply"] == ""
+
+
+async def test_the_judge_of_a_run_that_returned_sees_no_error_key(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    dm = Fixed(JUDGEMENT)
+    engine = Engine(fixtures, generation=Scripted(), decision=dm, tools=TOOLS)
+    await refinery.record(generation_record(agent="billing"))
+    await refinery.label("acme", engine, judge="judge")
+    state = dm.calls[0][0]
+    assert isinstance(state, dict) and "error" not in state
+
+
+async def test_the_teacher_answers_a_failed_decision(fixtures: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
+    taught = Reply(
+        tool_calls=[
+            ToolCall(
+                id="t1",
+                name="Output",
+                args={"answers": {"urgent": True}, "rationale": "It is down."},
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    engine = Engine(fixtures, generation=Scripted(taught), decision=Fixed(TRIAGE), tools=TOOLS)
+    failed = decision_record(agent="triage").model_copy(
+        update={"answers": {}, "error": "TimeoutError: decide timed out"}
+    )
+    await refinery.record(failed)
+    labeled = await refinery.label("acme", engine, teacher="teacher")
+    assert labeled.taught == 1 and labeled.errors == {}

@@ -846,3 +846,18 @@ async def test_a_parent_whose_child_was_given_a_task_and_questions_replays_as_on
     assert isinstance(again, Decision) and again.task is None and again.runtime == ["area"]
     assert [list(q) for _, q in dm.calls] == [["urgent", "area"]]
     assert pair.candidate.fingerprint == recorded.fingerprint
+
+
+async def test_a_failed_run_is_replayed_and_its_pair_says_it_failed(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    failed = generation_record(agent="support", reply="").model_copy(
+        update={"error": "ModelError: anthropic: overloaded"}
+    )
+    await refinery.record(failed)
+    candidate = Engine(fixtures, generation=Scripted(text_reply("Refunded.")), tools=TOOLS)
+    async with aclosing(refinery.replay("acme", candidate, agent="support")) as pairs:
+        [pair] = [p async for p in pairs]
+    assert pair.recorded.error == "ModelError: anthropic: overloaded"
+    assert isinstance(pair.candidate, Generation) and pair.candidate.reply == "Refunded."

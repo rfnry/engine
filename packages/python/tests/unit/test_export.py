@@ -449,3 +449,22 @@ async def test_a_generation_row_carries_the_stop_reason(storage: Storage) -> Non
     [key] = [k for k in exported.keys if k.startswith("acme/support/generation/")]
     [row] = _lines(bucket.objects[key])
     assert row["stop_reason"] == "max_tokens" and row["stopped"] is None
+
+
+async def test_a_failed_run_is_in_no_dataset_even_with_a_correction(storage: Storage) -> None:
+    refinery = Refinery(storage)
+    kept = generation_record(reply="Refunded.")
+    failed = generation_record(reply="").model_copy(update={"error": "ModelError: overloaded"})
+    refused = decision_record(agent="frontdesk").model_copy(
+        update={"answers": {}, "error": "TimeoutError: decide timed out"}
+    )
+    for run in (kept, failed, refused):
+        await refinery.record(run)
+    await refinery.review(
+        "acme", failed.run_id, Review(stance="objection", correction="Refund in full.")
+    )
+    bucket = MemoryBucket()
+    exported = await refinery.export("acme", bucket)
+    assert exported.rows == {"generation": 1}
+    [key] = exported.keys
+    assert [row["run_id"] for row in _lines(bucket.objects[key])] == [kept.run_id]

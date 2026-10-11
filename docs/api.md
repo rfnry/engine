@@ -1052,7 +1052,7 @@ async def export(
 ) -> Exported: ...
 ```
 
-Writes every run recorded or labeled after `since`, with all its labels, to `bucket` as JSONL under `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, in the datasets `generation`, `preference` and `decision`. Every row carries `holdout`, from a hash of its run id and `holdout_percent`, and its run's `fingerprint` as `{"agent", "tools"}`, `null` for a run recorded before fingerprints were kept. A generation row carries the run's `stopped` and `stop_reason`. Returns the keys, the rows per dataset and the watermark for the next `since`.
+Writes every run recorded or labeled after `since`, with all its labels, to `bucket` as JSONL under `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, in the datasets `generation`, `preference` and `decision`. Every row carries `holdout`, from a hash of its run id and `holdout_percent`, and its run's `fingerprint` as `{"agent", "tools"}`, `null` for a run recorded before fingerprints were kept. A generation row carries the run's `stopped` and `stop_reason`. A run whose `error` is set is in no dataset. Returns the keys, the rows per dataset and the watermark for the next `since`.
 
 Raises `InputError` when `scope` is empty or `holdout_percent` is outside 0 to 100, before anything is read or written.
 
@@ -1070,7 +1070,7 @@ async def label(
 ) -> Labeled: ...
 ```
 
-Runs `judge`, a decision agent, over the generation runs it has not labeled, and `teacher`, a generation agent, over the decision runs it has not labeled — at most `limit` runs each, their own runs skipped — and stores each answer as a label. A run that could not be labeled is named in `errors` and stays unlabeled for the next call.
+Runs `judge`, a decision agent, over the generation runs it has not labeled, and `teacher`, a generation agent, over the decision runs it has not labeled — at most `limit` runs each, their own runs skipped — and stores each answer as a label. A run that failed is labeled like any other; the judge is told its `error`. A run that could not be labeled is named in `errors` and stays unlabeled for the next call.
 
 Raises `InputError` when `scope` is empty. Raises `NotFoundError` when the tree has no agent `judge` or `teacher`. Raises `ConfigurationError` when `judge` is not a decision agent or `teacher` not a generation agent; each check happens before any run is labeled.
 
