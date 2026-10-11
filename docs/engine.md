@@ -1042,11 +1042,12 @@ under it; every later call with that id on the same run, racing or not, returns 
 writes nothing, and one on another run is an `InputError`.
 
 And models label what people did not. A **judge** is a decision agent in your tree whose questions
-are about an episode; it sees the input, the reply, every tool call with its result and the error a failed run ended
-with, with each image, audio or document replaced by a placeholder naming it — `[image: image/jpeg]`,
-`[document: application/pdf, "policy.pdf"]` — while the recorded run and the exported datasets keep the media. A judge sees neither the system
-prompt nor `run.boot`, so a rule a booted agent never had to `Read` is not in front of it; ask about
-them in the question when they matter:
+are about an episode; it sees the input, the reply, every tool call with its result and the error a
+failed run ended with, with each image, audio or document replaced by a placeholder naming it —
+`[image: image/jpeg]`, `[document: application/pdf, "policy.pdf"]` — while the recorded run and the
+exported datasets keep the media. A judge sees neither the system prompt nor `run.boot`, so a rule a
+booted agent never had to `Read` is not in front of it; ask about them in the question when they
+matter:
 
 ```
 agents/judge/
@@ -1085,14 +1086,15 @@ exported = await refinery.export("acme", Folder("datasets"), since=last_watermar
 exported.keys, exported.rows, exported.watermark
 ```
 
-Keys are `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, so repeated exports add
-files and never overwrite. `since` selects every run recorded or labeled after it, written in full
-with all its labels. A run that failed is in no dataset; replay and label it like any other. A run is recorded when it ends, so a long run still working at one export is in
-the next, whenever it started; the watermark covers both, so a review of a run you already exported
-reaches the next export. Rows are keyed by `run_id`: when a run appears again, its latest row
-supersedes the earlier ones — dedupe by `run_id`, keep the latest. Because of that you may pass a
-`since` a little before the last watermark: a run is stamped just before it is written, and
-services recording with their own clocks can disagree by a little.
+Keys are `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, so repeated exports add files and never
+overwrite. `since` selects every run recorded or labeled after it, written in full with all its
+labels. A run that failed is in no dataset; replay and label it like any other. A run is recorded
+when it ends, so a long run still working at one export is in the next, whenever it started; the
+watermark covers both, so a review of a run you already exported reaches the next export. Rows are
+keyed by `run_id`: when a run appears again, its latest row supersedes the earlier ones — dedupe by
+`run_id`, keep the latest. Because of that you may pass a `since` a little before the last
+watermark: a run is stamped just before it is written, and services recording with their own clocks
+can disagree by a little.
 
 Every row carries `"holdout": true|false` — the rows kept aside so any measurement on them is
 honest. It is derived from a hash of the run id (`holdout_percent=20` by default), so a run's flag
