@@ -460,10 +460,11 @@ for message in ["My invoice was charged twice.", "And the second charge?"]:
 ```
 
 `start=` is the position in `history` the run begins at; the run sends the messages from there,
-and `run.added` — the input and every message after it — is what to keep. `start=0`, the default,
-sends the whole history. `run.start` records where the run began, and `run.conversation` is what
-the model saw: the history from `start`, then `run.added`. A routed run is given the history and
-`start` its router was; a delegated run starts with no history, as always.
+and `run.added` — the input and every message after it — is what to keep; a router that routes
+nowhere adds nothing, `[]`, so `conversation += run.added` keeps nothing of that turn. `start=0`,
+the default, sends the whole history. `run.start` records where the run began, and
+`run.conversation` is what the model saw: the history from `start`, then `run.added`. A routed run
+is given the history and `start` its router was; a delegated run starts with no history, as always.
 
 `window` is yours, one policy among many. It keeps 20 to 39 turns — a turn is a message the person
 sent and everything that answered it — and moves its start 20 turns at a time, so between moves
@@ -477,7 +478,7 @@ function of yours.
 
 A conversation in a database is passed as itself. Anything with `read(start, stop)` that returns
 the messages at those positions — every one from `start` when `stop` is `None` — is a
-`HistoryLike`, and the run reads only what it sends:
+`HistoryLike`, and the run reads it only from `start` on:
 
 ```python
 class Conversation:
@@ -518,7 +519,10 @@ names it, the system prompt, the tools, the boot files and the messages — and 
 that wrote it reported. A message's `reasoning` is sent again only when what comes before it is
 still the same; otherwise the message goes without it, its text and calls as they were, and
 `run.messages` shows it as sent. So a history you cut or edited, a changed `context=`, `task=` or
-`tools=`, another agent, another model and a replay never send reasoning a vendor would refuse.
+`tools=`, another agent, another model and a replay never send reasoning a vendor would refuse. A
+run stopped after a step and continued after a change ahead of its history — a new date in
+`context=`, a moved window — sends its last tool call without its reasoning; a vendor that wants
+reasoning back on an open tool loop may refuse that, and handling it is the adapter's job.
 `prefix` and `usage` are the engine's record; no model sees them.
 
 Caching is the adapter's. An adapter that marks a cache point has every call of a window read from
@@ -534,7 +538,7 @@ conversation still passes back. The window's `budget` is what keeps either from 
 
 To measure on a long conversation, tag its runs with it — `tags={"conversation": "dana-1"}` — and
 `refinery.replay("acme", candidate, agent="support", tags={"conversation": "dana-1"})` replays them
-oldest first, each with the history it was sent.
+oldest first, each on what it was sent, with `start=0` and so without `History`.
 
 ### Decision agents
 
