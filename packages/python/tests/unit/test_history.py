@@ -549,3 +549,71 @@ async def test_a_history_given_as_a_generator_is_read_once(fixtures: Path) -> No
     )
     assert isinstance(run, Generation) and run.messages[:-1] == chat[2:]
     assert positions(run.steps[0].result) == [0, 1]
+
+
+async def test_bad_tags_are_refused_before_the_history_is_read(fixtures: Path) -> None:
+    class Down:
+        async def read(self, start: int, stop: int | None = None) -> Sequence[object]:
+            raise ConnectionError("database is down")
+
+    engine = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+    with pytest.raises(InputError, match=r"^engine: tags need a key"):
+        await engine.run("support", "acme", "x", history=Down(), start=2, tags={"": "x"})
+
+
+async def test_engine_tools_take_a_generator_history(fixtures: Path) -> None:
+    tools = surface(fixtures, (m for m in looked_up()), start=4)
+    assert positions(await tools.dispatch("History", {})) == [0, 1, 2, 3]
+
+
+def test_engine_tools_refuse_a_start_past_the_end_of_a_list(fixtures: Path) -> None:
+    with pytest.raises(InputError, match=r"^engine_tools: start must be between 0 and 4; got 9$"):
+        surface(fixtures, looked_up(), start=9)
+
+
+@pytest.mark.parametrize(
+    ("history", "position", "call_id"),
+    [
+        ([*looked_up()[2:3], *looked_up()[1:2]], 0, "c7"),
+        ([*looked_up()[:2], Message(role="user", content="Hello?")], 1, "c7"),
+        (
+            [*looked_up()[:2], Message(role="tool", tool_call_id="", content="?")],
+            2,
+            "",
+        ),
+    ],
+    ids=["result before its call", "call left open", "result with an empty id"],
+)
+async def test_a_history_that_breaks_a_pair_any_way_is_refused(
+    fixtures: Path, history: list[Message], position: int, call_id: str
+) -> None:
+    engine = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+    with pytest.raises(InputError) as caught:
+        await engine.run("support", "acme", "x", history=history)
+    assert str(caught.value) == (
+        f"engine: history breaks tool call {call_id!r} from its result at position {position}; "
+        "start at a message the person sent"
+    )
+
+
+async def test_a_pattern_that_runs_past_the_deadline_is_an_error_the_model_reads(
+    fixtures: Path,
+) -> None:
+    slow = [Message(role="user", content="a" * 34 + "!"), Message(role="user", content="now")]
+    tools = surface(fixtures, slow, start=1, tool_timeout=0.05)
+    with pytest.raises(InputError, match=r"^history: the pattern ran past the tool's deadline"):
+        await tools.dispatch("History", {"pattern": "(a|aa)+$"})
+
+
+async def test_a_routed_run_reads_a_history_once(fixtures: Path) -> None:
+    kept = Kept(looked_up())
+    engine = Engine(fixtures, generation=Scripted(text_reply("ok")), decision=Desk(), tools=TOOLS)
+    await engine.run("frontdesk", "acme", "It is down", history=kept, start=4)
+    assert kept.reads == [(4, None)]
+
+
+async def test_start_zero_reads_from_the_beginning(fixtures: Path) -> None:
+    kept = Kept(looked_up())
+    engine = Engine(fixtures, generation=Scripted(text_reply("ok")), tools=TOOLS)
+    await engine.run("support", "acme", "x", history=kept)
+    assert kept.reads == [(0, None)]

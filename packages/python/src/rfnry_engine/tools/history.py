@@ -92,9 +92,8 @@ def _clip(parts: list[Text], chars: int) -> list[Text]:
 
 
 def _page(found: Found, chars: int) -> tuple[list[Part], int]:
-    shown: list[list[Text]] = []
+    shown: list[tuple[int, list[Text]]] = []
     used = 0
-    first = found[-1][0]
     for position, message in reversed(found):
         parts = _shown(position, message)
         size = _size(parts)
@@ -105,10 +104,9 @@ def _page(found: Found, chars: int) -> tuple[list[Part], int]:
                 *_clip(parts, chars),
                 Text(text=f"[position {position} cut at {chars} characters]"),
             ]
-        shown.append(parts)
+        shown.append((position, parts))
         used += size
-        first = position
-    return [part for parts in reversed(shown) for part in parts], first
+    return [part for _, parts in reversed(shown) for part in parts], shown[-1][0]
 
 
 def _matching(pattern: regex.Pattern[str], indexed: Found, deadline: float | None) -> Found:
@@ -143,28 +141,30 @@ async def _reading(
     return parts
 
 
+def _compiled(pattern: str, case_insensitive: bool) -> regex.Pattern[str]:
+    try:
+        return regex.compile(pattern, regex.IGNORECASE if case_insensitive else 0)
+    except regex.error as exc:
+        raise InputError(f"history: invalid pattern: {exc}") from exc
+
+
 async def _searching(
     history: Sequence[object] | HistoryLike,
     before: int,
-    args: HistoryArgs,
+    pattern: regex.Pattern[str],
+    limit: int,
     walk: int,
     chars: int,
     timeout: float | None,
 ) -> Result:
-    try:
-        pattern = regex.compile(
-            args.pattern or "", regex.IGNORECASE if args.case_insensitive else 0
-        )
-    except regex.error as exc:
-        raise InputError(f"history: invalid pattern: {exc}") from exc
     deadline = None if timeout is None else time.monotonic() + timeout
     found: Found = []
     position, walked = before, 0
-    while position > 0 and len(found) < args.limit and walked < walk:
+    while position > 0 and len(found) < limit and walked < walk:
         first = max(0, position - min(_PAGE, walk - walked))
         page = await _read(history, first, position)
         hits = await asyncio.to_thread(_matching, pattern, list(enumerate(page, first)), deadline)
-        room = args.limit - len(found)
+        room = limit - len(found)
         found = hits[-room:] + found
         walked += position - first
         position = hits[-room][0] if len(hits) > room else first
@@ -199,6 +199,7 @@ def history_tool(
         before = start if a.before is None else min(a.before, start)
         if a.pattern is None:
             return await _reading(history, before, a.limit, chars)
-        return await _searching(history, before, a, walk, chars, timeout)
+        pattern = _compiled(a.pattern, a.case_insensitive)
+        return await _searching(history, before, pattern, a.limit, walk, chars, timeout)
 
     return Tool(HISTORY_TOOL, _DESCRIPTION, body=body, args=HistoryArgs)

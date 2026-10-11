@@ -276,9 +276,9 @@ delegated or routed run carries its own. A run recorded before fingerprints were
 with `None`.
 
 Keep the conversation yourself and pass it back. `run.conversation` is the history the run was
-sent, the input, every assistant turn — its text in `content`, its calls in `tool_calls`, its `reasoning` as
-the model returned it — every tool result with its `is_error`, and the final assistant turn, so the
-next run continues from what the agent did, not only what it said:
+sent, the input, every assistant turn — its text in `content`, its calls in `tool_calls`, its
+`reasoning` as the model returned it — every tool result with its `is_error`, and the final
+assistant turn, so the next run continues from what the agent did, not only what it said:
 
 ```python
 run = await engine.run("support", scope="acme", input="My invoice was charged twice.")
@@ -514,10 +514,10 @@ page in the order it happened — or, with `pattern`, the ones whose text matche
 
 It never reads what the model was given or anything after it. A page is 20 messages, at most 100;
 a search walks back at most `Engine(history_walk=10_000)` messages and a result holds at most
-`Engine(history_chars=100_000)` characters, each ending with where to go on; its deadline is
-`tool_timeout`, as every tool's, so a slow database gets the time you give it. No line in
-`AGENT.md` asks for it: it comes with `start=`, as `tools=` comes with the call. To send a window
-without it, pass the slice as the history and leave `start` at 0.
+`Engine(history_chars=100_000)` characters of messages, ending with where to go on when there is
+more; its deadline is `tool_timeout`, as every tool's, so a slow database gets the time you give
+it. No line in `AGENT.md` asks for it: it comes with `start=`, as `tools=` comes with the call. To
+send a window without it, pass the slice as the history and leave `start` at 0.
 
 `History` never hands a file back. An image, audio or document shows as a line naming it, with its
 URL when it has one — `[image: image/jpeg, https://files.acme.com/a1.jpg]`,
@@ -1461,12 +1461,12 @@ question with instructions both in its frontmatter and in its body or in neither
 with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a route entry
 that names a task its agent does not have or gives a decision agent nothing to ask, a tool
 declared without a body or given without a declaration, a run of an agent whose kind of model is
-absent, a missing workspace, a `Workspace` root that is not a
-directory, a `Workspace` with neither `sandbox=` nor `unsandboxed=True` or with both, an unsandboxed
-shell not on `PATH`, a `sandbox` or `shell` that is not a list of strings, a `max_steps`,
-`max_depth`, `tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is not positive, an `approve` that
-returns anything but `True` or `False`, a judge that is not a decision agent or a teacher that is
-not a generation agent. `NotFoundError` for an agent the tree does not have — a judge, a teacher
+absent, a missing workspace, a `Workspace` root that is not a directory, a `Workspace` with neither
+`sandbox=` nor `unsandboxed=True` or with both, an unsandboxed shell not on `PATH`, a `sandbox` or
+`shell` that is not a list of strings, a `max_steps`, `max_depth`, `tool_timeout`, `history_walk`,
+`history_chars`, `timeout` or `output_bytes` that is not positive, an `approve` that returns
+anything but `True` or `False`, a judge that is not a decision agent or a teacher that is not a
+generation agent. `NotFoundError` for an agent the tree does not have — a judge, a teacher
 or a replay's agent in the candidate included — a task the agent does not have
 (`engine: agent 'support' has no task 'ghost'`), found when the run starts, or a run the refinery
 does not.

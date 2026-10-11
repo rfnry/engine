@@ -36,6 +36,12 @@ class EngineTools(Tools):
             raise InputError(f"engine_tools: start must not be negative; got {start}")
         if start and history is None:
             raise InputError("engine_tools: start needs a history")
+        if history is not None and not isinstance(history, HistoryLike):
+            history = list(history)
+            if start > len(history):
+                raise InputError(
+                    f"engine_tools: start must be between 0 and {len(history)}; got {start}"
+                )
         spec = engine._spec(agent)
         if spec.workspace and workspace is None:
             raise ConfigurationError(
