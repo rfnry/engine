@@ -989,7 +989,7 @@ async def test_a_conversation_shorter_than_the_recorded_start_gives_the_pair_an_
     ):
         pair = await replayed(refinery, candidate, "support", lambda run, kept=short: kept)
         assert pair.error == (
-            f"InputError: refinery: the conversation ends at position {end}, "
+            f"InputError: refinery: the conversation has no message at position {end}, "
             "before the recorded input at position 6"
         )
 

@@ -141,7 +141,7 @@ class _Before:
         got = await self.source.read(start, end)
         if len(got) < end - start:
             raise InputError(
-                f"refinery: the conversation ends at position {start + len(got)}, "
+                f"refinery: the conversation has no message at position {start + len(got)}, "
                 f"before the recorded input at position {self.cut}"
             )
         return got
@@ -452,7 +452,7 @@ class Refinery:
                     held = list(source)
                     if len(held) < cut:
                         raise InputError(
-                            f"refinery: the conversation ends at position {len(held)}, "
+                            f"refinery: the conversation has no message at position {len(held)}, "
                             f"before the recorded input at position {cut}"
                         )
                     history = held[:cut]
