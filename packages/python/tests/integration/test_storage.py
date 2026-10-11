@@ -810,3 +810,51 @@ async def test_a_state_of_parts_round_trips_as_parts_and_replays(
     looking = Looking()
     [pair] = [p async for p in refinery.replay("a", Engine(root, decision=looking), agent="grader")]
     assert pair.error is None and looking.calls[0][0] == parts
+
+
+async def test_start_prefix_and_usage_round_trip_and_old_bodies_read_without_them(
+    storage: Storage,
+) -> None:
+    written = Message(
+        role="assistant",
+        content="Found it.",
+        prefix="0123456789abcdef",
+        usage=Usage(input=7, output=2, cache_read=5),
+    )
+    run = Generation(
+        run_id="w",
+        agent="support",
+        scope="a",
+        at=datetime.now(UTC),
+        duration_ms=1,
+        model="m",
+        input="hi",
+        system="s",
+        start=4,
+        messages=[Message(role="user", content="hi")],
+        conversation=[Message(role="user", content="hi"), written],
+        steps=[],
+        calls=1,
+        reply="Found it.",
+        usage=Usage(),
+    )
+    refinery = Refinery(storage)
+    await refinery.record(run)
+    got = await storage.get_run("a", "w")
+    assert got is not None and Generation.model_validate(got.body) == run
+    bucket = MemoryBucket()
+    await refinery.export("a", bucket)
+    [data] = [value for key, value in bucket.objects.items() if "/generation/" in key]
+    [row] = [json.loads(line) for line in data.splitlines()]
+    assert row["start"] == 4 and row["conversation"][-1]["prefix"] == "0123456789abcdef"
+    old = {key: value for key, value in got.body.items() if key != "start"}
+    old["conversation"] = [
+        {k: v for k, v in message.items() if k not in ("prefix", "usage")}
+        for message in got.body["conversation"]
+    ]
+    await storage.put_run("a", got.model_copy(update={"body": old}))
+    again = await storage.get_run("a", "w")
+    assert again is not None
+    back = Generation.model_validate(again.body)
+    assert back.start == 0 and back.conversation[-1].prefix is None
+    assert back.conversation[-1].usage is None
