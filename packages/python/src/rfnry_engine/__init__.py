@@ -56,7 +56,6 @@ from rfnry_engine.records import (
 )
 from rfnry_engine.refinery.export import Bucket
 from rfnry_engine.refinery.holdout import is_holdout
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import (
     Conflict,
     Exported,
@@ -102,7 +101,6 @@ __all__ = [
     "Generation",
     "GenerationModel",
     "HistoryLike",
-    "InMemoryStorage",
     "InputError",
     "Jail",
     "Label",

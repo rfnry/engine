@@ -250,8 +250,7 @@ def test_the_entry_matches_the_code(heading: str) -> None:
             check_function(node, getattr(module, node.name))
 
 
-def test_the_storages_implement_exactly_their_protocol() -> None:
-    assert rfnry_engine.Storage in implemented(rfnry_engine.InMemoryStorage)
+def test_the_storage_implements_exactly_its_protocol() -> None:
     assert rfnry_engine.Storage in implemented(rfnry_engine.PostgresStorage)
     for name, cls in IMPLEMENTATIONS.items():
         promised = set[str]().union(*(members(protocol) for protocol in implemented(cls)))

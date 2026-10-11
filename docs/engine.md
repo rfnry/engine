@@ -1341,12 +1341,17 @@ through it is still refused.
 
 ## Storage
 
-The refinery is the only part of the library that stores anything. Two storages ship: `InMemoryStorage()`
-for tests and small things, `PostgresStorage(pool)` for everything else, taking an asyncpg pool you
-built. `initialize()` creates two tables, `engine_runs` and `engine_labels`, and is safe to run
-again. A run's row keeps `at`, when the run started, and `recorded`, when the refinery stored it —
-one stamp for a run and every child run under it — and `runs(since=)` reads `recorded`. The tables
-are prefixed `engine_` so one database can also hold rfnry-memory's and rfnry-thread's:
+The refinery is the only part of the library that stores anything, and it stores in Postgres:
+`PostgresStorage(pool)`, over an asyncpg pool you built. A Postgres to try it on is one container:
+
+```bash
+docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
+```
+
+`initialize()` creates two tables, `engine_runs` and `engine_labels`, and is safe to run again. A
+run's row keeps `at`, when the run started, and `recorded`, when the refinery stored it — one stamp
+for a run and every child run under it — and `runs(since=)` reads `recorded`. The tables are
+prefixed `engine_` so one database can also hold rfnry-memory's and rfnry-thread's:
 
 ```python
 pool = await asyncpg.create_pool(dsn)
@@ -1354,10 +1359,10 @@ memory = Memory(rfnry_memory.PostgresStorage(pool), embedding=emb)
 refinery = Refinery(rfnry_engine.PostgresStorage(pool))
 ```
 
-A storage is any object with the methods below. `scope` comes first in every one, and each reads
-and writes that scope only. `refinery.storage` is the storage the refinery was given, to read its
-rows back yourself, and `refinery.record(run)` stores a run and every child run under it — what an
-engine with a refinery does after each run not made with `record=False`:
+A storage of your own is any object with the methods below. `scope` comes first in every one, and
+each reads and writes that scope only. `refinery.storage` is the storage the refinery was given, to
+read its rows back yourself, and `refinery.record(run)` stores a run and every child run under it —
+what an engine with a refinery does after each run not made with `record=False`:
 
 ```python
 class Storage(Protocol):
@@ -1430,7 +1435,7 @@ Everything the package exports, by role.
 - **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
 - **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Jail`, `Workspace`.
 - **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Replay`, `Bucket`, `is_holdout`.
-- **Store:** `Storage`, `InMemoryStorage`, `PostgresStorage`, `RunRow`, `LabelRow`.
+- **Store:** `Storage`, `PostgresStorage`, `RunRow`, `LabelRow`.
 - **Fail loudly:** `EngineException`, `ConfigurationError`, `NotFoundError`, `InputError`, `ModelError`, `RunawayError`, `DelegationLoopError`, `DelegationDepthError`, `StorageError`.
 
 ## Errors

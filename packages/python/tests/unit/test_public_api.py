@@ -4,7 +4,6 @@ EXPECTED = {
     "Engine",
     "AgentInfo",
     "Refinery",
-    "InMemoryStorage",
     "PostgresStorage",
     "Storage",
     "RunRow",
