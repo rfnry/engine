@@ -14,6 +14,7 @@ from rfnry_engine.models import (
     Part,
     Question,
     State,
+    StopReason,
     Text,
     ToolSpec,
     Usage,
@@ -93,6 +94,7 @@ class Generation(BaseModel):
     usage: Usage
     children: list[Run] = Field(default_factory=list)
     stopped: Stopped | None = None
+    stop_reason: StopReason | None = None
 
     @property
     def added(self) -> list[Message]:

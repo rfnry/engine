@@ -438,3 +438,14 @@ async def test_a_generation_row_says_where_its_history_began(storage: Storage) -
     await refinery.export("acme", bucket)
     [row] = _lines(next(iter(bucket.objects.values())))
     assert row["start"] == 6
+
+
+async def test_a_generation_row_carries_the_stop_reason(storage: Storage) -> None:
+    refinery = Refinery(storage)
+    cut = generation_record(reply="Refunds are").model_copy(update={"stop_reason": "max_tokens"})
+    await refinery.record(cut)
+    bucket = MemoryBucket()
+    exported = await refinery.export("acme", bucket)
+    [key] = [k for k in exported.keys if k.startswith("acme/support/generation/")]
+    [row] = _lines(bucket.objects[key])
+    assert row["stop_reason"] == "max_tokens" and row["stopped"] is None

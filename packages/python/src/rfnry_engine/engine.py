@@ -35,6 +35,7 @@ from rfnry_engine.models import (
     QuestionLike,
     Reply,
     State,
+    StopReason,
     StreamingGenerationModel,
     Text,
     ToolCall,
@@ -599,6 +600,7 @@ class Engine:
         streaming = on_event is not None and hasattr(model_, "generate_stream")
         streamed: list[str] = []
         said = ""
+        ended: StopReason | None = None
 
         async def emit(event: Any) -> None:
             if on_event is not None:
@@ -792,6 +794,7 @@ class Engine:
                 usage=usage,
                 children=children,
                 stopped=stopped,
+                stop_reason=ended,
             )
 
         for turn in range(self.max_steps):
@@ -810,6 +813,7 @@ class Engine:
                     messages.append(Message(role="assistant", content=partial))
                 return finish(partial or said, "now")
             reply = asking.result()
+            ended = reply.stop_reason
             if not streaming and reply.text:
                 await delta(reply.text)
             said = reply.text

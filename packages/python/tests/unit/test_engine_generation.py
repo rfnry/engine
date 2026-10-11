@@ -35,9 +35,10 @@ from rfnry_engine.models import (
 from rfnry_engine.records import Event, Generation, Run, TextDelta
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
+from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Fixed, Scripted, Streaming, said, text_reply
+from .fakes import TOOLS, Fixed, Scripted, Streaming, generation_record, said, text_reply
 
 
 def _tool_use(*calls: ToolCall) -> Reply:
@@ -670,3 +671,37 @@ async def test_the_model_adapter_says_which_files_load_may_hand_it(
     assert run.steps[0].result == (
         "InputError: builtins: the model does not take application/pdf files: knowledge/rates.pdf"
     )
+
+
+async def test_a_run_keeps_the_stop_reason_of_its_last_reply(fixtures: Path) -> None:
+    ended = await engine_for(fixtures, Scripted(text_reply("Done."))).run("billing", "acme", "x")
+    cut = await engine_for(
+        fixtures, Scripted(Reply(text="Refunds are", stop_reason="max_tokens"))
+    ).run("billing", "acme", "x")
+    assert isinstance(ended, Generation) and ended.stop_reason == "end_turn"
+    assert isinstance(cut, Generation) and cut.stop_reason == "max_tokens"
+    assert cut.reply == "Refunds are"
+
+
+class Refund(BaseModel):
+    refund: bool
+
+
+async def test_an_accepted_output_ends_on_tool_use(fixtures: Path) -> None:
+    call = ToolCall(id="o1", name="Output", args={"refund": True})
+    llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"))
+    run = await engine_for(fixtures, llm).run("billing", "acme", "x", expect=Refund)
+    assert isinstance(run, Generation) and run.stop_reason == "tool_use"
+
+
+async def test_a_run_stopped_before_any_reply_has_no_stop_reason(fixtures: Path) -> None:
+    stop = Stop()
+    stop.now()
+    run = await engine_for(fixtures, Scripted()).run("billing", "acme", "x", stop=stop)
+    assert isinstance(run, Generation) and run.stopped == "now" and run.stop_reason is None
+
+
+def test_a_run_recorded_before_the_stop_reason_was_kept_reads_none() -> None:
+    body = generation_record().model_dump(mode="json")
+    del body["stop_reason"]
+    assert Generation.model_validate(body).stop_reason is None
