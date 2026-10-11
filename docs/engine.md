@@ -527,7 +527,8 @@ day.
 A history the model cannot take is refused by its vendor: the adapter raises the vendor's error,
 `engine.run` raises it as it is, and nothing of that run is recorded — the tool calls it already
 made included. A model that runs out of room while it answers ends the run with the text it had,
-recorded like any other. The window's `budget` is what keeps either from happening.
+recorded like any other; a tool call it had begun is answered `NotRun` and never run, so the
+conversation still passes back. The window's `budget` is what keeps either from happening.
 
 To measure on a long conversation, tag its runs with it — `tags={"conversation": "dana-1"}` — and
 `refinery.replay("acme", candidate, agent="support", tags={"conversation": "dana-1"})` replays them

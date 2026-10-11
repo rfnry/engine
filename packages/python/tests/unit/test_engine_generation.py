@@ -196,6 +196,36 @@ async def test_calls_after_an_accepted_output_are_answered_but_never_run(
     assert [(s.tool, s.is_error) for s in run.steps] == [("Output", False), ("lookup_order", True)]
 
 
+async def test_calls_in_a_reply_that_ran_out_of_room_are_answered_but_never_run(
+    fixtures: Path,
+) -> None:
+    looked: list[dict[str, Any]] = []
+
+    async def lookup(args: dict[str, Any]) -> str:
+        looked.append(args)
+        return "found"
+
+    cut = Reply(
+        text="Let me look",
+        tool_calls=[ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"})],
+        stop_reason="max_tokens",
+    )
+    llm = Scripted(cut, text_reply("It is on its way."))
+    engine = Engine(fixtures, generation=llm, tools=[Tool("lookup_order", body=lookup), TOOLS[1]])
+    first = await engine.run("support", "acme", "Where is A-1?")
+    assert isinstance(first, Generation) and first.reply == "Let me look" and looked == []
+    assert first.conversation[-1] == Message(
+        role="tool",
+        tool_call_id="c1",
+        content="NotRun: lookup_order was not run; the reply ended with max_tokens",
+        is_error=True,
+    )
+    assert [(s.tool, s.is_error, s.duration_ms) for s in first.steps] == [("lookup_order", True, 0)]
+    second = await engine.run("support", "acme", "And now?", history=first.added, start=0)
+    assert isinstance(second, Generation) and second.reply == "It is on its way."
+    assert looked == []
+
+
 async def test_streaming_emits_deltas(fixtures: Path) -> None:
     llm = Streaming(text_reply("one two"))
     seen: list[Event] = []

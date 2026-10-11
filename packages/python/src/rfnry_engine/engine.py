@@ -691,6 +691,19 @@ class Engine:
             if step.child_run_id is not None:
                 children.append(delegated.pop(step.child_run_id))
 
+        def not_run(call: ToolCall, why: str) -> None:
+            answer(
+                call,
+                Step(
+                    tool=call.name,
+                    args=call.args,
+                    result=f"NotRun: {call.name} was not run; {why}",
+                    is_error=True,
+                    at=_now(),
+                    duration_ms=0,
+                ),
+            )
+
         async def cut(call: ToolCall, began: float) -> Step:
             step = Step(
                 tool=call.name,
@@ -800,6 +813,8 @@ class Engine:
                 model = reply.model
             messages.append(_assistant(reply, after))
             if reply.stop_reason != "tool_use" or not reply.tool_calls:
+                for call in reply.tool_calls:
+                    not_run(call, f"the reply ended with {reply.stop_reason}")
                 return finish(reply.text)
             output = next(
                 (c for c in reply.tool_calls if expect is not None and c.name == OUTPUT_TOOL), None
@@ -849,16 +864,6 @@ class Engine:
                 )
             )
             for call in reply.tool_calls[reply.tool_calls.index(output) + 1 :]:
-                answer(
-                    call,
-                    Step(
-                        tool=call.name,
-                        args=call.args,
-                        result=f"NotRun: {call.name} was not run; {OUTPUT_TOOL} ended the run",
-                        is_error=True,
-                        at=_now(),
-                        duration_ms=0,
-                    ),
-                )
+                not_run(call, f"{OUTPUT_TOOL} ended the run")
             return finish(parsed.model_dump_json())
         raise RunawayError(f"engine: run exceeded {self.max_steps} steps")

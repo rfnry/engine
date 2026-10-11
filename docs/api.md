@@ -146,7 +146,7 @@ class Reply(BaseModel):
     reasoning: Any = None
 ```
 
-What a generation model returns. A reply whose `stop_reason` is `"tool_use"` and whose `tool_calls` is non-empty asks the engine to run those calls and call the model again; anything else is final. `StopReason` is `Literal["end_turn", "tool_use", "max_tokens", "error"]`.
+What a generation model returns. A reply whose `stop_reason` is `"tool_use"` and whose `tool_calls` is non-empty asks the engine to run those calls and call the model again; anything else is final, and a call it holds is answered `NotRun` and never run. `StopReason` is `Literal["end_turn", "tool_use", "max_tokens", "error"]`.
 
 ### `Usage`
 
