@@ -1,8 +1,6 @@
-import os
 from datetime import datetime
 from pathlib import Path
 
-import asyncpg
 from rfnry_engine import Engine, PostgresStorage, Refinery, Review
 
 from providers import AnthropicProvider
@@ -17,9 +15,8 @@ datasets = Folder(ROOT / "datasets")
 watermarks: dict[str, datetime | None] = {}
 
 
-async def setup() -> None:
+async def setup(pool) -> None:
     global refinery, engine
-    pool = await asyncpg.create_pool(os.environ["RFNRY_EXAMPLES_POSTGRES_URL"])
     refinery = Refinery(PostgresStorage(pool))
     await refinery.initialize()
     engine = Engine(ROOT / "agents", generation=AnthropicProvider(), refinery=refinery)

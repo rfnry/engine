@@ -1,6 +1,8 @@
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import asyncpg
 import uvicorn
 from fastapi import FastAPI
 
@@ -10,8 +12,9 @@ from routes import router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    await harness.setup()
-    yield
+    async with asyncpg.create_pool(os.environ["RFNRY_EXAMPLES_POSTGRES_URL"]) as pool:
+        await harness.setup(pool)
+        yield
 
 
 app = FastAPI(lifespan=lifespan)
