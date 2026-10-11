@@ -1303,7 +1303,8 @@ not a generation agent. `NotFoundError` for an agent the tree does not have — 
 or a replay's agent in the candidate included — a task the agent does not have
 (`engine: agent 'support' has no task 'ghost'`), found when the run starts, or a run the refinery
 does not.
-`InputError` for a call the library refuses: an empty scope, tags
+`InputError` for a call the library refuses: an empty scope, a history that breaks a tool call from
+its result, tags
 outside their limits, runtime questions that do not fit, a runtime id the run already asks,
 `questions=` for a generation agent, a decision run with no question to ask, media the decision
 model does not declare, a media part with both or neither of `data` and `url`, a

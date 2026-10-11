@@ -161,6 +161,7 @@ async def test_history_from_another_library_is_read_by_its_fields(fixtures: Path
         other.Message(
             role="assistant", content="A cat.", tool_calls=[other.ToolCall(id="c1", name="Read")]
         ),
+        other.Message(role="tool", tool_call_id="c1", content="a cat"),
         {
             "role": "user",
             "content": [other.Text(text="Sure?"), other.Image(media_type="image/png", data=b"png")],
@@ -176,8 +177,9 @@ async def test_history_from_another_library_is_read_by_its_fields(fixtures: Path
     assert sent[1] == Message(
         role="assistant", content="A cat.", tool_calls=[ToolCall(id="c1", name="Read")]
     )
-    assert sent[2].content == [Text(text="Sure?"), Image(media_type="image/png", data=b"png")]
-    assert run.conversation[:3] == sent[:3]
+    assert sent[2] == Message(role="tool", tool_call_id="c1", content="a cat")
+    assert sent[3].content == [Text(text="Sure?"), Image(media_type="image/png", data=b"png")]
+    assert run.conversation[:4] == sent[:4]
 
 
 async def test_a_malformed_part_from_another_library_in_history_is_an_input_error(

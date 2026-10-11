@@ -141,6 +141,23 @@ def _history(value: Sequence[object] | None) -> list[Message]:
         ) from exc
 
 
+def _paired(history: list[Message], start: int) -> None:
+    calls: dict[str, int] = {}
+    for position, message in enumerate(history, start):
+        if message.role == "tool" and calls.pop(message.tool_call_id or "", None) is None:
+            raise InputError(
+                f"engine: history breaks tool call {message.tool_call_id!r} from its result "
+                f"at position {position}; start at a message the person sent"
+            )
+        calls.update((call.id, position) for call in message.tool_calls)
+    if calls:
+        call_id, position = next(iter(calls.items()))
+        raise InputError(
+            f"engine: history breaks tool call {call_id!r} from its result "
+            f"at position {position}; start at a message the person sent"
+        )
+
+
 def _questions(value: Mapping[str, QuestionLike] | None) -> dict[str, Question]:
     if value is None:
         return {}
@@ -303,9 +320,11 @@ class Engine:
             raise InputError("engine: scope is required")
         spec = self._spec(agent)
         asked = _asked(spec, questions)
+        given = _history(history)
+        _paired(given, 0)
         options = _Options(
             task=task,
-            history=_history(history),
+            history=given,
             context=context,
             expect=expect,
             on_event=on_event,
