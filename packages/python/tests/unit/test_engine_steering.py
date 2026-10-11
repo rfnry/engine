@@ -17,7 +17,7 @@ from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Workspace
 
-from .fakes import Fixed, text_reply
+from .fakes import Fixed, said, text_reply
 
 AGENTS = {
     "chat": "kind: generation\ndescription: Talks",
@@ -311,7 +311,7 @@ async def test_inbox_items_land_at_the_next_boundary_in_order(tmp_path: Path) ->
         Message(role="user", content="also check the tests"),
         Message(role="user", content=parts),
     ]
-    assert run.conversation[:-1] == llm.calls[1] and run.messages == llm.calls[0]
+    assert said(run.conversation[:-1]) == llm.calls[1] and run.messages == llm.calls[0]
     assert inbox.empty()
 
 

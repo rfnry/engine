@@ -6,8 +6,9 @@ import json
 from rfnry_engine.models import Message, Part, ToolSpec
 
 
-def opening(system: str, tools: list[ToolSpec], boot: list[Part]) -> bytes:
+def opening(model: str | None, system: str, tools: list[ToolSpec], boot: list[Part]) -> bytes:
     head = {
+        "model": model,
         "system": system,
         "tools": [tool.model_dump(mode="json") for tool in tools],
         "boot": [part.model_dump(mode="json") for part in boot],
@@ -16,8 +17,10 @@ def opening(system: str, tools: list[ToolSpec], boot: list[Part]) -> bytes:
 
 
 def extend(digest: bytes, message: Message) -> bytes:
-    said = message.model_dump_json(exclude={"prefix", "usage"})
-    return hashlib.sha256(digest + said.encode()).digest()
+    said = message.model_dump(mode="json", exclude={"prefix", "usage"}, fallback=repr)
+    return hashlib.sha256(
+        digest + json.dumps(said, sort_keys=True, ensure_ascii=False).encode()
+    ).digest()
 
 
 def mark(digest: bytes) -> str:

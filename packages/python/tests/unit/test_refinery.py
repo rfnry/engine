@@ -21,6 +21,7 @@ from .fakes import (
     decision_record,
     delegate_triage,
     generation_record,
+    said,
     text_reply,
 )
 
@@ -296,7 +297,7 @@ async def test_a_stopped_run_read_back_continues_the_next_run(fixtures: Path) ->
     assert isinstance(last, Generation) and last.model_dump() == run.model_dump()
     after = await engine.run("support", "acme", "And the second charge?", history=last.conversation)
     question = Message(role="user", content="And the second charge?")
-    assert llm.calls[1][1] == [*run.conversation, question]
+    assert llm.calls[1][1] == [*said(run.conversation), question]
     assert isinstance(after, Generation) and after.reply == "The second charge is refunded."
 
 

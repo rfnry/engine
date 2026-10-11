@@ -36,6 +36,7 @@ from .fakes import (
     delegating,
     generation_record,
     lead,
+    said,
     text_reply,
 )
 
@@ -106,7 +107,7 @@ async def test_boot_all_puts_every_rule_skill_and_knowledge_file_before_the_mode
     first, second = llm.calls
     assert first[0] == run.system == before.system
     assert first[1] == [Message(role="user", content=parts), *run.messages]
-    assert second[1] == [Message(role="user", content=parts), *run.conversation[:-1]]
+    assert second[1] == [Message(role="user", content=parts), *said(run.conversation[:-1])]
     assert run.messages == [Message(role="user", content="Charged twice.")]
     assert all(message.content != parts for message in run.conversation)
     assert [t.name for t in first[2]] == [t.name for t in plain.calls[0][2]]
@@ -283,7 +284,7 @@ async def test_a_conversation_passed_back_carries_no_second_copy_of_the_folder(
     boot = Message(role="user", content=first.boot)
     assert llm.calls[1][1] == [
         boot,
-        *first.conversation,
+        *said(first.conversation),
         Message(role="user", content="And the second?"),
     ]
 

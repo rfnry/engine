@@ -16,7 +16,6 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
 from rfnry_engine.bundle import build_bundle
-from rfnry_engine.chain import extend, mark, opening
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
@@ -547,7 +546,11 @@ class Engine:
             context=options.context,
         )
         boot = [Message(role="user", content=list(spec.boot))] if spec.boot else []
-        history, digest = chain.settle(options.history, opening(system, specs, list(spec.boot)))
+        history, digest = await asyncio.to_thread(
+            lambda: chain.settle(
+                options.history, chain.opening(_declared(model_), system, specs, list(spec.boot))
+            )
+        )
         hashed = len(history)
         messages = [*history, Message(role="user", content=_content(input))]
         sent = list(messages)
@@ -695,12 +698,15 @@ class Engine:
         def marked() -> str:
             nonlocal digest, hashed
             for message in messages[hashed:]:
-                digest = extend(digest, message)
+                digest = chain.extend(digest, message)
             hashed = len(messages)
-            return mark(digest)
+            return chain.mark(digest)
 
         async def ask() -> Reply:
-            sending = [*boot, *messages]
+            sending = [
+                *boot,
+                *(m.model_copy(update={"prefix": None, "usage": None}) for m in messages),
+            ]
             if streaming:
                 return as_reply(
                     await cast(StreamingGenerationModel, model_).generate_stream(

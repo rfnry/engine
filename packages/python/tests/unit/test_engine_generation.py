@@ -474,10 +474,9 @@ async def test_a_run_returns_the_conversation_to_continue_from(fixtures: Path) -
         "support", "acme", "And the second charge?", history=first.conversation
     )
     assert isinstance(second, Generation)
-    assert llm.calls[2][1] == [
-        *first.conversation,
-        Message(role="user", content="And the second charge?"),
-    ]
+    assert llm.calls[2][1] == said(
+        [*first.conversation, Message(role="user", content="And the second charge?")]
+    )
     assert said(second.conversation)[-1] == Message(role="assistant", content="Done.")
 
 

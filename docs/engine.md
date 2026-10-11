@@ -434,13 +434,13 @@ await refinery.review("acme", run.run_id, Review(stance="objection", correction=
 
 Reasoning goes back only where it was given. Some vendors bind a model's reasoning to the exact
 conversation it was given in and refuse it anywhere else. Every assistant message the engine makes
-from a reply carries `prefix`, a short hash of everything sent before it — the system prompt, the
-tools, the boot files and the messages — and `usage`, what the call that wrote it reported. A
-message's `reasoning` is sent again only when what comes before it is still the same; otherwise the
-message goes without it, its text and calls as they were, and `run.messages` shows it as sent. So a
-history you cut or edited, a changed `context=`, `task=` or `tools=`, another agent and a replay
-never send reasoning a vendor would refuse. `prefix` and `usage` are the engine's record; no model
-sees them.
+from a reply carries `prefix`, a short hash of everything sent before it — the model, as its adapter
+names it, the system prompt, the tools, the boot files and the messages — and `usage`, what the call
+that wrote it reported. A message's `reasoning` is sent again only when what comes before it is
+still the same; otherwise the message goes without it, its text and calls as they were, and
+`run.messages` shows it as sent. So a history you cut or edited, a changed `context=`, `task=` or
+`tools=`, another agent, another model and a replay never send reasoning a vendor would refuse.
+`prefix` and `usage` are the engine's record; no model sees them.
 
 ### Decision agents
 

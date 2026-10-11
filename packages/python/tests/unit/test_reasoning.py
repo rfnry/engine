@@ -1,3 +1,5 @@
+import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +48,7 @@ async def test_an_assistant_message_carries_the_prefix_it_was_written_after(
     llm = Scripted(reading(), text_reply("Refund in full."))
     run = await first_run(Engine(fixtures, generation=llm, tools=TOOLS))
     prefixes = [m.prefix for m in run.conversation if m.role == "assistant"]
-    assert all(p is not None and len(p) == 16 and int(p, 16) >= 0 for p in prefixes)
+    assert all(p is not None and re.fullmatch(r"[0-9a-f]{16}", p) for p in prefixes)
     assert len(set(prefixes)) == 2
     assert all(m.prefix is None for m in run.conversation if m.role != "assistant")
 
@@ -135,3 +137,53 @@ async def test_a_message_from_another_library_goes_without_its_reasoning(fixture
     )
     assert isinstance(run, Generation)
     assert run.messages[1] == Message(role="assistant", content="hello")
+
+
+async def test_the_model_receives_messages_without_the_engines_record(fixtures: Path) -> None:
+    llm = Scripted(reading(), text_reply("Refund in full."))
+    run = await first_run(Engine(fixtures, generation=llm, tools=TOOLS))
+    assert all(m.prefix is None and m.usage is None for call in llm.calls for m in call[1])
+    assert run.conversation[1].prefix is not None and run.conversation[1].usage is not None
+
+
+class Named(Scripted):
+    def __init__(self, name: str, *replies: Reply) -> None:
+        super().__init__(*replies)
+        self.model = name
+
+
+async def test_reasoning_is_left_out_when_the_model_is_another(fixtures: Path) -> None:
+    old = Named("model-a", reading(), text_reply("Refund in full."))
+    history = (await first_run(Engine(fixtures, generation=old, tools=TOOLS))).conversation
+    new = Named("model-b", text_reply("ok"))
+    run = await Engine(fixtures, generation=new, tools=TOOLS).run(
+        "support", "acme", "Which?", history=history, context=CONTEXT
+    )
+    assert isinstance(run, Generation) and run.messages[1].reasoning is None
+    same = Named("model-a", text_reply("ok"))
+    run = await Engine(fixtures, generation=same, tools=TOOLS).run(
+        "support", "acme", "Which?", history=history, context=CONTEXT
+    )
+    assert isinstance(run, Generation) and run.messages[1].reasoning == THOUGHT
+
+
+async def test_reasoning_goes_back_when_a_stored_history_came_back_with_its_keys_reordered(
+    fixtures: Path,
+) -> None:
+    unsorted = Reply(
+        text="Checking.",
+        tool_calls=[ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md", "a": None})],
+        stop_reason="tool_use",
+        reasoning={"z": 1, "a": 2},
+    )
+    llm = Scripted(unsorted, text_reply("Refund in full."), text_reply("ok"))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    first = await first_run(engine)
+    stored = [
+        Message.model_validate(json.loads(json.dumps(m.model_dump(mode="json"), sort_keys=True)))
+        for m in first.conversation
+    ]
+    run = await engine.run("support", "acme", "Which?", history=stored, context=CONTEXT)
+    assert isinstance(run, Generation)
+    assert run.messages[1].reasoning == {"z": 1, "a": 2}
+    assert llm.calls[2][1][1].reasoning == {"z": 1, "a": 2}
