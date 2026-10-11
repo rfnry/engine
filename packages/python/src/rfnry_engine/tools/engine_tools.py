@@ -8,7 +8,7 @@ from rfnry_engine.models import HistoryLike, ToolCall
 from rfnry_engine.tools.builtins import builtins, load_tool
 from rfnry_engine.tools.declared import declared_tools
 from rfnry_engine.tools.delegate import delegate_tool
-from rfnry_engine.tools.history import history_tool
+from rfnry_engine.tools.history import HISTORY_TOOL, history_tool
 from rfnry_engine.tools.tools import Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import Workspace
 
@@ -41,6 +41,12 @@ class EngineTools(Tools):
             raise ConfigurationError(
                 f"engine_tools: agent {agent!r} declares workspace: true; pass workspace= to the run"
             )
+        declared = declared_tools(spec, engine.tools)
+        given = [] if tools is None else [d["name"] for d in tools.definitions()]
+        if HISTORY_TOOL in [*(t.name for t in declared), *given]:
+            raise ConfigurationError(
+                f"engine_tools: a tool named {HISTORY_TOOL!r} collides with the builtin"
+            )
         room = workspace if spec.workspace else None
         media_types = getattr(engine.generation, "media_types", None)
         items: list[Tool | ToolsLike] = [
@@ -57,7 +63,7 @@ class EngineTools(Tools):
                     timeout=engine.tool_timeout,
                 )
             )
-        items.extend(declared_tools(spec, engine.tools))
+        items.extend(declared)
         if room is not None:
             items.extend(room.tools())
         if spec.agents:

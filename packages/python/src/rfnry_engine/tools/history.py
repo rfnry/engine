@@ -13,6 +13,7 @@ from rfnry_engine.errors import InputError
 from rfnry_engine.models import HistoryLike, Message, Part, Text
 from rfnry_engine.tools.tools import Result, Tool
 
+HISTORY_TOOL = "History"
 _PAGE = 100
 _MESSAGES = TypeAdapter(list[Message])
 _DESCRIPTION = (
@@ -186,4 +187,4 @@ def history_tool(
             return await _reading(history, before, a.limit, chars)
         return await _searching(history, before, a, walk, chars, timeout)
 
-    return Tool("History", _DESCRIPTION, body=body, args=HistoryArgs)
+    return Tool(HISTORY_TOOL, _DESCRIPTION, body=body, args=HistoryArgs)

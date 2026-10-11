@@ -13,6 +13,7 @@ from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.tools.engine_tools import EngineTools
+from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import TOOLS, Answering, Desk, Scripted, delegating, lead, said, text_reply
 
@@ -385,3 +386,24 @@ def test_history_bounds_must_be_positive(fixtures: Path, name: str) -> None:
     settings: dict[str, Any] = {name: 0}
     with pytest.raises(ConfigurationError, match=rf"^engine: {name} must be positive$"):
         Engine(fixtures, generation=Scripted(), tools=TOOLS, **settings)
+
+
+COLLIDES = r"^engine_tools: a tool named 'History' collides with the builtin$"
+
+
+async def mine(args: dict[str, Any]) -> str:
+    return "mine"
+
+
+async def test_a_tool_named_history_is_refused_on_every_run(fixtures: Path, tmp_path: Path) -> None:
+    engine = Engine(fixtures, generation=Scripted(text_reply("x")), tools=TOOLS)
+    with pytest.raises(ConfigurationError, match=COLLIDES):
+        await engine.run("support", "acme", "x", tools=Tools([Tool("History", "Mine", body=mine)]))
+    (tmp_path / "desk" / "tools").mkdir(parents=True)
+    (tmp_path / "desk" / "AGENT.md").write_text("---\nname: desk\nkind: generation\n---\nHelp.\n")
+    (tmp_path / "desk" / "tools" / "History.md").write_text(
+        "---\nname: History\ndescription: Mine\n---\n"
+    )
+    declared = Engine(tmp_path, generation=Scripted(), tools=[Tool("History", body=mine)])
+    with pytest.raises(ConfigurationError, match=COLLIDES):
+        await declared.run("desk", "acme", "x")

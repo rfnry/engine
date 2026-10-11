@@ -1179,7 +1179,8 @@ class Tools:
 
 An agent's tools are declared in its directory. `Read Grep Glob LS Skill Load` come with every generation agent,
 `Delegate` comes with `agents:`, `History` with a run whose `start=` is past the beginning of its
-history; everything else is a file under `tools/`:
+history, and its name is taken on every run, so a tool of yours named `History` is refused from
+the first; everything else is a file under `tools/`:
 
 ```markdown
 ---
