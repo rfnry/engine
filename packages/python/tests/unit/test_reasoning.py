@@ -187,3 +187,25 @@ async def test_reasoning_goes_back_when_a_stored_history_came_back_with_its_keys
     assert isinstance(run, Generation)
     assert run.messages[1].reasoning == {"z": 1, "a": 2}
     assert llm.calls[2][1][1].reasoning == {"z": 1, "a": 2}
+
+
+async def test_a_usage_or_prefix_from_elsewhere_reads_as_none(fixtures: Path) -> None:
+    history = [
+        {"role": "user", "content": "Where is A-1?"},
+        {
+            "role": "assistant",
+            "content": "On its way.",
+            "prefix": "not-a-mark",
+            "usage": {"input": 3, "output": 1, "total": 4},
+            "reasoning": THOUGHT,
+        },
+    ]
+    engine = Engine(fixtures, generation=Scripted(text_reply("Still.")), tools=TOOLS)
+    run = await engine.run("support", "acme", "And now?", history=history)
+    assert isinstance(run, Generation)
+    answered = run.messages[1]
+    assert answered.prefix is None and answered.usage is None and answered.reasoning is None
+    kept = Message.model_validate(
+        {"role": "assistant", "prefix": "0123456789abcdef", "usage": {"input": 3}}
+    )
+    assert kept.prefix == "0123456789abcdef" and kept.usage == Usage(input=3)

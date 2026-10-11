@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Annotated, Any, Literal, Protocol, Self, runtime_checkable
 
@@ -10,7 +11,9 @@ from pydantic import (
     Field,
     JsonValue,
     ValidationError,
+    ValidatorFunctionWrapHandler,
     field_serializer,
+    field_validator,
     model_validator,
 )
 
@@ -81,6 +84,18 @@ class Message(BaseModel):
     is_error: bool = False
     prefix: str | None = None
     usage: Usage | None = None
+
+    @field_validator("prefix", "usage", mode="wrap")
+    @classmethod
+    def _engines_own(cls, value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
+        try:
+            held = handler(value)
+        except ValidationError:
+            return None
+        return None if isinstance(held, str) and MARK.fullmatch(held) is None else held
+
+
+MARK = re.compile(r"[0-9a-f]{16}")
 
 
 class Usage(BaseModel):
