@@ -136,7 +136,15 @@ class _Before:
 
     async def read(self, start: int, stop: int | None = None) -> Sequence[object]:
         end = self.cut if stop is None else min(stop, self.cut)
-        return [] if start >= end else await self.source.read(start, end)
+        if start >= end:
+            return []
+        got = await self.source.read(start, end)
+        if len(got) < end - start:
+            raise InputError(
+                f"refinery: the conversation ends at position {start + len(got)}, "
+                f"before the recorded input at position {self.cut}"
+            )
+        return got
 
 
 class Refinery:
@@ -438,7 +446,16 @@ class Refinery:
             if conversation is not None:
                 source = conversation(recorded)
                 cut = run.start + len(run.messages) - 1
-                history = _Before(source, cut) if isinstance(source, HistoryLike) else source[:cut]
+                if isinstance(source, HistoryLike):
+                    history = _Before(source, cut)
+                else:
+                    held = list(source)
+                    if len(held) < cut:
+                        raise InputError(
+                            f"refinery: the conversation ends at position {len(held)}, "
+                            f"before the recorded input at position {cut}"
+                        )
+                    history = held[:cut]
                 start = run.start
             return await candidate.run(
                 agent,

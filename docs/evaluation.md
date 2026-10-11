@@ -169,14 +169,14 @@ whose runs it is asked about too, and a lookup — and the model reads any other
 build the candidate with bodies that only read.
 
 Each replay is given the recorded input — an image replays as an image — the history before it (with
-`conversation=`, its whole conversation, and `History`), the task and the context, so the candidate
-answers the question the recorded run answered. The latest review decides the reference: a person's
-correction is the right answer, an approval makes the recorded reply one, and a run labeled only by
-its outcome has no text to grade against, so it is skipped here and its outcome counted on its own.
-`grader` is a decision agent of yours whose check `matches` asks whether the reply says what the
-reference says; it reads text, so it is given the two texts and not the question's parts. Its
-probability is a score. The comparison is the mean over the pairs graded, next to the same number
-for the engine you run today replayed the same way, with `failures` counted as failures.
+`conversation=`, the conversation before it, and `History`), the task and the context, so the
+candidate answers the question the recorded run answered. The latest review decides the reference: a
+person's correction is the right answer, an approval makes the recorded reply one, and a run labeled
+only by its outcome has no text to grade against, so it is skipped here and its outcome counted on
+its own. `grader` is a decision agent of yours whose check `matches` asks whether the reply says
+what the reference says; it reads text, so it is given the two texts and not the question's parts.
+Its probability is a score. The comparison is the mean over the pairs graded, next to the same
+number for the engine you run today replayed the same way, with `failures` counted as failures.
 `pair.recorded.fingerprint` and `pair.candidate.fingerprint` say what changed between the two: the
 folder, the tools, or neither.
 

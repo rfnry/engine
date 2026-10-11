@@ -1,6 +1,7 @@
 import asyncio
 import json
 import shutil
+from collections import deque
 from collections.abc import Callable, Sequence
 from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
@@ -912,7 +913,7 @@ async def test_a_windowed_run_replays_with_its_conversation_and_history(
     whole = [*EARLIER, *recorded.added, *later]
     window = said([*EARLIER[4:], Message(role="user", content="Is it refunded?")])
     held = Held(whole)
-    for source in (whole, held):
+    for source in (whole, deque(whole), held):
         llm = Scripted(text_reply("Yes."))
         candidate = Engine(fixtures, generation=llm, tools=TOOLS)
         pair = await replayed(refinery, candidate, "support", lambda run, kept=source: kept)
@@ -937,8 +938,19 @@ async def test_a_routed_run_replays_its_generation_run_with_the_conversation(
     await recorder.run("frontdesk", "acme", "It is down again.", history=EARLIER, start=4)
     llm = Scripted(text_reply("Try again."))
     candidate = Engine(fixtures, generation=llm, decision=Desk(), tools=TOOLS)
-    pair = await replayed(refinery, candidate, "frontdesk", lambda run: EARLIER)
+    seen: list[Run] = []
+
+    def conversation(run: Run) -> list[Message]:
+        seen.append(run)
+        return EARLIER
+
+    pair = await replayed(refinery, candidate, "frontdesk", conversation)
     assert pair.error is None
+    assert "History" in [spec.name for spec in llm.calls[0][2]]
+    assert isinstance(pair.candidate, Decision)
+    assert isinstance(pair.candidate.routed_to, Generation) and pair.candidate.routed_to.start == 4
+    [called] = seen
+    assert isinstance(called, Decision) and called.agent == "frontdesk"
     assert said(llm.calls[0][1]) == said(
         [*EARLIER[4:], Message(role="user", content="It is down again.")]
     )
@@ -969,5 +981,39 @@ async def test_a_conversation_shorter_than_the_recorded_start_gives_the_pair_an_
     )
     await recorder.run("support", "acme", "Hi.", history=EARLIER, start=4)
     candidate = Engine(fixtures, generation=Scripted(), tools=TOOLS)
-    pair = await replayed(refinery, candidate, "support", lambda run: EARLIER[:2])
-    assert pair.error is not None and "start must be between 0 and 2; got 4" in pair.error
+    for short, end in (
+        (EARLIER[:2], 2),
+        (Held(EARLIER[:2]), 4),
+        (EARLIER[:5], 5),
+        (Held(EARLIER[:5]), 5),
+    ):
+        pair = await replayed(refinery, candidate, "support", lambda run, kept=short: kept)
+        assert pair.error == (
+            f"InputError: refinery: the conversation ends at position {end}, "
+            "before the recorded input at position 6"
+        )
+
+
+async def test_history_in_a_replay_reads_before_the_input_and_never_past_it(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    recorder = Engine(
+        fixtures, generation=Scripted(text_reply("Still refunded.")), tools=TOOLS, refinery=refinery
+    )
+    recorded = await recorder.run("support", "acme", "Is it refunded?", history=EARLIER, start=4)
+    assert isinstance(recorded, Generation)
+    later = [Message(role="user", content="Later."), Message(role="assistant", content="Later.")]
+    whole = [*EARLIER, *recorded.added, *later]
+    for source in (whole, Held(whole)):
+        llm = Scripted(
+            Reply(tool_calls=[ToolCall(id="h1", name="History", args={})], stop_reason="tool_use"),
+            text_reply("Yes."),
+        )
+        candidate = Engine(fixtures, generation=llm, tools=TOOLS)
+        pair = await replayed(refinery, candidate, "support", lambda run, kept=source: kept)
+        assert pair.error is None
+        [result] = [m for m in llm.calls[1][1] if m.role == "tool"][-1:]
+        seen = json.dumps(result.model_dump(mode="json"))
+        assert "Where is A-1?" in seen
+        assert "Is it refunded?" not in seen and "Later." not in seen
