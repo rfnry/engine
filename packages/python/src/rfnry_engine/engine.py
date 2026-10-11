@@ -28,6 +28,7 @@ from rfnry_engine.models import (
     Content,
     DecisionModel,
     GenerationModel,
+    HistoryLike,
     Message,
     Part,
     Question,
@@ -93,6 +94,8 @@ class _Options:
     tags: dict[str, str] = field(default_factory=dict)
     approve: Approve | None = None
     questions: Mapping[str, Question] = field(default_factory=dict)
+    start: int = 0
+    source: Sequence[object] | HistoryLike | None = None
 
 
 class AgentInfo(BaseModel):
@@ -157,6 +160,19 @@ def _paired(history: list[Message], start: int) -> None:
             f"engine: history breaks tool call {call_id!r} from its result "
             f"at position {position}; start at a message the person sent"
         )
+
+
+async def _window(history: Sequence[object] | HistoryLike | None, start: int) -> list[Message]:
+    if isinstance(history, HistoryLike):
+        if start < 0:
+            raise InputError(f"engine: start must not be negative; got {start}")
+        return _history(await history.read(start))
+    if history is None and start:
+        raise InputError("engine: start needs a history")
+    held = history or []
+    if not 0 <= start <= len(held):
+        raise InputError(f"engine: start must be between 0 and {len(held)}; got {start}")
+    return _history(held[start:])
 
 
 def _questions(value: Mapping[str, QuestionLike] | None) -> dict[str, Question]:
@@ -310,7 +326,8 @@ class Engine:
         *,
         task: str | None = None,
         questions: Mapping[str, QuestionLike] | None = None,
-        history: Sequence[object] | None = None,
+        history: Sequence[object] | HistoryLike | None = None,
+        start: int = 0,
         context: str | None = None,
         expect: type[BaseModel] | None = None,
         on_event: EventHandler | None = None,
@@ -326,8 +343,8 @@ class Engine:
             raise InputError("engine: scope is required")
         spec = self._spec(agent)
         asked = _asked(spec, questions)
-        given = _history(history)
-        _paired(given, 0)
+        given = await _window(history, start)
+        _paired(given, start)
         options = _Options(
             task=task,
             history=given,
@@ -341,6 +358,8 @@ class Engine:
             tags=_tags(tags),
             approve=approve,
             questions=asked,
+            start=start,
+            source=history,
         )
         run = await self._run(spec, scope, input, options, None)
         if record and self.refinery is not None:
@@ -585,6 +604,8 @@ class Engine:
                     history=[],
                     expect=None,
                     inbox=None,
+                    start=0,
+                    source=None,
                 )
                 child = await self._run(target, scope, args.input, forwarded, run_id)
             except Exception as exc:
@@ -731,6 +752,7 @@ class Engine:
                 input=input,
                 system=system,
                 boot=list(spec.boot),
+                start=options.start,
                 messages=sent,
                 conversation=list(messages),
                 tools=specs,

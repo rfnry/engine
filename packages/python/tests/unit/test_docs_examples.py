@@ -56,6 +56,7 @@ def markdown(start: str) -> str:
 
 
 ILLUSTRATIVE = {
+    "class Conversation:": "needs a database pool; a list stands in for it in the block above",
     "refinery = Refinery(PostgresStorage(pool))": "needs a Postgres pool; the integration tier runs PostgresStorage",
     "pool = await asyncpg.create_pool(dsn)": "needs a Postgres pool and rfnry-memory",
 }

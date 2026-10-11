@@ -275,8 +275,8 @@ tools and its `questions` the questions it asked ([Decision agents](#decision-ag
 delegated or routed run carries its own. A run recorded before fingerprints were kept reads back
 with `None`.
 
-Keep the conversation yourself and pass it back. `run.conversation` is the history you passed, the
-input, every assistant turn — its text in `content`, its calls in `tool_calls`, its `reasoning` as
+Keep the conversation yourself and pass it back. `run.conversation` is the history the run was
+sent, the input, every assistant turn — its text in `content`, its calls in `tool_calls`, its `reasoning` as
 the model returned it — every tool result with its `is_error`, and the final assistant turn, so the
 next run continues from what the agent did, not only what it said:
 
@@ -284,6 +284,9 @@ next run continues from what the agent did, not only what it said:
 run = await engine.run("support", scope="acme", input="My invoice was charged twice.")
 next = await engine.run("support", scope="acme", input="And the second charge?", history=run.conversation)
 ```
+
+A conversation that runs for months is passed whole with where each run starts, and the run sends
+only what follows: [Long conversations](#long-conversations).
 
 The input is a string, a JSON object, or a list of parts — what the user sent, as they sent it:
 
@@ -431,6 +434,65 @@ await refinery.review("acme", run.run_id, Review(stance="objection", correction=
 ```
 
 ### Long conversations
+
+A model keeps nothing between calls: each one is sent the history a run is given, and a
+conversation passed back whole grows with every turn — months of it fit no model's context, and
+every token of it is paid for again on every turn. The engine does not keep a conversation or
+choose what of it to send; you keep it, as you keep any conversation, and tell each run where to
+start:
+
+```python
+conversation, start = [], 0
+
+
+def window(conversation, start, turns=20, budget=150_000):
+    starts = [i for i, m in enumerate(conversation) if m.role == "user" and i >= start]
+    used = next((m.usage for m in reversed(conversation) if m.usage), None)
+    if used and used.input + used.cache_read + used.cache_creation > budget and len(starts) > 1:
+        return starts[len(starts) // 2]
+    return starts[-turns] if len(starts) >= 2 * turns else start
+
+
+for message in ["My invoice was charged twice.", "And the second charge?"]:
+    start = window(conversation, start)
+    run = await engine.run("support", scope="acme", input=message, history=conversation, start=start)
+    conversation += run.added
+```
+
+`start=` is the position in `history` the run begins at; the run sends the messages from there,
+and `run.added` — the input and every message after it — is what to keep. `start=0`, the default,
+sends the whole history. `run.start` records where the run began, and `run.conversation` is what
+the model saw: the history from `start`, then `run.added`. A routed run is given the history and
+`start` its router was; a delegated run starts with no history, as always.
+
+`window` is yours, one policy among many. It keeps 20 to 39 turns — a turn is a message the person
+sent and everything that answered it — and moves its start 20 turns at a time, so between moves
+the history only grows at its end. It starts at a message the person sent, so no tool call is cut
+from its result; a history whose sent part holds a result without its call, or a call without its
+result, is an `InputError` before any model is called. Each assistant message keeps the `usage`
+its call reported, so `input + cache_read + cache_creation` is how many tokens the conversation
+had reached there, and the window moves early, keeping the newer half, once the last call passed
+`budget`. A window per sitting, per day, by your own count, from a summary you wrote: each is a
+function of yours.
+
+A conversation in a database is passed as itself. Anything with `read(start, stop)` that returns
+the messages at those positions — every one from `start` when `stop` is `None` — is a
+`HistoryLike`, and the run reads only what it sends:
+
+```python
+class Conversation:
+    def __init__(self, pool, conversation_id):
+        self.pool, self.id = pool, conversation_id
+
+    async def read(self, start, stop=None):
+        rows = await self.pool.fetch(
+            "select body from messages where conversation = $1 and position >= $2"
+            " and ($3::int is null or position < $3) order by position",
+            self.id, start, stop)
+        return [Message.model_validate_json(row["body"]) for row in rows]
+```
+
+A position is a message's index in the conversation from 0, and always holds the same message.
 
 Reasoning goes back only where it was given. Some vendors bind a model's reasoning to the exact
 conversation it was given in and refuse it anywhere else. Every assistant message the engine makes
@@ -959,7 +1021,7 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | task, context, tags, model, fingerprint, system, boot, messages, tools, conversation, steps, reply, stopped, usage, every label |
+| `generation` | generation run | task, context, tags, model, fingerprint, system, boot, start, messages, tools, conversation, steps, reply, stopped, usage, every label |
 | `preference` | human correction | tags, fingerprint, prompt (system, boot, messages), chosen (the correction), rejected (the reply) |
 | `decision` | question of a decision run | task, tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
 
@@ -1287,7 +1349,7 @@ them yourself; every row carries its run's tags.
 
 Everything the package exports, by role.
 
-- **Run things:** `Engine`, `AgentInfo`, `Stop`.
+- **Run things:** `Engine`, `AgentInfo`, `Stop`, `HistoryLike`.
 - **What a run returns:** `Generation`, `Decision`, `Run`, `Step`, `Fingerprint`; events `TextDelta`, `ToolCallStarted`, `ToolResultReady`, `Event`.
 - **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
 - **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Jail`, `Workspace`.
@@ -1316,7 +1378,7 @@ or a replay's agent in the candidate included — a task the agent does not have
 (`engine: agent 'support' has no task 'ghost'`), found when the run starts, or a run the refinery
 does not.
 `InputError` for a call the library refuses: an empty scope, a history that breaks a tool call from
-its result, tags
+its result, a `start` outside the history or without one, tags
 outside their limits, runtime questions that do not fit, a runtime id the run already asks,
 `questions=` for a generation agent, a decision run with no question to ask, media the decision
 model does not declare, a media part with both or neither of `data` and `url`, a

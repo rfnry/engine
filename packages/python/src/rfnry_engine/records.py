@@ -83,6 +83,7 @@ class Generation(BaseModel):
     input: State
     system: str
     boot: list[Part] = Field(default_factory=list)
+    start: int = 0
     messages: list[Message]
     conversation: list[Message]
     tools: list[ToolSpec] = Field(default_factory=list)
@@ -92,6 +93,10 @@ class Generation(BaseModel):
     usage: Usage
     children: list[Run] = Field(default_factory=list)
     stopped: Stopped | None = None
+
+    @property
+    def added(self) -> list[Message]:
+        return self.conversation[max(len(self.messages) - 1, 0) :]
 
 
 class Decision(BaseModel):
@@ -112,6 +117,10 @@ class Decision(BaseModel):
     answers: dict[str, Answer]
     usage: Usage
     routed_to: Run | None = None
+
+    @property
+    def added(self) -> list[Message]:
+        return [] if self.routed_to is None else self.routed_to.added
 
     @field_validator("state", mode="before")
     @classmethod

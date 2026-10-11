@@ -171,15 +171,19 @@ def check_class(node: ast.ClassDef, cls: Any) -> None:
     methods = {s.name: s for s in node.body if isinstance(s, Function)}
     for name, method in methods.items():
         check_function(method, getattr(cls, name))
-    if issubclass(cls, BaseModel) or dataclasses.is_dataclass(cls):
-        real = fields(cls)
-        assert list(attributes) == list(real), node.name
-        for name, s in attributes.items():
-            assert (written(s.annotation), value(s.value)) == real[name], f"{node.name}.{name}"
-        return
     properties: dict[str, Any] = {
         n: v for n, v in vars(cls).items() if n[0] != "_" and isinstance(v, property)
     }
+    if issubclass(cls, BaseModel) or dataclasses.is_dataclass(cls):
+        real = fields(cls)
+        assert [name for name in attributes if name not in properties] == list(real), node.name
+        for name, s in attributes.items():
+            if name in properties:
+                returned = inspect.get_annotations(properties[name].fget)["return"]
+                assert written(s.annotation) == normal(returned), f"{node.name}.{name}"
+            else:
+                assert (written(s.annotation), value(s.value)) == real[name], f"{node.name}.{name}"
+        return
     if getattr(cls, "_is_protocol", False):
         assert set(attributes) | set(methods) == set(properties) | set(verbs(cls)), node.name
     assert set(properties) <= set(attributes), node.name

@@ -49,6 +49,7 @@ EXPECTED = {
     "AnswerLike",
     "QuestionLike",
     "GenerationModel",
+    "HistoryLike",
     "StreamingGenerationModel",
     "DecisionModel",
     "Tool",

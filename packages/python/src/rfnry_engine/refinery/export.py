@@ -50,6 +50,7 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
         "fingerprint": _fingerprint(body),
         "system": body["system"],
         "boot": body.get("boot", []),
+        "start": body.get("start", 0),
         "messages": body["messages"],
         "tools": body.get("tools", []),
         "conversation": body.get("conversation", []),

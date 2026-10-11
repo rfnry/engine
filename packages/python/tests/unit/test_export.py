@@ -418,3 +418,12 @@ async def test_a_check_row_writes_its_no_without_float_noise() -> None:
     [key] = [k for k in bucket.objects if "/decision/" in k]
     [row] = _lines(bucket.objects[key])
     assert row["probabilities"] == {"yes": 0.33, "no": 0.67}
+
+
+async def test_a_generation_row_says_where_its_history_began() -> None:
+    refinery = Refinery(InMemoryStorage())
+    await refinery.record(generation_record().model_copy(update={"start": 6}))
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [row] = _lines(next(iter(bucket.objects.values())))
+    assert row["start"] == 6

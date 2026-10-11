@@ -366,3 +366,8 @@ class DecisionModel(Protocol):
 
 
 Message.model_rebuild()
+
+
+@runtime_checkable
+class HistoryLike(Protocol):
+    async def read(self, start: int, stop: int | None = None) -> Sequence[object]: ...

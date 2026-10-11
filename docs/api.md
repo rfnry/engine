@@ -103,6 +103,15 @@ One turn of a conversation. An assistant turn carries its text in `content`, its
 
 `prefix` and `usage` are the engine's record of an assistant message it made from a reply, never sent to a model and outside the vocabulary shared with rfnry-memory: `prefix` is the first 16 hex characters of a sha256 over everything sent before the message when it was written — the model, as its adapter names it, the system prompt, the tools, the boot files and the earlier messages as sent — and its `reasoning` is sent again only while what precedes it is the same; `usage` is what the call that wrote it reported.
 
+### `HistoryLike`
+
+```python
+class HistoryLike(Protocol):
+    async def read(self, start: int, stop: int | None = None) -> Sequence[object]: ...
+```
+
+A conversation kept anywhere, read by position: the messages at positions `start` up to `stop`, every one from `start` when `stop` is `None`, each read by the fields of `Message`. A position is a message's index in the conversation from 0 and always holds the same message. `Engine.run` and `EngineTools` take one as `history`, as they take a list.
+
 ### `ToolSpec`
 
 ```python
@@ -371,7 +380,8 @@ async def run(
     *,
     task: str | None = None,
     questions: Mapping[str, QuestionLike] | None = None,
-    history: Sequence[object] | None = None,
+    history: Sequence[object] | HistoryLike | None = None,
+    start: int = 0,
     context: str | None = None,
     expect: type[BaseModel] | None = None,
     on_event: EventHandler | None = None,
@@ -385,9 +395,9 @@ async def run(
 ) -> Run: ...
 ```
 
-Runs `agent` for the tenant `scope` on `input` and returns its record: a `Generation` for a generation agent, a `Decision` for a decision agent. A generation agent's `task` puts `tasks/<task>.md` in its system prompt; a decision agent's adds the questions in `tasks/<task>/` to those of `questions/`, which every run asks. `questions` are a decision agent's runtime questions, read by their fields and asked with the folder's in the same call. A route's run gets the task its route entry names, if any, never the router's task or runtime questions. With a refinery attached, a run that returns is recorded unless `record=False`, and a recording that fails is logged, never raised. `EventHandler` is `Callable[[Event], Awaitable[None]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets, and `tools` rides this run only; `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`, called with the agent's name and the call.
+Runs `agent` for the tenant `scope` on `input` and returns its record: a `Generation` for a generation agent, a `Decision` for a decision agent. A generation agent's `task` puts `tasks/<task>.md` in its system prompt; a decision agent's adds the questions in `tasks/<task>/` to those of `questions/`, which every run asks. `questions` are a decision agent's runtime questions, read by their fields and asked with the folder's in the same call. `history` is a list of messages or a `HistoryLike`, and the run sends its messages from position `start` on — `start=0` sends them all; a routed run is given both, a delegated run neither. A route's run gets the task its route entry names, if any, never the router's task or runtime questions. With a refinery attached, a run that returns is recorded unless `record=False`, and a recording that fails is logged, never raised. `EventHandler` is `Callable[[Event], Awaitable[None]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets, and `tools` rides this run only; `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`, called with the agent's name and the call.
 
-Raises `InputError` when `scope` is empty, a generation agent is given `questions`, a runtime question does not fit the contract or has an empty id or one the run already asks from `questions/` or its task, a decision run has no question to ask, a decision agent is given media its model does not declare in `media_types`, `tags` are outside their limits, `history` does not fit the contract or breaks a tool call from its result — a result whose call is not in it, or a call with no result — or `input` mixes parts with other values. Raises `NotFoundError` when the tree has no agent `agent`, or the agent has no task `task`, before any model is called. Raises `ConfigurationError` when the model for the agent's kind is absent, a decision agent routes to a generation agent without a generation model, an agent with `workspace: true` runs without a `workspace`, `tools` repeats a name the agent already has, a tool named `Output` collides with `expect`, or `approve` returns anything but `True` or `False`. Raises `ModelError` when an adapter's result does not fit the contract. Raises `RunawayError` when the loop passes `max_steps`. Raises `DelegationLoopError` or `DelegationDepthError` when a route loops or goes deeper than `max_depth`.
+Raises `InputError` when `scope` is empty, a generation agent is given `questions`, a runtime question does not fit the contract or has an empty id or one the run already asks from `questions/` or its task, a decision run has no question to ask, a decision agent is given media its model does not declare in `media_types`, `tags` are outside their limits, `history` does not fit the contract or breaks a tool call from its result — a result whose call is not in it, or a call with no result —, `start` is negative, past the end of a list `history`, or given without a `history`, or `input` mixes parts with other values. Raises `NotFoundError` when the tree has no agent `agent`, or the agent has no task `task`, before any model is called. Raises `ConfigurationError` when the model for the agent's kind is absent, a decision agent routes to a generation agent without a generation model, an agent with `workspace: true` runs without a `workspace`, `tools` repeats a name the agent already has, a tool named `Output` collides with `expect`, or `approve` returns anything but `True` or `False`. Raises `ModelError` when an adapter's result does not fit the contract. Raises `RunawayError` when the loop passes `max_steps`. Raises `DelegationLoopError` or `DelegationDepthError` when a route loops or goes deeper than `max_depth`.
 
 ### `Engine.tool`
 
@@ -469,6 +479,7 @@ class Generation(BaseModel):
     input: State
     system: str
     boot: list[Part] = []
+    start: int = 0
     messages: list[Message]
     conversation: list[Message]
     tools: list[ToolSpec] = []
@@ -478,9 +489,10 @@ class Generation(BaseModel):
     usage: Usage
     children: list[Run] = []
     stopped: Stopped | None = None
+    added: list[Message]
 ```
 
-The record of a generation run: the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. `model` is the model the replies reported; when none did, as in a run stopped during its first model call, it is the adapter's `model` attribute if that is a non-empty string, else `None`. An accepted `Output` makes `reply` its JSON. `boot` is what `boot: all` sent, `[]` without it: the files sorted by relative path character by character, a file `Read` returns as a `Text` of `<<<path>>>` on a line of its own followed by what `Read` returns, any other file as a `Text` of `<<<path>>>` followed by the part `Load` returns; every model call receives it as one user message ahead of the messages, and neither `messages` nor `conversation` holds it. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. A run recorded before `context` or `fingerprint` was kept reads back with `None`, and one recorded before `boot` was kept with `[]`.
+The record of a generation run: the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. `model` is the model the replies reported; when none did, as in a run stopped during its first model call, it is the adapter's `model` attribute if that is a non-empty string, else `None`. An accepted `Output` makes `reply` its JSON. `boot` is what `boot: all` sent, `[]` without it: the files sorted by relative path character by character, a file `Read` returns as a `Text` of `<<<path>>>` on a line of its own followed by what `Read` returns, any other file as a `Text` of `<<<path>>>` followed by the part `Load` returns; every model call receives it as one user message ahead of the messages, and neither `messages` nor `conversation` holds it. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. A run recorded before `context` or `fingerprint` was kept reads back with `None`, and one recorded before `boot` was kept with `[]`. `start` is the position in the history the run began at, `0` when it was sent whole or was recorded before `start` was kept. `added` is computed from the record: the input and every message after it, `conversation` from the input on — what a caller keeps.
 
 ### `Decision`
 
@@ -503,9 +515,10 @@ class Decision(BaseModel):
     answers: dict[str, Answer]
     usage: Usage
     routed_to: Run | None = None
+    added: list[Message]
 ```
 
-The record of a decision run: the task it was given, the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder or the task and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported — its `model` attribute, a non-empty string, when the call reports no model — and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. A run recorded before `task`, `runtime` or `fingerprint` was kept reads back with `None`, `[]` and `None`.
+The record of a decision run: the task it was given, the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder or the task and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported — its `model` attribute, a non-empty string, when the call reports no model — and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. A run recorded before `task`, `runtime` or `fingerprint` was kept reads back with `None`, `[]` and `None`. `added` is the `added` of the run its route started, `[]` when it routed nowhere.
 
 ### `Run`
 
