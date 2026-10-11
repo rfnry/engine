@@ -11,9 +11,9 @@ from rfnry_engine import Stop
 from rfnry_engine.engine import Engine
 from rfnry_engine.models import ChoiceAnswer, Message, Part, Reply, Text, ToolCall, ToolSpec
 from rfnry_engine.records import Decision, Generation
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Review
 from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Workspace
 
@@ -114,9 +114,9 @@ def answered(messages: list[Message]) -> bool:
     return asked == results
 
 
-async def test_stop_now_cancels_a_slow_model_call(tmp_path: Path) -> None:
+async def test_stop_now_cancels_a_slow_model_call(tmp_path: Path, storage: Storage) -> None:
     llm = Paced((30.0, text_reply("never")))
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     engine = Engine(make_tree(tmp_path), generation=llm, refinery=refinery)
     stop = Stop()
     task = asyncio.create_task(engine.run("chat", "acme", "hi", stop=stop))
@@ -239,10 +239,12 @@ async def test_now_after_after_step_upgrades_the_stop(tmp_path: Path) -> None:
     assert isinstance(run, Generation) and run.stopped == "now" and slow.cancelled
 
 
-async def test_a_stopped_run_is_recorded_and_continues_cleanly(tmp_path: Path) -> None:
+async def test_a_stopped_run_is_recorded_and_continues_cleanly(
+    tmp_path: Path, storage: Storage
+) -> None:
     slow = Slow(30.0)
     llm = Paced(use(call("slow", "c1")), text_reply("Picking up where we left off."))
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     engine = Engine(make_tree(tmp_path), generation=llm, refinery=refinery)
     tools = Tools([Tool("slow", body=slow)])
     stop = Stop()

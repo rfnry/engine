@@ -9,8 +9,8 @@ from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.models import Answer, ChoiceAnswer, Reply, ToolCall
 from rfnry_engine.records import Decision, Generation
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
@@ -230,8 +230,10 @@ async def test_an_approve_that_answers_something_else_is_the_consumers_bug(tmp_p
         await engine.run("desk", "acme", "x", tools=Refunds().tools(), approve=maybe)
 
 
-async def test_the_exported_generation_row_keeps_each_approval(tmp_path: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_the_exported_generation_row_keeps_each_approval(
+    tmp_path: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     llm = Scripted(use("refund", order="A-1"), text_reply("cannot"))
     engine = Engine(make_tree(tmp_path), generation=llm, refinery=refinery)
     await engine.run("desk", "acme", "x", tools=Refunds().tools(), approve=Approver(allow=False))

@@ -8,8 +8,8 @@ from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, NotFoundError
 from rfnry_engine.models import Check, Choice, ChoiceAnswer, Question, Score
 from rfnry_engine.records import Decision, Generation
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import Storage
 
 from .fakes import TOOLS, Answering, Scripted, delegate_triage, text_reply
 
@@ -336,9 +336,11 @@ async def test_a_task_lives_in_the_folder_so_the_agent_fingerprint_covers_it(
     assert before.fingerprint.questions != edited.fingerprint.questions
 
 
-async def test_runtime_questions_and_a_task_are_recorded_and_read_back(tmp_path: Path) -> None:
+async def test_runtime_questions_and_a_task_are_recorded_and_read_back(
+    tmp_path: Path, storage: Storage
+) -> None:
     root = grader(tmp_path)
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     engine = Engine(root, decision=Answering(), refinery=refinery)
     run = await engine.run("grader", "acme", "x", task="tone", questions=RUNTIME)
     read = await refinery.run("acme", run.run_id)

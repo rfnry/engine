@@ -19,8 +19,8 @@ from rfnry_engine.models import (
     ToolCall,
 )
 from rfnry_engine.records import Decision, Generation
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 
@@ -214,8 +214,10 @@ async def test_a_delegated_run_starts_with_no_history(tmp_path: Path) -> None:
     assert child.messages == [Message(role="user", content="Draft a reply")]
 
 
-async def test_a_run_read_back_keeps_its_start_and_what_it_added(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_run_read_back_keeps_its_start_and_what_it_added(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     engine = Engine(fixtures, generation=Scripted(text_reply("ok")), tools=TOOLS, refinery=refinery)
     run = await engine.run("support", "acme", "And now?", history=two(), start=4)
     back = await refinery.run("acme", run.run_id)

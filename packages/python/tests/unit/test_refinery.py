@@ -7,9 +7,9 @@ from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, NotFoundError
 from rfnry_engine.models import Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Decision, Generation, Run
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Outcome, Review
 from rfnry_engine.refinery.refinery import Refinery, label_of
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool
 
@@ -26,8 +26,7 @@ from .fakes import (
 )
 
 
-async def test_record_flattens_children_into_rows() -> None:
-    storage = InMemoryStorage()
+async def test_record_flattens_children_into_rows(storage: Storage) -> None:
     refinery = Refinery(storage)
     child = decision_record()
     parent = generation_record(children=[child])
@@ -44,8 +43,8 @@ async def test_record_flattens_children_into_rows() -> None:
     assert stored is not None and stored.body["children"] == [] and stored.kind == "generation"
 
 
-async def test_review_and_outcome_become_labels_with_their_source() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_review_and_outcome_become_labels_with_their_source(storage: Storage) -> None:
+    refinery = Refinery(storage)
     run = generation_record()
     await refinery.record(run)
     review = await refinery.review(
@@ -61,8 +60,8 @@ async def test_review_and_outcome_become_labels_with_their_source() -> None:
     assert world.body["outcome"]["status"] == "failed"
 
 
-async def test_a_label_id_stores_one_label_however_often_it_is_given() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_label_id_stores_one_label_however_often_it_is_given(storage: Storage) -> None:
+    refinery = Refinery(storage)
     run, other = generation_record(), decision_record()
     await refinery.record(run)
     await refinery.record(other)
@@ -96,8 +95,8 @@ async def test_a_label_id_stores_one_label_however_often_it_is_given() -> None:
     assert len(await refinery.storage.labels("acme")) == 4
 
 
-async def test_a_label_id_belongs_to_its_scope() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_label_id_belongs_to_its_scope(storage: Storage) -> None:
+    refinery = Refinery(storage)
     a, b = generation_record(scope="a"), generation_record(scope="b")
     await refinery.record(a)
     await refinery.record(b)
@@ -108,8 +107,8 @@ async def test_a_label_id_belongs_to_its_scope() -> None:
     assert [label_of(row) for row in await refinery.storage.labels("b")] == [in_b]
 
 
-async def test_a_correction_must_match_the_run_kind() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_correction_must_match_the_run_kind(storage: Storage) -> None:
+    refinery = Refinery(storage)
     generation, decision = generation_record(), decision_record()
     await refinery.record(generation)
     await refinery.record(decision)
@@ -128,8 +127,8 @@ async def test_a_correction_must_match_the_run_kind() -> None:
     assert len(await refinery.storage.labels("acme")) == 1
 
 
-async def test_review_needs_something_and_a_known_run() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_review_needs_something_and_a_known_run(storage: Storage) -> None:
+    refinery = Refinery(storage)
     with pytest.raises(ValueError):
         Review()
     with pytest.raises(NotFoundError, match="^refinery: run 'ghost' was not found$"):
@@ -138,8 +137,7 @@ async def test_review_needs_something_and_a_known_run() -> None:
         await refinery.outcome("acme", "ghost", Outcome(status="failed"))
 
 
-async def test_scopes_never_mix_and_deletion_is_provable() -> None:
-    storage = InMemoryStorage()
+async def test_scopes_never_mix_and_deletion_is_provable(storage: Storage) -> None:
     refinery = Refinery(storage)
     a, b = generation_record(scope="a"), generation_record(scope="b")
     await refinery.record(a)
@@ -168,8 +166,8 @@ def tree_ids(run: Run) -> set[str]:
 
 async def test_delete_runs_by_tag_takes_the_routed_and_delegated_runs_and_their_labels(
     fixtures: Path,
+    storage: Storage,
 ) -> None:
-    storage = InMemoryStorage()
     refinery = Refinery(storage)
     engine = desk(fixtures, refinery, customers=2)
     gone = await engine.run(
@@ -193,8 +191,8 @@ async def test_delete_runs_by_tag_takes_the_routed_and_delegated_runs_and_their_
     assert await refinery.delete_runs("acme", tags={"customer": "c-81"}) == 0
 
 
-async def test_a_tag_matches_by_containment(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_tag_matches_by_containment(fixtures: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
     engine = desk(fixtures, refinery, customers=1)
     await engine.run("frontdesk", "acme", "It is down", tags={"customer": "c-81", "arm": "b"})
     for absent in ({"customer": "c-81", "arm": "a"}, {"customer": "c-8"}, {"region": "eu"}):
@@ -203,8 +201,9 @@ async def test_a_tag_matches_by_containment(fixtures: Path) -> None:
         assert not await refinery.verify_absent("acme", tags=present)
 
 
-async def test_delete_runs_by_id_takes_that_run_and_its_descendants_only(fixtures: Path) -> None:
-    storage = InMemoryStorage()
+async def test_delete_runs_by_id_takes_that_run_and_its_descendants_only(
+    fixtures: Path, storage: Storage
+) -> None:
     refinery = Refinery(storage)
     engine = desk(fixtures, refinery, customers=2)
     first = await engine.run("frontdesk", "acme", "It is down")
@@ -218,8 +217,7 @@ async def test_delete_runs_by_id_takes_that_run_and_its_descendants_only(fixture
     assert await refinery.verify_absent("acme")
 
 
-async def test_delete_runs_never_reaches_another_scope(fixtures: Path) -> None:
-    storage = InMemoryStorage()
+async def test_delete_runs_never_reaches_another_scope(fixtures: Path, storage: Storage) -> None:
     refinery = Refinery(storage)
     engine = desk(fixtures, refinery, customers=2)
     mine = await engine.run("frontdesk", "acme", "It is down", tags={"customer": "c-81"})
@@ -234,8 +232,8 @@ async def test_delete_runs_never_reaches_another_scope(fixtures: Path) -> None:
     assert len(await storage.labels("globex")) == 1
 
 
-async def test_delete_runs_and_verify_absent_take_exactly_one_selector() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_delete_runs_and_verify_absent_take_exactly_one_selector(storage: Storage) -> None:
+    refinery = Refinery(storage)
     with pytest.raises(InputError, match="^refinery: delete_runs takes run_ids or tags$"):
         await refinery.delete_runs("acme")
     for verb in (refinery.delete_runs, refinery.verify_absent):
@@ -248,8 +246,10 @@ async def test_delete_runs_and_verify_absent_take_exactly_one_selector() -> None
     assert await refinery.verify_absent("acme")
 
 
-async def test_a_recorded_run_reads_back_as_engine_run_returned_it(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_recorded_run_reads_back_as_engine_run_returned_it(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     engine = desk(fixtures, refinery, customers=1)
     run = await engine.run("frontdesk", "acme", "It is down", tags={"customer": "c-81"})
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
@@ -261,8 +261,10 @@ async def test_a_recorded_run_reads_back_as_engine_run_returned_it(fixtures: Pat
     assert await refinery.run("acme", triage.run_id) == triage
 
 
-async def test_delegated_children_read_back_in_the_order_of_their_steps(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_delegated_children_read_back_in_the_order_of_their_steps(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     calls = [delegate_triage(f"d{n}", f"ticket {n}").tool_calls[0] for n in range(3)]
     llm = Scripted(
         Reply(tool_calls=calls[:2], stop_reason="tool_use"),
@@ -276,7 +278,9 @@ async def test_delegated_children_read_back_in_the_order_of_their_steps(fixtures
     assert got.model_dump() == run.model_dump()
 
 
-async def test_a_stopped_run_read_back_continues_the_next_run(fixtures: Path) -> None:
+async def test_a_stopped_run_read_back_continues_the_next_run(
+    fixtures: Path, storage: Storage
+) -> None:
     stop = Stop()
 
     async def lookup(args: dict[str, Any]) -> list[Part]:
@@ -288,7 +292,7 @@ async def test_a_stopped_run_read_back_continues_the_next_run(fixtures: Path) ->
         Reply(tool_calls=[lookup_call], stop_reason="tool_use"),
         text_reply("The second charge is refunded."),
     )
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     tools = [Tool("lookup_order", body=lookup), TOOLS[1]]
     engine = Engine(fixtures, generation=llm, tools=tools, refinery=refinery)
     run = await engine.run("support", "acme", "Charged twice.", stop=stop)
@@ -301,8 +305,8 @@ async def test_a_stopped_run_read_back_continues_the_next_run(fixtures: Path) ->
     assert isinstance(after, Generation) and after.reply == "The second charge is refunded."
 
 
-async def test_a_run_reads_back_only_in_its_own_scope() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_run_reads_back_only_in_its_own_scope(storage: Storage) -> None:
+    refinery = Refinery(storage)
     run = generation_record(scope="a")
     await refinery.record(run)
     assert await refinery.run("a", run.run_id) == run
@@ -312,8 +316,8 @@ async def test_a_run_reads_back_only_in_its_own_scope() -> None:
         await refinery.run("a", "ghost")
 
 
-async def test_every_refinery_verb_needs_a_scope(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_every_refinery_verb_needs_a_scope(fixtures: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
     run = generation_record()
     await refinery.record(run)
     engine = Engine(fixtures, generation=Scripted(), tools=TOOLS, refinery=refinery)

@@ -19,7 +19,6 @@ from rfnry_engine import (
     ChoiceAnswer,
     Document,
     Engine,
-    InMemoryStorage,
     Message,
     Part,
     QuestionLike,
@@ -27,6 +26,7 @@ from rfnry_engine import (
     Reply,
     ScoreAnswer,
     State,
+    Storage,
     Text,
     Tool,
     ToolCall,
@@ -247,11 +247,11 @@ async def ask_a_person(agent: str, call: ToolCall) -> bool:
     return call.name == "Shell" and call.args == {"command": "echo hi"}
 
 
-async def context(tmp_path: Path, setup: Setup) -> dict[str, Any]:
+async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, Any]:
     root = tmp_path / "agents"
     tree(root)
     (tmp_path / "work").mkdir()
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     recorded = Engine(
         root, generation=Model(), decision=Answering("billing"), tools=TOOLS, refinery=refinery
     )
@@ -331,13 +331,13 @@ def test_signature_blocks_match_the_code(block: str) -> None:
 
 @pytest.mark.parametrize("block", runnable())
 async def test_docs_example_runs(
-    block: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    block: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, storage: Storage
 ) -> None:
     monkeypatch.chdir(tmp_path)
     setup = SETUPS.get(first_line(block), Setup())
     for old, new in setup.replace.items():
         block = block.replace(old, new)
-    namespace = await context(tmp_path, setup)
+    namespace = await context(tmp_path, setup, storage)
     code = compile(block, "engine.md", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
     result = eval(code, namespace)
     if inspect.iscoroutine(result):
@@ -354,8 +354,10 @@ def test_every_question_in_the_docs_loads(block: str, tmp_path: Path) -> None:
     assert question.instructions and question.type in block.split("\n")[1]
 
 
-async def test_the_question_the_model_composes_reaches_the_decision_agent(tmp_path: Path) -> None:
-    namespace = await context(tmp_path, SETUPS[ASKS])
+async def test_the_question_the_model_composes_reaches_the_decision_agent(
+    tmp_path: Path, storage: Storage
+) -> None:
+    namespace = await context(tmp_path, SETUPS[ASKS], storage)
     block = next(block for block in PYTHON if first_line(block) == ASKS)
     await eval(compile(block, "engine.md", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT), namespace)
     child = namespace["child"]

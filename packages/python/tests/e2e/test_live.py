@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 from unit.fakes import TOOLS, MemoryBucket
 
-from rfnry_engine import ChoiceAnswer, Decision, Engine, Generation, InMemoryStorage, Refinery
+from rfnry_engine import ChoiceAnswer, Decision, Engine, Generation, Refinery, Storage
 
 pytestmark = pytest.mark.live
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "agents"
@@ -34,8 +34,8 @@ async def test_a_decision_agent_routes(adapters: Any) -> None:
     assert run.routed_to is not None and run.routed_to.agent == "billing"
 
 
-async def test_label_and_export_round_trip(adapters: Any) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_label_and_export_round_trip(adapters: Any, storage: Storage) -> None:
+    refinery = Refinery(storage)
     engine = Engine(
         FIXTURES,
         generation=adapters.generation(),

@@ -33,8 +33,8 @@ from rfnry_engine.models import (
     Usage,
 )
 from rfnry_engine.records import Event, Generation, Run, TextDelta
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import TOOLS, Fixed, Scripted, Streaming, said, text_reply
@@ -282,14 +282,15 @@ async def test_runaway_loop_raises(fixtures: Path) -> None:
         await engine.run("support", "acme", "x")
 
 
-async def test_a_run_that_raises_leaves_no_record_its_children_included(fixtures: Path) -> None:
+async def test_a_run_that_raises_leaves_no_record_its_children_included(
+    fixtures: Path, storage: Storage
+) -> None:
     triage: dict[str, Answer] = {
         "urgent": CheckAnswer(probability=0.9),
         "severity": ScoreAnswer(score=0, probabilities=[0.7, 0.1, 0.1, 0.1]),
     }
     delegate = ToolCall(id="d", name="Delegate", args={"agent": "triage", "input": "It is down"})
     llm = Scripted(_tool_use(delegate), _tool_use(ToolCall(id="c", name="LS", args={})))
-    storage = InMemoryStorage()
     engine = engine_for(
         fixtures, llm, decision=Fixed(triage), refinery=Refinery(storage), max_steps=2
     )
@@ -312,10 +313,10 @@ async def test_refusals(fixtures: Path) -> None:
 
 @pytest.mark.parametrize("task", ["ghost", "../AGENT", "../../billing/AGENT", "../rules/refunds"])
 async def test_a_task_is_looked_up_like_an_agent_and_never_a_path_out_of_tasks(
-    fixtures: Path, task: str
+    fixtures: Path, task: str, storage: Storage
 ) -> None:
     llm = Scripted(text_reply("x"))
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     engine = engine_for(fixtures, llm, refinery=refinery)
     message = f"^engine: agent 'support' has no task {re.escape(repr(task))}$"
     with pytest.raises(NotFoundError, match=message):

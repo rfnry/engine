@@ -10,9 +10,9 @@ from pydantic import BaseModel
 from rfnry_engine.engine import Engine
 from rfnry_engine.models import Check, Choice, Message, Question, Reply, Score, ToolCall
 from rfnry_engine.records import Decision, Fingerprint, Generation
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Review
 from rfnry_engine.refinery.refinery import Refinery, flatten
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import (
@@ -217,8 +217,10 @@ async def test_the_context_a_run_was_given_is_recorded_and_reaches_its_children(
     assert routed.routed_to.context == "On call: Ana."
 
 
-async def test_the_record_and_every_exported_row_carry_the_fingerprint(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_the_record_and_every_exported_row_carry_the_fingerprint(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     engine_ = engine(fixtures, delegate_triage(), text_reply("Sorry, no."), refinery=refinery)
     run = await engine_.run("support", "acme", "It is down", context="Acme is enterprise.")
     assert isinstance(run, Generation) and run.fingerprint is not None
@@ -242,8 +244,9 @@ async def test_the_record_and_every_exported_row_carry_the_fingerprint(fixtures:
     )
 
 
-async def test_a_run_recorded_before_fingerprints_and_context_reads_back_and_exports() -> None:
-    storage = InMemoryStorage()
+async def test_a_run_recorded_before_fingerprints_and_context_reads_back_and_exports(
+    storage: Storage,
+) -> None:
     refinery = Refinery(storage)
     for record in (generation_record(), decision_record()):
         [stored] = flatten(record, datetime.now(UTC))
@@ -349,8 +352,8 @@ async def test_a_generation_run_has_no_questions_part(fixtures: Path) -> None:
 
 async def test_the_questions_part_is_recorded_exported_and_old_rows_read_back_without_it(
     fixtures: Path,
+    storage: Storage,
 ) -> None:
-    storage = InMemoryStorage()
     refinery = Refinery(storage)
     run = await Engine(fixtures, decision=Desk(), refinery=refinery).run("triage", "acme", "x")
     assert isinstance(run, Decision) and run.fingerprint is not None

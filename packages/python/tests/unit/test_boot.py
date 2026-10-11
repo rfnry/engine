@@ -22,9 +22,9 @@ from rfnry_engine.models import (
     ToolSpec,
 )
 from rfnry_engine.records import Generation
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Review
 from rfnry_engine.refinery.refinery import Refinery, flatten
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
 
 from .fakes import (
@@ -311,13 +311,13 @@ async def test_a_delegated_agent_boots_its_own_folder_and_only_its_own(tmp_path:
 
 
 async def test_the_boot_is_recorded_read_back_exported_and_left_to_the_candidate_on_replay(
-    fixtures: Path, tmp_path: Path
+    fixtures: Path, tmp_path: Path, storage: Storage
 ) -> None:
     root = tree(fixtures, tmp_path)
     support = root / "support"
     furnish(support)
     boot_all(support)
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     history = [Message(role="user", content="hi"), Message(role="assistant", content="hello")]
     built = Engine(root, generation=Scripted(text_reply("Sorry.")), tools=TOOLS, refinery=refinery)
     run = await built.run("support", "acme", "Charged twice.", history=history)
@@ -345,8 +345,9 @@ async def test_the_boot_is_recorded_read_back_exported_and_left_to_the_candidate
     ]
 
 
-async def test_a_run_recorded_before_boot_was_kept_reads_back_and_exports_an_empty_boot() -> None:
-    storage = InMemoryStorage()
+async def test_a_run_recorded_before_boot_was_kept_reads_back_and_exports_an_empty_boot(
+    storage: Storage,
+) -> None:
     refinery = Refinery(storage)
     run = generation_record()
     [stored] = flatten(run, datetime.now(UTC))

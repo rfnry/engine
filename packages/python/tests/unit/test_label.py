@@ -27,11 +27,10 @@ from rfnry_engine.models import (
     ToolCall,
 )
 from rfnry_engine.records import Generation
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.judge import TeacherAnswers, teacher_answers, teacher_prompt
 from rfnry_engine.refinery.labels import Review
 from rfnry_engine.refinery.refinery import Refinery, label_of
-from rfnry_engine.refinery.storage import RunRow
+from rfnry_engine.refinery.storage import RunRow, Storage
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import TOOLS, Fixed, MemoryBucket, Scripted, text_reply
@@ -54,8 +53,7 @@ def _teacher_reply() -> Reply:
     return Reply(tool_calls=[ToolCall(id="t1", name="Output", args=args)], stop_reason="tool_use")
 
 
-async def test_judge_labels_generation_runs_once(fixtures: Path) -> None:
-    storage = InMemoryStorage()
+async def test_judge_labels_generation_runs_once(fixtures: Path, storage: Storage) -> None:
     refinery = Refinery(storage)
     dm = Fixed(JUDGEMENT)
     engine = Engine(
@@ -82,8 +80,7 @@ async def test_judge_labels_generation_runs_once(fixtures: Path) -> None:
     assert (await refinery.label("acme", engine, judge="judge")).judged == 0
 
 
-async def test_teacher_answers_decision_runs(fixtures: Path) -> None:
-    storage = InMemoryStorage()
+async def test_teacher_answers_decision_runs(fixtures: Path, storage: Storage) -> None:
     refinery = Refinery(storage)
     llm = Scripted(_teacher_reply())
     engine = Engine(
@@ -101,8 +98,8 @@ async def test_teacher_answers_decision_runs(fixtures: Path) -> None:
     assert "QUESTION severity (score)" in str(prompt) and "3: Active outage" in str(prompt)
 
 
-async def test_a_failing_labeler_is_reported_per_run(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_failing_labeler_is_reported_per_run(fixtures: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
     engine = Engine(
         fixtures,
         generation=Scripted(text_reply("x")),
@@ -119,8 +116,9 @@ async def test_a_failing_labeler_is_reported_per_run(fixtures: Path) -> None:
     )
 
 
-async def test_judge_and_teacher_never_label_their_own_runs(fixtures: Path) -> None:
-    storage = InMemoryStorage()
+async def test_judge_and_teacher_never_label_their_own_runs(
+    fixtures: Path, storage: Storage
+) -> None:
     refinery = Refinery(storage)
     llm = Scripted(text_reply("taught"))
     engine = Engine(
@@ -135,8 +133,8 @@ async def test_judge_and_teacher_never_label_their_own_runs(fixtures: Path) -> N
 
 async def test_a_judge_or_teacher_the_tree_cannot_use_is_refused_before_any_run(
     fixtures: Path,
+    storage: Storage,
 ) -> None:
-    storage = InMemoryStorage()
     refinery = Refinery(storage)
     llm = Scripted(text_reply("Refunded."))
     dm = Fixed({**TRIAGE, **JUDGEMENT})
@@ -282,8 +280,9 @@ def test_the_teacher_reads_structure_as_compact_json_and_a_bare_option_as_its_ke
 
 async def test_a_teachers_answer_is_the_exported_truth_until_a_person_gives_one(
     fixtures: Path,
+    storage: Storage,
 ) -> None:
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     engine = Engine(
         fixtures,
         generation=Scripted(_teacher_reply()),
@@ -309,14 +308,15 @@ async def test_a_teachers_answer_is_the_exported_truth_until_a_person_gives_one(
     assert await truth() == {"urgent": (False, "human"), "severity": (3.0, "teacher")}
 
 
-async def test_the_judge_sees_media_as_placeholders_never_base64(fixtures: Path) -> None:
+async def test_the_judge_sees_media_as_placeholders_never_base64(
+    fixtures: Path, storage: Storage
+) -> None:
     async def policy(args: dict[str, Any]) -> list[Part]:
         return [
             Text(text="the policy"),
             Document(media_type="application/pdf", data=PDF, name="policy.pdf"),
         ]
 
-    storage = InMemoryStorage()
     refinery = Refinery(storage)
     dm = Fixed(JUDGEMENT)
     llm = Scripted(
@@ -353,7 +353,7 @@ async def test_the_judge_sees_media_as_placeholders_never_base64(fixtures: Path)
 
 
 async def test_the_judge_sees_media_loaded_from_the_folder_as_placeholders(
-    fixtures: Path, tmp_path: Path
+    fixtures: Path, tmp_path: Path, storage: Storage
 ) -> None:
     root = tmp_path / "agents"
     shutil.copytree(fixtures, root)
@@ -361,7 +361,7 @@ async def test_the_judge_sees_media_loaded_from_the_folder_as_placeholders(
     (root / "billing" / "knowledge").mkdir()
     (root / "billing" / "knowledge" / "diagram.png").write_bytes(png)
     (root / "billing" / "knowledge" / "rates.pdf").write_bytes(pdf)
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     dm = Fixed(JUDGEMENT)
     reads = [
         ToolCall(id="i", name="Load", args={"path": "knowledge/diagram.png"}),

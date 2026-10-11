@@ -27,8 +27,8 @@ from rfnry_engine.models import (
     Usage,
 )
 from rfnry_engine.records import Decision, Generation
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import TOOLS, Answering, Fixed, MemoryBucket, Scripted, sorter, text_reply
@@ -313,9 +313,10 @@ async def test_a_checks_yes_and_no_reach_the_decision_model(tmp_path: Path) -> N
 
 async def test_structured_questions_reach_the_model_the_record_and_the_export_as_written(
     tmp_path: Path,
+    storage: Storage,
 ) -> None:
     dm = sorter(tmp_path)
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     run = await Engine(tmp_path, decision=dm, refinery=refinery).run("sorter", "acme", "Hi")
     [(_, asked)] = dm.calls
     assert isinstance(run, Decision) and run.questions == asked
@@ -355,10 +356,11 @@ class Seeing(Answering):
 
 async def test_media_the_decision_model_declares_is_passed_as_the_state_as_parts(
     tmp_path: Path,
+    storage: Storage,
 ) -> None:
     sorter(tmp_path)
     seeing = Seeing()
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     engine = Engine(tmp_path, decision=seeing, refinery=refinery)
     parts: list[Part] = [
         Text(text="Which team handles this screenshot?"),
@@ -375,9 +377,11 @@ async def test_media_the_decision_model_declares_is_passed_as_the_state_as_parts
     assert isinstance(joined, Decision) and joined.state == "Plain\ntext"
 
 
-async def test_a_list_state_without_media_reads_back_as_it_was_given(tmp_path: Path) -> None:
+async def test_a_list_state_without_media_reads_back_as_it_was_given(
+    tmp_path: Path, storage: Storage
+) -> None:
     sorter(tmp_path)
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     engine = Engine(tmp_path, decision=Seeing(), refinery=refinery)
     given: list[Any] = [{"type": "text", "text": "a dict, not a part"}, 1]
     shaped: list[Any] = [{"type": "text", "text": "a dict shaped like a part"}]

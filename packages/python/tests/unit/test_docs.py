@@ -10,13 +10,13 @@ from rfnry_engine import (
     CheckAnswer,
     Engine,
     Image,
-    InMemoryStorage,
     Message,
     Outcome,
     Refinery,
     Reply,
     Review,
     State,
+    Storage,
     Text,
     ToolSpec,
     is_holdout,
@@ -60,6 +60,7 @@ class Seeing:
 
 async def test_the_holdout_replay_grades_the_candidate_on_what_each_run_was_given(
     tmp_path: Path,
+    storage: Storage,
 ) -> None:
     for path, text in {
         "support/AGENT.md": "---\nname: support\nkind: generation\n---\nYou help.\n",
@@ -68,7 +69,7 @@ async def test_the_holdout_replay_grades_the_candidate_on_what_each_run_was_give
     }.items():
         (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / path).write_text(text, encoding="utf-8")
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     graded = Fixed({"matches": CheckAnswer(probability=0.9)})
     engine = Engine(tmp_path, generation=Seeing(), decision=graded)
     held = [f"run-{i}" for i in range(200) if is_holdout(f"run-{i}")][:4]
@@ -118,12 +119,14 @@ class Wavering:
         return Reply(text=self.replies.pop(0))
 
 
-async def test_the_noise_recipe_counts_what_moved_and_the_swing(tmp_path: Path) -> None:
+async def test_the_noise_recipe_counts_what_moved_and_the_swing(
+    tmp_path: Path, storage: Storage
+) -> None:
     (tmp_path / "support").mkdir()
     (tmp_path / "support/AGENT.md").write_text(
         "---\nname: support\nkind: generation\n---\nYou help.\n", encoding="utf-8"
     )
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     held = [f"run-{i}" for i in range(200) if is_holdout(f"run-{i}")][:3]
     recorder = Engine(tmp_path, generation=Wavering("a", "b", "c"))
     for run_id in held:

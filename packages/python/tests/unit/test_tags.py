@@ -8,9 +8,9 @@ from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError
 from rfnry_engine.models import Answer, CheckAnswer, ChoiceAnswer, Reply, ScoreAnswer, ToolCall
 from rfnry_engine.records import Decision, Generation, Run
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Review
 from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
 
 from .fakes import (
@@ -179,8 +179,8 @@ def _lines(data: bytes) -> list[dict[str, Any]]:
     return [json.loads(line) for line in data.decode().splitlines()]
 
 
-async def test_every_dataset_row_carries_the_tags() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_every_dataset_row_carries_the_tags(storage: Storage) -> None:
+    refinery = Refinery(storage)
     generation = generation_record(reply="Sorry, no.").model_copy(update={"tags": TAGS})
     decision = decision_record(agent="frontdesk").model_copy(update={"tags": {"arm": "a"}})
     await refinery.record(generation)
@@ -194,8 +194,7 @@ async def test_every_dataset_row_carries_the_tags() -> None:
     assert [row["tags"] for row in rows["decision"]] == [{"arm": "a"}]
 
 
-async def test_a_run_stored_before_tags_exports_empty_tags() -> None:
-    storage = InMemoryStorage()
+async def test_a_run_stored_before_tags_exports_empty_tags(storage: Storage) -> None:
     refinery = Refinery(storage)
     generation, decision = generation_record(), decision_record()
     await refinery.record(generation)

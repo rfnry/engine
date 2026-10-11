@@ -25,10 +25,9 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.refinery.holdout import is_holdout
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Label, Outcome, Replay, Review
 from rfnry_engine.refinery.refinery import Refinery
-from rfnry_engine.refinery.storage import LabelRow
+from rfnry_engine.refinery.storage import LabelRow, Storage
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Workspace
 
@@ -77,8 +76,10 @@ def candidate(fixtures: Path, llm: Any = None, **kwargs: Any) -> Engine:
     return Engine(fixtures, generation=llm or Echo(), decision=Desk(), tools=TOOLS, **kwargs)
 
 
-async def test_it_replays_the_top_level_runs_of_the_agent_oldest_first(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_it_replays_the_top_level_runs_of_the_agent_oldest_first(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     recorder = Engine(
         fixtures,
         generation=Scripted(delegate_triage(), text_reply("Handled."), text_reply("Hi.")),
@@ -100,8 +101,10 @@ async def test_it_replays_the_top_level_runs_of_the_agent_oldest_first(fixtures:
     assert await collect(refinery.replay("other", candidate(fixtures), agent="support")) == []
 
 
-async def test_holdout_selects_by_the_same_hash_and_percent_as_export(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_holdout_selects_by_the_same_hash_and_percent_as_export(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     held, kept = ids(True, 2), ids(False, 3)
     for minute, run_id in enumerate([kept[0], held[0], kept[1], held[1], kept[2]]):
         await put(refinery, generation_record(), run_id, minute)
@@ -120,8 +123,10 @@ async def test_holdout_selects_by_the_same_hash_and_percent_as_export(fixtures: 
     )
 
 
-async def test_labeled_keeps_runs_a_person_or_the_world_labeled(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_labeled_keeps_runs_a_person_or_the_world_labeled(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     for i in range(4):
         await put(refinery, generation_record(), f"r{i}", i)
     await refinery.review("acme", "r0", Review(stance="approval"))
@@ -153,8 +158,8 @@ async def test_labeled_keeps_runs_a_person_or_the_world_labeled(fixtures: Path) 
     ]
 
 
-async def test_tags_select_by_containment(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_tags_select_by_containment(fixtures: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
     arms = [{"arm": "a", "customer": "c-1"}, {"arm": "b"}, {"arm": "a"}]
     for i, tags in enumerate(arms):
         await put(refinery, generation_record().model_copy(update={"tags": tags}), f"r{i}", i)
@@ -170,10 +175,12 @@ async def test_tags_select_by_containment(fixtures: Path) -> None:
     assert [pair.recorded.run_id for pair in only] == ["r0"]
 
 
-async def test_a_fingerprint_selects_one_recorded_version(fixtures: Path, tmp_path: Path) -> None:
+async def test_a_fingerprint_selects_one_recorded_version(
+    fixtures: Path, tmp_path: Path, storage: Storage
+) -> None:
     root = tmp_path / "agents"
     shutil.copytree(fixtures, root)
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     old = Engine(root, generation=Scripted(text_reply("a")), tools=TOOLS, refinery=refinery)
     before = await old.run("support", "acme", "hi")
     (root / "support/rules/refunds.md").write_text("Refund only the second charge.\n")
@@ -191,8 +198,9 @@ async def test_a_fingerprint_selects_one_recorded_version(fixtures: Path, tmp_pa
 
 async def test_the_candidate_is_sent_the_input_history_task_and_context_as_recorded(
     fixtures: Path,
+    storage: Storage,
 ) -> None:
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     recorder = Engine(
         fixtures,
         generation=Scripted(text_reply("one"), text_reply("two"), text_reply("three")),
@@ -244,8 +252,8 @@ class Verdict(BaseModel):
     refund: bool
 
 
-async def test_expect_and_approve_are_the_caller_s(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_expect_and_approve_are_the_caller_s(fixtures: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
     recorder = Engine(
         fixtures, generation=Scripted(text_reply("ok")), tools=TOOLS, refinery=refinery
     )
@@ -290,8 +298,9 @@ class Flaky:
 
 async def test_a_candidate_that_fails_yields_its_error_and_the_replay_goes_on(
     fixtures: Path,
+    storage: Storage,
 ) -> None:
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     for i in range(3):
         await put(refinery, generation_record(), f"r{i}", i)
     pairs = await collect(refinery.replay("acme", candidate(fixtures, Flaky()), agent="support"))
@@ -310,8 +319,9 @@ async def test_a_candidate_that_fails_yields_its_error_and_the_replay_goes_on(
 
 async def test_repeat_replays_each_recorded_run_that_many_times_one_after_another(
     fixtures: Path,
+    storage: Storage,
 ) -> None:
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     for i in range(2):
         await put(refinery, generation_record(), f"r{i}", i)
     llm = Scripted(*(text_reply(word) for word in ("one", "two", "three", "four", "five", "six")))
@@ -344,8 +354,8 @@ async def test_repeat_replays_each_recorded_run_that_many_times_one_after_anothe
     assert [(pair.recorded.run_id, pair.attempt) for pair in once] == [("r0", 0), ("r1", 0)]
 
 
-async def test_limit_counts_recorded_runs_not_attempts(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_limit_counts_recorded_runs_not_attempts(fixtures: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
     for i in range(3):
         await put(refinery, generation_record(), f"r{i}", i)
     pairs = await collect(
@@ -361,8 +371,9 @@ async def test_limit_counts_recorded_runs_not_attempts(fixtures: Path) -> None:
 
 async def test_an_attempt_that_fails_yields_its_error_and_the_other_attempts_go_on(
     fixtures: Path,
+    storage: Storage,
 ) -> None:
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     await put(refinery, generation_record(), "r0", 0)
     pairs = await collect(
         refinery.replay("acme", candidate(fixtures, Flaky()), agent="support", repeat=3)
@@ -378,8 +389,9 @@ async def test_an_attempt_that_fails_yields_its_error_and_the_other_attempts_go_
 
 async def test_a_decision_run_replays_its_state_and_what_its_route_was_given(
     fixtures: Path,
+    storage: Storage,
 ) -> None:
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     recorder = Engine(
         fixtures,
         generation=Scripted(text_reply("Routed.")),
@@ -422,8 +434,9 @@ async def test_a_decision_run_replays_its_state_and_what_its_route_was_given(
 
 async def test_a_run_with_children_replays_as_one_run_the_candidate_delegates_as_it_does(
     fixtures: Path,
+    storage: Storage,
 ) -> None:
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     recorder = Engine(
         fixtures,
         generation=Scripted(delegate_triage(), text_reply("Escalated.")),
@@ -446,8 +459,9 @@ async def test_a_run_with_children_replays_as_one_run_the_candidate_delegates_as
     assert isinstance(again.candidate, Generation) and len(again.candidate.children) == 1
 
 
-async def test_a_replay_records_nothing_and_labels_nothing(fixtures: Path) -> None:
-    storage = InMemoryStorage()
+async def test_a_replay_records_nothing_and_labels_nothing(
+    fixtures: Path, storage: Storage
+) -> None:
     refinery = Refinery(storage)
     recorder = Engine(
         fixtures,
@@ -504,8 +518,10 @@ async def until(holds: Any) -> None:
     raise AssertionError("the condition never held")
 
 
-async def test_concurrency_bounds_the_runs_in_flight_and_order_holds(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_concurrency_bounds_the_runs_in_flight_and_order_holds(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     await recorded_inputs(refinery, ["a", "b", "c", "d"])
     gate = Gate()
     pairs = refinery.replay("acme", candidate(fixtures, gate), agent="support", concurrency=2)
@@ -535,8 +551,10 @@ async def test_concurrency_bounds_the_runs_in_flight_and_order_holds(fixtures: P
     assert gate.most == 2
 
 
-async def test_concurrency_bounds_every_attempt_together_and_order_holds(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_concurrency_bounds_every_attempt_together_and_order_holds(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     await recorded_inputs(refinery, ["a", "b"])
     gate = Gate()
     pairs = refinery.replay(
@@ -561,8 +579,10 @@ async def test_concurrency_bounds_every_attempt_together_and_order_holds(fixture
     assert gate.most == 3 and gate.started == 4
 
 
-async def test_one_at_a_time_runs_the_next_only_when_the_last_is_taken(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_one_at_a_time_runs_the_next_only_when_the_last_is_taken(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     await recorded_inputs(refinery, ["a", "b", "c"])
     llm = Echo()
     async with aclosing(
@@ -577,8 +597,10 @@ async def test_one_at_a_time_runs_the_next_only_when_the_last_is_taken(fixtures:
     assert len(llm.calls) == 2
 
 
-async def test_closing_a_replay_cancels_the_runs_in_flight(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_closing_a_replay_cancels_the_runs_in_flight(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     await recorded_inputs(refinery, ["a", "b", "c"])
     gate = Gate()
     gate.release["a"] = asyncio.Event()
@@ -601,7 +623,9 @@ async def recall(args: dict[str, Any]) -> str:
     return "nothing remembered"
 
 
-async def test_the_tools_and_workspace_a_run_had_are_the_caller_s(tmp_path: Path) -> None:
+async def test_the_tools_and_workspace_a_run_had_are_the_caller_s(
+    tmp_path: Path, storage: Storage
+) -> None:
     (tmp_path / "coder").mkdir()
     (tmp_path / "coder/AGENT.md").write_text(
         "---\nname: coder\nkind: generation\nworkspace: true\n---\nYou code.\n"
@@ -609,7 +633,7 @@ async def test_the_tools_and_workspace_a_run_had_are_the_caller_s(tmp_path: Path
     (tmp_path / "work").mkdir()
     work = Workspace(tmp_path / "work", unsandboxed=True)
     memory = Tools([Tool("recall", "Recall a fact", body=recall)])
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     recorder = Engine(tmp_path, generation=Scripted(text_reply("done")), refinery=refinery)
     run = await recorder.run("coder", "acme", "fix it", tools=memory, workspace=work)
     engine = Engine(tmp_path, generation=Echo())
@@ -624,8 +648,10 @@ async def test_the_tools_and_workspace_a_run_had_are_the_caller_s(tmp_path: Path
     assert {"recall", "Shell", "Write", "Edit"} <= {spec.name for spec in pair.candidate.tools}
 
 
-async def test_a_bad_call_is_refused_before_anything_is_read(fixtures: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_bad_call_is_refused_before_anything_is_read(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     engine = candidate(fixtures)
     with pytest.raises(InputError, match="^refinery: scope is required$"):
         refinery.replay("", engine, agent="support")
@@ -662,8 +688,9 @@ AREA = Choice(
 
 async def test_a_decision_replay_re_asks_runtime_questions_as_recorded_and_the_folder_from_the_candidate(
     tmp_path: Path,
+    storage: Storage,
 ) -> None:
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     recorder = Engine(graded(tmp_path / "old"), decision=Answering(), refinery=refinery)
     asked = await recorder.run("grader", "acme", "x", questions={"area": AREA})
     tasked = await recorder.run("grader", "acme", "y", task="tone", questions={"area": AREA})
@@ -697,6 +724,7 @@ async def test_a_decision_replay_re_asks_runtime_questions_as_recorded_and_the_f
 
 async def test_a_routed_decision_replays_with_the_router_s_task_not_the_routed_run_s(
     tmp_path: Path,
+    storage: Storage,
 ) -> None:
     for path, text in {
         "desk/AGENT.md": "---\nname: desk\nkind: decision\nroute: {by: team, to: {b: grader}}\n---\n",
@@ -706,7 +734,7 @@ async def test_a_routed_decision_replays_with_the_router_s_task_not_the_routed_r
         (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / path).write_text(text, encoding="utf-8")
     graded(tmp_path)
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     recorded = await Engine(tmp_path, decision=Answering(), refinery=refinery).run(
         "desk", "acme", "x", task="audit"
     )
@@ -720,8 +748,9 @@ async def test_a_routed_decision_replays_with_the_router_s_task_not_the_routed_r
 
 async def test_a_runtime_question_the_candidate_s_folder_now_holds_fails_its_pair(
     tmp_path: Path,
+    storage: Storage,
 ) -> None:
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     recorder = Engine(graded(tmp_path / "old"), decision=Answering(), refinery=refinery)
     await recorder.run("grader", "acme", "x", questions={"area": AREA})
     root = graded(tmp_path / "new")
@@ -735,8 +764,10 @@ async def test_a_runtime_question_the_candidate_s_folder_now_holds_fails_its_pai
     )
 
 
-async def test_a_fingerprint_selects_decision_runs_by_all_three_parts(tmp_path: Path) -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_fingerprint_selects_decision_runs_by_all_three_parts(
+    tmp_path: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
     recorder = Engine(graded(tmp_path), decision=Answering(), refinery=refinery)
     folder = await recorder.run("grader", "acme", "x")
     runtime = await recorder.run("grader", "acme", "x", questions={"area": AREA})
@@ -757,11 +788,13 @@ async def test_a_fingerprint_selects_decision_runs_by_all_three_parts(tmp_path: 
     assert await collect(refinery.replay("acme", engine, agent="grader", fingerprint=unasked)) == []
 
 
-async def test_a_decision_run_with_media_replays_its_parts(tmp_path: Path) -> None:
+async def test_a_decision_run_with_media_replays_its_parts(
+    tmp_path: Path, storage: Storage
+) -> None:
     class Seeing(Answering):
         media_types = {"image/*"}
 
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     recorder = Engine(graded(tmp_path), decision=Seeing(), refinery=refinery)
     parts = [Text(text="Urgent?"), Image(media_type="image/png", data=b"\x89PNG\r\n\x1a\n")]
     await recorder.run("grader", "acme", parts)
@@ -781,8 +814,9 @@ async def test_a_decision_run_with_media_replays_its_parts(tmp_path: Path) -> No
 
 async def test_a_parent_whose_child_was_given_a_task_and_questions_replays_as_one_run(
     tmp_path: Path,
+    storage: Storage,
 ) -> None:
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     asked = delegating("grader", "Sorry!", task="tone", questions={"area": PICK})
     recorder = Engine(
         lead(tmp_path),

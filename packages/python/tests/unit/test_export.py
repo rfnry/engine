@@ -12,10 +12,10 @@ from rfnry_engine.errors import InputError
 from rfnry_engine.models import Document, Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Generation, Step
 from rfnry_engine.refinery.holdout import is_holdout
-from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.labels import Outcome, Review
+from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery, flatten
-from rfnry_engine.refinery.storage import RunRow
+from rfnry_engine.refinery.storage import RunRow, Storage
 from rfnry_engine.tools.tools import Tool
 
 from .fakes import (
@@ -43,8 +43,8 @@ def _lines(data: bytes) -> list[dict[str, Any]]:
     return [json.loads(line) for line in data.decode().splitlines()]
 
 
-async def test_export_writes_three_datasets_with_labels_and_holdout() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_export_writes_three_datasets_with_labels_and_holdout(storage: Storage) -> None:
+    refinery = Refinery(storage)
     generation = generation_record(reply="Sorry, no.")
     decision = decision_record(agent="frontdesk", probability=0.8)
     await refinery.record(generation)
@@ -112,8 +112,8 @@ async def test_export_writes_three_datasets_with_labels_and_holdout() -> None:
     }
 
 
-async def test_export_since_the_watermark_is_incremental() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_export_since_the_watermark_is_incremental(storage: Storage) -> None:
+    refinery = Refinery(storage)
     old = generation_record()
     await refinery.record(old)
     first = await refinery.export("acme", MemoryBucket())
@@ -128,7 +128,9 @@ async def test_export_since_the_watermark_is_incremental() -> None:
     assert (await refinery.export("acme", MemoryBucket(), since=second.watermark)).rows == {}
 
 
-async def test_a_run_still_working_at_an_export_is_in_the_next_one(fixtures: Path) -> None:
+async def test_a_run_still_working_at_an_export_is_in_the_next_one(
+    fixtures: Path, storage: Storage
+) -> None:
     started, gate = asyncio.Event(), asyncio.Event()
 
     async def slow(args: dict[str, Any]) -> str:
@@ -142,7 +144,7 @@ async def test_a_run_still_working_at_an_export_is_in_the_next_one(fixtures: Pat
                 return Reply(tool_calls=[ToolCall(id="c1", name="now")], stop_reason="tool_use")
             return text_reply("answer")
 
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     engine = Engine(
         fixtures,
         generation=Model(),
@@ -163,8 +165,8 @@ async def test_a_run_still_working_at_an_export_is_in_the_next_one(fixtures: Pat
     assert (await refinery.export("acme", MemoryBucket(), since=second.watermark)).rows == {}
 
 
-async def test_a_label_added_after_export_re_exports_its_run() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_label_added_after_export_re_exports_its_run(storage: Storage) -> None:
+    refinery = Refinery(storage)
     reviewed = generation_record(reply="Sorry, no.")
     untouched = generation_record()
     await refinery.record(reviewed)
@@ -184,8 +186,8 @@ async def test_a_label_added_after_export_re_exports_its_run() -> None:
     assert (await refinery.export("acme", MemoryBucket(), since=second.watermark)).rows == {}
 
 
-async def test_conflicts_are_two_distinct_corrections_on_one_run() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_conflicts_are_two_distinct_corrections_on_one_run(storage: Storage) -> None:
+    refinery = Refinery(storage)
     run = generation_record()
     await refinery.record(run)
     await refinery.review("acme", run.run_id, Review(correction="A"))
@@ -200,8 +202,10 @@ async def test_conflicts_are_two_distinct_corrections_on_one_run() -> None:
     ]
 
 
-async def test_holdout_percent_marks_every_row_and_never_moves_between_exports() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_holdout_percent_marks_every_row_and_never_moves_between_exports(
+    storage: Storage,
+) -> None:
+    refinery = Refinery(storage)
     run = generation_record(reply="Sorry, no.")
     await refinery.record(run)
     await refinery.review("acme", run.run_id, Review(correction="Refund in full."))
@@ -223,26 +227,29 @@ async def test_holdout_percent_marks_every_row_and_never_moves_between_exports()
     assert flags[0] == flags[1] == [is_holdout(run.run_id)] * 2
 
 
-async def test_a_holdout_percent_outside_0_to_100_is_refused_even_with_nothing_to_export() -> None:
-    empty, recorded = Refinery(InMemoryStorage()), Refinery(InMemoryStorage())
-    await recorded.record(generation_record(reply="Sorry, no."))
-    for refinery in (empty, recorded):
+async def test_a_holdout_percent_outside_0_to_100_is_refused_even_with_nothing_to_export(
+    storage: Storage,
+) -> None:
+    refinery = Refinery(storage)
+    await refinery.record(generation_record(reply="Sorry, no."))
+    for scope in ("empty", "acme"):
         for bad in (-1, 101):
             bucket = MemoryBucket()
             expected = f"^refinery: holdout_percent must be 0-100, got {bad}$"
             with pytest.raises(InputError, match=expected):
-                await refinery.export("acme", bucket, holdout_percent=bad)
+                await refinery.export(scope, bucket, holdout_percent=bad)
             assert bucket.objects == {}
 
 
-class Capped(InMemoryStorage):
+class Capped(PostgresStorage):
     async def runs(self, scope: str, **kwargs: Any) -> list[RunRow]:
         rows = await super().runs(scope, **{**kwargs, "limit": None})
         return rows if kwargs.get("limit") is None else rows[:2]
 
 
-async def test_export_reads_every_run_without_a_cap() -> None:
-    storage = Capped()
+@pytest.mark.usefixtures("storage")
+async def test_export_reads_every_run_without_a_cap(pool: Any) -> None:
+    storage = Capped(pool)
     refinery = Refinery(storage)
     for _ in range(3):
         await refinery.record(generation_record())
@@ -254,7 +261,9 @@ async def test_export_reads_every_run_without_a_cap() -> None:
     )
 
 
-async def test_a_run_with_parts_is_recorded_and_exported_with_its_bytes_as_base64() -> None:
+async def test_a_run_with_parts_is_recorded_and_exported_with_its_bytes_as_base64(
+    storage: Storage,
+) -> None:
     png = b"\x89PNG\r\n\x1a\n\xff\xfe"
     parts: list[Part] = [Text(text="What is this?"), Image(media_type="image/png", data=png)]
     step = Step(
@@ -268,7 +277,7 @@ async def test_a_run_with_parts_is_recorded_and_exported_with_its_bytes_as_base6
     run = generation_record().model_copy(
         update={"input": parts, "messages": [Message(role="user", content=parts)], "steps": [step]}
     )
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     await refinery.record(run)
     stored = await refinery.storage.get_run("acme", run.run_id)
     assert stored is not None
@@ -288,6 +297,7 @@ async def test_a_run_with_parts_is_recorded_and_exported_with_its_bytes_as_base6
 
 async def test_a_generation_row_carries_the_tools_offered_and_the_conversation_in_order(
     fixtures: Path,
+    storage: Storage,
 ) -> None:
     llm = Scripted(
         Reply(
@@ -300,7 +310,7 @@ async def test_a_generation_row_carries_the_tools_offered_and_the_conversation_i
         ),
         text_reply("Refunded."),
     )
-    refinery = Refinery(InMemoryStorage())
+    refinery = Refinery(storage)
     engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=refinery)
     run = await engine.run(
         "support",
@@ -342,8 +352,8 @@ async def test_a_generation_row_carries_the_tools_offered_and_the_conversation_i
     )
 
 
-async def test_a_run_offered_no_tools_exports_an_empty_list() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_run_offered_no_tools_exports_an_empty_list(storage: Storage) -> None:
+    refinery = Refinery(storage)
     run = generation_record(reply="Sure.")
     assert run.tools == []
     await refinery.record(run)
@@ -375,8 +385,9 @@ async def test_a_run_offered_no_tools_exports_an_empty_list() -> None:
     ]
 
 
-async def test_a_run_stored_before_tools_were_recorded_still_loads_and_exports() -> None:
-    storage = InMemoryStorage()
+async def test_a_run_stored_before_tools_were_recorded_still_loads_and_exports(
+    storage: Storage,
+) -> None:
     refinery = Refinery(storage)
     run = generation_record()
     [stored] = flatten(run, datetime.now(UTC))
@@ -395,8 +406,8 @@ async def test_a_run_stored_before_tools_were_recorded_still_loads_and_exports()
     assert row["tools"] == [] and row["conversation"] == []
 
 
-async def test_a_generation_row_carries_the_context_its_run_was_given() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_generation_row_carries_the_context_its_run_was_given(storage: Storage) -> None:
+    refinery = Refinery(storage)
     given = generation_record().model_copy(update={"context": "Acme is on the enterprise plan."})
     bare = generation_record()
     await refinery.record(given)
@@ -409,8 +420,8 @@ async def test_a_generation_row_carries_the_context_its_run_was_given() -> None:
     assert rows[bare.run_id]["context"] is None
 
 
-async def test_a_check_row_writes_its_no_without_float_noise() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_check_row_writes_its_no_without_float_noise(storage: Storage) -> None:
+    refinery = Refinery(storage)
     decision = decision_record(probability=0.33)
     await refinery.record(decision)
     bucket = MemoryBucket()
@@ -420,8 +431,8 @@ async def test_a_check_row_writes_its_no_without_float_noise() -> None:
     assert row["probabilities"] == {"yes": 0.33, "no": 0.67}
 
 
-async def test_a_generation_row_says_where_its_history_began() -> None:
-    refinery = Refinery(InMemoryStorage())
+async def test_a_generation_row_says_where_its_history_began(storage: Storage) -> None:
+    refinery = Refinery(storage)
     await refinery.record(generation_record().model_copy(update={"start": 6}))
     bucket = MemoryBucket()
     await refinery.export("acme", bucket)
