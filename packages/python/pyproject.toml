@@ -38,10 +38,11 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
 markers = [
-    "postgres: needs a real Postgres (set RFNRY_TEST_POSTGRES_URL)",
     "live: calls real models (set RFNRY_LIVE_ADAPTERS to a module path)",
 ]
-addopts = "-m 'not postgres and not live'"
+addopts = "-m 'not live'"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 
 [tool.ruff]
 line-length = 100
@@ -60,7 +61,6 @@ check = { cmd = "ruff check src tests" }
 "check:fix" = { cmd = "ruff check --fix src tests" }
 typecheck = { cmd = "mypy" }
 test = { cmd = "pytest -q" }
-"test:integration" = { cmd = "pytest -q -m postgres" }
 "test:e2e" = { cmd = "pytest -q -m live" }
 
 [tool.mypy]
