@@ -283,7 +283,7 @@ async def test_runaway_loop_raises(fixtures: Path) -> None:
         await engine.run("support", "acme", "x")
 
 
-async def test_a_run_that_raises_leaves_no_record_its_children_included(
+async def test_a_run_that_raises_is_recorded_with_its_children(
     fixtures: Path, storage: Storage
 ) -> None:
     triage: dict[str, Answer] = {
@@ -297,7 +297,7 @@ async def test_a_run_that_raises_leaves_no_record_its_children_included(
     )
     with pytest.raises(RunawayError):
         await engine.run("support", "acme", "x")
-    assert await storage.count_scope("acme") == 0
+    assert await storage.count_scope("acme") == 2
 
 
 async def test_refusals(fixtures: Path) -> None:

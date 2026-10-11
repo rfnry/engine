@@ -12,6 +12,7 @@ from unit.fakes import (
     Desk,
     MemoryBucket,
     Scripted,
+    decision_record,
     delegate_triage,
     delegating,
     generation_record,
@@ -858,3 +859,20 @@ async def test_start_prefix_and_usage_round_trip_and_old_bodies_read_without_the
     back = Generation.model_validate(again.body)
     assert back.start == 0 and back.conversation[-1].prefix is None
     assert back.conversation[-1].usage is None
+
+
+async def test_a_failed_run_and_its_failed_child_read_back_as_recorded(storage: Storage) -> None:
+    refinery = Refinery(storage)
+    child = decision_record(run_id="d1").model_copy(
+        update={"parent_run_id": "g1", "answers": {}, "error": "TimeoutError: decide timed out"}
+    )
+    failed = generation_record(run_id="g1", reply="", children=[child]).model_copy(
+        update={"error": "ModelError: anthropic: overloaded", "stop_reason": "tool_use"}
+    )
+    await refinery.record(failed)
+    back = await refinery.run("acme", "g1")
+    assert isinstance(back, Generation) and back.error == "ModelError: anthropic: overloaded"
+    assert back.stop_reason == "tool_use" and back.reply == ""
+    [kid] = back.children
+    assert isinstance(kid, Decision) and kid.answers == {}
+    assert kid.error == "TimeoutError: decide timed out"

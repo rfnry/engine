@@ -24,8 +24,10 @@ from rfnry_engine.errors import (
 )
 from rfnry_engine.fingerprint import questions_fingerprint, tools_fingerprint
 from rfnry_engine.models import (
+    Answer,
     ChoiceAnswer,
     Content,
+    Decided,
     DecisionModel,
     GenerationModel,
     HistoryLike,
@@ -97,6 +99,7 @@ class _Options:
     questions: Mapping[str, Question] = field(default_factory=dict)
     start: int = 0
     source: Sequence[object] | HistoryLike | None = None
+    failed: list[Run] = field(default_factory=list)
 
 
 class AgentInfo(BaseModel):
@@ -262,6 +265,10 @@ def _assistant(reply: Reply, prefix: str) -> Message:
     )
 
 
+def _failure(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -377,13 +384,23 @@ class Engine:
             start=start,
             source=held,
         )
-        run = await self._run(spec, scope, input, options, None)
-        if record and self.refinery is not None:
-            try:
-                await self.refinery.record(run)
-            except Exception:
-                logger.warning("refinery.record failed for run %s", run.run_id, exc_info=True)
+        try:
+            run = await self._run(spec, scope, input, options, None)
+        except Exception:
+            if record and options.failed:
+                await self._record(options.failed[-1])
+            raise
+        if record:
+            await self._record(run)
         return run
+
+    async def _record(self, run: Run) -> None:
+        if self.refinery is None:
+            return
+        try:
+            await self.refinery.record(run)
+        except Exception:
+            logger.warning("refinery.record failed for run %s", run.run_id, exc_info=True)
 
     def tool(
         self,
@@ -478,39 +495,53 @@ class Engine:
         run_id = uuid4().hex
         started = time.monotonic()
         at = _now()
-        decided = as_decided(await model_.decide(state, questions))
-        answers = settle(questions, decided.answers)
+        decided: Decided | None = None
+        answers: dict[str, Answer] = {}
         routed: Run | None = None
-        route = spec.route
-        if route is not None:
-            answer = answers[route.by]
-            target = route.to.get(answer.choice) if isinstance(answer, ChoiceAnswer) else None
-            floor = route.min_confidence
-            if target is not None and (floor is None or answer.confidence >= floor):
-                forwarded = replace(options, task=target.task, questions={})
-                routed = await self._run(
-                    self._agents[target.agent], scope, input, forwarded, run_id
-                )
-        return Decision(
-            run_id=run_id,
-            parent_run_id=parent_run_id,
-            agent=spec.name,
-            scope=scope,
-            tags=dict(options.tags),
-            task=options.task,
-            at=at,
-            duration_ms=int((time.monotonic() - started) * 1000),
-            model=decided.model or _declared(model_),
-            fingerprint=Fingerprint(
-                agent=spec.fingerprint, tools=NO_TOOLS, questions=questions_fingerprint(questions)
-            ),
-            state=state,
-            questions=questions,
-            runtime=list(options.questions),
-            answers=answers,
-            usage=decided.usage or Usage(),
-            routed_to=routed,
-        )
+        routing: list[Run] = []
+
+        def decision(error: Exception | None = None) -> Decision:
+            return Decision(
+                run_id=run_id,
+                parent_run_id=parent_run_id,
+                agent=spec.name,
+                scope=scope,
+                tags=dict(options.tags),
+                task=options.task,
+                at=at,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                model=(decided.model if decided is not None else None) or _declared(model_),
+                fingerprint=Fingerprint(
+                    agent=spec.fingerprint,
+                    tools=NO_TOOLS,
+                    questions=questions_fingerprint(questions),
+                ),
+                state=state,
+                questions=questions,
+                runtime=list(options.questions),
+                answers=answers,
+                usage=(decided.usage if decided is not None else None) or Usage(),
+                routed_to=routing[-1] if routing else routed,
+                error=None if error is None else _failure(error),
+            )
+
+        try:
+            decided = as_decided(await model_.decide(state, questions))
+            answers = settle(questions, decided.answers)
+            route = spec.route
+            if route is not None:
+                answer = answers[route.by]
+                target = route.to.get(answer.choice) if isinstance(answer, ChoiceAnswer) else None
+                floor = route.min_confidence
+                if target is not None and (floor is None or answer.confidence >= floor):
+                    forwarded = replace(options, task=target.task, questions={}, failed=routing)
+                    routed = await self._run(
+                        self._agents[target.agent], scope, input, forwarded, run_id
+                    )
+        except Exception as exc:
+            options.failed.append(decision(exc))
+            raise
+        return decision()
 
     def _check_routes(self, spec: AgentSpec, seen: set[str]) -> None:
         seen.add(spec.name)
@@ -613,6 +644,7 @@ class Engine:
         async def delegate(call: ToolCall) -> tuple[Content, bool, str | None, bool]:
             if requested(stop) == "now":
                 return STOPPED, True, None, True
+            failed: list[Run] = []
             try:
                 args = permit(spec, call.args)
                 target = self._agents[args.agent]
@@ -625,10 +657,14 @@ class Engine:
                     inbox=None,
                     start=0,
                     source=None,
+                    failed=failed,
                 )
                 child = await self._run(target, scope, args.input, forwarded, run_id)
             except Exception as exc:
-                return f"{type(exc).__name__}: {exc}", True, None, False
+                kept = failed[-1] if failed else None
+                if kept is not None:
+                    delegated[kept.run_id] = kept
+                return _failure(exc), True, None if kept is None else kept.run_id, False
             delegated[child.run_id] = child
             if isinstance(child, Generation) and child.stopped is not None:
                 return STOPPED, True, child.run_id, True
@@ -768,7 +804,9 @@ class Engine:
                 )
             return as_reply(await model_.generate(system, sending, specs))
 
-        def finish(reply_text: str, stopped: Stopped | None = None) -> Generation:
+        def finish(
+            reply_text: str, stopped: Stopped | None = None, error: Exception | None = None
+        ) -> Generation:
             return Generation(
                 run_id=run_id,
                 parent_run_id=parent_run_id,
@@ -795,86 +833,90 @@ class Engine:
                 children=children,
                 stopped=stopped,
                 stop_reason=ended,
+                error=None if error is None else _failure(error),
             )
 
-        for turn in range(self.max_steps):
-            mode = requested(stop)
-            if mode is not None:
-                return finish(said, mode)
-            if turn:
-                drain()
-            streamed.clear()
-            after = await asyncio.to_thread(marked)
-            asking = asyncio.ensure_future(ask())
-            if await wait([asking], stop):
-                await cancel([asking])
-                partial = "".join(streamed)
-                if partial:
-                    messages.append(Message(role="assistant", content=partial))
-                return finish(partial or said, "now")
-            reply = asking.result()
-            ended = reply.stop_reason
-            if not streaming and reply.text:
-                await delta(reply.text)
-            said = reply.text
-            calls += 1
-            if reply.usage is not None:
-                usage = usage + reply.usage
-            if reply.model:
-                model = reply.model
-            messages.append(_assistant(reply, after))
-            if reply.stop_reason != "tool_use" or not reply.tool_calls:
-                for call in reply.tool_calls:
-                    not_run(call, f"the reply ended with {reply.stop_reason}")
-                return finish(reply.text)
-            output = next(
-                (c for c in reply.tool_calls if expect is not None and c.name == OUTPUT_TOOL), None
-            )
-            before = (
-                reply.tool_calls
-                if output is None
-                else reply.tool_calls[: reply.tool_calls.index(output)]
-            )
-            stopped = await run_batch(before)
-            if output is None or expect is None:
-                continue
-            if stopped:
-                for call in reply.tool_calls[reply.tool_calls.index(output) :]:
-                    answer(call, await cut(call, time.monotonic()))
-                return finish(said, "now")
-            try:
-                parsed = expect.model_validate(output.args)
-            except ValidationError as exc:
-                errors = (
-                    f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}"
+        try:
+            for turn in range(self.max_steps):
+                mode = requested(stop)
+                if mode is not None:
+                    return finish(said, mode)
+                if turn:
+                    drain()
+                streamed.clear()
+                after = await asyncio.to_thread(marked)
+                asking = asyncio.ensure_future(ask())
+                if await wait([asking], stop):
+                    await cancel([asking])
+                    partial = "".join(streamed)
+                    if partial:
+                        messages.append(Message(role="assistant", content=partial))
+                    return finish(partial or said, "now")
+                reply = asking.result()
+                ended = reply.stop_reason
+                if not streaming and reply.text:
+                    await delta(reply.text)
+                said = reply.text
+                calls += 1
+                if reply.usage is not None:
+                    usage = usage + reply.usage
+                if reply.model:
+                    model = reply.model
+                messages.append(_assistant(reply, after))
+                if reply.stop_reason != "tool_use" or not reply.tool_calls:
+                    for call in reply.tool_calls:
+                        not_run(call, f"the reply ended with {reply.stop_reason}")
+                    return finish(reply.text)
+                output = next(
+                    (c for c in reply.tool_calls if expect is not None and c.name == OUTPUT_TOOL),
+                    None,
                 )
-                messages.append(
-                    Message(role="tool", tool_call_id=output.id, content=errors, is_error=True)
+                before = (
+                    reply.tool_calls
+                    if output is None
+                    else reply.tool_calls[: reply.tool_calls.index(output)]
                 )
+                stopped = await run_batch(before)
+                if output is None or expect is None:
+                    continue
+                if stopped:
+                    for call in reply.tool_calls[reply.tool_calls.index(output) :]:
+                        answer(call, await cut(call, time.monotonic()))
+                    return finish(said, "now")
+                try:
+                    parsed = expect.model_validate(output.args)
+                except ValidationError as exc:
+                    errors = f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}"
+                    messages.append(
+                        Message(role="tool", tool_call_id=output.id, content=errors, is_error=True)
+                    )
+                    steps.append(
+                        Step(
+                            tool=OUTPUT_TOOL,
+                            args=output.args,
+                            result=errors,
+                            is_error=True,
+                            at=_now(),
+                            duration_ms=0,
+                        )
+                    )
+                    await run_batch(reply.tool_calls[reply.tool_calls.index(output) + 1 :])
+                    continue
+                messages.append(Message(role="tool", tool_call_id=output.id, content="accepted"))
                 steps.append(
                     Step(
                         tool=OUTPUT_TOOL,
                         args=output.args,
-                        result=errors,
-                        is_error=True,
+                        result="accepted",
+                        is_error=False,
                         at=_now(),
                         duration_ms=0,
                     )
                 )
-                await run_batch(reply.tool_calls[reply.tool_calls.index(output) + 1 :])
-                continue
-            messages.append(Message(role="tool", tool_call_id=output.id, content="accepted"))
-            steps.append(
-                Step(
-                    tool=OUTPUT_TOOL,
-                    args=output.args,
-                    result="accepted",
-                    is_error=False,
-                    at=_now(),
-                    duration_ms=0,
-                )
-            )
-            for call in reply.tool_calls[reply.tool_calls.index(output) + 1 :]:
-                not_run(call, f"{OUTPUT_TOOL} ended the run")
-            return finish(parsed.model_dump_json())
-        raise RunawayError(f"engine: run exceeded {self.max_steps} steps")
+                for call in reply.tool_calls[reply.tool_calls.index(output) + 1 :]:
+                    not_run(call, f"{OUTPUT_TOOL} ended the run")
+                return finish(parsed.model_dump_json())
+            raise RunawayError(f"engine: run exceeded {self.max_steps} steps")
+        except Exception as exc:
+            options.failed.append(finish("", error=exc))
+            raise

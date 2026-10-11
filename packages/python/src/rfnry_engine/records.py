@@ -95,6 +95,7 @@ class Generation(BaseModel):
     children: list[Run] = Field(default_factory=list)
     stopped: Stopped | None = None
     stop_reason: StopReason | None = None
+    error: str | None = None
 
     @property
     def added(self) -> list[Message]:
@@ -119,6 +120,7 @@ class Decision(BaseModel):
     answers: dict[str, Answer]
     usage: Usage
     routed_to: Run | None = None
+    error: str | None = None
 
     @property
     def added(self) -> list[Message]:

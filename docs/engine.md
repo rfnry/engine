@@ -301,9 +301,16 @@ part from another library is read by its fields.
 
 Pass `record=False` to run without the refinery recording it — a replay, an evaluation, a dry run.
 
-A run that raises instead of returning — the adapter broke the contract (`ModelError`), the loop
-passed `max_steps` (`RunawayError`) — returns no record, and nothing of it is recorded, child runs
-included; the exception is what you have.
+A run that raises instead of returning — the vendor refused the call, the adapter broke the
+contract (`ModelError`), the loop passed `max_steps` (`RunawayError`) — returns no record; the
+exception is what you have, the same one the adapter or the engine raised. With a refinery
+attached, the run is recorded first, as far as it got: `error` says what ended it —
+`"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. A run refused before
+its first model call — a bad input, an agent or task the tree does not have, a delegation loop —
+has nothing to record, and a run whose task you cancel is not recorded; `stop=` ends a run with its
+record. A delegated run that fails stays under its parent in `children`, its step the error the
+parent's model was given, and the parent goes on; a routed run that fails fails its router, which
+is recorded with its answers and the failed run in `routed_to`.
 
 Pass `tags=` to mark a run with what you will group it by later — the commit of the tree, an
 experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64
@@ -567,8 +574,8 @@ history — `context=`, `task=`, `tools=`, a new tree — so a date in `context=
 day.
 
 A history the model cannot take is refused by its vendor: the adapter raises the vendor's error,
-`engine.run` raises it as it is, and nothing of that run is recorded — the tool calls it already
-made included. A model that runs out of room while it answers ends the run with the text it had,
+`engine.run` raises it as it is, and the run is recorded as far as it got, with its `error` — the
+tool calls it already made included. A model that runs out of room while it answers ends the run with the text it had,
 recorded like any other; a tool call it had begun is answered `NotRun` and never run, so the
 conversation still passes back. The window's `budget` is what keeps either from happening.
 
@@ -1001,8 +1008,9 @@ with it — evaluate, improve prompts and rules, train or distill models, audit 
 [`evaluation.md`](evaluation.md) is a guide to doing it: capturing the right answer, the correct
 label and what really happened, and the three levels of improvement they feed.
 
-Attach a refinery and every run that returns is recorded; a run that raises is not. A recording
-that fails is logged as a warning and never fails the run. `refinery.run(scope, run_id)` reads a
+Attach a refinery and every run is recorded when it ends — one that raises after its first model
+call too, as far as it got, with its error. A recording that fails is logged as a warning and
+never fails the run. `refinery.run(scope, run_id)` reads a
 recorded run back, its delegated and routed runs in place, to continue it anywhere — see
 [Running an agent](#running-an-agent).
 
