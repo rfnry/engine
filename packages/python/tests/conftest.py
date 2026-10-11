@@ -15,7 +15,7 @@ CONTAINER = "start the rfnry-engine-pg container (docker start rfnry-engine-pg)"
 
 
 async def execute(sql: str) -> None:
-    connection = await asyncpg.connect(URL)
+    connection = await asyncpg.connect(URL, timeout=5)
     try:
         await connection.execute(sql)
     finally:
@@ -30,10 +30,16 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         )
     try:
         asyncio.run(execute(f"CREATE SCHEMA {SCHEMA}"))
-    except (OSError, asyncpg.PostgresError) as exc:
+    except (
+        OSError,
+        asyncpg.PostgresError,
+        asyncpg.InterfaceError,
+        ValueError,
+        TimeoutError,
+    ) as exc:
         raise pytest.UsageError(
-            f"tests: cannot create a test schema at RFNRY_TEST_POSTGRES_URL ({exc}); {CONTAINER}"
-        ) from exc
+            f"tests: cannot connect to RFNRY_TEST_POSTGRES_URL ({type(exc).__name__}: {exc}); {CONTAINER}"
+        ) from None
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
