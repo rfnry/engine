@@ -14,7 +14,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
+from rfnry_engine import chain
 from rfnry_engine.bundle import build_bundle
+from rfnry_engine.chain import extend, mark, opening
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
@@ -227,9 +229,14 @@ def _state(spec: AgentSpec, value: State, media_types: Collection[str] | None) -
     return parts
 
 
-def _assistant(reply: Reply) -> Message:
+def _assistant(reply: Reply, prefix: str) -> Message:
     return Message(
-        role="assistant", content=reply.text, tool_calls=reply.tool_calls, reasoning=reply.reasoning
+        role="assistant",
+        content=reply.text,
+        tool_calls=reply.tool_calls,
+        reasoning=reply.reasoning,
+        prefix=prefix,
+        usage=reply.usage,
     )
 
 
@@ -540,7 +547,9 @@ class Engine:
             context=options.context,
         )
         boot = [Message(role="user", content=list(spec.boot))] if spec.boot else []
-        messages = [*options.history, Message(role="user", content=_content(input))]
+        history, digest = chain.settle(options.history, opening(system, specs, list(spec.boot)))
+        hashed = len(history)
+        messages = [*history, Message(role="user", content=_content(input))]
         sent = list(messages)
         steps: list[Step] = []
         children: list[Run] = []
@@ -683,6 +692,13 @@ class Engine:
                 messages.append(Message(role="user", content=_content(inbox.get_nowait())))
                 inbox.task_done()
 
+        def marked() -> str:
+            nonlocal digest, hashed
+            for message in messages[hashed:]:
+                digest = extend(digest, message)
+            hashed = len(messages)
+            return mark(digest)
+
         async def ask() -> Reply:
             sending = [*boot, *messages]
             if streaming:
@@ -727,6 +743,7 @@ class Engine:
             if turn:
                 drain()
             streamed.clear()
+            after = marked()
             asking = asyncio.ensure_future(ask())
             if await wait([asking], stop):
                 await cancel([asking])
@@ -743,7 +760,7 @@ class Engine:
                 usage = usage + reply.usage
             if reply.model:
                 model = reply.model
-            messages.append(_assistant(reply))
+            messages.append(_assistant(reply, after))
             if reply.stop_reason != "tool_use" or not reply.tool_calls:
                 return finish(reply.text)
             output = next(

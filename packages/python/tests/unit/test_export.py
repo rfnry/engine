@@ -359,6 +359,8 @@ async def test_a_run_offered_no_tools_exports_an_empty_list() -> None:
             "tool_call_id": None,
             "reasoning": None,
             "is_error": False,
+            "prefix": None,
+            "usage": None,
         },
         {
             "role": "assistant",
@@ -367,6 +369,8 @@ async def test_a_run_offered_no_tools_exports_an_empty_list() -> None:
             "tool_call_id": None,
             "reasoning": None,
             "is_error": False,
+            "prefix": None,
+            "usage": None,
         },
     ]
 

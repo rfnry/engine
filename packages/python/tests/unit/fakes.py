@@ -107,6 +107,10 @@ def text_reply(text: str, **kwargs: Any) -> Reply:
     return Reply(text=text, stop_reason="end_turn", **kwargs)
 
 
+def said(messages: list[Message]) -> list[Message]:
+    return [message.model_copy(update={"prefix": None, "usage": None}) for message in messages]
+
+
 async def lookup_order(args: dict[str, Any]) -> Any:
     return {"order": args["order_id"]}
 

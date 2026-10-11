@@ -79,6 +79,8 @@ class Message(BaseModel):
     tool_call_id: str | None = None
     reasoning: Any = None
     is_error: bool = False
+    prefix: str | None = None
+    usage: Usage | None = None
 
 
 class Usage(BaseModel):
@@ -361,3 +363,6 @@ class DecisionModel(Protocol):
     async def decide(
         self, state: State, questions: Mapping[str, QuestionLike]
     ) -> Mapping[str, AnswerLike] | DecidedLike: ...
+
+
+Message.model_rebuild()

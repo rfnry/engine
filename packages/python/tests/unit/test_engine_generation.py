@@ -37,7 +37,7 @@ from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Fixed, Scripted, Streaming, text_reply
+from .fakes import TOOLS, Fixed, Scripted, Streaming, said, text_reply
 
 
 def _tool_use(*calls: ToolCall) -> Reply:
@@ -104,7 +104,7 @@ async def test_tool_loop_runs_tools_and_feeds_results_back(fixtures: Path) -> No
     assert run.steps[0].tool == "Read" and "refunded in full" in run.steps[0].result
     second_messages = llm.calls[1][1]
     assert second_messages[-1].role == "tool" and second_messages[-1].tool_call_id == "c1"
-    assert second_messages[-2] == Message(
+    assert said(second_messages)[-2] == Message(
         role="assistant",
         tool_calls=[ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})],
     )
@@ -454,7 +454,7 @@ async def test_a_run_returns_the_conversation_to_continue_from(fixtures: Path) -
     first = await engine.run("support", "acme", "Charged twice.", history=history)
     assert isinstance(first, Generation)
     assert first.messages == [*history, Message(role="user", content="Charged twice.")]
-    assert first.conversation == [
+    assert said(first.conversation) == [
         *first.messages,
         Message(
             role="assistant",
@@ -478,7 +478,7 @@ async def test_a_run_returns_the_conversation_to_continue_from(fixtures: Path) -
         *first.conversation,
         Message(role="user", content="And the second charge?"),
     ]
-    assert second.conversation[-1] == Message(role="assistant", content="Done.")
+    assert said(second.conversation)[-1] == Message(role="assistant", content="Done.")
 
 
 async def test_a_typed_run_closes_its_output_call_in_the_conversation(fixtures: Path) -> None:
@@ -487,7 +487,7 @@ async def test_a_typed_run_closes_its_output_call_in_the_conversation(fixtures: 
     )
     run = await engine_for(fixtures, llm).run("support", "acme", "x", expect=Verdict)
     assert isinstance(run, Generation)
-    assert run.conversation[-2] == Message(
+    assert said(run.conversation)[-2] == Message(
         role="assistant",
         tool_calls=[ToolCall(id="o1", name="Output", args={"refund": True, "reason": "dup"})],
     )
@@ -541,7 +541,7 @@ async def test_parts_as_input_are_the_first_user_message(fixtures: Path) -> None
     assert first.input == parts and first.messages == [Message(role="user", content=parts)]
     second = await engine.run("billing", "acme", "Which colour?", history=first.conversation)
     assert isinstance(second, Generation)
-    assert llm.calls[1][1] == [
+    assert said(llm.calls[1][1]) == [
         Message(role="user", content=parts),
         Message(role="assistant", content="A cat."),
         Message(role="user", content="Which colour?"),

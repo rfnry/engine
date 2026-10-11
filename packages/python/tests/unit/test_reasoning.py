@@ -1,0 +1,137 @@
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel
+
+from rfnry_engine.engine import Engine
+from rfnry_engine.models import Message, Reply, ToolCall, Usage
+from rfnry_engine.records import Generation
+from rfnry_engine.tools.tools import Tool, Tools
+
+from .fakes import TOOLS, Scripted, now, text_reply
+
+THOUGHT = {"thought": "read the rule"}
+CONTEXT = "Acme is on the enterprise plan."
+
+
+def reading() -> Reply:
+    return Reply(
+        text="Checking.",
+        tool_calls=[ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})],
+        stop_reason="tool_use",
+        reasoning=THOUGHT,
+        usage=Usage(input=40, output=3, cache_read=30),
+    )
+
+
+async def first_run(engine: Engine) -> Generation:
+    run = await engine.run("support", "acme", "Charged twice.", context=CONTEXT)
+    assert isinstance(run, Generation)
+    return run
+
+
+async def test_an_assistant_message_keeps_the_usage_of_the_call_that_wrote_it(
+    fixtures: Path,
+) -> None:
+    llm = Scripted(reading(), text_reply("Refund in full."))
+    run = await first_run(Engine(fixtures, generation=llm, tools=TOOLS))
+    written = [m.usage for m in run.conversation if m.role == "assistant"]
+    assert written == [Usage(input=40, output=3, cache_read=30), None]
+    assert all(m.usage is None for m in run.conversation if m.role != "assistant")
+
+
+async def test_an_assistant_message_carries_the_prefix_it_was_written_after(
+    fixtures: Path,
+) -> None:
+    llm = Scripted(reading(), text_reply("Refund in full."))
+    run = await first_run(Engine(fixtures, generation=llm, tools=TOOLS))
+    prefixes = [m.prefix for m in run.conversation if m.role == "assistant"]
+    assert all(p is not None and len(p) == 16 and int(p, 16) >= 0 for p in prefixes)
+    assert len(set(prefixes)) == 2
+    assert all(m.prefix is None for m in run.conversation if m.role != "assistant")
+
+
+async def test_reasoning_goes_back_within_a_run_and_to_a_run_with_the_same_history(
+    fixtures: Path,
+) -> None:
+    llm = Scripted(reading(), text_reply("Refund in full."), text_reply("The second one."))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    first = await first_run(engine)
+    assert llm.calls[1][1][1].reasoning == THOUGHT
+    second = await engine.run(
+        "support", "acme", "Which charge?", history=first.conversation, context=CONTEXT
+    )
+    assert isinstance(second, Generation)
+    assert llm.calls[2][1][1].reasoning == THOUGHT and second.messages[1].reasoning == THOUGHT
+
+
+async def test_reasoning_is_left_out_once_what_came_before_it_changed(fixtures: Path) -> None:
+    llm = Scripted(reading(), text_reply("Refund in full."), *[text_reply("ok") for _ in range(4)])
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    history = (await first_run(engine)).conversation
+    extra = Tools([Tool("extra", "An extra tool", body=now)])
+    runs = [
+        await engine.run("support", "acme", "Which?", history=history, context="Acme is free."),
+        await engine.run(
+            "support", "acme", "Which?", history=history, context=CONTEXT, task="triage"
+        ),
+        await engine.run(
+            "support", "acme", "Which?", history=history, context=CONTEXT, tools=extra
+        ),
+        await engine.run("billing", "acme", "Which?", history=history, context=CONTEXT),
+    ]
+    for run in runs:
+        assert isinstance(run, Generation)
+        assert run.messages[1].reasoning is None
+        assert run.messages[1].content == "Checking."
+        assert run.messages[1].tool_calls == history[1].tool_calls
+    assert all(call[1][1].reasoning is None for call in llm.calls[2:])
+
+
+async def test_reasoning_is_left_out_of_a_history_cut_short(fixtures: Path) -> None:
+    thinking = Reply(text="The second one.", reasoning={"thought": "the later charge"})
+    llm = Scripted(reading(), text_reply("Refund in full."), thinking, text_reply("ok"))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    first = await first_run(engine)
+    second = await engine.run(
+        "support", "acme", "Which charge?", history=first.conversation, context=CONTEXT
+    )
+    assert isinstance(second, Generation)
+    assert second.conversation[-1].reasoning == {"thought": "the later charge"}
+    third = await engine.run(
+        "support", "acme", "Thanks.", history=second.conversation[4:], context=CONTEXT
+    )
+    assert isinstance(third, Generation)
+    assert third.messages[1].reasoning is None and llm.calls[3][1][1].reasoning is None
+
+
+async def test_reasoning_without_a_prefix_of_its_own_is_left_out(fixtures: Path) -> None:
+    llm = Scripted(text_reply("ok"), text_reply("ok"))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    for prefix in (None, "0000000000000000"):
+        history = [
+            Message(role="user", content="hi"),
+            Message(role="assistant", content="hello", reasoning=THOUGHT, prefix=prefix),
+        ]
+        run = await engine.run("support", "acme", "Charged twice.", history=history)
+        assert isinstance(run, Generation) and run.messages[1].reasoning is None
+    assert all(call[1][1].reasoning is None for call in llm.calls)
+
+
+class Foreign(BaseModel):
+    role: str
+    content: str
+    reasoning: Any = None
+
+
+async def test_a_message_from_another_library_goes_without_its_reasoning(fixtures: Path) -> None:
+    llm = Scripted(text_reply("ok"))
+    history = [
+        Foreign(role="user", content="hi"),
+        Foreign(role="assistant", content="hello", reasoning=THOUGHT),
+    ]
+    run = await Engine(fixtures, generation=llm, tools=TOOLS).run(
+        "support", "acme", "Charged twice.", history=history
+    )
+    assert isinstance(run, Generation)
+    assert run.messages[1] == Message(role="assistant", content="hello")
