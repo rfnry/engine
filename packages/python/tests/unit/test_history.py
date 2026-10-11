@@ -1,14 +1,18 @@
+import asyncio
+import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import InputError
-from rfnry_engine.models import Message, ToolCall
+from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.models import HistoryLike, Image, Message, Reply, Text, ToolCall
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.inmemory import InMemoryStorage
 from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.tools.engine_tools import EngineTools
 
 from .fakes import TOOLS, Answering, Desk, Scripted, delegating, lead, said, text_reply
 
@@ -182,3 +186,202 @@ async def test_a_run_read_back_keeps_its_start_and_what_it_added(fixtures: Path)
     back = await refinery.run("acme", run.run_id)
     assert isinstance(run, Generation) and isinstance(back, Generation)
     assert back.start == 4 and back.added == run.added
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 8
+
+
+def surface(
+    fixtures: Path, history: Sequence[object] | HistoryLike | None, start: int, **kwargs: Any
+) -> EngineTools:
+    engine = Engine(fixtures, generation=Scripted(), tools=TOOLS, **kwargs)
+    return EngineTools(engine, agent="support", scope="acme", history=history, start=start)
+
+
+def texts(result: object) -> list[str]:
+    assert isinstance(result, list)
+    return [part.text for part in result if isinstance(part, Text)]
+
+
+def positions(result: object) -> list[int]:
+    return [json.loads(t)["position"] for t in texts(result) if t.startswith('{"position"')]
+
+
+def calling_history(**args: Any) -> Reply:
+    return Reply(tool_calls=[ToolCall(id="h1", name="History", args=args)], stop_reason="tool_use")
+
+
+async def test_history_is_offered_only_when_a_run_starts_past_the_beginning(fixtures: Path) -> None:
+    llm = Scripted(text_reply("a"), text_reply("b"), text_reply("c"))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    whole = await engine.run("support", "acme", "x", history=two())
+    cut = await engine.run("support", "acme", "x", history=two(), start=4)
+    alone = await engine.run("support", "acme", "x")
+    offered = ["History" in [spec.name for spec in call[2]] for call in llm.calls]
+    assert offered == [False, True, False]
+    assert whole.fingerprint and cut.fingerprint and alone.fingerprint
+    assert whole.fingerprint.tools == alone.fingerprint.tools != cut.fingerprint.tools
+
+
+async def test_a_routed_run_is_offered_history_and_a_delegated_one_is_not(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    llm = Scripted(text_reply("Restarted it."))
+    await Engine(fixtures, generation=llm, decision=Desk(), tools=TOOLS).run(
+        "frontdesk", "acme", "And now?", history=two(), start=4
+    )
+    assert "History" in [spec.name for spec in llm.calls[0][2]]
+    led = Scripted(delegating("writer", "Draft a reply"), text_reply("Draft."), text_reply("Sent."))
+    history = [Message(role="user", content="hi"), Message(role="assistant", content="hello")]
+    await Engine(lead(tmp_path), generation=led, decision=Answering()).run(
+        "lead", "acme", "Answer the customer.", history=history, start=1
+    )
+    assert "History" in [spec.name for spec in led.calls[0][2]]
+    assert "History" not in [spec.name for spec in led.calls[1][2]]
+
+
+async def test_history_reads_the_page_before_where_the_model_starts(fixtures: Path) -> None:
+    tools = surface(fixtures, two(), start=4)
+    first = await tools.dispatch("History", {"limit": 3})
+    assert positions(first) == [1, 2, 3]
+    assert json.loads(texts(first)[0]) == {
+        "position": 1,
+        "role": "assistant",
+        "tool_calls": [{"id": "c1", "name": "lookup_order", "args": {"order_id": "A-1"}}],
+    }
+    assert json.loads(texts(first)[1]) == {
+        "position": 2,
+        "role": "tool",
+        "tool_call_id": "c1",
+        "is_error": False,
+    }
+    assert texts(first)[2] == '{"order": "A-1"}'
+    assert texts(first)[-1] == "[more before position 1: pass before=1 to read them]"
+    rest = await tools.dispatch("History", {"before": 1})
+    assert positions(rest) == [0] and texts(rest)[-1] == "Where is A-1?"
+    assert await tools.dispatch("History", {"before": 0}) == "no earlier messages"
+
+
+async def test_history_reads_rows_as_messages(fixtures: Path) -> None:
+    result = await surface(fixtures, Rows(two()), start=4).dispatch("History", {})
+    assert positions(result) == [0, 1, 2, 3]
+
+
+async def test_history_never_reads_what_the_model_was_given_or_after(fixtures: Path) -> None:
+    kept = Kept(two())
+    tools = surface(fixtures, kept, start=4)
+    kept.messages.append(Message(role="user", content="Written while the run worked."))
+    result = await tools.dispatch("History", {"before": 99, "limit": 100})
+    assert positions(result) == [0, 1, 2, 3] and kept.reads == [(0, 4)]
+
+
+async def test_history_reaches_everything_when_the_run_starts_at_the_end(fixtures: Path) -> None:
+    conversation = two()
+    tools = surface(fixtures, conversation, start=len(conversation))
+    result = await tools.dispatch("History", {"limit": 100})
+    assert positions(result) == list(range(len(conversation)))
+
+
+async def test_history_searches_back_for_what_matches(fixtures: Path) -> None:
+    tools = surface(fixtures, [*two(), *looked_up("c9")], start=8)
+    found = await tools.dispatch("History", {"pattern": "a-1", "case_insensitive": True})
+    assert positions(found) == [0, 1, 2, 4, 5, 6]
+    some = await tools.dispatch("History", {"pattern": "A-1", "limit": 2})
+    assert positions(some) == [5, 6]
+    assert texts(some)[-1] == "[searched back to position 5: pass before=5 to search further]"
+    assert await tools.dispatch("History", {"pattern": "refund"}) == "no matches before position 8"
+
+
+async def test_a_search_stops_after_history_walk_messages_and_says_where(fixtures: Path) -> None:
+    tools = surface(fixtures, [*two(), *looked_up("c9")], start=8, history_walk=3)
+    result = await tools.dispatch("History", {"pattern": "A-1"})
+    assert positions(result) == [5, 6]
+    assert texts(result)[-1] == "[searched back to position 5: pass before=5 to search further]"
+    nothing = await tools.dispatch("History", {"pattern": "refund"})
+    assert nothing == "no matches between positions 5 and 8: pass before=5 to search further"
+
+
+async def test_a_result_holds_at_most_history_chars_of_text_and_says_where_to_go_on(
+    fixtures: Path,
+) -> None:
+    conversation = [
+        Message(role="user", content="x" * 50),
+        Message(role="assistant", content="y" * 50),
+        Message(role="user", content="z"),
+    ]
+    page = await surface(fixtures, conversation, start=2, history_chars=120).dispatch("History", {})
+    assert positions(page) == [1]
+    assert texts(page)[-1] == "[more before position 1: pass before=1 to read them]"
+    big = [Message(role="user", content="w" * 500), Message(role="user", content="now")]
+    cut = await surface(fixtures, big, start=1, history_chars=100).dispatch("History", {})
+    assert sum(len(t) for t in texts(cut)[:-1]) == 100
+    assert texts(cut)[-1] == "[position 0 cut at 100 characters]"
+
+
+async def test_history_hands_over_media_as_the_parts_they_are(fixtures: Path) -> None:
+    image = Image(media_type="image/png", data=PNG)
+    conversation = [
+        Message(role="user", content=[Text(text="This one?"), image]),
+        Message(role="assistant", content="A receipt."),
+        Message(role="user", content="And now?"),
+    ]
+    result = await surface(fixtures, conversation, start=2).dispatch("History", {})
+    assert isinstance(result, list) and image in result
+
+
+async def test_an_invalid_pattern_is_an_error_the_model_reads(fixtures: Path) -> None:
+    with pytest.raises(InputError, match=r"^history: invalid pattern"):
+        await surface(fixtures, looked_up(), start=4).dispatch("History", {"pattern": "("})
+
+
+async def test_a_source_that_fails_inside_history_is_a_tool_error(fixtures: Path) -> None:
+    class Flaky(Kept):
+        async def read(self, start: int, stop: int | None = None) -> Sequence[object]:
+            if stop is not None:
+                raise ConnectionError("database is down")
+            return await super().read(start, stop)
+
+    llm = Scripted(calling_history(), text_reply("I cannot see that far back."))
+    run = await Engine(fixtures, generation=llm, tools=TOOLS).run(
+        "support", "acme", "x", history=Flaky(two()), start=4
+    )
+    assert isinstance(run, Generation) and run.steps[0].tool == "History"
+    assert run.steps[0].is_error and run.steps[0].result == "ConnectionError: database is down"
+
+
+async def test_a_slow_source_meets_the_tool_deadline(fixtures: Path) -> None:
+    class Slow(Kept):
+        async def read(self, start: int, stop: int | None = None) -> Sequence[object]:
+            if stop is not None:
+                await asyncio.sleep(5)
+            return await super().read(start, stop)
+
+    llm = Scripted(calling_history(), text_reply("ok"))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS, tool_timeout=0.05)
+    run = await engine.run("support", "acme", "x", history=Slow(looked_up()), start=4)
+    assert isinstance(run, Generation)
+    assert run.steps[0].result == "TimeoutError: History timed out after 0.05s"
+
+
+def test_history_is_described_the_same_whatever_the_start(fixtures: Path) -> None:
+    def definition(start: int) -> dict[str, Any]:
+        found = surface(fixtures, two(), start).definitions()
+        return next(d for d in found if d["name"] == "History")
+
+    assert definition(2) == definition(6)
+
+
+def test_engine_tools_refuse_a_start_they_cannot_use(fixtures: Path) -> None:
+    engine = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+    with pytest.raises(InputError, match=r"^engine_tools: start must not be negative; got -1$"):
+        EngineTools(engine, agent="support", scope="acme", history=[], start=-1)
+    with pytest.raises(InputError, match=r"^engine_tools: start needs a history$"):
+        EngineTools(engine, agent="support", scope="acme", start=3)
+    assert "History" not in EngineTools(engine, agent="support", scope="acme", history=two()).names
+
+
+@pytest.mark.parametrize("name", ["history_walk", "history_chars"])
+def test_history_bounds_must_be_positive(fixtures: Path, name: str) -> None:
+    settings: dict[str, Any] = {name: 0}
+    with pytest.raises(ConfigurationError, match=rf"^engine: {name} must be positive$"):
+        Engine(fixtures, generation=Scripted(), tools=TOOLS, **settings)

@@ -276,6 +276,8 @@ class Engine:
         max_steps: int = 200,
         max_depth: int = 5,
         tool_timeout: float | None = 30.0,
+        history_walk: int = 10_000,
+        history_chars: int = 100_000,
     ) -> None:
         if tool_timeout is not None and tool_timeout <= 0:
             raise ConfigurationError(
@@ -285,6 +287,10 @@ class Engine:
             raise ConfigurationError("engine: max_steps must be positive")
         if max_depth <= 0:
             raise ConfigurationError("engine: max_depth must be positive")
+        if history_walk <= 0:
+            raise ConfigurationError("engine: history_walk must be positive")
+        if history_chars <= 0:
+            raise ConfigurationError("engine: history_chars must be positive")
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"engine: root is not a directory: {root}")
@@ -299,6 +305,8 @@ class Engine:
         self.max_steps = max_steps
         self.max_depth = max_depth
         self.tool_timeout = tool_timeout
+        self.history_walk = history_walk
+        self.history_chars = history_chars
         self._agents = load_tree(self.root, getattr(generation, "media_types", None))
         validate_tree(self._agents)
         check_declarations(self._agents, self.tools, bodies=generation is not None)
@@ -537,6 +545,8 @@ class Engine:
             workspace=options.workspace,
             tags=options.tags,
             approve=options.approve,
+            history=options.source,
+            start=options.start,
         )
         bounded_by_workspace = (
             WORKSPACE_TOOLS if spec.workspace and options.workspace is not None else frozenset()

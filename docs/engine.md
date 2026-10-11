@@ -494,6 +494,21 @@ class Conversation:
 
 A position is a message's index in the conversation from 0, and always holds the same message.
 
+When a run starts past the beginning, the model is offered `History`, which reads the messages
+before the first one it was given, each under its position — a page at a time going back, each
+page in the order it happened — or, with `pattern`, the ones whose text matches:
+
+```json
+{"before": 340, "limit": 20, "pattern": "invoice", "case_insensitive": true}
+```
+
+It never reads what the model was given or anything after it. A page is 20 messages, at most 100;
+a search walks back at most `Engine(history_walk=10_000)` messages and a result holds at most
+`Engine(history_chars=100_000)` characters of text, each ending with where to go on; its deadline
+is `tool_timeout`, as every tool's, so a slow database gets the time you give it. No line in
+`AGENT.md` asks for it: it comes with `start=`, as `tools=` comes with the call. To send a window
+without it, pass the slice as the history and leave `start` at 0.
+
 Reasoning goes back only where it was given. Some vendors bind a model's reasoning to the exact
 conversation it was given in and refuse it anywhere else. Every assistant message the engine makes
 from a reply carries `prefix`, a short hash of everything sent before it — the model, as its adapter
@@ -1148,7 +1163,8 @@ class Tools:
 ```
 
 An agent's tools are declared in its directory. `Read Grep Glob LS Skill Load` come with every generation agent,
-`Delegate` comes with `agents:`; everything else is a file under `tools/`:
+`Delegate` comes with `agents:`, `History` with a run whose `start=` is past the beginning of its
+history; everything else is a file under `tools/`:
 
 ```markdown
 ---
@@ -1190,10 +1206,12 @@ engine = Engine(root, generation=llm, tools=tools)
 A tool the engine was given that no agent declares is a `ConfigurationError`; so is a declaration
 with no body, when the engine has a generation model to run it. So an agent's whole tool surface
 is readable from its directory, and the engine cannot hand a model something the tree does not
-show — except the `Tools` a caller passes to `run(tools=)`, which ride that one run.
+show — except what a caller passes on the call: the `Tools` of `run(tools=)`, which ride that one
+run, and `History`, which comes with `start=`.
 
 Every tool call inside a run has a deadline, `Engine(tool_timeout=30.0)` by default and `None` to
 turn it off. When it passes, the model gets the error `timed out after 30s` and the run continues.
+`History` reads your storage under the same deadline.
 Bodies are async and the deadline cancels them, so a body that runs blocking work in a thread must
 put its own limit on that work: cancelling the await does not stop the thread. A workspace's
 `Shell`, `Write` and `Edit` keep the workspace's own `timeout` instead. `Delegate` has no
@@ -1371,7 +1389,7 @@ declared without a body or given without a declaration, a run of an agent whose 
 absent, a missing workspace, a `Workspace` root that is not a
 directory, a `Workspace` with neither `sandbox=` nor `unsandboxed=True` or with both, an unsandboxed
 shell not on `PATH`, a `sandbox` or `shell` that is not a list of strings, a `max_steps`,
-`max_depth`, `tool_timeout`, `timeout` or `output_bytes` that is not positive, an `approve` that
+`max_depth`, `tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is not positive, an `approve` that
 returns anything but `True` or `False`, a judge that is not a decision agent or a teacher that is
 not a generation agent. `NotFoundError` for an agent the tree does not have — a judge, a teacher
 or a replay's agent in the candidate included — a task the agent does not have
