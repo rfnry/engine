@@ -17,6 +17,7 @@ from rfnry_engine.models import (
     Check,
     CheckAnswer,
     Choice,
+    ChoiceAnswer,
     HistoryLike,
     Image,
     Message,
@@ -1017,3 +1018,57 @@ async def test_history_in_a_replay_reads_before_the_input_and_never_past_it(
         seen = json.dumps(result.model_dump(mode="json"))
         assert "Where is A-1?" in seen
         assert "Is it refunded?" not in seen and "Later." not in seen
+
+
+async def test_a_source_that_ignores_stop_never_passes_the_cut(
+    fixtures: Path, storage: Storage
+) -> None:
+    class Sloppy:
+        def __init__(self, messages: list[Message]) -> None:
+            self.messages = messages
+
+        async def read(self, start: int, stop: int | None = None) -> Sequence[object]:
+            return self.messages[start:]
+
+    refinery = Refinery(storage)
+    recorder = Engine(
+        fixtures, generation=Scripted(text_reply("Still refunded.")), tools=TOOLS, refinery=refinery
+    )
+    recorded = await recorder.run("support", "acme", "Is it refunded?", history=EARLIER, start=4)
+    assert isinstance(recorded, Generation)
+    later = [Message(role="user", content="Later."), Message(role="assistant", content="Later.")]
+    whole = [*EARLIER, *recorded.added, *later]
+    llm = Scripted(text_reply("Yes."))
+    candidate = Engine(fixtures, generation=llm, tools=TOOLS)
+    pair = await replayed(refinery, candidate, "support", lambda run: Sloppy(whole))
+    assert pair.error is None
+    assert said(llm.calls[0][1]) == said(
+        [*EARLIER[4:], Message(role="user", content="Is it refunded?")]
+    )
+
+
+async def test_a_decision_run_that_routes_nowhere_never_calls_conversation(
+    fixtures: Path, storage: Storage
+) -> None:
+    other = Fixed(
+        {
+            "intent": ChoiceAnswer(
+                choice="other", probabilities={"billing": 0, "technical": 0, "other": 1}
+            )
+        }
+    )
+    refinery = Refinery(storage)
+    recorder = Engine(
+        fixtures, generation=Scripted(), decision=other, tools=TOOLS, refinery=refinery
+    )
+    recorded = await recorder.run("frontdesk", "acme", "Hello.")
+    assert isinstance(recorded, Decision) and recorded.routed_to is None
+    called: list[Run] = []
+
+    def conversation(run: Run) -> list[Message]:
+        called.append(run)
+        return EARLIER
+
+    candidate = Engine(fixtures, generation=Scripted(), decision=other, tools=TOOLS)
+    pair = await replayed(refinery, candidate, "frontdesk", conversation)
+    assert pair.error is None and called == []

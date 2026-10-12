@@ -138,7 +138,7 @@ class _Before:
         end = self.cut if stop is None else min(stop, self.cut)
         if start >= end:
             return []
-        got = await self.source.read(start, end)
+        got = list(await self.source.read(start, end))[: end - start]
         if len(got) < end - start:
             raise InputError(
                 f"refinery: the conversation has no message at position {start + len(got)}, "
