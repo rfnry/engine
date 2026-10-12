@@ -870,6 +870,7 @@ class Engine:
                     model = reply.model
                 messages.append(_assistant(reply, after))
                 asked = list(reply.tool_calls)
+                ran.clear()
                 if not streaming and reply.text:
                     await delta(reply.text)
                 if reply.stop_reason != "tool_use" or not reply.tool_calls:

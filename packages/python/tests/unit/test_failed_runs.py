@@ -307,19 +307,49 @@ async def test_a_call_cut_by_a_stop_is_recorded_once_when_its_handler_raises(
 
     async def closed(event: Event) -> None:
         if isinstance(event, ToolResultReady):
-            if event.step.stopped:
+            if event.step.stopped and event.call_id == "c2":
                 raise ConnectionResetError("the socket closed")
-            stop.now()
-            await asyncio.sleep(1)
+            if not event.step.stopped:
+                stop.now()
+                await asyncio.sleep(1)
 
+    calls = [
+        ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"}),
+        ToolCall(id="c2", name="lookup_order", args={"order_id": "A-2"}),
+    ]
     kept = Kept()
-    engine = Engine(fixtures, generation=Scripted(looked_up()), tools=TOOLS, refinery=kept)
+    engine = Engine(
+        fixtures,
+        generation=Scripted(Reply(tool_calls=calls, stop_reason="tool_use")),
+        tools=TOOLS,
+        refinery=kept,
+    )
     with pytest.raises(ConnectionResetError):
-        await engine.run("support", "acme", "Where is A-1?", on_event=closed, stop=stop)
+        await engine.run("support", "acme", "x", on_event=closed, stop=stop)
     [run] = kept.runs
-    [step] = run.steps
-    assert step.tool == "lookup_order" and step.stopped
-    assert [m.role for m in run.conversation] == ["user", "assistant", "tool"]
+    assert [(s.args["order_id"], s.stopped) for s in run.steps] == [("A-1", True), ("A-2", True)]
+    assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "c2"]
+
+
+async def test_a_call_repeated_in_a_later_turn_is_recorded_in_each(fixtures: Path) -> None:
+    results = 0
+
+    async def closed(event: Event) -> None:
+        nonlocal results
+        if isinstance(event, ToolResultReady):
+            results += 1
+            if results == 2:
+                raise ConnectionResetError("the socket closed")
+
+    again = looked_up()
+    kept = Kept()
+    engine = Engine(fixtures, generation=Scripted(again, again), tools=TOOLS, refinery=kept)
+    with pytest.raises(ConnectionResetError):
+        await engine.run("support", "acme", "Where is A-1?", on_event=closed)
+    [run] = kept.runs
+    assert [s.tool for s in run.steps] == ["lookup_order", "lookup_order"]
+    roles = [m.role for m in run.conversation]
+    assert roles == ["user", "assistant", "tool", "assistant", "tool"]
 
 
 async def test_a_failed_run_keeps_the_children_that_already_ran(fixtures: Path) -> None:

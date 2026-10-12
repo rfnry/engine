@@ -307,7 +307,7 @@ exception is what you have, the same one the adapter or the engine raised. With 
 attached, the run is recorded first, as far as it got: `error` says what ended it —
 `"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. Its conversation can
 hold a tool call with no result, when the run failed between the call and its result, and `run()`
-refuses such a history: start the next one at a message the person sent. A run refused before its
+refuses such a history: go on from the history the run was given. A run refused before its
 first model call — a bad input, an agent or task the tree does not have, a delegation loop — has
 nothing to record, and a run whose task you cancel is not recorded; `stop=` ends a run with its
 record. A delegated run that fails stays under its parent in `children`, its step the error the
