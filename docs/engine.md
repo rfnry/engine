@@ -305,12 +305,15 @@ A run that raises instead of returning — the vendor refused the call, the adap
 contract (`ModelError`), the loop passed `max_steps` (`RunawayError`) — returns no record; the
 exception is what you have, the same one the adapter or the engine raised. With a refinery
 attached, the run is recorded first, as far as it got: `error` says what ended it —
-`"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. A run refused before
-its first model call — a bad input, an agent or task the tree does not have, a delegation loop —
-has nothing to record, and a run whose task you cancel is not recorded; `stop=` ends a run with its
+`"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. Its conversation can end
+on a tool call with no result, when an `approve` raised or a handler raised on `ToolCallStarted`,
+and `run()` refuses such a history, so close it before you pass it back. A run refused before its
+first model call — a bad input, an agent or task the tree does not have, a delegation loop — has
+nothing to record, and a run whose task you cancel is not recorded; `stop=` ends a run with its
 record. A delegated run that fails stays under its parent in `children`, its step the error the
 parent's model was given, and the parent goes on; a routed run that fails fails its router, which
-is recorded with its answers and the failed run in `routed_to`.
+is recorded with its answers and the failed run in `routed_to`, or `None` when the routed run was
+refused before its first model call.
 
 Pass `tags=` to mark a run with what you will group it by later — the commit of the tree, an
 experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64
@@ -576,9 +579,9 @@ day.
 A history the model cannot take is refused by its vendor: the adapter raises the vendor's error,
 `engine.run` raises it as it is, and the run is recorded as far as it got, with its `error` — the
 tool calls it already made included. A model that runs out of room while it answers ends the run
-with the text it had, recorded like any other; a tool call it had begun is answered `NotRun` and
-never run, so the conversation still passes back. The window's `budget` is what keeps either from
-happening.
+with the text it had, recorded like any other with `run.stop_reason` `"max_tokens"`; a tool call
+it had begun is answered `NotRun` and never run, so the conversation still passes back. The
+window's `budget` is what keeps either from happening.
 
 To measure on a long conversation, tag its runs with it — `tags={"conversation": "dana-1"}` — and
 `refinery.replay("acme", candidate, agent="support", tags={"conversation": "dana-1"})` replays them
@@ -1090,13 +1093,13 @@ exported.keys, exported.rows, exported.watermark
 
 Keys are `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, so repeated exports add files and never
 overwrite. `since` selects every run recorded or labeled after it, written in full with all its
-labels. A run that failed is in no dataset; replay and label it like any other. A run is recorded
-when it ends, so a long run still working at one export is in the next, whenever it started; the
-watermark covers both, so a review of a run you already exported reaches the next export. Rows are
-keyed by `run_id`: when a run appears again, its latest row supersedes the earlier ones — dedupe by
-`run_id`, keep the latest. Because of that you may pass a `since` a little before the last
-watermark: a run is stamped just before it is written, and services recording with their own clocks
-can disagree by a little.
+labels. A run that raised — its `error` set — is in no dataset; replay and label it like any other.
+A run is recorded when it ends, so a long run still working at one export is in the next, whenever
+it started; the watermark covers both, so a review of a run you already exported reaches the next
+export. Rows are keyed by `run_id`: when a run appears again, its latest row supersedes the earlier
+ones — dedupe by `run_id`, keep the latest. Because of that you may pass a `since` a little before
+the last watermark: a run is stamped just before it is written, and services recording with their
+own clocks can disagree by a little.
 
 Every row carries `"holdout": true|false` — the rows kept aside so any measurement on them is
 honest. It is derived from a hash of the run id (`holdout_percent=20` by default), so a run's flag
@@ -1105,7 +1108,7 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | task, context, tags, model, fingerprint, system, boot, start, messages, tools, conversation, steps, reply, stopped, usage, every label |
+| `generation` | generation run | task, context, tags, model, fingerprint, system, boot, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
 | `preference` | human correction | tags, fingerprint, prompt (system, boot, messages), chosen (the correction), rejected (the reply) |
 | `decision` | question of a decision run | task, tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
 
