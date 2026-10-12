@@ -629,6 +629,8 @@ class Engine:
         steps: list[Step] = []
         children: list[Run] = []
         delegated: dict[str, Run] = {}
+        ran: list[tuple[ToolCall, Step]] = []
+        asked: list[ToolCall] = []
         usage = Usage()
         calls = 0
         model = _declared(model_)
@@ -727,6 +729,7 @@ class Engine:
                 stopped=stopped,
                 approved=approved,
             )
+            ran.append((call, step))
             await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step))
             return step
 
@@ -763,6 +766,7 @@ class Engine:
                 duration_ms=int((time.monotonic() - began) * 1000),
                 stopped=True,
             )
+            ran.append((call, step))
             await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step))
             return step
 
@@ -865,6 +869,7 @@ class Engine:
                 if reply.model:
                     model = reply.model
                 messages.append(_assistant(reply, after))
+                asked = list(reply.tool_calls)
                 if not streaming and reply.text:
                     await delta(reply.text)
                 if reply.stop_reason != "tool_use" or not reply.tool_calls:
@@ -922,6 +927,10 @@ class Engine:
                 return finish(parsed.model_dump_json())
             raise RunawayError(f"engine: run exceeded {self.max_steps} steps")
         except Exception as exc:
+            for call in asked:
+                for done, step in ran:
+                    if done is call and not any(step is kept for kept in steps):
+                        answer(call, step)
             children.extend(delegated.values())
             options.failed.append(finish("", error=exc))
             raise

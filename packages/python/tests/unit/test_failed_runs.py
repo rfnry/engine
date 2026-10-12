@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -6,7 +7,7 @@ import pytest
 from pydantic import BaseModel
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import ConfigurationError, ModelError, RunawayError
+from rfnry_engine.errors import ConfigurationError, DelegationDepthError, ModelError, RunawayError
 from rfnry_engine.models import (
     ChoiceAnswer,
     Message,
@@ -154,6 +155,57 @@ async def test_a_routed_run_that_fails_fails_its_router_and_both_are_recorded(
     assert routed.error == router.error and routed.parent_run_id == router.run_id
 
 
+async def test_a_routed_run_refused_before_its_first_call_leaves_routed_to_none(
+    fixtures: Path,
+) -> None:
+    kept = Kept()
+    llm = Scripted()
+    engine = Engine(
+        fixtures, generation=llm, decision=Desk(), tools=TOOLS, refinery=kept, max_depth=1
+    )
+    with pytest.raises(DelegationDepthError):
+        await engine.run("frontdesk", "acme", "It is down")
+    [router] = kept.runs
+    assert isinstance(router, Decision) and router.routed_to is None
+    assert router.error is not None and router.error.startswith("DelegationDepthError")
+    assert llm.calls == []
+
+
+async def test_an_approve_that_raises_fails_the_run_and_it_is_recorded(fixtures: Path) -> None:
+    async def approve(agent: str, call: ToolCall) -> bool:
+        raise PermissionError("approval service down")
+
+    kept = Kept()
+    engine = Engine(fixtures, generation=Scripted(looked_up()), tools=TOOLS, refinery=kept)
+    with pytest.raises(PermissionError):
+        await engine.run("support", "acme", "Where is A-1?", approve=approve)
+    [run] = kept.runs
+    assert isinstance(run, Generation)
+    assert run.error == "PermissionError: approval service down"
+    assert run.steps == [] and [m.role for m in run.conversation] == ["user", "assistant"]
+
+
+async def test_a_run_whose_task_is_cancelled_is_not_recorded(fixtures: Path) -> None:
+    waiting = asyncio.Event()
+
+    class Slow:
+        async def generate(
+            self, system: str, messages: list[Message], tools: list[ToolSpec]
+        ) -> Reply:
+            waiting.set()
+            await asyncio.sleep(60)
+            return text_reply("late")
+
+    kept = Kept()
+    engine = Engine(fixtures, generation=Slow(), tools=TOOLS, refinery=kept)
+    task = asyncio.ensure_future(engine.run("support", "acme", "x"))
+    await waiting.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert kept.runs == []
+
+
 async def test_a_run_refused_before_its_first_model_call_is_not_recorded(
     fixtures: Path,
 ) -> None:
@@ -202,6 +254,49 @@ async def test_an_event_handler_that_raises_fails_the_run_and_it_is_recorded(
     assert [m.role for m in run.conversation] == ["user", "assistant"]
 
 
+async def test_a_failed_run_keeps_the_step_of_a_tool_that_already_ran(fixtures: Path) -> None:
+    async def closed(event: Event) -> None:
+        if isinstance(event, ToolResultReady):
+            raise ConnectionResetError("the socket closed")
+
+    kept = Kept()
+    engine = Engine(fixtures, generation=Scripted(looked_up()), tools=TOOLS, refinery=kept)
+    with pytest.raises(ConnectionResetError):
+        await engine.run("support", "acme", "Where is A-1?", on_event=closed)
+    [run] = kept.runs
+    assert [s.tool for s in run.steps] == ["lookup_order"]
+    assert [m.role for m in run.conversation] == ["user", "assistant", "tool"]
+
+
+async def test_a_failed_batch_keeps_every_step_that_ran_in_the_order_asked(
+    fixtures: Path,
+) -> None:
+    seen: list[str] = []
+
+    async def closed(event: Event) -> None:
+        if isinstance(event, ToolResultReady):
+            seen.append(event.call_id)
+            if len(seen) == 1:
+                raise ConnectionResetError("the socket closed")
+
+    calls = [
+        ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"}),
+        ToolCall(id="c2", name="lookup_order", args={"order_id": "A-2"}),
+    ]
+    kept = Kept()
+    engine = Engine(
+        fixtures,
+        generation=Scripted(Reply(tool_calls=calls, stop_reason="tool_use")),
+        tools=TOOLS,
+        refinery=kept,
+    )
+    with pytest.raises(ConnectionResetError):
+        await engine.run("support", "acme", "x", on_event=closed)
+    [run] = kept.runs
+    assert [s.args["order_id"] for s in run.steps] == ["A-1", "A-2"]
+    assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "c2"]
+
+
 async def test_a_failed_run_keeps_the_children_that_already_ran(fixtures: Path) -> None:
     async def closed(event: Event) -> None:
         if isinstance(event, ToolResultReady):
@@ -221,3 +316,5 @@ async def test_a_failed_run_keeps_the_children_that_already_ran(fixtures: Path) 
     assert isinstance(run, Generation) and run.error == "ConnectionResetError: the socket closed"
     [child] = run.children
     assert isinstance(child, Decision) and child.agent == "triage" and child.error is None
+    [step] = run.steps
+    assert step.child_run_id == child.run_id
