@@ -1094,6 +1094,7 @@ exported.keys, exported.rows, exported.watermark
 Keys are `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, so repeated exports add files and never
 overwrite. `since` selects every run recorded or labeled after it, written in full with all its
 labels. A run that raised — its `error` set — is in no dataset; replay and label it like any other.
+A router whose routed run raised is the exception: it answered, so its decision rows are written.
 A run is recorded when it ends, so a long run still working at one export is in the next, whenever
 it started; the watermark covers both, so a review of a run you already exported reaches the next
 export. Rows are keyed by `run_id`: when a run appears again, its latest row supersedes the earlier

@@ -274,7 +274,7 @@ class Refinery:
             stamps.append(row.at)
         groups: dict[tuple[str, str], list[dict[str, object]]] = {}
         for run in runs:
-            if run.body.get("error") is not None:
+            if run.body.get("error") is not None and not run.body.get("answers"):
                 continue
             holdout = is_holdout(run.run_id, holdout_percent=holdout_percent)
             own = labels.get(run.run_id, [])

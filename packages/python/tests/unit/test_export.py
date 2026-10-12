@@ -471,6 +471,22 @@ async def test_a_failed_run_is_in_no_dataset_even_with_a_correction(storage: Sto
     assert [row["run_id"] for row in _lines(bucket.objects[key])] == [kept.run_id]
 
 
+async def test_a_router_whose_routed_run_failed_exports_its_answers(storage: Storage) -> None:
+    refinery = Refinery(storage)
+    routed = generation_record(reply="").model_copy(update={"error": "ModelError: overloaded"})
+    router = decision_record(agent="frontdesk", routed_to=routed).model_copy(
+        update={"error": "ModelError: overloaded"}
+    )
+    await refinery.record(router)
+    bucket = MemoryBucket()
+    exported = await refinery.export("acme", bucket)
+    assert exported.rows == {"decision": 1}
+    [key] = exported.keys
+    assert key.startswith("acme/frontdesk/decision/")
+    [row] = _lines(bucket.objects[key])
+    assert row["run_id"] == router.run_id and row["question_id"] == "urgent"
+
+
 async def test_a_run_recorded_before_start_was_kept_exports_start_zero(storage: Storage) -> None:
     refinery = Refinery(storage)
     await refinery.record(generation_record())
