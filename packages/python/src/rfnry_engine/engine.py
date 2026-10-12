@@ -928,9 +928,9 @@ class Engine:
             raise RunawayError(f"engine: run exceeded {self.max_steps} steps")
         except Exception as exc:
             for call in asked:
-                for done, step in ran:
-                    if done is call and not any(step is kept for kept in steps):
-                        answer(call, step)
+                built = [step for done, step in ran if done is call]
+                if built and not any(step is kept for step in built for kept in steps):
+                    answer(call, built[-1])
             children.extend(delegated.values())
             options.failed.append(finish("", error=exc))
             raise

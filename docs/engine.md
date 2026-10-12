@@ -305,9 +305,9 @@ A run that raises instead of returning — the vendor refused the call, the adap
 contract (`ModelError`), the loop passed `max_steps` (`RunawayError`) — returns no record; the
 exception is what you have, the same one the adapter or the engine raised. With a refinery
 attached, the run is recorded first, as far as it got: `error` says what ended it —
-`"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. Its conversation can end
-on a tool call with no result, when an `approve` raised or a handler raised on `ToolCallStarted`,
-and `run()` refuses such a history, so close it before you pass it back. A run refused before its
+`"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. Its conversation can
+hold a tool call with no result, when the run failed between the call and its result, and `run()`
+refuses such a history: start the next one at a message the person sent. A run refused before its
 first model call — a bad input, an agent or task the tree does not have, a delegation loop — has
 nothing to record, and a run whose task you cancel is not recorded; `stop=` ends a run with its
 record. A delegated run that fails stays under its parent in `children`, its step the error the
