@@ -37,6 +37,28 @@ def strip_frontmatter(raw: str) -> str:
     return raw if split is None else split[1]
 
 
+_HEAD = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
+
+
+def described(path: Path) -> str | None:
+    try:
+        raw = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    match = _HEAD.match(raw)
+    if match is None:
+        return None
+    try:
+        data = yaml.load(match.group(1), Loader=_Loader)
+    except yaml.YAMLError as exc:
+        raise ConfigurationError(f"frontmatter: invalid YAML in {path}: {exc}") from exc
+    said = data.get("description") if isinstance(data, dict) else None
+    if said is not None and not isinstance(said, str):
+        raise ConfigurationError(f"frontmatter: description must be a string in {path}")
+    collapsed = " ".join(said.split()) if said else ""
+    return collapsed or None
+
+
 def parse_frontmatter_doc[T: BaseModel](
     raw: str,
     *,
