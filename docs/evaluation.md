@@ -146,7 +146,7 @@ Grade the candidate's replies against the right answers with a decision agent of
 
 ```python
 async def read_only(agent, call):
-    return call.name in {"Read", "Grep", "Glob", "LS", "Skill", "Load", "Delegate", "lookup_order"}
+    return call.name in {"Read", "Grep", "Glob", "LS", "Load", "Delegate", "lookup_order"}
 
 grades, failures = [], []
 async for pair in refinery.replay("acme", candidate, agent="support", holdout=True, labeled=True,

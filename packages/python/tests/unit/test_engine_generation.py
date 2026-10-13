@@ -68,7 +68,6 @@ async def test_plain_reply_is_the_record(fixtures: Path) -> None:
         "Grep",
         "Glob",
         "LS",
-        "Skill",
         "Load",
     ]
 

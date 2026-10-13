@@ -32,11 +32,6 @@ def split_frontmatter(raw: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2)
 
 
-def strip_frontmatter(raw: str) -> str:
-    split = split_frontmatter(raw)
-    return raw if split is None else split[1]
-
-
 _HEAD = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
 
 

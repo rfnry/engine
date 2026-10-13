@@ -196,12 +196,11 @@ async def test_without_boot_the_model_is_sent_exactly_what_it_was_sent_before(
         "  refunds.md — When a refund is owed\nskills/\n"
         "  escalate.md — Hand a conversation to a person\n\n"
         "<<<TOOLS>>>\n"
-        "- Read: Read a text file in the agent directory. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.\n"
-        "- Grep: Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines.\n"
-        "- Glob: Find files by glob pattern, e.g. '**/*.md'. Paths are relative to the agent directory.\n"
-        "- LS: List a directory inside the agent directory.\n"
-        "- Skill: Load a skill's body by name from skills/.\n"
-        "- Load: Load a file from the agent directory as it is, such as an image, a PDF or audio, so you see or hear it yourself.\n"
+        "- Read: Read a text file by its path in the FILES map. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.\n"
+        "- Grep: Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder of the FILES map; without it, your own folder is searched.\n"
+        "- Glob: Find files by glob pattern, e.g. '**/*.md'. Paths are those of the FILES map.\n"
+        "- LS: List a folder by its path in the FILES map; without a path, your own folder.\n"
+        "- Load: Load a file of the FILES map as it is, such as an image, a PDF or audio, so you see or hear it yourself.\n"
         "- lookup_order: Fetch an order by id\n"
         "- now: The current UTC time\n"
         "- Delegate: Hand an input to another agent and get its reply.\n\n"
@@ -209,13 +208,12 @@ async def test_without_boot_the_model_is_sent_exactly_what_it_was_sent_before(
         "<<<CONTEXT>>>\nAcme is on the enterprise plan."
     )
     assert messages == [*history, Message(role="user", content="Charged twice.")]
-    assert tools_fingerprint(tools) == "c3e82fb70aab3171"
+    assert tools_fingerprint(tools) == "de11e35d10b209bc"
     assert [t.name for t in tools] == [
         "Read",
         "Grep",
         "Glob",
         "LS",
-        "Skill",
         "Load",
         "lookup_order",
         "now",
@@ -451,3 +449,24 @@ def test_the_boot_and_the_fingerprint_come_from_one_read_of_each_file(
     opens = {name: 2 if name.endswith(".md") else 1 for name in booted}
     assert {name: opened.count(support / name) for name in booted} == opens
     assert spec.fingerprint == by_hand(support)
+
+
+async def test_boot_all_sends_every_file_but_agent_md_and_the_declarations(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    support = root / "support"
+    (support / "notes.txt").write_text("Open on weekdays.\n", encoding="utf-8")
+    (support / "docs" / "tools").mkdir(parents=True)
+    (support / "docs" / "tools" / "hammer.md").write_text("Content.\n", encoding="utf-8")
+    boot_all(support)
+    run = await engine(root, Scripted(text_reply("ok"))).run("support", "acme", "Hi")
+    assert isinstance(run, Generation)
+    names = [p.text.split("\n", 1)[0] for p in run.boot if isinstance(p, Text)]
+    assert names == [
+        "<<<docs/tools/hammer.md>>>",
+        "<<<knowledge/plans.md>>>",
+        "<<<notes.txt>>>",
+        "<<<rules/refunds.md>>>",
+        "<<<skills/escalate.md>>>",
+    ]

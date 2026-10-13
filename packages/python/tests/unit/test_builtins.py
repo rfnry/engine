@@ -17,8 +17,15 @@ def _tools() -> Tools:
     return Tools(builtins(SUPPORT))
 
 
-def test_the_five_builtins() -> None:
-    assert _tools().names == ["Read", "Grep", "Glob", "LS", "Skill"]
+def test_the_four_builtins() -> None:
+    assert _tools().names == ["Read", "Grep", "Glob", "LS"]
+
+
+def test_every_builtin_takes_the_paths_of_the_files_map() -> None:
+    described = {d["name"]: d["description"] for d in _tools().definitions()}
+    [load] = Tools([load_tool(SUPPORT)]).definitions()
+    for text in [*described.values(), load["description"]]:
+        assert "FILES map" in text
 
 
 async def test_read_inside_and_outside() -> None:
@@ -39,12 +46,6 @@ async def test_glob_and_ls() -> None:
     assert "tools/lookup_order.md" in str(found).splitlines()
     listing = await _tools().dispatch("LS", {})
     assert "rules/" in str(listing).splitlines() and "AGENT.md" in str(listing).splitlines()
-
-
-async def test_skill_body_without_frontmatter() -> None:
-    assert await _tools().dispatch("Skill", {"name": "escalate"}) == 'Say "escalating" and stop.'
-    with pytest.raises(InputError, match="skill not found"):
-        await _tools().dispatch("Skill", {"name": "ghost"})
 
 
 async def test_bad_arguments_are_refused() -> None:
@@ -104,9 +105,6 @@ async def test_no_builtin_reaches_through_a_symlink(escape: Path) -> None:
     for pattern in ["../outside/*.md", "/etc/*"]:
         with pytest.raises(InputError, match="inside the agent directory"):
             await tools.dispatch("Glob", {"pattern": pattern})
-    for name in ["leak", "../rules/inside", "../link"]:
-        with pytest.raises(InputError, match=f"^builtins: skill outside skills/: {name}$"):
-            await tools.dispatch("Skill", {"name": name})
 
 
 @pytest.fixture

@@ -14,9 +14,7 @@ from .fakes import TOOLS, Scripted
 async def test_engine_tools_is_the_agents_surface(fixtures: Path) -> None:
     engine = Engine(fixtures, generation=Scripted(), tools=TOOLS)
     tools = EngineTools(engine, agent="support", scope="acme")
-    assert tools.names[:6] == ["Read", "Grep", "Glob", "LS", "Skill", "Load"] and set(
-        tools.names[6:]
-    ) >= {
+    assert tools.names[:5] == ["Read", "Grep", "Glob", "LS", "Load"] and set(tools.names[5:]) >= {
         "lookup_order",
         "now",
     }
@@ -27,7 +25,6 @@ async def test_engine_tools_is_the_agents_surface(fixtures: Path) -> None:
         "Grep",
         "Glob",
         "LS",
-        "Skill",
         "Load",
     ]
 

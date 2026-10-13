@@ -217,7 +217,7 @@ alone, so a folder written for another tool — `skills/<name>/SKILL.md` with `n
 stay out of the map: the prompt already holds them. Frontmatter that is not valid YAML, or a
 `description:` that is not a string, is a `ConfigurationError` naming the file when the tree loads,
 so a typo never drops a file from the map. Everything else the model reads when it needs it, with
-the `Read`, `Grep`, `Glob`, `LS`, `Skill` and `Load` tools, and it can read only inside its own
+the `Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can read only inside its own
 directory. `Read` returns a text file as text. `Load` hands the model any other file as it is — an
 image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in the
 folder as it came, the model reads it with its own understanding of images and documents, there is
@@ -239,16 +239,16 @@ boot: all
 Tag the document. Every rule applies to every document.
 ```
 
-With `boot: all` the model also receives every other file under `rules/`, `skills/` and
-`knowledge/`, sorted by relative path character by character — `knowledge/` before `rules/` before
-`skills/` — each under its path: what `Read` would return for it, and for a file `Read` refuses —
-over 5 MB, or not text — the part `Load` would hand over. The maps stay maps and the folder stays
-as it is; only when the files are read changes, so no turn goes to opening them. They travel as one
-user message ahead of the history, sent with every model call, and are read when the engine loads
-the tree, as the fingerprint is taken, so an edit shows in the next `Engine`. `run.boot` holds that
-message's parts; `run.messages` and `run.conversation` leave it out, so a conversation passed back
-does not send the folder twice and a replay boots from the candidate's folder. The tools stay as
-they are — `Read`, `Load` and `Skill` hand over what the model already holds. Each agent boots its
+With `boot: all` the model also receives every other file of its folder — all but `AGENT.md` and
+`tools/`, `tasks/` and `questions/`, described or not — sorted by path character by character, each
+under its path: what `Read` would return for it, and for a file `Read` refuses — over 5 MB, or not
+text — the part `Load` would hand over. The map stays a map and the folder stays as it is; only when
+the files are read changes, so no turn goes to opening them. They travel as one user message ahead
+of the history, sent with every model call, and are read when the engine loads the tree, as the
+fingerprint is taken, so an edit shows in the next `Engine`. `run.boot` holds that message's parts;
+`run.messages` and `run.conversation` leave it out, so a conversation passed back does not send the
+folder twice and a replay boots from the candidate's folder. The tools stay as they are — `Read` and
+`Load` hand over what the model already holds. Each agent boots its
 own folder, a delegated or routed one included. A decision agent reads no files, so `boot:` on one
 is a `ConfigurationError` when the tree loads; so is a file neither `Read` nor `Load` would hand
 over — over 20 MB, of a type the generation model's `media_types` does not name, or not the type its
@@ -1164,7 +1164,7 @@ recorded runs were given. Each pair holds the recorded run, its labels and the c
 candidate = Engine(root, generation=llm, decision=dm, tools=tools)
 
 async def read_only(agent, call):
-    return call.name in {"Read", "Grep", "Glob", "LS", "Skill", "Load", "Delegate", "lookup_order"}
+    return call.name in {"Read", "Grep", "Glob", "LS", "Load", "Delegate", "lookup_order"}
 
 async for pair in refinery.replay("acme", candidate, agent="support", holdout=True, labeled=True,
                                   approve=read_only):
@@ -1253,7 +1253,7 @@ class Tools:
     names: list[str]                                     # every tool's name, in order
 ```
 
-An agent's tools are declared in its directory. `Read Grep Glob LS Skill Load` come with every generation agent,
+An agent's tools are declared in its directory. `Read Grep Glob LS Load` come with every generation agent,
 `Delegate` comes with `agents:`, `History` with a run whose `start=` is past the beginning of its
 history, and its name is taken on every run, so a tool of yours named `History` is refused from
 the first; everything else is a file under `tools/`:

@@ -13,7 +13,6 @@ import regex
 from pydantic import BaseModel, Field
 
 from rfnry_engine.errors import InputError
-from rfnry_engine.frontmatter import strip_frontmatter
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Audio, Document, Image, Part, Text
 from rfnry_engine.tools.tools import Result, Tool
@@ -25,7 +24,6 @@ _HEAD_LIMIT = 250
 _GREP_BYTES = 50 * 1024 * 1024
 _GREP_SECONDS = 10.0
 _SNIFF = 8192
-_BOOTED = ("knowledge", "rules", "skills")
 
 
 class ReadArgs(BaseModel):
@@ -59,10 +57,6 @@ class GlobArgs(BaseModel):
 class LSArgs(BaseModel):
     path: str | None = None
     limit: int = Field(default=_HEAD_LIMIT, ge=1)
-
-
-class SkillArgs(BaseModel):
-    name: str
 
 
 def _hidden(rel: Path) -> bool:
@@ -127,9 +121,6 @@ def boot_parts(
     parts: list[Part] = []
     read: dict[str, bytes] = {}
     for name, path in files:
-        folder, _, rest = name.partition("/")
-        if folder not in _BOOTED or rest in ("", "_index.md"):
-            continue
         size = path.stat().st_size
         if size > _LOAD_BYTES:
             raise InputError(f"builtins: file exceeds {_LOAD_BYTES} bytes: {name}")
@@ -273,18 +264,6 @@ class _Directory:
         suffix = f"\n[truncated to {a.limit} of {len(entries)}]" if len(entries) > a.limit else ""
         return "\n".join(shown) + suffix
 
-    def skill(self, args: dict[str, Any]) -> str:
-        a = SkillArgs.model_validate(args)
-        flat = self.root / "skills" / f"{a.name}.md"
-        folder = self.root / "skills" / a.name / "SKILL.md"
-        try:
-            target = Jail(self.root / "skills").resolve(flat if flat.is_file() else folder)
-        except InputError:
-            raise InputError(f"builtins: skill outside skills/: {a.name}") from None
-        if not target.is_file():
-            raise InputError(f"builtins: skill not found: {a.name}")
-        return strip_frontmatter(target.read_text(encoding="utf-8")).lstrip("\n").rstrip()
-
 
 def builtins(root: Path) -> list[Tool]:
     directory = _Directory(root)
@@ -299,33 +278,27 @@ def builtins(root: Path) -> list[Tool]:
     return [
         Tool(
             "Read",
-            "Read a text file in the agent directory. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.",
+            "Read a text file by its path in the FILES map. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.",
             body=threaded(directory.read),
             args=ReadArgs,
         ),
         Tool(
             "Grep",
-            "Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines.",
+            "Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder of the FILES map; without it, your own folder is searched.",
             body=threaded(directory.grep),
             args=GrepArgs,
         ),
         Tool(
             "Glob",
-            "Find files by glob pattern, e.g. '**/*.md'. Paths are relative to the agent directory.",
+            "Find files by glob pattern, e.g. '**/*.md'. Paths are those of the FILES map.",
             body=threaded(directory.glob),
             args=GlobArgs,
         ),
         Tool(
             "LS",
-            "List a directory inside the agent directory.",
+            "List a folder by its path in the FILES map; without a path, your own folder.",
             body=threaded(directory.ls),
             args=LSArgs,
-        ),
-        Tool(
-            "Skill",
-            "Load a skill's body by name from skills/.",
-            body=threaded(directory.skill),
-            args=SkillArgs,
         ),
     ]
 
@@ -358,14 +331,14 @@ def load_tool(
     if workspace is None:
         return Tool(
             "Load",
-            "Load a file from the agent directory as it is, such as an image, a PDF or audio, so you see or hear it yourself.",
+            "Load a file of the FILES map as it is, such as an image, a PDF or audio, so you see or hear it yourself.",
             body=body,
             args=LoadArgs,
         )
     return Tool(
         "Load",
         "Load a file as it is, such as an image, a PDF or audio, so you see or hear it yourself. "
-        "where is 'folder' for the agent directory or 'workspace' for your workspace.",
+        "where is 'folder' for a file of the FILES map or 'workspace' for your workspace.",
         body=body,
         args=LoadAnywhereArgs,
     )
