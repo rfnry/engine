@@ -1,3 +1,6 @@
+---
+description: What the ledger's columns mean, what a duplicate is, and how to total expenses
+---
 ledger.csv has one row per transaction: date (YYYY-MM-DD), account, counterparty, reference, and
 amount in US dollars, negative for money out and positive for money in.
 

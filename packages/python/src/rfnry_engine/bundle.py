@@ -20,10 +20,8 @@ def build_bundle(
 ) -> str:
     sections = [
         ("AGENT", spec.body),
-        ("INDEX", _read(spec.root / "INDEX.md")),
         ("TASK", "" if task is None else _read(spec.root / "tasks" / f"{task}.md")),
-        ("RULES", _read(spec.root / "rules" / "_index.md")),
-        ("SKILLS", _read(spec.root / "skills" / "_index.md")),
+        ("FILES", spec.listing),
         (
             "TOOLS",
             "\n".join(
@@ -31,7 +29,6 @@ def build_bundle(
                 for t in tools
             ),
         ),
-        ("KNOWLEDGE", _read(spec.root / "knowledge" / "_index.md")),
         ("AGENTS", "\n".join(f"- {a.name}: {a.description}" for a in agents)),
         ("CONTEXT", (context or "").strip()),
     ]

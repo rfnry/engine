@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, f
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_files, folder_fingerprint
+from rfnry_engine.folders import listing
 from rfnry_engine.frontmatter import parse_frontmatter_doc
 from rfnry_engine.models import Check, Choice, Part, Question, Score
 from rfnry_engine.tools.builtins import boot_parts
@@ -100,6 +101,7 @@ class AgentSpec(BaseModel):
     workspace: bool = False
     task_questions: dict[str, dict[str, Question]] = Field(default_factory=dict)
     boot: list[Part] = Field(default_factory=list)
+    listing: str = ""
 
 
 def _read(path: Path) -> str:
@@ -229,6 +231,7 @@ def load_agent(directory: Path, media_types: Collection[str] | None = None) -> A
         workspace=front.workspace,
         task_questions=task_questions,
         boot=boot,
+        listing=listing(root, True, {}),
     )
 
 

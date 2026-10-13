@@ -184,9 +184,10 @@ def question(kind: str, extra: str = "") -> str:
 
 def tree(root: Path) -> None:
     write(root / "support/AGENT.md", markdown("name: support"))
-    write(root / "support/INDEX.md", "rules/refunds.md\n")
-    write(root / "support/rules/_index.md", "rules/refunds.md: refunds\n")
-    write(root / "support/rules/refunds.md", "A double charge is refunded in full.\n")
+    write(
+        root / "support/rules/refunds.md",
+        "---\ndescription: When a refund is owed\n---\nA double charge is refunded in full.\n",
+    )
     write(root / "support/tasks/triage.md", "Triage the message.\n")
     for name in ("lookup_order", "fetch_invoice"):
         write(root / f"support/tools/{name}.md", markdown(f"name: {name}\n"))
@@ -382,7 +383,6 @@ def test_the_route_entry_with_a_task_loads(tmp_path: Path) -> None:
 
 def test_the_agent_that_boots_its_folder_loads(tmp_path: Path) -> None:
     write(tmp_path / "tagger/AGENT.md", markdown("name: tagger"))
-    write(tmp_path / "tagger/rules/_index.md", "rules/house.md: the house rules\n")
     write(tmp_path / "tagger/rules/house.md", "Tag by department.\n")
     spec = load_agent(tmp_path / "tagger")
     assert spec.kind == "generation" and spec.body.startswith("Tag the document.")

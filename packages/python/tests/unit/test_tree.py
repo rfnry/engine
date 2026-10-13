@@ -95,6 +95,21 @@ def test_question_with_one_option_is_refused(tmp_path: Path) -> None:
         load_agent(tmp_path / "d")
 
 
+def test_an_agent_carries_the_map_of_its_folder() -> None:
+    support = load_tree(FIXTURES)["support"]
+    assert support.listing == (
+        "knowledge/\n  plans.md — The three plans\nrules/\n  refunds.md — When a refund is owed\n"
+        "skills/\n  escalate.md — Hand a conversation to a person"
+    )
+
+
+def test_a_bad_description_stops_the_tree_naming_the_file(tmp_path: Path) -> None:
+    _agent(tmp_path, "a", "kind: generation\n")
+    (tmp_path / "a" / "notes.md").write_text("---\ndescription: [x\n---\n")
+    with pytest.raises(ConfigurationError, match=r"^frontmatter: invalid YAML in .*notes\.md"):
+        load_tree(tmp_path)
+
+
 def _agent(
     root: Path,
     name: str,

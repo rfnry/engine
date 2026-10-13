@@ -158,8 +158,11 @@ async def test_a_run_applies_a_rule_held_only_in_its_file_without_reading_it(
 ) -> None:
     root = tree(fixtures, tmp_path)
     support = root / "support"
-    assert (support / "rules" / "refunds.md").read_text(encoding="utf-8") == RULE
-    assert "without approval" not in (support / "rules" / "_index.md").read_text(encoding="utf-8")
+    assert (support / "rules" / "refunds.md").read_text(encoding="utf-8").endswith(RULE)
+    assert (
+        "without approval"
+        not in Engine(root, generation=Scripted(), tools=TOOLS)._spec("support").listing
+    )
     reading = RuleFollower()
     on_demand = await engine(root, reading).run("support", "acme", "Charged twice.")
     assert isinstance(on_demand, Generation)
@@ -188,10 +191,10 @@ async def test_without_boot_the_model_is_sent_exactly_what_it_was_sent_before(
     [(system, messages, tools)] = llm.calls
     assert system == (
         "<<<AGENT>>>\nYou are the support desk. Be brief, cite the rule you apply.\n\n"
-        "<<<INDEX>>>\nrules/ holds what you must do; skills/ what you can do; knowledge/ what you know.\n\n"
         "<<<TASK>>>\nDecide whether this message needs a person.\n\n"
-        "<<<RULES>>>\n- refunds.md — when a refund is owed\n\n"
-        "<<<SKILLS>>>\n- escalate — hand a conversation to a person\n\n"
+        "<<<FILES>>>\nknowledge/\n  plans.md — The three plans\nrules/\n"
+        "  refunds.md — When a refund is owed\nskills/\n"
+        "  escalate.md — Hand a conversation to a person\n\n"
         "<<<TOOLS>>>\n"
         "- Read: Read a text file in the agent directory. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.\n"
         "- Grep: Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines.\n"
@@ -202,7 +205,6 @@ async def test_without_boot_the_model_is_sent_exactly_what_it_was_sent_before(
         "- lookup_order: Fetch an order by id\n"
         "- now: The current UTC time\n"
         "- Delegate: Hand an input to another agent and get its reply.\n\n"
-        "<<<KNOWLEDGE>>>\n- plans.md — the three plans\n\n"
         "<<<AGENTS>>>\n- triage: Judges urgency and severity of a message\n\n"
         "<<<CONTEXT>>>\nAcme is on the enterprise plan."
     )
@@ -266,7 +268,8 @@ async def test_the_boot_is_read_when_the_tree_loads_as_the_fingerprint_is_taken(
     old = await loaded.run("support", "acme", "x")
     new = await engine(root, Scripted(text_reply("c"))).run("support", "acme", "x")
     assert isinstance(old, Generation) and isinstance(new, Generation)
-    assert Text(text=f"<<<rules/refunds.md>>>\n{RULE}") in old.boot
+    held = f"<<<rules/refunds.md>>>\n---\ndescription: When a refund is owed\n---\n{RULE}"
+    assert Text(text=held) in old.boot
     assert Text(text="<<<rules/refunds.md>>>\nRefunds need approval.\n") in new.boot
     assert old.fingerprint != new.fingerprint
 
@@ -445,5 +448,6 @@ def test_the_boot_and_the_fingerprint_come_from_one_read_of_each_file(
     monkeypatch.undo()
     booted = ["knowledge/diagram.png", "knowledge/plans.md", "knowledge/rates.pdf"]
     booted += ["rules/chargebacks/disputed.md", "rules/refunds.md", "skills/escalate.md"]
-    assert {name: opened.count(support / name) for name in booted} == dict.fromkeys(booted, 1)
+    opens = {name: 2 if name.endswith(".md") else 1 for name in booted}
+    assert {name: opened.count(support / name) for name in booted} == opens
     assert spec.fingerprint == by_hand(support)

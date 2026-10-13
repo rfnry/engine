@@ -29,9 +29,9 @@ async def test_read_inside_and_outside() -> None:
 
 async def test_grep_files_and_content() -> None:
     files = await _tools().dispatch("Grep", {"pattern": "refund", "case_insensitive": True})
-    assert str(files).splitlines() == ["rules/_index.md", "rules/refunds.md"]
+    assert str(files).splitlines() == ["rules/refunds.md"]
     lines = await _tools().dispatch("Grep", {"pattern": "refunded", "mode": "content"})
-    assert lines == "rules/refunds.md:1:A duplicate charge is refunded in full without approval."
+    assert lines == "rules/refunds.md:4:A duplicate charge is refunded in full without approval."
 
 
 async def test_glob_and_ls() -> None:

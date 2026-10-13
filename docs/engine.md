@@ -170,13 +170,9 @@ a tenant and returns its record.
 agents/
   support/
     AGENT.md              who the agent is
-    INDEX.md              a map of the directory, read at boot
-    rules/_index.md       what the agent must do — the index is read at boot, the files on demand
-    rules/refunds.md
-    skills/_index.md      what the agent can do — the index at boot, a skill's body when loaded
+    rules/refunds.md      any folders and files; a file's description puts it in the map
     skills/escalate.md
-    knowledge/_index.md   what the agent knows — the index at boot, the files on demand
-    knowledge/rates.pdf   knowledge is text, images or PDFs
+    knowledge/rates.pdf   text, images, PDFs, anything — read when needed
     tools/lookup_order.md
     tools/fetch_invoice.md
     tasks/triage.md       a named task, chosen per run
@@ -195,16 +191,38 @@ agents: [triage]
 You are the support desk for Acme. Be brief, be exact, cite the rule you are applying.
 ```
 
-At boot the model receives `AGENT.md`, `INDEX.md`, the three `_index.md` files, the list of tools it
-has, the descriptions of the agents it may call, the task if one was named, and any context the
-caller passes. Everything else it reads when it needs it, with the `Read`, `Grep`, `Glob`, `LS`,
-`Skill` and `Load` tools, and it can read only inside its own directory. `Read` returns a text file
-as text. `Load` hands the model any other file as it is — an image, a PDF, a recording, a
-spreadsheet — so a price list, a diagram or a scanned form sits in `knowledge/` as it came, the
-model reads it with its own understanding of images and documents, there is no parser in between,
-and nothing is loaded until the model asks — unless the agent asks for its folder at boot, below.
-Write the maps with full paths —
-`rules/refunds.md`, not `refunds.md` — because a model opens exactly what the map names.
+At boot the model receives `AGENT.md`, a map of its folder, the list of tools it has, the
+descriptions of the agents it may call, the task if one was named, and any context the caller
+passes. The map is generated when the tree loads: every folder, and every file whose frontmatter
+has a `description:`, under its path as the tools take it.
+
+```markdown
+---
+description: When a refund is owed, and what needs a person
+---
+A duplicate charge is refunded in full without approval.
+```
+
+```
+knowledge/
+rules/
+  refunds.md — When a refund is owed, and what needs a person
+skills/
+```
+
+A folder is always in the map, since its name says something; a file without a description is
+not, though the model can still find it with `LS` and `Glob`. Other frontmatter keys are left
+alone, so a folder written for another tool — `skills/<name>/SKILL.md` with `name:` and
+`description:` — works as it is. `AGENT.md` and the folders `tools/`, `tasks/` and `questions/`
+stay out of the map: the prompt already holds them. Frontmatter that is not valid YAML, or a
+`description:` that is not a string, is a `ConfigurationError` naming the file when the tree loads,
+so a typo never drops a file from the map. Everything else the model reads when it needs it, with
+the `Read`, `Grep`, `Glob`, `LS`, `Skill` and `Load` tools, and it can read only inside its own
+directory. `Read` returns a text file as text. `Load` hands the model any other file as it is — an
+image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in the
+folder as it came, the model reads it with its own understanding of images and documents, there is
+no parser in between, and nothing is loaded until the model asks — unless the agent asks for its
+folder at boot, below.
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its
 `kind`, `description` and the `agents` it may call.
 
@@ -1458,8 +1476,9 @@ Everything the package exports, by role.
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
 `AGENT.md`, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
-(`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), a decision agent
-with `boot: all`, a file `boot: all` would send that neither `Read` nor `Load` would hand over —
+(`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that
+is not valid YAML or a `description:` that is not a string in a file the map would show, a decision
+agent with `boot: all`, a file `boot: all` would send that neither `Read` nor `Load` would hand over —
 over 20 MB, of a type the model's `media_types` does not name, or not the type its name says — a
 question with instructions both in its frontmatter and in its body or in neither, a decision agent
 with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a route entry
