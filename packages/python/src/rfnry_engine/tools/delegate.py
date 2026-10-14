@@ -54,6 +54,9 @@ QUESTION: dict[str, Any] = {
 _stack: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
     "delegation_stack", default=()
 )
+_routes: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "delegation_routes", default=()
+)
 
 
 class AgentArgs(BaseModel):
@@ -97,17 +100,20 @@ def permit(spec: AgentSpec, args: dict[str, Any]) -> DelegateArgs:
 @asynccontextmanager
 async def enter(name: str, max_depth: int, *, routed: bool = False) -> AsyncIterator[None]:
     stack = _stack.get()
-    if routed and name in stack:
+    routes = _routes.get()
+    if routed and name in routes:
         raise DelegationLoopError(f"delegate: loop at {' -> '.join([*stack, name])}")
     if len(stack) >= max_depth:
         raise DelegationDepthError(
             f"delegate: depth {max_depth} exceeded at {' -> '.join([*stack, name])}"
         )
-    token = _stack.set((*stack, name))
+    stack_token = _stack.set((*stack, name))
+    routes_token = _routes.set((*routes, name) if routed else (name,))
     try:
         yield
     finally:
-        _stack.reset(token)
+        _routes.reset(routes_token)
+        _stack.reset(stack_token)
 
 
 def delegate_schema(engine: Engine, spec: AgentSpec) -> dict[str, Any]:

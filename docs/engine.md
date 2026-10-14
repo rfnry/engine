@@ -836,10 +836,11 @@ target already asks, or a decision run with nothing to ask reaches the model as 
 read and act on, and the run goes on.
 
 Depth is capped (`max_depth`, default 5). Within it an agent may name itself in `agents:` and hand a
-sub-problem to a fresh run of itself, and two agents may call each other. A route is different: a
-route into an agent already in the chain would decide the same input again, so it is refused with
-`DelegationLoopError`. Through `Delegate` an error reaches the model as a tool error and the run
-continues; through a route it raises.
+sub-problem to a fresh run of itself, and two agents may call each other. A route is different: it
+forwards the same input, so a route into an agent that already decided it — in the same chain of
+routes, since the last `Delegate` — is refused with `DelegationLoopError`; a `Delegate` starts a new
+input, so the agents above it do not count. Through `Delegate` an error reaches the model as a tool
+error and the run continues; through a route it raises.
 
 ### Both kinds together
 
@@ -1453,8 +1454,8 @@ was made with, recorded like any run; `context=`, `tools=`, `workspace=` and `ta
 Mounted inside another run with `run(tools=)` it is a tool like any other, under `tool_timeout`,
 and its run is not the caller's child — to nest with lineage, name the agent in `agents:`. The
 chain carries across it as across `Delegate`: an agent may reach a fresh run of itself through it,
-`max_depth` bounds how deep that goes, and only a route into an agent already in the chain is
-refused.
+`max_depth` bounds how deep that goes, and only a route into an agent already in the same chain of
+routes is refused.
 
 ## Storage
 
@@ -1590,9 +1591,9 @@ correction of the wrong shape or for a question the run was not asked, a `delete
 a `limit`, `concurrency` or `repeat` below 1, a tool called with bad arguments or a path outside its
 directory. `ModelError` when an adapter breaks the contract — a
 result whose fields do not fit, a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels. `RunawayError` when
-a loop exceeds `max_steps` (default 200). `DelegationLoopError` for a route into an agent already
-in the chain; `DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool
-error through `Delegate` and raises through a route.
+a loop exceeds `max_steps` (default 200). `DelegationLoopError` for a route into an agent already in
+the same chain of routes; `DelegationDepthError` for nesting past `max_depth`, which reaches the
+model as a tool error through `Delegate` and raises through a route.
 `StorageError` for the database. Inside a run, a tool's error is the model's to read, never raised.
 All under `EngineException` — the root takes the `Exception` suffix, every child ends in `Error`,
 the same shape as rfnry-memory's. Every message names the module that raised it, then says what went
