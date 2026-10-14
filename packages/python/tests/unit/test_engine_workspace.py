@@ -67,14 +67,14 @@ async def test_an_agent_without_the_flag_never_sees_the_workspace(
     await engine.run("chat", "acme", "x", workspace=work)
     await engine.run("chat", "acme", "x")
     for index in (0, 1):
-        assert not {"Shell", "Write", "Edit"} & set(names(llm, index))
+        assert not {"Shell", "Job", "Jobs", "Write", "Edit"} & set(names(llm, index))
 
 
-async def test_an_agent_with_the_flag_sees_the_three_tools(tmp_path: Path, work: Workspace) -> None:
+async def test_an_agent_with_the_flag_sees_the_five_tools(tmp_path: Path, work: Workspace) -> None:
     llm = Scripted(text_reply("ok"))
     engine = Engine(make_tree(tmp_path), generation=llm)
     await engine.run("coder", "acme", "x", workspace=work)
-    assert {"Shell", "Write", "Edit"} <= set(names(llm, 0))
+    assert {"Shell", "Job", "Jobs", "Write", "Edit"} <= set(names(llm, 0))
 
 
 async def test_a_flagged_agent_without_a_workspace_is_refused_before_the_model(
@@ -251,3 +251,54 @@ async def test_an_agent_loads_the_chart_it_made_in_its_workspace(
     ]
     [load] = [t for t in llm.calls[0][2] if t.name == "Load"]
     assert load.input_schema["properties"]["where"]["enum"] == ["folder", "workspace"]
+
+
+async def appears(path: Path) -> None:
+    for _ in range(100):
+        if path.exists():
+            return
+        await asyncio.sleep(0.02)
+    pytest.fail(f"{path.name} never appeared")
+
+
+async def test_a_job_started_in_one_run_is_read_and_stopped_in_the_next(
+    tmp_path: Path, root: Path, work: Workspace
+) -> None:
+    start = {"command": "echo started; touch ready; sleep 30", "background": True}
+    llm = Scripted(
+        use(ToolCall(id="1", name="Shell", args=start)),
+        text_reply("started it"),
+        use(ToolCall(id="2", name="Job", args={"id": "j1", "stop": True})),
+        text_reply("stopped it"),
+    )
+    engine = Engine(make_tree(tmp_path), generation=llm)
+    first = await engine.run("coder", "acme", "start it", workspace=work)
+    assert isinstance(first, Generation)
+    assert json.loads(str(first.steps[0].result)) == {"job": "j1"}
+    await appears(root / "ready")
+    second = await engine.run("coder", "acme", "stop it", workspace=work)
+    assert isinstance(second, Generation)
+    assert json.loads(str(second.steps[0].result)) == {
+        "output": "started\n",
+        "running": False,
+        "exit_code": -15,
+    }
+
+
+async def test_approve_sees_a_background_command(tmp_path: Path, work: Workspace) -> None:
+    seen: list[ToolCall] = []
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        seen.append(call)
+        return False
+
+    llm = Scripted(
+        use(ToolCall(id="1", name="Shell", args={"command": "serve", "background": True})),
+        text_reply("refused"),
+    )
+    engine = Engine(make_tree(tmp_path), generation=llm)
+    run = await engine.run("coder", "acme", "x", workspace=work, approve=approve)
+    assert seen[0].args == {"command": "serve", "background": True}
+    assert isinstance(run, Generation) and run.steps[0].approved is False
+    jobs = next(t for t in work.tools() if t.name == "Jobs")
+    assert await jobs.call({}) == {"jobs": []}

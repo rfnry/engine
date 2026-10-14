@@ -7,7 +7,9 @@ SRC = Path(rfnry_engine.__file__).parent
 
 LOG_CALLS = {"debug", "info", "warning", "error", "exception", "critical", "log"}
 
-ALLOWED: dict[tuple[str, str], str] = {}
+ALLOWED: dict[tuple[str, str], str] = {
+    ("tools/workspace.py", "failed[0]"): "a backend's kill() error reaches the caller as it is",
+}
 
 
 def _sources() -> list[Path]:

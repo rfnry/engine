@@ -961,14 +961,34 @@ read-only, this tenant's directory writable, an empty `/tmp`, and nothing else �
 no service configuration, no network — and kills every process when the command ends. The model
 sees none of this: it has the same tools, and its command runs inside.
 
-The agent then has three more tools. `Shell(command)` runs a command and returns `exit_code`,
-`stdout`, `stderr` and `timed_out`; when the command ends, anything it left running is stopped.
-`Write(path, content)` writes a file exactly, and `Edit(path, old, new)` replaces one exact
-occurrence — helpers that send only what changes and leave a clean step in the record; the shell
-can do both too. `Load` takes `where="workspace"` to hand the model a file from the workspace, so
-an agent looks at the chart it just plotted. Each command starts fresh in the directory, so a `cd`
-or a variable does not carry over, and the tool's description tells the model so, along with its
-limits.
+The agent then has five more tools. `Shell(command, background=false)` runs a command and returns
+`exit_code`, `stdout`, `stderr` and `timed_out`; when the command ends, anything it left running is
+stopped. With `background=true` the command starts as a job — a server, a watcher, a long build —
+and the call returns its id at once, `{"job": "j1"}`. `Job(id, stop=false)` returns what the job
+printed since the last read, stdout and stderr in the order they arrived, whether it is `running`,
+and its `exit_code` once it has ended; `stop=true` stops it first. `Jobs()` lists the jobs: id,
+command, when it started, running or exit code. `Write(path, content)` writes a file exactly, and
+`Edit(path, old, new)` replaces one exact occurrence — helpers that send only what changes and leave
+a clean step in the record; the shell can do both too. `Load` takes `where="workspace"` to hand the
+model a file from the workspace, so an agent looks at the chart it just plotted. Each command starts
+fresh in the directory, so a `cd` or a variable does not carry over, and the tool's description
+tells the model so, along with its limits.
+
+Jobs belong to the workspace, not to the run: they keep running after the run that started them,
+after a run that failed and after `stop.now()`, until the model stops them or you close the
+workspace — so an agent starts a server in one message and tests against it in the next. Every run
+given the workspace, delegated and routed runs included, sees the same jobs, numbered `j1`, `j2`, …
+for the workspace's life. A job that ended stays listed until its last output is read. Each job
+keeps one task reading its output, so it never stalls on a full pipe; what it printed waits for
+`Job`, kept to its first and last `output_bytes // 2` bytes. The list of jobs is not in the system
+prompt, which would change with every job and cost the cached prefix of every conversation on the
+workspace; the model asks `Jobs()`.
+
+Close the workspace when you are done with it — `async with Workspace(…) as workspace:` or `await
+workspace.close()` — and every job is stopped; the workspace stays usable. A workspace never closed
+leaves its jobs to the backend: on `Local` they may outlive your process, unless the sandbox ties
+them to it, as bubblewrap's `--die-with-parent` does. A workspace and its jobs live in one process:
+a service with several workers keeps a conversation on the same worker.
 
 `Workspace(backend, scope=, timeout=, output_bytes=)`:
 
@@ -976,7 +996,7 @@ limits.
 | --- | --- | --- |
 | `backend` | | where commands run and files live: `Local`, or one of yours |
 | `scope` | | the tenant the workspace belongs to |
-| `timeout` | `120` seconds | the limit on each `Shell`, `Write` and `Edit` call; a command still running is stopped — on `Local`, sent SIGTERM, then killed a second later with everything it started — and the call returns what it printed with `timed_out: true` |
+| `timeout` | `120` seconds | the limit on each `Shell`, `Job`, `Write` and `Edit` call; a command still running is stopped — on `Local`, sent SIGTERM, then killed a second later with everything it started — and the call returns what it printed with `timed_out: true` |
 | `output_bytes` | `30_000` | the cap on `stdout` and on `stderr`, each keeping its first and last half |
 
 `Local(root, shell=, env=, description=)`:
@@ -988,10 +1008,10 @@ limits.
 | `env` | `PATH`, `HOME` (the directory), `LANG` | the only environment commands see, so the service's own keys never reach them |
 | `description` | none | added to `Shell`'s description, to tell the model what machine it has: `"bash on Debian 13, Python 3.14, no network"` |
 
-The workspace's `timeout` replaces `Engine(tool_timeout=)` for its three tools, so a ten-minute
-build and a thirty-second API call live in the same engine. A `shell` whose first word is not on
-`PATH` is a `ConfigurationError` that says so; pass `shell=["sh", "-c"]` on a system that has only
-a POSIX shell, such as Alpine.
+The workspace's `timeout` replaces `Engine(tool_timeout=)` for `Shell`, `Job`, `Write` and `Edit`,
+so a ten-minute build and a thirty-second API call live in the same engine. A `shell` whose first
+word is not on `PATH` is a `ConfigurationError` that says so; pass `shell=["sh", "-c"]` on a system
+that has only a POSIX shell, such as Alpine.
 
 On `Local`, `Write`, `Edit` and `Load` stay inside the directory: they refuse a path that leaves
 it, symlinks included. `Shell` reaches what the process running it can reach, so the real boundary
@@ -1038,8 +1058,9 @@ An agent without `workspace: true` never sees these tools, even when the run has
 plain agent, a root with no `AGENT.md`, gets them whenever one is passed; an agent with it, run
 without one, is a `ConfigurationError`, and so is a decision agent that declares it. Delegated and
 routed agents receive the run's workspace on the same terms. `stop.now()` stops a running command
-the same way the timeout does. You own the workspace and its lifetime: a temporary directory per
-run, or one kept for a project. A workspace belongs to the tenant its `scope` names.
+the same way the timeout does, and leaves jobs running. You own the workspace and its lifetime: a
+temporary directory per run, or one kept for a project. A workspace belongs to the tenant its
+`scope` names.
 
 ### Approving tool calls
 
@@ -1059,10 +1080,11 @@ run = await engine.run("coder", scope="acme", input="make the failing test pass"
 
 Where the person is — a thread, a dashboard, a chat app — is yours; the engine only waits. "Allow
 everything" is no `approve`; "ask every time" is one that always asks; "allow edits, ask for the
-rest" is the function above; "always allow this command" is a set the function keeps. A refused
-call does not run: the model reads `NotApproved: Shell was not approved` and carries on, and a
-reason reaches it through the `inbox`. Each step records `approved` — `True`, `False`, or `None`
-when nobody was asked — and the exported rows keep it, so a person's refusals become labels.
+rest" is the function above; "always allow this command" is a set the function keeps. A refused call
+does not run: the model reads `NotApproved: Shell was not approved` and carries on, and a reason
+reaches it through the `inbox`. Each step records `approved` — `True`, `False`, or `None` when
+nobody was asked — and the exported rows keep it, so a person's refusals become labels. A
+workspace's calls carry what a person needs to decide: `background` on `Shell`, `stop` on `Job`.
 
 Time spent waiting is not a tool's time: the deadline starts when the call runs. `stop.now()` ends
 a wait. Delegated and routed runs are asked through the same function, with their own agent's name;
@@ -1351,7 +1373,7 @@ turn it off. When it passes, the model gets the error `timed out after 30s` and 
 `History` reads your storage under the same deadline.
 Bodies are async and the deadline cancels them, so a body that runs blocking work in a thread must
 put its own limit on that work: cancelling the await does not stop the thread. A workspace's
-`Shell`, `Write` and `Edit` keep the workspace's own `timeout` instead. `Delegate` has no
+`Shell`, `Job`, `Write` and `Edit` keep the workspace's own `timeout` instead. `Delegate` has no
 deadline. The child run it starts is bounded by its own tool calls and `max_steps`.
 
 The builtins are bounded whatever the deadline. `Read` returns UTF-8 text and refuses anything else

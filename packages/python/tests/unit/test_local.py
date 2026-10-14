@@ -1,5 +1,7 @@
 import asyncio
 import os
+import socket
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -393,3 +395,58 @@ async def test_write_and_edit_reach_the_directory(root: Path, tmp_path: Path) ->
     with pytest.raises(InputError, match="^workspace: path outside the workspace: ../x.txt$"):
         await tool(ws, "Write").call({"path": "../x.txt", "content": "x"})
     assert not (tmp_path / "x.txt").exists()
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+async def written_pid(path: Path) -> int:
+    for _ in range(100):
+        if path.exists() and path.read_text().strip():
+            return int(path.read_text())
+        await asyncio.sleep(0.02)
+    pytest.fail(f"{path.name} never held a pid")
+
+
+async def test_a_server_started_as_a_job_answers_the_next_command(root: Path) -> None:
+    port = free_port()
+    (root / "fetch.py").write_text(
+        "import time, urllib.request\n"
+        "for _ in range(100):\n"
+        "    try:\n"
+        f"        print(urllib.request.urlopen('http://127.0.0.1:{port}/').status)\n"
+        "        break\n"
+        "    except OSError:\n"
+        "        time.sleep(0.05)\n"
+    )
+    ws = workspace(root)
+    serve = f"{sys.executable} -m http.server {port} --bind 127.0.0.1"
+    assert await tool(ws, "Shell").call({"command": serve, "background": True}) == {"job": "j1"}
+    assert (await shell(ws, f"{sys.executable} fetch.py"))["stdout"] == "200\n"
+    stopped = await tool(ws, "Job").call({"id": "j1", "stop": True})
+    assert stopped["running"] is False and '"GET / HTTP/1.1" 200' in stopped["output"]
+
+
+async def test_a_job_that_cannot_run_ends_with_its_error(root: Path) -> None:
+    ws = workspace(root)
+    await tool(ws, "Shell").call({"command": "no-such-command-anywhere", "background": True})
+    for _ in range(100):
+        [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
+        if not listed["running"]:
+            break
+        await asyncio.sleep(0.02)
+    result = await tool(ws, "Job").call({"id": "j1"})
+    assert result["running"] is False and result["exit_code"] == 127
+    assert "no-such-command-anywhere: command not found" in result["output"]
+
+
+async def test_closing_the_workspace_stops_a_real_job_and_what_it_started(root: Path) -> None:
+    ws = workspace(root)
+    command = "sleep 30 & echo $! > child.pid; wait"
+    await tool(ws, "Shell").call({"command": command, "background": True})
+    pid = await written_pid(root / "child.pid")
+    await ws.close()
+    assert await gone(pid)

@@ -490,3 +490,27 @@ async def test_stop_now_answers_the_calls_after_a_pending_output_too(tmp_path: P
         ("LS", True),
     ]
     assert answered(run.conversation)
+
+
+async def test_stop_now_leaves_a_workspace_job_running(tmp_path: Path) -> None:
+    root = tmp_path / "work"
+    root.mkdir()
+    work = Workspace(Local(root), scope="acme")
+    llm = Paced(
+        use(call("Shell", "c1", command="sleep 30 & echo $! > job.pid; wait", background=True)),
+        use(call("Shell", "c2", command="touch ready; sleep 30")),
+    )
+    engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=None)
+    stop = Stop()
+    task = asyncio.create_task(engine.run("coder", "acme", "x", workspace=work, stop=stop))
+    for _ in range(100):
+        if (root / "ready").exists():
+            break
+        await asyncio.sleep(0.02)
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert isinstance(run, Generation) and run.stopped == "now"
+    os.kill(int((root / "job.pid").read_text()), 0)
+    jobs = next(t for t in work.tools() if t.name == "Jobs")
+    assert [listed["running"] for listed in (await jobs.call({}))["jobs"]] == [True]
+    await work.close()

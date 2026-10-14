@@ -6,6 +6,8 @@ import os
 import shutil
 import signal
 from collections.abc import Awaitable, Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
 
@@ -15,7 +17,7 @@ from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.jail import Jail
 from rfnry_engine.tools.tools import Tool
 
-WORKSPACE_TOOLS = frozenset({"Shell", "Write", "Edit"})
+WORKSPACE_TOOLS = frozenset({"Shell", "Job", "Write", "Edit"})
 GRACE = 1.0
 CHUNK = 65_536
 TEXT_BYTES = 5 * 1024 * 1024
@@ -48,6 +50,12 @@ class Backend(Protocol):
 
 class ShellArgs(BaseModel):
     command: str
+    background: bool = False
+
+
+class JobArgs(BaseModel):
+    id: str
+    stop: bool = False
 
 
 class WriteArgs(BaseModel):
@@ -218,6 +226,24 @@ class Local:
         target.write_bytes(data)
 
 
+def _complete(data: bytearray) -> int:
+    for back in range(1, min(3, len(data)) + 1):
+        byte = data[-back]
+        if 0x80 <= byte <= 0xBF:
+            continue
+        needs = (
+            2
+            if 0xC2 <= byte <= 0xDF
+            else 3
+            if 0xE0 <= byte <= 0xEF
+            else 4
+            if 0xF0 <= byte <= 0xF4
+            else 0
+        )
+        return len(data) - back if needs > back else len(data)
+    return len(data)
+
+
 class _Kept:
     def __init__(self, cap: int) -> None:
         self.half = cap // 2
@@ -235,10 +261,15 @@ class _Kept:
         if len(self.tail) > self.half:
             del self.tail[: len(self.tail) - self.half]
 
-    def take(self) -> str:
+    def take(self, final: bool = True) -> str:
+        held = b""
+        if not final:
+            buffer = self.tail or self.head
+            held = bytes(buffer[_complete(buffer) :])
+            del buffer[len(buffer) - len(held) :]
         head, tail = bytes(self.head), bytes(self.tail)
-        omitted = self.total - len(head) - len(tail)
-        self.head, self.tail, self.total = bytearray(), bytearray(), 0
+        omitted = self.total - len(held) - len(head) - len(tail)
+        self.head, self.tail, self.total = bytearray(held), bytearray(), len(held)
         if omitted <= 0:
             return (head + tail).decode("utf-8", errors="replace")
         return (
@@ -283,6 +314,30 @@ async def _exit_code(process: Process) -> int | None:
         return None
 
 
+@dataclass
+class _Job:
+    command: str
+    process: Process
+    kept: _Kept
+    started: datetime = field(default_factory=lambda: datetime.now(UTC))
+    ended: asyncio.Event = field(default_factory=asyncio.Event)
+    code: int | None = None
+    task: asyncio.Task[None] | None = None
+
+
+async def _follow(job: _Job) -> None:
+    reading = _reading(job.process, job.kept, job.kept)
+    try:
+        job.code = await job.process.wait()
+        await job.process.kill()
+        await _settle(reading)
+    except Exception as exc:
+        job.kept.add(f"\n{type(exc).__name__}: {exc}\n".encode())
+    finally:
+        _discard(reading)
+        job.ended.set()
+
+
 class Workspace:
     def __init__(
         self,
@@ -308,6 +363,14 @@ class Workspace:
         self.timeout = timeout
         self.output_bytes = output_bytes
         self._description = description
+        self._jobs: dict[str, _Job] = {}
+        self._count = 0
+
+    async def __aenter__(self) -> Workspace:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
 
     def tools(self) -> list[Tool]:
         half = self.output_bytes // 2
@@ -315,14 +378,32 @@ class Workspace:
             "Run a shell command. It starts in the workspace directory, so relative paths work and "
             "there is no need to search the filesystem for it. Each command starts fresh: a cd or a "
             "variable does not carry over to the next one. A command is stopped after "
-            f"{self.timeout:g} seconds, and anything it leaves running is stopped when it ends. "
-            "Returns exit_code, stdout, stderr and timed_out; stdout and stderr keep their first and "
-            f"last {half} bytes, so send a long output to a file and read it from there."
+            f"{self.timeout:g} seconds, and anything it leaves running is stopped when it ends. To "
+            "keep something running, such as a server, a watcher or a long build, pass "
+            "background=true: it starts a job and returns its id at once, and the job keeps running "
+            "after your reply until it is stopped. Job reads a job's new output and stops it; Jobs "
+            "lists them. Returns exit_code, stdout, stderr and timed_out; stdout and stderr keep "
+            f"their first and last {half} bytes, so send a long output to a file and read it from "
+            "there."
         )
         if self._description:
             shell = f"{shell}\n\n{self._description}"
         return [
             Tool("Shell", shell, body=self._shell, args=ShellArgs),
+            Tool(
+                "Job",
+                "Read what a background job printed since the last read, stdout and stderr in the "
+                "order they arrived, whether it is running, and its exit_code once it has ended. "
+                f"stop=true stops it. The output keeps its first and last {half} bytes.",
+                body=self._job,
+                args=JobArgs,
+            ),
+            Tool(
+                "Jobs",
+                "List the workspace's background jobs: id, command, when it started, whether it is "
+                "running and its exit_code. A job that ended is listed until Job reads its last output.",
+                body=self._list,
+            ),
             Tool(
                 "Write",
                 "Write a file in the workspace with exactly this content, creating parent directories.",
@@ -337,9 +418,23 @@ class Workspace:
             ),
         ]
 
+    async def close(self) -> None:
+        jobs = list(self._jobs.values())
+        self._jobs.clear()
+        running = [job for job in jobs if not job.ended.is_set()]
+        results = await asyncio.gather(
+            *(job.process.kill() for job in running), return_exceptions=True
+        )
+        failed = [result for result in results if isinstance(result, BaseException)]
+        if failed:
+            raise failed[0]
+        await asyncio.gather(*(job.task for job in jobs if job.task is not None))
+
     async def _shell(self, args: dict[str, Any]) -> dict[str, Any]:
-        command = ShellArgs.model_validate(args).command
-        process = await self.backend.spawn(command)
+        a = ShellArgs.model_validate(args)
+        if a.background:
+            return {"job": await asyncio.shield(self._start(a.command))}
+        process = await self.backend.spawn(a.command)
         out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
         reading = _reading(process, out, err)
         try:
@@ -363,6 +458,45 @@ class Workspace:
             "stdout": out.take(),
             "stderr": err.take(),
             "timed_out": timed_out,
+        }
+
+    async def _start(self, command: str) -> str:
+        process = await self.backend.spawn(command)
+        self._count += 1
+        name = f"j{self._count}"
+        job = _Job(command=command, process=process, kept=_Kept(self.output_bytes))
+        job.task = asyncio.create_task(_follow(job))
+        self._jobs[name] = job
+        return name
+
+    async def _job(self, args: dict[str, Any]) -> dict[str, Any]:
+        a = JobArgs.model_validate(args)
+        job = self._jobs.get(a.id)
+        if job is None:
+            raise InputError(f"workspace: there is no job {a.id}")
+        if a.stop and not job.ended.is_set():
+            await job.process.kill()
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(self.timeout):
+                    await job.ended.wait()
+        running = not job.ended.is_set()
+        output = job.kept.take(final=not running)
+        if not running and self._jobs.get(a.id) is job:
+            del self._jobs[a.id]
+        return {"output": output, "running": running, "exit_code": None if running else job.code}
+
+    async def _list(self, args: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "jobs": [
+                {
+                    "job": name,
+                    "command": job.command,
+                    "started": job.started.isoformat(timespec="seconds"),
+                    "running": not job.ended.is_set(),
+                    "exit_code": job.code if job.ended.is_set() else None,
+                }
+                for name, job in self._jobs.items()
+            ]
         }
 
     async def _bounded[T](self, name: str, work: Awaitable[T]) -> T:

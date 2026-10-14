@@ -849,7 +849,7 @@ class Workspace:
     output_bytes: int
 ```
 
-Where an agent with `workspace: true` writes code and runs it, passed as `run(workspace=)`: the library's tools over `backend`, for the tenant `scope`. `timeout` bounds every `Shell`, `Write` and `Edit` call in seconds; a command still running at the limit, or when its call is cancelled, is stopped with its process's `kill()`, and so is anything a command leaves running when it ends, after which what remains of its output is read for at most a second. `output_bytes` caps `stdout` and `stderr` each, keeping their first and last half.
+Where an agent with `workspace: true` writes code and runs it, passed as `run(workspace=)`: the library's tools over `backend`, for the tenant `scope`. `timeout` bounds every `Shell`, `Job`, `Write` and `Edit` call in seconds; a command still running at the limit, or when its call is cancelled, is stopped with its process's `kill()`, and so is anything a command leaves running when it ends, after which what remains of its output is read for at most a second. `output_bytes` caps `stdout` and `stderr` each, keeping their first and last half. Jobs belong to the workspace and outlive the runs that started them; each keeps one task reading its output until it ends or `close` stops it.
 
 Raises `ConfigurationError` when `backend` lacks `spawn`, `read` or `write`, its `description` is not a string, `scope` is empty, or `timeout` or `output_bytes` is not positive.
 
@@ -859,7 +859,15 @@ Raises `ConfigurationError` when `backend` lacks `spawn`, `read` or `write`, its
 def tools(self) -> list[Tool]: ...
 ```
 
-Returns the three tools an agent with `workspace: true` gets: `Shell(command)`, which returns `exit_code`, `stdout`, `stderr` and `timed_out`; `Write(path, content)`, which writes a file exactly; and `Edit(path, old, new)`, which replaces one exact occurrence in a UTF-8 file of at most 5 MB. They go through the backend, and its errors reach the caller as they are.
+Returns the five tools an agent with `workspace: true` gets: `Shell(command, background=false)`, which returns `exit_code`, `stdout`, `stderr` and `timed_out`, or with `background=true` starts a job and returns `{"job": id}` at once; `Job(id, stop=false)`, which returns the job's `output` since the last read, `running`, and `exit_code` once it has ended, and with `stop=true` stops it first; `Jobs()`, which lists the jobs as `{"jobs": [{job, command, started, running, exit_code}]}`; `Write(path, content)`, which writes a file exactly; and `Edit(path, old, new)`, which replaces one exact occurrence in a UTF-8 file of at most 5 MB. They go through the backend, and its errors reach the caller as they are. `Job` raises `InputError` for an id with no job: a job leaves the list once its last output is read.
+
+### `Workspace.close`
+
+```python
+async def close(self) -> None: ...
+```
+
+Stops every job of the workspace with its process's `kill()`, waits for each to end, and empties the list; the workspace stays usable and its ids keep counting. Leaving `async with Workspace(…) as workspace:` calls it. Raises the first error a `kill()` raised, after asking every job.
 
 ### `Backend`
 

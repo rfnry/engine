@@ -1,6 +1,7 @@
 import asyncio
 import time
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -105,7 +106,7 @@ async def started(machine: Machine, count: int = 1) -> Command:
 
 def test_the_tools_in_order() -> None:
     ws = Workspace(Machine(), scope="acme")
-    assert [t.name for t in ws.tools()] == ["Shell", "Write", "Edit"]
+    assert [t.name for t in ws.tools()] == ["Shell", "Job", "Jobs", "Write", "Edit"]
 
 
 async def test_shell_returns_exit_code_and_both_streams() -> None:
@@ -266,3 +267,211 @@ def test_a_backend_needs_its_three_methods_and_a_string_description() -> None:
         ConfigurationError, match="^workspace: a backend's description must be a string$"
     ):
         Workspace(Numbered(), scope="acme")
+
+
+async def background(ws: Workspace, command: str) -> Any:
+    return await tool(ws, "Shell").call({"command": command, "background": True})
+
+
+async def test_a_background_command_returns_its_job_at_once() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    assert await background(ws, "serve") == {"job": "j1"}
+    assert await background(ws, "watch") == {"job": "j2"}
+    assert [c.line for c in machine.commands] == ["serve", "watch"]
+    await ws.close()
+
+
+async def test_job_returns_new_output_in_the_order_it_arrived_then_nothing_new() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    ran = machine.commands[0]
+    for pipe, data in (
+        (ran.stdout, b"listening\n"),
+        (ran.stderr, b"warning\n"),
+        (ran.stdout, b"GET /\n"),
+    ):
+        pipe.say(data)
+        await asyncio.sleep(0.01)
+    job = tool(ws, "Job")
+    assert await job.call({"id": "j1"}) == {
+        "output": "listening\nwarning\nGET /\n",
+        "running": True,
+        "exit_code": None,
+    }
+    assert await job.call({"id": "j1"}) == {"output": "", "running": True, "exit_code": None}
+    await ws.close()
+
+
+async def test_a_jobs_output_is_capped_head_and_tail_between_reads() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme", output_bytes=1000)
+    await background(ws, "serve")
+    machine.commands[0].stdout.say(b"a" * 50_000)
+    await asyncio.sleep(0.05)
+    output = (await tool(ws, "Job").call({"id": "j1"}))["output"]
+    assert output == "a" * 500 + "\n[... 49000 bytes omitted ...]\n" + "a" * 500
+    await ws.close()
+
+
+async def test_stop_ends_a_job_returns_its_last_output_and_then_it_is_gone() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    ran = machine.commands[0]
+    ran.stdout.say(b"bye\n")
+    await asyncio.sleep(0.01)
+    assert await tool(ws, "Job").call({"id": "j1", "stop": True}) == {
+        "output": "bye\n",
+        "running": False,
+        "exit_code": -15,
+    }
+    assert ran.kills >= 1
+    with pytest.raises(InputError, match="^workspace: there is no job j1$"):
+        await tool(ws, "Job").call({"id": "j1"})
+    assert await tool(ws, "Jobs").call({}) == {"jobs": []}
+
+
+async def test_a_job_that_ended_is_listed_until_its_last_output_is_read() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "build")
+    [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
+    assert (listed["job"], listed["command"], listed["running"], listed["exit_code"]) == (
+        "j1",
+        "build",
+        True,
+        None,
+    )
+    assert datetime.fromisoformat(listed["started"]).tzinfo is not None
+    ran = machine.commands[0]
+    ran.stdout.say(b"built\n")
+    ran.exit(0)
+    await asyncio.sleep(0.05)
+    [ended] = (await tool(ws, "Jobs").call({}))["jobs"]
+    assert (ended["running"], ended["exit_code"]) == (False, 0)
+    assert await tool(ws, "Job").call({"id": "j1"}) == {
+        "output": "built\n",
+        "running": False,
+        "exit_code": 0,
+    }
+    assert await tool(ws, "Jobs").call({}) == {"jobs": []}
+
+
+async def test_output_that_arrives_after_the_exit_is_kept() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "build")
+    ran = machine.commands[0]
+    ran.stubborn = True
+    ran.exit(0, hold=True)
+    await asyncio.sleep(0.05)
+    ran.stdout.say(b"late\n")
+    ran.stdout.close()
+    ran.stderr.close()
+    await asyncio.sleep(0.05)
+    assert await tool(ws, "Job").call({"id": "j1"}) == {
+        "output": "late\n",
+        "running": False,
+        "exit_code": 0,
+    }
+
+
+async def test_stopping_a_job_that_ended_returns_its_output_without_a_kill() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "build")
+    ran = machine.commands[0]
+    ran.stdout.say(b"done\n")
+    ran.exit(0)
+    await asyncio.sleep(0.05)
+    kills = ran.kills
+    assert await tool(ws, "Job").call({"id": "j1", "stop": True}) == {
+        "output": "done\n",
+        "running": False,
+        "exit_code": 0,
+    }
+    assert ran.kills == kills
+
+
+async def test_a_command_that_cannot_start_is_the_models_error_and_takes_no_id() -> None:
+    class Broken(Machine):
+        def __init__(self) -> None:
+            super().__init__()
+            self.broken = True
+
+        async def spawn(self, command: str) -> Command:
+            if self.broken:
+                self.broken = False
+                raise RuntimeError("docker: the daemon is not running")
+            return await super().spawn(command)
+
+    ws = Workspace(Broken(), scope="acme")
+    with pytest.raises(RuntimeError, match="the daemon is not running"):
+        await background(ws, "serve")
+    assert await tool(ws, "Jobs").call({}) == {"jobs": []}
+    assert await background(ws, "serve") == {"job": "j1"}
+    await ws.close()
+
+
+async def test_close_stops_every_job_and_ids_keep_counting() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    await background(ws, "watch")
+    async with ws:
+        pass
+    assert all(c.kills >= 1 for c in machine.commands)
+    assert await tool(ws, "Jobs").call({}) == {"jobs": []}
+    assert await background(ws, "again") == {"job": "j3"}
+    await ws.close()
+
+
+async def test_a_background_command_cut_by_a_stop_still_registers_its_job() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    task = asyncio.create_task(background(ws, "serve"))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.01)
+    [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
+    assert (listed["job"], listed["running"]) == ("j1", True)
+    await ws.close()
+
+
+def test_shell_tells_the_model_about_jobs() -> None:
+    description = tool(Workspace(Machine(), scope="acme"), "Shell").description
+    assert "background=true" in description and "keeps running after your reply" in description
+    assert "Job reads" in description and "Jobs lists" in description
+
+
+async def test_a_character_split_across_job_reads_is_kept_whole() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    ran = machine.commands[0]
+    ran.stdout.say(b"a\xc3")
+    await asyncio.sleep(0.01)
+    job = tool(ws, "Job")
+    assert await job.call({"id": "j1"}) == {"output": "a", "running": True, "exit_code": None}
+    ran.stdout.say(b"\xa9b")
+    ran.exit(0)
+    await asyncio.sleep(0.05)
+    assert await job.call({"id": "j1"}) == {"output": "éb", "running": False, "exit_code": 0}
+
+
+async def test_a_lone_lead_byte_is_flushed_when_the_job_ends() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    ran = machine.commands[0]
+    ran.stdout.say(b"\xc3")
+    await asyncio.sleep(0.01)
+    job = tool(ws, "Job")
+    assert await job.call({"id": "j1"}) == {"output": "", "running": True, "exit_code": None}
+    ran.exit(0)
+    await asyncio.sleep(0.05)
+    assert await job.call({"id": "j1"}) == {"output": "\ufffd", "running": False, "exit_code": 0}
