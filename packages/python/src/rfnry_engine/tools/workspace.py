@@ -68,6 +68,7 @@ class EditArgs(BaseModel):
     path: str
     old: str
     new: str
+    all: bool = False
 
 
 class _Pipes(asyncio.SubprocessProtocol):
@@ -426,7 +427,7 @@ class Workspace:
             ),
             Tool(
                 "Edit",
-                "Replace one exact occurrence of old with new in a workspace file.",
+                "Replace one exact occurrence of old with new in a workspace file, or every occurrence with all=true.",
                 body=self._edit,
                 args=EditArgs,
             ),
@@ -547,17 +548,21 @@ class Workspace:
         a = EditArgs.model_validate(args)
         if not a.old:
             raise InputError("workspace: old must not be empty")
-        await self._bounded("Edit", self._replace(a))
-        return f"edited {a.path}"
+        count = await self._bounded("Edit", self._replace(a))
+        return f"edited {a.path} ({count} occurrence{'' if count == 1 else 's'})"
 
-    async def _replace(self, a: EditArgs) -> None:
+    async def _replace(self, a: EditArgs) -> int:
         try:
             text = (await self.backend.read(a.path, TEXT_BYTES)).decode("utf-8")
         except UnicodeDecodeError:
             raise InputError(f"workspace: not a UTF-8 text file: {a.path}") from None
         count = text.count(a.old)
-        if count != 1:
+        if count == 0 or (count > 1 and not a.all):
+            need = "at least once" if a.all else "exactly once"
             raise InputError(
-                f"workspace: old appears {count} times in {a.path}; it must appear exactly once"
+                f"workspace: old appears {count} times in {a.path}; it must appear {need}"
             )
-        await self.backend.write(a.path, text.replace(a.old, a.new, 1).encode("utf-8"))
+        await self.backend.write(
+            a.path, text.replace(a.old, a.new, -1 if a.all else 1).encode("utf-8")
+        )
+        return count

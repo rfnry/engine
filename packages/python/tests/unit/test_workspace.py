@@ -185,9 +185,40 @@ async def test_edit_replaces_exactly_one_occurrence_through_the_backend() -> Non
     machine = Machine()
     machine.files["f.txt"] = b"x = 1\r\ny = 2\n"
     edit = tool(Workspace(machine, scope="acme"), "Edit")
-    assert await edit.call({"path": "f.txt", "old": "x = 1", "new": "x = 3"}) == "edited f.txt"
+    assert (
+        await edit.call({"path": "f.txt", "old": "x = 1", "new": "x = 3"})
+        == "edited f.txt (1 occurrence)"
+    )
     assert machine.files["f.txt"] == b"x = 3\r\ny = 2\n"
     assert machine.limits == [TEXT_BYTES]
+
+
+async def test_edit_with_all_replaces_every_occurrence() -> None:
+    machine = Machine()
+    machine.files["f.txt"] = b"x = x + x\n"
+    edit = tool(Workspace(machine, scope="acme"), "Edit")
+    result = await edit.call({"path": "f.txt", "old": "x", "new": "y", "all": True})
+    assert result == "edited f.txt (3 occurrences)"
+    assert machine.files["f.txt"] == b"y = y + y\n"
+
+
+async def test_edit_with_all_still_needs_one_occurrence() -> None:
+    machine = Machine()
+    machine.files["f.txt"] = b"a\n"
+    edit = tool(Workspace(machine, scope="acme"), "Edit")
+    with pytest.raises(
+        InputError, match="^workspace: old appears 0 times in f.txt; it must appear at least once$"
+    ):
+        await edit.call({"path": "f.txt", "old": "x", "new": "y", "all": True})
+
+
+async def test_a_replacement_that_holds_the_old_text_is_made_once_per_occurrence() -> None:
+    machine = Machine()
+    machine.files["f.txt"] = b"ab ab"
+    edit = tool(Workspace(machine, scope="acme"), "Edit")
+    result = await edit.call({"path": "f.txt", "old": "ab", "new": "abab", "all": True})
+    assert result == "edited f.txt (2 occurrences)"
+    assert machine.files["f.txt"] == b"abab abab"
 
 
 @pytest.mark.parametrize(("content", "count"), [("a = 1\n", 0), ("x\nx\n", 2)])

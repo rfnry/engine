@@ -390,7 +390,7 @@ async def test_write_and_edit_reach_the_directory(root: Path, tmp_path: Path) ->
     written = await tool(ws, "Write").call({"path": "src/main.py", "content": "x = 1\r\ny = 2\n"})
     assert written == "wrote 13 bytes to src/main.py"
     edited = await tool(ws, "Edit").call({"path": "src/main.py", "old": "x = 1", "new": "x = 3"})
-    assert edited == "edited src/main.py"
+    assert edited == "edited src/main.py (1 occurrence)"
     assert (root / "src/main.py").read_bytes() == b"x = 3\r\ny = 2\n"
     with pytest.raises(InputError, match="^workspace: path outside the workspace: ../x.txt$"):
         await tool(ws, "Write").call({"path": "../x.txt", "content": "x"})
