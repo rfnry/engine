@@ -213,7 +213,7 @@ async def test_a_usage_or_prefix_from_elsewhere_reads_as_none(fixtures: Path) ->
     assert kept.prefix == "0123456789abcdef" and kept.usage == Usage(input=3)
 
 
-async def test_reasoning_is_left_out_once_a_booted_file_changed(
+async def test_reasoning_is_left_out_once_a_preloaded_file_changed(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tmp_path / "agents"
@@ -221,7 +221,7 @@ async def test_reasoning_is_left_out_once_a_booted_file_changed(
     agent = root / "support" / "AGENT.md"
     agent.write_text(
         agent.read_text(encoding="utf-8").replace(
-            "agents: [triage]\n", "agents: [triage]\nboot: all\n"
+            "agents: [triage]\n", "agents: [triage]\npreload: true\n"
         ),
         encoding="utf-8",
     )

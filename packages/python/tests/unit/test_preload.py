@@ -51,10 +51,10 @@ def tree(fixtures: Path, tmp_path: Path) -> Path:
     return root
 
 
-def boot_all(folder: Path) -> None:
+def preload_all(folder: Path) -> None:
     agent = folder / "AGENT.md"
     text = agent.read_text(encoding="utf-8")
-    agent.write_text(text.replace("\n---\n", "\nboot: all\n---\n", 1), encoding="utf-8")
+    agent.write_text(text.replace("\n---\n", "\npreload: true\n---\n", 1), encoding="utf-8")
 
 
 def furnish(support: Path) -> None:
@@ -71,7 +71,7 @@ def engine(root: Path, llm: GenerationModel) -> Engine:
     return Engine(root, generation=llm, decision=Answering(), tools=TOOLS)
 
 
-def booted(support: Path) -> list[Part]:
+def preloaded(support: Path) -> list[Part]:
     def text(name: str) -> Text:
         return Text(text=f"<<<{name}>>>\n" + (support / name).read_text(encoding="utf-8"))
 
@@ -87,7 +87,7 @@ def booted(support: Path) -> list[Part]:
     ]
 
 
-async def test_boot_all_puts_every_rule_skill_and_knowledge_file_before_the_model_in_path_order(
+async def test_preload_all_puts_every_rule_skill_and_knowledge_file_before_the_model_in_path_order(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tree(fixtures, tmp_path)
@@ -95,15 +95,15 @@ async def test_boot_all_puts_every_rule_skill_and_knowledge_file_before_the_mode
     furnish(support)
     plain = Scripted(text_reply("ok"))
     before = await engine(root, plain).run("support", "acme", "Charged twice.")
-    boot_all(support)
+    preload_all(support)
     llm = Scripted(
         Reply(tool_calls=[ToolCall(id="c", name="now", args={})], stop_reason="tool_use"),
         text_reply("Refunded."),
     )
     run = await engine(root, llm).run("support", "acme", "Charged twice.")
     assert isinstance(run, Generation) and isinstance(before, Generation)
-    parts = booted(support)
-    assert run.boot == parts and before.boot == []
+    parts = preloaded(support)
+    assert run.preload == parts and before.preload == []
     first, second = llm.calls
     assert first[0] == run.system == before.system
     assert first[1] == [Message(role="user", content=parts), *run.messages]
@@ -121,7 +121,7 @@ async def test_a_binary_knowledge_file_goes_in_as_the_part_load_hands_over(
     root = tree(fixtures, tmp_path)
     support = root / "support"
     furnish(support)
-    boot_all(support)
+    preload_all(support)
     llm = Scripted(text_reply("ok"))
     built = engine(root, llm)
     run = await built.run("support", "acme", "What does express cost?")
@@ -130,8 +130,8 @@ async def test_a_binary_knowledge_file_goes_in_as_the_part_load_hands_over(
     for name in ("knowledge/rates.pdf", "knowledge/diagram.png"):
         loaded = await surface.dispatch("Load", {"path": name})
         assert isinstance(loaded, list) and len(loaded) == 1
-        at = run.boot.index(Text(text=f"<<<{name}>>>"))
-        assert run.boot[at + 1 : at + 2] == loaded
+        at = run.preload.index(Text(text=f"<<<{name}>>>"))
+        assert run.preload[at + 1 : at + 2] == loaded
 
 
 class RuleFollower:
@@ -167,15 +167,15 @@ async def test_a_run_applies_a_rule_held_only_in_its_file_without_reading_it(
     on_demand = await engine(root, reading).run("support", "acme", "Charged twice.")
     assert isinstance(on_demand, Generation)
     assert [step.tool for step in on_demand.steps] == ["Read"]
-    boot_all(support)
-    booting = RuleFollower()
-    run = await engine(root, booting).run("support", "acme", "Charged twice.")
+    preload_all(support)
+    preloading = RuleFollower()
+    run = await engine(root, preloading).run("support", "acme", "Charged twice.")
     assert isinstance(run, Generation)
     assert run.steps == [] and run.calls == 1
     assert run.reply == "Refunded in full; no approval needed."
 
 
-async def test_without_boot_the_model_is_sent_exactly_what_it_was_sent_before(
+async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before(
     fixtures: Path,
 ) -> None:
     llm = Scripted(text_reply("ok"))
@@ -225,13 +225,14 @@ async def test_without_boot_the_model_is_sent_exactly_what_it_was_sent_before(
     ("front", "message"),
     [
         (
-            "kind: decision\nboot: all\n",
-            "^tree: decision agent 'a' cannot declare boot: all$",
+            "kind: decision\npreload: true\n",
+            "^tree: decision agent 'a' cannot declare preload:$",
         ),
-        ("kind: generation\nboot: some\n", "^frontmatter: invalid agent .*AGENT.md"),
+        ("kind: generation\npreload: some\n", "^frontmatter: invalid agent .*AGENT.md"),
+        ("kind: generation\nboot: all\n", "^frontmatter: unknown key 'boot' in .*AGENT.md$"),
     ],
 )
-def test_boot_is_all_and_a_decision_agent_cannot_declare_it(
+def test_preload_is_true_and_a_decision_agent_cannot_declare_it(
     tmp_path: Path, front: str, message: str
 ) -> None:
     (tmp_path / "a" / "questions").mkdir(parents=True)
@@ -241,25 +242,25 @@ def test_boot_is_all_and_a_decision_agent_cannot_declare_it(
         Engine(tmp_path, generation=Scripted(), decision=Answering())
 
 
-def test_a_booted_file_that_is_not_the_type_its_name_says_is_refused_when_the_tree_loads(
+def test_a_preloaded_file_that_is_not_the_type_its_name_says_is_refused_when_the_tree_loads(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tree(fixtures, tmp_path)
     (root / "support" / "knowledge" / "diagram.png").write_bytes(b"\0not a png")
-    boot_all(root / "support")
+    preload_all(root / "support")
     with pytest.raises(
         ConfigurationError,
-        match=r"^tree: agent 'support' cannot boot its folder: builtins: diagram.png is not the image/png its name says$",
+        match=r"^tree: agent 'support' cannot preload its folder: builtins: diagram.png is not the image/png its name says$",
     ):
         engine(root, Scripted())
 
 
-async def test_the_boot_is_read_when_the_tree_loads_as_the_fingerprint_is_taken(
+async def test_the_preload_is_read_when_the_tree_loads_as_the_fingerprint_is_taken(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tree(fixtures, tmp_path)
     support = root / "support"
-    boot_all(support)
+    preload_all(support)
     llm = Scripted(text_reply("a"), text_reply("b"))
     loaded = engine(root, llm)
     (support / "rules" / "refunds.md").write_text("Refunds need approval.\n", encoding="utf-8")
@@ -267,8 +268,8 @@ async def test_the_boot_is_read_when_the_tree_loads_as_the_fingerprint_is_taken(
     new = await engine(root, Scripted(text_reply("c"))).run("support", "acme", "x")
     assert isinstance(old, Generation) and isinstance(new, Generation)
     held = f"<<<rules/refunds.md>>>\n---\ndescription: When a refund is owed\n---\n{RULE}"
-    assert Text(text=held) in old.boot
-    assert Text(text="<<<rules/refunds.md>>>\nRefunds need approval.\n") in new.boot
+    assert Text(text=held) in old.preload
+    assert Text(text="<<<rules/refunds.md>>>\nRefunds need approval.\n") in new.preload
     assert old.fingerprint != new.fingerprint
 
 
@@ -276,48 +277,48 @@ async def test_a_conversation_passed_back_carries_no_second_copy_of_the_folder(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tree(fixtures, tmp_path)
-    boot_all(root / "support")
+    preload_all(root / "support")
     llm = Scripted(text_reply("Refunded."), text_reply("Done."))
     built = engine(root, llm)
     first = await built.run("support", "acme", "Charged twice.")
     assert isinstance(first, Generation)
     await built.run("support", "acme", "And the second?", history=first.conversation)
-    boot = Message(role="user", content=first.boot)
+    preload = Message(role="user", content=first.preload)
     assert llm.calls[1][1] == [
-        boot,
+        preload,
         *said(first.conversation),
         Message(role="user", content="And the second?"),
     ]
 
 
-async def test_a_delegated_agent_boots_its_own_folder_and_only_its_own(tmp_path: Path) -> None:
+async def test_a_delegated_agent_preloads_its_own_folder_and_only_its_own(tmp_path: Path) -> None:
     root = lead(tmp_path)
     (root / "lead" / "rules").mkdir()
     (root / "lead" / "rules" / "tone.md").write_text("Be kind.\n", encoding="utf-8")
     (root / "writer" / "knowledge").mkdir()
     (root / "writer" / "knowledge" / "style.md").write_text("Short words.\n", encoding="utf-8")
-    boot_all(root / "lead")
-    boot_all(root / "writer")
+    preload_all(root / "lead")
+    preload_all(root / "writer")
     llm = Scripted(delegating("writer", "Draft it."), text_reply("Drafted."), text_reply("Sent."))
     run = await Engine(root, generation=llm, decision=Answering()).run("lead", "acme", "Go.")
     assert isinstance(run, Generation)
     [child] = run.children
     assert isinstance(child, Generation)
-    assert run.boot == [Text(text="<<<rules/tone.md>>>\nBe kind.\n")]
-    assert child.boot == [Text(text="<<<knowledge/style.md>>>\nShort words.\n")]
+    assert run.preload == [Text(text="<<<rules/tone.md>>>\nBe kind.\n")]
+    assert child.preload == [Text(text="<<<knowledge/style.md>>>\nShort words.\n")]
     assert llm.calls[1][1] == [
-        Message(role="user", content=child.boot),
+        Message(role="user", content=child.preload),
         Message(role="user", content="Draft it."),
     ]
 
 
-async def test_the_boot_is_recorded_read_back_exported_and_left_to_the_candidate_on_replay(
+async def test_the_preload_is_recorded_read_back_exported_and_left_to_the_candidate_on_replay(
     fixtures: Path, tmp_path: Path, storage: Storage
 ) -> None:
     root = tree(fixtures, tmp_path)
     support = root / "support"
     furnish(support)
-    boot_all(support)
+    preload_all(support)
     refinery = Refinery(storage)
     history = [Message(role="user", content="hi"), Message(role="assistant", content="hello")]
     built = Engine(root, generation=Scripted(text_reply("Sorry.")), tools=TOOLS, refinery=refinery)
@@ -331,35 +332,56 @@ async def test_the_boot_is_recorded_read_back_exported_and_left_to_the_candidate
         key.split("/")[2]: json.loads(data.decode().splitlines()[0])
         for key, data in bucket.objects.items()
     }
-    sent = [part.model_dump(mode="json") for part in run.boot]
-    assert rows["generation"]["boot"] == sent
-    assert rows["preference"]["prompt"]["boot"] == sent
+    sent = [part.model_dump(mode="json") for part in run.preload]
+    assert rows["generation"]["preload"] == sent
+    assert rows["preference"]["prompt"]["preload"] == sent
     candidate_model = Scripted(text_reply("Refunded."))
     candidate = Engine(root, generation=candidate_model, tools=TOOLS)
     async for pair in refinery.replay("acme", candidate, agent="support"):
         assert pair.candidate is not None
     [(_, messages, _)] = candidate_model.calls
     assert messages == [
-        Message(role="user", content=run.boot),
+        Message(role="user", content=run.preload),
         *history,
         Message(role="user", content="Charged twice."),
     ]
 
 
-async def test_a_run_recorded_before_boot_was_kept_reads_back_and_exports_an_empty_boot(
+async def test_a_run_recorded_before_preload_was_kept_reads_back_and_exports_an_empty_preload(
     storage: Storage,
 ) -> None:
     refinery = Refinery(storage)
     run = generation_record()
     [stored] = flatten(run, datetime.now(UTC))
-    old = {key: value for key, value in stored.body.items() if key != "boot"}
+    old = {key: value for key, value in stored.body.items() if key != "preload"}
     await storage.put_run("acme", stored.model_copy(update={"body": old}))
-    assert Generation.model_validate(old).boot == []
+    assert Generation.model_validate(old).preload == []
     await refinery.review("acme", run.run_id, Review(correction="Better."))
     bucket = MemoryBucket()
     await refinery.export("acme", bucket)
     rows = {key.split("/")[2]: json.loads(data) for key, data in bucket.objects.items()}
-    assert rows["generation"]["boot"] == [] and rows["preference"]["prompt"]["boot"] == []
+    assert rows["generation"]["preload"] == [] and rows["preference"]["prompt"]["preload"] == []
+
+
+async def test_a_run_stored_with_the_old_boot_key_reads_back_and_exports_it_as_preload(
+    storage: Storage,
+) -> None:
+    refinery = Refinery(storage)
+    run = generation_record()
+    [stored] = flatten(run, datetime.now(UTC))
+    parts = [{"type": "text", "text": "<<<rules/a.md>>>\nBe kind.\n"}]
+    old = {key: value for key, value in stored.body.items() if key != "preload"}
+    old["boot"] = parts
+    await storage.put_run("acme", stored.model_copy(update={"body": old}))
+    await refinery.review("acme", run.run_id, Review(correction="Better."))
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    rows = {key.split("/")[2]: json.loads(data) for key, data in bucket.objects.items()}
+    assert (
+        rows["generation"]["preload"] == parts and rows["preference"]["prompt"]["preload"] == parts
+    )
+    read = await refinery.run("acme", run.run_id)
+    assert isinstance(read, Generation) and read.preload == [Text(text=parts[0]["text"])]
 
 
 class PicturesAndDocuments(Scripted):
@@ -381,10 +403,10 @@ async def test_a_file_over_load_s_cap_is_refused_when_the_tree_loads_with_load_s
         file.truncate(20 * 1024 * 1024 + 1)
     load = await refusal(root, Scripted(), "knowledge/archive.bin")
     assert load == "builtins: file exceeds 20971520 bytes: knowledge/archive.bin"
-    boot_all(root / "support")
+    preload_all(root / "support")
     with pytest.raises(ConfigurationError) as refused:
         engine(root, Scripted())
-    assert str(refused.value) == f"tree: agent 'support' cannot boot its folder: {load}"
+    assert str(refused.value) == f"tree: agent 'support' cannot preload its folder: {load}"
 
 
 async def test_a_text_file_over_read_s_cap_goes_in_as_load_hands_it(
@@ -395,7 +417,7 @@ async def test_a_text_file_over_read_s_cap_goes_in_as_load_hands_it(
     (root / "support" / name).write_text("a" * (5 * 1024 * 1024 + 1), encoding="utf-8")
     read = await refusal(root, Scripted(), name, tool="Read")
     assert read == f"builtins: file exceeds 5242880 bytes: {name}"
-    boot_all(root / "support")
+    preload_all(root / "support")
     built = engine(root, Scripted(text_reply("ok")))
     run = await built.run("support", "acme", "x")
     assert isinstance(run, Generation)
@@ -407,8 +429,8 @@ async def test_a_text_file_over_read_s_cap_goes_in_as_load_hands_it(
             media_type="text/plain", name="notes.txt", data=(root / "support" / name).read_bytes()
         )
     ]
-    at = run.boot.index(Text(text=f"<<<{name}>>>"))
-    assert run.boot[at + 1 : at + 2] == loaded
+    at = run.preload.index(Text(text=f"<<<{name}>>>"))
+    assert run.preload[at + 1 : at + 2] == loaded
 
 
 async def test_a_file_the_model_does_not_take_is_refused_when_the_tree_loads_with_load_s_message(
@@ -420,20 +442,20 @@ async def test_a_file_the_model_does_not_take_is_refused_when_the_tree_loads_wit
     load = await refusal(root, PicturesAndDocuments(), name)
     kind = mimetypes.guess_type(name)[0]
     assert load == f"builtins: the model does not take {kind} files: {name}"
-    boot_all(root / "support")
+    preload_all(root / "support")
     with pytest.raises(ConfigurationError) as refused:
         engine(root, PicturesAndDocuments())
-    assert str(refused.value) == f"tree: agent 'support' cannot boot its folder: {load}"
+    assert str(refused.value) == f"tree: agent 'support' cannot preload its folder: {load}"
     assert engine(root, Scripted()).agents["support"].kind == "generation"
 
 
-def test_the_boot_and_the_fingerprint_come_from_one_read_of_each_file(
+def test_the_preload_and_the_fingerprint_come_from_one_read_of_each_file(
     fixtures: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tree(fixtures, tmp_path)
     support = (root / "support").resolve()
     furnish(support)
-    boot_all(support)
+    preload_all(support)
     opened: list[Path] = []
     original = Path.open
 
@@ -444,14 +466,14 @@ def test_the_boot_and_the_fingerprint_come_from_one_read_of_each_file(
     monkeypatch.setattr(Path, "open", counting)
     spec = engine(root, Scripted())._agents["support"]
     monkeypatch.undo()
-    booted = ["knowledge/diagram.png", "knowledge/plans.md", "knowledge/rates.pdf"]
-    booted += ["rules/chargebacks/disputed.md", "rules/refunds.md", "skills/escalate.md"]
-    opens = {name: 2 if name.endswith(".md") else 1 for name in booted}
-    assert {name: opened.count(support / name) for name in booted} == opens
+    preloaded = ["knowledge/diagram.png", "knowledge/plans.md", "knowledge/rates.pdf"]
+    preloaded += ["rules/chargebacks/disputed.md", "rules/refunds.md", "skills/escalate.md"]
+    opens = {name: 2 if name.endswith(".md") else 1 for name in preloaded}
+    assert {name: opened.count(support / name) for name in preloaded} == opens
     assert spec.fingerprint == by_hand(support)
 
 
-async def test_boot_all_sends_every_file_but_agent_md_and_the_declarations(
+async def test_preload_all_sends_every_file_but_agent_md_and_the_declarations(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tree(fixtures, tmp_path)
@@ -459,10 +481,10 @@ async def test_boot_all_sends_every_file_but_agent_md_and_the_declarations(
     (support / "notes.txt").write_text("Open on weekdays.\n", encoding="utf-8")
     (support / "docs" / "tools").mkdir(parents=True)
     (support / "docs" / "tools" / "hammer.md").write_text("Content.\n", encoding="utf-8")
-    boot_all(support)
+    preload_all(support)
     run = await engine(root, Scripted(text_reply("ok"))).run("support", "acme", "Hi")
     assert isinstance(run, Generation)
-    names = [p.text.split("\n", 1)[0] for p in run.boot if isinstance(p, Text)]
+    names = [p.text.split("\n", 1)[0] for p in run.preload if isinstance(p, Text)]
     assert names == [
         "<<<docs/tools/hammer.md>>>",
         "<<<knowledge/plans.md>>>",
@@ -472,16 +494,16 @@ async def test_boot_all_sends_every_file_but_agent_md_and_the_declarations(
     ]
 
 
-def test_boot_all_sends_the_read_folders_too_in_path_order(tmp_path: Path) -> None:
+def test_preload_all_sends_the_read_folders_too_in_path_order(tmp_path: Path) -> None:
     (tmp_path / "coding").mkdir()
     (tmp_path / "coding" / "AGENT.md").write_text(
-        "---\nname: coding\nkind: generation\nreads: [books]\nboot: all\n---\nHi\n"
+        "---\nname: coding\nkind: generation\nreads: [books]\npreload: true\n---\nHi\n"
     )
     (tmp_path / "coding" / "notes.md").write_text("Own.\n")
     (tmp_path / "books").mkdir()
     (tmp_path / "books" / "a.md").write_text("Shared.\n")
     spec = Engine(tmp_path, generation=Scripted())._spec("coding")
-    assert spec.boot == [
+    assert spec.preload == [
         Text(text="<<<../books/a.md>>>\nShared.\n"),
         Text(text="<<<notes.md>>>\nOwn.\n"),
     ]

@@ -6,12 +6,12 @@ import json
 from rfnry_engine.models import Message, Part, ToolSpec
 
 
-def opening(model: str | None, system: str, tools: list[ToolSpec], boot: list[Part]) -> bytes:
+def opening(model: str | None, system: str, tools: list[ToolSpec], preload: list[Part]) -> bytes:
     head = {
         "model": model,
         "system": system,
         "tools": [tool.model_dump(mode="json") for tool in tools],
-        "boot": [part.model_dump(mode="json") for part in boot],
+        "boot": [part.model_dump(mode="json") for part in preload],
     }
     return hashlib.sha256(json.dumps(head, sort_keys=True, ensure_ascii=False).encode()).digest()
 

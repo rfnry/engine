@@ -636,10 +636,10 @@ class Engine:
             agents=targets,
             context=options.context,
         )
-        boot = [Message(role="user", content=list(spec.boot))] if spec.boot else []
+        preload = [Message(role="user", content=list(spec.preload))] if spec.preload else []
         history, digest = await asyncio.to_thread(
             lambda: chain.settle(
-                options.history, chain.opening(_declared(model_), system, specs, list(spec.boot))
+                options.history, chain.opening(_declared(model_), system, specs, list(spec.preload))
             )
         )
         hashed = len(history)
@@ -820,7 +820,7 @@ class Engine:
 
         async def ask() -> Reply:
             sending = [
-                *boot,
+                *preload,
                 *(m.model_copy(update={"prefix": None, "usage": None}) for m in messages),
             ]
             if streaming:
@@ -848,7 +848,7 @@ class Engine:
                 fingerprint=fingerprint,
                 input=input,
                 system=system,
-                boot=list(spec.boot),
+                preload=list(spec.preload),
                 start=options.start,
                 messages=sent,
                 conversation=list(messages),

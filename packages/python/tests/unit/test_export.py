@@ -103,7 +103,7 @@ async def test_export_writes_three_datasets_with_labels_and_holdout(storage: Sto
         "fingerprint": None,
         "prompt": {
             "system": generation.system,
-            "boot": [],
+            "preload": [],
             "messages": generation_row["messages"],
         },
         "chosen": "Refund in full.",

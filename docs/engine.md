@@ -62,14 +62,13 @@ adapter serves both libraries: annotated with `QuestionLike` from either library
 statically and at runtime. A result whose fields do not fit is a `ModelError`.
 
 `Message`, `ToolSpec`, `ToolCall` and `Reply` are the message shapes the loop exchanges with a
-generation model. An assistant turn is a `Message(role="assistant", content=…, tool_calls=[…])`:
-its text in `content`, its calls as `ToolCall`s. A tool result is a
-`Message(role="tool", tool_call_id=…, content=…)` whose `is_error` says the call failed, for
-adapters whose vendor marks failed tool results. `messages` may hold consecutive
-`role="user"` messages — the boot ahead of the history, several messages from the inbox — so an
-adapter whose vendor needs alternating roles merges them. A `Reply`
-whose `stop_reason` is `"tool_use"` and whose `tool_calls` is non-empty means "run these and call
-me again"; anything else is final:
+generation model. An assistant turn is a `Message(role="assistant", content=…, tool_calls=[…])`: its
+text in `content`, its calls as `ToolCall`s. A tool result is a `Message(role="tool",
+tool_call_id=…, content=…)` whose `is_error` says the call failed, for adapters whose vendor marks
+failed tool results. `messages` may hold consecutive `role="user"` messages — the preloaded files
+ahead of the history, several messages from the inbox — so an adapter whose vendor needs alternating
+roles merges them. A `Reply` whose `stop_reason` is `"tool_use"` and whose `tool_calls` is non-empty
+means "run these and call me again"; anything else is final:
 
 ```python
 Reply(text="", tool_calls=[ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})], stop_reason="tool_use")
@@ -193,10 +192,10 @@ agents: [triage]
 You are the support desk for Acme. Be brief, be exact, cite the rule you are applying.
 ```
 
-At boot the model receives `AGENT.md`, a map of its folder, the list of tools it has, the
-descriptions of the agents it may call, the task if one was named, and any context the caller
-passes. The map is generated when the tree loads: every folder, and every file whose frontmatter
-has a `description:`, under its path as the tools take it.
+At the start of a run the model receives `AGENT.md`, a map of its folder, the list of tools it has,
+the descriptions of the agents it may call, the task if one was named, and any context the caller
+passes. The map is generated when the tree loads: every folder, and every file whose frontmatter has
+a `description:`, under its path as the tools take it.
 
 ```markdown
 ---
@@ -224,7 +223,7 @@ from the map. Everything else the model reads when it needs it, with the `Read`,
 PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in the folder as
 it came, the model reads it with its own understanding of images and documents, there is no parser
 in between, and nothing is loaded until the model asks — unless the agent asks for its folder at
-boot, below.
+`preload`, below.
 
 A root holds agents and plain folders side by side, and an agent reads other folders of its root by
 naming them in `reads:` — plain folders, or other agents' folders:
@@ -250,13 +249,13 @@ Each folder it reads follows its own in the map as `../books/`, and the tools ta
 path — `Read` of `../books/python/async.md`, `Grep` with `path="../books"`, `Glob` of
 `../books/**/*.md`; without a path, `Grep` and `Glob` search the agent's own folder. Nothing outside
 the agent's folder and the folders it reads is reachable. Another agent's folder shows in the map
-without its `AGENT.md` and declarations, which stay readable. `boot: all` sends the folders it reads
-too, under the same paths, and an edit to one changes the fingerprint of every agent that reads it.
-`reads:` names direct children of the root: a name that is not one, starts with `.`, or is the
-agent's own is a `ConfigurationError` when the tree loads, and so is `reads:` on a decision agent,
-which reads no files, or on an agent whose folder is a link to a folder elsewhere — link the whole
-root instead. The tree is shared by every tenant: it holds how to do the work, never a tenant's data
-— that comes per run, in the input, the history or the workspace. An agent that reads
+without its `AGENT.md` and declarations, which stay readable. `preload: true` sends the folders it
+reads too, under the same paths, and an edit to one changes the fingerprint of every agent that
+reads it. `reads:` names direct children of the root: a name that is not one, starts with `.`, or is
+the agent's own is a `ConfigurationError` when the tree loads, and so is `reads:` on a decision
+agent, which reads no files, or on an agent whose folder is a link to a folder elsewhere — link the
+whole root instead. The tree is shared by every tenant: it holds how to do the work, never a
+tenant's data — that comes per run, in the input, the history or the workspace. An agent that reads
 `my_agents/acme/` reads it for every tenant.
 
 A root with no `AGENT.md` anywhere — a folder of skills, notes or references written for something
@@ -277,39 +276,41 @@ run = await engine.run("writer", scope="acme", input="Draft the launch note.",
 `kind`, `description`, the `agents` it may call and the folders it `reads`.
 
 An agent that needs its whole folder on every run — a few house rules applied to thousands of
-documents — asks for it at boot:
+documents — asks for it, with `preload: true`:
 
 ```markdown
 ---
 name: tagger
 kind: generation
 description: Tags each incoming document by the house rules
-boot: all
+preload: true
 ---
 Tag the document. Every rule applies to every document.
 ```
 
-With `boot: all` the model also receives every other file of its folder — all but `AGENT.md` and
+With `preload: true` the model also receives every other file of its folder — all but `AGENT.md` and
 `tools/`, `tasks/` and `questions/`, described or not — sorted by path character by character, each
 under its path: what `Read` would return for it, and for a file `Read` refuses — over 5 MB, or not
 text — the part `Load` would hand over. The map stays a map and the folder stays as it is; only when
 the files are read changes, so no turn goes to opening them. They travel as one user message ahead
 of the history, sent with every model call, and are read when the engine loads the tree, as the
-fingerprint is taken, so an edit shows in the next `Engine`. `run.boot` holds that message's parts;
-`run.messages` and `run.conversation` leave it out, so a conversation passed back does not send the
-folder twice and a replay boots from the candidate's folder. The tools stay as they are — `Read` and
-`Load` hand over what the model already holds. Each agent boots its own folder, a delegated or
-routed one included. A decision agent reads no files, so `boot:` on one is a `ConfigurationError`
-when the tree loads; so is a file neither `Read` nor `Load` would hand over — over 20 MB, of a type
-the generation model's `media_types` does not name, or not the type its name says — with `Load`'s
-own message.
+fingerprint is taken, so an edit shows in the next `Engine`. `run.preload` holds that message's
+parts; `run.messages` and `run.conversation` leave it out, so a conversation passed back does not
+send the folder twice and a replay preloads from the candidate's folder. The tools stay as they are
+— `Read` and `Load` hand over what the model already holds. Each agent preloads its own folder, a
+delegated or routed one included. A decision agent reads no files, so `preload:` on one is a
+`ConfigurationError` when the tree loads; so is a file neither `Read` nor `Load` would hand over —
+over 20 MB, of a type the generation model's `media_types` does not name, or not the type its name
+says — with `Load`'s own message.
 
 ### Running an agent
 
 `engine.run(agent, scope, input)` names the agent, the tenant and the input, and returns a record.
-For a generation agent that record is a `Generation`: the reply, the system prompt as sent, the files `boot: all` sent (`run.boot`), the messages as sent to the first model call, the whole conversation, the tools the model was offered (`run.tools`, each a `ToolSpec`), every tool
-call as a `Step` with its result and timing, the model calls and their summed usage, and any child
-runs. It is the whole observability payload; hand it to your own telemetry:
+For a generation agent that record is a `Generation`: the reply, the system prompt as sent, the
+files `preload: true` sent (`run.preload`), the messages as sent to the first model call, the whole
+conversation, the tools the model was offered (`run.tools`, each a `ToolSpec`), every tool call as a
+`Step` with its result and timing, the model calls and their summed usage, and any child runs. It is
+the whole observability payload; hand it to your own telemetry:
 
 ```python
 run.run_id, run.model, run.calls, run.usage.input, run.usage.output, run.duration_ms
@@ -630,15 +631,15 @@ what came before them changed — and the run goes on without it.
 Reasoning goes back only where it was given. Some vendors bind a model's reasoning to the exact
 conversation it was given in and refuse it anywhere else. Every assistant message the engine makes
 from a reply carries `prefix`, a short hash of everything sent before it — the model, as its adapter
-names it, the system prompt, the tools, the boot files and the messages — and `usage`, what the call
-that wrote it reported. A message's `reasoning` is sent again only when what comes before it is
+names it, the system prompt, the tools, the preloaded files and the messages — and `usage`, what the
+call that wrote it reported. A message's `reasoning` is sent again only when what comes before it is
 still the same; otherwise the message goes without it, its text and calls as they were, and
 `run.messages` shows it as sent. So a history you cut or edited, a changed `context=`, `task=` or
 `tools=`, another agent, another model and a replay never send reasoning a vendor would refuse. A
 run stopped after a step and continued after a change ahead of its history — a new date in
 `context=`, a moved window — sends its last tool call without its reasoning; a vendor that wants
-reasoning back on an open tool loop may refuse that, and handling it is the adapter's job.
-`prefix` and `usage` are the engine's record; no model sees them.
+reasoning back on an open tool loop may refuse that, and handling it is the adapter's job. `prefix`
+and `usage` are the engine's record; no model sees them.
 
 Caching is the adapter's. An adapter that marks a cache point has every call of a window read from
 the cache what the last call sent; a new window restarts it, and so does any change ahead of the
@@ -1149,9 +1150,9 @@ And models label what people did not. A **judge** is a decision agent in your tr
 are about an episode; it sees the input, the reply, every tool call with its result and the error a
 failed run ended with, with each image, audio or document replaced by a placeholder naming it —
 `[image: image/jpeg]`, `[document: application/pdf, "policy.pdf"]` — while the recorded run and the
-exported datasets keep the media. A judge sees neither the system prompt nor `run.boot`, so a rule a
-booted agent never had to `Read` is not in front of it; ask about them in the question when they
-matter:
+exported datasets keep the media. A judge sees neither the system prompt nor `run.preload`, so a
+rule a preloaded agent never had to `Read` is not in front of it; ask about them in the question
+when they matter:
 
 ```
 agents/judge/
@@ -1208,8 +1209,8 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | task, context, tags, model, fingerprint, system, boot, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
-| `preference` | human correction | tags, fingerprint, prompt (system, boot, messages), chosen (the correction), rejected (the reply) |
+| `generation` | generation run | task, context, tags, model, fingerprint, system, preload, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
+| `preference` | human correction | tags, fingerprint, prompt (system, preload, messages), chosen (the correction), rejected (the reply) |
 | `decision` | question of a decision run | task, tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
 
 Every row carries its run's `tags`, `{}` for a run that had none or was recorded before tags were
@@ -1219,15 +1220,14 @@ recorded before it was kept; group or filter the rows by them in your own code.
 
 The first two are a generation agent's episodes and the corrections people made to them. A
 generation row's `tools` is what the model was offered — `{name, description, input_schema}` each —
-`boot` the parts `boot: all` sent ahead of `messages`, `[]` without it, and `conversation` is
-`run.conversation` in order: history, input, assistant turns with their `tool_calls`
-(`{id, name, args}`), tool results with `is_error`, the final reply. Together they fit
-standard fine-tuning and eval formats with a few lines of mapping; the library writes no vendor's
-format. A run recorded before `tools` or `boot` was kept exports it as `[]`. Parts
-are written inline, their bytes as base64, so a row is self-contained; strip the media from a row
-you do not want it in. The third
-is a decision agent's answers beside what turned out true: a calibrated model is one whose 0.8 was
-right 80% of the time, and this is the table that says whether it was:
+`preload` the parts `preload: true` sent ahead of `messages`, `[]` without it, and `conversation` is
+`run.conversation` in order: history, input, assistant turns with their `tool_calls` (`{id, name,
+args}`), tool results with `is_error`, the final reply. Together they fit standard fine-tuning and
+eval formats with a few lines of mapping; the library writes no vendor's format. A run recorded
+before `tools` or `preload` was kept exports it as `[]`. Parts are written inline, their bytes as
+base64, so a row is self-contained; strip the media from a row you do not want it in. The third is a
+decision agent's answers beside what turned out true: a calibrated model is one whose 0.8 was right
+80% of the time, and this is the table that says whether it was:
 
 ```json
 {"run_id": "…", "holdout": false, "agent": "frontdesk", "tags": {"arm": "b"}, "question_id": "intent", "answer": "billing",
@@ -1563,39 +1563,39 @@ Everything the package exports, by role.
 `AGENT.md`, `Engine(name=)` on a root with agents or empty, an unknown key in the frontmatter of an
 `AGENT.md`, a question or a tool file (`frontmatter: unknown key 'route.min_confidance' in
 agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a `description:` that is not a
-string in a file the map would show, a decision agent with `boot: all`, a `reads:` naming no folder
-of the root or the agent's own, `reads:` on a decision agent or on an agent whose folder is a link
-to a folder elsewhere, a file `boot: all` would send that neither `Read` nor `Load` would hand over
-— over 20 MB, of a type the model's `media_types` does not name, or not the type its name says — a
-question with instructions both in its frontmatter and in its body or in neither, a decision agent
-with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a route entry
-that names a task its agent does not have or gives a decision agent nothing to ask, a tool declared
-without a body or given without a declaration, a run of an agent whose kind of model is absent, a
-missing workspace, a `Local` root that is not a directory, a `shell` that is not a list of strings
-or whose first word is not on `PATH`, a backend without `spawn`, `read` and `write` or whose
-`description` is not a string, a `Workspace` without a scope, a `max_steps`, `max_depth`,
+string in a file the map would show, a decision agent with `preload: true`, a `reads:` naming no
+folder of the root or the agent's own, `reads:` on a decision agent or on an agent whose folder is a
+link to a folder elsewhere, a file `preload: true` would send that neither `Read` nor `Load` would
+hand over — over 20 MB, of a type the model's `media_types` does not name, or not the type its name
+says — a question with instructions both in its frontmatter and in its body or in neither, a
+decision agent with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a
+route entry that names a task its agent does not have or gives a decision agent nothing to ask, a
+tool declared without a body or given without a declaration, a run of an agent whose kind of model
+is absent, a missing workspace, a `Local` root that is not a directory, a `shell` that is not a list
+of strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and `write` or
+whose `description` is not a string, a `Workspace` without a scope, a `max_steps`, `max_depth`,
 `tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is not positive,
 an `approve` that returns anything but `True` or `False`, a judge that is not a decision agent or a
-teacher that is not a generation agent.
-`NotFoundError` for an agent the tree does not have — a judge, a teacher or a replay's agent in the
-candidate included — a task the agent does not have (`engine: agent 'support' has no task 'ghost'`),
-found when the run starts, or a run the refinery does not.
-`InputError` for a call the library refuses: an empty scope, a workspace of another scope, a history
-that breaks a tool call from its result, a `start` outside the history or without one, tags
-outside their limits, runtime questions that do not fit, a runtime id the run already asks,
+teacher that is not a generation agent. `NotFoundError` for an agent the tree does not have — a
+judge, a teacher or a replay's agent in the candidate included — a task the agent does not have
+(`engine: agent 'support' has no task 'ghost'`), found when the run starts, or a run the refinery
+does not. `InputError` for a call the library refuses: an empty scope, a workspace of another scope,
+a history that breaks a tool call from its result, a `start` outside the history or without one,
+tags outside their limits, runtime questions that do not fit, a runtime id the run already asks,
 `questions=` for a generation agent, a decision run with no question to ask, media the decision
-model does not declare, a media part with both or neither of `data` and `url`, a
-correction of the wrong shape or for a question the run was not asked, a `delete_runs` or
-`verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an
-`export` or a `replay` given a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or
-a `limit`, `concurrency` or `repeat` below 1, a tool called with bad arguments or a path outside its
-directory. `ModelError` when an adapter breaks the contract — a
-result whose fields do not fit, a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels. `RunawayError` when
-a loop exceeds `max_steps` (default 200). `DelegationLoopError` for a route into an agent already in
-the same chain of routes; `DelegationDepthError` for nesting past `max_depth`, which reaches the
-model as a tool error through `Delegate` and raises through a route.
+model does not declare, a media part with both or neither of `data` and `url`, a correction of the
+wrong shape or for a question the run was not asked, a `delete_runs` or `verify_absent` given both
+`run_ids` and `tags` or an empty one, a `delete_runs` given neither, an `export` or a `replay` given
+a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or a `limit`, `concurrency` or
+`repeat` below 1, a tool called with bad arguments or a path outside its directory. `ModelError`
+when an adapter breaks the contract — a result whose fields do not fit, a missing answer,
+probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside
+its levels. `RunawayError` when a loop exceeds `max_steps` (default 200). `DelegationLoopError` for
+a route into an agent already in the same chain of routes; `DelegationDepthError` for nesting past
+`max_depth`, which reaches the model as a tool error through `Delegate` and raises through a route.
 `StorageError` for the database. Inside a run, a tool's error is the model's to read, never raised.
 All under `EngineException` — the root takes the `Exception` suffix, every child ends in `Error`,
 the same shape as rfnry-memory's. Every message names the module that raised it, then says what went
-wrong in lowercase: `engine: agent 'ghost' was not found`, `workspace: path outside the workspace: ../x`.
-A tool's error reaches the model with its type in front: `InputError: tools: unknown tool 'Ghost'`.
+wrong in lowercase: `engine: agent 'ghost' was not found`,
+`workspace: path outside the workspace: ../x`. A tool's error reaches the model with its type
+in front: `InputError: tools: unknown tool 'Ghost'`.

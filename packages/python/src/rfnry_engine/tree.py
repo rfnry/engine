@@ -13,7 +13,7 @@ from rfnry_engine.folders import content, declares, entries, joined, listing
 from rfnry_engine.frontmatter import parse_frontmatter_doc
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Check, Choice, Part, Question, Score
-from rfnry_engine.tools.builtins import boot_parts
+from rfnry_engine.tools.builtins import preload_parts
 
 Kind = Literal["generation", "decision"]
 
@@ -52,7 +52,7 @@ class AgentFront(BaseModel):
     agents: list[str] = Field(default_factory=list)
     route: RouteSpec | None = None
     workspace: bool = False
-    boot: Literal["all"] | None = None
+    preload: bool = False
     reads: list[str] = Field(default_factory=list)
 
 
@@ -103,7 +103,7 @@ class AgentSpec(BaseModel):
     fingerprint: str
     workspace: bool = False
     task_questions: dict[str, dict[str, Question]] = Field(default_factory=dict)
-    boot: list[Part] = Field(default_factory=list)
+    preload: list[Part] = Field(default_factory=list)
     listing: str = ""
     reads: dict[str, Path] = Field(default_factory=dict)
     plain: bool = False
@@ -182,7 +182,7 @@ class _Folder:
         return content(self.place, False)
 
     @cached_property
-    def booted(self) -> list[tuple[str, Path]]:
+    def preloaded(self) -> list[tuple[str, Path]]:
         return content(self.place, declares(self.place))
 
     @cached_property
@@ -266,8 +266,8 @@ def load_agent(
         raise ConfigurationError(
             f"tree: decision agent {front.name!r} cannot declare workspace: true"
         )
-    if front.kind == "decision" and front.boot is not None:
-        raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare boot: all")
+    if front.kind == "decision" and front.preload:
+        raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare preload:")
     if front.kind == "generation" and questions:
         raise ConfigurationError(f"tree: generation agent {front.name!r} cannot declare questions/")
     if front.kind == "generation" and front.route is not None:
@@ -276,17 +276,17 @@ def load_agent(
     root = directory.resolve()
     files = sorted([*content(root, False), *_under(reads, lambda folder: folder.files)])
     try:
-        boot, read = (
-            boot_parts(
-                sorted([*content(root, True), *_under(reads, lambda folder: folder.booted)]),
+        preload, read = (
+            preload_parts(
+                sorted([*content(root, True), *_under(reads, lambda folder: folder.preloaded)]),
                 media_types,
             )
-            if front.boot == "all"
+            if front.preload
             else ([], {})
         )
     except InputError as exc:
         raise ConfigurationError(
-            f"tree: agent {front.name!r} cannot boot its folder: {exc}"
+            f"tree: agent {front.name!r} cannot preload its folder: {exc}"
         ) from exc
     return AgentSpec(
         root=root,
@@ -302,7 +302,7 @@ def load_agent(
         fingerprint=folder_fingerprint(files, read),
         workspace=front.workspace,
         task_questions=task_questions,
-        boot=boot,
+        preload=preload,
         listing=joined(
             entries(root, True), {name: folder.mapped for name, folder in reads.items()}
         ),

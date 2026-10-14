@@ -49,7 +49,7 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
         "model": row.model,
         "fingerprint": _fingerprint(body),
         "system": body["system"],
-        "boot": body.get("boot", []),
+        "preload": body.get("preload", body.get("boot", [])),
         "start": body.get("start", 0),
         "messages": body["messages"],
         "tools": body.get("tools", []),
@@ -72,7 +72,7 @@ def preference_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[
             "fingerprint": _fingerprint(row.body),
             "prompt": {
                 "system": row.body["system"],
-                "boot": row.body.get("boot", []),
+                "preload": row.body.get("preload", row.body.get("boot", [])),
                 "messages": row.body["messages"],
             },
             "chosen": label.review.correction,

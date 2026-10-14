@@ -391,9 +391,9 @@ def test_the_route_entry_with_a_task_loads(tmp_path: Path) -> None:
     assert route is not None and route.to["technical"].task == "triage"
 
 
-def test_the_agent_that_boots_its_folder_loads(tmp_path: Path) -> None:
+def test_the_agent_that_preloads_its_folder_loads(tmp_path: Path) -> None:
     write(tmp_path / "tagger/AGENT.md", markdown("name: tagger"))
     write(tmp_path / "tagger/rules/house.md", "Tag by department.\n")
     spec = load_agent(tmp_path / "tagger")
     assert spec.kind == "generation" and spec.body.startswith("Tag the document.")
-    assert spec.boot == [Text(text="<<<rules/house.md>>>\nTag by department.\n")]
+    assert spec.preload == [Text(text="<<<rules/house.md>>>\nTag by department.\n")]

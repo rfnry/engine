@@ -120,7 +120,7 @@ def _handed(path: Path, data: bytes, shown: str, media_types: Collection[str] | 
     return _part(path, data, media_type)
 
 
-def boot_parts(
+def preload_parts(
     files: list[tuple[str, Path]], media_types: Collection[str] | None
 ) -> tuple[list[Part], dict[str, bytes]]:
     parts: list[Part] = []
