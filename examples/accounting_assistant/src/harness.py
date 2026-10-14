@@ -68,13 +68,14 @@ async def run(request: str) -> dict:
 
     async def bookkeep() -> None:
         try:
-            engine_run = await engine.run(
-                "bookkeeper",
-                scope="acme-books",
-                input=request,
-                workspace=workspace(work),
-                approve=approve,
-            )
+            async with workspace(work) as room:
+                engine_run = await engine.run(
+                    "bookkeeper",
+                    scope="acme-books",
+                    input=request,
+                    workspace=room,
+                    approve=approve,
+                )
             task.status, task.reply, task.run_id = "done", engine_run.reply, engine_run.run_id
         except Exception as error:
             task.status, task.reply = "failed", str(error)

@@ -2,7 +2,7 @@
 
 ## Description
 
-A bookkeeping assistant for an accounting firm's accountants, working on a client's ledger. It shows a workspace with a shell, and approvals: the agent writes and runs scripts in a folder of its own, each command in a fresh container that sees only that folder, and an accountant allows every shell command before it runs. Look at `workspace` and `engine.run(..., workspace=workspace(work), approve=approve)` in `src/harness.py`.
+A bookkeeping assistant for an accounting firm's accountants, working on a client's ledger. It shows a workspace with a shell, and approvals: the agent writes and runs scripts in a folder of its own, each command in a fresh container that sees only that folder, and an accountant allows every shell command before it runs. Look at `workspace` and `async with workspace(work) as room:` around `engine.run(..., workspace=room, approve=approve)` in `src/harness.py`; leaving the block closes the workspace and stops any job the agent left running.
 
 ## Running
 

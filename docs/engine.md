@@ -594,10 +594,10 @@ send a window without it, pass the slice as the history and leave `start` at 0.
 `History` never hands a file back. An image, audio or document shows as a line naming it, with its
 URL when it has one — `[image: image/jpeg, https://files.acme.com/a1.jpg]`,
 `[document: application/pdf, "rates.pdf"]` — and the model fetches what it wants to see again:
-`Load` for a file in the agent's directory or workspace, whose call is in the page above its
-result, or a tool of yours. A file is paid for on every call that holds it — an image by its
-pixels, a PDF by its pages — so one the model has read need not stay in your conversation either.
-Keep the line instead, and a tool that brings the file back:
+`Load` for a file in the agent's directory, the folders it reads or the workspace, whose call is in
+the page above its result, or a tool of yours. A file is paid for on every call that holds it — an
+image by its pixels, a PDF by its pages — so one the model has read need not stay in your
+conversation either. Keep the line instead, and a tool that brings the file back:
 
 ```python
 def forgotten(message):
@@ -1005,7 +1005,7 @@ and one loop.
 | --- | --- | --- |
 | `backend` | | where commands run and files live: `Local`, or one of yours |
 | `scope` | | the tenant the workspace belongs to |
-| `timeout` | `120` seconds | the limit on each `Shell`, `Job`, `Write` and `Edit` call; a command still running is stopped — on `Local`, sent SIGTERM, then killed a second later with everything it started — and the call returns what it printed with `timed_out: true` |
+| `timeout` | `120` seconds | the limit on each `Shell`, `Job`, `Write` and `Edit` call; a `Shell` command still running is stopped — on `Local`, sent SIGTERM, then killed a second later with everything it started — and `Shell` returns what it printed with `timed_out: true` |
 | `output_bytes` | `30_000` | the cap on `stdout` and on `stderr`, each keeping its first and last half |
 
 `Local(root, shell=, env=, description=)`:
@@ -1268,9 +1268,10 @@ saw. A decision run replays its state and its task, and asks its runtime questio
 were recorded while the questions of its folder come from the candidate's folder — a runtime id the
 candidate's folder now asks fails that pair; when its route reached a generation run, that run's
 input, history and context go too. What a record does not keep is yours to pass
-again — `expect=`, `approve=`, and the `tools=` and `workspace=` the runs were given. The candidate
-delegates and routes as it does, so a run with children replays as one run. A run recorded before
-`context` was kept replays without it.
+again — `expect=`, `approve=`, and the `tools=` and `workspace=` the runs were given. Replays given
+one workspace share its files and its jobs, and a job outlives the replay that started it: close the
+workspace when the replays are done. The candidate delegates and routes as it does, so a run with
+children replays as one run. A run recorded before `context` was kept replays without it.
 
 `repeat=3` replays each run three times: each attempt is a run of its own and a pair of its own,
 `pair.attempt` counts them from 0, and the three come one after another; `limit=` still counts
@@ -1357,8 +1358,8 @@ The first declares the contract the model sees and leaves the body to code. The 
 code tool as it is — description and schema included. Bodies and code tools go on the engine, one
 list for the whole tree. A body returns a string, a dict (the model reads it as JSON) or a list of
 parts, which reach the model as the tool result — a PDF the model reads itself, an image it looks
-at. `Load` already does that for files in the agent's directory; a tool does it for what lives
-elsewhere, such as your own store:
+at. `Load` already does that for files in the agent's directory and the folders it reads; a tool
+does it for what lives elsewhere, such as your own store:
 
 ```python
 class InvoiceArgs(BaseModel):
