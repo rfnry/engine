@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import os
 import shutil
 import signal
+import stat
 from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -21,6 +23,7 @@ WORKSPACE_TOOLS = frozenset({"Shell", "Job", "Write", "Edit"})
 GRACE = 1.0
 CHUNK = 65_536
 TEXT_BYTES = 5 * 1024 * 1024
+FOLDER = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
 class Stream(Protocol):
@@ -212,20 +215,62 @@ class Local:
         except InputError:
             raise InputError(f"workspace: path outside the workspace: {path}") from None
 
+    def _open(self, path: str, flags: int) -> int:
+        *folders, name = self._target(path).relative_to(self.root).parts or (".",)
+        try:
+            parent = os.open(self.root, FOLDER)
+            try:
+                for folder in folders:
+                    if flags & os.O_CREAT:
+                        with contextlib.suppress(FileExistsError):
+                            os.mkdir(folder, dir_fd=parent)
+                    parent, above = os.open(folder, FOLDER, dir_fd=parent), parent
+                    os.close(above)
+                return os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o666, dir_fd=parent)
+            finally:
+                os.close(parent)
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise InputError(f"workspace: path outside the workspace: {path}") from None
+            raise
+
     def _read(self, path: str, limit: int) -> bytes:
-        target = self._target(path)
-        if not target.is_file():
-            raise InputError(f"workspace: not a file: {path}")
-        if target.stat().st_size > limit:
+        try:
+            fd = self._open(path, os.O_RDONLY)
+        except OSError as exc:
+            if exc.errno not in (errno.ENOENT, errno.ENXIO):
+                raise
+            raise InputError(f"workspace: not a file: {path}") from None
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise InputError(f"workspace: not a file: {path}")
+            data = bytearray()
+            while len(data) <= limit and (chunk := os.read(fd, min(CHUNK, limit + 1 - len(data)))):
+                data += chunk
+        finally:
+            os.close(fd)
+        if len(data) > limit:
             raise InputError(f"workspace: file exceeds {limit} bytes: {path}")
-        return target.read_bytes()
+        return bytes(data)
 
     def _write(self, path: str, data: bytes) -> None:
-        target = self._target(path)
-        if target.is_dir():
-            raise InputError(f"workspace: is a directory: {path}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        try:
+            fd = self._open(path, os.O_WRONLY | os.O_CREAT)
+        except OSError as exc:
+            if exc.errno == errno.EISDIR:
+                raise InputError(f"workspace: is a directory: {path}") from None
+            if exc.errno != errno.ENXIO:
+                raise
+            raise InputError(f"workspace: not a file: {path}") from None
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise InputError(f"workspace: not a file: {path}")
+            os.ftruncate(fd, 0)
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view) :]
+        finally:
+            os.close(fd)
 
 
 def _complete(data: bytearray) -> int:

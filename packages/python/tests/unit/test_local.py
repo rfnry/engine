@@ -3,6 +3,7 @@ import os
 import socket
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -191,6 +192,99 @@ async def test_write_refuses_a_directory(local: Local, root: Path) -> None:
     with pytest.raises(InputError, match="^workspace: is a directory: dir$"):
         await local.write("dir", b"x")
     assert (root / "dir").is_dir()
+
+
+async def test_read_reads_up_to_the_limit_across_chunks(local: Local, root: Path) -> None:
+    (root / "big.bin").write_bytes(b"y" * 200_001)
+    with pytest.raises(InputError, match="^workspace: file exceeds 200000 bytes: big.bin$"):
+        await local.read("big.bin", 200_000)
+    assert await local.read("big.bin", 200_001) == b"y" * 200_001
+
+
+async def test_a_pipe_is_not_a_file_and_never_blocks(local: Local, root: Path) -> None:
+    os.mkfifo(root / "pipe")
+    with pytest.raises(InputError, match="^workspace: not a file: pipe$"):
+        await asyncio.wait_for(local.read("pipe", 100), 5)
+    with pytest.raises(InputError, match="^workspace: not a file: pipe$"):
+        await asyncio.wait_for(local.write("pipe", b"x"), 5)
+
+
+async def test_a_link_inside_the_workspace_still_reads_and_writes(local: Local, root: Path) -> None:
+    (root / "real").mkdir()
+    (root / "real/a.txt").write_bytes(b"a")
+    (root / "alias").symlink_to("real")
+    (root / "link.txt").symlink_to("real/a.txt")
+    assert await local.read("alias/a.txt", 10) == b"a"
+    assert await local.read("link.txt", 10) == b"a"
+    await local.write("alias/deep/b.txt", b"b")
+    assert (root / "real/deep/b.txt").read_bytes() == b"b"
+    await local.write("link.txt", b"c")
+    assert (root / "real/a.txt").read_bytes() == b"c" and (root / "link.txt").is_symlink()
+
+
+def swap_after_the_check(monkeypatch: pytest.MonkeyPatch, swap: Callable[[], None]) -> None:
+    checked = Local._target
+
+    def swapped(self: Local, path: str) -> Path:
+        target = checked(self, path)
+        swap()
+        return target
+
+    monkeypatch.setattr(Local, "_target", swapped)
+
+
+async def call(local: Local, verb: str, path: str) -> None:
+    if verb == "read":
+        await local.read(path, 100)
+    else:
+        await local.write(path, b"x")
+
+
+@pytest.mark.parametrize(
+    ("verb", "path"),
+    [("read", "sub/secret.txt"), ("write", "sub/secret.txt"), ("write", "sub/new/new.txt")],
+)
+async def test_a_folder_swapped_for_a_link_after_the_check_is_refused(
+    local: Local,
+    root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    verb: str,
+    path: str,
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "secret.txt").write_text("secret")
+    (root / "sub").mkdir()
+
+    def swap() -> None:
+        (root / "sub").rmdir()
+        (root / "sub").symlink_to(elsewhere)
+
+    swap_after_the_check(monkeypatch, swap)
+    with pytest.raises(InputError, match=f"^workspace: path outside the workspace: {path}$"):
+        await call(local, verb, path)
+    assert [p.name for p in elsewhere.iterdir()] == ["secret.txt"]
+    assert (elsewhere / "secret.txt").read_text() == "secret"
+
+
+@pytest.mark.parametrize("verb", ["read", "write"])
+async def test_a_file_swapped_for_a_link_after_the_check_is_refused(
+    local: Local, root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verb: str
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "secret.txt").write_text("secret")
+    (root / "notes.txt").write_text("notes")
+
+    def swap() -> None:
+        (root / "notes.txt").unlink()
+        (root / "notes.txt").symlink_to(elsewhere / "secret.txt")
+
+    swap_after_the_check(monkeypatch, swap)
+    with pytest.raises(InputError, match="^workspace: path outside the workspace: notes.txt$"):
+        await call(local, verb, "notes.txt")
+    assert (elsewhere / "secret.txt").read_text() == "secret"
 
 
 def test_root_must_be_a_directory(tmp_path: Path) -> None:
