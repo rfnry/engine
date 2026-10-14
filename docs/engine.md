@@ -961,6 +961,10 @@ read-only, this tenant's directory writable, an empty `/tmp`, and nothing else �
 no service configuration, no network — and kills every process when the command ends. The model
 sees none of this: it has the same tools, and its command runs inside.
 
+A sandbox per command, as here, gives each command its own network, so a server a job starts
+answers only commands inside the same sandbox; to start a server in one message and reach it in
+the next, keep one sandbox per workspace — `examples/workspaces/` does it with a container.
+
 The agent then has five more tools. `Shell(command, background=false)` runs a command and returns
 `exit_code`, `stdout`, `stderr` and `timed_out`; when the command ends, anything it left running is
 stopped. With `background=true` the command starts as a job — a server, a watcher, a long build —
