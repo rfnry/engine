@@ -328,19 +328,20 @@ run.fingerprint.agent                                # "3f9a1c0e5b7d2a41": the a
 run.fingerprint.tools                                # "a02c77e1f4b9d305": the tools it was offered
 ```
 
-`fingerprint.agent` is a short sha256 over every file in the agent's directory, by relative path and
-content — the only directory an agent reads — leaving out hidden files and folders, as `LS`, `Glob`
-and `Grep` do, and links that lead out of it. The engine takes it once, when it loads the tree, so
-an edit shows in the next `Engine` built from the folder. `fingerprint.tools` is one over
-`run.tools` — each tool's name, description and schema — so it covers the tools the folder
-declares, the code tools it adopts, the `tools=` a run passes, `Output` when `expect=` asks for one,
-and in `Delegate` the agents it may call — their names, descriptions, kinds and tasks. Neither sees
-what varies per run and is not the agent — the input, the history, `context=`, `tags=` — so two
-runs of an unchanged folder share it and any edit changes it. The model is `run.model`; the code
-behind a tool is yours to version. A decision run carries one too, its `tools` the fingerprint of no
-tools and its `questions` the questions it asked ([Decision agents](#decision-agents)), and each
-delegated or routed run carries its own. A run recorded before fingerprints were kept reads back
-with `None`.
+`fingerprint.agent` is a short sha256 over every file the agent reads, by relative path and content:
+its own directory, and each folder it names in `reads:` with that folder's files under `../<name>/`,
+as the map shows them — leaving out hidden files and folders, as `LS`, `Glob` and `Grep` do, and
+links that lead out of them. The engine takes it once, when it loads the tree, so an edit to the
+agent or to a folder it reads shows in the next `Engine` built from the folder. `fingerprint.tools`
+is one over `run.tools` — each tool's name, description and schema — so it covers the tools the
+folder declares, the code tools it adopts, the `tools=` a run passes, `Output` when `expect=` asks
+for one, and in `Delegate` the agents it may call — their names, descriptions, kinds and tasks.
+Neither sees what varies per run and is not the agent — the input, the history, `context=`, `tags=`
+— so two runs of an unchanged folder share it and any edit changes it. The model is `run.model`; the
+code behind a tool is yours to version. A decision run carries one too, its `tools` the fingerprint
+of no tools and its `questions` the questions it asked ([Decision agents](#decision-agents)), and
+each delegated or routed run carries its own. A run recorded before fingerprints were kept reads
+back with `None`.
 
 Keep the conversation yourself and pass it back. `run.conversation` is the history the run was
 sent, the input, every assistant turn — its text in `content`, its calls in `tool_calls`, its
@@ -1042,11 +1043,12 @@ runs each command in a scope with those limits; `env=` then needs `XDG_RUNTIME_D
 Without a sandbox, the kill reaches every process the command started except one that leaves its
 process group with `setsid`; the process namespace of a container or of bubblewrap closes that gap.
 
-An agent without `workspace: true` never sees these tools, even when the run has a workspace; an
-agent with it, run without one, is a `ConfigurationError`, and so is a decision agent that declares
-it. Delegated and routed agents receive the run's workspace on the same terms. `stop.now()` stops a
-running command the same way the timeout does. You own the directory and its lifetime: a temporary
-one per run, or one kept for a project.
+An agent without `workspace: true` never sees these tools, even when the run has a workspace — but
+a plain agent, a root with no `AGENT.md`, gets them whenever one is passed; an agent with it, run
+without one, is a `ConfigurationError`, and so is a decision agent that declares it. Delegated and
+routed agents receive the run's workspace on the same terms. `stop.now()` stops a running command
+the same way the timeout does. You own the directory and its lifetime: a temporary one per run, or
+one kept for a project.
 
 ### Approving tool calls
 
@@ -1422,8 +1424,10 @@ answer it routed to, not only the answers.
 It is a `Tools` of one, so it adds to any other. Each call is a top-level run under the scope it
 was made with, recorded like any run; `context=`, `tools=`, `workspace=` and `tags=` ride every call.
 Mounted inside another run with `run(tools=)` it is a tool like any other, under `tool_timeout`,
-and its run is not the caller's child — to nest with lineage, name the agent in `agents:`. A loop
-through it is still refused.
+and its run is not the caller's child — to nest with lineage, name the agent in `agents:`. The
+chain carries across it as across `Delegate`: an agent may reach a fresh run of itself through it,
+`max_depth` bounds how deep that goes, and only a route into an agent already in the chain is
+refused.
 
 ## Storage
 
