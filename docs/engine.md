@@ -1460,10 +1460,10 @@ It is a `Tools` of one, so it adds to any other. Each call is a top-level run un
 made with, recorded like any run; `context=`, `tools=`, `workspace=` and `tags=` ride every call.
 Mounted inside another run with `run(tools=)` it is a tool like any other, under `tool_timeout`, and
 its run is not the caller's child — to nest with lineage, name the agent in `agents:`. The chain
-carries across it as across `Delegate`, except that a call through it starts a new input, so the
-route chain resets there while `max_depth` still counts the whole stack: an agent may reach a fresh
-run of itself through it, `max_depth` bounds how deep that goes, and only a route into an agent
-already in the same chain of routes is refused.
+carries across it as across `Delegate`: a call through it starts a new input, so the route chain
+resets there while `max_depth` still counts the whole stack: an agent may reach a fresh run of
+itself through it, `max_depth` bounds how deep that goes, and only a route into an agent already in
+the same chain of routes is refused.
 
 ## Storage
 

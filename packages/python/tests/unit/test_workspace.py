@@ -96,14 +96,17 @@ async def shell(ws: Workspace, command: str) -> dict[str, Any]:
     return result
 
 
-async def until(check: Callable[[], bool], deadline: float = 5.0) -> None:
-    async with asyncio.timeout(deadline):
-        while not check():
-            await asyncio.sleep(0.005)
+async def until(check: Callable[[], bool], what: str, deadline: float = 5.0) -> None:
+    try:
+        async with asyncio.timeout(deadline):
+            while not check():
+                await asyncio.sleep(0.005)
+    except TimeoutError:
+        pytest.fail(f"{what} never happened")
 
 
 async def delivered(ws: Workspace, total: int, job: str = "j1") -> None:
-    await until(lambda: ws._jobs[job].kept.total >= total)
+    await until(lambda: ws._jobs[job].kept.total >= total, f"{total} bytes of output arriving")
 
 
 async def finished(ws: Workspace, job: str = "j1") -> None:
@@ -414,7 +417,7 @@ async def test_output_that_arrives_after_the_exit_is_kept() -> None:
     ran = machine.commands[0]
     ran.stubborn = True
     ran.exit(0, hold=True)
-    await until(lambda: ran.code.done())
+    await until(lambda: ran.code.done(), "the command exiting")
     ran.stdout.say(b"late\n")
     ran.stdout.close()
     ran.stderr.close()
@@ -484,7 +487,7 @@ async def test_a_background_command_cut_by_a_stop_still_registers_its_job() -> N
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    await until(lambda: "j1" in ws._jobs)
+    await until(lambda: "j1" in ws._jobs, "the job registering")
     [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
     assert (listed["job"], listed["running"]) == ("j1", True)
     await ws.close()
