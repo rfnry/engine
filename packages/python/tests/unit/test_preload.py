@@ -4,6 +4,7 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -21,7 +22,7 @@ from rfnry_engine.models import (
     ToolCall,
     ToolSpec,
 )
-from rfnry_engine.records import Generation
+from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.labels import Review
 from rfnry_engine.refinery.refinery import Refinery, flatten
 from rfnry_engine.refinery.storage import Storage
@@ -33,6 +34,7 @@ from .fakes import (
     MemoryBucket,
     Scripted,
     by_hand,
+    decision_record,
     delegating,
     generation_record,
     lead,
@@ -367,21 +369,37 @@ async def test_a_run_stored_with_the_old_boot_key_reads_back_and_exports_it_as_p
     storage: Storage,
 ) -> None:
     refinery = Refinery(storage)
-    run = generation_record()
-    [stored] = flatten(run, datetime.now(UTC))
+    parent_id, triage_id = uuid4().hex, uuid4().hex
+    routed = generation_record(agent="billing").model_copy(update={"parent_run_id": triage_id})
+    triage = decision_record(run_id=triage_id, routed_to=routed).model_copy(
+        update={"parent_run_id": parent_id}
+    )
+    child = generation_record(agent="billing").model_copy(update={"parent_run_id": parent_id})
+    run = generation_record(run_id=parent_id, children=[child, triage])
     parts = [{"type": "text", "text": "<<<rules/a.md>>>\nBe kind.\n"}]
-    old = {key: value for key, value in stored.body.items() if key != "preload"}
-    old["boot"] = parts
-    await storage.put_run("acme", stored.model_copy(update={"body": old}))
+    for stored in flatten(run, datetime.now(UTC)):
+        old = {key: value for key, value in stored.body.items() if key != "preload"}
+        if stored.kind == "generation":
+            old["boot"] = parts
+        await storage.put_run("acme", stored.model_copy(update={"body": old}))
     await refinery.review("acme", run.run_id, Review(correction="Better."))
     bucket = MemoryBucket()
     await refinery.export("acme", bucket)
-    rows = {key.split("/")[2]: json.loads(data) for key, data in bucket.objects.items()}
-    assert (
-        rows["generation"]["preload"] == parts and rows["preference"]["prompt"]["preload"] == parts
-    )
+    lines = {
+        key: [json.loads(line) for line in data.decode().splitlines()]
+        for key, data in bucket.objects.items()
+    }
+    generations = [row for key, rows in lines.items() if "/generation/" in key for row in rows]
+    [preference] = [row for key, rows in lines.items() if "/preference/" in key for row in rows]
+    assert len(generations) == 3 and all(row["preload"] == parts for row in generations)
+    assert preference["prompt"]["preload"] == parts
     read = await refinery.run("acme", run.run_id)
-    assert isinstance(read, Generation) and read.preload == [Text(text=parts[0]["text"])]
+    assert isinstance(read, Generation)
+    [nested] = [kid for kid in read.children if isinstance(kid, Generation)]
+    [decided] = [kid for kid in read.children if isinstance(kid, Decision)]
+    assert isinstance(decided.routed_to, Generation)
+    preloads = [read.preload, nested.preload, decided.routed_to.preload]
+    assert preloads == [[Text(text=parts[0]["text"])]] * 3
 
 
 class PicturesAndDocuments(Scripted):

@@ -91,6 +91,8 @@ def unflatten(row: RunRow, under: dict[str, list[RunRow]]) -> dict[str, Any]:
     )
     nested = [unflatten(child, under) for child in children]
     if row.kind == "generation":
+        if "boot" in body and "preload" not in body:
+            body["preload"] = body.pop("boot")
         body["children"] = nested
     else:
         body["routed_to"] = nested[0] if nested else None
@@ -100,8 +102,6 @@ def unflatten(row: RunRow, under: dict[str, list[RunRow]]) -> dict[str, Any]:
 def read_back(row: RunRow, under: dict[str, list[RunRow]]) -> Run:
     body = unflatten(row, under)
     if row.kind == "generation":
-        if "boot" in body and "preload" not in body:
-            body = {**{k: v for k, v in body.items() if k != "boot"}, "preload": body["boot"]}
         return Generation.model_validate(body)
     return Decision.model_validate(body)
 
