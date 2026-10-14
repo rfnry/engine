@@ -564,3 +564,19 @@ def test_a_single_agent_root_reads_nothing(tmp_path: Path) -> None:
     _agent(tmp_path, "solo", "kind: generation\nreads: [books]\n")
     with pytest.raises(ConfigurationError, match="reads unknown folder 'books'"):
         load_tree(tmp_path / "solo")
+
+
+def test_reads_needs_the_agent_s_folder_inside_the_root_not_a_link_to_elsewhere(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    (root / "books").mkdir(parents=True)
+    _agent(tmp_path / "elsewhere", "coding", "kind: generation\nreads: [books]\n")
+    (root / "coding").symlink_to(tmp_path / "elsewhere" / "coding", target_is_directory=True)
+    message = r"^tree: agent 'coding' declares reads: but its folder is a link to "
+    with pytest.raises(ConfigurationError, match=message):
+        load_tree(root)
+    (tmp_path / "elsewhere" / "coding" / "AGENT.md").write_text(
+        "---\nname: coding\nkind: generation\n---\n"
+    )
+    assert load_tree(root)["coding"].reads == {}

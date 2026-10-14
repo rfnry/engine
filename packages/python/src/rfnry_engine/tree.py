@@ -178,6 +178,10 @@ def _reads(front: AgentFront, directory: Path, folders: Mapping[str, Path]) -> d
     for name in front.reads:
         if name.startswith(".") or name == directory.name or name not in folders:
             raise ConfigurationError(f"tree: agent {front.name!r} reads unknown folder {name!r}")
+    if front.reads and directory.resolve().parent != directory.parent.resolve():
+        raise ConfigurationError(
+            f"tree: agent {front.name!r} declares reads: but its folder is a link to {directory.resolve()}; reads: needs the agent's folder inside the root"
+        )
     return {name: folders[name] for name in front.reads}
 
 
