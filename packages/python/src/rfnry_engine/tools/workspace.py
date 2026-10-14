@@ -108,6 +108,16 @@ def _signal(pid: int, sig: signal.Signals) -> None:
         os.killpg(pid, sig)
 
 
+def _alive(pid: int) -> bool:
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return False
+    return True
+
+
 async def _stop(pid: int, exited: asyncio.Future[None]) -> None:
     _signal(pid, signal.SIGTERM)
     try:
@@ -193,7 +203,8 @@ class _Running:
         try:
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(GRACE):
-                    await asyncio.shield(self._exited)
+                    while _alive(self._pid):
+                        await asyncio.sleep(0.02)
         finally:
             _signal(self._pid, signal.SIGKILL)
 

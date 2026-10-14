@@ -216,3 +216,29 @@ def test_a_description_must_be_a_string(tmp_path: Path) -> None:
     assert Local(tmp_path, description="bash on a laptop").description == "bash on a laptop"
     with pytest.raises(ConfigurationError, match="^workspace: description must be a string$"):
         Local(tmp_path, description=3)  # type: ignore[arg-type]
+
+
+CHILD_TRAP = "(trap 'sleep 0.3; echo cleaned > cleaned.txt; exit 0' TERM; sleep 30 & wait) & "
+
+
+async def test_kill_gives_a_child_the_grace_to_clean_up_while_the_leader_runs(
+    local: Local, root: Path
+) -> None:
+    process = await local.spawn(CHILD_TRAP + "sleep 30")
+    await asyncio.sleep(0.3)
+    began = time.monotonic()
+    await process.kill()
+    assert time.monotonic() - began < 2
+    assert (root / "cleaned.txt").read_text() == "cleaned\n"
+
+
+async def test_kill_gives_a_child_the_grace_to_clean_up_after_the_leader_exited(
+    local: Local, root: Path
+) -> None:
+    process = await local.spawn(CHILD_TRAP + "echo started")
+    assert await asyncio.wait_for(process.wait(), 5) == 0
+    await asyncio.sleep(0.3)
+    began = time.monotonic()
+    await process.kill()
+    assert time.monotonic() - began < 2
+    assert (root / "cleaned.txt").read_text() == "cleaned\n"
