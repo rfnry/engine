@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,19 @@ async def test_its_tools_folder_is_content_and_the_run_s_tools_and_workspace_rid
     first, second = ([t.name for t in call[2]] for call in llm.calls)
     assert "ping" in first and "Shell" not in first
     assert {"Shell", "Write", "Edit"} <= set(second)
+
+
+async def test_its_workspace_tools_keep_the_workspace_timeout_over_the_engine_s(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "work").mkdir()
+    shell = ToolCall(id="s", name="Shell", args={"command": "sleep 0.5; echo done"})
+    llm = Scripted(Reply(tool_calls=[shell], stop_reason="tool_use"), text_reply("ok"))
+    engine = Engine(notes(tmp_path / "notes"), generation=llm, tool_timeout=0.1)
+    work = Workspace(Local(tmp_path / "work"), scope="acme")
+    run = await engine.run("notes", "acme", "x", workspace=work)
+    assert isinstance(run, Generation) and not run.steps[0].is_error
+    assert json.loads(str(run.steps[0].result))["stdout"] == "done\n"
 
 
 async def test_it_runs_as_a_tool_and_reads_its_tools_folder_as_content(tmp_path: Path) -> None:

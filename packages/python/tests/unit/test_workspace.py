@@ -556,6 +556,7 @@ async def test_a_failed_kill_leaves_the_job_reachable_by_a_second_close() -> Non
     machine = Dying(kill_fails=1)
     ws = Workspace(machine, scope="acme")
     await background(ws, "serve")
+    following = ws._jobs["j1"].task
     with pytest.raises(RuntimeError, match="kill failed"):
         await ws.close()
     [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
@@ -564,7 +565,7 @@ async def test_a_failed_kill_leaves_the_job_reachable_by_a_second_close() -> Non
     assert await tool(ws, "Jobs").call({}) == {"jobs": []}
     assert machine.commands[0].kills >= 2
     await asyncio.sleep(0)
-    assert not [t for t in asyncio.all_tasks() if "_follow" in repr(t) and not t.done()]
+    assert following is not None and following.done()
 
 
 async def test_a_wait_that_raises_is_in_the_output_and_the_process_is_killed() -> None:
