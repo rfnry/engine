@@ -470,3 +470,18 @@ async def test_boot_all_sends_every_file_but_agent_md_and_the_declarations(
         "<<<rules/refunds.md>>>",
         "<<<skills/escalate.md>>>",
     ]
+
+
+def test_boot_all_sends_the_read_folders_too_in_path_order(tmp_path: Path) -> None:
+    (tmp_path / "coding").mkdir()
+    (tmp_path / "coding" / "AGENT.md").write_text(
+        "---\nname: coding\nkind: generation\nreads: [books]\nboot: all\n---\nHi\n"
+    )
+    (tmp_path / "coding" / "notes.md").write_text("Own.\n")
+    (tmp_path / "books").mkdir()
+    (tmp_path / "books" / "a.md").write_text("Shared.\n")
+    spec = Engine(tmp_path, generation=Scripted())._spec("coding")
+    assert spec.boot == [
+        Text(text="<<<../books/a.md>>>\nShared.\n"),
+        Text(text="<<<notes.md>>>\nOwn.\n"),
+    ]

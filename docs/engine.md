@@ -223,8 +223,40 @@ image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a sca
 folder as it came, the model reads it with its own understanding of images and documents, there is
 no parser in between, and nothing is loaded until the model asks — unless the agent asks for its
 folder at boot, below.
+
+A root holds agents and plain folders side by side, and an agent reads other folders of its root by
+naming them in `reads:` — plain folders, or other agents' folders:
+
+```
+my_agents/
+  coding/AGENT.md       reads: [books]
+  writing/AGENT.md      reads: [books]
+  books/                no AGENT.md: read by both, never run
+```
+
+```markdown
+---
+name: coding
+kind: generation
+description: Writes and reviews code
+reads: [books]
+---
+You write code. The books hold the house's conventions.
+```
+
+Each folder it reads follows its own in the map as `../books/`, and the tools take its files by
+that path — `Read` of `../books/python/async.md`, `Grep` with `path="../books"`, `Glob` of
+`../books/**/*.md`; without a path, `Grep` and `Glob` search the agent's own folder. Nothing outside
+the agent's folder and the folders it reads is reachable. Another agent's folder shows in the map
+without its `AGENT.md` and declarations, which stay readable. `boot: all` sends the folders it reads
+too, under the same paths, and an edit to one changes the fingerprint of every agent that reads it.
+`reads:` names direct children of the root: a name that is not one, starts with `.`, or is the
+agent's own is a `ConfigurationError` when the tree loads, and so is `reads:` on a decision agent,
+which reads no files. The tree is shared by every tenant: it holds how to do the work, never a
+tenant's data — that comes per run, in the input, the history or the workspace.
+
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its
-`kind`, `description` and the `agents` it may call.
+`kind`, `description`, the `agents` it may call and the folders it `reads`.
 
 An agent that needs its whole folder on every run — a few house rules applied to thousands of
 documents — asks for it at boot:
@@ -1442,6 +1474,7 @@ as `(label_id, at, text)`, oldest first.
 `scope` is the tenant. It is required on every run and every refinery verb, it is the first column
 of every table, and no read accepts its absence. Tools pinned to a tenant are passed on the call.
 `refinery.delete_scope(scope)` removes everything; `refinery.verify_absent(scope)` proves it.
+The tree of agents is shared by every tenant and holds no tenant's data.
 
 Inside a tenant, erase by tag or by run id. A support desk serves every customer in one scope; tag
 each run with its customer, and when one asks to be forgotten:
@@ -1478,7 +1511,8 @@ Everything the package exports, by role.
 `AGENT.md`, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
 (`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that
 is not valid YAML or a `description:` that is not a string in a file the map would show, a decision
-agent with `boot: all`, a file `boot: all` would send that neither `Read` nor `Load` would hand over —
+agent with `boot: all`, a `reads:` naming no folder of the root or the agent's own, `reads:` on a
+decision agent, a file `boot: all` would send that neither `Read` nor `Load` would hand over —
 over 20 MB, of a type the model's `media_types` does not name, or not the type its name says — a
 question with instructions both in its frontmatter and in its body or in neither, a decision agent
 with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a route entry

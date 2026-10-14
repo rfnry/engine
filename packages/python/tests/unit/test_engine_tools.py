@@ -61,3 +61,19 @@ def test_engine_tools_need_a_scope(fixtures: Path) -> None:
     engine = Engine(fixtures, generation=Scripted(), tools=TOOLS)
     with pytest.raises(InputError, match="^engine_tools: scope is required$"):
         EngineTools(engine, agent="support", scope="")
+
+
+async def test_an_agent_reads_another_agent_s_folder_in_full(tmp_path: Path) -> None:
+    for name, front in [("coding", "reads: [writing]\n"), ("writing", "")]:
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "AGENT.md").write_text(
+            f"---\nname: {name}\nkind: generation\n{front}---\nHi\n"
+        )
+    (tmp_path / "writing" / "tasks").mkdir()
+    (tmp_path / "writing" / "tasks" / "draft.md").write_text("Draft it.\n")
+    engine = Engine(tmp_path, generation=Scripted())
+    assert engine.agents["coding"].reads == ["writing"] and engine.agents["writing"].reads == []
+    tools = EngineTools(engine, agent="coding", scope="acme")
+    assert "Hi" in await tools.dispatch("Read", {"path": "../writing/AGENT.md"})
+    assert await tools.dispatch("Read", {"path": "../writing/tasks/draft.md"}) == "Draft it.\n"
+    assert engine._spec("coding").listing == "../writing/"

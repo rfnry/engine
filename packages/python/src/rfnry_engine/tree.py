@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from typing import Literal
 
@@ -8,8 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, f
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_files, folder_fingerprint
-from rfnry_engine.folders import content, listing
+from rfnry_engine.folders import content, declares, listing
 from rfnry_engine.frontmatter import parse_frontmatter_doc
+from rfnry_engine.jail import Jail
 from rfnry_engine.models import Check, Choice, Part, Question, Score
 from rfnry_engine.tools.builtins import boot_parts
 
@@ -51,6 +52,7 @@ class AgentFront(BaseModel):
     route: RouteSpec | None = None
     workspace: bool = False
     boot: Literal["all"] | None = None
+    reads: list[str] = Field(default_factory=list)
 
 
 class QuestionFront(BaseModel):
@@ -102,6 +104,7 @@ class AgentSpec(BaseModel):
     task_questions: dict[str, dict[str, Question]] = Field(default_factory=dict)
     boot: list[Part] = Field(default_factory=list)
     listing: str = ""
+    reads: dict[str, Path] = Field(default_factory=dict)
 
 
 def _read(path: Path) -> str:
@@ -168,7 +171,43 @@ def _questions(directory: Path) -> dict[str, Question]:
     return {p.stem: _question(p) for p in _markdown_files(directory)}
 
 
-def load_agent(directory: Path, media_types: Collection[str] | None = None) -> AgentSpec:
+def _reads(front: AgentFront, directory: Path, folders: Mapping[str, Path]) -> dict[str, Path]:
+    if front.kind == "decision" and front.reads:
+        raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare reads:")
+    for name in front.reads:
+        if name.startswith(".") or name == directory.name or name not in folders:
+            raise ConfigurationError(f"tree: agent {front.name!r} reads unknown folder {name!r}")
+    return {name: folders[name] for name in front.reads}
+
+
+def _under(
+    reads: Mapping[str, Path], files: Callable[[Path], list[tuple[str, Path]]]
+) -> list[tuple[str, Path]]:
+    return [
+        (f"../{name}/{rel}", path) for name, folder in reads.items() for rel, path in files(folder)
+    ]
+
+
+def _readable(root: Path) -> dict[str, Path]:
+    jail = Jail(root)
+    found: dict[str, Path] = {}
+    for child in sorted(root.iterdir()):
+        if child.name.startswith(".") or not child.is_dir():
+            continue
+        try:
+            place = jail.resolve(child)
+        except InputError:
+            continue
+        if place != jail.root:
+            found[child.name] = place
+    return found
+
+
+def load_agent(
+    directory: Path,
+    media_types: Collection[str] | None = None,
+    folders: Mapping[str, Path] | None = None,
+) -> AgentSpec:
     front, body = parse_frontmatter_doc(
         _read(directory / "AGENT.md"),
         model=AgentFront,
@@ -208,11 +247,15 @@ def load_agent(directory: Path, media_types: Collection[str] | None = None) -> A
         raise ConfigurationError(f"tree: generation agent {front.name!r} cannot declare questions/")
     if front.kind == "generation" and front.route is not None:
         raise ConfigurationError(f"tree: generation agent {front.name!r} cannot declare route:")
+    reads = _reads(front, directory, folders or {})
     root = directory.resolve()
-    files = folder_files(root)
+    files = sorted([*folder_files(root), *_under(reads, folder_files)])
+    shared = _under(reads, lambda folder: content(folder, declares(folder)))
     try:
         boot, read = (
-            boot_parts(content(root, True), media_types) if front.boot == "all" else ([], {})
+            boot_parts(sorted([*content(root, True), *shared]), media_types)
+            if front.boot == "all"
+            else ([], {})
         )
     except InputError as exc:
         raise ConfigurationError(
@@ -233,7 +276,8 @@ def load_agent(directory: Path, media_types: Collection[str] | None = None) -> A
         workspace=front.workspace,
         task_questions=task_questions,
         boot=boot,
-        listing=listing(root, True, {}),
+        listing=listing(root, True, reads),
+        reads=reads,
     )
 
 
@@ -242,8 +286,9 @@ def load_tree(root: Path, media_types: Collection[str] | None = None) -> dict[st
     if (root / "AGENT.md").is_file():
         spec = load_agent(root, media_types)
         return {spec.name: spec}
+    folders = _readable(root)
     agents = {
-        child.name: load_agent(child, media_types)
+        child.name: load_agent(child, media_types, folders)
         for child in sorted(root.iterdir())
         if child.is_dir() and (child / "AGENT.md").is_file()
     }

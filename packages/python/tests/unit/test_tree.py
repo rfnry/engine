@@ -508,3 +508,59 @@ def test_a_route_entry_with_an_unknown_key_names_it(tmp_path: Path) -> None:
     message = "^frontmatter: unknown key 'route.to.x.tsak' in "
     with pytest.raises(ConfigurationError, match=message):
         load_agent(tmp_path / "a")
+
+
+def _shelf(root: Path, coding: str = "reads: [books, writing]\n") -> Path:
+    _agent(root, "coding", f"kind: generation\n{coding}")
+    _agent(root, "writing", "kind: generation\ndescription: Writes\n", tools=("draft",))
+    (root / "writing" / "voice.md").write_text("---\ndescription: The voice\n---\nWarm.\n")
+    (root / "books" / "python").mkdir(parents=True)
+    (root / "books" / "python" / "async.md").write_text("---\ndescription: Async\n---\nAwait.\n")
+    return root
+
+
+def test_an_agent_reads_the_folders_it_names(tmp_path: Path) -> None:
+    agents = load_tree(_shelf(tmp_path))
+    coding = agents["coding"]
+    assert coding.reads == {
+        "books": (tmp_path / "books").resolve(),
+        "writing": (tmp_path / "writing").resolve(),
+    }
+    assert coding.listing == (
+        "../books/\n  python/\n    async.md — Async\n../writing/\n  voice.md — The voice"
+    )
+    assert agents["writing"].reads == {} and "books" not in agents
+
+
+@pytest.mark.parametrize(
+    ("front", "message"),
+    [
+        ("kind: generation\nreads: [ghost]\n", "agent 'coding' reads unknown folder 'ghost'"),
+        ("kind: generation\nreads: [coding]\n", "agent 'coding' reads unknown folder 'coding'"),
+        ("kind: generation\nreads: [.hidden]\n", "agent 'coding' reads unknown folder '.hidden'"),
+        ("kind: generation\nreads: [outside]\n", "agent 'coding' reads unknown folder 'outside'"),
+        ("kind: generation\nreads: [loop]\n", "agent 'coding' reads unknown folder 'loop'"),
+        (
+            "kind: decision\nreads: [books]\n",
+            "decision agent 'coding' cannot declare reads:",
+        ),
+    ],
+)
+def test_reads_names_a_readable_folder_of_the_root(
+    tmp_path: Path, front: str, message: str
+) -> None:
+    root = tmp_path / "root"
+    _agent(root, "coding", front, {"q": CHECK} if "decision" in front else None)
+    (root / "books").mkdir()
+    (root / ".hidden").mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    (root / "outside").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    (root / "loop").symlink_to(root, target_is_directory=True)
+    with pytest.raises(ConfigurationError, match=f"^tree: {message}$"):
+        load_tree(root)
+
+
+def test_a_single_agent_root_reads_nothing(tmp_path: Path) -> None:
+    _agent(tmp_path, "solo", "kind: generation\nreads: [books]\n")
+    with pytest.raises(ConfigurationError, match="reads unknown folder 'books'"):
+        load_tree(tmp_path / "solo")

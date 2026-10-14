@@ -369,7 +369,7 @@ class Engine:
 
 Loads the tree of agents under `root` and checks it against the models and tool bodies given — the files of an agent with `boot: all` against the generation model's `media_types`; `tools` is one list for the whole tree, and `Recorder` is a protocol of `async def record(self, run: Run) -> None`, which a `Refinery` meets. `tool_timeout` is each tool call's deadline in seconds, `None` for none. `history_walk` is how many messages one `History` search walks back, `history_chars` how many characters one `History` result holds. `agents` maps each agent's name to its `AgentInfo`.
 
-Raises `ConfigurationError` when `root` is not a directory, when the tree cannot be used (no agent under `root`, a bad `AGENT.md`, question or tool file, an unknown frontmatter key, frontmatter that is not valid YAML or a `description:` that is not a string in a `.md` file the map would show, an agent in `agents:` or `route:` the tree does not have, a route entry naming a task its agent does not have or reaching a decision agent with nothing to ask — no `questions/` and no task with questions named — a route not by a choice question of the router's `questions/`, a decision agent with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a decision agent with `boot: all`, a file `boot: all` would send that neither `Read` nor `Load` would hand over: over 20 MB, of a type the generation model's `media_types` does not name, or not the type its name says), when a tool is given that no agent declares or, with a generation model, a declared tool has no body, when two tools share a name, or when `max_steps`, `max_depth`, `tool_timeout`, `history_walk` or `history_chars` is not positive.
+Raises `ConfigurationError` when `root` is not a directory, when the tree cannot be used (no agent under `root`, a bad `AGENT.md`, question or tool file, an unknown frontmatter key, frontmatter that is not valid YAML or a `description:` that is not a string in a `.md` file the map would show, an agent in `agents:` or `route:` the tree does not have, a route entry naming a task its agent does not have or reaching a decision agent with nothing to ask — no `questions/` and no task with questions named — a route not by a choice question of the router's `questions/`, a decision agent with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a decision agent with `boot: all`, a `reads:` naming a folder that is not a direct child of the root, starts with `.` or is the agent's own, `reads:` on a decision agent, a file `boot: all` would send that neither `Read` nor `Load` would hand over: over 20 MB, of a type the generation model's `media_types` does not name, or not the type its name says), when a tool is given that no agent declares or, with a generation model, a declared tool has no body, when two tools share a name, or when `max_steps`, `max_depth`, `tool_timeout`, `history_walk` or `history_chars` is not positive.
 
 ### `Engine.run`
 
@@ -458,9 +458,10 @@ class AgentInfo(BaseModel):
     kind: Kind
     description: str
     agents: list[str]
+    reads: list[str]
 ```
 
-An agent as the engine loaded it, in `Engine.agents`: its name, its kind, its description and the agents it may call. `Kind` is `Literal["generation", "decision"]`.
+An agent as the engine loaded it, in `Engine.agents`: its name, its kind, its description, the agents it may call and the folders of its root it reads. `Kind` is `Literal["generation", "decision"]`.
 
 ### `Generation`
 

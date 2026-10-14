@@ -377,3 +377,22 @@ async def test_the_questions_part_is_recorded_exported_and_old_rows_read_back_wi
         "questions": run.fingerprint.questions,
     }
     assert rows["old"]["fingerprint"] == {"agent": "a" * 16, "tools": NO_TOOLS, "questions": None}
+
+
+async def test_an_edit_to_a_read_folder_changes_the_fingerprint_of_every_agent_reading_it(
+    tmp_path: Path,
+) -> None:
+    for name in ("coding", "writing", "other"):
+        (tmp_path / name).mkdir()
+        front = "reads: [books]\n" if name != "other" else ""
+        (tmp_path / name / "AGENT.md").write_text(
+            f"---\nname: {name}\nkind: generation\n{front}---\nHi\n"
+        )
+    (tmp_path / "books").mkdir()
+    (tmp_path / "books" / "a.md").write_text("one\n")
+    before = Engine(tmp_path, generation=Scripted())
+    (tmp_path / "books" / "a.md").write_text("two\n")
+    after = Engine(tmp_path, generation=Scripted())
+    for name in ("coding", "writing"):
+        assert before._spec(name).fingerprint != after._spec(name).fingerprint
+    assert before._spec("other").fingerprint == after._spec("other").fingerprint

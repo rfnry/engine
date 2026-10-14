@@ -107,6 +107,7 @@ class AgentInfo(BaseModel):
     kind: Kind
     description: str
     agents: list[str]
+    reads: list[str]
 
 
 class Recorder(Protocol):
@@ -332,7 +333,11 @@ class Engine:
     def agents(self) -> dict[str, AgentInfo]:
         return {
             name: AgentInfo(
-                name=name, kind=spec.kind, description=spec.description, agents=spec.agents
+                name=name,
+                kind=spec.kind,
+                description=spec.description,
+                agents=spec.agents,
+                reads=list(spec.reads),
             )
             for name, spec in self._agents.items()
         }
