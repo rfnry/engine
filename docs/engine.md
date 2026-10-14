@@ -1028,8 +1028,9 @@ limits nothing: one command can take all the memory, CPU or processes of the mac
 other tenant. Where the service's user has a systemd user session,
 `systemd-run --user --scope -p MemoryMax=1G -p CPUQuota=100% -p TasksMax=256 --quiet` before
 `bwrap` runs each command in a scope with those limits; `env=` then needs `XDG_RUNTIME_DIR` too,
-which `systemd-run` uses to find the session. A container per command, with Docker or Podman, is
-in `examples/workspaces/`.
+which `systemd-run` uses to find the session. A container per command, with Docker or Podman, and a
+backend that keeps one container per workspace, entered with `docker exec`, are in
+`examples/workspaces/`.
 
 Without a sandbox, the kill reaches every process the command started except one that leaves its
 process group with `setsid`; the process namespace of a container or of bubblewrap closes that gap.

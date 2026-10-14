@@ -47,8 +47,34 @@ runtime (`--runtime runsc`) is the stronger boundary. The Docker socket is root 
 service that can reach it is as good as root; rootless Docker, or Podman — `podman run` takes the
 same flags — avoids that.
 
-A container kept for a tenant or a conversation keeps what commands installed between them: start
-it with `--init`, and put `docker exec -i -w /srv/tenants/acme/work acme-work timeout -s KILL 600`
-in front of the shell. The engine's signals do not reach inside `docker exec`, so that time limit
-is the only one that stops a command, `stop.now()` leaves a command running until then, and
-starting and removing the container is yours.
+A container per command starts every command in a world of its own, so a server a job started is
+not reachable from the next command. For that, keep one container per workspace, below.
+
+## One container per workspace
+
+`src/docker.py` is a backend over a container you keep for a workspace, entered with `docker exec`.
+Every command runs in the same container, so what one installs the next one has, and a server a job
+started answers the next command. Files go through `docker exec` too, so nothing of the host is
+mounted.
+
+```python
+workspace = Workspace(Docker("acme-work", workdir="/work"), scope="acme", timeout=600)
+```
+
+The engine's signals do not pass through `docker exec`, so each command runs with a tag of its own
+in its environment, `RFNRY_JOB`, which everything it starts inherits; `kill()` sends SIGTERM, then
+SIGKILL a second later, to every process in the container carrying it. A process that clears its
+environment escapes, as one that calls `setsid` escapes `Local`. When a command exits while
+something it started still holds its output, the `docker` client takes about two seconds to return.
+Starting the container with `--init`, limiting it and removing it are yours, as above.
+
+## Running
+
+```bash
+cd examples/workspaces
+uv run src/check.py
+```
+
+It starts a `python:3.14-slim` container, serves a page from a job, fetches it from a second
+command, stops the job, leaves a process behind in a third, closes the workspace, checks that
+nothing is left running, and removes the container.
