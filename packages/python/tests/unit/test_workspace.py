@@ -179,6 +179,56 @@ async def test_a_cancelled_command_is_stopped() -> None:
     assert ran.kills == 1
 
 
+class Starting(Machine):
+    def __init__(self, *, fails: bool = False) -> None:
+        super().__init__()
+        self.fails = fails
+        self.release = asyncio.Event()
+
+    async def spawn(self, command: str) -> Command:
+        ran = await super().spawn(command)
+        await self.release.wait()
+        if self.fails:
+            raise RuntimeError("docker: the daemon went away")
+        return ran
+
+
+async def test_a_command_cancelled_while_it_starts_is_stopped_once_it_has_started() -> None:
+    machine = Starting()
+    task = asyncio.create_task(shell(Workspace(machine, scope="acme"), "x"))
+    ran = await started(machine)
+    task.cancel()
+    machine.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert ran.kills == 1
+
+
+async def test_a_second_cancel_while_it_starts_leaves_the_command_to_be_stopped() -> None:
+    machine = Starting()
+    task = asyncio.create_task(shell(Workspace(machine, scope="acme"), "x"))
+    ran = await started(machine)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert ran.kills == 0
+    machine.release.set()
+    await until(lambda: ran.kills == 1, "the started command being stopped")
+
+
+async def test_a_start_that_fails_after_a_cancel_is_still_a_cancel() -> None:
+    machine = Starting(fails=True)
+    task = asyncio.create_task(shell(Workspace(machine, scope="acme"), "x"))
+    ran = await started(machine)
+    task.cancel()
+    machine.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert ran.kills == 0
+
+
 async def test_output_still_open_after_the_exit_is_read_for_at_most_a_second() -> None:
     def act(ran: Command) -> None:
         ran.stubborn = True

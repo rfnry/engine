@@ -385,6 +385,12 @@ def _discard(reading: list[asyncio.Task[None]]) -> None:
             task.exception()
 
 
+async def _reap(spawning: asyncio.Task[Process]) -> None:
+    with contextlib.suppress(Exception):
+        process = await spawning
+        await process.kill()
+
+
 async def _exit_code(process: Process) -> int | None:
     try:
         async with asyncio.timeout(GRACE):
@@ -530,7 +536,12 @@ class Workspace:
         a = ShellArgs.model_validate(args)
         if a.background:
             return {"job": await asyncio.shield(self._start(a.command))}
-        process = await self.backend.spawn(a.command)
+        spawning = asyncio.create_task(self.backend.spawn(a.command))
+        try:
+            process = await asyncio.shield(spawning)
+        except asyncio.CancelledError:
+            await asyncio.shield(_reap(spawning))
+            raise
         out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
         reading = _reading(process, out, err)
         try:

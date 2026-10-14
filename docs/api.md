@@ -881,7 +881,7 @@ class Backend(Protocol):
     async def write(self, path: str, data: bytes) -> None: ...
 ```
 
-Where a workspace's commands run and its files live, passed to `Workspace`. `spawn` starts `command` in the workspace's directory with no input and returns at once. `read` returns a file's bytes and refuses one larger than `limit`; `write` writes a file whole, creating its parent directories. Paths are the model's, relative to the workspace, and what they can reach is the backend's to decide. An error a backend raises reaches the model as the tool's error. A backend may have a `description`, a string `Workspace` ends `Shell`'s description with.
+Where a workspace's commands run and its files live, passed to `Workspace`. `spawn` starts `command` in the workspace's directory with no input and returns at once; a stop or a cancel that comes while it runs lets it return, then kills what it started. `read` returns a file's bytes and refuses one larger than `limit`; `write` writes a file whole, creating its parent directories. Paths are the model's, relative to the workspace, and what they can reach is the backend's to decide. An error a backend raises reaches the model as the tool's error. A backend may have a `description`, a string `Workspace` ends `Shell`'s description with.
 
 ### `Process`
 

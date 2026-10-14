@@ -1063,10 +1063,11 @@ class Backend(Protocol):
 
 `spawn` starts a command in the workspace with no input and returns at once a `Process`: its
 `stdout` and `stderr`, read until they end, `wait()` for its exit code, and `kill()` to end it and
-everything it started. `read` refuses a file larger than `limit`; `write` creates parent
-directories. A path is the model's, relative to the workspace, and what it can reach is the
-backend's to decide; an error a backend raises reaches the model as the tool's error. A backend may
-have a `description`, which ends `Shell`'s description, as `Local` takes one.
+everything it started. A stop or a cancel that comes while `spawn` runs lets it return, then kills
+what it started. `read` refuses a file larger than `limit`; `write` creates parent directories. A
+path is the model's, relative to the workspace, and what it can reach is the backend's to decide; an
+error a backend raises reaches the model as the tool's error. A backend may have a `description`,
+which ends `Shell`'s description, as `Local` takes one.
 
 The library has no notion of a secret. A key a user types is the run's input; a key you put in
 `Local(env=)` is the commands' environment, which a command can print. Either way the record keeps
