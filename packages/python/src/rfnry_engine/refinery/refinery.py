@@ -405,6 +405,10 @@ class Refinery:
     ) -> AsyncGenerator[Replay, None]:
         if not scope:
             raise InputError("refinery: scope is required")
+        if workspace is not None and workspace.scope != scope:
+            raise InputError(
+                f"refinery: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
+            )
         if not 0 <= holdout_percent <= 100:
             raise InputError(f"refinery: holdout_percent must be 0-100, got {holdout_percent}")
         if tags is not None:

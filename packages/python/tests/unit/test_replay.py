@@ -1072,3 +1072,13 @@ async def test_a_decision_run_that_routes_nowhere_never_calls_conversation(
     candidate = Engine(fixtures, generation=Scripted(), decision=other, tools=TOOLS)
     pair = await replayed(refinery, candidate, "frontdesk", conversation)
     assert pair.error is None and called == []
+
+
+async def test_a_workspace_of_another_scope_is_refused_by_replay(
+    fixtures: Path, storage: Storage, tmp_path: Path
+) -> None:
+    work = Workspace(Local(tmp_path), scope="acme")
+    with pytest.raises(
+        InputError, match="^refinery: workspace belongs to scope 'acme', not 'globex'$"
+    ):
+        Refinery(storage).replay("globex", candidate(fixtures), agent="support", workspace=work)

@@ -374,6 +374,10 @@ class Engine:
     ) -> Run:
         if not scope:
             raise InputError("engine: scope is required")
+        if workspace is not None and workspace.scope != scope:
+            raise InputError(
+                f"engine: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
+            )
         spec = self._spec(agent)
         asked = _asked(spec, questions)
         tagged = _tags(tags)
@@ -429,6 +433,10 @@ class Engine:
     ) -> Tools:
         if not scope:
             raise InputError("engine: scope is required")
+        if workspace is not None and workspace.scope != scope:
+            raise InputError(
+                f"engine: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
+            )
         spec = self._spec(agent)
         tagged = _tags(tags)
 

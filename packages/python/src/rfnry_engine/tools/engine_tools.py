@@ -32,6 +32,10 @@ class EngineTools(Tools):
     ) -> None:
         if not scope:
             raise InputError("engine_tools: scope is required")
+        if workspace is not None and workspace.scope != scope:
+            raise InputError(
+                f"engine_tools: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
+            )
         if start < 0:
             raise InputError(f"engine_tools: start must not be negative; got {start}")
         if start and history is None:

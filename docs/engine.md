@@ -1062,8 +1062,10 @@ plain agent, a root with no `AGENT.md`, gets them whenever one is passed; an age
 without one, is a `ConfigurationError`, and so is a decision agent that declares it. Delegated and
 routed agents receive the run's workspace on the same terms. `stop.now()` stops a running command
 the same way the timeout does, and leaves jobs running. You own the workspace and its lifetime: a
-temporary directory per run, or one kept for a project. A workspace belongs to the tenant its
-`scope` names.
+temporary directory per run, or one kept for a project. A workspace belongs to one tenant, the one
+its `scope` names: a run, a tool or a replay of another scope refuses it before anything runs —
+`engine: workspace belongs to scope 'acme', not 'globex'` — so a workspace, its files and its jobs
+never cross tenants.
 
 ### Approving tool calls
 
@@ -1569,8 +1571,8 @@ teacher that is not a generation agent.
 `NotFoundError` for an agent the tree does not have — a judge, a teacher or a replay's agent in the
 candidate included — a task the agent does not have (`engine: agent 'support' has no task 'ghost'`),
 found when the run starts, or a run the refinery does not.
-`InputError` for a call the library refuses: an empty scope, a history that breaks a tool call from
-its result, a `start` outside the history or without one, tags
+`InputError` for a call the library refuses: an empty scope, a workspace of another scope, a history
+that breaks a tool call from its result, a `start` outside the history or without one, tags
 outside their limits, runtime questions that do not fit, a runtime id the run already asks,
 `questions=` for a generation agent, a decision run with no question to ask, media the decision
 model does not declare, a media part with both or neither of `data` and `url`, a

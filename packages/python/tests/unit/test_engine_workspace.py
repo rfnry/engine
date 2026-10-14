@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.models import ChoiceAnswer, Image, Reply, ToolCall
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.engine_tools import EngineTools
@@ -302,3 +302,19 @@ async def test_approve_sees_a_background_command(tmp_path: Path, work: Workspace
     assert isinstance(run, Generation) and run.steps[0].approved is False
     jobs = next(t for t in work.tools() if t.name == "Jobs")
     assert await jobs.call({}) == {"jobs": []}
+
+
+async def test_a_workspace_of_another_scope_is_refused_before_anything_runs(
+    tmp_path: Path, work: Workspace
+) -> None:
+    llm = Scripted(text_reply("never"))
+    engine = Engine(make_tree(tmp_path), generation=llm)
+    refused = "workspace belongs to scope 'acme', not 'globex'$"
+    for agent in ("coder", "chat"):
+        with pytest.raises(InputError, match=f"^engine: {refused}"):
+            await engine.run(agent, "globex", "x", workspace=work)
+    with pytest.raises(InputError, match=f"^engine: {refused}"):
+        engine.tool("coder", scope="globex", workspace=work)
+    with pytest.raises(InputError, match=f"^engine_tools: {refused}"):
+        EngineTools(engine, agent="coder", scope="globex", workspace=work)
+    assert llm.calls == []
