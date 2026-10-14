@@ -810,12 +810,13 @@ Raises `InputError` when `scope` is empty, `start` is negative, `start` is above
 
 ```python
 class Jail:
-    def __init__(self, root: Path | str) -> None: ...
+    def __init__(self, root: Path | str, *, also: Iterable[Path | str] = ()) -> None: ...
 
     root: Path
+    also: list[Path]
 ```
 
-Keeps paths inside one directory, `root`, resolved; for a tool of your own that reads the agent's directory, as the builtins do.
+Keeps paths inside one directory, `root`, or inside one of `also` — the folders an agent reads — all resolved; for a tool of your own that reads the agent's directory, as the builtins do.
 
 ### `Jail.resolve`
 
@@ -825,7 +826,7 @@ def resolve(self, path: str | Path) -> Path: ...
 
 Returns `path`, taken relative to `root` unless it is absolute, resolved with its symlinks.
 
-Raises `InputError` when it resolves outside `root`.
+Raises `InputError` when it resolves outside `root` and every place in `also`.
 
 ### `Workspace`
 

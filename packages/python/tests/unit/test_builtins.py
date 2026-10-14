@@ -337,3 +337,67 @@ async def test_read_selects_lines_by_offset_and_limit(tmp_path: Path) -> None:
     assert await tools.dispatch("Read", {"path": "notes.md", "limit": 1}) == "one"
     with pytest.raises(InputError, match="limit"):
         await tools.dispatch("Read", {"path": "notes.md", "limit": 0})
+
+
+@pytest.fixture
+def shelf(tmp_path: Path) -> Path:
+    root = tmp_path / "agents"
+    (root / "coding" / "notes").mkdir(parents=True)
+    (root / "coding" / "notes" / "style.md").write_text("tabs never\n")
+    (root / "books" / "python").mkdir(parents=True)
+    (root / "books" / "python" / "async.md").write_text("await the future\n")
+    (root / "books" / ".draft.md").write_text("await nothing\n")
+    (root / "writing").mkdir()
+    (root / "writing" / "voice.md").write_text("await warmly\n")
+    return root
+
+
+def reading(shelf: Path) -> Tools:
+    books = (shelf / "books").resolve()
+    coding = shelf / "coding"
+    return Tools([*builtins(coding, {"books": books}), load_tool(coding, None, None, [books])])
+
+
+def test_the_jail_takes_more_places(shelf: Path) -> None:
+    jail = Jail(shelf / "coding", also=[shelf / "books"])
+    assert jail.resolve("../books/python/async.md") == (shelf / "books/python/async.md").resolve()
+    assert jail.also == [(shelf / "books").resolve()]
+    for path in ["../writing/voice.md", "..", "../books/../writing/voice.md"]:
+        with pytest.raises(InputError, match="^jail: path outside the agent directory"):
+            jail.resolve(path)
+
+
+async def test_a_read_folder_is_read_by_its_path_beside_the_agent_s(shelf: Path) -> None:
+    tools = reading(shelf)
+    assert (
+        await tools.dispatch("Read", {"path": "../books/python/async.md"}) == "await the future\n"
+    )
+    assert await tools.dispatch("Read", {"path": "notes/style.md"}) == "tabs never\n"
+    assert await tools.dispatch("LS", {"path": "../books"}) == "python/"
+    loaded = await tools.dispatch("Load", {"path": "../books/python/async.md"})
+    assert isinstance(loaded, list) and len(loaded) == 1
+    for name, args in [
+        ("Read", {"path": "../writing/voice.md"}),
+        ("LS", {"path": ".."}),
+        ("Load", {"path": "../writing/voice.md"}),
+    ]:
+        with pytest.raises(InputError, match="outside the agent directory"):
+            await tools.dispatch(name, args)
+
+
+async def test_grep_and_glob_search_the_own_folder_unless_told(shelf: Path) -> None:
+    tools = reading(shelf)
+    assert await tools.dispatch("Grep", {"pattern": "await"}) == "no matches found"
+    assert await tools.dispatch("Grep", {"pattern": "await", "path": "../books"}) == (
+        "../books/python/async.md"
+    )
+    assert await tools.dispatch(
+        "Grep", {"pattern": "await", "path": "../books", "mode": "content"}
+    ) == ("../books/python/async.md:1:await the future")
+    assert await tools.dispatch("Glob", {"pattern": "**/*.md"}) == "notes/style.md"
+    assert await tools.dispatch("Glob", {"pattern": "../books/**/*.md"}) == (
+        "../books/python/async.md"
+    )
+    for pattern in ["../writing/*.md", "../books/../writing/*", "../books", "../books/"]:
+        with pytest.raises(InputError, match="inside the agent directory"):
+            await tools.dispatch("Glob", {"pattern": pattern})

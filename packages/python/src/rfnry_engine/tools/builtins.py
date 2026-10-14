@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 import time
-from collections.abc import Collection
+from collections.abc import Collection, Iterable, Mapping
 from fnmatch import fnmatch
 from itertools import islice
 from pathlib import Path
@@ -60,7 +60,7 @@ class LSArgs(BaseModel):
 
 
 def _hidden(rel: Path) -> bool:
-    return any(part.startswith(".") for part in rel.parts)
+    return any(part.startswith(".") and part != ".." for part in rel.parts)
 
 
 def _text(path: Path) -> str | None:
@@ -134,9 +134,16 @@ def boot_parts(
 
 
 class _Directory:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, reads: Mapping[str, Path] | None = None) -> None:
         self.root = Path(root).resolve()
-        self.jail = Jail(self.root)
+        self.reads = {name: Path(folder).resolve() for name, folder in (reads or {}).items()}
+        self.jail = Jail(self.root, also=self.reads.values())
+
+    def _shown(self, path: Path) -> str:
+        for name, folder in self.reads.items():
+            if folder in path.parents:
+                return f"../{name}/{path.relative_to(folder).as_posix()}"
+        return path.relative_to(self.root).as_posix()
 
     def _inside(self, path: Path) -> bool:
         try:
@@ -169,7 +176,7 @@ class _Directory:
         walked = list(islice(base.rglob("*"), _MAX_WALK + 1))
         found: list[Path] = []
         for candidate in walked[:_MAX_WALK]:
-            rel = candidate.relative_to(self.root)
+            rel = Path(self._shown(candidate))
             if not candidate.is_file() or _hidden(rel) or not self._inside(candidate):
                 continue
             if glob is not None and not rel.match(glob):
@@ -202,7 +209,7 @@ class _Directory:
         exhausted = False
         paths, walked_out = self._files_under(base, a.glob)
         for path in paths:
-            rel = path.relative_to(self.root)
+            rel = self._shown(path)
             try:
                 size = path.stat().st_size
                 if size > _MAX_BYTES:
@@ -236,16 +243,21 @@ class _Directory:
 
     def glob(self, args: dict[str, Any]) -> str:
         a = GlobArgs.model_validate(args)
-        if a.pattern.startswith("/") or ".." in a.pattern.split("/"):
+        base, pattern, allowed = self.root, a.pattern, True
+        if pattern.startswith("../"):
+            name, _, pattern = pattern[3:].partition("/")
+            allowed = name in self.reads and bool(pattern)
+            base = self.reads.get(name, base)
+        if not allowed or pattern.startswith("/") or ".." in pattern.split("/"):
             raise InputError(
-                "builtins: pattern must be relative and stay inside the agent directory"
+                "builtins: pattern must be relative and stay inside the agent directory or a folder it reads"
             )
-        entries = list(islice(self.root.glob(a.pattern), _MAX_WALK + 1))
+        entries = list(islice(base.glob(pattern), _MAX_WALK + 1))
         truncated = len(entries) > _MAX_WALK
         matches = sorted(
-            str(p.relative_to(self.root))
+            self._shown(p)
             for p in entries[:_MAX_WALK]
-            if p.is_file() and not _hidden(p.relative_to(self.root)) and self._inside(p)
+            if p.is_file() and not _hidden(Path(self._shown(p))) and self._inside(p)
         )
         suffix = f"\n[truncated: walk exceeded {_MAX_WALK} entries]" if truncated else ""
         return "\n".join(matches) + suffix
@@ -265,8 +277,8 @@ class _Directory:
         return "\n".join(shown) + suffix
 
 
-def builtins(root: Path) -> list[Tool]:
-    directory = _Directory(root)
+def builtins(root: Path, reads: Mapping[str, Path] | None = None) -> list[Tool]:
+    directory = _Directory(root, reads)
 
     def threaded(handler: Any) -> Any:
         async def body(args: dict[str, Any]) -> Result:
@@ -304,9 +316,12 @@ def builtins(root: Path) -> list[Tool]:
 
 
 def load_tool(
-    folder: Path, workspace: Path | None = None, media_types: Collection[str] | None = None
+    folder: Path,
+    workspace: Path | None = None,
+    media_types: Collection[str] | None = None,
+    reads: Iterable[Path] = (),
 ) -> Tool:
-    places = {"folder": Jail(folder)}
+    places = {"folder": Jail(folder, also=reads)}
     if workspace is not None:
         places["workspace"] = Jail(workspace)
 
