@@ -537,6 +537,21 @@ async def test_a_job_that_cannot_run_ends_with_its_error(root: Path) -> None:
     assert "no-such-command-anywhere: command not found" in result["output"]
 
 
+async def test_a_job_whose_event_loop_ends_is_stopped_not_orphaned(root: Path) -> None:
+    ws = workspace(root)
+    command = "echo $$ > leader.pid; sleep 30 & echo $! > child.pid; wait"
+
+    async def turn() -> None:
+        await tool(ws, "Shell").call({"command": command, "background": True})
+        await written_pid(root / "child.pid")
+
+    await asyncio.to_thread(asyncio.run, turn())
+    assert await gone(int((root / "leader.pid").read_text()))
+    assert await gone(int((root / "child.pid").read_text()))
+    [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
+    assert (listed["running"], listed["exit_code"]) == (False, None)
+
+
 async def test_closing_the_workspace_stops_a_real_job_and_what_it_started(root: Path) -> None:
     ws = workspace(root)
     command = "sleep 30 & echo $! > child.pid; wait"

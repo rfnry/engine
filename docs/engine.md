@@ -995,8 +995,9 @@ every conversation on the workspace; the model asks `Jobs()`.
 Close the workspace when you are done with it — `async with Workspace(…) as workspace:` or `await
 workspace.close()` — and every job is stopped; the workspace stays usable. A workspace never closed
 leaves its jobs to the backend: on `Local` they may outlive your process, unless the sandbox ties
-them to it, as bubblewrap's `--die-with-parent` does. A workspace and its jobs live in one process:
-a service with several workers keeps a conversation on the same worker.
+them to it, as bubblewrap's `--die-with-parent` does. A workspace and its jobs live in one event
+loop, and a job whose loop ends is stopped: a service keeps a conversation's workspace on one worker
+and one loop.
 
 `Workspace(backend, scope=, timeout=, output_bytes=)`:
 

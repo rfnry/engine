@@ -580,6 +580,34 @@ async def test_a_wait_that_raises_is_in_the_output_and_the_process_is_killed() -
     assert result["running"] is False
 
 
+async def test_a_kill_that_raises_after_a_wait_that_raised_is_in_the_output_too() -> None:
+    machine = Dying(wait_fails=True, kill_fails=1)
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    await asyncio.sleep(0.05)
+    result = await tool(ws, "Job").call({"id": "j1"})
+    assert "RuntimeError: docker: wait failed" in result["output"]
+    assert "RuntimeError: docker: kill failed" in result["output"]
+    assert result["running"] is False
+
+
+@pytest.mark.parametrize("kill_fails", [0, 1])
+async def test_a_job_whose_reader_is_cancelled_is_killed_and_ends(kill_fails: int) -> None:
+    machine = Dying(kill_fails=kill_fails)
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    task = ws._jobs["j1"].task
+    assert task is not None
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert machine.commands[0].kills == 1
+    [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
+    assert (listed["running"], listed["exit_code"]) == (False, None)
+    output = (await tool(ws, "Job").call({"id": "j1"}))["output"]
+    assert ("RuntimeError: docker: kill failed" in output) is bool(kill_fails)
+
+
 async def test_job_waits_for_the_job_to_end_and_returns_as_soon_as_it_does() -> None:
     machine = Machine()
     ws = Workspace(machine, scope="acme")

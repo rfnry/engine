@@ -388,10 +388,15 @@ async def _follow(job: _Job) -> None:
         job.code = await job.process.wait()
         await job.process.kill()
         await _settle(reading)
-    except Exception as exc:
-        job.kept.add(f"\n{type(exc).__name__}: {exc}\n".encode())
-        with contextlib.suppress(Exception):
+    except BaseException as exc:
+        if isinstance(exc, Exception):
+            job.kept.add(f"\n{type(exc).__name__}: {exc}\n".encode())
+        try:
             await job.process.kill()
+        except Exception as error:
+            job.kept.add(f"\n{type(error).__name__}: {error}\n".encode())
+        if not isinstance(exc, Exception):
+            raise
     finally:
         _discard(reading)
         job.ended.set()
