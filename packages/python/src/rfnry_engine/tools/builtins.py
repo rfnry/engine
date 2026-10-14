@@ -252,7 +252,10 @@ class _Directory:
             raise InputError(
                 "builtins: pattern must be relative and stay inside the agent directory or a folder it reads"
             )
-        entries = list(islice(base.glob(pattern), _MAX_WALK + 1))
+        try:
+            entries = list(islice(base.glob(pattern), _MAX_WALK + 1))
+        except ValueError as exc:
+            raise InputError(f"builtins: invalid glob pattern {a.pattern!r}: {exc}") from exc
         truncated = len(entries) > _MAX_WALK
         matches = sorted(
             self._shown(p)

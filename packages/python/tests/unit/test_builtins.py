@@ -430,3 +430,9 @@ async def test_grep_and_glob_search_the_own_folder_unless_told(shelf: Path) -> N
     for pattern in ["../writing/*.md", "../books/../writing/*", "../books", "../books/"]:
         with pytest.raises(InputError, match="inside the agent directory"):
             await tools.dispatch("Glob", {"pattern": pattern})
+
+
+@pytest.mark.parametrize("pattern", [".", "../books/."])
+async def test_glob_refuses_a_pattern_the_walk_cannot_take(shelf: Path, pattern: str) -> None:
+    with pytest.raises(InputError, match="^builtins: invalid glob pattern"):
+        await reading(shelf).dispatch("Glob", {"pattern": pattern})
