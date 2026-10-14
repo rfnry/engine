@@ -96,6 +96,21 @@ async def shell(ws: Workspace, command: str) -> dict[str, Any]:
     return result
 
 
+async def until(check: Callable[[], bool], deadline: float = 5.0) -> None:
+    async with asyncio.timeout(deadline):
+        while not check():
+            await asyncio.sleep(0.005)
+
+
+async def delivered(ws: Workspace, total: int, job: str = "j1") -> None:
+    await until(lambda: ws._jobs[job].kept.total >= total)
+
+
+async def finished(ws: Workspace, job: str = "j1") -> None:
+    async with asyncio.timeout(5):
+        await ws._jobs[job].ended.wait()
+
+
 async def started(machine: Machine, count: int = 1) -> Command:
     for _ in range(100):
         if len(machine.commands) >= count:
@@ -318,13 +333,15 @@ async def test_job_returns_new_output_in_the_order_it_arrived_then_nothing_new()
     ws = Workspace(machine, scope="acme")
     await background(ws, "serve")
     ran = machine.commands[0]
+    total = 0
     for pipe, data in (
         (ran.stdout, b"listening\n"),
         (ran.stderr, b"warning\n"),
         (ran.stdout, b"GET /\n"),
     ):
         pipe.say(data)
-        await asyncio.sleep(0.01)
+        total += len(data)
+        await delivered(ws, total)
     job = tool(ws, "Job")
     assert await job.call({"id": "j1"}) == {
         "output": "listening\nwarning\nGET /\n",
@@ -340,7 +357,7 @@ async def test_a_jobs_output_is_capped_head_and_tail_between_reads() -> None:
     ws = Workspace(machine, scope="acme", output_bytes=1000)
     await background(ws, "serve")
     machine.commands[0].stdout.say(b"a" * 50_000)
-    await asyncio.sleep(0.05)
+    await delivered(ws, 50_000)
     output = (await tool(ws, "Job").call({"id": "j1"}))["output"]
     assert output == "a" * 500 + "\n[... 49000 bytes omitted ...]\n" + "a" * 500
     await ws.close()
@@ -352,7 +369,7 @@ async def test_stop_ends_a_job_returns_its_last_output_and_then_it_is_gone() -> 
     await background(ws, "serve")
     ran = machine.commands[0]
     ran.stdout.say(b"bye\n")
-    await asyncio.sleep(0.01)
+    await delivered(ws, 4)
     assert await tool(ws, "Job").call({"id": "j1", "stop": True}) == {
         "output": "bye\n",
         "running": False,
@@ -379,7 +396,7 @@ async def test_a_job_that_ended_is_listed_until_its_last_output_is_read() -> Non
     ran = machine.commands[0]
     ran.stdout.say(b"built\n")
     ran.exit(0)
-    await asyncio.sleep(0.05)
+    await finished(ws)
     [ended] = (await tool(ws, "Jobs").call({}))["jobs"]
     assert (ended["running"], ended["exit_code"]) == (False, 0)
     assert await tool(ws, "Job").call({"id": "j1"}) == {
@@ -397,11 +414,11 @@ async def test_output_that_arrives_after_the_exit_is_kept() -> None:
     ran = machine.commands[0]
     ran.stubborn = True
     ran.exit(0, hold=True)
-    await asyncio.sleep(0.05)
+    await until(lambda: ran.code.done())
     ran.stdout.say(b"late\n")
     ran.stdout.close()
     ran.stderr.close()
-    await asyncio.sleep(0.05)
+    await finished(ws)
     assert await tool(ws, "Job").call({"id": "j1"}) == {
         "output": "late\n",
         "running": False,
@@ -416,7 +433,7 @@ async def test_stopping_a_job_that_ended_returns_its_output_without_a_kill() -> 
     ran = machine.commands[0]
     ran.stdout.say(b"done\n")
     ran.exit(0)
-    await asyncio.sleep(0.05)
+    await finished(ws)
     kills = ran.kills
     assert await tool(ws, "Job").call({"id": "j1", "stop": True}) == {
         "output": "done\n",
@@ -467,7 +484,7 @@ async def test_a_background_command_cut_by_a_stop_still_registers_its_job() -> N
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    await asyncio.sleep(0.01)
+    await until(lambda: "j1" in ws._jobs)
     [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
     assert (listed["job"], listed["running"]) == ("j1", True)
     await ws.close()
@@ -485,12 +502,12 @@ async def test_a_character_split_across_job_reads_is_kept_whole() -> None:
     await background(ws, "serve")
     ran = machine.commands[0]
     ran.stdout.say(b"a\xc3")
-    await asyncio.sleep(0.01)
+    await delivered(ws, 2)
     job = tool(ws, "Job")
     assert await job.call({"id": "j1"}) == {"output": "a", "running": True, "exit_code": None}
     ran.stdout.say(b"\xa9b")
     ran.exit(0)
-    await asyncio.sleep(0.05)
+    await finished(ws)
     assert await job.call({"id": "j1"}) == {"output": "éb", "running": False, "exit_code": 0}
 
 
@@ -500,11 +517,11 @@ async def test_a_lone_lead_byte_is_flushed_when_the_job_ends() -> None:
     await background(ws, "serve")
     ran = machine.commands[0]
     ran.stdout.say(b"\xc3")
-    await asyncio.sleep(0.01)
+    await delivered(ws, 1)
     job = tool(ws, "Job")
     assert await job.call({"id": "j1"}) == {"output": "", "running": True, "exit_code": None}
     ran.exit(0)
-    await asyncio.sleep(0.05)
+    await finished(ws)
     assert await job.call({"id": "j1"}) == {"output": "\ufffd", "running": False, "exit_code": 0}
 
 
@@ -572,7 +589,7 @@ async def test_a_wait_that_raises_is_in_the_output_and_the_process_is_killed() -
     machine = Dying(wait_fails=True)
     ws = Workspace(machine, scope="acme")
     await background(ws, "serve")
-    await asyncio.sleep(0.05)
+    await finished(ws)
     [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
     assert listed["running"] is False
     assert machine.commands[0].kills == 1
@@ -585,7 +602,7 @@ async def test_a_kill_that_raises_after_a_wait_that_raised_is_in_the_output_too(
     machine = Dying(wait_fails=True, kill_fails=1)
     ws = Workspace(machine, scope="acme")
     await background(ws, "serve")
-    await asyncio.sleep(0.05)
+    await finished(ws)
     result = await tool(ws, "Job").call({"id": "j1"})
     assert "RuntimeError: docker: wait failed" in result["output"]
     assert "RuntimeError: docker: kill failed" in result["output"]
@@ -614,7 +631,7 @@ async def test_a_kill_that_fails_the_same_way_twice_is_in_the_output_once() -> N
     ws = Workspace(machine, scope="acme")
     await background(ws, "build")
     machine.commands[0].exit(0)
-    await asyncio.sleep(0.05)
+    await finished(ws)
     assert machine.commands[0].kills == 2
     assert await tool(ws, "Job").call({"id": "j1"}) == {
         "output": "\nRuntimeError: docker: kill failed\n",

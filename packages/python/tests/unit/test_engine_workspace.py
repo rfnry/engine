@@ -254,7 +254,7 @@ async def test_an_agent_loads_the_chart_it_made_in_its_workspace(
 
 
 async def appears(path: Path) -> None:
-    for _ in range(100):
+    for _ in range(500):
         if path.exists():
             return
         await asyncio.sleep(0.02)
@@ -272,17 +272,20 @@ async def test_a_job_started_in_one_run_is_read_and_stopped_in_the_next(
         text_reply("stopped it"),
     )
     engine = Engine(make_tree(tmp_path), generation=llm)
-    first = await engine.run("coder", "acme", "start it", workspace=work)
-    assert isinstance(first, Generation)
-    assert json.loads(str(first.steps[0].result)) == {"job": "j1"}
-    await appears(root / "ready")
-    second = await engine.run("coder", "acme", "stop it", workspace=work)
-    assert isinstance(second, Generation)
-    assert json.loads(str(second.steps[0].result)) == {
-        "output": "started\n",
-        "running": False,
-        "exit_code": -15,
-    }
+    try:
+        first = await engine.run("coder", "acme", "start it", workspace=work)
+        assert isinstance(first, Generation)
+        assert json.loads(str(first.steps[0].result)) == {"job": "j1"}
+        await appears(root / "ready")
+        second = await engine.run("coder", "acme", "stop it", workspace=work)
+        assert isinstance(second, Generation)
+        assert json.loads(str(second.steps[0].result)) == {
+            "output": "started\n",
+            "running": False,
+            "exit_code": -15,
+        }
+    finally:
+        await work.close()
 
 
 async def test_approve_sees_a_background_command(tmp_path: Path, work: Workspace) -> None:

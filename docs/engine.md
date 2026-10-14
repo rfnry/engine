@@ -53,13 +53,13 @@ class DecisionModel(Protocol):
     async def decide(self, state: State, questions: Mapping[str, QuestionLike]) -> Mapping[str, AnswerLike] | DecidedLike: ...
 ```
 
-Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLike` and `AnswerLike` are
-protocols over the fields of `Reply`, `Decided` and the answers below, and a result is read by those
-fields, not its class. `QuestionLike` is the same over the questions a decision model is handed; an
-adapter branches on `question.type` and reads `options`, `levels` or `yes` and `no`. An adapter typed
-against another library's copy of these contracts — rfnry-memory's — fits here unchanged, so one
-adapter serves both libraries: annotated with `QuestionLike` from either library, it serves both,
-statically and at runtime. A result whose fields do not fit is a `ModelError`.
+Models are matched by shape, statically and at runtime: `ReplyLike`, `DecidedLike` and `AnswerLike`
+are protocols over the fields of `Reply`, `Decided` and the answers below, and a result is read by
+those fields, not its class. `QuestionLike` is the same over the questions a decision model is
+handed; an adapter branches on `question.type` and reads `options`, `levels` or `yes` and `no`. An
+adapter typed against another library's copy of these contracts — rfnry-memory's — fits here
+unchanged, so one adapter serves both libraries: annotated with `QuestionLike` from either library,
+it serves both, statically and at runtime. A result whose fields do not fit is a `ModelError`.
 
 `Message`, `ToolSpec`, `ToolCall` and `Reply` are the message shapes the loop exchanges with a
 generation model. An assistant turn is a `Message(role="assistant", content=…, tool_calls=[…])`: its
@@ -93,11 +93,12 @@ part: frames travel as images. Parts are matched by shape too, so another family
 them is accepted as it is.
 
 Structured output is a tool call — the model is offered an `Output` tool — so an adapter needs
-nothing beyond tool support. An adapter that also implements
-`generate_stream(system, messages, tools, on_delta)` streams text when the caller asks for events. An adapter that has `media_types`, the file types its model takes —
-`{"image/*", "application/pdf"}` — lets `Load` refuse the rest with an error the model can act on,
-instead of the next model call failing; without it, `Load` hands the model any file. An adapter that
-has `model`, the name of the model it calls, names the run's model before any reply does.
+nothing beyond tool support. An adapter that also implements `generate_stream(system, messages,
+tools, on_delta)` streams text when the caller asks for events. An adapter that has `media_types`,
+the file types its model takes — `{"image/*", "application/pdf"}` — lets `Load` refuse the rest with
+an error the model can act on, instead of the next model call failing; without it, `Load` hands the
+model any file. An adapter that has `model`, the name of the model it calls, names the run's model
+before any reply does.
 
 A decision model answers three kinds of question:
 
@@ -479,9 +480,9 @@ next = await engine.run("support", scope="acme", input="And the second charge?",
 
 `refinery.run(scope, run_id)` returns the run as `engine.run` returned it, its delegated and routed
 runs back in place; a child's id returns that child and the runs under it. A run id the scope does
-not have is a `NotFoundError`. A deploy is a stop: on SIGTERM, ask every run in flight to stop after its step.
-Each ends at its next boundary and is recorded with `stopped="after_step"`; the next message, on
-whichever task takes it, reads the run back and continues:
+not have is a `NotFoundError`. A deploy is a stop: on SIGTERM, ask every run in flight to stop after
+its step. Each ends at its next boundary and is recorded with `stopped="after_step"`; the next
+message, on whichever task takes it, reads the run back and continues:
 
 ```python
 import signal
@@ -1030,6 +1031,11 @@ model's own path, never the path on your machine: `workspace: cannot write notes
 directory`. `Shell` reaches what the process running it can reach, so the real boundary is the
 sandbox in front of the shell, or the machine.
 
+The workspace root and the folders above it must be out of the model's reach: `Local` checks every
+call against the folder it was made with, but a `Local` made later on a path the model could rename
+follows the rename. The bubblewrap recipe binds the root itself, so a sandboxed model never sees
+its parent.
+
 Binding the whole system read-only (`--ro-bind / /`) is not enough: a command could still read
 every other tenant's directory and every secret on disk. Mount only what commands need — the
 recipe above suits a system whose programs live under `/usr`; add a read-only `/etc` path when a
@@ -1337,9 +1343,9 @@ class Tools:
     names: list[str]                                     # every tool's name, in order
 ```
 
-An agent's tools are declared in its directory. `Read Grep Glob LS Load` come with every generation agent,
-`Delegate` comes with `agents:`, `History` with a run whose `start=` is past the beginning of its
-history, and its name is taken on every run, so a tool of yours named `History` is refused from
+An agent's tools are declared in its directory. `Read Grep Glob LS Load` come with every generation
+agent, `Delegate` comes with `agents:`, `History` with a run whose `start=` is past the beginning of
+its history, and its name is taken on every run, so a tool of yours named `History` is refused from
 the first; everything else is a file under `tools/`:
 
 ```markdown
@@ -1398,13 +1404,12 @@ with a pointer to `Load`; `offset` and `limit` select lines. `Load` takes any fi
 hands it over as an image, audio or a document part, whichever its type says. The type comes from
 the file's name, and for PNG, JPEG, GIF, WebP and PDF the first bytes must agree — a `.png` that is
 not one is refused rather than sent — while a file with no known name is typed by its bytes or sent
-as `application/octet-stream`. What the model can take is the adapter's `media_types`, and past
-that the vendor's. `Grep` searches text only and skips the rest; `Glob` and `LS` list every file.
-Neither `Read` nor `Grep` reads a file over 5 MB. `Grep` stops after scanning 50 MB and
-notes the cut. A search that runs past 10 s in one call is an `InputError` the model can act on. `Glob` and
-`Grep` walk at most 100,000 entries and note the cut. A tool that reads the
-agent's directory itself resolves paths with `Jail`, which refuses one that leaves the directory,
-as the builtins do.
+as `application/octet-stream`. What the model can take is the adapter's `media_types`, and past that
+the vendor's. `Grep` searches text only and skips the rest; `Glob` and `LS` list every file. Neither
+`Read` nor `Grep` reads a file over 5 MB. `Grep` stops after scanning 50 MB and notes the cut. A
+search that runs past 10 s in one call is an `InputError` the model can act on. `Glob` and `Grep`
+walk at most 100,000 entries and note the cut. A tool that reads the agent's directory itself
+resolves paths with `Jail`, which refuses one that leaves the directory, as the builtins do.
 
 Tools that belong to a tenant go on the call that names the tenant:
 
@@ -1446,18 +1451,19 @@ triaged["answers"]["urgent"]["probability"]                # 0.91
 surface = consult + MemoryTools(memory, corpus_id="acme")
 ```
 
-A generation agent's tool returns its reply. A decision agent's returns `{"answers": {…}}`, and when it
-routed, also `"routed_to": {"agent": …, "reply": …}` — the routed run's result, nested the same way
-when the target is itself a decision agent — so a caller that consults a routing agent gets the
+A generation agent's tool returns its reply. A decision agent's returns `{"answers": {…}}`, and when
+it routed, also `"routed_to": {"agent": …, "reply": …}` — the routed run's result, nested the same
+way when the target is itself a decision agent — so a caller that consults a routing agent gets the
 answer it routed to, not only the answers.
 
-It is a `Tools` of one, so it adds to any other. Each call is a top-level run under the scope it
-was made with, recorded like any run; `context=`, `tools=`, `workspace=` and `tags=` ride every call.
-Mounted inside another run with `run(tools=)` it is a tool like any other, under `tool_timeout`,
-and its run is not the caller's child — to nest with lineage, name the agent in `agents:`. The
-chain carries across it as across `Delegate`: an agent may reach a fresh run of itself through it,
-`max_depth` bounds how deep that goes, and only a route into an agent already in the same chain of
-routes is refused.
+It is a `Tools` of one, so it adds to any other. Each call is a top-level run under the scope it was
+made with, recorded like any run; `context=`, `tools=`, `workspace=` and `tags=` ride every call.
+Mounted inside another run with `run(tools=)` it is a tool like any other, under `tool_timeout`, and
+its run is not the caller's child — to nest with lineage, name the agent in `agents:`. The chain
+carries across it as across `Delegate`, except that a call through it starts a new input, so the
+route chain resets there while `max_depth` still counts the whole stack: an agent may reach a fresh
+run of itself through it, `max_depth` bounds how deep that goes, and only a route into an agent
+already in the same chain of routes is refused.
 
 ## Storage
 
@@ -1552,12 +1558,20 @@ them yourself; every row carries its run's tags.
 Everything the package exports, by role.
 
 - **Run things:** `Engine`, `AgentInfo`, `Stop`, `HistoryLike`.
-- **What a run returns:** `Generation`, `Decision`, `Run`, `Step`, `Fingerprint`; events `TextDelta`, `ToolCallStarted`, `ToolResultReady`, `Event`.
-- **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
-- **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Jail`, `Workspace`, `Backend`, `Process`, `Local`.
-- **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Replay`, `Bucket`, `is_holdout`.
+- **What a run returns:** `Generation`, `Decision`, `Run`, `Step`, `Fingerprint`; events
+  `TextDelta`, `ToolCallStarted`, `ToolResultReady`, `Event`.
+- **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `DecisionModel`; `Message`,
+  `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`,
+  `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`,
+  `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by,
+  `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
+- **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Jail`, `Workspace`, `Backend`, `Process`,
+  `Local`.
+- **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Replay`,
+  `Bucket`, `is_holdout`.
 - **Store:** `Storage`, `PostgresStorage`, `RunRow`, `LabelRow`.
-- **Fail loudly:** `EngineException`, `ConfigurationError`, `NotFoundError`, `InputError`, `ModelError`, `RunawayError`, `DelegationLoopError`, `DelegationDepthError`, `StorageError`.
+- **Fail loudly:** `EngineException`, `ConfigurationError`, `NotFoundError`, `InputError`,
+  `ModelError`, `RunawayError`, `DelegationLoopError`, `DelegationDepthError`, `StorageError`.
 
 ## Errors
 

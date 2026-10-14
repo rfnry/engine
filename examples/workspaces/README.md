@@ -33,7 +33,6 @@ and `--user` is the user that owns it, so a file written on either side stays ed
 configuration from `$HOME/.docker`, and `Local`'s default `HOME` is the workspace: a command that
 wrote `.docker/config.json` there put `HTTP_PROXY` into the next command's container. So
 `DOCKER_CONFIG` points outside the workspace, and the command's own variables go in with `-e`.
-Podman reads `$HOME/.config/containers/containers.conf` the same way, and that file can add mounts.
 
 The client passes the engine's SIGTERM on to the container, so the timeout and `stop.now()` stop
 it. SIGKILL stops only the client, so a command that ignores SIGTERM would keep its container
@@ -44,8 +43,7 @@ The caps bound one command; how many run at once is yours to cap — a semaphore
 `--cgroup-parent` can put every workspace container under one slice, where a limit on the slice
 bounds them all. A container shares the host's kernel; for code from many tenants, the gVisor
 runtime (`--runtime runsc`) is the stronger boundary. The Docker socket is root on the host, so a
-service that can reach it is as good as root; rootless Docker, or Podman — `podman run` takes the
-same flags — avoids that.
+service that can reach it is as good as root; rootless Docker avoids that.
 
 A container per command starts every command in a world of its own, so a server a job started is
 not reachable from the next command. For that, keep one container per workspace, below.
@@ -55,7 +53,8 @@ not reachable from the next command. For that, keep one container per workspace,
 `src/docker.py` is a backend over a container you keep for a workspace, entered with `docker exec`.
 Every command runs in the same container, so what one installs the next one has, and a server a job
 started answers the next command. Files go through `docker exec` too, so nothing of the host is
-mounted.
+mounted. `Read` and `Write` reach the whole container, not a folder of it: the container is the
+boundary, and this `docker run` mounts nothing of the host.
 
 ```python
 workspace = Workspace(Docker("acme-work", workdir="/work"), scope="acme", timeout=600)

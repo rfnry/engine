@@ -31,6 +31,19 @@ INTENT = (
 STOPPED = "stopped by the user"
 
 
+async def until(check: Callable[[], bool], what: str, deadline: float = 10.0) -> None:
+    try:
+        async with asyncio.timeout(deadline):
+            while not check():
+                await asyncio.sleep(0.01)
+    except TimeoutError:
+        pytest.fail(f"{what} never happened")
+
+
+def written(path: Path) -> bool:
+    return path.exists() and bool(path.read_text().strip())
+
+
 def make_tree(tmp_path: Path) -> Path:
     root = tmp_path / "agents"
     for name, front in AGENTS.items():
@@ -405,28 +418,21 @@ async def test_stop_now_kills_a_workspace_shell(tmp_path: Path) -> None:
     stop = Stop()
     task = asyncio.create_task(engine.run("coder", "acme", "x", workspace=work, stop=stop))
     pidfile = root / "child.pid"
-    for _ in range(100):
-        if pidfile.exists() and pidfile.read_text().strip():
-            break
-        await asyncio.sleep(0.02)
+    await until(lambda: written(pidfile), "the shell writing its child's pid")
     pid = int(pidfile.read_text())
     stop.now()
-    run = await asyncio.wait_for(task, 2)
+    run = await asyncio.wait_for(task, 10)
     assert isinstance(run, Generation) and run.stopped == "now" and run.steps[0].result == STOPPED
-    for _ in range(40):
+
+    def gone() -> bool:
         try:
             os.kill(pid, 0)
-        except ProcessLookupError:
-            break
-        try:
             state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-        except (FileNotFoundError, ProcessLookupError):
-            break
-        if state == "Z":
-            break
-        await asyncio.sleep(0.05)
-    else:
-        pytest.fail("the shell's child survived the stop")
+        except (ProcessLookupError, FileNotFoundError):
+            return True
+        return state == "Z"
+
+    await until(gone, "the shell's child stopping")
 
 
 async def test_stop_now_sends_a_workspace_command_sigterm_first(tmp_path: Path) -> None:
@@ -439,12 +445,9 @@ async def test_stop_now_sends_a_workspace_command_sigterm_first(tmp_path: Path) 
     task = asyncio.create_task(
         engine.run("coder", "acme", "x", workspace=Workspace(Local(root), scope="acme"), stop=stop)
     )
-    for _ in range(100):
-        if (root / "ready").exists():
-            break
-        await asyncio.sleep(0.02)
+    await until((root / "ready").exists, "the shell starting")
     stop.now()
-    run = await asyncio.wait_for(task, 2)
+    run = await asyncio.wait_for(task, 10)
     assert isinstance(run, Generation) and run.stopped == "now" and run.steps[0].result == STOPPED
     assert (root / "stopped.txt").read_text() == "stopped\n"
 
@@ -503,14 +506,14 @@ async def test_stop_now_leaves_a_workspace_job_running(tmp_path: Path) -> None:
     engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=None)
     stop = Stop()
     task = asyncio.create_task(engine.run("coder", "acme", "x", workspace=work, stop=stop))
-    for _ in range(100):
-        if (root / "ready").exists():
-            break
-        await asyncio.sleep(0.02)
-    stop.now()
-    run = await asyncio.wait_for(task, 2)
-    assert isinstance(run, Generation) and run.stopped == "now"
-    os.kill(int((root / "job.pid").read_text()), 0)
-    jobs = next(t for t in work.tools() if t.name == "Jobs")
-    assert [listed["running"] for listed in (await jobs.call({}))["jobs"]] == [True]
-    await work.close()
+    try:
+        await until((root / "ready").exists, "the second command starting")
+        await until(lambda: written(root / "job.pid"), "the job writing its pid")
+        stop.now()
+        run = await asyncio.wait_for(task, 10)
+        assert isinstance(run, Generation) and run.stopped == "now"
+        os.kill(int((root / "job.pid").read_text()), 0)
+        jobs = next(t for t in work.tools() if t.name == "Jobs")
+        assert [listed["running"] for listed in (await jobs.call({}))["jobs"]] == [True]
+    finally:
+        await work.close()

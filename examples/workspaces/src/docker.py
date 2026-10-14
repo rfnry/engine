@@ -11,8 +11,8 @@ TAGGED = (
     'for p in /proc/[0-9]*; do tr "\\0" "\\n" < "$p/environ" 2>/dev/null '
     '| grep -qx "RFNRY_JOB=$1" && kill -"$2" "${p#/proc/}" 2>/dev/null; done; true'
 )
-READ = 'test -f "$1" || exit 3; [ "$(wc -c < "$1")" -le "$2" ] || exit 4; cat "$1"'
-WRITE = 'mkdir -p "$(dirname "$1")" && cat > "$1"'
+READ = 'test -f "$1" || exit 3; [ "$(wc -c < "$1")" -le "$2" ] || exit 4; cat -- "$1"'
+WRITE = 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"'
 
 
 class Docker:

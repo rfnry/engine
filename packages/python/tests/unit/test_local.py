@@ -609,7 +609,7 @@ def free_port() -> int:
 
 
 async def written_pid(path: Path) -> int:
-    for _ in range(100):
+    for _ in range(500):
         if path.exists() and path.read_text().strip():
             return int(path.read_text())
         await asyncio.sleep(0.02)
@@ -629,10 +629,13 @@ async def test_a_server_started_as_a_job_answers_the_next_command(root: Path) ->
     )
     ws = workspace(root)
     serve = f"{sys.executable} -m http.server {port} --bind 127.0.0.1"
-    assert await tool(ws, "Shell").call({"command": serve, "background": True}) == {"job": "j1"}
-    assert (await shell(ws, f"{sys.executable} fetch.py"))["stdout"] == "200\n"
-    stopped = await tool(ws, "Job").call({"id": "j1", "stop": True})
-    assert stopped["running"] is False and '"GET / HTTP/1.1" 200' in stopped["output"]
+    try:
+        assert await tool(ws, "Shell").call({"command": serve, "background": True}) == {"job": "j1"}
+        assert (await shell(ws, f"{sys.executable} fetch.py"))["stdout"] == "200\n"
+        stopped = await tool(ws, "Job").call({"id": "j1", "stop": True})
+        assert stopped["running"] is False and '"GET / HTTP/1.1" 200' in stopped["output"]
+    finally:
+        await ws.close()
 
 
 async def test_a_job_that_cannot_run_ends_with_its_error(root: Path) -> None:
