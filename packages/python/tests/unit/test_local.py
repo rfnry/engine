@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from rfnry_engine.errors import ConfigurationError, InputError
-from rfnry_engine.tools.workspace import Backend, Local, Process, Stream
+from rfnry_engine.tools.workspace import Backend, Local, Process, Stream, Workspace
 
 
 def alive(pid: int) -> bool:
@@ -242,3 +242,154 @@ async def test_kill_gives_a_child_the_grace_to_clean_up_after_the_leader_exited(
     await process.kill()
     assert time.monotonic() - began < 2
     assert (root / "cleaned.txt").read_text() == "cleaned\n"
+
+
+def workspace(root: Path, **kwargs: Any) -> Workspace:
+    return Workspace(Local(root), scope="acme", **kwargs)
+
+
+def tool(ws: Workspace, name: str) -> Any:
+    return next(t for t in ws.tools() if t.name == name)
+
+
+async def shell(ws: Workspace, command: str) -> dict[str, Any]:
+    result = await tool(ws, "Shell").call({"command": command})
+    assert isinstance(result, dict)
+    return result
+
+
+async def test_shell_runs_a_real_command(root: Path) -> None:
+    result = await shell(workspace(root), "echo out; echo err >&2; exit 3")
+    assert result == {"exit_code": 3, "stdout": "out\n", "stderr": "err\n", "timed_out": False}
+
+
+async def test_real_output_is_capped_head_and_tail(root: Path) -> None:
+    ws = workspace(root)
+    out = (await shell(ws, "head -c 200000 /dev/zero | tr '\\0' a"))["stdout"]
+    assert len(out) < ws.output_bytes + 100
+    assert "bytes omitted" in out and out.startswith("a") and out.endswith("a")
+
+
+async def test_the_deadline_kills_the_process_tree(root: Path) -> None:
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.5):
+            await shell(workspace(root), "sleep 30 & echo $! > child.pid; wait")
+    assert await gone(int((root / "child.pid").read_text()))
+
+
+async def test_endless_output_is_bounded_and_killed(root: Path) -> None:
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(1.0):
+            await shell(workspace(root), "yes & echo $! > yes.pid; wait")
+    assert await gone(int((root / "yes.pid").read_text()))
+
+
+async def test_a_background_process_does_not_hold_the_call(root: Path) -> None:
+    began = time.monotonic()
+    result = await shell(workspace(root), "sleep 30 & echo $!; echo started")
+    assert time.monotonic() - began < 5
+    pid, started = result["stdout"].split()
+    assert started == "started"
+    assert await gone(int(pid))
+
+
+async def test_parallel_shell_calls_run_independently(root: Path) -> None:
+    ws = workspace(root)
+    began = time.monotonic()
+    a, b = await asyncio.gather(shell(ws, "sleep 0.3; echo a"), shell(ws, "sleep 0.3; echo b"))
+    assert (a["stdout"], b["stdout"]) == ("a\n", "b\n")
+    assert time.monotonic() - began < 2
+
+
+async def test_the_timeout_stops_the_command_and_keeps_what_it_printed(root: Path) -> None:
+    began = time.monotonic()
+    result = await shell(
+        workspace(root, timeout=0.5), "echo before; sleep 30 & echo $! > child.pid; wait"
+    )
+    assert time.monotonic() - began < 5
+    assert result["timed_out"] is True and result["stdout"] == "before\n"
+    assert await gone(int((root / "child.pid").read_text()))
+
+
+async def test_the_timeout_sends_sigterm_first_so_a_command_can_clean_up(root: Path) -> None:
+    began = time.monotonic()
+    result = await shell(
+        workspace(root, timeout=0.5),
+        "trap 'echo stopping; exit 0' TERM; echo started; sleep 30 & wait",
+    )
+    assert time.monotonic() - began < 1.4
+    assert result == {
+        "exit_code": 0,
+        "stdout": "started\nstopping\n",
+        "stderr": "",
+        "timed_out": True,
+    }
+
+
+async def test_a_command_that_ignores_sigterm_is_killed_a_second_later(root: Path) -> None:
+    began = time.monotonic()
+    result = await shell(
+        workspace(root, timeout=0.5), "trap '' TERM; sleep 30 & echo $! > child.pid; wait"
+    )
+    assert 1.4 < time.monotonic() - began < 4
+    assert result["timed_out"] is True and result["exit_code"] == -9
+    assert await gone(int((root / "child.pid").read_text()))
+
+
+async def test_a_cancelled_command_gets_sigterm_first(root: Path) -> None:
+    task = asyncio.create_task(
+        shell(
+            workspace(root),
+            "trap 'echo stopped > stopped.txt; exit 0' TERM; touch ready; sleep 30 & wait",
+        )
+    )
+    await appears(root / "ready")
+    began = time.monotonic()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert time.monotonic() - began < 0.9
+    assert (root / "stopped.txt").read_text() == "stopped\n"
+
+
+async def test_a_cancelled_command_that_ignores_sigterm_is_killed_a_second_later(
+    root: Path,
+) -> None:
+    task = asyncio.create_task(
+        shell(workspace(root), "trap '' TERM; sleep 30 & echo $! > child.pid; touch ready; wait")
+    )
+    await appears(root / "ready")
+    began = time.monotonic()
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=5)
+    assert task in done and task.cancelled()
+    assert 0.9 < time.monotonic() - began < 3
+    assert await gone(int((root / "child.pid").read_text()))
+
+
+async def test_a_second_cancel_kills_at_once(root: Path) -> None:
+    task = asyncio.create_task(
+        shell(workspace(root), "trap '' TERM; sleep 30 & echo $! > child.pid; touch ready; wait")
+    )
+    await appears(root / "ready")
+    began = time.monotonic()
+    task.cancel()
+    await asyncio.sleep(0.2)
+    assert not task.done()
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=5)
+    assert task in done and task.cancelled()
+    assert time.monotonic() - began < 0.8
+    assert await gone(int((root / "child.pid").read_text()))
+
+
+async def test_write_and_edit_reach_the_directory(root: Path, tmp_path: Path) -> None:
+    ws = workspace(root)
+    written = await tool(ws, "Write").call({"path": "src/main.py", "content": "x = 1\r\ny = 2\n"})
+    assert written == "wrote 13 bytes to src/main.py"
+    edited = await tool(ws, "Edit").call({"path": "src/main.py", "old": "x = 1", "new": "x = 3"})
+    assert edited == "edited src/main.py"
+    assert (root / "src/main.py").read_bytes() == b"x = 3\r\ny = 2\n"
+    with pytest.raises(InputError, match="^workspace: path outside the workspace: ../x.txt$"):
+        await tool(ws, "Write").call({"path": "../x.txt", "content": "x"})
+    assert not (tmp_path / "x.txt").exists()

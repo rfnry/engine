@@ -15,7 +15,7 @@ from rfnry_engine.refinery.labels import Review
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Tool, Tools
-from rfnry_engine.tools.workspace import Workspace
+from rfnry_engine.tools.workspace import Local, Workspace
 
 from .fakes import Fixed, said, text_reply
 
@@ -399,7 +399,7 @@ async def test_a_routed_run_shares_the_stop_and_the_inbox(tmp_path: Path) -> Non
 async def test_stop_now_kills_a_workspace_shell(tmp_path: Path) -> None:
     root = tmp_path / "work"
     root.mkdir()
-    work = Workspace(root, unsandboxed=True)
+    work = Workspace(Local(root), scope="acme")
     llm = Paced(use(call("Shell", "c1", command="sleep 30 & echo $! > child.pid; wait")))
     engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=None)
     stop = Stop()
@@ -437,7 +437,7 @@ async def test_stop_now_sends_a_workspace_command_sigterm_first(tmp_path: Path) 
     engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=None)
     stop = Stop()
     task = asyncio.create_task(
-        engine.run("coder", "acme", "x", workspace=Workspace(root, unsandboxed=True), stop=stop)
+        engine.run("coder", "acme", "x", workspace=Workspace(Local(root), scope="acme"), stop=stop)
     )
     for _ in range(100):
         if (root / "ready").exists():

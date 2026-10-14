@@ -52,7 +52,7 @@ async def test_label_and_export_round_trip(adapters: Any, storage: Storage) -> N
 
 
 async def test_a_coder_writes_and_runs_code(adapters: Any, tmp_path: Path) -> None:
-    from rfnry_engine import Workspace
+    from rfnry_engine import Local, Workspace
 
     agents = tmp_path / "agents" / "coder"
     agents.mkdir(parents=True)
@@ -68,7 +68,7 @@ async def test_a_coder_writes_and_runs_code(adapters: Any, tmp_path: Path) -> No
         "coder",
         "live",
         "Write sum.py that prints the sum of 1..100, run it.",
-        workspace=Workspace(work, unsandboxed=True),
+        workspace=Workspace(Local(work), scope="live"),
     )
     assert isinstance(run, Generation)
     assert {"Write", "Shell"} <= {s.tool for s in run.steps}

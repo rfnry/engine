@@ -19,6 +19,7 @@ from rfnry_engine import (
     ChoiceAnswer,
     Document,
     Engine,
+    Local,
     Message,
     Part,
     QuestionLike,
@@ -65,6 +66,7 @@ SIGNATURES = {
     "class GenerationModel(Protocol):": (rfnry_engine.GenerationModel, rfnry_engine.DecisionModel),
     "class Tools:": (Tools,),
     "class Storage(Protocol):": (rfnry_engine.Storage, Refinery),
+    "class Backend(Protocol):": (rfnry_engine.Backend,),
 }
 
 
@@ -125,9 +127,8 @@ SETUPS = {
             )
         }
     ),
-    "from rfnry_engine import Workspace": Setup(replace={"/srv/tenants/acme/work": "work"}),
-    'sandboxed = Workspace("/srv/tenants/acme/work", sandbox=[': Setup(
-        replace={"/srv/tenants/acme/work": "work"}
+    "from rfnry_engine import Local, Workspace": Setup(
+        replace={"/srv/tenants/acme/work": "work", '"bwrap",': '"env",'}
     ),
     "async def approve(agent, call):": Setup(
         replies=(
@@ -292,7 +293,7 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
         "decision": await recorded.run("frontdesk", "acme", "It is down"),
         "last_watermark": None,
         "ask_a_person": ask_a_person,
-        "workspace": Workspace(tmp_path / "work", unsandboxed=True),
+        "workspace": Workspace(Local(tmp_path / "work"), scope="acme"),
         "hashlib": hashlib,
         "checkout": lambda commit: shutil.copytree(
             root, tmp_path / "versions" / commit, dirs_exist_ok=True

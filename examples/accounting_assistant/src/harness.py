@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
-from rfnry_engine import Engine, ToolCall, Workspace
+from rfnry_engine import Engine, Local, ToolCall, Workspace
 
 from providers import AnthropicProvider
 
@@ -27,21 +27,22 @@ TIMEOUT = 120
 
 def workspace(work: Path) -> Workspace:
     path = str(work)
-    return Workspace(
+    local = Local(
         work,
-        timeout=TIMEOUT,
         env={
             "PATH": os.environ["PATH"],
             "DOCKER_CONFIG": os.environ.get("DOCKER_CONFIG", str(Path.home() / ".docker")),
         },
-        sandbox=[
+        shell=[
             *("docker", "run", "--rm", "-i", "--init", "--network", "none", "--cap-drop", "ALL"),
             *("--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp"),
             *("--memory", "1g", "--cpus", "1", "--pids-limit", "256"),
             *("--user", f"{os.getuid()}:{os.getgid()}", "-e", f"HOME={path}"),
             *("-v", f"{path}:{path}", "-w", path, IMAGE, "timeout", "-s", "KILL", str(TIMEOUT)),
+            *("bash", "-c"),
         ],
     )
+    return Workspace(local, scope="acme-books", timeout=TIMEOUT)
 
 
 engine = Engine(ROOT / "agents", generation=AnthropicProvider())

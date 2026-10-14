@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from rfnry_engine import AgentInfo, Engine, Tool, Tools, Workspace
+from rfnry_engine import AgentInfo, Engine, Local, Tool, Tools, Workspace
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.models import Reply, ToolCall
 from rfnry_engine.records import Generation
@@ -50,7 +50,9 @@ async def test_its_tools_folder_is_content_and_the_run_s_tools_and_workspace_rid
     llm = Scripted(text_reply("a"), text_reply("b"))
     engine = Engine(notes(tmp_path / "notes"), generation=llm)
     await engine.run("notes", "acme", "x", tools=Tools([Tool("ping", "Ping", body=ping)]))
-    await engine.run("notes", "acme", "x", workspace=Workspace(tmp_path / "work", unsandboxed=True))
+    await engine.run(
+        "notes", "acme", "x", workspace=Workspace(Local(tmp_path / "work"), scope="acme")
+    )
     first, second = ([t.name for t in call[2]] for call in llm.calls)
     assert "ping" in first and "Shell" not in first
     assert {"Shell", "Write", "Edit"} <= set(second)

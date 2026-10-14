@@ -52,8 +52,18 @@ def members(protocol: type) -> set[str]:
 PROTOCOLS = [value for value in EXPORTED.values() if is_protocol(value)]
 
 
+def same(real: object, declared: object) -> bool:
+    if isinstance(declared, property):
+        return isinstance(real, property)
+    return inspect.isfunction(real) and inspect.signature(real) == inspect.signature(declared)
+
+
 def implemented(cls: type) -> list[type]:
-    return [p for p in PROTOCOLS if members(p) and members(p) <= set(vars(cls))]
+    return [
+        p
+        for p in PROTOCOLS
+        if members(p) and all(n in vars(cls) and same(vars(cls)[n], vars(p)[n]) for n in members(p))
+    ]
 
 
 def is_class(value: object) -> bool:
@@ -252,6 +262,7 @@ def test_the_entry_matches_the_code(heading: str) -> None:
 
 def test_the_storage_implements_exactly_its_protocol() -> None:
     assert rfnry_engine.Storage in implemented(rfnry_engine.PostgresStorage)
+    assert rfnry_engine.Backend in implemented(rfnry_engine.Local)
     for name, cls in IMPLEMENTATIONS.items():
         promised = set[str]().union(*(members(protocol) for protocol in implemented(cls)))
         assert sorted(verbs(cls)) == sorted(promised), name

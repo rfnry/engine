@@ -13,7 +13,7 @@ from rfnry_engine.models import ChoiceAnswer, Image, Reply, ToolCall
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
-from rfnry_engine.tools.workspace import Workspace
+from rfnry_engine.tools.workspace import Local, Workspace
 
 from .fakes import Fixed, Scripted, text_reply
 
@@ -48,10 +48,15 @@ def names(llm: Scripted, index: int) -> list[str]:
 
 
 @pytest.fixture
-def work(tmp_path: Path) -> Workspace:
-    root = tmp_path / "work"
-    root.mkdir()
-    return Workspace(root, unsandboxed=True)
+def root(tmp_path: Path) -> Path:
+    path = tmp_path / "work"
+    path.mkdir()
+    return path
+
+
+@pytest.fixture
+def work(root: Path) -> Workspace:
+    return Workspace(Local(root), scope="acme")
 
 
 async def test_an_agent_without_the_flag_never_sees_the_workspace(
@@ -122,7 +127,7 @@ async def test_the_workspace_timeout_stops_a_shell_and_the_run_goes_on(tmp_path:
     )
     engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=None)
     run = await engine.run(
-        "coder", "acme", "x", workspace=Workspace(root, unsandboxed=True, timeout=0.5)
+        "coder", "acme", "x", workspace=Workspace(Local(root), scope="acme", timeout=0.5)
     )
     assert isinstance(run, Generation) and run.reply == "gave up"
     result = json.loads(str(run.steps[0].result))
@@ -162,7 +167,7 @@ async def test_the_engine_tool_timeout_leaves_workspace_tools_to_their_own(
 
 
 async def test_delegation_passes_the_workspace_to_a_child_that_declares_it(
-    tmp_path: Path, work: Workspace
+    tmp_path: Path, root: Path, work: Workspace
 ) -> None:
     llm = Scripted(
         use(ToolCall(id="d", name="Delegate", args={"agent": "coder", "input": "make it"})),
@@ -173,7 +178,7 @@ async def test_delegation_passes_the_workspace_to_a_child_that_declares_it(
     engine = Engine(make_tree(tmp_path), generation=llm)
     run = await engine.run("lead", "acme", "x", workspace=work)
     assert isinstance(run, Generation) and run.reply == "ok"
-    assert (work.root / "made.txt").read_text() == "hi\n"
+    assert (root / "made.txt").read_text() == "hi\n"
     assert "Shell" not in names(llm, 0) and "Shell" in names(llm, 1)
 
 
@@ -190,7 +195,9 @@ async def test_delegating_to_a_flagged_child_without_a_workspace_is_a_tool_error
     assert run.steps[0].is_error and "ConfigurationError" in run.steps[0].result
 
 
-async def test_a_routed_target_receives_the_workspace(tmp_path: Path, work: Workspace) -> None:
+async def test_a_routed_target_receives_the_workspace(
+    tmp_path: Path, root: Path, work: Workspace
+) -> None:
     llm = Scripted(
         use(ToolCall(id="s", name="Shell", args={"command": "echo routed > r.txt"})),
         text_reply("done"),
@@ -203,7 +210,7 @@ async def test_a_routed_target_receives_the_workspace(tmp_path: Path, work: Work
     assert (
         isinstance(run, Decision) and run.routed_to is not None and run.routed_to.agent == "coder"
     )
-    assert (work.root / "r.txt").read_text() == "routed\n"
+    assert (root / "r.txt").read_text() == "routed\n"
 
 
 async def test_a_duplicate_shell_is_refused(tmp_path: Path, work: Workspace) -> None:
@@ -229,10 +236,10 @@ async def test_engine_tools_carry_the_workspace(tmp_path: Path, work: Workspace)
 
 
 async def test_an_agent_loads_the_chart_it_made_in_its_workspace(
-    tmp_path: Path, work: Workspace
+    tmp_path: Path, root: Path, work: Workspace
 ) -> None:
     png = b"\x89PNG\r\n\x1a\nchart"
-    (work.root / "chart.png").write_bytes(png)
+    (root / "chart.png").write_bytes(png)
     llm = Scripted(
         use(ToolCall(id="1", name="Load", args={"path": "chart.png", "where": "workspace"})),
         text_reply("the line goes up"),

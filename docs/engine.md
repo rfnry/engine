@@ -917,16 +917,17 @@ about an agent changes when the other kind of model is absent — only which age
 
 ### Workspace
 
-> `Workspace` gives the model a real shell, and **a shell is not confined by its directory**. Without
-> a sandbox it can do anything the user running the service can do: read every other tenant's
-> workspace, read the service's configuration and any secret on disk, reach the database and the
-> network, delete things. A document an agent reads can tell it to try. Run every command inside a
-> sandbox with `sandbox=` — a container per command, as below, is the default to reach for — and keep
-> the agent directory outside the workspace.
+> `Workspace` gives the model a real shell, and **a shell is not confined by its directory**. `Local`
+> runs each command as a process of your service: without a sandbox in front of its shell, a command
+> can do anything the service's user can — read every other tenant's workspace, read the service's
+> configuration and any secret on disk, reach the database and the network, delete things. A
+> document an agent reads can tell it to try. Put a sandbox in front of the shell, as below, or pass
+> a backend that runs commands somewhere else, and keep the agent directory outside the workspace.
 
-A workspace is a directory where an agent writes code, runs it, reads what happened and tries again —
-the loop a coding assistant runs in a developer's terminal. An agent opts in with one line in its
-`AGENT.md`, and a run supplies the directory and the sandbox its commands run in:
+A workspace is where an agent writes code, runs it, reads what happened and tries again — the loop
+a coding assistant runs in a developer's terminal. An agent opts in with one line in its
+`AGENT.md`, and a run supplies the workspace: the library's tools over a backend of yours, which
+runs the commands and holds the files.
 
 ```
 agents/coder/AGENT.md
@@ -939,117 +940,104 @@ workspace: true
 ```
 
 ```python
-from rfnry_engine import Workspace
+from rfnry_engine import Local, Workspace
 
-workspace = Workspace("/srv/tenants/acme/work", timeout=600,
-    env={"PATH": "/usr/bin:/bin", "DOCKER_CONFIG": "/etc/acme/docker"},
-    sandbox=["docker", "run", "--rm", "-i", "--init", "--network", "none",
-             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp",
-             "--memory", "1g", "--cpus", "1", "--pids-limit", "256", "--user", "1000:1000",
-             "-e", "HOME=/srv/tenants/acme/work",
-             "-v", "/srv/tenants/acme/work:/srv/tenants/acme/work", "-w", "/srv/tenants/acme/work",
-             "acme/workspace:1", "timeout", "-s", "KILL", "600"])
-
-run = await engine.run("coder", scope="acme", input="make the failing test pass", workspace=workspace)
-```
-
-Each command gets a fresh container from an image you build — a world of its own: no network, no
-other tenant, nothing of the service — and `--rm` removes it when the command ends. The model sees
-none of this: it has the same tools, and its command runs inside.
-
-Every workspace says whether its shell is sandboxed. `sandbox=` names the command each shell call
-runs inside — this container, or bubblewrap below; `Workspace(root, unsandboxed=True)` says out loud
-that this machine holds nothing the model must not reach — a developer's laptop. A workspace with
-neither refuses to start.
-
-The agent then has three more tools. `Shell(command)` runs a command and returns `exit_code`,
-`stdout`, `stderr` and `timed_out`. `Write(path, content)` writes a file exactly, and
-`Edit(path, old, new)` replaces one exact occurrence — helpers that send only what changes and leave
-a clean step in the record; the shell can do both too. `Load` takes `where="workspace"` to hand
-the model a file from the directory, so an agent looks at the chart it just plotted. Each command starts fresh in the directory,
-so a `cd` or a variable does not carry over, and the tool's description tells the model so, along
-with its shell and its limits.
-
-`Workspace(root, sandbox= or unsandboxed=True, shell=, timeout=, output_bytes=, env=)`:
-
-| argument | default | what it does |
-| --- | --- | --- |
-| `sandbox` | none | the command each `Shell` call runs inside — a container, bubblewrap — before the shell |
-| `unsandboxed` | `False` | `True` runs the shell on the machine itself, reaching whatever the service's user can |
-| `shell` | `["bash", "-c"]` | the shell the command is given to, last; the model is told its name. Without a sandbox it must be on `PATH` |
-| `timeout` | `120` seconds | the limit on each `Shell`, `Write` and `Edit` call; a command still running is sent SIGTERM, then killed a second later with everything it started, and the call returns what it printed with `timed_out: true` |
-| `output_bytes` | `30_000` | the cap on `stdout` and on `stderr`, each keeping its first and last half |
-| `env` | `PATH`, `HOME` (the directory), `LANG` | the only environment the sandbox's command sees, so the service's own keys never reach it |
-
-The workspace's `timeout` replaces `Engine(tool_timeout=)` for its three tools, so a ten-minute
-build and a thirty-second API call live in the same engine. An unsandboxed workspace without bash on
-`PATH` is a `ConfigurationError` that says so; pass `shell=["sh", "-c"]` on a system that has only a
-POSIX shell, such as Alpine.
-
-`Write`, `Edit` and `Load` stay inside the directory: the engine runs them itself and refuses a path
-that leaves it. `Shell` reaches what the process running it can reach, so the real boundary is
-`sandbox=` or the machine.
-
-In the container above, the image is the toolchain: a Dockerfile of yours with what your agents
-need — Python, Go, a C++ compiler. The directory is mounted at the same path, so `Write` and the
-shell see the same files, and `--user` is the user that owns it, so a file written on either side
-stays editable on both. `env=` is the environment of the `docker` client, not of the command. The
-client reads its configuration from `$HOME/.docker`, and the default `HOME` is the workspace: a
-command that wrote `.docker/config.json` there put `HTTP_PROXY` into the next command's container.
-So `DOCKER_CONFIG` points outside the workspace, and the command's own variables go in with `-e`.
-Podman reads `$HOME/.config/containers/containers.conf` the same way, and that file can add mounts.
-
-The client passes the engine's SIGTERM on to the container, so the timeout and `stop.now()` stop
-it. SIGKILL stops only the client, so a command that ignores SIGTERM would keep its container
-running; `timeout -s KILL` inside ends it at the same limit. Each command takes about a quarter of
-a second to start.
-
-The caps bound one command; how many run at once is yours to cap — a semaphore around runs — and
-`--cgroup-parent` can put every workspace container under one slice, where a limit on the slice
-bounds them all. A container shares the host's kernel; for code from many tenants, the gVisor
-runtime (`--runtime runsc`) is the stronger boundary. The Docker socket is root on the host, so a
-service that can reach it is as good as root; rootless Docker, or Podman — `podman run` takes the
-same flags — avoids that.
-
-A container kept for a tenant or a conversation keeps what commands installed between them: start
-it with `--init`, and enter it with `docker exec -i -w /srv/tenants/acme/work acme-work timeout -s KILL 600`.
-The engine's signals do not reach inside `docker exec`, so that time limit is the only one that
-stops a command, `stop.now()` leaves a command running until then, and starting and removing the
-container is yours.
-
-Where Docker is not an option, on Linux, bubblewrap builds each command a world of its own from the
-host: the system's programs read-only, this tenant's directory writable, an empty `/tmp`, and
-nothing else — no other tenant, no service configuration, no network — and it kills every process
-when the command ends:
-
-```python
-sandboxed = Workspace("/srv/tenants/acme/work", sandbox=[
+local = Local("/srv/tenants/acme/work", shell=[
     "bwrap", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin",
     "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
     "--tmpfs", "/tmp", "--bind", "/srv/tenants/acme/work", "/srv/tenants/acme/work",
     "--chdir", "/srv/tenants/acme/work", "--unshare-all", "--die-with-parent", "--new-session",
+    "bash", "-c",
 ])
+workspace = Workspace(local, scope="acme", timeout=600)
+
+run = await engine.run("coder", scope="acme", input="make the failing test pass", workspace=workspace)
 ```
+
+`Local` runs each command on this machine, in the directory, given to the words of `shell` — here
+bubblewrap, which builds each command a world of its own from the host: the system's programs
+read-only, this tenant's directory writable, an empty `/tmp`, and nothing else — no other tenant,
+no service configuration, no network — and kills every process when the command ends. The model
+sees none of this: it has the same tools, and its command runs inside.
+
+The agent then has three more tools. `Shell(command)` runs a command and returns `exit_code`,
+`stdout`, `stderr` and `timed_out`; when the command ends, anything it left running is stopped.
+`Write(path, content)` writes a file exactly, and `Edit(path, old, new)` replaces one exact
+occurrence — helpers that send only what changes and leave a clean step in the record; the shell
+can do both too. `Load` takes `where="workspace"` to hand the model a file from the workspace, so
+an agent looks at the chart it just plotted. Each command starts fresh in the directory, so a `cd`
+or a variable does not carry over, and the tool's description tells the model so, along with its
+limits.
+
+`Workspace(backend, scope=, timeout=, output_bytes=)`:
+
+| argument | default | what it does |
+| --- | --- | --- |
+| `backend` | | where commands run and files live: `Local`, or one of yours |
+| `scope` | | the tenant the workspace belongs to |
+| `timeout` | `120` seconds | the limit on each `Shell`, `Write` and `Edit` call; a command still running is stopped — on `Local`, sent SIGTERM, then killed a second later with everything it started — and the call returns what it printed with `timed_out: true` |
+| `output_bytes` | `30_000` | the cap on `stdout` and on `stderr`, each keeping its first and last half |
+
+`Local(root, shell=, env=, description=)`:
+
+| argument | default | what it does |
+| --- | --- | --- |
+| `root` | | the directory commands start in and files live in |
+| `shell` | `["bash", "-c"]` | the words each command is given to, last: a sandbox goes in front of the shell, and the first word must be on `PATH` |
+| `env` | `PATH`, `HOME` (the directory), `LANG` | the only environment commands see, so the service's own keys never reach them |
+| `description` | none | added to `Shell`'s description, to tell the model what machine it has: `"bash on Debian 13, Python 3.14, no network"` |
+
+The workspace's `timeout` replaces `Engine(tool_timeout=)` for its three tools, so a ten-minute
+build and a thirty-second API call live in the same engine. A `shell` whose first word is not on
+`PATH` is a `ConfigurationError` that says so; pass `shell=["sh", "-c"]` on a system that has only
+a POSIX shell, such as Alpine.
+
+On `Local`, `Write`, `Edit` and `Load` stay inside the directory: they refuse a path that leaves
+it, symlinks included. `Shell` reaches what the process running it can reach, so the real boundary
+is the sandbox in front of the shell, or the machine.
 
 Binding the whole system read-only (`--ro-bind / /`) is not enough: a command could still read
 every other tenant's directory and every secret on disk. Mount only what commands need — the
-recipe above suits a system whose programs live under `/usr`; add a read-only `/etc` path when a tool
-needs one — and one workspace per tenant, each with its own sandbox. bubblewrap limits nothing: one
-command can take all the memory, CPU or processes of the machine from every other tenant. Where the
-service's user has a systemd user session,
-`systemd-run --user --scope -p MemoryMax=1G -p CPUQuota=100% -p TasksMax=256 --quiet` before `bwrap`
-runs each command in a scope with those limits; `env=` then needs `XDG_RUNTIME_DIR` too, which
-`systemd-run` uses to find the session.
+recipe above suits a system whose programs live under `/usr`; add a read-only `/etc` path when a
+tool needs one — and give each tenant its own workspace, each with its own sandbox. bubblewrap
+limits nothing: one command can take all the memory, CPU or processes of the machine from every
+other tenant. Where the service's user has a systemd user session,
+`systemd-run --user --scope -p MemoryMax=1G -p CPUQuota=100% -p TasksMax=256 --quiet` before
+`bwrap` runs each command in a scope with those limits; `env=` then needs `XDG_RUNTIME_DIR` too,
+which `systemd-run` uses to find the session. A container per command, with Docker or Podman, is
+in `examples/workspaces/`.
 
 Without a sandbox, the kill reaches every process the command started except one that leaves its
 process group with `setsid`; the process namespace of a container or of bubblewrap closes that gap.
 
-An agent without `workspace: true` never sees these tools, even when the run has a workspace — but
-a plain agent, a root with no `AGENT.md`, gets them whenever one is passed; an agent with it, run
-without one, is a `ConfigurationError`, and so is a decision agent that declares it. Delegated and
-routed agents receive the run's workspace on the same terms. `stop.now()` stops a running command
-the same way the timeout does. You own the directory and its lifetime: a temporary one per run, or
-one kept for a project.
+A backend is three methods; the library does the rest — the tools, the time limits, the output
+caps, stopping what a command leaves behind:
+
+```python
+class Backend(Protocol):
+    async def spawn(self, command: str) -> Process: ...
+    async def read(self, path: str, limit: int) -> bytes: ...
+    async def write(self, path: str, data: bytes) -> None: ...
+```
+
+`spawn` starts a command in the workspace with no input and returns at once a `Process`: its
+`stdout` and `stderr`, read until they end, `wait()` for its exit code, and `kill()` to end it and
+everything it started. `read` refuses a file larger than `limit`; `write` creates parent
+directories. A path is the model's, relative to the workspace, and what it can reach is the
+backend's to decide; an error a backend raises reaches the model as the tool's error. A backend may
+have a `description`, which ends `Shell`'s description, as `Local` takes one.
+
+The library has no notion of a secret. A key a user types is the run's input; a key you put in
+`Local(env=)` is the commands' environment, which a command can print. Either way the record keeps
+what the model was given and what commands printed, exactly, in the run's scope and in what you
+export from it. `record=False` keeps a run out of the record; `delete_runs` and `delete_scope` take
+it out later.
+
+An agent without `workspace: true` never sees these tools, even when the run has a workspace; an
+agent with it, run without one, is a `ConfigurationError`, and so is a decision agent that declares
+it. Delegated and routed agents receive the run's workspace on the same terms. `stop.now()` stops a
+running command the same way the timeout does. You own the workspace and its lifetime: a temporary
+directory per run, or one kept for a project. A workspace belongs to the tenant its `scope` names.
 
 ### Approving tool calls
 
@@ -1525,7 +1513,7 @@ Everything the package exports, by role.
 - **Run things:** `Engine`, `AgentInfo`, `Stop`, `HistoryLike`.
 - **What a run returns:** `Generation`, `Decision`, `Run`, `Step`, `Fingerprint`; events `TextDelta`, `ToolCallStarted`, `ToolResultReady`, `Event`.
 - **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `DecisionModel`; `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
-- **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Jail`, `Workspace`.
+- **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Jail`, `Workspace`, `Backend`, `Process`, `Local`.
 - **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Replay`, `Bucket`, `is_holdout`.
 - **Store:** `Storage`, `PostgresStorage`, `RunRow`, `LabelRow`.
 - **Fail loudly:** `EngineException`, `ConfigurationError`, `NotFoundError`, `InputError`, `ModelError`, `RunawayError`, `DelegationLoopError`, `DelegationDepthError`, `StorageError`.
@@ -1534,22 +1522,22 @@ Everything the package exports, by role.
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
 `AGENT.md`, `Engine(name=)` on a root with agents or empty, an unknown key in the frontmatter of an
-`AGENT.md`, a question or a tool file
-(`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that
-is not valid YAML or a `description:` that is not a string in a file the map would show, a decision
-agent with `boot: all`, a `reads:` naming no folder of the root or the agent's own, `reads:` on a
-decision agent or on an agent whose folder is a link to a folder elsewhere, a file `boot: all` would
-send that neither `Read` nor `Load` would hand over — over 20 MB, of a type the model's
-`media_types` does not name, or not the type its name says — a question with instructions both in
-its frontmatter and in its body or in neither, a decision agent with a file straight in `tasks/` or
-a task that repeats an id of its `questions/`, a route entry that names a task its agent does not
-have or gives a decision agent nothing to ask, a tool declared without a body or given without a
-declaration, a run of an agent whose kind of model is absent, a missing workspace, a `Workspace`
-root that is not a directory, a `Workspace` with neither `sandbox=` nor `unsandboxed=True` or with
-both, an unsandboxed shell not on `PATH`, a `sandbox` or `shell` that is not a list of strings, a
-`max_steps`, `max_depth`, `tool_timeout`, `history_walk`, `history_chars`, `timeout` or
-`output_bytes` that is not positive, an `approve` that returns anything but `True` or `False`, a
-judge that is not a decision agent or a teacher that is not a generation agent.
+`AGENT.md`, a question or a tool file (`frontmatter: unknown key 'route.min_confidance' in
+agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a `description:` that is not a
+string in a file the map would show, a decision agent with `boot: all`, a `reads:` naming no folder
+of the root or the agent's own, `reads:` on a decision agent or on an agent whose folder is a link
+to a folder elsewhere, a file `boot: all` would send that neither `Read` nor `Load` would hand over
+— over 20 MB, of a type the model's `media_types` does not name, or not the type its name says — a
+question with instructions both in its frontmatter and in its body or in neither, a decision agent
+with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a route entry
+that names a task its agent does not have or gives a decision agent nothing to ask, a tool declared
+without a body or given without a declaration, a run of an agent whose kind of model is absent, a
+missing workspace, a `Local` root that is not a directory, a `shell` that is not a list of strings
+or whose first word is not on `PATH`, a backend without `spawn`, `read` and `write` or whose
+`description` is not a string, a `Workspace` without a scope, a `max_steps`, `max_depth`,
+`tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is not positive,
+an `approve` that returns anything but `True` or `False`, a judge that is not a decision agent or a
+teacher that is not a generation agent.
 `NotFoundError` for an agent the tree does not have — a judge, a teacher or a replay's agent in the
 candidate included — a task the agent does not have (`engine: agent 'support' has no task 'ghost'`),
 found when the run starts, or a run the refinery does not.

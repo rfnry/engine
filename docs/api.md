@@ -836,20 +836,22 @@ Raises `InputError` when it resolves outside `root` and every place in `also`.
 class Workspace:
     def __init__(
         self,
-        root: Path | str,
+        backend: Backend,
         *,
-        sandbox: Sequence[str] | None = None,
-        unsandboxed: bool = False,
-        shell: Sequence[str] = ("bash", "-c"),
+        scope: str,
         timeout: float = 120.0,
         output_bytes: int = 30_000,
-        env: dict[str, str] | None = None,
     ) -> None: ...
+
+    backend: Backend
+    scope: str
+    timeout: float
+    output_bytes: int
 ```
 
-A directory where an agent with `workspace: true` writes code and runs it, passed as `run(workspace=)`. It takes exactly one of `sandbox`, the command each `Shell` call runs inside, and `unsandboxed=True`; `timeout` bounds every `Shell`, `Write` and `Edit` call in seconds, and a command still running at the limit, or when its call is cancelled, is sent SIGTERM and, a second later, SIGKILL with everything it started; `output_bytes` caps `stdout` and `stderr` each, and `env` is the only environment commands see, by default `PATH`, `HOME` set to the directory, and `LANG`.
+Where an agent with `workspace: true` writes code and runs it, passed as `run(workspace=)`: the library's tools over `backend`, for the tenant `scope`. `timeout` bounds every `Shell`, `Write` and `Edit` call in seconds; a command still running at the limit, or when its call is cancelled, is stopped with its process's `kill()`, and so is anything a command leaves running when it ends, after which what remains of its output is read for at most a second. `output_bytes` caps `stdout` and `stderr` each, keeping their first and last half.
 
-Raises `ConfigurationError` when `root` is not a directory, when neither or both of `sandbox` and `unsandboxed=True` are given, when `sandbox` or `shell` is not a non-empty list of strings, when `timeout` or `output_bytes` is not positive, or when an unsandboxed `shell` is not on `PATH`.
+Raises `ConfigurationError` when `backend` lacks `spawn`, `read` or `write`, its `description` is not a string, `scope` is empty, or `timeout` or `output_bytes` is not positive.
 
 ### `Workspace.tools`
 
@@ -857,7 +859,64 @@ Raises `ConfigurationError` when `root` is not a directory, when neither or both
 def tools(self) -> list[Tool]: ...
 ```
 
-Returns the three tools an agent with `workspace: true` gets: `Shell(command)`, which returns `exit_code`, `stdout`, `stderr` and `timed_out`; `Write(path, content)`, which writes a file exactly; and `Edit(path, old, new)`, which replaces one exact occurrence. `Write` and `Edit` refuse a path outside the directory with an `InputError`.
+Returns the three tools an agent with `workspace: true` gets: `Shell(command)`, which returns `exit_code`, `stdout`, `stderr` and `timed_out`; `Write(path, content)`, which writes a file exactly; and `Edit(path, old, new)`, which replaces one exact occurrence in a UTF-8 file of at most 5 MB. They go through the backend, and its errors reach the caller as they are.
+
+### `Backend`
+
+```python
+@runtime_checkable
+class Backend(Protocol):
+    async def spawn(self, command: str) -> Process: ...
+
+    async def read(self, path: str, limit: int) -> bytes: ...
+
+    async def write(self, path: str, data: bytes) -> None: ...
+```
+
+Where a workspace's commands run and its files live, passed to `Workspace`. `spawn` starts `command` in the workspace's directory with no input and returns at once. `read` returns a file's bytes and refuses one larger than `limit`; `write` writes a file whole, creating its parent directories. Paths are the model's, relative to the workspace, and what they can reach is the backend's to decide. An error a backend raises reaches the model as the tool's error. A backend may have a `description`, a string `Workspace` ends `Shell`'s description with.
+
+### `Process`
+
+```python
+class Process(Protocol):
+    stdout: Stream
+    stderr: Stream
+
+    async def wait(self) -> int: ...
+
+    async def kill(self) -> None: ...
+```
+
+A command a backend started. `stdout` and `stderr` are read until they return `b""`; `Stream` is a protocol of `async def read(self, n: int) -> bytes`, which an `asyncio.StreamReader` meets. `wait` returns the exit code once the command has exited, even while something it started still holds its output open. `kill` ends the command and everything it started and returns once they have ended or cannot be stopped further; it may be called after the command exited, to end what it left behind, and more than once.
+
+### `Local`
+
+```python
+class Local:
+    def __init__(
+        self,
+        root: Path | str,
+        *,
+        shell: Sequence[str] = ("bash", "-c"),
+        env: dict[str, str] | None = None,
+        description: str | None = None,
+    ) -> None: ...
+
+    root: Path
+    shell: list[str]
+    env: dict[str, str]
+    description: str | None
+
+    async def spawn(self, command: str) -> Process: ...
+
+    async def read(self, path: str, limit: int) -> bytes: ...
+
+    async def write(self, path: str, data: bytes) -> None: ...
+```
+
+A `Backend` on this machine. Commands run as `[*shell, command]` in `root`, in a new session, with `env` as their whole environment — by default `PATH`, `HOME` set to `root`, and `LANG`; a sandbox goes in front of the shell, as in `shell=["bwrap", …, "bash", "-c"]`. `kill` sends the command's process group SIGTERM and, a second later, SIGKILL. `read` and `write` stay inside `root`, symlinks resolved. `description` ends `Shell`'s description.
+
+Raises `ConfigurationError` when `root` is not a directory, `shell` is not a non-empty list of non-empty strings, its first word is not on the `PATH` of `env`, or `description` is not a string. `read` and `write` raise `InputError` for a path outside `root`; `read` for a path that is not a file or a file larger than `limit`; `write` for a directory.
 
 ## Storage
 

@@ -33,7 +33,7 @@ from rfnry_engine.refinery.labels import Label, Outcome, Replay, Review
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import LabelRow, Storage
 from rfnry_engine.tools.tools import Tool, Tools
-from rfnry_engine.tools.workspace import Workspace
+from rfnry_engine.tools.workspace import Local, Workspace
 
 from .fakes import (
     PICK,
@@ -636,7 +636,7 @@ async def test_the_tools_and_workspace_a_run_had_are_the_caller_s(
         "---\nname: coder\nkind: generation\nworkspace: true\n---\nYou code.\n"
     )
     (tmp_path / "work").mkdir()
-    work = Workspace(tmp_path / "work", unsandboxed=True)
+    work = Workspace(Local(tmp_path / "work"), scope="acme")
     memory = Tools([Tool("recall", "Recall a fact", body=recall)])
     refinery = Refinery(storage)
     recorder = Engine(tmp_path, generation=Scripted(text_reply("done")), refinery=refinery)
