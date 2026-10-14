@@ -212,19 +212,19 @@ rules/
 skills/
 ```
 
-A folder is always in the map, since its name says something; a file without a description is
-not, though the model can still find it with `LS` and `Glob`. Other frontmatter keys are left
-alone, so a folder written for another tool — `skills/<name>/SKILL.md` with `name:` and
-`description:` — works as it is. `AGENT.md` and the folders `tools/`, `tasks/` and `questions/`
-stay out of the map: the prompt already holds them. Frontmatter that is not valid YAML, or a
-`description:` that is not a string, is a `ConfigurationError` naming the file when the tree loads,
-so a typo never drops a file from the map. Everything else the model reads when it needs it, with
-the `Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can read only inside its own
-directory. `Read` returns a text file as text. `Load` hands the model any other file as it is — an
-image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in the
-folder as it came, the model reads it with its own understanding of images and documents, there is
-no parser in between, and nothing is loaded until the model asks — unless the agent asks for its
-folder at boot, below.
+A folder is always in the map, since its name says something; a file without a description is not,
+though the model can still find it with `LS` and `Glob`. Other frontmatter keys are left alone, so a
+folder written for another tool — `skills/<name>/SKILL.md` with `name:` and `description:` — works
+as it is. `AGENT.md` and the folders `tools/`, `tasks/` and `questions/` stay out of the map: the
+prompt already holds them. Frontmatter that is not valid YAML, or a `description:` that is not a
+string, is a `ConfigurationError` naming the file when the tree loads, so a typo never drops a file
+from the map. Everything else the model reads when it needs it, with the `Read`, `Grep`, `Glob`,
+`LS` and `Load` tools, and it can read only inside its own directory and the folders it reads.
+`Read` returns a text file as text. `Load` hands the model any other file as it is — an image, a
+PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in the folder as
+it came, the model reads it with its own understanding of images and documents, there is no parser
+in between, and nothing is loaded until the model asks — unless the agent asks for its folder at
+boot, below.
 
 A root holds agents and plain folders side by side, and an agent reads other folders of its root by
 naming them in `reads:` — plain folders, or other agents' folders:
@@ -246,8 +246,8 @@ reads: [books]
 You write code. The books hold the house's conventions.
 ```
 
-Each folder it reads follows its own in the map as `../books/`, and the tools take its files by
-that path — `Read` of `../books/python/async.md`, `Grep` with `path="../books"`, `Glob` of
+Each folder it reads follows its own in the map as `../books/`, and the tools take its files by that
+path — `Read` of `../books/python/async.md`, `Grep` with `path="../books"`, `Glob` of
 `../books/**/*.md`; without a path, `Grep` and `Glob` search the agent's own folder. Nothing outside
 the agent's folder and the folders it reads is reachable. Another agent's folder shows in the map
 without its `AGENT.md` and declarations, which stay readable. `boot: all` sends the folders it reads
@@ -255,7 +255,8 @@ too, under the same paths, and an edit to one changes the fingerprint of every a
 `reads:` names direct children of the root: a name that is not one, starts with `.`, or is the
 agent's own is a `ConfigurationError` when the tree loads, and so is `reads:` on a decision agent,
 which reads no files. The tree is shared by every tenant: it holds how to do the work, never a
-tenant's data — that comes per run, in the input, the history or the workspace.
+tenant's data — that comes per run, in the input, the history or the workspace. An agent that reads
+`my_agents/acme/` reads it for every tenant.
 
 A root with no `AGENT.md` anywhere — a folder of skills, notes or references written for something
 else — runs as one agent, named by `Engine(root, name=)` or by the folder's name: a generation agent
@@ -296,11 +297,11 @@ of the history, sent with every model call, and are read when the engine loads t
 fingerprint is taken, so an edit shows in the next `Engine`. `run.boot` holds that message's parts;
 `run.messages` and `run.conversation` leave it out, so a conversation passed back does not send the
 folder twice and a replay boots from the candidate's folder. The tools stay as they are — `Read` and
-`Load` hand over what the model already holds. Each agent boots its
-own folder, a delegated or routed one included. A decision agent reads no files, so `boot:` on one
-is a `ConfigurationError` when the tree loads; so is a file neither `Read` nor `Load` would hand
-over — over 20 MB, of a type the generation model's `media_types` does not name, or not the type its
-name says — with `Load`'s own message.
+`Load` hand over what the model already holds. Each agent boots its own folder, a delegated or
+routed one included. A decision agent reads no files, so `boot:` on one is a `ConfigurationError`
+when the tree loads; so is a file neither `Read` nor `Load` would hand over — over 20 MB, of a type
+the generation model's `media_types` does not name, or not the type its name says — with `Load`'s
+own message.
 
 ### Running an agent
 
@@ -1527,25 +1528,25 @@ Everything the package exports, by role.
 ## Errors
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
-`AGENT.md`, `Engine(name=)` on a root with agents or empty, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
+`AGENT.md`, `Engine(name=)` on a root with agents or empty, an unknown key in the frontmatter of an
+`AGENT.md`, a question or a tool file
 (`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that
 is not valid YAML or a `description:` that is not a string in a file the map would show, a decision
 agent with `boot: all`, a `reads:` naming no folder of the root or the agent's own, `reads:` on a
-decision agent, a file `boot: all` would send that neither `Read` nor `Load` would hand over —
-over 20 MB, of a type the model's `media_types` does not name, or not the type its name says — a
-question with instructions both in its frontmatter and in its body or in neither, a decision agent
-with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a route entry
-that names a task its agent does not have or gives a decision agent nothing to ask, a tool
-declared without a body or given without a declaration, a run of an agent whose kind of model is
-absent, a missing workspace, a `Workspace` root that is not a directory, a `Workspace` with neither
-`sandbox=` nor `unsandboxed=True` or with both, an unsandboxed shell not on `PATH`, a `sandbox` or
-`shell` that is not a list of strings, a `max_steps`, `max_depth`, `tool_timeout`, `history_walk`,
-`history_chars`, `timeout` or `output_bytes` that is not positive, an `approve` that returns
-anything but `True` or `False`, a judge that is not a decision agent or a teacher that is not a
-generation agent. `NotFoundError` for an agent the tree does not have — a judge, a teacher
-or a replay's agent in the candidate included — a task the agent does not have
-(`engine: agent 'support' has no task 'ghost'`), found when the run starts, or a run the refinery
-does not.
+decision agent, a file `boot: all` would send that neither `Read` nor `Load` would hand over — over
+20 MB, of a type the model's `media_types` does not name, or not the type its name says — a question
+with instructions both in its frontmatter and in its body or in neither, a decision agent with a
+file straight in `tasks/` or a task that repeats an id of its `questions/`, a route entry that names
+a task its agent does not have or gives a decision agent nothing to ask, a tool declared without a
+body or given without a declaration, a run of an agent whose kind of model is absent, a missing
+workspace, a `Workspace` root that is not a directory, a `Workspace` with neither `sandbox=` nor
+`unsandboxed=True` or with both, an unsandboxed shell not on `PATH`, a `sandbox` or `shell` that is
+not a list of strings, a `max_steps`, `max_depth`, `tool_timeout`, `history_walk`, `history_chars`,
+`timeout` or `output_bytes` that is not positive, an `approve` that returns anything but `True` or
+`False`, a judge that is not a decision agent or a teacher that is not a generation agent.
+`NotFoundError` for an agent the tree does not have — a judge, a teacher or a replay's agent in the
+candidate included — a task the agent does not have (`engine: agent 'support' has no task 'ghost'`),
+found when the run starts, or a run the refinery does not.
 `InputError` for a call the library refuses: an empty scope, a history that breaks a tool call from
 its result, a `start` outside the history or without one, tags
 outside their limits, runtime questions that do not fit, a runtime id the run already asks,

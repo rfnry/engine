@@ -76,4 +76,7 @@ async def test_an_agent_reads_another_agent_s_folder_in_full(tmp_path: Path) -> 
     tools = EngineTools(engine, agent="coding", scope="acme")
     assert "Hi" in await tools.dispatch("Read", {"path": "../writing/AGENT.md"})
     assert await tools.dispatch("Read", {"path": "../writing/tasks/draft.md"}) == "Draft it.\n"
+    loaded = await tools.dispatch("Load", {"path": "../writing/tasks/draft.md"})
+    assert isinstance(loaded, list) and len(loaded) == 1
+    assert loaded[0].data == b"Draft it.\n"
     assert engine._spec("coding").listing == "../writing/"

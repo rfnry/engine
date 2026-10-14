@@ -385,6 +385,35 @@ async def test_a_read_folder_is_read_by_its_path_beside_the_agent_s(shelf: Path)
             await tools.dispatch(name, args)
 
 
+async def test_a_read_folder_reaches_nothing_beyond_itself(shelf: Path, tmp_path: Path) -> None:
+    (tmp_path / "outside.md").write_text("await outside\n")
+    (shelf / "books" / "out.md").symlink_to(tmp_path / "outside.md")
+    (shelf / "books" / "w").symlink_to(shelf / "writing")
+    (shelf / "books2").mkdir()
+    (shelf / "books2" / "x.md").write_text("await x\n")
+    tools = reading(shelf)
+    for name, args in [
+        ("Read", {"path": "../books/out.md"}),
+        ("Load", {"path": "../books/out.md"}),
+        ("Read", {"path": "../books/w/voice.md"}),
+        ("LS", {"path": "../books/w"}),
+        ("Read", {"path": "../books2/x.md"}),
+        ("LS", {"path": "../books2"}),
+        ("Grep", {"pattern": "await", "path": "../writing"}),
+    ]:
+        with pytest.raises(InputError, match="outside the agent directory"):
+            await tools.dispatch(name, args)
+    with pytest.raises(InputError, match="inside the agent directory"):
+        await tools.dispatch("Glob", {"pattern": "../books2/*.md"})
+    for listing in [
+        await tools.dispatch("Grep", {"pattern": "await", "path": "../books"}),
+        await tools.dispatch("Grep", {"pattern": "await", "path": "../books", "mode": "content"}),
+        await tools.dispatch("Glob", {"pattern": "../books/**/*.md"}),
+        await tools.dispatch("Glob", {"pattern": "../books/*"}),
+    ]:
+        assert "out.md" not in listing and "/w/" not in listing and "voice" not in listing
+
+
 async def test_grep_and_glob_search_the_own_folder_unless_told(shelf: Path) -> None:
     tools = reading(shelf)
     assert await tools.dispatch("Grep", {"pattern": "await"}) == "no matches found"
