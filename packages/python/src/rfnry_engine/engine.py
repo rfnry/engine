@@ -467,10 +467,11 @@ class Engine:
         input: State,
         options: _Options,
         parent_run_id: str | None,
+        routed: bool = False,
     ) -> Run:
         if options.task is not None and options.task not in spec.tasks:
             raise NotFoundError(f"engine: agent {spec.name!r} has no task {options.task!r}")
-        async with enter(spec.name, self.max_depth):
+        async with enter(spec.name, self.max_depth, routed=routed):
             if spec.kind == "generation":
                 return await self._generation(spec, scope, input, options, parent_run_id)
             return await self._decision(spec, scope, input, options, parent_run_id)
@@ -548,7 +549,7 @@ class Engine:
                 if target is not None and (floor is None or answer.confidence >= floor):
                     forwarded = replace(options, task=target.task, questions={}, failed=routing)
                     routed = await self._run(
-                        self._agents[target.agent], scope, input, forwarded, run_id
+                        self._agents[target.agent], scope, input, forwarded, run_id, routed=True
                     )
         except Exception as exc:
             options.failed.append(decision(exc))

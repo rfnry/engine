@@ -95,9 +95,9 @@ def permit(spec: AgentSpec, args: dict[str, Any]) -> DelegateArgs:
 
 
 @asynccontextmanager
-async def enter(name: str, max_depth: int) -> AsyncIterator[None]:
+async def enter(name: str, max_depth: int, *, routed: bool = False) -> AsyncIterator[None]:
     stack = _stack.get()
-    if name in stack:
+    if routed and name in stack:
         raise DelegationLoopError(f"delegate: loop at {' -> '.join([*stack, name])}")
     if len(stack) >= max_depth:
         raise DelegationDepthError(

@@ -374,7 +374,7 @@ attached, the run is recorded first, as far as it got: `error` says what ended i
 `"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. Its conversation can
 hold a tool call with no result, when the run failed between the call and its result, and `run()`
 refuses such a history: go on from the history the run was given. A run refused before its
-first model call — a bad input, an agent or task the tree does not have, a delegation loop — has
+first model call — a bad input, an agent or task the tree does not have, a route loop — has
 nothing to record, and a run whose task you cancel is not recorded; `stop=` ends a run with its
 record. A delegated run that fails stays under its parent in `children`, its step the error the
 parent's model was given, and the parent goes on; a routed run that fails fails its router, which
@@ -832,8 +832,11 @@ the target does not have, questions for a generation agent, a question that does
 target already asks, or a decision run with nothing to ask reaches the model as a tool error it can
 read and act on, and the run goes on.
 
-Depth is capped (`max_depth`, default 5) and a cycle is refused; both are reported to the model as
-tool errors, and the run continues.
+Depth is capped (`max_depth`, default 5). Within it an agent may name itself in `agents:` and hand a
+sub-problem to a fresh run of itself, and two agents may call each other. A route is different: a
+route into an agent already in the chain would decide the same input again, so it is refused with
+`DelegationLoopError`. Through `Delegate` an error reaches the model as a tool error and the run
+continues; through a route it raises.
 
 ### Both kinds together
 
@@ -1554,8 +1557,9 @@ correction of the wrong shape or for a question the run was not asked, a `delete
 a `limit`, `concurrency` or `repeat` below 1, a tool called with bad arguments or a path outside its
 directory. `ModelError` when an adapter breaks the contract — a
 result whose fields do not fit, a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels. `RunawayError` when
-a loop exceeds `max_steps` (default 200). `DelegationLoopError` and `DelegationDepthError` for
-nesting: through `Delegate` they reach the model as tool errors, through a route they raise.
+a loop exceeds `max_steps` (default 200). `DelegationLoopError` for a route into an agent already
+in the chain; `DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool
+error through `Delegate` and raises through a route.
 `StorageError` for the database. Inside a run, a tool's error is the model's to read, never raised.
 All under `EngineException` — the root takes the `Exception` suffix, every child ends in `Error`,
 the same shape as rfnry-memory's. Every message names the module that raised it, then says what went

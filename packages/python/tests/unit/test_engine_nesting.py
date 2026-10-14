@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import InputError, NotFoundError
+from rfnry_engine.errors import DelegationLoopError, InputError, NotFoundError
 from rfnry_engine.models import (
     Answer,
     Check,
@@ -96,7 +96,21 @@ async def test_the_whole_chain_frontdesk_support_triage(fixtures: Path) -> None:
     assert run.routed_to.agent == "support" and run.routed_to.children[0].agent == "triage"
 
 
-async def test_a_loop_is_an_error_result_not_a_crash(tmp_path: Path) -> None:
+async def test_an_agent_delegates_to_a_fresh_run_of_itself(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nagents: [a]\n---\nhi\n"
+    )
+    llm = Scripted(_delegate("a", "the sub-problem"), text_reply("sub done"), text_reply("done"))
+    run = await Engine(tmp_path, generation=llm).run("a", "acme", "start")
+    assert isinstance(run, Generation) and run.reply == "done"
+    child = run.children[0]
+    assert isinstance(child, Generation) and child.agent == "a" and child.reply == "sub done"
+    [delegate] = [t for t in llm.calls[0][2] if t.name == "Delegate"]
+    assert delegate.description is not None and "\n- a: " in delegate.description
+
+
+async def test_a_delegation_cycle_runs_until_max_depth(tmp_path: Path) -> None:
     for name in ("a", "b"):
         (tmp_path / name).mkdir()
         other = "b" if name == "a" else "a"
@@ -106,11 +120,27 @@ async def test_a_loop_is_an_error_result_not_a_crash(tmp_path: Path) -> None:
     llm = Scripted(
         _delegate("b", "go"), _delegate("a", "back"), text_reply("b done"), text_reply("a done")
     )
-    run = await Engine(tmp_path, generation=llm).run("a", "acme", "start")
+    run = await Engine(tmp_path, generation=llm, max_depth=2).run("a", "acme", "start")
     assert isinstance(run, Generation)
     child = run.children[0]
     assert isinstance(child, Generation) and child.steps[0].is_error
-    assert child.steps[0].result == "DelegationLoopError: delegate: loop at a -> b -> a"
+    assert (
+        child.steps[0].result == "DelegationDepthError: delegate: depth 2 exceeded at a -> b -> a"
+    )
+
+
+async def test_a_route_back_into_the_chain_raises(tmp_path: Path) -> None:
+    for name, other in (("r1", "r2"), ("r2", "r1")):
+        (tmp_path / name / "questions").mkdir(parents=True)
+        (tmp_path / name / "AGENT.md").write_text(
+            f"---\nname: {name}\nkind: decision\nroute: {{by: go, to: {{next: {other}}}}}\n---\n"
+        )
+        (tmp_path / name / "questions" / "go.md").write_text(
+            "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
+        )
+    engine = Engine(tmp_path, decision=Answering())
+    with pytest.raises(DelegationLoopError, match=r"^delegate: loop at r1 -> r2 -> r1$"):
+        await engine.run("r1", "acme", "x")
 
 
 async def test_depth_is_capped(tmp_path: Path) -> None:
