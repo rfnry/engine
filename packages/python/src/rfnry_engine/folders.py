@@ -15,15 +15,18 @@ def declares(folder: Path) -> bool:
     return (folder / "AGENT.md").is_file()
 
 
-def _inside(jail: Jail, path: Path) -> bool:
+def _inside(jail: Jail, entry: Path) -> bool:
+    if not (entry.is_symlink() or entry.is_junction()):
+        return True
     try:
-        jail.resolve(path)
+        jail.resolve(entry)
     except InputError:
         return False
     return True
 
 
 def _walk(folder: Path, declared: bool) -> tuple[list[str], list[tuple[str, Path]]]:
+    folder = folder.resolve()
     jail = Jail(folder)
     dirs: list[str] = []
     files: list[tuple[str, Path]] = []
@@ -52,7 +55,7 @@ def content(folder: Path, declared: bool) -> list[tuple[str, Path]]:
     return _walk(folder, declared)[1]
 
 
-def _entries(folder: Path, declared: bool, depth: int) -> list[str]:
+def entries(folder: Path, declared: bool) -> list[str]:
     dirs, files = _walk(folder, declared)
     children: dict[str, list[tuple[str, str, bool]]] = {}
     for rel in dirs:
@@ -71,12 +74,19 @@ def _entries(folder: Path, declared: bool, depth: int) -> list[str]:
             if is_folder:
                 render(f"{parent}/{name}" if parent else name, indent + 1)
 
-    render("", depth)
+    render("", 0)
     return lines
 
 
-def listing(folder: Path, declared: bool, reads: Mapping[str, Path]) -> str:
-    lines = _entries(folder, declared, 0)
-    for name, read in reads.items():
-        lines += [f"../{name}/", *_entries(read, declares(read), 1)]
+def joined(own: list[str], reads: Mapping[str, list[str]]) -> str:
+    lines = list(own)
+    for name, shown in reads.items():
+        lines += [f"../{name}/", *(f"  {line}" for line in shown)]
     return "\n".join(lines)
+
+
+def listing(folder: Path, declared: bool, reads: Mapping[str, Path]) -> str:
+    return joined(
+        entries(folder, declared),
+        {name: entries(read, declares(read)) for name, read in reads.items()},
+    )

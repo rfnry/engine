@@ -2,32 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from rfnry_engine.errors import InputError
-from rfnry_engine.jail import Jail
 from rfnry_engine.models import Question, ToolSpec
 
 SHORT = 16
-
-
-def folder_files(root: Path) -> list[tuple[str, Path]]:
-    jail = Jail(root)
-    found: list[tuple[str, Path]] = []
-    for directory, folders, files in os.walk(root):
-        folders[:] = [name for name in folders if not name.startswith(".")]
-        for name in files:
-            path = Path(directory) / name
-            if name.startswith(".") or not path.is_file():
-                continue
-            try:
-                jail.resolve(path)
-            except InputError:
-                continue
-            found.append((path.relative_to(root).as_posix(), path))
-    return sorted(found, key=lambda item: item[0])
 
 
 def folder_fingerprint(files: list[tuple[str, Path]], read: Mapping[str, bytes]) -> str:

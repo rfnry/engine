@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping
+from functools import cached_property
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator
 
 from rfnry_engine.errors import ConfigurationError, InputError
-from rfnry_engine.fingerprint import folder_files, folder_fingerprint
-from rfnry_engine.folders import content, declares, listing
+from rfnry_engine.fingerprint import folder_fingerprint
+from rfnry_engine.folders import content, declares, entries, joined, listing
 from rfnry_engine.frontmatter import parse_frontmatter_doc
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Check, Choice, Part, Question, Score
@@ -172,7 +173,26 @@ def _questions(directory: Path) -> dict[str, Question]:
     return {p.stem: _question(p) for p in _markdown_files(directory)}
 
 
-def _reads(front: AgentFront, directory: Path, folders: Mapping[str, Path]) -> dict[str, Path]:
+class _Folder:
+    def __init__(self, place: Path) -> None:
+        self.place = place
+
+    @cached_property
+    def files(self) -> list[tuple[str, Path]]:
+        return content(self.place, False)
+
+    @cached_property
+    def booted(self) -> list[tuple[str, Path]]:
+        return content(self.place, declares(self.place))
+
+    @cached_property
+    def mapped(self) -> list[str]:
+        return entries(self.place, declares(self.place))
+
+
+def _reads(
+    front: AgentFront, directory: Path, folders: Mapping[str, _Folder]
+) -> dict[str, _Folder]:
     if front.kind == "decision" and front.reads:
         raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare reads:")
     for name in front.reads:
@@ -186,7 +206,7 @@ def _reads(front: AgentFront, directory: Path, folders: Mapping[str, Path]) -> d
 
 
 def _under(
-    reads: Mapping[str, Path], files: Callable[[Path], list[tuple[str, Path]]]
+    reads: Mapping[str, _Folder], files: Callable[[_Folder], list[tuple[str, Path]]]
 ) -> list[tuple[str, Path]]:
     return [
         (f"../{name}/{rel}", path) for name, folder in reads.items() for rel, path in files(folder)
@@ -211,7 +231,7 @@ def _readable(root: Path) -> dict[str, Path]:
 def load_agent(
     directory: Path,
     media_types: Collection[str] | None = None,
-    folders: Mapping[str, Path] | None = None,
+    folders: Mapping[str, _Folder] | None = None,
 ) -> AgentSpec:
     front, body = parse_frontmatter_doc(
         _read(directory / "AGENT.md"),
@@ -254,11 +274,13 @@ def load_agent(
         raise ConfigurationError(f"tree: generation agent {front.name!r} cannot declare route:")
     reads = _reads(front, directory, folders or {})
     root = directory.resolve()
-    files = sorted([*folder_files(root), *_under(reads, folder_files)])
-    shared = _under(reads, lambda folder: content(folder, declares(folder)))
+    files = sorted([*content(root, False), *_under(reads, lambda folder: folder.files)])
     try:
         boot, read = (
-            boot_parts(sorted([*content(root, True), *shared]), media_types)
+            boot_parts(
+                sorted([*content(root, True), *_under(reads, lambda folder: folder.booted)]),
+                media_types,
+            )
             if front.boot == "all"
             else ([], {})
         )
@@ -281,8 +303,10 @@ def load_agent(
         workspace=front.workspace,
         task_questions=task_questions,
         boot=boot,
-        listing=listing(root, True, reads),
-        reads=reads,
+        listing=joined(
+            entries(root, True), {name: folder.mapped for name, folder in reads.items()}
+        ),
+        reads={name: folder.place for name, folder in reads.items()},
     )
 
 
@@ -299,7 +323,7 @@ def plain_agent(root: Path, name: str) -> AgentSpec:
         questions={},
         tools={},
         tasks=[],
-        fingerprint=folder_fingerprint(folder_files(root), {}),
+        fingerprint=folder_fingerprint(content(root, False), {}),
         listing=listing(root, False, {}),
         plain=True,
     )
@@ -318,7 +342,7 @@ def load_tree(
         _unnamed(name, root)
         spec = load_agent(root, media_types)
         return {spec.name: spec}
-    folders = _readable(root)
+    folders = {name: _Folder(place) for name, place in _readable(root).items()}
     agents = {
         child.name: load_agent(child, media_types, folders)
         for child in sorted(root.iterdir())
