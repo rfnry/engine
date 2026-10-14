@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from rfnry_engine import Local, Process
 from rfnry_engine.errors import InputError
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Audio, Document, Image
@@ -240,7 +241,7 @@ async def test_load_reaches_the_workspace_when_the_run_has_one(media: Path, tmp_
     assert "where" not in schema["input_schema"]["properties"]
     with pytest.raises(InputError, match=r"^builtins: not a file: chart.png$"):
         await alone.dispatch("Load", {"path": "chart.png", "where": "workspace"})
-    both = Tools([load_tool(media, work)])
+    both = Tools([load_tool(media, Local(work))])
     assert await both.dispatch("Load", {"path": "chart.png", "where": "workspace"}) == [
         Image(media_type="image/png", data=PNG)
     ]
@@ -248,7 +249,7 @@ async def test_load_reaches_the_workspace_when_the_run_has_one(media: Path, tmp_
         Document(media_type="application/pdf", name="rates.pdf", data=PDF)
     ]
     with pytest.raises(
-        InputError, match="^builtins: path outside the workspace: ../agent/knowledge/rates.pdf$"
+        InputError, match="^workspace: path outside the workspace: ../agent/knowledge/rates.pdf$"
     ):
         await both.dispatch("Load", {"path": "../agent/knowledge/rates.pdf", "where": "workspace"})
 
@@ -436,3 +437,48 @@ async def test_grep_and_glob_search_the_own_folder_unless_told(shelf: Path) -> N
 async def test_glob_refuses_a_pattern_the_walk_cannot_take(shelf: Path, pattern: str) -> None:
     with pytest.raises(InputError, match="^builtins: invalid glob pattern"):
         await reading(shelf).dispatch("Glob", {"pattern": pattern})
+
+
+async def test_read_reaches_the_workspace_when_the_run_has_one(media: Path, tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "notes.txt").write_text("one\ntwo\nthree\n")
+    (work / "chart.png").write_bytes(PNG)
+    [alone] = [d for d in Tools(builtins(media)).definitions() if d["name"] == "Read"]
+    assert "where" not in alone["input_schema"]["properties"]
+    both = Tools(builtins(media, None, Local(work)))
+    read = {"path": "notes.txt", "where": "workspace", "offset": 1, "limit": 1}
+    assert await both.dispatch("Read", read) == "two"
+    assert await both.dispatch("Read", {"path": "knowledge/notes.md"}) == "plain\n"
+    with pytest.raises(
+        InputError, match="^builtins: chart.png is not a text file; Load gives you the file itself$"
+    ):
+        await both.dispatch("Read", {"path": "chart.png", "where": "workspace"})
+    with pytest.raises(
+        InputError, match="^workspace: path outside the workspace: ../agent/knowledge/notes.md$"
+    ):
+        await both.dispatch("Read", {"path": "../agent/knowledge/notes.md", "where": "workspace"})
+
+
+async def test_read_and_load_go_through_any_backend_with_their_limits() -> None:
+    class Files:
+        def __init__(self) -> None:
+            self.limits: list[int] = []
+
+        async def spawn(self, command: str) -> Process:
+            raise AssertionError("no command runs")
+
+        async def read(self, path: str, limit: int) -> bytes:
+            self.limits.append(limit)
+            return PNG if path.endswith(".png") else b"text\n"
+
+        async def write(self, path: str, data: bytes) -> None:
+            raise AssertionError("nothing is written")
+
+    files = Files()
+    tools = Tools([*builtins(SUPPORT, None, files), load_tool(SUPPORT, files)])
+    assert await tools.dispatch("Read", {"path": "a.txt", "where": "workspace"}) == "text\n"
+    assert await tools.dispatch("Load", {"path": "b.png", "where": "workspace"}) == [
+        Image(media_type="image/png", data=PNG)
+    ]
+    assert files.limits == [5 * 1024 * 1024, 20 * 1024 * 1024]

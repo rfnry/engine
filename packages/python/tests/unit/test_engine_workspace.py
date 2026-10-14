@@ -318,3 +318,19 @@ async def test_a_workspace_of_another_scope_is_refused_before_anything_runs(
     with pytest.raises(InputError, match=f"^engine_tools: {refused}"):
         EngineTools(engine, agent="coder", scope="globex", workspace=work)
     assert llm.calls == []
+
+
+async def test_an_agent_reads_a_file_it_wrote_in_its_workspace(
+    tmp_path: Path, work: Workspace
+) -> None:
+    read = {"path": "notes.txt", "where": "workspace", "offset": 1, "limit": 1}
+    llm = Scripted(
+        use(ToolCall(id="1", name="Write", args={"path": "notes.txt", "content": "one\ntwo\n"})),
+        use(ToolCall(id="2", name="Read", args=read)),
+        text_reply("two"),
+    )
+    engine = Engine(make_tree(tmp_path), generation=llm)
+    run = await engine.run("coder", "acme", "x", workspace=work)
+    assert isinstance(run, Generation) and run.steps[1].result == "two"
+    [schema] = [t for t in llm.calls[0][2] if t.name == "Read"]
+    assert schema.input_schema["properties"]["where"]["enum"] == ["folder", "workspace"]

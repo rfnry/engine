@@ -59,14 +59,10 @@ class EngineTools(Tools):
             )
         room = workspace if spec.workspace or spec.plain else None
         media_types = getattr(engine.generation, "media_types", None)
+        backend = room.backend if room else None
         items: list[Tool | ToolsLike] = [
-            *builtins(spec.root, spec.reads),
-            load_tool(
-                spec.root,
-                getattr(room.backend, "root", None) if room else None,
-                media_types,
-                spec.reads.values(),
-            ),
+            *builtins(spec.root, spec.reads, backend),
+            load_tool(spec.root, backend, media_types, spec.reads.values()),
         ]
         if history is not None and start > 0:
             items.append(

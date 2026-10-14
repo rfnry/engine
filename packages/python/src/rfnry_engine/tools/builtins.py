@@ -16,6 +16,7 @@ from rfnry_engine.errors import InputError
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Audio, Document, Image, Part, Text
 from rfnry_engine.tools.tools import Result, Tool
+from rfnry_engine.tools.workspace import Backend
 
 _MAX_BYTES = 5 * 1024 * 1024
 _LOAD_BYTES = 20 * 1024 * 1024
@@ -30,6 +31,10 @@ class ReadArgs(BaseModel):
     path: str
     offset: int = Field(default=0, ge=0)
     limit: int | None = Field(default=None, ge=1)
+
+
+class ReadAnywhereArgs(ReadArgs):
+    where: Literal["folder", "workspace"] = "folder"
 
 
 class LoadArgs(BaseModel):
@@ -133,6 +138,35 @@ def boot_parts(
     return parts, read
 
 
+def _lines(data: bytes, a: ReadArgs) -> str:
+    text = _decoded(data)
+    if text is None:
+        raise InputError(f"builtins: {a.path} is not a text file; Load gives you the file itself")
+    if a.offset or a.limit is not None:
+        lines = text.splitlines()
+        end = a.offset + a.limit if a.limit is not None else len(lines)
+        text = "\n".join(lines[a.offset : end])
+    return text
+
+
+def _read_tool(read: Tool, workspace: Backend | None) -> Tool:
+    if workspace is None:
+        return read
+
+    async def body(args: dict[str, Any]) -> Result:
+        a = ReadAnywhereArgs.model_validate(args)
+        if a.where == "folder":
+            return await read.call(args)
+        return _lines(await workspace.read(a.path, _MAX_BYTES), a)
+
+    return Tool(
+        "Read",
+        f"{read.description} where is 'folder' for a file of the FILES map or 'workspace' for your workspace.",
+        body=body,
+        args=ReadAnywhereArgs,
+    )
+
+
 class _Directory:
     def __init__(self, root: Path, reads: Mapping[str, Path] | None = None) -> None:
         self.root = Path(root).resolve()
@@ -159,16 +193,7 @@ class _Directory:
             raise InputError(f"builtins: not a file: {a.path}")
         if target.stat().st_size > _MAX_BYTES:
             raise InputError(f"builtins: file exceeds {_MAX_BYTES} bytes: {a.path}")
-        text = _decoded(target.read_bytes())
-        if text is None:
-            raise InputError(
-                f"builtins: {a.path} is not a text file; Load gives you the file itself"
-            )
-        if a.offset or a.limit is not None:
-            lines = text.splitlines()
-            end = a.offset + a.limit if a.limit is not None else len(lines)
-            text = "\n".join(lines[a.offset : end])
-        return text
+        return _lines(target.read_bytes(), a)
 
     def _files_under(self, base: Path, glob: str | None) -> tuple[list[Path], bool]:
         if base.is_file():
@@ -280,7 +305,9 @@ class _Directory:
         return "\n".join(shown) + suffix
 
 
-def builtins(root: Path, reads: Mapping[str, Path] | None = None) -> list[Tool]:
+def builtins(
+    root: Path, reads: Mapping[str, Path] | None = None, workspace: Backend | None = None
+) -> list[Tool]:
     directory = _Directory(root, reads)
 
     def threaded(handler: Any) -> Any:
@@ -291,11 +318,14 @@ def builtins(root: Path, reads: Mapping[str, Path] | None = None) -> list[Tool]:
         return body
 
     return [
-        Tool(
-            "Read",
-            "Read a text file by its path in the FILES map. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.",
-            body=threaded(directory.read),
-            args=ReadArgs,
+        _read_tool(
+            Tool(
+                "Read",
+                "Read a text file by its path in the FILES map. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.",
+                body=threaded(directory.read),
+                args=ReadArgs,
+            ),
+            workspace,
         ),
         Tool(
             "Grep",
@@ -320,30 +350,26 @@ def builtins(root: Path, reads: Mapping[str, Path] | None = None) -> list[Tool]:
 
 def load_tool(
     folder: Path,
-    workspace: Path | None = None,
+    workspace: Backend | None = None,
     media_types: Collection[str] | None = None,
     reads: Iterable[Path] = (),
 ) -> Tool:
-    places = {"folder": Jail(folder, also=reads)}
-    if workspace is not None:
-        places["workspace"] = Jail(workspace)
+    jail = Jail(folder, also=reads)
 
-    def load(args: dict[str, Any]) -> list[Part]:
-        a = LoadAnywhereArgs.model_validate(args)
-        try:
-            target = places[a.where].resolve(a.path)
-        except InputError:
-            if a.where == "folder":
-                raise
-            raise InputError(f"builtins: path outside the workspace: {a.path}") from None
+    def load(path: str) -> list[Part]:
+        target = jail.resolve(path)
         if not target.is_file():
-            raise InputError(f"builtins: not a file: {a.path}")
+            raise InputError(f"builtins: not a file: {path}")
         if target.stat().st_size > _LOAD_BYTES:
-            raise InputError(f"builtins: file exceeds {_LOAD_BYTES} bytes: {a.path}")
-        return [_handed(target, target.read_bytes(), a.path, media_types)]
+            raise InputError(f"builtins: file exceeds {_LOAD_BYTES} bytes: {path}")
+        return [_handed(target, target.read_bytes(), path, media_types)]
 
     async def body(args: dict[str, Any]) -> Result:
-        parts: list[Part] = await asyncio.to_thread(load, args)
+        a = LoadAnywhereArgs.model_validate(args)
+        if a.where == "workspace" and workspace is not None:
+            data = await workspace.read(a.path, _LOAD_BYTES)
+            return [_handed(Path(a.path), data, a.path, media_types)]
+        parts: list[Part] = await asyncio.to_thread(load, a.path)
         return parts
 
     if workspace is None:

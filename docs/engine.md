@@ -972,10 +972,11 @@ instead of asking again and again — and `stop=true` stops a job still running 
 `Jobs()` lists the jobs: id, command, when it started, running or exit code. `Write(path, content)`
 writes a file exactly, and `Edit(path, old, new, all=false)` replaces one exact occurrence, or with
 `all=true` every one — helpers that send only what changes and leave a clean step in the record; the
-shell can do both too. `Load` takes `where="workspace"` to hand the model a file from the workspace,
-so an agent looks at the chart it just plotted. Each command starts fresh in the directory, so a
-`cd` or a variable does not carry over, and the tool's description tells the model so, along with
-its limits.
+shell can do both too. `Read` and `Load` take `where="workspace"`: `Read` for a text file of the
+workspace, with `offset` and `limit` selecting lines, `Load` to hand the model a file as it is, so
+an agent looks at the chart it just plotted. Both go through the backend. Each command starts fresh
+in the directory, so a `cd` or a variable does not carry over, and the tool's description tells the
+model so, along with its limits.
 
 Jobs belong to the workspace, not to the run: they keep running after the run that started them,
 after a run that failed and after `stop.now()`, until the model stops them or you close the
@@ -1016,9 +1017,9 @@ so a ten-minute build and a thirty-second API call live in the same engine. A `s
 word is not on `PATH` is a `ConfigurationError` that says so; pass `shell=["sh", "-c"]` on a system
 that has only a POSIX shell, such as Alpine.
 
-On `Local`, `Write`, `Edit` and `Load` stay inside the directory: they refuse a path that leaves
-it, symlinks included. `Shell` reaches what the process running it can reach, so the real boundary
-is the sandbox in front of the shell, or the machine.
+On `Local`, `Write`, `Edit`, `Read` and `Load` stay inside the directory: they refuse a path that
+leaves it, symlinks included. `Shell` reaches what the process running it can reach, so the real
+boundary is the sandbox in front of the shell, or the machine.
 
 Binding the whole system read-only (`--ro-bind / /`) is not enough: a command could still read
 every other tenant's directory and every secret on disk. Mount only what commands need — the
