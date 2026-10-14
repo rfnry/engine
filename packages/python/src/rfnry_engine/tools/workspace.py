@@ -23,7 +23,7 @@ WORKSPACE_TOOLS = frozenset({"Shell", "Job", "Write", "Edit"})
 GRACE = 1.0
 CHUNK = 65_536
 TEXT_BYTES = 5 * 1024 * 1024
-FOLDER = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+FOLDER = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
 class Stream(Protocol):
@@ -190,17 +190,20 @@ class Local:
 
     async def spawn(self, command: str) -> Process:
         loop = asyncio.get_running_loop()
-        transport, pipes = await loop.subprocess_exec(
-            _Pipes,
-            *self.shell,
-            command,
-            cwd=self.root,
-            env=self.env,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
+        try:
+            transport, pipes = await loop.subprocess_exec(
+                _Pipes,
+                *self.shell,
+                command,
+                cwd=self.root,
+                env=self.env,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise InputError(f"workspace: cannot start the command: {exc.strerror}") from None
         return _Running(transport, pipes)
 
     async def read(self, path: str, limit: int) -> bytes:
@@ -217,38 +220,35 @@ class Local:
 
     def _open(self, path: str, flags: int) -> int:
         *folders, name = self._target(path).relative_to(self.root).parts or (".",)
+        parent = os.open(self.root, FOLDER)
         try:
-            parent = os.open(self.root, FOLDER)
-            try:
-                for folder in folders:
-                    if flags & os.O_CREAT:
-                        with contextlib.suppress(FileExistsError):
-                            os.mkdir(folder, dir_fd=parent)
-                    parent, above = os.open(folder, FOLDER, dir_fd=parent), parent
-                    os.close(above)
-                return os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o666, dir_fd=parent)
-            finally:
-                os.close(parent)
-        except OSError as exc:
-            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                raise InputError(f"workspace: path outside the workspace: {path}") from None
-            raise
+            for folder in folders:
+                if flags & os.O_CREAT:
+                    with contextlib.suppress(FileExistsError):
+                        os.mkdir(folder, dir_fd=parent)
+                parent, above = _at(path, folder, FOLDER, parent), parent
+                os.close(above)
+            return _at(path, name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, parent)
+        finally:
+            os.close(parent)
 
     def _read(self, path: str, limit: int) -> bytes:
         try:
             fd = self._open(path, os.O_RDONLY)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise InputError(f"workspace: not a file: {path}")
+                data = bytearray()
+                while len(data) <= limit and (
+                    chunk := os.read(fd, min(CHUNK, limit + 1 - len(data)))
+                ):
+                    data += chunk
+            finally:
+                os.close(fd)
         except OSError as exc:
-            if exc.errno not in (errno.ENOENT, errno.ENXIO):
-                raise
-            raise InputError(f"workspace: not a file: {path}") from None
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                raise InputError(f"workspace: not a file: {path}")
-            data = bytearray()
-            while len(data) <= limit and (chunk := os.read(fd, min(CHUNK, limit + 1 - len(data)))):
-                data += chunk
-        finally:
-            os.close(fd)
+            if exc.errno in (errno.ENOENT, errno.ENXIO, errno.ENOTDIR):
+                raise InputError(f"workspace: not a file: {path}") from None
+            raise InputError(f"workspace: cannot read {path}: {exc.strerror}") from None
         if len(data) > limit:
             raise InputError(f"workspace: file exceeds {limit} bytes: {path}")
         return bytes(data)
@@ -256,21 +256,37 @@ class Local:
     def _write(self, path: str, data: bytes) -> None:
         try:
             fd = self._open(path, os.O_WRONLY | os.O_CREAT)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise InputError(f"workspace: not a file: {path}")
+                os.ftruncate(fd, 0)
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view) :]
+            finally:
+                os.close(fd)
         except OSError as exc:
             if exc.errno == errno.EISDIR:
                 raise InputError(f"workspace: is a directory: {path}") from None
-            if exc.errno != errno.ENXIO:
-                raise
-            raise InputError(f"workspace: not a file: {path}") from None
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                raise InputError(f"workspace: not a file: {path}")
-            os.ftruncate(fd, 0)
-            view = memoryview(data)
-            while view:
-                view = view[os.write(fd, view) :]
-        finally:
-            os.close(fd)
+            if exc.errno == errno.ENXIO:
+                raise InputError(f"workspace: not a file: {path}") from None
+            raise InputError(f"workspace: cannot write {path}: {exc.strerror}") from None
+
+
+def _at(path: str, name: str, flags: int, parent: int) -> int:
+    try:
+        return os.open(name, flags, 0o666, dir_fd=parent)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR) and _link(name, parent):
+            raise InputError(f"workspace: path outside the workspace: {path}") from None
+        raise
+
+
+def _link(name: str, parent: int) -> bool:
+    try:
+        return stat.S_ISLNK(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode)
+    except OSError:
+        return False
 
 
 def _complete(data: bytearray) -> int:
@@ -389,12 +405,13 @@ async def _follow(job: _Job) -> None:
         await job.process.kill()
         await _settle(reading)
     except BaseException as exc:
-        if isinstance(exc, Exception):
-            job.kept.add(f"\n{type(exc).__name__}: {exc}\n".encode())
+        said = f"\n{type(exc).__name__}: {exc}\n" if isinstance(exc, Exception) else ""
+        job.kept.add(said.encode())
         try:
             await job.process.kill()
         except Exception as error:
-            job.kept.add(f"\n{type(error).__name__}: {error}\n".encode())
+            if (again := f"\n{type(error).__name__}: {error}\n") != said:
+                job.kept.add(again.encode())
         if not isinstance(exc, Exception):
             raise
     finally:
@@ -496,7 +513,9 @@ class Workspace:
         for name, job in gone:
             if self._jobs.get(name) is job:
                 del self._jobs[name]
-        await asyncio.gather(*(job.task for _, job in gone if job.task is not None))
+        await asyncio.gather(
+            *(job.task for _, job in gone if job.task is not None), return_exceptions=True
+        )
         failed = [result for result in results if isinstance(result, BaseException)]
         if failed:
             raise failed[0]

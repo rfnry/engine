@@ -609,6 +609,47 @@ async def test_a_job_whose_reader_is_cancelled_is_killed_and_ends(kill_fails: in
     assert ("RuntimeError: docker: kill failed" in output) is bool(kill_fails)
 
 
+async def test_a_kill_that_fails_the_same_way_twice_is_in_the_output_once() -> None:
+    machine = Dying(kill_fails=2)
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "build")
+    machine.commands[0].exit(0)
+    await asyncio.sleep(0.05)
+    assert machine.commands[0].kills == 2
+    assert await tool(ws, "Job").call({"id": "j1"}) == {
+        "output": "\nRuntimeError: docker: kill failed\n",
+        "running": False,
+        "exit_code": 0,
+    }
+
+
+@pytest.mark.parametrize("awaited", [False, True])
+async def test_close_returns_after_a_job_whose_reader_was_cancelled(awaited: bool) -> None:
+    ws = Workspace(Machine(), scope="acme")
+    await background(ws, "serve")
+    task = ws._jobs["j1"].task
+    assert task is not None
+    task.cancel()
+    if awaited:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    await ws.close()
+    assert await tool(ws, "Jobs").call({}) == {"jobs": []}
+
+
+async def test_a_close_that_is_cancelled_is_cancelled() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    machine.commands[0].stubborn = True
+    closing = asyncio.create_task(ws.close())
+    await asyncio.sleep(0.05)
+    assert not closing.done()
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+
+
 async def test_job_waits_for_the_job_to_end_and_returns_as_soon_as_it_does() -> None:
     machine = Machine()
     ws = Workspace(machine, scope="acme")

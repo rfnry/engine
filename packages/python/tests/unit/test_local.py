@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import socket
 import sys
 import time
@@ -287,6 +288,40 @@ async def test_a_file_swapped_for_a_link_after_the_check_is_refused(
     assert (elsewhere / "secret.txt").read_text() == "secret"
 
 
+async def test_a_folder_the_service_may_only_pass_through_still_reads_and_writes(
+    local: Local, root: Path
+) -> None:
+    (root / "locked").mkdir()
+    (root / "locked/a.txt").write_bytes(b"a")
+    (root / "locked").chmod(0o100)
+    try:
+        assert await local.read("locked/a.txt", 10) == b"a"
+        await local.write("locked/a.txt", b"b")
+        assert await local.read("locked/a.txt", 10) == b"b"
+    finally:
+        (root / "locked").chmod(0o700)
+
+
+@pytest.mark.parametrize("path", ["a" * 300 + ".txt", "a" * 300 + "/b.txt"], ids=["name", "folder"])
+@pytest.mark.parametrize("verb", ["read", "write"])
+async def test_what_the_system_refuses_is_said_without_the_host_path(
+    local: Local, verb: str, path: str
+) -> None:
+    with pytest.raises(
+        InputError, match=f"^workspace: cannot {verb} {re.escape(path)}: File name too long$"
+    ):
+        await call(local, verb, path)
+
+
+async def test_a_path_through_a_file_is_not_outside_the_workspace(local: Local, root: Path) -> None:
+    (root / "notes.txt").write_text("notes")
+    with pytest.raises(InputError, match="^workspace: not a file: notes.txt/x$"):
+        await local.read("notes.txt/x", 100)
+    with pytest.raises(InputError, match="^workspace: cannot write notes.txt/x: Not a directory$"):
+        await local.write("notes.txt/x", b"x")
+    assert (root / "notes.txt").read_text() == "notes"
+
+
 def test_root_must_be_a_directory(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError, match="^workspace: root is not a directory: "):
         Local(tmp_path / "missing")
@@ -357,6 +392,15 @@ async def shell(ws: Workspace, command: str) -> dict[str, Any]:
 async def test_shell_runs_a_real_command(root: Path) -> None:
     result = await shell(workspace(root), "echo out; echo err >&2; exit 3")
     assert result == {"exit_code": 3, "stdout": "out\n", "stderr": "err\n", "timed_out": False}
+
+
+async def test_a_command_that_cannot_start_is_refused_without_the_host_path(root: Path) -> None:
+    ws = workspace(root)
+    root.rmdir()
+    with pytest.raises(
+        InputError, match="^workspace: cannot start the command: No such file or directory$"
+    ):
+        await shell(ws, "echo hi")
 
 
 async def test_real_output_is_capped_head_and_tail(root: Path) -> None:

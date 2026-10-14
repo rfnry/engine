@@ -1025,8 +1025,10 @@ word is not on `PATH` is a `ConfigurationError` that says so; pass `shell=["sh",
 that has only a POSIX shell, such as Alpine.
 
 On `Local`, `Write`, `Edit`, `Read` and `Load` stay inside the directory: they refuse a path that
-leaves it, symlinks included. `Shell` reaches what the process running it can reach, so the real
-boundary is the sandbox in front of the shell, or the machine.
+leaves it, symlinks included. What the system refuses reaches the model with its reason and the
+model's own path, never the path on your machine: `workspace: cannot write notes.txt/x: Not a
+directory`. `Shell` reaches what the process running it can reach, so the real boundary is the
+sandbox in front of the shell, or the machine.
 
 Binding the whole system read-only (`--ro-bind / /`) is not enough: a command could still read
 every other tenant's directory and every secret on disk. Mount only what commands need — the
