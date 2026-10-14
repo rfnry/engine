@@ -178,8 +178,10 @@ agents/
     tasks/triage.md       a named task, chosen per run
 ```
 
-`AGENT.md` makes a directory an agent. Its frontmatter names the kind and what the agent may call;
-its body is the persona:
+`AGENT.md` makes a directory an agent. `Engine(root)` loads `root` as one agent when `root/AGENT.md`
+exists; otherwise each direct child with an `AGENT.md` is an agent, and every other child is a plain
+folder, read by the agents that name it and never run. The frontmatter of `AGENT.md` names the kind
+and what the agent may call; its body is the persona:
 
 ```markdown
 ---
@@ -254,6 +256,20 @@ too, under the same paths, and an edit to one changes the fingerprint of every a
 agent's own is a `ConfigurationError` when the tree loads, and so is `reads:` on a decision agent,
 which reads no files. The tree is shared by every tenant: it holds how to do the work, never a
 tenant's data — that comes per run, in the input, the history or the workspace.
+
+A root with no `AGENT.md` anywhere — a folder of skills, notes or references written for something
+else — runs as one agent, named by `Engine(root, name=)` or by the folder's name: a generation agent
+with no persona, whose whole folder is its map and its content, `tools/` and `tasks/` included. It
+takes what the run gives it — `context=` for its instructions, `tools=`, and the workspace tools
+whenever a `workspace=` is passed:
+
+```python
+engine = Engine(Path("skills"), generation=llm, name="writer")
+run = await engine.run("writer", scope="acme", input="Draft the launch note.",
+                       context="You write Acme's release notes in its house style.")
+```
+
+`name=` on a root that has agents is a `ConfigurationError`, and so is an empty one.
 
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its
 `kind`, `description`, the `agents` it may call and the folders it `reads`.
@@ -1508,7 +1524,7 @@ Everything the package exports, by role.
 ## Errors
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
-`AGENT.md`, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
+`AGENT.md`, `Engine(name=)` on a root with agents or empty, an unknown key in the frontmatter of an `AGENT.md`, a question or a tool file
 (`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that
 is not valid YAML or a `description:` that is not a string in a file the map would show, a decision
 agent with `boot: all`, a `reads:` naming no folder of the root or the agent's own, `reads:` on a

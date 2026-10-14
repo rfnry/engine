@@ -105,6 +105,7 @@ class AgentSpec(BaseModel):
     boot: list[Part] = Field(default_factory=list)
     listing: str = ""
     reads: dict[str, Path] = Field(default_factory=dict)
+    plain: bool = False
 
 
 def _read(path: Path) -> str:
@@ -281,9 +282,36 @@ def load_agent(
     )
 
 
-def load_tree(root: Path, media_types: Collection[str] | None = None) -> dict[str, AgentSpec]:
+def plain_agent(root: Path, name: str) -> AgentSpec:
+    root = root.resolve()
+    return AgentSpec(
+        root=root,
+        name=name,
+        kind="generation",
+        description="",
+        body="",
+        agents=[],
+        route=None,
+        questions={},
+        tools={},
+        tasks=[],
+        fingerprint=folder_fingerprint(folder_files(root), {}),
+        listing=listing(root, False, {}),
+        plain=True,
+    )
+
+
+def _unnamed(name: str | None, root: Path) -> None:
+    if name is not None:
+        raise ConfigurationError(f"tree: name= names a root with no AGENT.md; {root} has agents")
+
+
+def load_tree(
+    root: Path, media_types: Collection[str] | None = None, name: str | None = None
+) -> dict[str, AgentSpec]:
     root = Path(root)
     if (root / "AGENT.md").is_file():
+        _unnamed(name, root)
         spec = load_agent(root, media_types)
         return {spec.name: spec}
     folders = _readable(root)
@@ -292,9 +320,11 @@ def load_tree(root: Path, media_types: Collection[str] | None = None) -> dict[st
         for child in sorted(root.iterdir())
         if child.is_dir() and (child / "AGENT.md").is_file()
     }
-    if not agents:
-        raise ConfigurationError(f"tree: no agents under {root}")
-    return agents
+    if agents:
+        _unnamed(name, root)
+        return agents
+    spec = plain_agent(root, name or root.resolve().name)
+    return {spec.name: spec}
 
 
 def validate_tree(agents: dict[str, AgentSpec]) -> None:

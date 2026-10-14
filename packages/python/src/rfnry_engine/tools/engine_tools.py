@@ -53,7 +53,7 @@ class EngineTools(Tools):
             raise ConfigurationError(
                 f"engine_tools: a tool named {HISTORY_TOOL!r} collides with the builtin"
             )
-        room = workspace if spec.workspace else None
+        room = workspace if spec.workspace or spec.plain else None
         media_types = getattr(engine.generation, "media_types", None)
         items: list[Tool | ToolsLike] = [
             *builtins(spec.root, spec.reads),

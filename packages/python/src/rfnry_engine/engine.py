@@ -287,6 +287,7 @@ class Engine:
         self,
         root: Path | str,
         *,
+        name: str | None = None,
         generation: GenerationModel | None = None,
         decision: DecisionModel | None = None,
         tools: list[Tool] | None = None,
@@ -309,6 +310,8 @@ class Engine:
             raise ConfigurationError("engine: history_walk must be positive")
         if history_chars <= 0:
             raise ConfigurationError("engine: history_chars must be positive")
+        if name is not None and not name:
+            raise ConfigurationError("engine: name must not be empty")
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"engine: root is not a directory: {root}")
@@ -325,7 +328,7 @@ class Engine:
         self.tool_timeout = tool_timeout
         self.history_walk = history_walk
         self.history_chars = history_chars
-        self._agents = load_tree(self.root, getattr(generation, "media_types", None))
+        self._agents = load_tree(self.root, getattr(generation, "media_types", None), name)
         validate_tree(self._agents)
         check_declarations(self._agents, self.tools, bodies=generation is not None)
 
@@ -597,7 +600,9 @@ class Engine:
             start=options.start,
         )
         bounded_by_workspace = (
-            WORKSPACE_TOOLS if spec.workspace and options.workspace is not None else frozenset()
+            WORKSPACE_TOOLS
+            if (spec.workspace or spec.plain) and options.workspace is not None
+            else frozenset()
         )
         specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
         if expect is not None:
