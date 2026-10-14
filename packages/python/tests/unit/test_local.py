@@ -288,6 +288,73 @@ async def test_a_file_swapped_for_a_link_after_the_check_is_refused(
     assert (elsewhere / "secret.txt").read_text() == "secret"
 
 
+@pytest.mark.parametrize(
+    ("verb", "path"),
+    [("read", "notes.txt"), ("write", "notes.txt"), ("write", "deep/new.txt")],
+)
+async def test_a_folder_above_the_root_swapped_for_a_link_after_the_check_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verb: str, path: str
+) -> None:
+    above = tmp_path / "tenants"
+    (above / "work").mkdir(parents=True)
+    (above / "work/notes.txt").write_text("notes")
+    local = Local(above / "work")
+    other = tmp_path / "other"
+    (other / "work").mkdir(parents=True)
+    (other / "work/notes.txt").write_text("secret")
+
+    def swap() -> None:
+        above.rename(tmp_path / "moved")
+        above.symlink_to(other)
+
+    swap_after_the_check(monkeypatch, swap)
+    with pytest.raises(InputError, match=f"^workspace: path outside the workspace: {path}$"):
+        await call(local, verb, path)
+    assert [p.name for p in (other / "work").iterdir()] == ["notes.txt"]
+    assert (other / "work/notes.txt").read_text() == "secret"
+
+
+@pytest.mark.parametrize("verb", ["read", "write"])
+async def test_a_root_replaced_by_another_folder_is_refused(
+    local: Local, root: Path, tmp_path: Path, verb: str
+) -> None:
+    (root / "notes.txt").write_text("notes")
+    root.rename(tmp_path / "moved")
+    root.mkdir()
+    (root / "notes.txt").write_text("other")
+    with pytest.raises(InputError, match="^workspace: path outside the workspace: notes.txt$"):
+        await call(local, verb, "notes.txt")
+    assert (root / "notes.txt").read_text() == "other"
+
+
+@pytest.mark.parametrize("verb", ["read", "write"])
+async def test_a_root_swapped_for_a_link_after_the_check_is_refused(
+    local: Local, root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verb: str
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "notes.txt").write_text("secret")
+
+    def swap() -> None:
+        root.rename(tmp_path / "moved")
+        root.symlink_to(elsewhere)
+
+    swap_after_the_check(monkeypatch, swap)
+    with pytest.raises(InputError, match="^workspace: path outside the workspace: notes.txt$"):
+        await call(local, verb, "notes.txt")
+    assert (elsewhere / "notes.txt").read_text() == "secret"
+
+
+async def test_a_root_reached_through_a_link_still_reads_and_writes(
+    root: Path, tmp_path: Path
+) -> None:
+    (tmp_path / "alias").symlink_to(root)
+    local = Local(tmp_path / "alias")
+    await local.write("src/main.py", b"x = 1\n")
+    assert await local.read("src/main.py", 100) == b"x = 1\n"
+    assert (root / "src/main.py").read_bytes() == b"x = 1\n"
+
+
 async def test_a_folder_the_service_may_only_pass_through_still_reads_and_writes(
     local: Local, root: Path
 ) -> None:

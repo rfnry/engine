@@ -23,7 +23,8 @@ WORKSPACE_TOOLS = frozenset({"Shell", "Job", "Write", "Edit"})
 GRACE = 1.0
 CHUNK = 65_536
 TEXT_BYTES = 5 * 1024 * 1024
-FOLDER = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW
+ROOT = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY
+FOLDER = ROOT | os.O_NOFOLLOW
 
 
 class Stream(Protocol):
@@ -169,6 +170,8 @@ class Local:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"workspace: root is not a directory: {root}")
+        found = self.root.stat()
+        self._identity = (found.st_dev, found.st_ino)
         self.env = (
             dict(env)
             if env is not None
@@ -220,8 +223,11 @@ class Local:
 
     def _open(self, path: str, flags: int) -> int:
         *folders, name = self._target(path).relative_to(self.root).parts or (".",)
-        parent = os.open(self.root, FOLDER)
+        parent = os.open(self.root, ROOT)
         try:
+            found = os.fstat(parent)
+            if (found.st_dev, found.st_ino) != self._identity:
+                raise InputError(f"workspace: path outside the workspace: {path}")
             for folder in folders:
                 if flags & os.O_CREAT:
                     with contextlib.suppress(FileExistsError):
