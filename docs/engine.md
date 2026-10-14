@@ -917,12 +917,13 @@ about an agent changes when the other kind of model is absent — only which age
 
 ### Workspace
 
-> `Workspace` gives the model a real shell, and **a shell is not confined by its directory**. `Local`
-> runs each command as a process of your service: without a sandbox in front of its shell, a command
-> can do anything the service's user can — read every other tenant's workspace, read the service's
-> configuration and any secret on disk, reach the database and the network, delete things. A
-> document an agent reads can tell it to try. Put a sandbox in front of the shell, as below, or pass
-> a backend that runs commands somewhere else, and keep the agent directory outside the workspace.
+> `Workspace` gives the model a real shell, and **a shell is not confined by its directory**.
+> `Local` runs each command as a process of your service: without a sandbox in front of its shell, a
+> command can do anything the service's user can — read every other tenant's workspace, read the
+> service's configuration and any secret on disk, reach the database and the network, delete things.
+> A document an agent reads can tell it to try. Put a sandbox in front of the shell, as below, or
+> pass a backend that runs commands somewhere else, and keep the agent directory outside the
+> workspace.
 
 A workspace is where an agent writes code, runs it, reads what happened and tries again — the loop
 a coding assistant runs in a developer's terminal. An agent opts in with one line in its
@@ -1033,11 +1034,12 @@ what the model was given and what commands printed, exactly, in the run's scope 
 export from it. `record=False` keeps a run out of the record; `delete_runs` and `delete_scope` take
 it out later.
 
-An agent without `workspace: true` never sees these tools, even when the run has a workspace; an
-agent with it, run without one, is a `ConfigurationError`, and so is a decision agent that declares
-it. Delegated and routed agents receive the run's workspace on the same terms. `stop.now()` stops a
-running command the same way the timeout does. You own the workspace and its lifetime: a temporary
-directory per run, or one kept for a project. A workspace belongs to the tenant its `scope` names.
+An agent without `workspace: true` never sees these tools, even when the run has a workspace — but a
+plain agent, a root with no `AGENT.md`, gets them whenever one is passed; an agent with it, run
+without one, is a `ConfigurationError`, and so is a decision agent that declares it. Delegated and
+routed agents receive the run's workspace on the same terms. `stop.now()` stops a running command
+the same way the timeout does. You own the workspace and its lifetime: a temporary directory per
+run, or one kept for a project. A workspace belongs to the tenant its `scope` names.
 
 ### Approving tool calls
 
