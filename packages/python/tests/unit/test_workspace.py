@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from rfnry_engine.errors import ConfigurationError, InputError
-from rfnry_engine.tools.workspace import TEXT_BYTES, Workspace
+from rfnry_engine.tools.workspace import TEXT_BYTES, Workspace, _Kept
 
 
 class Pipe:
@@ -475,3 +475,75 @@ async def test_a_lone_lead_byte_is_flushed_when_the_job_ends() -> None:
     ran.exit(0)
     await asyncio.sleep(0.05)
     assert await job.call({"id": "j1"}) == {"output": "\ufffd", "running": False, "exit_code": 0}
+
+
+def test_a_character_split_between_head_and_tail_is_held_whole() -> None:
+    kept = _Kept(10)
+    kept.add(b"abcd\xf0\x9f")
+    assert kept.take(final=False) == "abcd"
+    kept.add(b"\x98\x80")
+    assert kept.take() == "\U0001f600"
+
+
+def test_held_bytes_do_not_disturb_the_omitted_count() -> None:
+    kept = _Kept(10)
+    kept.add(b"a" * 100 + b"\xf0\x9f")
+    first = kept.take(final=False)
+    assert first == "a" * 5 + "\n[... 92 bytes omitted ...]\n" + "a" * 3
+    kept.add(b"\x98\x80z")
+    assert kept.take() == "\U0001f600z"
+
+
+class Dying(Machine):
+    def __init__(self, *, kill_fails: int = 0, wait_fails: bool = False) -> None:
+        super().__init__()
+        self.kill_fails = kill_fails
+        self.wait_fails = wait_fails
+
+    async def spawn(self, command: str) -> Command:
+        ran = await super().spawn(command)
+        machine = self
+
+        async def kill() -> None:
+            ran.kills += 1
+            if machine.kill_fails > 0:
+                machine.kill_fails -= 1
+                raise RuntimeError("docker: kill failed")
+            ran.exit(-15)
+
+        async def wait() -> int:
+            if machine.wait_fails:
+                raise RuntimeError("docker: wait failed")
+            return await asyncio.shield(ran.code)
+
+        ran.kill = kill  # type: ignore[method-assign]
+        ran.wait = wait  # type: ignore[method-assign]
+        return ran
+
+
+async def test_a_failed_kill_leaves_the_job_reachable_by_a_second_close() -> None:
+    machine = Dying(kill_fails=1)
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    with pytest.raises(RuntimeError, match="kill failed"):
+        await ws.close()
+    [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
+    assert (listed["job"], listed["running"]) == ("j1", True)
+    await ws.close()
+    assert await tool(ws, "Jobs").call({}) == {"jobs": []}
+    assert machine.commands[0].kills >= 2
+    await asyncio.sleep(0)
+    assert not [t for t in asyncio.all_tasks() if "_follow" in repr(t) and not t.done()]
+
+
+async def test_a_wait_that_raises_is_in_the_output_and_the_process_is_killed() -> None:
+    machine = Dying(wait_fails=True)
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    await asyncio.sleep(0.05)
+    [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
+    assert listed["running"] is False
+    assert machine.commands[0].kills == 1
+    result = await tool(ws, "Job").call({"id": "j1"})
+    assert "RuntimeError: docker: wait failed" in result["output"]
+    assert result["running"] is False

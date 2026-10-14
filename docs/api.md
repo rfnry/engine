@@ -849,7 +849,7 @@ class Workspace:
     output_bytes: int
 ```
 
-Where an agent with `workspace: true` writes code and runs it, passed as `run(workspace=)`: the library's tools over `backend`, for the tenant `scope`. `timeout` bounds every `Shell`, `Job`, `Write` and `Edit` call in seconds; a command still running at the limit, or when its call is cancelled, is stopped with its process's `kill()`, and so is anything a command leaves running when it ends, after which what remains of its output is read for at most a second. `output_bytes` caps `stdout` and `stderr` each, keeping their first and last half. Jobs belong to the workspace and outlive the runs that started them; each keeps one task reading its output until it ends or `close` stops it.
+Where an agent with `workspace: true` writes code and runs it, passed as `run(workspace=)`: the library's tools over `backend`, for the tenant `scope`. `timeout` bounds every `Shell`, `Job`, `Write` and `Edit` call in seconds; a command still running at the limit, or when its call is cancelled, is stopped with its process's `kill()`, and so is anything a command leaves running when it ends, after which what remains of its output is read for at most a second. `output_bytes` caps `stdout` and `stderr` each, keeping their first and last half. Jobs belong to the workspace and outlive the runs that started them; each is read in the background until it ends or `close` stops it.
 
 Raises `ConfigurationError` when `backend` lacks `spawn`, `read` or `write`, its `description` is not a string, `scope` is empty, or `timeout` or `output_bytes` is not positive.
 
@@ -867,7 +867,7 @@ Returns the five tools an agent with `workspace: true` gets: `Shell(command, bac
 async def close(self) -> None: ...
 ```
 
-Stops every job of the workspace with its process's `kill()`, waits for each to end, and empties the list; the workspace stays usable and its ids keep counting. Leaving `async with Workspace(…) as workspace:` calls it. Raises the first error a `kill()` raised, after asking every job.
+Stops every job of the workspace with its process's `kill()`, waits for each to end, and empties the list; a job whose `kill()` raised stays listed, so a second `close` or `Job(id, stop=true)` can reach it. The workspace stays usable and its ids keep counting. Leaving `async with Workspace(…) as workspace:` calls it. Raises the first error a `kill()` raised, after asking every job.
 
 ### `Backend`
 

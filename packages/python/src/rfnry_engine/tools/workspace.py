@@ -264,9 +264,19 @@ class _Kept:
     def take(self, final: bool = True) -> str:
         held = b""
         if not final:
-            buffer = self.tail or self.head
-            held = bytes(buffer[_complete(buffer) :])
-            del buffer[len(buffer) - len(held) :]
+            if self.total == len(self.head) + len(self.tail):
+                whole = self.head + self.tail
+                held = bytes(whole[_complete(whole) :])
+                cut = len(held)
+                from_tail = min(cut, len(self.tail))
+                if from_tail:
+                    del self.tail[len(self.tail) - from_tail :]
+                if cut > from_tail:
+                    del self.head[len(self.head) - (cut - from_tail) :]
+            else:
+                held = bytes(self.tail[_complete(self.tail) :])
+                if held:
+                    del self.tail[len(self.tail) - len(held) :]
         head, tail = bytes(self.head), bytes(self.tail)
         omitted = self.total - len(held) - len(head) - len(tail)
         self.head, self.tail, self.total = bytearray(held), bytearray(), len(held)
@@ -333,6 +343,8 @@ async def _follow(job: _Job) -> None:
         await _settle(reading)
     except Exception as exc:
         job.kept.add(f"\n{type(exc).__name__}: {exc}\n".encode())
+        with contextlib.suppress(Exception):
+            await job.process.kill()
     finally:
         _discard(reading)
         job.ended.set()
@@ -419,16 +431,22 @@ class Workspace:
         ]
 
     async def close(self) -> None:
-        jobs = list(self._jobs.values())
-        self._jobs.clear()
-        running = [job for job in jobs if not job.ended.is_set()]
+        jobs = list(self._jobs.items())
+        running = [job for _, job in jobs if not job.ended.is_set()]
         results = await asyncio.gather(
             *(job.process.kill() for job in running), return_exceptions=True
         )
+        errors = dict(zip(map(id, running), results, strict=True))
+        gone = [
+            (name, job) for name, job in jobs if not isinstance(errors.get(id(job)), BaseException)
+        ]
+        for name, job in gone:
+            if self._jobs.get(name) is job:
+                del self._jobs[name]
+        await asyncio.gather(*(job.task for _, job in gone if job.task is not None))
         failed = [result for result in results if isinstance(result, BaseException)]
         if failed:
             raise failed[0]
-        await asyncio.gather(*(job.task for job in jobs if job.task is not None))
 
     async def _shell(self, args: dict[str, Any]) -> dict[str, Any]:
         a = ShellArgs.model_validate(args)

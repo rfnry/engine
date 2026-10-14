@@ -978,11 +978,11 @@ Jobs belong to the workspace, not to the run: they keep running after the run th
 after a run that failed and after `stop.now()`, until the model stops them or you close the
 workspace — so an agent starts a server in one message and tests against it in the next. Every run
 given the workspace, delegated and routed runs included, sees the same jobs, numbered `j1`, `j2`, …
-for the workspace's life. A job that ended stays listed until its last output is read. Each job
-keeps one task reading its output, so it never stalls on a full pipe; what it printed waits for
-`Job`, kept to its first and last `output_bytes // 2` bytes. The list of jobs is not in the system
-prompt, which would change with every job and cost the cached prefix of every conversation on the
-workspace; the model asks `Jobs()`.
+for the workspace's life. A job that ended stays listed until its last output is read. Each job is
+read in the background until it ends or the workspace is closed, so it never stalls on a full pipe;
+what it printed waits for `Job`, kept to its first and last `output_bytes // 2` bytes. The list of
+jobs is not in the system prompt, which would change with every job and cost the cached prefix of
+every conversation on the workspace; the model asks `Jobs()`.
 
 Close the workspace when you are done with it — `async with Workspace(…) as workspace:` or `await
 workspace.close()` — and every job is stopped; the workspace stays usable. A workspace never closed
