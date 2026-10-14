@@ -1086,7 +1086,8 @@ rest" is the function above; "always allow this command" is a set the function k
 does not run: the model reads `NotApproved: Shell was not approved` and carries on, and a reason
 reaches it through the `inbox`. Each step records `approved` — `True`, `False`, or `None` when
 nobody was asked — and the exported rows keep it, so a person's refusals become labels. A
-workspace's calls carry what a person needs to decide: `background` on `Shell`, `wait` and `stop` on `Job`.
+workspace's calls carry what a person needs to decide: `background` on `Shell`, `wait` and `stop` on
+`Job`.
 
 Time spent waiting is not a tool's time: the deadline starts when the call runs. `stop.now()` ends
 a wait. Delegated and routed runs are asked through the same function, with their own agent's name;
