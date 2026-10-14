@@ -439,6 +439,12 @@ async def test_glob_refuses_a_pattern_the_walk_cannot_take(shelf: Path, pattern:
         await reading(shelf).dispatch("Glob", {"pattern": pattern})
 
 
+@pytest.mark.parametrize("glob", ["", "."])
+async def test_grep_refuses_a_glob_the_match_cannot_take(shelf: Path, glob: str) -> None:
+    with pytest.raises(InputError, match=f"^builtins: invalid glob '{glob}': empty pattern$"):
+        await reading(shelf).dispatch("Grep", {"pattern": "tabs", "glob": glob})
+
+
 async def test_read_reaches_the_workspace_when_the_run_has_one(media: Path, tmp_path: Path) -> None:
     work = tmp_path / "work"
     work.mkdir()

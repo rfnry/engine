@@ -232,7 +232,10 @@ class _Directory:
         lines: list[str] = []
         scanned = 0
         exhausted = False
-        paths, walked_out = self._files_under(base, a.glob)
+        try:
+            paths, walked_out = self._files_under(base, a.glob)
+        except ValueError as exc:
+            raise InputError(f"builtins: invalid glob {a.glob!r}: {exc}") from exc
         for path in paths:
             rel = self._shown(path)
             try:
