@@ -547,3 +547,85 @@ async def test_a_wait_that_raises_is_in_the_output_and_the_process_is_killed() -
     result = await tool(ws, "Job").call({"id": "j1"})
     assert "RuntimeError: docker: wait failed" in result["output"]
     assert result["running"] is False
+
+
+async def test_job_waits_for_the_job_to_end_and_returns_as_soon_as_it_does() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "build")
+    ran = machine.commands[0]
+
+    def finish() -> None:
+        ran.stdout.say(b"built\n")
+        ran.exit(0)
+
+    asyncio.get_running_loop().call_later(0.2, finish)
+    began = time.monotonic()
+    result = await tool(ws, "Job").call({"id": "j1", "wait": 5})
+    assert time.monotonic() - began < 1
+    assert result == {"output": "built\n", "running": False, "exit_code": 0}
+
+
+async def test_job_returns_at_the_wait_with_the_job_still_running() -> None:
+    ws = Workspace(Machine(), scope="acme")
+    await background(ws, "serve")
+    began = time.monotonic()
+    result = await tool(ws, "Job").call({"id": "j1", "wait": 0.2})
+    assert 0.2 <= time.monotonic() - began < 1
+    assert result == {"output": "", "running": True, "exit_code": None}
+    await ws.close()
+
+
+async def test_wait_with_stop_gives_the_job_that_long_then_stops_it() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "build")
+    began = time.monotonic()
+    result = await tool(ws, "Job").call({"id": "j1", "wait": 0.2, "stop": True})
+    assert time.monotonic() - began >= 0.2
+    assert result == {"output": "", "running": False, "exit_code": -15}
+    assert machine.commands[0].kills >= 1
+
+
+@pytest.mark.parametrize("wait", [-1, 121])
+async def test_a_wait_outside_the_timeout_is_refused(wait: int) -> None:
+    ws = Workspace(Machine(), scope="acme", timeout=120)
+    await background(ws, "serve")
+    with pytest.raises(
+        InputError, match=f"^workspace: wait must be between 0 and 120 seconds; got {wait}$"
+    ):
+        await tool(ws, "Job").call({"id": "j1", "wait": wait})
+    await ws.close()
+
+
+async def test_a_stop_ends_the_wait_and_the_job_runs_on() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    task = asyncio.create_task(tool(ws, "Job").call({"id": "j1", "wait": 10}))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
+    assert listed["running"] is True and machine.commands[0].kills == 0
+    await ws.close()
+
+
+def test_job_tells_the_model_how_long_it_may_wait() -> None:
+    description = tool(Workspace(Machine(), scope="acme", timeout=300), "Job").description
+    assert "wait is seconds, up to 300, to wait for it to end first" in description
+
+
+async def test_a_job_call_is_bounded_by_the_timeout_as_a_whole() -> None:
+    machine = Machine()
+    ws = Workspace(machine, scope="acme", timeout=0.3)
+    await background(ws, "serve")
+    ran = machine.commands[0]
+    ran.stubborn = True
+    began = time.monotonic()
+    result = await tool(ws, "Job").call({"id": "j1", "wait": 0.3, "stop": True})
+    assert time.monotonic() - began < 0.5
+    assert result["running"] is True and ran.kills == 1
+    ran.stubborn = False
+    await ws.close()

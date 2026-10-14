@@ -964,15 +964,17 @@ sees none of this: it has the same tools, and its command runs inside.
 The agent then has five more tools. `Shell(command, background=false)` runs a command and returns
 `exit_code`, `stdout`, `stderr` and `timed_out`; when the command ends, anything it left running is
 stopped. With `background=true` the command starts as a job — a server, a watcher, a long build —
-and the call returns its id at once, `{"job": "j1"}`. `Job(id, stop=false)` returns what the job
-printed since the last read, stdout and stderr in the order they arrived, whether it is `running`,
-and its `exit_code` once it has ended; `stop=true` stops it first. `Jobs()` lists the jobs: id,
-command, when it started, running or exit code. `Write(path, content)` writes a file exactly, and
-`Edit(path, old, new)` replaces one exact occurrence — helpers that send only what changes and leave
-a clean step in the record; the shell can do both too. `Load` takes `where="workspace"` to hand the
-model a file from the workspace, so an agent looks at the chart it just plotted. Each command starts
-fresh in the directory, so a `cd` or a variable does not carry over, and the tool's description
-tells the model so, along with its limits.
+and the call returns its id at once, `{"job": "j1"}`. `Job(id, wait=0, stop=false)` returns what the
+job printed since the last read, stdout and stderr in the order they arrived, whether it is
+`running`, and its `exit_code` once it has ended; `wait` is seconds to wait for the job to end
+first, up to the workspace's `timeout`, returning as soon as it does — a model waits for a build
+instead of asking again and again — and `stop=true` stops a job still running after the wait.
+`Jobs()` lists the jobs: id, command, when it started, running or exit code. `Write(path, content)`
+writes a file exactly, and `Edit(path, old, new)` replaces one exact occurrence — helpers that send
+only what changes and leave a clean step in the record; the shell can do both too. `Load` takes
+`where="workspace"` to hand the model a file from the workspace, so an agent looks at the chart it
+just plotted. Each command starts fresh in the directory, so a `cd` or a variable does not carry
+over, and the tool's description tells the model so, along with its limits.
 
 Jobs belong to the workspace, not to the run: they keep running after the run that started them,
 after a run that failed and after `stop.now()`, until the model stops them or you close the
@@ -1084,7 +1086,7 @@ rest" is the function above; "always allow this command" is a set the function k
 does not run: the model reads `NotApproved: Shell was not approved` and carries on, and a reason
 reaches it through the `inbox`. Each step records `approved` — `True`, `False`, or `None` when
 nobody was asked — and the exported rows keep it, so a person's refusals become labels. A
-workspace's calls carry what a person needs to decide: `background` on `Shell`, `stop` on `Job`.
+workspace's calls carry what a person needs to decide: `background` on `Shell`, `wait` and `stop` on `Job`.
 
 Time spent waiting is not a tool's time: the deadline starts when the call runs. `stop.now()` ends
 a wait. Delegated and routed runs are asked through the same function, with their own agent's name;

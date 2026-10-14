@@ -55,6 +55,7 @@ class ShellArgs(BaseModel):
 
 class JobArgs(BaseModel):
     id: str
+    wait: float = 0
     stop: bool = False
 
 
@@ -393,7 +394,7 @@ class Workspace:
             f"{self.timeout:g} seconds, and anything it leaves running is stopped when it ends. To "
             "keep something running, such as a server, a watcher or a long build, pass "
             "background=true: it starts a job and returns its id at once, and the job keeps running "
-            "after your reply until it is stopped. Job reads a job's new output and stops it; Jobs "
+            "after your reply until it is stopped. Job reads a job's new output, waits for it to end and stops it; Jobs "
             "lists them. Returns exit_code, stdout, stderr and timed_out; stdout and stderr keep "
             f"their first and last {half} bytes, so send a long output to a file and read it from "
             "there."
@@ -406,7 +407,8 @@ class Workspace:
                 "Job",
                 "Read what a background job printed since the last read, stdout and stderr in the "
                 "order they arrived, whether it is running, and its exit_code once it has ended. "
-                f"stop=true stops it. The output keeps its first and last {half} bytes.",
+                f"wait is seconds, up to {self.timeout:g}, to wait for it to end first; stop=true "
+                f"stops it, after the wait. The output keeps its first and last {half} bytes.",
                 body=self._job,
                 args=JobArgs,
             ),
@@ -489,13 +491,22 @@ class Workspace:
 
     async def _job(self, args: dict[str, Any]) -> dict[str, Any]:
         a = JobArgs.model_validate(args)
+        if not 0 <= a.wait <= self.timeout:
+            raise InputError(
+                f"workspace: wait must be between 0 and {self.timeout:g} seconds; got {a.wait:g}"
+            )
+        deadline = asyncio.get_running_loop().time() + self.timeout
         job = self._jobs.get(a.id)
         if job is None:
             raise InputError(f"workspace: there is no job {a.id}")
+        if a.wait:
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(a.wait):
+                    await job.ended.wait()
         if a.stop and not job.ended.is_set():
             await job.process.kill()
             with contextlib.suppress(TimeoutError):
-                async with asyncio.timeout(self.timeout):
+                async with asyncio.timeout_at(deadline):
                     await job.ended.wait()
         running = not job.ended.is_set()
         output = job.kept.take(final=not running)
