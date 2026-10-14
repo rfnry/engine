@@ -5,6 +5,7 @@ import pytest
 
 from rfnry_engine import AgentInfo, Engine, Tool, Tools, Workspace
 from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.models import Reply, ToolCall
 from rfnry_engine.records import Generation
 
 from .fakes import Fixed, Scripted, text_reply
@@ -53,6 +54,18 @@ async def test_its_tools_folder_is_content_and_the_run_s_tools_and_workspace_rid
     first, second = ([t.name for t in call[2]] for call in llm.calls)
     assert "ping" in first and "Shell" not in first
     assert {"Shell", "Write", "Edit"} <= set(second)
+
+
+async def test_it_runs_as_a_tool_and_reads_its_tools_folder_as_content(tmp_path: Path) -> None:
+    read = ToolCall(id="r1", name="Read", args={"path": "tools/hammer.md"})
+    llm = Scripted(Reply(tool_calls=[read], stop_reason="tool_use"), text_reply("Hit it."))
+    engine = Engine(notes(tmp_path / "notes"), generation=llm)
+    tool = engine.tool("notes", scope="acme", context="You answer from the notes.")
+    assert await tool.dispatch("notes", {"input": "How do I hammer?"}) == "Hit it."
+    assert llm.calls[0][0].endswith("<<<CONTEXT>>>\nYou answer from the notes.")
+    result = llm.calls[1][1][-1]
+    assert result.role == "tool" and not result.is_error
+    assert result.content == "---\ndescription: How to hammer\n---\nHit it.\n"
 
 
 def test_a_tool_body_has_nothing_to_serve(tmp_path: Path) -> None:

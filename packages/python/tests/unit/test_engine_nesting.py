@@ -143,6 +143,32 @@ async def test_a_route_back_into_the_chain_raises(tmp_path: Path) -> None:
         await engine.run("r1", "acme", "x")
 
 
+async def test_a_route_back_into_the_agent_that_delegated_is_a_tool_error_it_reads(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nagents: [r]\n---\nhi\n"
+    )
+    (tmp_path / "r" / "questions").mkdir(parents=True)
+    (tmp_path / "r" / "AGENT.md").write_text(
+        "---\nname: r\nkind: decision\nroute: {by: go, to: {next: a}}\n---\n"
+    )
+    (tmp_path / "r" / "questions" / "go.md").write_text(
+        "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
+    )
+    llm = Scripted(_delegate("r", "route it"), text_reply("a done"))
+    run = await Engine(tmp_path, generation=llm, decision=Answering()).run("a", "acme", "start")
+    assert isinstance(run, Generation) and run.reply == "a done"
+    assert run.steps[0].is_error
+    assert run.steps[0].result == "DelegationLoopError: delegate: loop at a -> r -> a"
+    told = llm.calls[1][1][-1]
+    assert told.role == "tool" and told.is_error and told.content == run.steps[0].result
+    [router] = run.children
+    assert isinstance(router, Decision) and router.agent == "r" and router.routed_to is None
+    assert run.steps[0].child_run_id == router.run_id
+
+
 async def test_depth_is_capped(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "AGENT.md").write_text(
