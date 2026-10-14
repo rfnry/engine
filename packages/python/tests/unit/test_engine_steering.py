@@ -417,11 +417,15 @@ async def test_stop_now_kills_a_workspace_shell(tmp_path: Path) -> None:
     engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=None)
     stop = Stop()
     task = asyncio.create_task(engine.run("coder", "acme", "x", workspace=work, stop=stop))
-    pidfile = root / "child.pid"
-    await until(lambda: written(pidfile), "the shell writing its child's pid")
-    pid = int(pidfile.read_text())
-    stop.now()
-    run = await asyncio.wait_for(task, 10)
+    try:
+        pidfile = root / "child.pid"
+        await until(lambda: written(pidfile), "the shell writing its child's pid")
+        pid = int(pidfile.read_text())
+        stop.now()
+        run = await asyncio.wait_for(task, 10)
+    finally:
+        task.cancel()
+        await asyncio.wait([task])
     assert isinstance(run, Generation) and run.stopped == "now" and run.steps[0].result == STOPPED
 
     def gone() -> bool:
@@ -445,9 +449,13 @@ async def test_stop_now_sends_a_workspace_command_sigterm_first(tmp_path: Path) 
     task = asyncio.create_task(
         engine.run("coder", "acme", "x", workspace=Workspace(Local(root), scope="acme"), stop=stop)
     )
-    await until((root / "ready").exists, "the shell starting")
-    stop.now()
-    run = await asyncio.wait_for(task, 10)
+    try:
+        await until((root / "ready").exists, "the shell starting")
+        stop.now()
+        run = await asyncio.wait_for(task, 10)
+    finally:
+        task.cancel()
+        await asyncio.wait([task])
     assert isinstance(run, Generation) and run.stopped == "now" and run.steps[0].result == STOPPED
     assert (root / "stopped.txt").read_text() == "stopped\n"
 

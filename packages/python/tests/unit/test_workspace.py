@@ -713,7 +713,7 @@ async def test_a_close_that_is_cancelled_is_cancelled() -> None:
     await background(ws, "serve")
     machine.commands[0].stubborn = True
     closing = asyncio.create_task(ws.close())
-    await asyncio.sleep(0.05)
+    await until(lambda: machine.commands[0].kills >= 1, "close stopping the job")
     assert not closing.done()
     closing.cancel()
     with pytest.raises(asyncio.CancelledError):

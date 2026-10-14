@@ -223,8 +223,8 @@ from the map. Everything else the model reads when it needs it, with the `Read`,
 `Read` returns a text file as text. `Load` hands the model any other file as it is — an image, a
 PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in the folder as
 it came, the model reads it with its own understanding of images and documents, there is no parser
-in between, and nothing is loaded until the model asks — unless the agent asks for its folder at
-`preload`, below.
+in between, and nothing is loaded until the model asks — unless the agent sets `preload: true`,
+below.
 
 A root holds agents and plain folders side by side, and an agent reads other folders of its root by
 naming them in `reads:` — plain folders, or other agents' folders:
@@ -1044,9 +1044,8 @@ limits nothing: one command can take all the memory, CPU or processes of the mac
 other tenant. Where the service's user has a systemd user session,
 `systemd-run --user --scope -p MemoryMax=1G -p CPUQuota=100% -p TasksMax=256 --quiet` before
 `bwrap` runs each command in a scope with those limits; `env=` then needs `XDG_RUNTIME_DIR` too,
-which `systemd-run` uses to find the session. A container per command, with Docker or Podman, and a
-backend that keeps one container per workspace, entered with `docker exec`, are in
-`examples/workspaces/`.
+which `systemd-run` uses to find the session. A container per command, with Docker, and a backend
+that keeps one container per workspace, entered with `docker exec`, are in `examples/workspaces/`.
 
 Without a sandbox, the kill reaches every process the command started except one that leaves its
 process group with `setsid`; the process namespace of a container or of bubblewrap closes that gap.
@@ -1460,11 +1459,10 @@ answer it routed to, not only the answers.
 It is a `Tools` of one, so it adds to any other. Each call is a top-level run under the scope it was
 made with, recorded like any run; `context=`, `tools=`, `workspace=` and `tags=` ride every call.
 Mounted inside another run with `run(tools=)` it is a tool like any other, under `tool_timeout`, and
-its run is not the caller's child — to nest with lineage, name the agent in `agents:`. The chain
-carries across it as across `Delegate`: a call through it starts a new input, so the route chain
-resets there while `max_depth` still counts the whole stack: an agent may reach a fresh run of
-itself through it, `max_depth` bounds how deep that goes, and only a route into an agent already in
-the same chain of routes is refused.
+its run is not the caller's child — to nest with lineage, name the agent in `agents:`. As across
+`Delegate`, `max_depth` counts the whole stack across it; a call through it starts a new input, so
+the route chain resets there: an agent may reach a fresh run of itself through it, and only a route
+into an agent already in the same chain of routes is refused.
 
 ## Storage
 
