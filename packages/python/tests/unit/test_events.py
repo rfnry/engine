@@ -715,6 +715,112 @@ async def test_a_further_stop_reaches_a_delegated_runs_call_and_keeps_the_delega
     assert asyncio.all_tasks() <= before
 
 
+@pytest.mark.parametrize("stopped", [False, True])
+async def test_a_call_whose_tool_returns_after_the_run_is_cancelled_never_reaches_its_handler(
+    tmp_path: Path, stopped: bool
+) -> None:
+    stop, collect = Stop(), Collect()
+    entered, finish, c2_held = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    cancels = 0
+
+    async def holding(event: Event) -> None:
+        await collect(event)
+        if isinstance(event, ToolResultReady):
+            if event.call_id == "c2":
+                stop.now()
+                c2_held.set()
+            await asyncio.Event().wait()
+
+    async def outlasting(args: dict[str, Any]) -> str:
+        nonlocal cancels
+        entered.set()
+        while not finish.is_set():
+            try:
+                await finish.wait()
+            except asyncio.CancelledError:
+                cancels += 1
+        return "kept going"
+
+    before = asyncio.all_tasks()
+    calls = [ToolCall(id="c1", name="outlasting", args={})]
+    if stopped:
+        calls.append(ToolCall(id="c2", name="lookup", args={"order_id": "A-1"}))
+    tools = Tools([Tool("outlasting", body=outlasting), Tool("lookup", body=lookup)])
+    llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
+    running = asyncio.create_task(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "lead", "acme", "Check A-1", tools=tools, stop=stop, on_event=holding
+        )
+    )
+    try:
+        async with asyncio.timeout(2):
+            await entered.wait()
+            if stopped:
+                await c2_held.wait()
+        await asyncio.sleep(0.05)
+        running.cancel()
+        await asyncio.sleep(0.05)
+        assert not running.done() and cancels == (2 if stopped else 1)
+        finish.set()
+        done, _ = await asyncio.wait({running}, timeout=1)
+        assert running in done and running.cancelled()
+    finally:
+        finish.set()
+        running.cancel()
+        await asyncio.wait({running}, timeout=2)
+    ready = [e.call_id for e in collect.events if isinstance(e, ToolResultReady)]
+    assert ready == (["c2"] if stopped else [])
+    started = [e.call_id for e in collect.events if isinstance(e, ToolCallStarted)]
+    assert started == [c.id for c in calls]
+    assert asyncio.all_tasks() <= before
+
+
+async def test_a_further_cancel_reaches_a_result_handler_that_ignored_the_first(
+    tmp_path: Path,
+) -> None:
+    held, left = asyncio.Event(), asyncio.Event()
+    cancels = 0
+
+    async def stubborn(event: Event) -> None:
+        nonlocal cancels
+        if not isinstance(event, ToolResultReady):
+            return
+        held.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancels += 1
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancels += 1
+            left.set()
+
+    before = asyncio.all_tasks()
+    calls = [ToolCall(id="c1", name="lookup", args={"order_id": "A-1"})]
+    llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
+    running = asyncio.create_task(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "lead", "acme", "Check A-1", tools=TOOLS, on_event=stubborn
+        )
+    )
+    try:
+        async with asyncio.timeout(2):
+            await held.wait()
+        running.cancel()
+        await asyncio.sleep(0.05)
+        assert cancels == 1 and not running.done()
+        running.cancel()
+        async with asyncio.timeout(2):
+            await left.wait()
+        done, _ = await asyncio.wait({running}, timeout=1)
+        assert running in done and running.cancelled() and cancels == 2
+    finally:
+        running.cancel()
+        await asyncio.wait({running}, timeout=2)
+    assert asyncio.all_tasks() <= before
+
+
 @pytest.mark.parametrize("cancelled", [False, True])
 async def test_a_run_with_a_stop_leaves_no_task_behind(tmp_path: Path, cancelled: bool) -> None:
     dying = Dying()

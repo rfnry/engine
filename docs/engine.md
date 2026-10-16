@@ -469,7 +469,8 @@ audit, before it calls `stop.now()`. A call that already has its result keeps it
 for an `on_event` still handling its `ToolResultReady` to return: a handler can stop the run on what
 a tool returned; a slow one delays the stop, and cancelling the run cancels it. Cancelling the run's
 task cancels its model call and every tool call still running, delegations and their runs included,
-and re-raises once all of them have ended, as an `asyncio.TaskGroup` does; a stop waits the same way
+and re-raises once all of them have ended, as an `asyncio.TaskGroup` does — a call whose tool
+returns after the cancel ends with it, before its `ToolResultReady` — and a stop waits the same way
 for the work it cancels, so a tool that ignores cancellation holds either one. The first stop is
 graceful: a workspace command is sent SIGTERM and given a second to end. A second stop —
 `stop.now()` again, or cancelling a run that is already stopping — ends what is still running at

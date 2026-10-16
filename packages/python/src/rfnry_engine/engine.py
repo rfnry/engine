@@ -659,10 +659,19 @@ class Engine:
         streamed: list[str] = []
         said = ""
         ended: StopReason | None = None
+        runner = asyncio.current_task()
+        calm = 0 if runner is None else runner.cancelling()
 
         async def emit(event: Any) -> None:
             if on_event is not None:
                 await on_event(event)
+
+        async def hand_over(call: ToolCall, step: Step) -> Step:
+            if runner is not None and runner.cancelling() > calm:
+                raise asyncio.CancelledError("engine: the run was cancelled")
+            ran.append((call, step))
+            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step))
+            return step
 
         async def delta(text: str) -> None:
             streamed.append(text)
@@ -751,9 +760,7 @@ class Engine:
                 stopped=stopped,
                 approved=approved,
             )
-            ran.append((call, step))
-            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step))
-            return step
+            return await hand_over(call, step)
 
         def answer(call: ToolCall, step: Step) -> None:
             messages.append(
@@ -788,9 +795,7 @@ class Engine:
                 duration_ms=int((time.monotonic() - began) * 1000),
                 stopped=True,
             )
-            ran.append((call, step))
-            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step))
-            return step
+            return await hand_over(call, step)
 
         async def run_batch(batch: list[ToolCall]) -> bool:
             began = time.monotonic()
