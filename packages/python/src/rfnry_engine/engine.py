@@ -812,8 +812,7 @@ class Engine:
                     await cancel([t for t in tasks if t not in finishing and not t.done()])
                     await wait(finishing, None)
                 except BaseException:
-                    for task in finishing:
-                        task.cancel()
+                    await cancel(tasks)
                     raise
             for call, task in zip(batch, tasks, strict=True):
                 answer(call, await cut(call, began) if task.cancelled() else task.result())

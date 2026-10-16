@@ -468,13 +468,17 @@ cancels its call, or a streamed `TextDelta` handler, is cancelled with that work
 does its own work, such as an audit, before it calls `stop.now()`. A call that already
 has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady`
 to return: a handler can stop the run on what a tool returned; a slow one delays the stop, and
-cancelling the run cancels it. A stop set before the run starts ends it before the first model call;
-one set after it ended does nothing. A stop reaches delegated and routed runs, which end the same
-way at their own next boundary. With `after_step()` pending the inbox is not read. Whatever is still
-in the inbox when the run ends stays there — the engine never starts a run; you do, with those
-messages as its input. A decision run never reads the inbox: its questions are one call, and a stop
-or an inbox rides to the run it routes to. "Pause, please" is a message in the inbox: the model
-reads it at the next boundary and wraps up in its own words.
+cancelling the run cancels it. Cancelling the run's task cancels its model call and every tool call
+still running, delegations and their runs included, and re-raises once all of them have ended,
+however many cancels come meanwhile, as an `asyncio.TaskGroup` does; a stop waits the same way for
+the work it cancels, so a tool that ignores cancellation holds either one. A stop set before the run
+starts ends it before the first model call; one set after it ended does nothing. A stop reaches
+delegated and routed runs, which end the same way at their own next boundary. With `after_step()`
+pending the inbox is not read. Whatever is still in the inbox when the run ends stays there — the
+engine never starts a run; you do, with those messages as its input. A decision run never reads the
+inbox: its questions are one call, and a stop or an inbox rides to the run it routes to. "Pause,
+please" is a message in the inbox: the model reads it at the next boundary and wraps up in its own
+words.
 
 A run that ended continues from its record, on any process, after any restart. With a refinery
 attached every run that returns is recorded with its conversation: keep the run id beside what you

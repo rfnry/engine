@@ -410,10 +410,109 @@ async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_han
         await asyncio.sleep(0.01)
     running.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await running
-    await asyncio.wait_for(left.wait(), 1)
-    await asyncio.wait_for(died.wait(), 1)
-    await asyncio.sleep(0)
+        async with asyncio.timeout(2):
+            await running
+    assert left.is_set() and died.is_set()
+    assert asyncio.all_tasks() <= before
+
+
+class Dying:
+    def __init__(self, kept: str | None = None) -> None:
+        self.entered, self.died = asyncio.Event(), asyncio.Event()
+        self.kept = kept
+
+    async def __call__(self, *args: Any) -> Any:
+        self.entered.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            await asyncio.shield(asyncio.sleep(0.2))
+            self.died.set()
+            if self.kept is None:
+                raise
+            return self.kept
+        raise AssertionError("a cancelled call must not end on its own")
+
+
+class DyingModel:
+    def __init__(self) -> None:
+        self.generate = Dying()
+
+
+async def cancel_while_dying(running: asyncio.Task[Any], dying: Dying, cancels: int) -> None:
+    async with asyncio.timeout(2):
+        await dying.entered.wait()
+    running.cancel()
+    for _ in range(cancels - 1):
+        await asyncio.sleep(0.05)
+        assert not running.done()
+        running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(2):
+            await running
+    assert dying.died.is_set()
+
+
+@pytest.mark.parametrize("kept", [None, "kept going"])
+@pytest.mark.parametrize("cancels", [1, 2])
+async def test_a_cancelled_run_returns_once_its_tool_calls_have_ended(
+    tmp_path: Path, cancels: int, kept: str | None
+) -> None:
+    dying = Dying(kept)
+    calls = [
+        ToolCall(id="c1", name="lookup", args={"order_id": "A-1"}),
+        ToolCall(id="c2", name="dying", args={}),
+    ]
+    tools = Tools([Tool("lookup", body=lookup), Tool("dying", body=dying)])
+    llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
+    before = asyncio.all_tasks()
+    running = asyncio.create_task(
+        Engine(make_tree(tmp_path), generation=llm).run("lead", "acme", "Check A-1", tools=tools)
+    )
+    await cancel_while_dying(running, dying, cancels)
+    assert asyncio.all_tasks() <= before
+
+
+@pytest.mark.parametrize("cancels", [1, 2])
+async def test_a_cancelled_run_returns_once_a_delegated_run_has_ended(
+    tmp_path: Path, cancels: int
+) -> None:
+    dying = Dying()
+    llm = Scripted(
+        Reply(
+            tool_calls=[
+                ToolCall(id="d", name="Delegate", args={"agent": "chat", "input": "Check A-1"})
+            ],
+            stop_reason="tool_use",
+        ),
+        Reply(tool_calls=[ToolCall(id="c1", name="dying", args={})], stop_reason="tool_use"),
+    )
+    before = asyncio.all_tasks()
+    running = asyncio.create_task(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "lead", "acme", "Check A-1", tools=Tools([Tool("dying", body=dying)])
+        )
+    )
+    await cancel_while_dying(running, dying, cancels)
+    assert asyncio.all_tasks() <= before
+
+
+@pytest.mark.parametrize("where", ["model", "approve"])
+async def test_a_cancelled_run_returns_once_its_model_call_or_approval_has_ended(
+    tmp_path: Path, where: str
+) -> None:
+    calls = [ToolCall(id="c1", name="lookup", args={"order_id": "A-1"})]
+    model = DyingModel()
+    llm = model if where == "model" else Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
+    dying = model.generate if where == "model" else Dying()
+    approve = dying if where == "approve" else None
+    before = asyncio.all_tasks()
+    running = asyncio.create_task(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "lead", "acme", "Check A-1", tools=TOOLS, approve=approve
+        )
+    )
+    await cancel_while_dying(running, dying, 2)
     assert asyncio.all_tasks() <= before
 
 

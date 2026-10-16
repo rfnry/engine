@@ -36,8 +36,7 @@ async def wait(tasks: list[asyncio.Task[Any]], stop: Stop | None) -> bool:
                 return True
         return False
     except BaseException:
-        for task in tasks:
-            task.cancel()
+        await cancel(tasks)
         raise
     finally:
         if waiter is not None:
@@ -47,8 +46,14 @@ async def wait(tasks: list[asyncio.Task[Any]], stop: Stop | None) -> bool:
 async def cancel(tasks: list[asyncio.Task[Any]]) -> None:
     for task in tasks:
         task.cancel()
-    if tasks:
-        await asyncio.wait(tasks)
+    cancelled: asyncio.CancelledError | None = None
+    while pending := [task for task in tasks if not task.done()]:
+        try:
+            await asyncio.wait(pending)
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
     for task in tasks:
         if not task.cancelled():
             task.exception()
+    if cancelled is not None:
+        raise cancelled
