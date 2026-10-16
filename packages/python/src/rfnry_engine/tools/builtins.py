@@ -138,8 +138,11 @@ def _contents(jail: Jail, path: str, limit: int) -> bytes:
     try:
         fd = jail.open(path)
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            found = os.fstat(fd)
+            if not stat.S_ISREG(found.st_mode):
                 raise InputError(f"builtins: not a file: {path}")
+            if found.st_size > limit:
+                raise InputError(f"builtins: file exceeds {limit} bytes: {path}")
             with open(fd, "rb", closefd=False) as file:
                 data = file.read(limit + 1)
         finally:

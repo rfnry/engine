@@ -674,3 +674,17 @@ async def test_closing_the_workspace_stops_a_real_job_and_what_it_started(root: 
     pid = await written_pid(root / "child.pid")
     await ws.close()
     assert await gone(pid)
+
+
+async def test_read_refuses_a_file_far_over_the_limit_without_reading_it(
+    local: Local, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with (root / "sparse.bin").open("wb") as file:
+        file.truncate(1 << 40)
+
+    def never(*_: Any) -> bytes:
+        raise AssertionError("read called")
+
+    monkeypatch.setattr("rfnry_engine.tools.workspace.os.read", never)
+    with pytest.raises(InputError, match="^workspace: file exceeds 10 bytes: sparse.bin$"):
+        await local.read("sparse.bin", 10)

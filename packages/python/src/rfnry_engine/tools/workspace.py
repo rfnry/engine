@@ -221,8 +221,11 @@ class Local:
         try:
             fd = self._open(path, os.O_RDONLY)
             try:
-                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                found = os.fstat(fd)
+                if not stat.S_ISREG(found.st_mode):
                     raise InputError(f"workspace: not a file: {path}")
+                if found.st_size > limit:
+                    raise InputError(f"workspace: file exceeds {limit} bytes: {path}")
                 data = bytearray()
                 while len(data) <= limit and (
                     chunk := os.read(fd, min(CHUNK, limit + 1 - len(data)))

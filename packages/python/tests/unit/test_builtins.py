@@ -1,5 +1,6 @@
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -8,7 +9,7 @@ from rfnry_engine.errors import InputError
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Audio, Document, Image
 from rfnry_engine.tools import builtins as builtins_module
-from rfnry_engine.tools.builtins import builtins, load_tool
+from rfnry_engine.tools.builtins import _contents, builtins, load_tool
 from rfnry_engine.tools.tools import Tools
 
 SUPPORT = Path(__file__).parents[1] / "fixtures" / "agents" / "support"
@@ -510,3 +511,17 @@ async def test_what_the_system_refuses_is_said_with_the_model_s_path(tmp_path: P
     finally:
         (root / "locked").chmod(0o700)
         (root / "closed.md").chmod(0o600)
+
+
+def test_a_file_far_over_the_limit_is_refused_without_reading_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with (tmp_path / "sparse.bin").open("wb") as file:
+        file.truncate(1 << 40)
+
+    def never(*_: Any, **__: Any) -> Any:
+        raise AssertionError("opened for reading")
+
+    monkeypatch.setattr("rfnry_engine.tools.builtins.open", never, raising=False)
+    with pytest.raises(InputError, match="^builtins: file exceeds 10 bytes: sparse.bin$"):
+        _contents(Jail(tmp_path), "sparse.bin", 10)
