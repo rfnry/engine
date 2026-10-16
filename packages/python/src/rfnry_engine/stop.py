@@ -91,7 +91,7 @@ async def wait(
 async def cancel(tasks: Sequence[asyncio.Future[Any]]) -> None:
     for task in tasks:
         task.cancel()
-    await join(tasks)
+    await wait(tasks, None)
 
 
 async def join(tasks: Sequence[asyncio.Future[Any]]) -> None:

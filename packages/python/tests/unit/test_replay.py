@@ -1,6 +1,8 @@
 import asyncio
 import json
+import os
 import shutil
+import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import aclosing
@@ -634,18 +636,25 @@ async def test_a_replay_closed_under_a_cancel_returns_once_its_runs_have_ended(
     for text in ["a", "b"]:
         await recorder.run("grader", "acme", text)
     entered, release, died = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    cancels = 0
 
     class SlowToDie(Answering):
         async def decide(
             self, state: State, questions: Mapping[str, QuestionLike]
         ) -> dict[str, Answer]:
+            nonlocal cancels
             if state == "a":
                 return await super().decide(state, questions)
             entered.set()
             try:
                 await asyncio.sleep(30)
             except asyncio.CancelledError:
-                await asyncio.shield(release.wait())
+                cancels += 1
+                while not release.is_set():
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:
+                        cancels += 1
                 died.set()
                 raise
             raise AssertionError("a cancelled replay must not end on its own")
@@ -664,9 +673,10 @@ async def test_a_replay_closed_under_a_cancel_returns_once_its_runs_have_ended(
         async with asyncio.timeout(2):
             await entered.wait()
         await asyncio.sleep(0.05)
+        assert cancels == 1
         reading.cancel()
         await asyncio.sleep(0.05)
-        assert not reading.done() and not died.is_set()
+        assert not reading.done() and not died.is_set() and cancels == 2
     finally:
         release.set()
     with pytest.raises(asyncio.CancelledError):
@@ -675,23 +685,30 @@ async def test_a_replay_closed_under_a_cancel_returns_once_its_runs_have_ended(
     assert died.is_set()
 
 
-async def test_a_reader_cancelled_twice_cancels_its_replay_once(
+async def test_each_cancel_of_a_reader_cancels_its_replay_once(
     tmp_path: Path, storage: Storage
 ) -> None:
     refinery = Refinery(storage)
     recorder = Engine(graded(tmp_path), decision=Answering(), refinery=refinery)
     await recorder.run("grader", "acme", "a")
     entered, release, died = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    cancels = 0
 
     class SlowToDie(Answering):
         async def decide(
             self, state: State, questions: Mapping[str, QuestionLike]
         ) -> dict[str, Answer]:
+            nonlocal cancels
             entered.set()
             try:
                 await asyncio.sleep(30)
             except asyncio.CancelledError:
-                await release.wait()
+                cancels += 1
+                while not release.is_set():
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:
+                        cancels += 1
                 died.set()
                 raise
             raise AssertionError("a cancelled replay must not end on its own")
@@ -701,20 +718,83 @@ async def test_a_reader_cancelled_twice_cancels_its_replay_once(
         async for _ in refinery.replay("acme", engine, agent="grader"):
             raise AssertionError("a cancelled replay must yield nothing")
 
+    before = asyncio.all_tasks()
     reading = asyncio.create_task(read())
     try:
         async with asyncio.timeout(2):
             await entered.wait()
-        for _ in range(2):
+        for count in (1, 2):
             reading.cancel()
             await asyncio.sleep(0.05)
-            assert not reading.done() and not died.is_set()
+            assert not reading.done() and not died.is_set() and cancels == count
     finally:
         release.set()
     with pytest.raises(asyncio.CancelledError):
         async with asyncio.timeout(2):
             await reading
-    assert died.is_set()
+    assert died.is_set() and cancels == 2
+    assert asyncio.all_tasks() <= before
+
+
+TRAPPED = "echo $$ > leader.pid; trap '' TERM; sleep 30 & echo $! > child.pid; wait"
+
+
+def ended(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (ProcessLookupError, FileNotFoundError):
+        return True
+    return state == "Z"
+
+
+@pytest.mark.parametrize("cancels", [1, 2])
+async def test_a_second_cancel_of_a_reader_kills_its_replays_command_at_once(
+    tmp_path: Path, storage: Storage, cancels: int
+) -> None:
+    (tmp_path / "coder").mkdir()
+    (tmp_path / "coder/AGENT.md").write_text(
+        "---\nname: coder\nkind: generation\nworkspace: true\n---\nYou code.\n"
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    workspace = Workspace(Local(work), scope="acme")
+    refinery = Refinery(storage)
+    recorder = Engine(tmp_path, generation=Scripted(text_reply("done")), refinery=refinery)
+    await recorder.run("coder", "acme", "fix it", workspace=workspace)
+    shell = ToolCall(id="c1", name="Shell", args={"command": TRAPPED})
+    engine = Engine(
+        tmp_path, generation=Scripted(Reply(tool_calls=[shell], stop_reason="tool_use"))
+    )
+
+    async def read() -> None:
+        async for _ in refinery.replay("acme", engine, agent="coder", workspace=workspace):
+            raise AssertionError("a cancelled replay must yield nothing")
+
+    before = asyncio.all_tasks()
+    reading = asyncio.create_task(read())
+    try:
+        async with asyncio.timeout(5):
+            while not ((work / "child.pid").exists() and (work / "child.pid").read_text()):
+                await asyncio.sleep(0.01)
+        began = time.monotonic()
+        reading.cancel()
+        if cancels == 2:
+            await asyncio.sleep(0.1)
+            assert not reading.done()
+            reading.cancel()
+        done, _ = await asyncio.wait({reading}, timeout=5)
+        took = time.monotonic() - began
+    finally:
+        reading.cancel()
+        await asyncio.wait({reading}, timeout=5)
+    assert reading in done and reading.cancelled()
+    assert 0.9 < took < 2.5 if cancels == 1 else took < 0.5
+    async with asyncio.timeout(2):
+        for name in ("leader.pid", "child.pid"):
+            while not ended(int((work / name).read_text())):
+                await asyncio.sleep(0.01)
+    assert asyncio.all_tasks() <= before
 
 
 async def recall(args: dict[str, Any]) -> str:
