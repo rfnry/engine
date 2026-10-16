@@ -535,14 +535,17 @@ class Workspace:
         failed = [result for result in results if result is not None]
         readers = [job.task for _, job in gone if job.task is not None]
         caller = asyncio.current_task()
+        passed = caller is not None and caller.cancelling() > 1
         while pending := [task for task in readers if not task.done()]:
+            if passed and caller is not None:
+                for task in pending:
+                    while task.cancelling() < caller.cancelling():
+                        task.cancel()
             try:
                 await asyncio.wait(pending)
             except asyncio.CancelledError as exc:
                 cancelled = cancelled or exc
-                for task in pending:
-                    while caller is not None and task.cancelling() < caller.cancelling():
-                        task.cancel()
+                passed = True
         for task in readers:
             if not task.cancelled():
                 task.exception()
