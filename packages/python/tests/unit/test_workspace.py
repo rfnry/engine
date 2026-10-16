@@ -841,3 +841,28 @@ async def test_a_second_cancel_cannot_cut_the_kill_of_a_running_command_short() 
     assert not [
         t for t in asyncio.all_tasks() - before if not t.done() and t is not asyncio.current_task()
     ]
+
+
+@pytest.mark.parametrize("exits", [True, False])
+async def test_a_cancel_during_the_kill_waits_for_that_kill_and_starts_no_other(
+    exits: bool,
+) -> None:
+    machine = Slow()
+    if exits:
+        machine.act = prints()
+    before = asyncio.all_tasks()
+    ws = Workspace(machine, scope="acme", timeout=120 if exits else 0.05)
+    task = asyncio.create_task(shell(ws, "x"))
+    ran = await started(machine)
+    await until(lambda: ran.kills == 1, "the kill starting")
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert ran.kills == 1 and not task.done()
+    machine.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0)
+    assert ran.kills == 1 and machine.finished == 1
+    assert not [
+        t for t in asyncio.all_tasks() - before if not t.done() and t is not asyncio.current_task()
+    ]

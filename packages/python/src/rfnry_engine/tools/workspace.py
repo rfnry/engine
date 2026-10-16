@@ -362,8 +362,7 @@ def _retrieve(task: asyncio.Task[None]) -> None:
         task.exception()
 
 
-async def _stop(process: Process) -> None:
-    killing = asyncio.create_task(process.kill())
+async def _stop(killing: asyncio.Task[None]) -> None:
     try:
         await asyncio.shield(killing)
     except asyncio.CancelledError:
@@ -524,6 +523,7 @@ class Workspace:
             raise
         out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
         reading = _reading(process, out, err)
+        killing: asyncio.Task[None] | None = None
         try:
             code: int | None
             try:
@@ -532,13 +532,14 @@ class Workspace:
                 timed_out = False
             except TimeoutError:
                 timed_out = True
-            await _stop(process)
+            killing = asyncio.create_task(process.kill())
+            await _stop(killing)
             if timed_out:
                 code = await _exit_code(process)
             await _settle(reading)
         except BaseException:
             _discard(reading)
-            await _stop(process)
+            await _stop(asyncio.create_task(process.kill()) if killing is None else killing)
             raise
         return {
             "exit_code": code,
