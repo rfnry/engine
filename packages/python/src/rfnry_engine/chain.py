@@ -11,7 +11,7 @@ def opening(model: str | None, system: str, tools: list[ToolSpec], preload: list
         "model": model,
         "system": system,
         "tools": [tool.model_dump(mode="json") for tool in tools],
-        "boot": [part.model_dump(mode="json") for part in preload],
+        "preload": [part.model_dump(mode="json") for part in preload],
     }
     return hashlib.sha256(json.dumps(head, sort_keys=True, ensure_ascii=False).encode()).digest()
 

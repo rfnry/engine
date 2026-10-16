@@ -91,8 +91,6 @@ def unflatten(row: RunRow, under: dict[str, list[RunRow]]) -> dict[str, Any]:
     )
     nested = [unflatten(child, under) for child in children]
     if row.kind == "generation":
-        if "boot" in body and "preload" not in body:
-            body["preload"] = body.pop("boot")
         body["children"] = nested
     else:
         body["routed_to"] = nested[0] if nested else None
