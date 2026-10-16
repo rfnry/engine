@@ -12,7 +12,7 @@ _FRONTMATTER = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
 _BOOL = "tag:yaml.org,2002:bool"
 
 
-class _Loader(yaml.SafeLoader):
+class _Loader(getattr(yaml, "CSafeLoader", yaml.SafeLoader)):  # type: ignore[misc]
     pass
 
 
