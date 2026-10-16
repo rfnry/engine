@@ -365,13 +365,15 @@ async def test_a_stop_from_a_text_handler_answers_an_output_beside_it_as_stopped
     assert answered(run) == ["o1"]
 
 
+@pytest.mark.parametrize("dead", [False, True])
 async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_handler(
-    tmp_path: Path,
+    tmp_path: Path, dead: bool
 ) -> None:
     stop, entered, left = Stop(), asyncio.Event(), asyncio.Event()
+    dying, died = asyncio.Event(), asyncio.Event()
 
     async def stuck(event: Event) -> None:
-        if isinstance(event, ToolResultReady):
+        if isinstance(event, ToolResultReady) and event.call_id == "c2":
             stop.now()
             entered.set()
             try:
@@ -379,21 +381,95 @@ async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_han
             finally:
                 left.set()
 
+    async def slow_to_die(args: dict[str, Any]) -> str:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            dying.set()
+            await asyncio.shield(asyncio.sleep(0.2))
+            died.set()
+            raise
+        return "never"
+
     before = asyncio.all_tasks()
-    looked = ToolCall(id="c1", name="lookup", args={"order_id": "A-1"})
-    llm = Scripted(Reply(tool_calls=[looked], stop_reason="tool_use"))
+    calls = [
+        ToolCall(id="c1", name="dying", args={}),
+        ToolCall(id="c2", name="lookup", args={"order_id": "A-1"}),
+    ]
+    tools = Tools([Tool("dying", body=slow_to_die), Tool("lookup", body=lookup)])
+    llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     running = asyncio.create_task(
         Engine(make_tree(tmp_path), generation=llm).run(
-            "lead", "acme", "Check A-1", tools=TOOLS, stop=stop, on_event=stuck
+            "lead", "acme", "Check A-1", tools=tools, stop=stop, on_event=stuck
         )
     )
     await entered.wait()
-    await asyncio.sleep(0.01)
+    await dying.wait()
+    if dead:
+        await died.wait()
+        await asyncio.sleep(0.01)
     running.cancel()
     with pytest.raises(asyncio.CancelledError):
         await running
     await asyncio.wait_for(left.wait(), 1)
+    await asyncio.wait_for(died.wait(), 1)
+    await asyncio.sleep(0)
     assert asyncio.all_tasks() <= before
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        text_reply("All done."),
+        Reply(
+            text="All done.",
+            tool_calls=[ToolCall(id="c1", name="lookup", args={"order_id": "A-1"})],
+            stop_reason="max_tokens",
+        ),
+    ],
+)
+async def test_a_stop_from_a_text_handler_stops_a_reply_that_ends_the_run(
+    tmp_path: Path, reply: Reply
+) -> None:
+    stop = Stop()
+
+    async def kill(event: Event) -> None:
+        if isinstance(event, TextDelta):
+            stop.now()
+
+    run = await asyncio.wait_for(
+        Engine(make_tree(tmp_path), generation=Scripted(reply)).run(
+            "lead", "acme", "Finish", tools=TOOLS, stop=stop, on_event=kill
+        ),
+        2,
+    )
+    assert isinstance(run, Generation) and run.stopped == "now" and run.reply == "All done."
+    assert [s.tool for s in run.steps] == [c.name for c in reply.tool_calls]
+
+
+@pytest.mark.parametrize("kind", [ToolCallStarted, ToolResultReady])
+async def test_a_stop_on_the_last_allowed_turn_returns_the_run(
+    tmp_path: Path, kind: type[BaseModel]
+) -> None:
+    stop, collect = Stop(), Collect()
+
+    async def kill(event: Event) -> None:
+        await collect(event)
+        if isinstance(event, kind):
+            stop.now()
+
+    calls = [ToolCall(id="c1", name="lookup", args={"order_id": "A-1"})]
+    llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
+    run = await asyncio.wait_for(
+        Engine(make_tree(tmp_path), generation=llm, max_steps=1).run(
+            "lead", "acme", "Check A-1", tools=TOOLS, stop=stop, on_event=kill
+        ),
+        2,
+    )
+    assert isinstance(run, Generation) and run.stopped == "now"
+    check(run, calls, collect.of(run.run_id))
+    assert [s.stopped for s in run.steps] == [kind is ToolCallStarted]
+    assert answered(run) == ["c1"]
 
 
 async def test_a_childs_text_carries_its_own_run_and_its_own_turns(tmp_path: Path) -> None:

@@ -806,8 +806,13 @@ class Engine:
                     if (spec.agents and c.name == DELEGATE_TOOL)
                     or any(c is done for done, _ in ran)
                 ]
-                await cancel([t for t in tasks if t not in finishing and not t.done()])
-                await wait(finishing, None)
+                try:
+                    await cancel([t for t in tasks if t not in finishing and not t.done()])
+                    await wait(finishing, None)
+                except BaseException:
+                    for task in finishing:
+                        task.cancel()
+                    raise
             for call, task in zip(batch, tasks, strict=True):
                 answer(call, await cut(call, began) if task.cancelled() else task.result())
             return stopped
@@ -901,7 +906,7 @@ class Engine:
                 if reply.stop_reason != "tool_use" or not reply.tool_calls:
                     for call in reply.tool_calls:
                         not_run(call, f"the reply ended with {reply.stop_reason}")
-                    return finish(reply.text)
+                    return finish(reply.text, "now" if requested(stop) == "now" else None)
                 output = next(
                     (c for c in reply.tool_calls if expect is not None and c.name == OUTPUT_TOOL),
                     None,
@@ -951,6 +956,9 @@ class Engine:
                 for call in reply.tool_calls[reply.tool_calls.index(output) + 1 :]:
                     not_run(call, f"{OUTPUT_TOOL} ended the run")
                 return finish(parsed.model_dump_json())
+            mode = requested(stop)
+            if mode is not None:
+                return finish(said, mode)
             raise RunawayError(f"engine: run exceeded {self.max_steps} steps")
         except Exception as exc:
             for call in asked:
