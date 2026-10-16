@@ -256,7 +256,6 @@ async def test_history_is_offered_only_when_a_run_starts_past_the_beginning(fixt
     alone = await engine.run("support", "acme", "x")
     offered = ["History" in [spec.name for spec in call[2]] for call in llm.calls]
     assert offered == [False, True, False]
-    assert whole.fingerprint and cut.fingerprint and alone.fingerprint
     assert whole.fingerprint.tools == alone.fingerprint.tools != cut.fingerprint.tools
 
 

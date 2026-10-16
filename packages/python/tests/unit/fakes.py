@@ -22,7 +22,7 @@ from rfnry_engine.models import (
     ToolSpec,
     Usage,
 )
-from rfnry_engine.records import Decision, Generation, Run, Step
+from rfnry_engine.records import Decision, Fingerprint, Generation, Run, Step
 from rfnry_engine.tools.tools import Tool
 
 
@@ -137,6 +137,7 @@ def generation_record(
         at=datetime.now(UTC),
         duration_ms=5,
         model="m",
+        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16),
         input="hi",
         system="<<<AGENT>>>\nx",
         messages=[Message(role="user", content="hi")],
@@ -173,6 +174,7 @@ def decision_record(
         at=datetime.now(UTC),
         duration_ms=2,
         model="d",
+        fingerprint=Fingerprint(agent="c" * 16, tools="d" * 16, questions="e" * 16),
         state={"message": "hi"},
         questions={"urgent": Check(instructions="Urgent?")},
         answers={

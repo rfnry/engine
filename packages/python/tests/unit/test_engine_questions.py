@@ -332,7 +332,6 @@ async def test_a_task_lives_in_the_folder_so_the_agent_fingerprint_covers_it(
     prints = [run.fingerprint for run in (before, edited, added)]
     assert all(p is not None for p in prints)
     assert len({p.agent for p in prints if p is not None}) == 3
-    assert before.fingerprint is not None and edited.fingerprint is not None
     assert before.fingerprint.questions != edited.fingerprint.questions
 
 

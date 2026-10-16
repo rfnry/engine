@@ -5,11 +5,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+import pytest
+from pydantic import BaseModel, ValidationError
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.models import Check, Choice, Message, Question, Reply, Score, ToolCall
-from rfnry_engine.records import Decision, Fingerprint, Generation
+from rfnry_engine.records import Decision, Fingerprint, Generation, Run
 from rfnry_engine.refinery.labels import Review
 from rfnry_engine.refinery.refinery import Refinery, flatten
 from rfnry_engine.refinery.storage import Storage
@@ -24,6 +25,7 @@ from .fakes import (
     by_hand,
     decision_record,
     delegate_triage,
+    generation_record,
     lookup_order,
     now,
     text_reply,
@@ -60,7 +62,6 @@ async def test_the_agent_fingerprint_is_every_file_of_its_folder_by_path_and_con
 ) -> None:
     root = tree(fixtures, tmp_path)
     run = await generation(root)
-    assert run.fingerprint is not None
     assert run.fingerprint.agent == by_hand(root / "support")
     assert len(run.fingerprint.agent) == 16 and len(run.fingerprint.tools) == 16
     specs = sorted((spec.model_dump(mode="json") for spec in run.tools), key=lambda t: t["name"])
@@ -103,7 +104,6 @@ async def test_an_edit_to_a_rule_changes_the_agent_fingerprint_and_not_the_tools
     before = await generation(root)
     (root / "support/rules/refunds.md").write_text("Refund only the second charge.\n")
     after = await generation(root)
-    assert before.fingerprint is not None and after.fingerprint is not None
     assert before.fingerprint.agent != after.fingerprint.agent
     assert before.fingerprint.tools == after.fingerprint.tools
 
@@ -161,8 +161,6 @@ async def test_a_code_tool_s_schema_or_description_changes_the_tools_fingerprint
         fixtures,
         tools=[Tool("lookup_order", body=lookup_order), Tool("now", "The time", body=now)],
     )
-    assert plain.fingerprint is not None and zoned.fingerprint is not None
-    assert described.fingerprint is not None
     assert plain.fingerprint.agent == zoned.fingerprint.agent == described.fingerprint.agent
     assert len({plain.fingerprint.tools, zoned.fingerprint.tools, described.fingerprint.tools}) == 3
 
@@ -188,17 +186,17 @@ async def test_the_tools_a_run_is_offered_are_the_tools_it_is_fingerprinted_by(
 async def test_a_decision_run_and_every_nested_run_carry_their_own(fixtures: Path) -> None:
     engine_ = engine(fixtures, delegate_triage(), text_reply("Handled."))
     parent = await engine_.run("support", "acme", "It is down")
-    assert isinstance(parent, Generation) and parent.fingerprint is not None
+    assert isinstance(parent, Generation)
     [child] = parent.children
-    assert isinstance(child, Decision) and child.fingerprint is not None
+    assert isinstance(child, Decision)
     assert child.fingerprint == Fingerprint(
         agent=by_hand(fixtures / "triage"), tools=NO_TOOLS, questions=asked(child.questions)
     )
     assert parent.fingerprint.agent == by_hand(fixtures / "support")
     routed = await engine(fixtures).run("frontdesk", "acme", "It is down")
-    assert isinstance(routed, Decision) and routed.fingerprint is not None
+    assert isinstance(routed, Decision)
     assert routed.fingerprint.agent == by_hand(fixtures / "frontdesk")
-    assert routed.routed_to is not None and routed.routed_to.fingerprint is not None
+    assert routed.routed_to is not None
     assert routed.routed_to.fingerprint.agent == parent.fingerprint.agent
 
 
@@ -222,7 +220,7 @@ async def test_the_record_and_every_exported_row_carry_the_fingerprint(
     refinery = Refinery(storage)
     engine_ = engine(fixtures, delegate_triage(), text_reply("Sorry, no."), refinery=refinery)
     run = await engine_.run("support", "acme", "It is down", context="Acme is enterprise.")
-    assert isinstance(run, Generation) and run.fingerprint is not None
+    assert isinstance(run, Generation)
     read = await refinery.run("acme", run.run_id)
     assert isinstance(read, Generation)
     assert read.fingerprint == run.fingerprint and read.context == "Acme is enterprise."
@@ -266,7 +264,6 @@ async def test_a_decision_run_s_questions_part_is_the_questions_it_asked(fixture
     folder = await triage(fixtures).run("triage", "acme", "It is down")
     both = await triage(fixtures).run("triage", "acme", "It is down", questions={"area": AREA})
     assert isinstance(folder, Decision) and isinstance(both, Decision)
-    assert folder.fingerprint is not None and both.fingerprint is not None
     assert folder.fingerprint.questions == asked(folder.questions)
     assert both.fingerprint.questions == asked(both.questions)
     assert len(folder.fingerprint.questions or "") == 16
@@ -286,12 +283,12 @@ async def test_the_questions_part_is_stable_across_runs_loads_and_the_order_ques
     elsewhere = await triage(fixtures, root).run(
         "triage", "acme", "c", questions={"area": AREA.model_copy(), "angry": other}
     )
-    assert first.fingerprint is not None and first.fingerprint.questions is not None
+    assert first.fingerprint.questions is not None
     assert first.fingerprint == again.fingerprint == elsewhere.fingerprint
 
 
 def _print(run: object) -> str | None:
-    assert isinstance(run, Decision) and run.fingerprint is not None
+    assert isinstance(run, Decision)
     return run.fingerprint.questions
 
 
@@ -327,7 +324,7 @@ async def test_the_questions_part_changes_with_a_question_its_options_or_their_o
 
 async def test_a_generation_run_has_no_questions_part(fixtures: Path) -> None:
     run = await generation(fixtures)
-    assert run.fingerprint is not None and run.fingerprint.questions is None
+    assert run.fingerprint.questions is None
 
 
 async def test_the_questions_part_is_recorded_exported_and_old_rows_read_back_without_it(
@@ -336,7 +333,7 @@ async def test_the_questions_part_is_recorded_exported_and_old_rows_read_back_wi
 ) -> None:
     refinery = Refinery(storage)
     run = await Engine(fixtures, decision=Desk(), refinery=refinery).run("triage", "acme", "x")
-    assert isinstance(run, Decision) and run.fingerprint is not None
+    assert isinstance(run, Decision)
     assert (await refinery.run("acme", run.run_id)).fingerprint == run.fingerprint
     old = decision_record(run_id="old")
     [stored] = flatten(old, datetime.now(UTC))
@@ -376,3 +373,12 @@ async def test_an_edit_to_a_read_folder_changes_the_fingerprint_of_every_agent_r
     for name in ("coding", "writing"):
         assert before._spec(name).fingerprint != after._spec(name).fingerprint
     assert before._spec("other").fingerprint == after._spec("other").fingerprint
+
+
+@pytest.mark.parametrize("record", [generation_record(), decision_record()])
+def test_a_record_must_carry_a_fingerprint(record: Run) -> None:
+    body = record.model_dump(mode="json")
+    del body["fingerprint"]
+    for missing in ({}, {"fingerprint": None}):
+        with pytest.raises(ValidationError, match="fingerprint"):
+            type(record).model_validate({**body, **missing})

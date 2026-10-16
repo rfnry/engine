@@ -192,7 +192,6 @@ async def test_a_fingerprint_selects_one_recorded_version(
     new = Engine(root, generation=Scripted(text_reply("b")), tools=TOOLS, refinery=refinery)
     after = await new.run("support", "acme", "hi")
     await put(refinery, generation_record(), "unprinted", 0)
-    assert before.fingerprint is not None and after.fingerprint is not None
     assert before.fingerprint != after.fingerprint
     engine = candidate(fixtures)
     for version, run in ((before.fingerprint, before), (after.fingerprint, after)):
@@ -722,7 +721,6 @@ async def test_a_decision_replay_re_asks_runtime_questions_as_recorded_and_the_f
     assert [call[1] for call in dm.calls] == [first.questions, second.questions, third.questions]
     for recorded, pair in zip((asked, tasked, plain), pairs, strict=True):
         assert isinstance(recorded, Decision) and isinstance(pair.candidate, Decision)
-        assert recorded.fingerprint is not None and pair.candidate.fingerprint is not None
         assert recorded.fingerprint.agent != pair.candidate.fingerprint.agent
         assert recorded.fingerprint.questions != pair.candidate.fingerprint.questions
 
@@ -788,7 +786,6 @@ async def test_a_fingerprint_selects_decision_runs_by_all_three_parts(
             refinery.replay("acme", engine, agent="grader", fingerprint=run.fingerprint)
         )
         assert [pair.recorded.run_id for pair in pairs] == [r.run_id for r in expected]
-    assert runtime.fingerprint is not None
     unasked = runtime.fingerprint.model_copy(update={"questions": None})
     assert await collect(refinery.replay("acme", engine, agent="grader", fingerprint=unasked)) == []
 

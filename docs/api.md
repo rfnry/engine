@@ -479,7 +479,7 @@ class Generation(BaseModel):
     at: datetime
     duration_ms: int
     model: str | None
-    fingerprint: Fingerprint | None = None
+    fingerprint: Fingerprint
     input: State
     system: str
     preload: list[Part] = []
@@ -514,7 +514,7 @@ class Decision(BaseModel):
     at: datetime
     duration_ms: int
     model: str | None
-    fingerprint: Fingerprint | None = None
+    fingerprint: Fingerprint
     state: State
     questions: dict[str, Question]
     runtime: list[str] = []

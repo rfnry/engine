@@ -18,9 +18,8 @@ def export_key(scope: str, agent: str, dataset: str, stamp: str) -> str:
     return f"{scope}/{agent}/{dataset}/{stamp}.jsonl"
 
 
-def _fingerprint(body: dict[str, Any]) -> dict[str, Any] | None:
-    printed = body["fingerprint"]
-    return None if printed is None else Fingerprint.model_validate(printed).model_dump(mode="json")
+def _fingerprint(body: dict[str, Any]) -> dict[str, Any]:
+    return Fingerprint.model_validate(body["fingerprint"]).model_dump(mode="json")
 
 
 def _label(label: Label) -> dict[str, Any]:

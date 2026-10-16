@@ -104,9 +104,8 @@ def read_back(row: RunRow, under: dict[str, list[RunRow]]) -> Run:
     return Decision.model_validate(body)
 
 
-def printed(row: RunRow) -> Fingerprint | None:
-    body = row.body["fingerprint"]
-    return None if body is None else Fingerprint.model_validate(body)
+def printed(row: RunRow) -> Fingerprint:
+    return Fingerprint.model_validate(row.body["fingerprint"])
 
 
 def label_of(row: LabelRow) -> Label:

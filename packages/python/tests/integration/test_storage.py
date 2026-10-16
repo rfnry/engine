@@ -308,6 +308,7 @@ async def test_a_generation_with_its_tools_round_trips(storage: Storage) -> None
         at=at,
         duration_ms=1,
         model="m",
+        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16),
         input="hi",
         system="s",
         messages=[Message(role="user", content="hi")],
@@ -346,6 +347,7 @@ async def test_tags_round_trip(storage: Storage) -> None:
         at=at,
         duration_ms=1,
         model="d",
+        fingerprint=Fingerprint(agent="c" * 16, tools="d" * 16, questions="e" * 16),
         state="hi",
         questions={"urgent": Check(instructions="Urgent?")},
         answers={"urgent": CheckAnswer(probability=0.9)},
@@ -359,6 +361,7 @@ async def test_tags_round_trip(storage: Storage) -> None:
         at=at,
         duration_ms=1,
         model="m",
+        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16),
         input="hi",
         system="s",
         messages=[Message(role="user", content="hi")],
@@ -567,7 +570,6 @@ async def test_fingerprints_and_context_round_trip(
     )
     run = await engine.run("frontdesk", "a", "It is down", context="Acme is enterprise.")
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
-    assert run.fingerprint is not None and run.routed_to.fingerprint is not None
     assert run.routed_to.context == "Acme is enterprise."
     assert await refinery.run("a", run.run_id) == run
     bucket = MemoryBucket()
@@ -671,7 +673,6 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     assert await replayed(tags={"arm": "a"}) == [first.run_id, third.run_id]
     assert await replayed(tags={"arm": "a", "customer": "c-1"}) == [first.run_id]
     assert await replayed(labeled=True) == [second.run_id, third.run_id]
-    assert first.fingerprint is not None
     assert await replayed(fingerprint=first.fingerprint) == [
         r.run_id for r in (first, second, third)
     ]
@@ -707,7 +708,7 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
     engine = Engine(grader(tmp_path / "old"), decision=Answering(), refinery=refinery)
     asked = await engine.run("grader", "a", "x", task="tone", questions={"area": AREA})
     plain = await engine.run("grader", "a", "y")
-    assert isinstance(asked, Decision) and asked.fingerprint is not None
+    assert isinstance(asked, Decision)
     again = await refinery.run("a", asked.run_id)
     assert again == asked and isinstance(again, Decision)
     assert again.task == "tone" and again.runtime == ["area"]
@@ -743,7 +744,6 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
         "area": AREA,
     }
     assert sent == expected
-    assert plain.fingerprint is not None
     assert plain.fingerprint.questions != asked.fingerprint.questions
 
 
@@ -807,6 +807,7 @@ async def test_start_prefix_and_usage_round_trip(
         at=datetime.now(UTC),
         duration_ms=1,
         model="m",
+        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16),
         input="hi",
         system="s",
         start=4,

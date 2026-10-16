@@ -110,7 +110,6 @@ async def test_preload_all_puts_every_rule_skill_and_knowledge_file_before_the_m
     assert run.messages == [Message(role="user", content="Charged twice.")]
     assert all(message.content != parts for message in run.conversation)
     assert [t.name for t in first[2]] == [t.name for t in plain.calls[0][2]]
-    assert run.fingerprint is not None and before.fingerprint is not None
     assert run.fingerprint.agent != before.fingerprint.agent
 
 
