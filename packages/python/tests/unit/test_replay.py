@@ -675,6 +675,48 @@ async def test_a_replay_closed_under_a_cancel_returns_once_its_runs_have_ended(
     assert died.is_set()
 
 
+async def test_a_reader_cancelled_twice_cancels_its_replay_once(
+    tmp_path: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    recorder = Engine(graded(tmp_path), decision=Answering(), refinery=refinery)
+    await recorder.run("grader", "acme", "a")
+    entered, release, died = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class SlowToDie(Answering):
+        async def decide(
+            self, state: State, questions: Mapping[str, QuestionLike]
+        ) -> dict[str, Answer]:
+            entered.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                await release.wait()
+                died.set()
+                raise
+            raise AssertionError("a cancelled replay must not end on its own")
+
+    async def read() -> None:
+        engine = Engine(tmp_path, decision=SlowToDie())
+        async for _ in refinery.replay("acme", engine, agent="grader"):
+            raise AssertionError("a cancelled replay must yield nothing")
+
+    reading = asyncio.create_task(read())
+    try:
+        async with asyncio.timeout(2):
+            await entered.wait()
+        for _ in range(2):
+            reading.cancel()
+            await asyncio.sleep(0.05)
+            assert not reading.done() and not died.is_set()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(2):
+            await reading
+    assert died.is_set()
+
+
 async def recall(args: dict[str, Any]) -> str:
     return "nothing remembered"
 

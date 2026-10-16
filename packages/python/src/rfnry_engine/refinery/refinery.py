@@ -503,9 +503,8 @@ class Refinery:
             running: deque[asyncio.Task[Replay]] = deque()
 
             async def first() -> Replay:
-                done = await running[0]
-                running.popleft()
-                return done
+                await asyncio.wait([running[0]])
+                return running.popleft().result()
 
             try:
                 for recorded, labels in chosen:
