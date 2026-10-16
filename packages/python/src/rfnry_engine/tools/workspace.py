@@ -533,12 +533,19 @@ class Workspace:
             if self._jobs.get(name) is job:
                 del self._jobs[name]
         failed = [result for result in results if result is not None]
-        try:
-            await asyncio.gather(
-                *(job.task for _, job in gone if job.task is not None), return_exceptions=True
-            )
-        except asyncio.CancelledError as exc:
-            cancelled = cancelled or exc
+        readers = [job.task for _, job in gone if job.task is not None]
+        caller = asyncio.current_task()
+        while pending := [task for task in readers if not task.done()]:
+            try:
+                await asyncio.wait(pending)
+            except asyncio.CancelledError as exc:
+                cancelled = cancelled or exc
+                for task in pending:
+                    while caller is not None and task.cancelling() < caller.cancelling():
+                        task.cancel()
+        for task in readers:
+            if not task.cancelled():
+                task.exception()
         if cancelled is not None:
             _log(*failed)
             raise cancelled

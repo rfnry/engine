@@ -1117,6 +1117,75 @@ async def test_a_further_cancel_of_a_cancelled_close_ends_the_jobs_it_waits_for(
     assert not pending(before)
 
 
+class Lingering(Machine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+        self.cut = 0
+
+    async def spawn(self, command: str) -> Command:
+        ran = await super().spawn(command)
+        machine = self
+
+        async def kill() -> None:
+            ran.kills += 1
+            if ran.kills == 1:
+                try:
+                    await machine.release.wait()
+                finally:
+                    ran.exit(-15)
+                return
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                machine.cut += 1
+                raise
+
+        ran.kill = kill  # type: ignore[method-assign]
+        return ran
+
+
+@pytest.mark.parametrize("first", ["during the kills", "before close"])
+async def test_the_second_cancel_of_close_ends_the_kill_that_follows_a_job_s_end(
+    first: str,
+) -> None:
+    machine = Lingering()
+    before = asyncio.all_tasks()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    ran = machine.commands[0]
+
+    async def leaving() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await ws.close()
+
+    closing = asyncio.create_task(ws.close() if first == "during the kills" else leaving())
+    try:
+        if first == "before close":
+            await asyncio.sleep(0)
+            closing.cancel()
+        await until(lambda: ran.kills == 1, "close stopping the job")
+        if first == "during the kills":
+            closing.cancel()
+        await asyncio.sleep(0.05)
+        assert not closing.done()
+        machine.release.set()
+        await until(lambda: ran.kills == 2, "the kill that follows the job's end")
+        await asyncio.sleep(0.05)
+        assert not closing.done() and ws._jobs == {} and machine.cut == 0
+        closing.cancel()
+        done, _ = await asyncio.wait({closing}, timeout=1)
+        assert closing in done and closing.cancelled()
+        assert machine.cut == 1
+    finally:
+        closing.cancel()
+        await asyncio.wait({closing}, timeout=5)
+    await asyncio.sleep(0)
+    assert not pending(before)
+
+
 async def test_a_kill_that_fails_while_close_is_cancelled_is_logged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
