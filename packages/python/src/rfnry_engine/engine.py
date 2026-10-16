@@ -801,6 +801,7 @@ class Engine:
                 return True
             tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
             stopped = await wait(tasks, stop)
+            finishing: list[asyncio.Task[Step]] = []
             try:
                 if stopped:
                     finishing = [
@@ -812,7 +813,13 @@ class Engine:
                     for task in tasks:
                         if task not in finishing:
                             task.cancel()
-                    await wait(finishing, None)
+                    if finishing:
+                        await asyncio.wait(finishing)
+            except BaseException:
+                for call, task in zip(batch, tasks, strict=True):
+                    if task in finishing or any(call is done for done, _ in ran):
+                        task.cancel()
+                raise
             finally:
                 await join(tasks)
             for call, task in zip(batch, tasks, strict=True):

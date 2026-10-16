@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import gc
 from pathlib import Path
 from typing import Any
@@ -421,6 +422,53 @@ async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_han
         async with asyncio.timeout(2):
             await running
     assert died.is_set()
+    assert asyncio.all_tasks() <= before
+
+
+async def test_cancelling_a_run_cancels_the_handler_of_a_call_that_swallowed_the_stop(
+    tmp_path: Path,
+) -> None:
+    stop = Stop()
+    held = {"c1": asyncio.Event(), "c2": asyncio.Event()}
+    left = {"c1": asyncio.Event(), "c2": asyncio.Event()}
+
+    async def holding(event: Event) -> None:
+        if isinstance(event, ToolResultReady):
+            if event.call_id == "c2":
+                stop.now()
+            held[event.call_id].set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                left[event.call_id].set()
+
+    async def swallows(args: dict[str, Any]) -> str:
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.sleep(30)
+        return "kept going"
+
+    before = asyncio.all_tasks()
+    calls = [
+        ToolCall(id="c1", name="swallows", args={}),
+        ToolCall(id="c2", name="lookup", args={"order_id": "A-1"}),
+    ]
+    tools = Tools([Tool("swallows", body=swallows), Tool("lookup", body=lookup)])
+    llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
+    running = asyncio.create_task(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "lead", "acme", "Check A-1", tools=tools, stop=stop, on_event=holding
+        )
+    )
+    async with asyncio.timeout(2):
+        await held["c2"].wait()
+        await held["c1"].wait()
+    running.cancel()
+    async with asyncio.timeout(2):
+        await left["c1"].wait()
+        await left["c2"].wait()
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(2):
+            await running
     assert asyncio.all_tasks() <= before
 
 
