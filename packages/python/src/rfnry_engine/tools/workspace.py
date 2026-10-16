@@ -362,11 +362,17 @@ def _discard(reading: list[asyncio.Task[None]]) -> None:
 
 
 async def _reap(spawning: asyncio.Task[Process]) -> None:
-    try:
-        process = await spawning
-    except Exception:
+    hurried = False
+    while not spawning.done():
+        try:
+            await asyncio.wait([spawning])
+        except asyncio.CancelledError:
+            hurried = True
+    if spawning.cancelled() or spawning.exception() is not None:
         return
-    await process.kill()
+    if hurried:
+        cast(asyncio.Task[None], asyncio.current_task()).cancel()
+    await spawning.result().kill()
 
 
 def _log(*errors: BaseException | None) -> None:
@@ -382,8 +388,11 @@ async def _see_through(*kills: Awaitable[None]) -> list[BaseException | None]:
         try:
             await asyncio.wait(pending)
         except asyncio.CancelledError as exc:
-            cancelled = cancelled or exc
-    errors = [task.exception() for task in killing]
+            if cancelled is None:
+                cancelled = exc
+                for task in pending:
+                    task.cancel()
+    errors = [None if task.cancelled() else task.exception() for task in killing]
     if cancelled is not None:
         _log(*errors)
         raise cancelled

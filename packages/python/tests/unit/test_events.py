@@ -373,6 +373,7 @@ async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_han
 ) -> None:
     stop, entered, left = Stop(), asyncio.Event(), asyncio.Event()
     dying, release, died = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    cancels = 0
 
     async def stuck(event: Event) -> None:
         if isinstance(event, ToolResultReady) and event.call_id == "c2":
@@ -384,11 +385,13 @@ async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_han
                 left.set()
 
     async def slow_to_die(args: dict[str, Any]) -> str:
+        nonlocal cancels
         try:
             await asyncio.sleep(30)
         except asyncio.CancelledError:
+            cancels += 1
             dying.set()
-            await asyncio.shield(release.wait())
+            cancels += await outlast(asyncio.ensure_future(release.wait()))
             died.set()
             raise
         return "never"
@@ -421,7 +424,7 @@ async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_han
     with pytest.raises(asyncio.CancelledError):
         async with asyncio.timeout(2):
             await running
-    assert died.is_set()
+    assert died.is_set() and cancels == (1 if dead else 2)
     assert asyncio.all_tasks() <= before
 
 
@@ -479,21 +482,52 @@ async def test_cancelling_a_run_cancels_the_handler_of_a_call_that_swallowed_the
     assert asyncio.all_tasks() <= before
 
 
+async def outlast(ending: asyncio.Future[Any]) -> int:
+    cancels = 0
+    while not ending.done():
+        try:
+            await asyncio.wait([ending])
+        except asyncio.CancelledError:
+            cancels += 1
+    return cancels
+
+
 class Dying:
     def __init__(self, kept: str | None = None) -> None:
         self.entered, self.died = asyncio.Event(), asyncio.Event()
         self.kept = kept
+        self.cancels = 0
 
     async def __call__(self, *args: Any) -> Any:
         self.entered.set()
         try:
             await asyncio.sleep(30)
         except asyncio.CancelledError:
-            await asyncio.shield(asyncio.sleep(0.2))
+            self.cancels += 1 + await outlast(asyncio.ensure_future(asyncio.sleep(0.2)))
             self.died.set()
             if self.kept is None:
                 raise
             return self.kept
+        raise AssertionError("a cancelled call must not end on its own")
+
+
+class Absorbing:
+    def __init__(self) -> None:
+        self.entered, self.release = asyncio.Event(), asyncio.Event()
+        self.cancels = 0
+
+    async def __call__(self, *args: Any) -> Any:
+        self.entered.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            self.cancels += 1
+            while not self.release.is_set():
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:
+                    self.cancels += 1
+            raise
         raise AssertionError("a cancelled call must not end on its own")
 
 
@@ -513,7 +547,7 @@ async def cancel_while_dying(running: asyncio.Task[Any], dying: Dying, cancels: 
     with pytest.raises(asyncio.CancelledError):
         async with asyncio.timeout(2):
             await running
-    assert dying.died.is_set()
+    assert dying.died.is_set() and dying.cancels == cancels
 
 
 @pytest.mark.parametrize("kept", [None, "kept going"])
@@ -576,6 +610,108 @@ async def test_a_cancelled_run_returns_once_its_model_call_or_approval_has_ended
         )
     )
     await cancel_while_dying(running, dying, 2)
+    assert asyncio.all_tasks() <= before
+
+
+@pytest.mark.parametrize("apart", [True, False])
+@pytest.mark.parametrize("presses", [2, 3])
+async def test_each_further_stop_cancels_a_call_still_running_once_more(
+    tmp_path: Path, presses: int, apart: bool
+) -> None:
+    stop, dying, collect = Stop(), Absorbing(), Collect()
+    held, release = asyncio.Event(), asyncio.Event()
+    handler_cancelled = False
+
+    async def holding(event: Event) -> None:
+        nonlocal handler_cancelled
+        await collect(event)
+        if isinstance(event, ToolResultReady) and event.call_id == "c2":
+            held.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                handler_cancelled = True
+                raise
+
+    before = asyncio.all_tasks()
+    calls = [
+        ToolCall(id="c1", name="dying", args={}),
+        ToolCall(id="c2", name="lookup", args={"order_id": "A-1"}),
+    ]
+    tools = Tools([Tool("dying", body=dying), Tool("lookup", body=lookup)])
+    llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
+    running = asyncio.create_task(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "lead", "acme", "Check A-1", tools=tools, stop=stop, on_event=holding
+        )
+    )
+    try:
+        async with asyncio.timeout(2):
+            await dying.entered.wait()
+            await held.wait()
+            for _ in range(presses):
+                stop.now()
+                if apart:
+                    await asyncio.sleep(0.05)
+            while dying.cancels < presses:
+                await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        assert dying.cancels == presses and not handler_cancelled and not running.done()
+    finally:
+        release.set()
+        dying.release.set()
+    async with asyncio.timeout(2):
+        run = await running
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert [(s.result, s.stopped) for s in run.steps] == [
+        (STOPPED, True),
+        ('{"order": "A-1", "status": "shipped"}', False),
+    ]
+    check(run, calls, collect.of(run.run_id))
+    assert not handler_cancelled
+    assert asyncio.all_tasks() <= before
+
+
+async def test_a_further_stop_reaches_a_delegated_runs_call_and_keeps_the_delegation(
+    tmp_path: Path,
+) -> None:
+    stop, dying = Stop(), Absorbing()
+    llm = Scripted(
+        Reply(
+            tool_calls=[
+                ToolCall(id="d", name="Delegate", args={"agent": "chat", "input": "Check A-1"})
+            ],
+            stop_reason="tool_use",
+        ),
+        Reply(tool_calls=[ToolCall(id="c1", name="dying", args={})], stop_reason="tool_use"),
+    )
+    before = asyncio.all_tasks()
+    running = asyncio.create_task(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "lead", "acme", "Check A-1", tools=Tools([Tool("dying", body=dying)]), stop=stop
+        )
+    )
+    try:
+        async with asyncio.timeout(2):
+            await dying.entered.wait()
+            stop.now()
+            await asyncio.sleep(0.05)
+            stop.now()
+            while dying.cancels < 2:
+                await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        assert dying.cancels == 2 and not running.done()
+    finally:
+        dying.release.set()
+    async with asyncio.timeout(2):
+        run = await running
+    assert isinstance(run, Generation) and run.stopped == "now"
+    [child] = run.children
+    assert isinstance(child, Generation) and child.stopped == "now"
+    assert [(s.tool, s.stopped, s.child_run_id) for s in run.steps] == [
+        ("Delegate", True, child.run_id)
+    ]
+    assert [(s.tool, s.result, s.stopped) for s in child.steps] == [("dying", STOPPED, True)]
     assert asyncio.all_tasks() <= before
 
 

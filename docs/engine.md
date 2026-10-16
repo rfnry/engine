@@ -463,22 +463,24 @@ call cut off by `now()` is answered with the error `stopped by the user` and its
 `stopped=True`, so every tool call in `run.conversation` has its result and the next run continues
 from it. A call the stop finds not yet running never runs: a stop from a handler of a call's
 `ToolCallStarted` comes before its tool runs, and one from a handler of a reply's `TextDelta` before
-any of the reply's calls. A handler still running when a stop
-cancels its call, or a streamed `TextDelta` handler, is cancelled with that work, so a kill switch
-does its own work, such as an audit, before it calls `stop.now()`. A call that already
-has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady`
-to return: a handler can stop the run on what a tool returned; a slow one delays the stop, and
-cancelling the run cancels it. Cancelling the run's task cancels its model call and every tool call
-still running, delegations and their runs included, and re-raises once all of them have ended,
-however many cancels come meanwhile, as an `asyncio.TaskGroup` does; a stop waits the same way for
-the work it cancels, so a tool that ignores cancellation holds either one. A stop set before the run
-starts ends it before the first model call; one set after it ended does nothing. A stop reaches
-delegated and routed runs, which end the same way at their own next boundary. With `after_step()`
-pending the inbox is not read. Whatever is still in the inbox when the run ends stays there — the
-engine never starts a run; you do, with those messages as its input. A decision run never reads the
-inbox: its questions are one call, and a stop or an inbox rides to the run it routes to. "Pause,
-please" is a message in the inbox: the model reads it at the next boundary and wraps up in its own
-words.
+any of the reply's calls. A handler still running when a stop cancels its call, or a streamed
+`TextDelta` handler, is cancelled with that work, so a kill switch does its own work, such as an
+audit, before it calls `stop.now()`. A call that already has its result keeps it, and the stop waits
+for an `on_event` still handling its `ToolResultReady` to return: a handler can stop the run on what
+a tool returned; a slow one delays the stop, and cancelling the run cancels it. Cancelling the run's
+task cancels its model call and every tool call still running, delegations and their runs included,
+and re-raises once all of them have ended, as an `asyncio.TaskGroup` does; a stop waits the same way
+for the work it cancels, so a tool that ignores cancellation holds either one. The first stop is
+graceful: a workspace command is sent SIGTERM and given a second to end. A second stop —
+`stop.now()` again, or cancelling a run that is already stopping — ends what is still running at
+once, with no grace period: each further `now()` or cancel cancels once more every tool call still
+running, and a workspace kills its command outright. A stop set before the run starts ends it before
+the first model call; one set after it ended does nothing. A stop reaches delegated and routed runs,
+which end the same way at their own next boundary. With `after_step()` pending the inbox is not
+read. Whatever is still in the inbox when the run ends stays there — the engine never starts a run;
+you do, with those messages as its input. A decision run never reads the inbox: its questions are
+one call, and a stop or an inbox rides to the run it routes to. "Pause, please" is a message in the
+inbox: the model reads it at the next boundary and wraps up in its own words.
 
 A run that ended continues from its record, on any process, after any restart. With a refinery
 attached every run that returns is recorded with its conversation: keep the run id beside what you
@@ -1081,17 +1083,21 @@ class Backend(Protocol):
 
 `spawn` starts a command in the workspace with no input and returns at once a `Process`: its
 `stdout` and `stderr`, read until they end, `wait()` for its exit code, and `kill()` to end it and
-everything it started. Every kill the workspace starts runs to its end, and the call that started
-it waits for it: a stop or a cancel of a `Shell` call, of `Job(stop=true)` or of `close()` returns
-once the kill has returned, however many cancels come meanwhile, and one that comes while `spawn`
-runs waits for it to return, then for the kill of what it started. So `spawn` and `kill()` must
-return promptly. A `kill()` that raises is the call's error; when the call is already leaving with
-a cancellation, or with the error of a `wait()` that raised, it is logged as an error instead,
+everything it started. Every kill the workspace starts runs to its end, and the call that started it
+waits for it: a stop or a cancel of a `Shell` call, of `Job(stop=true)` or of `close()` returns once
+the kill has returned, however many cancels come meanwhile, and one that comes while `spawn` runs
+waits for it to return, then for the kill of what it started. So `spawn` and `kill()` must return
+promptly. A cancel that comes while a kill runs, or a second one while `spawn` runs, cancels that
+kill, once — so a second stop ends a command at once — and the call still waits for it: a cancelled
+`kill()` must still end the command and everything it started, at once, before it returns; `Local`
+sends SIGKILL in a `finally`, and so does the Docker backend in `examples/workspaces/`. A `kill()`
+that raises is the call's error; when the call is already leaving with a cancellation, or with the
+error of a `wait()` that raised, it is logged as an error instead,
 `workspace: could not stop the command: …`, and the kill that follows a job's end puts its error in
 the job's output. `read` refuses a file larger than `limit`; `write` creates parent directories. A
-path is the model's, relative to the workspace, and what it can reach is the backend's to decide;
-an error a backend raises reaches the model as the tool's error. A backend may have a
-`description`, which ends `Shell`'s description, as `Local` takes one.
+path is the model's, relative to the workspace, and what it can reach is the backend's to decide; an
+error a backend raises reaches the model as the tool's error. A backend may have a `description`,
+which ends `Shell`'s description, as `Local` takes one.
 
 The library has no notion of a secret. A key a user types is the run's input; a key you put in
 `Local(env=)` is the commands' environment, which a command can print. Either way the record keeps
@@ -1103,11 +1109,11 @@ An agent without `workspace: true` never sees these tools, even when the run has
 plain agent, a root with no `AGENT.md`, gets them whenever one is passed; an agent with it, run
 without one, is a `ConfigurationError`, and so is a decision agent that declares it. Delegated and
 routed agents receive the run's workspace on the same terms. `stop.now()` stops a running command
-the same way the timeout does, and leaves jobs running. You own the workspace and its lifetime: a
-temporary directory per run, or one kept for a project. A workspace belongs to one tenant, the one
-its `scope` names: a run, a tool or a replay of another scope refuses it before anything runs —
-`engine: workspace belongs to scope 'acme', not 'globex'` — so a workspace, its files and its jobs
-never cross tenants.
+the same way the timeout does, and a second one kills it at once; either leaves jobs running. You
+own the workspace and its lifetime: a temporary directory per run, or one kept for a project. A
+workspace belongs to one tenant, the one its `scope` names: a run, a tool or a replay of another
+scope refuses it before anything runs — `engine: workspace belongs to scope 'acme', not 'globex'` —
+so a workspace, its files and its jobs never cross tenants.
 
 ### Approving tool calls
 

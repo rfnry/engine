@@ -841,6 +841,7 @@ class Slow(Machine):
         self.fails = fails
         self.release = asyncio.Event()
         self.finished = 0
+        self.cut = 0
 
     async def spawn(self, command: str) -> Command:
         ran = await super().spawn(command)
@@ -848,11 +849,17 @@ class Slow(Machine):
 
         async def kill() -> None:
             ran.kills += 1
-            await machine.release.wait()
-            machine.finished += 1
-            if machine.fails:
-                raise RuntimeError("docker: kill failed")
-            ran.exit(-15)
+            try:
+                await machine.release.wait()
+            except asyncio.CancelledError:
+                machine.cut += 1
+                raise
+            finally:
+                await machine.release.wait()
+                machine.finished += 1
+                if machine.fails:
+                    raise RuntimeError("docker: kill failed")
+                ran.exit(-15)
 
         ran.kill = kill  # type: ignore[method-assign]
         return ran
@@ -896,14 +903,16 @@ async def cancel_twice_during_the_kill(
     try:
         await until(lambda: kills(machine) == count, "the kill starting")
         task.cancel()
-        await asyncio.sleep(0.01)
+        await until(lambda: machine.cut == count, "the cancel cutting the kill")
         task.cancel()
         await asyncio.sleep(0.05)
-        assert not task.done() and kills(machine) == count and machine.finished == 0
+        assert not task.done() and kills(machine) == machine.cut == count
+        assert machine.finished == 0
     finally:
         machine.release.set()
     done, _ = await asyncio.wait({task}, timeout=5)
     assert task in done and task.cancelled()
+    assert machine.cut == count
 
 
 @pytest.mark.parametrize("fails", [False, True])
@@ -946,6 +955,30 @@ async def test_a_command_cancelled_while_it_starts_returns_once_it_is_stopped(
     assert kills(machine) == machine.finished == 1
     assert not pending(before)
     assert logged(caplog) == ([LOST] if fails else [])
+
+
+async def test_a_second_cancel_while_it_starts_cuts_the_kill_of_what_it_started() -> None:
+    machine = Late()
+    before = asyncio.all_tasks()
+    task = asyncio.create_task(shell(Workspace(machine, scope="acme"), "x"))
+    try:
+        await started(machine)
+        for _ in range(3):
+            task.cancel()
+            await asyncio.sleep(0.01)
+        assert not task.done() and kills(machine) == 0
+        machine.begin.set()
+        await until(lambda: machine.cut == 1, "the cancel cutting the kill")
+        await asyncio.sleep(0.05)
+        assert not task.done() and kills(machine) == 1 and machine.finished == 0
+    finally:
+        machine.begin.set()
+        machine.release.set()
+    done, _ = await asyncio.wait({task}, timeout=5)
+    assert task in done and task.cancelled()
+    assert kills(machine) == machine.cut == machine.finished == 1
+    await asyncio.sleep(0)
+    assert not pending(before)
 
 
 async def test_a_cancelled_job_stop_returns_once_its_kill_has_finished() -> None:

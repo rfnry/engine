@@ -58,7 +58,7 @@ from rfnry_engine.records import (
     ToolCallStarted,
     ToolResultReady,
 )
-from rfnry_engine.stop import Stop, Stopped, cancel, join, requested, wait
+from rfnry_engine.stop import Stop, Stopped, requested, wait
 from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
@@ -717,7 +717,6 @@ class Engine:
             if options.approve is not None:
                 asking = asyncio.ensure_future(options.approve(spec.name, call))
                 if await wait([asking], stop):
-                    await cancel([asking])
                     return await cut(call, began)
                 approved = asking.result()
             if approved is not None and not isinstance(approved, bool):
@@ -800,27 +799,16 @@ class Engine:
                     answer(call, await cut(call, began))
                 return True
             tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
-            stopped = await wait(tasks, stop)
-            finishing: list[asyncio.Task[Step]] = []
-            try:
-                if stopped:
-                    finishing = [
-                        t
-                        for c, t in zip(batch, tasks, strict=True)
-                        if (spec.agents and c.name == DELEGATE_TOOL)
-                        or any(c is done for done, _ in ran)
-                    ]
-                    for task in tasks:
-                        if task not in finishing:
-                            task.cancel()
-                    await asyncio.wait(tasks)
-            except BaseException:
-                for call, task in zip(batch, tasks, strict=True):
-                    if task in finishing or any(call is done for done, _ in ran):
-                        task.cancel()
-                raise
-            finally:
-                await join(tasks)
+
+            def finishing() -> list[asyncio.Task[Step]]:
+                return [
+                    task
+                    for call, task in zip(batch, tasks, strict=True)
+                    if (spec.agents and call.name == DELEGATE_TOOL)
+                    or any(call is done for done, _ in ran)
+                ]
+
+            stopped = await wait(tasks, stop, finishing)
             for call, task in zip(batch, tasks, strict=True):
                 answer(call, await cut(call, began) if task.cancelled() else task.result())
             return stopped
@@ -893,7 +881,6 @@ class Engine:
                 after = await asyncio.to_thread(marked)
                 asking = asyncio.ensure_future(ask())
                 if await wait([asking], stop):
-                    await cancel([asking])
                     partial = "".join(streamed)
                     if partial:
                         messages.append(Message(role="assistant", content=partial))

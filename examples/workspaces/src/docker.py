@@ -116,8 +116,8 @@ class Inside:
         return await self.client.wait()
 
     async def kill(self) -> None:
-        await self.docker.signal(self.tag, "TERM")
         try:
+            await self.docker.signal(self.tag, "TERM")
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(GRACE):
                     await self.client.wait()

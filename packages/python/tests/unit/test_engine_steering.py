@@ -1,6 +1,8 @@
 import asyncio
 import os
+import time
 from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -458,6 +460,99 @@ async def test_stop_now_sends_a_workspace_command_sigterm_first(tmp_path: Path) 
         await asyncio.wait([task])
     assert isinstance(run, Generation) and run.stopped == "now" and run.steps[0].result == STOPPED
     assert (root / "stopped.txt").read_text() == "stopped\n"
+
+
+TRAPPED = "echo $$ > leader.pid; trap '' TERM; sleep 30 & echo $! > child.pid; wait"
+
+
+def ended(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (ProcessLookupError, FileNotFoundError):
+        return True
+    return state == "Z"
+
+
+async def group_ended(root: Path) -> None:
+    for name in ("leader.pid", "child.pid"):
+        await until(partial(ended, int((root / name).read_text())), f"{name} ending")
+
+
+@pytest.mark.parametrize(
+    "pushes",
+    [
+        ["now"],
+        ["cancel"],
+        ["now", "now"],
+        ["now", "now", "now"],
+        ["now", "cancel"],
+        ["cancel", "cancel"],
+        ["cancel", "now"],
+    ],
+)
+async def test_a_second_stop_kills_a_workspace_command_at_once(
+    tmp_path: Path, pushes: list[str]
+) -> None:
+    root = tmp_path / "work"
+    root.mkdir()
+    llm = Paced(use(call("Shell", "c1", command=TRAPPED)))
+    engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=None)
+    stop = Stop()
+    task = asyncio.create_task(
+        engine.run("coder", "acme", "x", workspace=Workspace(Local(root), scope="acme"), stop=stop)
+    )
+    try:
+        await until(lambda: written(root / "child.pid"), "the shell writing its child's pid")
+        began = time.monotonic()
+        for at, push in enumerate(pushes):
+            if at:
+                await asyncio.sleep(0.1)
+            if push == "now":
+                stop.now()
+            else:
+                task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=5)
+        took = time.monotonic() - began
+    finally:
+        task.cancel()
+        await asyncio.wait([task])
+    assert task in done
+    if "cancel" in pushes:
+        assert task.cancelled()
+    else:
+        run = task.result()
+        assert isinstance(run, Generation) and run.stopped == "now"
+        assert run.steps[0].result == STOPPED
+    if len(pushes) == 1:
+        assert 0.9 < took < 2.5
+    else:
+        assert took < 0.5
+    await group_ended(root)
+
+
+async def test_two_stops_at_once_kill_a_workspace_command_at_once(tmp_path: Path) -> None:
+    root = tmp_path / "work"
+    root.mkdir()
+    llm = Paced(use(call("Shell", "c1", command=TRAPPED)))
+    engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=None)
+    stop = Stop()
+    task = asyncio.create_task(
+        engine.run("coder", "acme", "x", workspace=Workspace(Local(root), scope="acme"), stop=stop)
+    )
+    try:
+        await until(lambda: written(root / "child.pid"), "the shell writing its child's pid")
+        began = time.monotonic()
+        stop.now()
+        stop.now()
+        run = await asyncio.wait_for(task, 5)
+        took = time.monotonic() - began
+    finally:
+        task.cancel()
+        await asyncio.wait([task])
+    assert isinstance(run, Generation) and run.stopped == "now" and run.steps[0].result == STOPPED
+    assert took < 0.5
+    await group_ended(root)
 
 
 class Verdict(BaseModel):

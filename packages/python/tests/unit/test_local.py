@@ -580,20 +580,48 @@ async def test_a_cancelled_command_that_ignores_sigterm_is_killed_a_second_later
     assert await gone(int((root / "child.pid").read_text()))
 
 
-async def test_a_second_cancel_still_waits_for_the_kill_to_finish(root: Path) -> None:
-    task = asyncio.create_task(
-        shell(workspace(root), "trap '' TERM; sleep 30 & echo $! > child.pid; touch ready; wait")
-    )
-    await appears(root / "ready")
-    began = time.monotonic()
+TRAPPED = "echo $$ > leader.pid; trap '' TERM; sleep 30 & echo $! > child.pid; wait"
+
+
+async def group_gone(root: Path) -> bool:
+    return all([await gone(int((root / name).read_text())) for name in ("leader.pid", "child.pid")])
+
+
+async def test_a_second_cancel_kills_the_command_at_once(root: Path) -> None:
+    task = asyncio.create_task(shell(workspace(root), TRAPPED))
+    await written_pid(root / "child.pid")
     task.cancel()
     await asyncio.sleep(0.2)
     assert not task.done()
+    began = time.monotonic()
     task.cancel()
     done, _ = await asyncio.wait({task}, timeout=5)
     assert task in done and task.cancelled()
-    assert 0.9 < time.monotonic() - began < 3
-    assert await gone(int((root / "child.pid").read_text()))
+    assert time.monotonic() - began < 0.5
+    assert await group_gone(root)
+
+
+@pytest.mark.parametrize("stopping", ["close", "Job"])
+async def test_a_cancel_while_a_job_is_stopped_kills_it_at_once(root: Path, stopping: str) -> None:
+    ws = workspace(root)
+    await tool(ws, "Shell").call({"command": TRAPPED, "background": True})
+    await written_pid(root / "child.pid")
+    task = asyncio.create_task(
+        ws.close() if stopping == "close" else tool(ws, "Job").call({"id": "j1", "stop": True})
+    )
+    await asyncio.sleep(0.2)
+    assert not task.done()
+    began = time.monotonic()
+    for _ in range(2):
+        task.cancel()
+        await asyncio.sleep(0.01)
+    done, _ = await asyncio.wait({task}, timeout=5)
+    assert task in done and task.cancelled()
+    assert time.monotonic() - began < 0.5
+    assert await group_gone(root)
+    async with asyncio.timeout(5):
+        await ws._jobs["j1"].ended.wait()
+        await ws.close()
 
 
 class Gated(Local):
