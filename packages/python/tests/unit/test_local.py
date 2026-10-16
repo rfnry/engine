@@ -575,7 +575,7 @@ async def test_a_cancelled_command_that_ignores_sigterm_is_killed_a_second_later
     assert await gone(int((root / "child.pid").read_text()))
 
 
-async def test_a_second_cancel_kills_at_once(root: Path) -> None:
+async def test_a_second_cancel_still_waits_for_the_kill_to_finish(root: Path) -> None:
     task = asyncio.create_task(
         shell(workspace(root), "trap '' TERM; sleep 30 & echo $! > child.pid; touch ready; wait")
     )
@@ -587,7 +587,7 @@ async def test_a_second_cancel_kills_at_once(root: Path) -> None:
     task.cancel()
     done, _ = await asyncio.wait({task}, timeout=5)
     assert task in done and task.cancelled()
-    assert time.monotonic() - began < 0.8
+    assert 0.9 < time.monotonic() - began < 3
     assert await gone(int((root / "child.pid").read_text()))
 
 

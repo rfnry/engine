@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import errno
+import logging
 import os
 import shutil
 import signal
@@ -18,6 +19,8 @@ from pydantic import BaseModel
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.jail import Jail
 from rfnry_engine.tools.tools import Tool
+
+logger = logging.getLogger(__name__)
 
 WORKSPACE_TOOLS = frozenset({"Shell", "Job", "Write", "Edit"})
 GRACE = 1.0
@@ -352,22 +355,32 @@ def _discard(reading: list[asyncio.Task[None]]) -> None:
 
 
 async def _reap(spawning: asyncio.Task[Process]) -> None:
-    with contextlib.suppress(Exception):
-        process = await spawning
-        await process.kill()
-
-
-def _retrieve(task: asyncio.Task[None]) -> None:
-    if not task.cancelled():
-        task.exception()
-
-
-async def _stop(killing: asyncio.Task[None]) -> None:
     try:
-        await asyncio.shield(killing)
-    except asyncio.CancelledError:
-        killing.add_done_callback(_retrieve)
-        raise
+        process = await spawning
+    except Exception:
+        return
+    await process.kill()
+
+
+def _log(*errors: BaseException | None) -> None:
+    for error in errors:
+        if error is not None:
+            logger.error("workspace: could not stop the command: %s", error, exc_info=error)
+
+
+async def _finish(*kills: Awaitable[None]) -> list[BaseException | None]:
+    killing = [asyncio.ensure_future(kill) for kill in kills]
+    cancelled: asyncio.CancelledError | None = None
+    while pending := [task for task in killing if not task.done()]:
+        try:
+            await asyncio.wait(pending)
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+    errors = [task.exception() for task in killing]
+    if cancelled is not None:
+        _log(*errors)
+        raise cancelled
+    return errors
 
 
 async def _exit_code(process: Process) -> int | None:
@@ -389,22 +402,24 @@ class _Job:
     task: asyncio.Task[None] | None = None
 
 
+def _note(kept: _Kept, error: BaseException | None) -> None:
+    if error is not None:
+        kept.add(f"\n{type(error).__name__}: {error}\n".encode())
+
+
 async def _follow(job: _Job) -> None:
     reading = _reading(job.process, job.kept, job.kept)
     try:
-        job.code = await job.process.wait()
-        await job.process.kill()
-        await _settle(reading)
-    except BaseException as exc:
-        said = f"\n{type(exc).__name__}: {exc}\n" if isinstance(exc, Exception) else ""
-        job.kept.add(said.encode())
         try:
-            await job.process.kill()
-        except Exception as error:
-            if (again := f"\n{type(error).__name__}: {error}\n") != said:
-                job.kept.add(again.encode())
-        if not isinstance(exc, Exception):
-            raise
+            job.code = await job.process.wait()
+        except Exception as exc:
+            _note(job.kept, exc)
+        finally:
+            [error] = await _finish(job.process.kill())
+            _note(job.kept, error)
+        await _settle(reading)
+    except Exception as exc:
+        _note(job.kept, exc)
     finally:
         _discard(reading)
         job.ended.set()
@@ -494,20 +509,16 @@ class Workspace:
     async def close(self) -> None:
         jobs = list(self._jobs.items())
         running = [job for _, job in jobs if not job.ended.is_set()]
-        results = await asyncio.gather(
-            *(job.process.kill() for job in running), return_exceptions=True
-        )
+        results = await _finish(*(job.process.kill() for job in running))
         errors = dict(zip(map(id, running), results, strict=True))
-        gone = [
-            (name, job) for name, job in jobs if not isinstance(errors.get(id(job)), BaseException)
-        ]
+        gone = [(name, job) for name, job in jobs if errors.get(id(job)) is None]
         for name, job in gone:
             if self._jobs.get(name) is job:
                 del self._jobs[name]
         await asyncio.gather(
             *(job.task for _, job in gone if job.task is not None), return_exceptions=True
         )
-        failed = [result for result in results if isinstance(result, BaseException)]
+        failed = [result for result in results if result is not None]
         if failed:
             raise failed[0]
 
@@ -519,28 +530,30 @@ class Workspace:
         try:
             process = await asyncio.shield(spawning)
         except asyncio.CancelledError:
-            await asyncio.shield(_reap(spawning))
+            _log(*await _finish(_reap(spawning)))
             raise
         out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
         reading = _reading(process, out, err)
-        killing: asyncio.Task[None] | None = None
+        code: int | None = None
         try:
-            code: int | None
-            try:
-                async with asyncio.timeout(self.timeout):
-                    code = await process.wait()
-                timed_out = False
-            except TimeoutError:
-                timed_out = True
-            killing = asyncio.create_task(process.kill())
-            await _stop(killing)
+            async with asyncio.timeout(self.timeout):
+                code = await process.wait()
+            timed_out = False
+        except TimeoutError:
+            timed_out = True
+        except BaseException:
+            _discard(reading)
+            _log(*await _finish(process.kill()))
+            raise
+        try:
+            [error] = await _finish(process.kill())
+            if error is not None:
+                raise error
             if timed_out:
                 code = await _exit_code(process)
             await _settle(reading)
-        except BaseException:
+        finally:
             _discard(reading)
-            await _stop(asyncio.create_task(process.kill()) if killing is None else killing)
-            raise
         return {
             "exit_code": code,
             "stdout": out.take(),
@@ -572,7 +585,9 @@ class Workspace:
                 async with asyncio.timeout(a.wait):
                     await job.ended.wait()
         if a.stop and not job.ended.is_set():
-            await job.process.kill()
+            [error] = await _finish(job.process.kill())
+            if error is not None:
+                raise error
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout_at(deadline):
                     await job.ended.wait()
