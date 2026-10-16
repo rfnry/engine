@@ -622,12 +622,14 @@ async def test_a_kill_the_workspace_started_takes_one_cancel_as_the_first_stop(
 ) -> None:
     ws = workspace(root, timeout=0.3 if stopping == "timeout" else 120)
     if stopping == "timeout":
+        killing = time.monotonic() + 0.3
         task = asyncio.create_task(shell(ws, TRAPPED))
         await written_pid(root / "child.pid")
         await asyncio.sleep(0.4)
     else:
         await tool(ws, "Shell").call({"command": TRAPPED, "background": True})
         await written_pid(root / "child.pid")
+        killing = time.monotonic()
         task = asyncio.create_task(
             ws.close() if stopping == "close" else tool(ws, "Job").call({"id": "j1", "stop": True})
         )
@@ -640,9 +642,12 @@ async def test_a_kill_the_workspace_started_takes_one_cancel_as_the_first_stop(
         assert not task.done()
         task.cancel()
     done, _ = await asyncio.wait({task}, timeout=5)
-    took = time.monotonic() - began
+    ended = time.monotonic()
     assert task in done and task.cancelled()
-    assert 0.6 < took < 1.6 if cancels == 1 else took < 0.5
+    if cancels == 1:
+        assert ended - killing > 0.9 and ended - began < 1.6
+    else:
+        assert ended - began < 0.5
     assert await group_gone(root)
     if stopping == "close":
         assert ws._jobs == {}
