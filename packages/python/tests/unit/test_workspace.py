@@ -800,3 +800,44 @@ async def test_a_job_call_is_bounded_by_the_timeout_as_a_whole() -> None:
     assert result["running"] is True and ran.kills == 1
     ran.stubborn = False
     await ws.close()
+
+
+class Slow(Machine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+        self.finished = 0
+
+    async def spawn(self, command: str) -> Command:
+        ran = await super().spawn(command)
+        machine = self
+
+        async def kill() -> None:
+            ran.kills += 1
+            await machine.release.wait()
+            machine.finished += 1
+            ran.exit(-15)
+
+        ran.kill = kill  # type: ignore[method-assign]
+        return ran
+
+
+async def test_a_second_cancel_cannot_cut_the_kill_of_a_running_command_short() -> None:
+    machine = Slow()
+    before = asyncio.all_tasks()
+    task = asyncio.create_task(shell(Workspace(machine, scope="acme"), "x"))
+    ran = await started(machine)
+    await asyncio.sleep(0)
+    task.cancel()
+    await until(lambda: ran.kills == 1, "the kill starting")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert machine.finished == 0
+    machine.release.set()
+    await until(lambda: machine.finished == 1, "the kill finishing")
+    await asyncio.sleep(0)
+    assert ran.kills == 1
+    assert not [
+        t for t in asyncio.all_tasks() - before if not t.done() and t is not asyncio.current_task()
+    ]

@@ -1038,6 +1038,11 @@ call against the folder it was made with, but a `Local` made later on a path the
 follows the rename. The bubblewrap recipe binds the root itself, so a sandboxed model never sees
 its parent.
 
+`Local` refuses a root that is no longer the folder it was made with, by its directory inode number.
+On a filesystem whose directory inode numbers are not stable — overlayfs without `xino`, FUSE
+without `use_ino` — that check refuses a valid root, so such a filesystem is not supported as a
+workspace root.
+
 Binding the whole system read-only (`--ro-bind / /`) is not enough: a command could still read
 every other tenant's directory and every secret on disk. Mount only what commands need — the
 recipe above suits a system whose programs live under `/usr`; add a read-only `/etc` path when a
@@ -1064,8 +1069,9 @@ class Backend(Protocol):
 
 `spawn` starts a command in the workspace with no input and returns at once a `Process`: its
 `stdout` and `stderr`, read until they end, `wait()` for its exit code, and `kill()` to end it and
-everything it started. A stop or a cancel that comes while `spawn` runs lets it return, then kills
-what it started. `read` refuses a file larger than `limit`; `write` creates parent directories. A
+everything it started. `spawn` must return promptly: a stop or a cancel that comes while it runs
+waits for it to return, then kills what it started, and a second cancel cannot cut that kill short.
+`read` refuses a file larger than `limit`; `write` creates parent directories. A
 path is the model's, relative to the workspace, and what it can reach is the backend's to decide; an
 error a backend raises reaches the model as the tool's error. A backend may have a `description`,
 which ends `Shell`'s description, as `Local` takes one.
@@ -1233,9 +1239,9 @@ generation row's `tools` is what the model was offered — `{name, description, 
 `run.conversation` in order: history, input, assistant turns with their `tool_calls` (`{id, name,
 args}`), tool results with `is_error`, the final reply. Together they fit standard fine-tuning and
 eval formats with a few lines of mapping; the library writes no vendor's format. Parts are written
-inline, their bytes as base64, so a row is self-contained; strip the media from a row you do not want it in. The third is a
-decision agent's answers beside what turned out true: a calibrated model is one whose 0.8 was right
-80% of the time, and this is the table that says whether it was:
+inline, their bytes as base64, so a row is self-contained; strip the media from a row you do not
+want it in. The third is a decision agent's answers beside what turned out true: a calibrated model
+is one whose 0.8 was right 80% of the time, and this is the table that says whether it was:
 
 ```json
 {"run_id": "…", "holdout": false, "agent": "frontdesk", "tags": {"arm": "b"}, "question_id": "intent", "answer": "billing",

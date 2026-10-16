@@ -391,6 +391,20 @@ async def _reap(spawning: asyncio.Task[Process]) -> None:
         await process.kill()
 
 
+def _retrieve(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+async def _stop(process: Process) -> None:
+    killing = asyncio.create_task(process.kill())
+    try:
+        await asyncio.shield(killing)
+    except asyncio.CancelledError:
+        killing.add_done_callback(_retrieve)
+        raise
+
+
 async def _exit_code(process: Process) -> int | None:
     try:
         async with asyncio.timeout(GRACE):
@@ -552,13 +566,13 @@ class Workspace:
                 timed_out = False
             except TimeoutError:
                 timed_out = True
-            await process.kill()
+            await _stop(process)
             if timed_out:
                 code = await _exit_code(process)
             await _settle(reading)
         except BaseException:
             _discard(reading)
-            await process.kill()
+            await _stop(process)
             raise
         return {
             "exit_code": code,
