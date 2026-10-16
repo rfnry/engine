@@ -429,10 +429,11 @@ run = await engine.run("support", scope="acme", input=message, task="triage",
 ```
 
 A `ToolCallStarted` carries the call's `args`, and a `ToolResultReady` its `step`: the same `Step`
-the run records, sent however the call ended — a result, an error, a refusal, a delegation, a stop —
-so a step can be shown, in a conversation or anywhere, while the run goes on. A call the engine
-answers without running it sends neither: `Output`, a call after an accepted `Output`, a call in a
-reply that was cut short. Its step is in `run.steps`.
+the run records, sent once however the call ended — a result, an error, a refusal, a delegation, a
+stop — so a step can be shown, in a conversation or anywhere, while the run goes on. A call
+`stop.now()` cuts off sends its `ToolResultReady` whether or not it had started; any other call the
+engine answers without running it sends neither: `Output`, a call after an accepted `Output`, a call
+in a reply that was cut short. Its step is in `run.steps`.
 
 Every model call is a turn, and a `TextDelta` carries the `turn` that said it, from 0. Text of a
 turn that ends in tool calls — "Let me look that up." — is said beside them; a run that ends in
@@ -460,13 +461,15 @@ that ended on its own), `run.steps` are the steps it took, `run.reply` is the la
 produced — text streamed before `now()` included — or `""`, and it is recorded like any run. A tool
 call cut off by `now()` is answered with the error `stopped by the user` and its `Step` has
 `stopped=True`, so every tool call in `run.conversation` has its result and the next run continues
-from it. A stop set before the run starts ends it before the first model call; one set after it
-ended does nothing. A stop reaches delegated and routed runs, which end the same way at their own
-next boundary. With `after_step()` pending the inbox is not read. Whatever is still in the inbox
-when the run ends stays there — the engine never starts a run; you do, with those messages as its
-input. A decision run never reads the inbox: its questions are one call, and a stop or an inbox
-rides to the run it routes to. "Pause, please" is a message in the inbox: the model reads it at the
-next boundary and wraps up in its own words.
+from it. A call that already has its result keeps it, even while `on_event` is still handling its
+`ToolResultReady`: a handler can stop the run on what a tool returned. A stop set before the run
+starts ends it before the first model call; one set after it ended does nothing. A stop reaches
+delegated and routed runs, which end the same way at their own next boundary. With `after_step()`
+pending the inbox is not read. Whatever is still in the inbox when the run ends stays there — the
+engine never starts a run; you do, with those messages as its input. A decision run never reads the
+inbox: its questions are one call, and a stop or an inbox rides to the run it routes to. "Pause,
+please" is a message in the inbox: the model reads it at the next boundary and wraps up in its own
+words.
 
 A run that ended continues from its record, on any process, after any restart. With a refinery
 attached every run that returns is recorded with its conversation: keep the run id beside what you

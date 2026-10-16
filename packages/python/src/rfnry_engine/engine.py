@@ -794,14 +794,15 @@ class Engine:
             tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
             stopped = await wait(tasks, stop)
             if stopped:
-                delegated = [
+                finishing = [
                     t
                     for c, t in zip(batch, tasks, strict=True)
-                    if spec.agents and c.name == DELEGATE_TOOL
+                    if (spec.agents and c.name == DELEGATE_TOOL)
+                    or any(c is done for done, _ in ran)
                 ]
-                await cancel([t for t in tasks if t not in delegated and not t.done()])
-                if delegated:
-                    await asyncio.wait(delegated)
+                await cancel([t for t in tasks if t not in finishing and not t.done()])
+                if finishing:
+                    await asyncio.wait(finishing)
             for call, task in zip(batch, tasks, strict=True):
                 answer(call, await cut(call, began) if task.cancelled() else task.result())
             return stopped
