@@ -1,6 +1,6 @@
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from datetime import datetime
 from typing import Any
 
@@ -1368,3 +1368,41 @@ async def test_a_close_cancelled_while_it_waits_for_its_jobs_logs_the_kill_that_
         await ws.close()
     await asyncio.sleep(0)
     assert not pending(before)
+
+
+def recording(made: list[str]) -> Callable[..., asyncio.Task[Any]]:
+    def factory(
+        loop: asyncio.AbstractEventLoop, coro: Coroutine[Any, Any, Any], **kwargs: Any
+    ) -> asyncio.Task[Any]:
+        made.append(coro.__qualname__)
+        return asyncio.Task(coro, loop=loop, **kwargs)
+
+    return factory
+
+
+async def test_kills_go_through_the_loop_s_task_factory() -> None:
+    loop = asyncio.get_running_loop()
+    made: list[str] = []
+    loop.set_task_factory(recording(made))
+    try:
+        await shell(Workspace(Machine(prints(b"hi")), scope="acme"), "x")
+    finally:
+        loop.set_task_factory(None)
+    assert "Command.kill" in made
+
+
+async def test_a_kill_cancelled_as_it_is_made_still_runs_under_a_task_factory() -> None:
+    loop = asyncio.get_running_loop()
+    made: list[str] = []
+    loop.set_task_factory(recording(made))
+    try:
+        machine = Machine()
+        task = asyncio.create_task(shell(Workspace(machine, scope="acme"), "x"))
+        ran = await started(machine)
+        task.cancel()
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=5)
+    finally:
+        loop.set_task_factory(None)
+    assert task in done and task.cancelled()
+    assert ran.kills == 1
