@@ -308,7 +308,7 @@ async def test_a_generation_with_its_tools_round_trips(storage: Storage) -> None
         at=at,
         duration_ms=1,
         model="m",
-        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16),
+        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16, questions=None),
         input="hi",
         system="s",
         messages=[Message(role="user", content="hi")],
@@ -361,7 +361,7 @@ async def test_tags_round_trip(storage: Storage) -> None:
         at=at,
         duration_ms=1,
         model="m",
-        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16),
+        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16, questions=None),
         input="hi",
         system="s",
         messages=[Message(role="user", content="hi")],
@@ -676,7 +676,10 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     assert await replayed(fingerprint=first.fingerprint) == [
         r.run_id for r in (first, second, third)
     ]
-    assert await replayed(fingerprint=Fingerprint(agent="0" * 16, tools="0" * 16)) == []
+    assert (
+        await replayed(fingerprint=Fingerprint(agent="0" * 16, tools="0" * 16, questions=None))
+        == []
+    )
     assert len(await replayed(holdout=True, holdout_percent=100)) == 3
     assert await replayed(holdout=True, holdout_percent=0) == []
     assert await replayed(limit=2) == [first.run_id, second.run_id]
@@ -807,7 +810,7 @@ async def test_start_prefix_and_usage_round_trip(
         at=datetime.now(UTC),
         duration_ms=1,
         model="m",
-        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16),
+        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16, questions=None),
         input="hi",
         system="s",
         start=4,

@@ -439,7 +439,7 @@ A person's handle on a running run, passed as `run(stop=)`; it reaches the runs 
 def now(self) -> None: ...
 ```
 
-Cancels the model call in flight and every tool call still running; a call it finds not yet running never runs, so a stop from an `on_event` handler of a call's `ToolCallStarted`, or of a reply's `TextDelta`, comes before the tool runs. A handler running inside work the stop cancels, a `ToolCallStarted` handler or a streamed `TextDelta` handler, is cancelled with that work, so a kill switch does its own work, such as an audit, before it calls `stop.now()`. The run returns with `stopped="now"`, and each call it cut off is answered with the error `stopped by the user`. A call that already has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady` to return, so a slow handler delays it; cancelling the run cancels the handler.
+Cancels the model call in flight and every tool call still running, except a running `Delegate` call, which is waited for while the stop reaches the run it started; a call it finds not yet running never runs, so a stop from an `on_event` handler of a call's `ToolCallStarted`, or of a reply's `TextDelta`, comes before the tool runs. A handler still running when a stop cancels its call, or a streamed `TextDelta` handler, is cancelled with that work, so a kill switch does its own work, such as an audit, before it calls `stop.now()`. The run returns with `stopped="now"`, and each call it cut off is answered with the error `stopped by the user`. A call that already has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady` to return, so a slow handler delays it; cancelling the run cancels the handler.
 
 ### `Stop.after_step`
 
@@ -541,7 +541,7 @@ What `Engine.run` returns, told apart by `kind`.
 class Fingerprint(BaseModel):
     agent: str
     tools: str
-    questions: str | None = None
+    questions: str | None
 ```
 
 Which agent, which tools and which questions produced a run, each the first 16 hex characters of a sha256. `agent` covers every file in the agent's directory and in each folder it names in `reads:` as the engine loaded them, by relative path and content, a read folder's files under `../<name>/`, leaving out hidden files and folders (a name starting with `.`) and links that lead out of their folder; it is computed once, when the `Engine` is built. `tools` covers the tools the model was offered, `Run.tools` sorted by name as canonical JSON: the folder's, the code's, the run's `tools=` and `Output` when `expect=` asked for one. `questions` covers the questions a decision run asked, `Decision.questions` as JSON ordered by question id, each question's fields in order and its options and levels as given, runtime questions included; it is `None` for a generation run. None covers the input, the history, `context`, `tags`, the model or the code behind a tool.

@@ -626,7 +626,9 @@ class Engine:
                     input_schema=expect.model_json_schema(),
                 )
             )
-        fingerprint = Fingerprint(agent=spec.fingerprint, tools=tools_fingerprint(specs))
+        fingerprint = Fingerprint(
+            agent=spec.fingerprint, tools=tools_fingerprint(specs), questions=None
+        )
         targets = [self._agents[name] for name in spec.agents]
         system = await asyncio.to_thread(
             build_bundle,

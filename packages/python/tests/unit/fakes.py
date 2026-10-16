@@ -137,7 +137,7 @@ def generation_record(
         at=datetime.now(UTC),
         duration_ms=5,
         model="m",
-        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16),
+        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16, questions=None),
         input="hi",
         system="<<<AGENT>>>\nx",
         messages=[Message(role="user", content="hi")],

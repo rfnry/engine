@@ -463,9 +463,9 @@ call cut off by `now()` is answered with the error `stopped by the user` and its
 `stopped=True`, so every tool call in `run.conversation` has its result and the next run continues
 from it. A call the stop finds not yet running never runs: a stop from a handler of a call's
 `ToolCallStarted` comes before its tool runs, and one from a handler of a reply's `TextDelta` before
-any of the reply's calls. A handler running inside work the stop cancels — a call's
-`ToolCallStarted` handler, or a streamed `TextDelta` handler — is cancelled with that work, so a
-kill switch does its own work, such as an audit, before it calls `stop.now()`. A call that already
+any of the reply's calls. A handler still running when a stop
+cancels its call, or a streamed `TextDelta` handler, is cancelled with that work, so a kill switch
+does its own work, such as an audit, before it calls `stop.now()`. A call that already
 has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady`
 to return: a handler can stop the run on what a tool returned; a slow one delays the stop, and
 cancelling the run cancels it. A stop set before the run starts ends it before the first model call;

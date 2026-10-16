@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from rfnry_engine.records import Fingerprint
 from rfnry_engine.refinery.labels import Label
 from rfnry_engine.refinery.storage import RunRow
 
@@ -19,7 +18,8 @@ def export_key(scope: str, agent: str, dataset: str, stamp: str) -> str:
 
 
 def _fingerprint(body: dict[str, Any]) -> dict[str, Any]:
-    return Fingerprint.model_validate(body["fingerprint"]).model_dump(mode="json")
+    fingerprint: dict[str, Any] = body["fingerprint"]
+    return fingerprint
 
 
 def _label(label: Label) -> dict[str, Any]:

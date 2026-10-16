@@ -65,7 +65,7 @@ EventHandler = Callable[[Event], Awaitable[None]]
 class Fingerprint(BaseModel):
     agent: str
     tools: str
-    questions: str | None = None
+    questions: str | None
 
 
 class Generation(BaseModel):

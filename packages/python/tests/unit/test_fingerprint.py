@@ -1,7 +1,6 @@
 import hashlib
 import json
 import shutil
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +11,7 @@ from rfnry_engine.engine import Engine
 from rfnry_engine.models import Check, Choice, Message, Question, Reply, Score, ToolCall
 from rfnry_engine.records import Decision, Fingerprint, Generation, Run
 from rfnry_engine.refinery.labels import Review
-from rfnry_engine.refinery.refinery import Refinery, flatten
+from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Tool, Tools
 
@@ -178,9 +177,8 @@ async def test_the_tools_a_run_is_offered_are_the_tools_it_is_fingerprinted_by(
     mounted = await engine(fixtures).run("support", "acme", "hi", tools=recall)
     assert isinstance(mounted, Generation) and "recall" in {t.name for t in mounted.tools}
     prints = [run.fingerprint for run in (plain, expecting, mounted)]
-    assert all(p is not None for p in prints)
-    assert len({p.tools for p in prints if p is not None}) == 3
-    assert len({p.agent for p in prints if p is not None}) == 1
+    assert len({p.tools for p in prints}) == 3
+    assert len({p.agent for p in prints}) == 1
 
 
 async def test_a_decision_run_and_every_nested_run_carry_their_own(fixtures: Path) -> None:
@@ -327,7 +325,7 @@ async def test_a_generation_run_has_no_questions_part(fixtures: Path) -> None:
     assert run.fingerprint.questions is None
 
 
-async def test_the_questions_part_is_recorded_exported_and_old_rows_read_back_without_it(
+async def test_the_questions_part_is_recorded_exported(
     fixtures: Path,
     storage: Storage,
 ) -> None:
@@ -335,12 +333,6 @@ async def test_the_questions_part_is_recorded_exported_and_old_rows_read_back_wi
     run = await Engine(fixtures, decision=Desk(), refinery=refinery).run("triage", "acme", "x")
     assert isinstance(run, Decision)
     assert (await refinery.run("acme", run.run_id)).fingerprint == run.fingerprint
-    old = decision_record(run_id="old")
-    [stored] = flatten(old, datetime.now(UTC))
-    body = {**stored.body, "fingerprint": {"agent": "a" * 16, "tools": NO_TOOLS}}
-    await storage.put_run("acme", stored.model_copy(update={"body": body}))
-    read = await refinery.run("acme", "old")
-    assert read.fingerprint == Fingerprint(agent="a" * 16, tools=NO_TOOLS, questions=None)
     bucket = MemoryBucket()
     await refinery.export("acme", bucket)
     rows = {
@@ -353,7 +345,6 @@ async def test_the_questions_part_is_recorded_exported_and_old_rows_read_back_wi
         "tools": NO_TOOLS,
         "questions": run.fingerprint.questions,
     }
-    assert rows["old"]["fingerprint"] == {"agent": "a" * 16, "tools": NO_TOOLS, "questions": None}
 
 
 async def test_an_edit_to_a_read_folder_changes_the_fingerprint_of_every_agent_reading_it(

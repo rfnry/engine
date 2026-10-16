@@ -191,7 +191,7 @@ async def test_a_fingerprint_selects_one_recorded_version(
     (root / "support/rules/refunds.md").write_text("Refund only the second charge.\n")
     new = Engine(root, generation=Scripted(text_reply("b")), tools=TOOLS, refinery=refinery)
     after = await new.run("support", "acme", "hi")
-    await put(refinery, generation_record(), "unprinted", 0)
+    await put(refinery, generation_record(), "fixture", 0)
     assert before.fingerprint != after.fingerprint
     engine = candidate(fixtures)
     for version, run in ((before.fingerprint, before), (after.fingerprint, after)):
@@ -777,9 +777,8 @@ async def test_a_fingerprint_selects_decision_runs_by_all_three_parts(
     again = await recorder.run("grader", "acme", "y", questions={"area": AREA})
     tasked = await recorder.run("grader", "acme", "x", task="tone")
     prints = [run.fingerprint for run in (folder, runtime, tasked)]
-    assert all(p is not None for p in prints)
-    assert len({p.agent for p in prints if p is not None}) == 1
-    assert len({p.questions for p in prints if p is not None}) == 3
+    assert len({p.agent for p in prints}) == 1
+    assert len({p.questions for p in prints}) == 3
     engine = Engine(graded(tmp_path), decision=Answering())
     for run, expected in ((folder, [folder]), (runtime, [runtime, again]), (tasked, [tasked])):
         pairs = await collect(
