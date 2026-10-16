@@ -28,6 +28,7 @@ _HEAD_LIMIT = 250
 _GREP_BYTES = 50 * 1024 * 1024
 _GREP_SECONDS = 10.0
 _SNIFF = 8192
+_OPEN_FILES = "/proc/self/fd"
 
 
 class ReadArgs(BaseModel):
@@ -125,7 +126,7 @@ def preload_parts(
     parts: list[Part] = []
     read: dict[str, bytes] = {}
     for name, path in files:
-        data = read[name] = _contents(jail, name, _LOAD_BYTES)
+        data = read[name] = _contents(jail, name, _LOAD_BYTES)[1]
         text = _decoded(data) if len(data) <= _MAX_BYTES else None
         if text is None:
             parts += [Text(text=f"<<<{name}>>>"), _handed(path, data, name, media_types)]
@@ -134,7 +135,14 @@ def preload_parts(
     return parts, read
 
 
-def _contents(jail: Jail, path: str, limit: int) -> bytes:
+def _name_of(fd: int, path: str) -> Path:
+    try:
+        return Path(os.readlink(f"{_OPEN_FILES}/{fd}"))
+    except OSError:
+        return Path(path)
+
+
+def _contents(jail: Jail, path: str, limit: int) -> tuple[Path, bytes]:
     try:
         fd = jail.open(path)
         try:
@@ -143,6 +151,7 @@ def _contents(jail: Jail, path: str, limit: int) -> bytes:
                 raise InputError(f"builtins: not a file: {path}")
             if found.st_size > limit:
                 raise InputError(f"builtins: file exceeds {limit} bytes: {path}")
+            opened = _name_of(fd, path)
             with open(fd, "rb", closefd=False) as file:
                 data = file.read(limit + 1)
         finally:
@@ -153,7 +162,7 @@ def _contents(jail: Jail, path: str, limit: int) -> bytes:
         raise InputError(f"builtins: cannot read {path}: {exc.strerror}") from None
     if len(data) > limit:
         raise InputError(f"builtins: file exceeds {limit} bytes: {path}")
-    return data
+    return opened, data
 
 
 def _lines(data: bytes, a: ReadArgs) -> str:
@@ -206,7 +215,7 @@ class _Directory:
 
     def read(self, args: dict[str, Any]) -> Result:
         a = ReadArgs.model_validate(args)
-        return _lines(_contents(self.jail, a.path, _MAX_BYTES), a)
+        return _lines(_contents(self.jail, a.path, _MAX_BYTES)[1], a)
 
     def _files_under(self, base: Path, glob: str | None) -> tuple[list[Path], bool]:
         if base.is_file():
@@ -389,7 +398,8 @@ def load_tool(
     jail = Jail(folder, also=reads)
 
     def load(path: str) -> list[Part]:
-        return [_handed(Path(path), _contents(jail, path, _LOAD_BYTES), path, media_types)]
+        opened, data = _contents(jail, path, _LOAD_BYTES)
+        return [_handed(opened, data, path, media_types)]
 
     async def body(args: dict[str, Any]) -> Result:
         a = LoadAnywhereArgs.model_validate(args)

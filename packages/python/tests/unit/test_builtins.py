@@ -250,9 +250,26 @@ async def test_load_resolves_a_folder_file_once(
     assert resolved == ["knowledge/rates.pdf"]
 
 
-async def test_load_names_a_link_by_its_own_name_and_types_it_by_its_bytes(media: Path) -> None:
-    (media / "knowledge" / "report.pdf").write_bytes(PDF)
-    (media / "knowledge" / "report").symlink_to("report.pdf")
+async def test_load_names_and_types_a_link_by_the_file_it_opens(media: Path) -> None:
+    knowledge = media / "knowledge"
+    (knowledge / "report.pdf").write_bytes(PDF)
+    (knowledge / "report").symlink_to("report.pdf")
+    (knowledge / "notes").symlink_to("notes.md")
+    (knowledge / "photo.png").symlink_to("photo.jpg")
+    tools = Tools([load_tool(media)])
+    for link, part in {
+        "report": Document(media_type="application/pdf", name="report.pdf", data=PDF),
+        "notes": Document(media_type="text/markdown", name="notes.md", data=b"plain\n"),
+        "photo.png": Image(media_type="image/jpeg", data=JPEG),
+    }.items():
+        assert await tools.dispatch("Load", {"path": f"knowledge/{link}"}) == [part], link
+
+
+async def test_load_names_a_file_by_its_path_where_the_system_cannot_name_it(
+    media: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (media / "knowledge" / "report").symlink_to("rates.pdf")
+    monkeypatch.setattr(builtins_module, "_OPEN_FILES", str(tmp_path / "nowhere"))
     assert await Tools([load_tool(media)]).dispatch("Load", {"path": "knowledge/report"}) == [
         Document(media_type="application/pdf", name="report", data=PDF)
     ]
