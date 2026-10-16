@@ -623,7 +623,7 @@ async def test_a_kill_the_workspace_started_takes_one_cancel_as_the_first_stop(
     ws = workspace(root, timeout=0.3 if stopping == "timeout" else 120)
     if stopping == "timeout":
         killing = time.monotonic() + 0.3
-        task = asyncio.create_task(shell(ws, TRAPPED))
+        task: asyncio.Task[Any] = asyncio.create_task(shell(ws, TRAPPED))
         await written_pid(root / "child.pid")
         await asyncio.sleep(0.4)
     else:
@@ -753,6 +753,7 @@ async def test_a_workspace_read_or_load_past_the_tool_timeout_returns_once_its_t
         local.release.set()
     async with asyncio.timeout(2):
         run = await running
+    assert isinstance(run, Generation)
     assert run.steps[0].result == f"TimeoutError: {name} timed out after 0.05s"
 
 

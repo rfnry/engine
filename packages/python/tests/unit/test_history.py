@@ -561,7 +561,7 @@ async def test_bad_tags_are_refused_before_the_history_is_read(fixtures: Path) -
 
 
 async def test_engine_tools_take_a_generator_history(fixtures: Path) -> None:
-    tools = surface(fixtures, (m for m in looked_up()), start=4)
+    tools = surface(fixtures, (m for m in looked_up()), start=4)  # type: ignore[arg-type]
     assert positions(await tools.dispatch("History", {})) == [0, 1, 2, 3]
 
 

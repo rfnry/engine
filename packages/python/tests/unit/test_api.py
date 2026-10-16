@@ -55,7 +55,11 @@ PROTOCOLS = [value for value in EXPORTED.values() if is_protocol(value)]
 def same(real: object, declared: object) -> bool:
     if isinstance(declared, property):
         return isinstance(real, property)
-    return inspect.isfunction(real) and inspect.signature(real) == inspect.signature(declared)
+    return (
+        inspect.isfunction(real)
+        and callable(declared)
+        and inspect.signature(real) == inspect.signature(declared)
+    )
 
 
 def implemented(cls: type) -> list[type]:
