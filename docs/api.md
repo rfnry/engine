@@ -818,7 +818,7 @@ class Jail:
     also: list[Path]
 ```
 
-Keeps paths inside one directory, `root`, or inside one of `also` — the folders an agent reads — all resolved; for a tool of your own that reads the agent's directory, as the builtins do.
+Keeps paths inside one directory, `root`, or inside one of `also` — the folders an agent reads — all resolved; for a tool of your own that reads the agent's directory, as the builtins do. It notes each place's device and inode when it is made and checks a place by them before it opens anything in it.
 
 ### `Jail.resolve`
 
@@ -829,6 +829,16 @@ def resolve(self, path: str | Path) -> Path: ...
 Returns `path`, taken relative to `root` unless it is absolute, resolved with its symlinks.
 
 Raises `InputError` when it resolves outside `root` and every place in `also`.
+
+### `Jail.open`
+
+```python
+def open(self, path: str | Path, flags: int = 0, mode: int = 0o666) -> int: ...
+```
+
+Opens `path`, resolved as `resolve` does, and returns its file descriptor, which the caller closes. `flags` and `mode` are those of `os.open`; `flags` is `os.O_RDONLY` unless given. It opens the place that holds the target, checks it is still the folder the `Jail` was made with, and walks down from it one folder at a time without following a link, so a link swapped in after the check is refused; with `os.O_CREAT` it creates the missing folders on the way. The last name is opened non-blocking, so a pipe never holds the call. The builtins and `Local` read and write through it.
+
+Raises `InputError` when `path` resolves outside `root` and every place in `also`, when the walk meets a link, or when the place is no longer the folder it was. What the system refuses, such as a missing file, is raised as the `OSError` it is.
 
 ### `Workspace`
 

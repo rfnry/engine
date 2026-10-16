@@ -23,8 +23,6 @@ WORKSPACE_TOOLS = frozenset({"Shell", "Job", "Write", "Edit"})
 GRACE = 1.0
 CHUNK = 65_536
 TEXT_BYTES = 5 * 1024 * 1024
-ROOT = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY
-FOLDER = ROOT | os.O_NOFOLLOW
 
 
 class Stream(Protocol):
@@ -170,8 +168,6 @@ class Local:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"workspace: root is not a directory: {root}")
-        found = self.root.stat()
-        self._identity = (found.st_dev, found.st_ino)
         self.env = (
             dict(env)
             if env is not None
@@ -222,21 +218,10 @@ class Local:
             raise InputError(f"workspace: path outside the workspace: {path}") from None
 
     def _open(self, path: str, flags: int) -> int:
-        *folders, name = self._target(path).relative_to(self.root).parts or (".",)
-        parent = os.open(self.root, ROOT)
         try:
-            found = os.fstat(parent)
-            if (found.st_dev, found.st_ino) != self._identity:
-                raise InputError(f"workspace: path outside the workspace: {path}")
-            for folder in folders:
-                if flags & os.O_CREAT:
-                    with contextlib.suppress(FileExistsError):
-                        os.mkdir(folder, dir_fd=parent)
-                parent, above = _at(path, folder, FOLDER, parent), parent
-                os.close(above)
-            return _at(path, name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, parent)
-        finally:
-            os.close(parent)
+            return self._jail.open(self._target(path), flags)
+        except InputError:
+            raise InputError(f"workspace: path outside the workspace: {path}") from None
 
     def _read(self, path: str, limit: int) -> bytes:
         try:
@@ -277,22 +262,6 @@ class Local:
             if exc.errno == errno.ENXIO:
                 raise InputError(f"workspace: not a file: {path}") from None
             raise InputError(f"workspace: cannot write {path}: {exc.strerror}") from None
-
-
-def _at(path: str, name: str, flags: int, parent: int) -> int:
-    try:
-        return os.open(name, flags, 0o666, dir_fd=parent)
-    except OSError as exc:
-        if exc.errno in (errno.ELOOP, errno.ENOTDIR) and _link(name, parent):
-            raise InputError(f"workspace: path outside the workspace: {path}") from None
-        raise
-
-
-def _link(name: str, parent: int) -> bool:
-    try:
-        return stat.S_ISLNK(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode)
-    except OSError:
-        return False
 
 
 def _complete(data: bytearray) -> int:

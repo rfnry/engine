@@ -1416,6 +1416,9 @@ the vendor's. `Grep` searches text only and skips the rest; `Glob` and `LS` list
 search that runs past 10 s in one call is an `InputError` the model can act on. `Glob` and `Grep`
 walk at most 100,000 entries and note the cut. A tool that reads the agent's directory itself
 resolves paths with `Jail`, which refuses one that leaves the directory, as the builtins do.
+`Jail.open` opens a file the way the builtins and `Local` do: from a place it checks is still the
+folder it was given, one folder at a time without following a link, so a link swapped in after the
+check is refused.
 
 Tools that belong to a tenant go on the call that names the tenant:
 
