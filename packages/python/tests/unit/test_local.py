@@ -11,9 +11,13 @@ from typing import Any
 
 import pytest
 
+from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.jail import Jail
+from rfnry_engine.models import Reply, ToolCall
 from rfnry_engine.tools.workspace import Backend, Local, Process, Stream, Workspace
+
+from .fakes import Scripted, text_reply
 
 
 def alive(pid: int) -> bool:
@@ -638,6 +642,57 @@ async def test_a_cancelled_write_or_edit_returns_once_its_thread_has_ended(
         async with asyncio.timeout(2):
             await task
     assert (root / "notes.txt").read_text() == ("old\n" if held == "read" else "new\n")
+
+
+@pytest.mark.parametrize(
+    ("name", "held"), [("Write", "write"), ("Edit", "read"), ("Edit", "write")]
+)
+async def test_a_write_or_edit_past_the_timeout_returns_once_its_thread_has_ended(
+    root: Path, name: str, held: str
+) -> None:
+    (root / "notes.txt").write_text("old\n")
+    local = Gated(root, held)
+    args = (
+        {"path": "notes.txt", "content": "new\n"}
+        if name == "Write"
+        else {"path": "notes.txt", "old": "old", "new": "new"}
+    )
+    ws = Workspace(local, scope="acme", timeout=0.3)
+    task = asyncio.create_task(tool(ws, name).call(args))
+    try:
+        assert await asyncio.to_thread(local.entered.wait, 2)
+        await asyncio.sleep(0.5)
+        assert not task.done()
+    finally:
+        local.release.set()
+    with pytest.raises(TimeoutError, match=rf"^workspace: {name} did not finish within 0.3s$"):
+        async with asyncio.timeout(2):
+            await task
+    assert (root / "notes.txt").read_text() == ("old\n" if held == "read" else "new\n")
+
+
+@pytest.mark.parametrize("name", ["Read", "Load"])
+async def test_a_workspace_read_or_load_past_the_tool_timeout_returns_once_its_thread_has_ended(
+    root: Path, tmp_path: Path, name: str
+) -> None:
+    (root / "notes.txt").write_text("old\n")
+    (tmp_path / "plain").mkdir()
+    local = Gated(root, "read")
+    call = ToolCall(id="1", name=name, args={"path": "notes.txt", "where": "workspace"})
+    llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("ok"))
+    engine = Engine(tmp_path / "plain", generation=llm, tool_timeout=0.05)
+    running = asyncio.create_task(
+        engine.run("plain", "acme", "x", workspace=Workspace(local, scope="acme"))
+    )
+    try:
+        assert await asyncio.to_thread(local.entered.wait, 2)
+        await asyncio.sleep(0.3)
+        assert not running.done() and len(llm.calls) == 1
+    finally:
+        local.release.set()
+    async with asyncio.timeout(2):
+        run = await running
+    assert run.steps[0].result == f"TimeoutError: {name} timed out after 0.05s"
 
 
 async def test_write_and_edit_reach_the_directory(root: Path, tmp_path: Path) -> None:
