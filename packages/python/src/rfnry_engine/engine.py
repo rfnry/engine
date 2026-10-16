@@ -651,6 +651,7 @@ class Engine:
         children: list[Run] = []
         delegated: dict[str, Run] = {}
         ran: list[tuple[ToolCall, Step]] = []
+        approving: set[int] = set()
         asked: list[ToolCall] = []
         usage = Usage()
         calls = 0
@@ -725,7 +726,12 @@ class Engine:
             approved = None
             if options.approve is not None:
                 asking = asyncio.ensure_future(options.approve(spec.name, call))
-                if await wait([asking], stop):
+                approving.add(id(call))
+                try:
+                    halted = await wait([asking], stop)
+                finally:
+                    approving.discard(id(call))
+                if halted:
                     return await cut(call, began)
                 approved = asking.result()
             if approved is not None and not isinstance(approved, bool):
@@ -810,6 +816,7 @@ class Engine:
                     task
                     for call, task in zip(batch, tasks, strict=True)
                     if (spec.agents and call.name == DELEGATE_TOOL)
+                    or id(call) in approving
                     or any(call is done for done, _ in ran)
                 ]
 
