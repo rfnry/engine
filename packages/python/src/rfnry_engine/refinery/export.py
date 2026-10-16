@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from rfnry_engine.records import Fingerprint
 from rfnry_engine.refinery.labels import Label
 from rfnry_engine.refinery.storage import RunRow
 
@@ -18,9 +17,9 @@ def export_key(scope: str, agent: str, dataset: str, stamp: str) -> str:
     return f"{scope}/{agent}/{dataset}/{stamp}.jsonl"
 
 
-def _fingerprint(body: dict[str, Any]) -> dict[str, Any] | None:
-    printed = body.get("fingerprint")
-    return None if printed is None else Fingerprint.model_validate(printed).model_dump(mode="json")
+def _fingerprint(body: dict[str, Any]) -> dict[str, Any]:
+    fingerprint: dict[str, Any] = body["fingerprint"]
+    return fingerprint
 
 
 def _label(label: Label) -> dict[str, Any]:
@@ -43,21 +42,21 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
         "holdout": holdout,
         "agent": row.agent,
         "task": row.task,
-        "context": body.get("context"),
-        "tags": body.get("tags", {}),
+        "context": body["context"],
+        "tags": body["tags"],
         "at": row.at.isoformat(),
         "model": row.model,
         "fingerprint": _fingerprint(body),
         "system": body["system"],
-        "preload": body.get("preload", []),
-        "start": body.get("start", 0),
+        "preload": body["preload"],
+        "start": body["start"],
         "messages": body["messages"],
-        "tools": body.get("tools", []),
-        "conversation": body.get("conversation", []),
+        "tools": body["tools"],
+        "conversation": body["conversation"],
         "steps": body["steps"],
         "reply": body["reply"],
-        "stopped": body.get("stopped"),
-        "stop_reason": body.get("stop_reason"),
+        "stopped": body["stopped"],
+        "stop_reason": body["stop_reason"],
         "usage": body["usage"],
         "labels": [_label(label) for label in labels],
     }
@@ -68,11 +67,11 @@ def preference_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[
         {
             "run_id": row.run_id,
             "holdout": holdout,
-            "tags": row.body.get("tags", {}),
+            "tags": row.body["tags"],
             "fingerprint": _fingerprint(row.body),
             "prompt": {
                 "system": row.body["system"],
-                "preload": row.body.get("preload", []),
+                "preload": row.body["preload"],
                 "messages": row.body["messages"],
             },
             "chosen": label.review.correction,
@@ -137,7 +136,7 @@ def decision_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[di
                 "holdout": holdout,
                 "agent": row.agent,
                 "task": row.task,
-                "tags": body.get("tags", {}),
+                "tags": body["tags"],
                 "at": row.at.isoformat(),
                 "model": row.model,
                 "fingerprint": _fingerprint(body),

@@ -3,6 +3,7 @@ import os
 import re
 import socket
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -10,8 +11,15 @@ from typing import Any
 
 import pytest
 
+from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.jail import Jail
+from rfnry_engine.models import Reply, ToolCall
+from rfnry_engine.records import Generation
+from rfnry_engine.stop import Stop
 from rfnry_engine.tools.workspace import Backend, Local, Process, Stream, Workspace
+
+from .fakes import Scripted, text_reply
 
 
 def alive(pid: int) -> bool:
@@ -224,14 +232,14 @@ async def test_a_link_inside_the_workspace_still_reads_and_writes(local: Local, 
 
 
 def swap_after_the_check(monkeypatch: pytest.MonkeyPatch, swap: Callable[[], None]) -> None:
-    checked = Local._target
+    checked = Jail.resolve
 
-    def swapped(self: Local, path: str) -> Path:
+    def swapped(self: Jail, path: str | Path) -> Path:
         target = checked(self, path)
         swap()
         return target
 
-    monkeypatch.setattr(Local, "_target", swapped)
+    monkeypatch.setattr(Jail, "resolve", swapped)
 
 
 async def call(local: Local, verb: str, path: str) -> None:
@@ -574,20 +582,178 @@ async def test_a_cancelled_command_that_ignores_sigterm_is_killed_a_second_later
     assert await gone(int((root / "child.pid").read_text()))
 
 
-async def test_a_second_cancel_kills_at_once(root: Path) -> None:
-    task = asyncio.create_task(
-        shell(workspace(root), "trap '' TERM; sleep 30 & echo $! > child.pid; touch ready; wait")
-    )
-    await appears(root / "ready")
-    began = time.monotonic()
+TRAPPED = "echo $$ > leader.pid; trap '' TERM; sleep 30 & echo $! > child.pid; wait"
+
+
+async def group_gone(root: Path) -> bool:
+    return all([await gone(int((root / name).read_text())) for name in ("leader.pid", "child.pid")])
+
+
+async def test_a_second_cancel_kills_the_command_at_once(root: Path) -> None:
+    task = asyncio.create_task(shell(workspace(root), TRAPPED))
+    await written_pid(root / "child.pid")
     task.cancel()
     await asyncio.sleep(0.2)
     assert not task.done()
+    began = time.monotonic()
     task.cancel()
     done, _ = await asyncio.wait({task}, timeout=5)
     assert task in done and task.cancelled()
-    assert time.monotonic() - began < 0.8
-    assert await gone(int((root / "child.pid").read_text()))
+    assert time.monotonic() - began < 0.5
+    assert await group_gone(root)
+
+
+async def test_two_cancels_at_the_same_moment_kill_the_command_at_once(root: Path) -> None:
+    task = asyncio.create_task(shell(workspace(root), TRAPPED))
+    await written_pid(root / "child.pid")
+    began = time.monotonic()
+    task.cancel()
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=5)
+    assert task in done and task.cancelled()
+    assert time.monotonic() - began < 0.5
+    assert await group_gone(root)
+
+
+@pytest.mark.parametrize("cancels", [1, 2])
+@pytest.mark.parametrize("stopping", ["timeout", "close", "Job"])
+async def test_a_kill_the_workspace_started_takes_one_cancel_as_the_first_stop(
+    root: Path, stopping: str, cancels: int
+) -> None:
+    ws = workspace(root, timeout=0.3 if stopping == "timeout" else 120)
+    if stopping == "timeout":
+        killing = time.monotonic() + 0.3
+        task = asyncio.create_task(shell(ws, TRAPPED))
+        await written_pid(root / "child.pid")
+        await asyncio.sleep(0.4)
+    else:
+        await tool(ws, "Shell").call({"command": TRAPPED, "background": True})
+        await written_pid(root / "child.pid")
+        killing = time.monotonic()
+        task = asyncio.create_task(
+            ws.close() if stopping == "close" else tool(ws, "Job").call({"id": "j1", "stop": True})
+        )
+        await asyncio.sleep(0.2)
+    assert not task.done()
+    began = time.monotonic()
+    task.cancel()
+    if cancels == 2:
+        await asyncio.sleep(0.2)
+        assert not task.done()
+        task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=5)
+    ended = time.monotonic()
+    assert task in done and task.cancelled()
+    if cancels == 1:
+        assert ended - killing > 0.9 and ended - began < 1.6
+    else:
+        assert ended - began < 0.5
+    assert await group_gone(root)
+    if stopping == "close":
+        assert ws._jobs == {}
+    elif stopping == "Job":
+        async with asyncio.timeout(5):
+            await ws._jobs["j1"].ended.wait()
+            await ws.close()
+
+
+class Gated(Local):
+    def __init__(self, root: Path, held: str) -> None:
+        super().__init__(root)
+        self.held = held
+        self.entered, self.release = threading.Event(), threading.Event()
+
+    def _hold(self, verb: str) -> None:
+        if verb == self.held:
+            self.entered.set()
+            assert self.release.wait(5)
+
+    def _read(self, path: str, limit: int) -> bytes:
+        self._hold("read")
+        return super()._read(path, limit)
+
+    def _write(self, path: str, data: bytes) -> None:
+        self._hold("write")
+        super()._write(path, data)
+
+
+@pytest.mark.parametrize(
+    ("name", "held"), [("Write", "write"), ("Edit", "read"), ("Edit", "write")]
+)
+async def test_a_cancelled_write_or_edit_returns_once_its_thread_has_ended(
+    root: Path, name: str, held: str
+) -> None:
+    (root / "notes.txt").write_text("old\n")
+    local = Gated(root, held)
+    args = (
+        {"path": "notes.txt", "content": "new\n"}
+        if name == "Write"
+        else {"path": "notes.txt", "old": "old", "new": "new"}
+    )
+    task = asyncio.create_task(tool(Workspace(local, scope="acme"), name).call(args))
+    try:
+        assert await asyncio.to_thread(local.entered.wait, 2)
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0.05)
+            assert not task.done()
+    finally:
+        local.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(2):
+            await task
+    assert (root / "notes.txt").read_text() == ("old\n" if held == "read" else "new\n")
+
+
+@pytest.mark.parametrize(
+    ("name", "held"), [("Write", "write"), ("Edit", "read"), ("Edit", "write")]
+)
+async def test_a_write_or_edit_past_the_timeout_returns_once_its_thread_has_ended(
+    root: Path, name: str, held: str
+) -> None:
+    (root / "notes.txt").write_text("old\n")
+    local = Gated(root, held)
+    args = (
+        {"path": "notes.txt", "content": "new\n"}
+        if name == "Write"
+        else {"path": "notes.txt", "old": "old", "new": "new"}
+    )
+    ws = Workspace(local, scope="acme", timeout=0.3)
+    task = asyncio.create_task(tool(ws, name).call(args))
+    try:
+        assert await asyncio.to_thread(local.entered.wait, 2)
+        await asyncio.sleep(0.5)
+        assert not task.done()
+    finally:
+        local.release.set()
+    with pytest.raises(TimeoutError, match=rf"^workspace: {name} did not finish within 0.3s$"):
+        async with asyncio.timeout(2):
+            await task
+    assert (root / "notes.txt").read_text() == ("old\n" if held == "read" else "new\n")
+
+
+@pytest.mark.parametrize("name", ["Read", "Load"])
+async def test_a_workspace_read_or_load_past_the_tool_timeout_returns_once_its_thread_has_ended(
+    root: Path, tmp_path: Path, name: str
+) -> None:
+    (root / "notes.txt").write_text("old\n")
+    (tmp_path / "plain").mkdir()
+    local = Gated(root, "read")
+    call = ToolCall(id="1", name=name, args={"path": "notes.txt", "where": "workspace"})
+    llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("ok"))
+    engine = Engine(tmp_path / "plain", generation=llm, tool_timeout=0.05)
+    running = asyncio.create_task(
+        engine.run("plain", "acme", "x", workspace=Workspace(local, scope="acme"))
+    )
+    try:
+        assert await asyncio.to_thread(local.entered.wait, 2)
+        await asyncio.sleep(0.3)
+        assert not running.done() and len(llm.calls) == 1
+    finally:
+        local.release.set()
+    async with asyncio.timeout(2):
+        run = await running
+    assert run.steps[0].result == f"TimeoutError: {name} timed out after 0.05s"
 
 
 async def test_write_and_edit_reach_the_directory(root: Path, tmp_path: Path) -> None:
@@ -673,3 +839,90 @@ async def test_closing_the_workspace_stops_a_real_job_and_what_it_started(root: 
     pid = await written_pid(root / "child.pid")
     await ws.close()
     assert await gone(pid)
+
+
+class SlowToStart(Local):
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.entered, self.release = asyncio.Event(), asyncio.Event()
+        self.groups: list[int] = []
+
+    async def spawn(self, command: str) -> Process:
+        self.entered.set()
+        await self.release.wait()
+        process = await super().spawn(command)
+        self.groups.append(process._pid)  # type: ignore[attr-defined]
+        return process
+
+
+async def group_ended(group: int) -> bool:
+    for _ in range(100):
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+@pytest.mark.parametrize("how", ["stop", "cancel"])
+async def test_a_job_cut_while_it_starts_is_stopped_by_close(
+    root: Path, tmp_path: Path, how: str
+) -> None:
+    (tmp_path / "plain").mkdir()
+    local = SlowToStart(root)
+    ws = Workspace(local, scope="acme")
+    command = "sleep 30 & wait"
+    call = ToolCall(id="1", name="Shell", args={"command": command, "background": True})
+    llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("ok"))
+    engine = Engine(tmp_path / "plain", generation=llm)
+    stop = Stop()
+    before = asyncio.all_tasks()
+
+    async def app() -> Generation:
+        async with ws:
+            run = await engine.run("plain", "acme", "x", workspace=ws, stop=stop)
+        assert isinstance(run, Generation)
+        return run
+
+    task = asyncio.create_task(app())
+    try:
+        try:
+            async with asyncio.timeout(5):
+                await local.entered.wait()
+            if how == "stop":
+                stop.now()
+            else:
+                task.cancel()
+            await asyncio.sleep(0.05)
+        finally:
+            local.release.set()
+        done, _ = await asyncio.wait({task}, timeout=5)
+        assert task in done
+        if how == "stop":
+            assert task.result().steps[0].stopped
+        else:
+            assert task.cancelled()
+        async with asyncio.timeout(5):
+            while not local.groups:
+                await asyncio.sleep(0.01)
+        assert ws._jobs == {}
+        assert all([await group_ended(group) for group in local.groups])
+        await asyncio.sleep(0)
+        assert asyncio.all_tasks() <= before
+    finally:
+        await ws.close()
+
+
+async def test_read_refuses_a_file_far_over_the_limit_without_reading_it(
+    local: Local, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with (root / "sparse.bin").open("wb") as file:
+        file.truncate(1 << 40)
+
+    def never(*_: Any) -> bytes:
+        raise AssertionError("read called")
+
+    monkeypatch.setattr("rfnry_engine.tools.workspace.os.read", never)
+    with pytest.raises(InputError, match="^workspace: file exceeds 10 bytes: sparse.bin$"):
+        await local.read("sparse.bin", 10)

@@ -308,6 +308,7 @@ async def test_a_generation_with_its_tools_round_trips(storage: Storage) -> None
         at=at,
         duration_ms=1,
         model="m",
+        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16, questions=None),
         input="hi",
         system="s",
         messages=[Message(role="user", content="hi")],
@@ -335,13 +336,9 @@ async def test_a_generation_with_its_tools_round_trips(storage: Storage) -> None
     await Refinery(storage).record(run)
     got = await storage.get_run("a", "g")
     assert got is not None and Generation.model_validate(got.body) == run
-    old = {key: value for key, value in got.body.items() if key != "tools"}
-    await storage.put_run("a", got.model_copy(update={"body": old}))
-    again = await storage.get_run("a", "g")
-    assert again is not None and Generation.model_validate(again.body).tools == []
 
 
-async def test_tags_round_trip_and_old_bodies_read_as_no_tags(storage: Storage) -> None:
+async def test_tags_round_trip(storage: Storage) -> None:
     at = datetime.now(UTC)
     decision = Decision(
         run_id="d",
@@ -350,6 +347,7 @@ async def test_tags_round_trip_and_old_bodies_read_as_no_tags(storage: Storage) 
         at=at,
         duration_ms=1,
         model="d",
+        fingerprint=Fingerprint(agent="c" * 16, tools="d" * 16, questions="e" * 16),
         state="hi",
         questions={"urgent": Check(instructions="Urgent?")},
         answers={"urgent": CheckAnswer(probability=0.9)},
@@ -363,6 +361,7 @@ async def test_tags_round_trip_and_old_bodies_read_as_no_tags(storage: Storage) 
         at=at,
         duration_ms=1,
         model="m",
+        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16, questions=None),
         input="hi",
         system="s",
         messages=[Message(role="user", content="hi")],
@@ -379,10 +378,6 @@ async def test_tags_round_trip_and_old_bodies_read_as_no_tags(storage: Storage) 
         got = await storage.get_run("a", run_id)
         assert got is not None and got.body["tags"] == {"arm": "b", "commit": "a81d07b"}
         assert kind.model_validate(got.body).tags == {"arm": "b", "commit": "a81d07b"}
-        old = {key: value for key, value in got.body.items() if key != "tags"}
-        await storage.put_run("a", got.model_copy(update={"body": old}))
-        again = await storage.get_run("a", run_id)
-        assert again is not None and kind.model_validate(again.body).tags == {}
 
 
 def _tagged(
@@ -562,7 +557,7 @@ async def test_a_tree_reads_back_with_its_one_record_stamp(storage: Storage) -> 
     assert (await refinery.export("a", MemoryBucket())).watermark == stamp
 
 
-async def test_fingerprints_and_context_round_trip_and_old_bodies_read_as_none(
+async def test_fingerprints_and_context_round_trip(
     storage: Storage,
 ) -> None:
     refinery = Refinery(storage)
@@ -575,7 +570,6 @@ async def test_fingerprints_and_context_round_trip_and_old_bodies_read_as_none(
     )
     run = await engine.run("frontdesk", "a", "It is down", context="Acme is enterprise.")
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
-    assert run.fingerprint is not None and run.routed_to.fingerprint is not None
     assert run.routed_to.context == "Acme is enterprise."
     assert await refinery.run("a", run.run_id) == run
     bucket = MemoryBucket()
@@ -587,20 +581,6 @@ async def test_fingerprints_and_context_round_trip_and_old_bodies_read_as_none(
     assert len(rows) >= 3 and all(
         row["fingerprint"] == runs[row["run_id"]].model_dump(mode="json")["fingerprint"]
         for row in rows
-    )
-    for stored in await storage.run_tree("a", run_ids=[run.run_id]):
-        old = {k: v for k, v in stored.body.items() if k not in ("fingerprint", "context")}
-        await storage.put_run("a", stored.model_copy(update={"body": old}))
-    again = await refinery.run("a", run.run_id)
-    assert isinstance(again, Decision) and isinstance(again.routed_to, Generation)
-    assert again.fingerprint is None and again.routed_to.fingerprint is None
-    assert again.routed_to.context is None
-    bucket = MemoryBucket()
-    await refinery.export("a", bucket)
-    assert all(
-        json.loads(line)["fingerprint"] is None
-        for data in bucket.objects.values()
-        for line in data.decode().splitlines()
     )
 
 
@@ -693,11 +673,13 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     assert await replayed(tags={"arm": "a"}) == [first.run_id, third.run_id]
     assert await replayed(tags={"arm": "a", "customer": "c-1"}) == [first.run_id]
     assert await replayed(labeled=True) == [second.run_id, third.run_id]
-    assert first.fingerprint is not None
     assert await replayed(fingerprint=first.fingerprint) == [
         r.run_id for r in (first, second, third)
     ]
-    assert await replayed(fingerprint=Fingerprint(agent="0" * 16, tools="0" * 16)) == []
+    assert (
+        await replayed(fingerprint=Fingerprint(agent="0" * 16, tools="0" * 16, questions=None))
+        == []
+    )
     assert len(await replayed(holdout=True, holdout_percent=100)) == 3
     assert await replayed(holdout=True, holdout_percent=0) == []
     assert await replayed(limit=2) == [first.run_id, second.run_id]
@@ -729,7 +711,7 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
     engine = Engine(grader(tmp_path / "old"), decision=Answering(), refinery=refinery)
     asked = await engine.run("grader", "a", "x", task="tone", questions={"area": AREA})
     plain = await engine.run("grader", "a", "y")
-    assert isinstance(asked, Decision) and asked.fingerprint is not None
+    assert isinstance(asked, Decision)
     again = await refinery.run("a", asked.run_id)
     assert again == asked and isinstance(again, Decision)
     assert again.task == "tone" and again.runtime == ["area"]
@@ -765,7 +747,6 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
         "area": AREA,
     }
     assert sent == expected
-    assert plain.fingerprint is not None
     assert plain.fingerprint.questions != asked.fingerprint.questions
 
 
@@ -813,7 +794,7 @@ async def test_a_state_of_parts_round_trips_as_parts_and_replays(
     assert pair.error is None and looking.calls[0][0] == parts
 
 
-async def test_start_prefix_and_usage_round_trip_and_old_bodies_read_without_them(
+async def test_start_prefix_and_usage_round_trip(
     storage: Storage,
 ) -> None:
     written = Message(
@@ -829,6 +810,7 @@ async def test_start_prefix_and_usage_round_trip_and_old_bodies_read_without_the
         at=datetime.now(UTC),
         duration_ms=1,
         model="m",
+        fingerprint=Fingerprint(agent="a" * 16, tools="b" * 16, questions=None),
         input="hi",
         system="s",
         start=4,
@@ -849,18 +831,6 @@ async def test_start_prefix_and_usage_round_trip_and_old_bodies_read_without_the
     data = bucket.objects[key]
     [row] = [json.loads(line) for line in data.splitlines()]
     assert row["start"] == 4 and row["conversation"][-1]["prefix"] == "0123456789abcdef"
-    old = {key: value for key, value in got.body.items() if key != "start"}
-    for listed in ("messages", "conversation"):
-        old[listed] = [
-            {k: v for k, v in message.items() if k not in ("prefix", "usage")}
-            for message in got.body[listed]
-        ]
-    await storage.put_run("a", got.model_copy(update={"body": old}))
-    again = await storage.get_run("a", "w")
-    assert again is not None
-    back = Generation.model_validate(again.body)
-    assert back.start == 0 and back.conversation[-1].prefix is None
-    assert back.conversation[-1].usage is None
 
 
 async def test_a_failed_run_and_its_failed_child_read_back_as_recorded(storage: Storage) -> None:

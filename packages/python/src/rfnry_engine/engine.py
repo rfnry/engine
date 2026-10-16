@@ -58,7 +58,7 @@ from rfnry_engine.records import (
     ToolCallStarted,
     ToolResultReady,
 )
-from rfnry_engine.stop import Stop, Stopped, cancel, requested, wait
+from rfnry_engine.stop import Stop, Stopped, requested, wait
 from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
@@ -626,7 +626,9 @@ class Engine:
                     input_schema=expect.model_json_schema(),
                 )
             )
-        fingerprint = Fingerprint(agent=spec.fingerprint, tools=tools_fingerprint(specs))
+        fingerprint = Fingerprint(
+            agent=spec.fingerprint, tools=tools_fingerprint(specs), questions=None
+        )
         targets = [self._agents[name] for name in spec.agents]
         system = await asyncio.to_thread(
             build_bundle,
@@ -649,6 +651,7 @@ class Engine:
         children: list[Run] = []
         delegated: dict[str, Run] = {}
         ran: list[tuple[ToolCall, Step]] = []
+        approving: set[int] = set()
         asked: list[ToolCall] = []
         usage = Usage()
         calls = 0
@@ -657,10 +660,19 @@ class Engine:
         streamed: list[str] = []
         said = ""
         ended: StopReason | None = None
+        runner = asyncio.current_task()
+        calm = 0 if runner is None else runner.cancelling()
 
         async def emit(event: Any) -> None:
             if on_event is not None:
                 await on_event(event)
+
+        async def hand_over(call: ToolCall, step: Step) -> Step:
+            if runner is not None and runner.cancelling() > calm:
+                raise asyncio.CancelledError("engine: the run was cancelled")
+            ran.append((call, step))
+            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step))
+            return step
 
         async def delta(text: str) -> None:
             streamed.append(text)
@@ -706,14 +718,20 @@ class Engine:
                 )
             )
             began = time.monotonic()
+            if requested(stop) == "now":
+                return await cut(call, began)
             child_run_id: str | None = None
             stopped = False
             content: Content
             approved = None
             if options.approve is not None:
                 asking = asyncio.ensure_future(options.approve(spec.name, call))
-                if await wait([asking], stop):
-                    await cancel([asking])
+                approving.add(id(call))
+                try:
+                    halted = await wait([asking], stop)
+                finally:
+                    approving.discard(id(call))
+                if halted:
                     return await cut(call, began)
                 approved = asking.result()
             if approved is not None and not isinstance(approved, bool):
@@ -748,9 +766,7 @@ class Engine:
                 stopped=stopped,
                 approved=approved,
             )
-            ran.append((call, step))
-            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step))
-            return step
+            return await hand_over(call, step)
 
         def answer(call: ToolCall, step: Step) -> None:
             messages.append(
@@ -785,23 +801,26 @@ class Engine:
                 duration_ms=int((time.monotonic() - began) * 1000),
                 stopped=True,
             )
-            ran.append((call, step))
-            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step))
-            return step
+            return await hand_over(call, step)
 
         async def run_batch(batch: list[ToolCall]) -> bool:
             began = time.monotonic()
+            if requested(stop) == "now":
+                for call in batch:
+                    answer(call, await cut(call, began))
+                return True
             tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
-            stopped = await wait(tasks, stop)
-            if stopped:
-                delegated = [
-                    t
-                    for c, t in zip(batch, tasks, strict=True)
-                    if spec.agents and c.name == DELEGATE_TOOL
+
+            def finishing() -> list[asyncio.Task[Step]]:
+                return [
+                    task
+                    for call, task in zip(batch, tasks, strict=True)
+                    if (spec.agents and call.name == DELEGATE_TOOL)
+                    or id(call) in approving
+                    or any(call is done for done, _ in ran)
                 ]
-                await cancel([t for t in tasks if t not in delegated and not t.done()])
-                if delegated:
-                    await asyncio.wait(delegated)
+
+            stopped = await wait(tasks, stop, finishing)
             for call, task in zip(batch, tasks, strict=True):
                 answer(call, await cut(call, began) if task.cancelled() else task.result())
             return stopped
@@ -874,7 +893,6 @@ class Engine:
                 after = await asyncio.to_thread(marked)
                 asking = asyncio.ensure_future(ask())
                 if await wait([asking], stop):
-                    await cancel([asking])
                     partial = "".join(streamed)
                     if partial:
                         messages.append(Message(role="assistant", content=partial))
@@ -895,7 +913,7 @@ class Engine:
                 if reply.stop_reason != "tool_use" or not reply.tool_calls:
                     for call in reply.tool_calls:
                         not_run(call, f"the reply ended with {reply.stop_reason}")
-                    return finish(reply.text)
+                    return finish(reply.text, "now" if requested(stop) == "now" else None)
                 output = next(
                     (c for c in reply.tool_calls if expect is not None and c.name == OUTPUT_TOOL),
                     None,
@@ -945,12 +963,15 @@ class Engine:
                 for call in reply.tool_calls[reply.tool_calls.index(output) + 1 :]:
                     not_run(call, f"{OUTPUT_TOOL} ended the run")
                 return finish(parsed.model_dump_json())
+            mode = requested(stop)
+            if mode is not None:
+                return finish(said, mode)
             raise RunawayError(f"engine: run exceeded {self.max_steps} steps")
         except Exception as exc:
             for call in asked:
-                built = [step for done, step in ran if done is call]
-                if built and not any(step is kept for step in built for kept in steps):
-                    answer(call, built[-1])
+                built = next((step for done, step in ran if done is call), None)
+                if built is not None and not any(built is kept for kept in steps):
+                    answer(call, built)
             children.extend(delegated.values())
             options.failed.append(finish("", error=exc))
             raise

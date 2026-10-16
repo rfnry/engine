@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import errno
+import logging
 import os
 import shutil
 import signal
 import stat
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,14 +18,15 @@ from pydantic import BaseModel
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.jail import Jail
+from rfnry_engine.stop import join
 from rfnry_engine.tools.tools import Tool
+
+logger = logging.getLogger(__name__)
 
 WORKSPACE_TOOLS = frozenset({"Shell", "Job", "Write", "Edit"})
 GRACE = 1.0
 CHUNK = 65_536
 TEXT_BYTES = 5 * 1024 * 1024
-ROOT = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY
-FOLDER = ROOT | os.O_NOFOLLOW
 
 
 class Stream(Protocol):
@@ -158,6 +160,12 @@ def _words(value: Sequence[str], name: str, example: str) -> list[str]:
     return list(value)
 
 
+async def _threaded[T](work: Callable[..., T], *args: Any) -> T:
+    running = asyncio.get_running_loop().run_in_executor(None, work, *args)
+    await join([running])
+    return running.result()
+
+
 class Local:
     def __init__(
         self,
@@ -170,8 +178,6 @@ class Local:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"workspace: root is not a directory: {root}")
-        found = self.root.stat()
-        self._identity = (found.st_dev, found.st_ino)
         self.env = (
             dict(env)
             if env is not None
@@ -210,40 +216,26 @@ class Local:
         return _Running(transport, pipes)
 
     async def read(self, path: str, limit: int) -> bytes:
-        return await asyncio.to_thread(self._read, path, limit)
+        return await _threaded(self._read, path, limit)
 
     async def write(self, path: str, data: bytes) -> None:
-        await asyncio.to_thread(self._write, path, data)
-
-    def _target(self, path: str) -> Path:
-        try:
-            return self._jail.resolve(path)
-        except InputError:
-            raise InputError(f"workspace: path outside the workspace: {path}") from None
+        await _threaded(self._write, path, data)
 
     def _open(self, path: str, flags: int) -> int:
-        *folders, name = self._target(path).relative_to(self.root).parts or (".",)
-        parent = os.open(self.root, ROOT)
         try:
-            found = os.fstat(parent)
-            if (found.st_dev, found.st_ino) != self._identity:
-                raise InputError(f"workspace: path outside the workspace: {path}")
-            for folder in folders:
-                if flags & os.O_CREAT:
-                    with contextlib.suppress(FileExistsError):
-                        os.mkdir(folder, dir_fd=parent)
-                parent, above = _at(path, folder, FOLDER, parent), parent
-                os.close(above)
-            return _at(path, name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, parent)
-        finally:
-            os.close(parent)
+            return self._jail.open(path, flags)
+        except InputError:
+            raise InputError(f"workspace: path outside the workspace: {path}") from None
 
     def _read(self, path: str, limit: int) -> bytes:
         try:
             fd = self._open(path, os.O_RDONLY)
             try:
-                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                found = os.fstat(fd)
+                if not stat.S_ISREG(found.st_mode):
                     raise InputError(f"workspace: not a file: {path}")
+                if found.st_size > limit:
+                    raise InputError(f"workspace: file exceeds {limit} bytes: {path}")
                 data = bytearray()
                 while len(data) <= limit and (
                     chunk := os.read(fd, min(CHUNK, limit + 1 - len(data)))
@@ -277,22 +269,6 @@ class Local:
             if exc.errno == errno.ENXIO:
                 raise InputError(f"workspace: not a file: {path}") from None
             raise InputError(f"workspace: cannot write {path}: {exc.strerror}") from None
-
-
-def _at(path: str, name: str, flags: int, parent: int) -> int:
-    try:
-        return os.open(name, flags, 0o666, dir_fd=parent)
-    except OSError as exc:
-        if exc.errno in (errno.ELOOP, errno.ENOTDIR) and _link(name, parent):
-            raise InputError(f"workspace: path outside the workspace: {path}") from None
-        raise
-
-
-def _link(name: str, parent: int) -> bool:
-    try:
-        return stat.S_ISLNK(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode)
-    except OSError:
-        return False
 
 
 def _complete(data: bytearray) -> int:
@@ -385,10 +361,40 @@ def _discard(reading: list[asyncio.Task[None]]) -> None:
             task.exception()
 
 
-async def _reap(spawning: asyncio.Task[Process]) -> None:
-    with contextlib.suppress(Exception):
-        process = await spawning
-        await process.kill()
+def _log(*errors: BaseException | None) -> None:
+    for error in errors:
+        if error is not None:
+            logger.error("workspace: could not stop the command: %s", error, exc_info=error)
+
+
+async def _kill_all(
+    *kills: Coroutine[Any, Any, None],
+) -> tuple[list[BaseException | None], asyncio.CancelledError | None]:
+    loop = asyncio.get_running_loop()
+    killing = [asyncio.Task(kill, loop=loop, eager_start=True) for kill in kills]
+    caller = asyncio.current_task()
+    cancelled: asyncio.CancelledError | None = None
+    hurried = False
+    while True:
+        if not hurried and caller is not None and caller.cancelling() > 1:
+            hurried = True
+            for task in killing:
+                task.cancel()
+        if not (pending := [task for task in killing if not task.done()]):
+            break
+        try:
+            await asyncio.wait(pending)
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+    return [None if task.cancelled() else task.exception() for task in killing], cancelled
+
+
+async def _see_through(*kills: Coroutine[Any, Any, None]) -> list[BaseException | None]:
+    errors, cancelled = await _kill_all(*kills)
+    if cancelled is not None:
+        _log(*errors)
+        raise cancelled
+    return errors
 
 
 async def _exit_code(process: Process) -> int | None:
@@ -410,22 +416,27 @@ class _Job:
     task: asyncio.Task[None] | None = None
 
 
+def _note(kept: _Kept, error: BaseException | None, said: str = "") -> str:
+    line = "" if error is None else f"\n{type(error).__name__}: {error}\n"
+    if line and line != said:
+        kept.add(line.encode())
+    return line
+
+
 async def _follow(job: _Job) -> None:
     reading = _reading(job.process, job.kept, job.kept)
+    said = ""
     try:
-        job.code = await job.process.wait()
-        await job.process.kill()
-        await _settle(reading)
-    except BaseException as exc:
-        said = f"\n{type(exc).__name__}: {exc}\n" if isinstance(exc, Exception) else ""
-        job.kept.add(said.encode())
         try:
-            await job.process.kill()
-        except Exception as error:
-            if (again := f"\n{type(error).__name__}: {error}\n") != said:
-                job.kept.add(again.encode())
-        if not isinstance(exc, Exception):
-            raise
+            job.code = await job.process.wait()
+        except Exception as exc:
+            said = _note(job.kept, exc)
+        finally:
+            [error] = await _see_through(job.process.kill())
+            _note(job.kept, error, said)
+        await _settle(reading)
+    except Exception as exc:
+        _note(job.kept, exc)
     finally:
         _discard(reading)
         job.ended.set()
@@ -515,51 +526,64 @@ class Workspace:
     async def close(self) -> None:
         jobs = list(self._jobs.items())
         running = [job for _, job in jobs if not job.ended.is_set()]
-        results = await asyncio.gather(
-            *(job.process.kill() for job in running), return_exceptions=True
-        )
+        results, cancelled = await _kill_all(*(job.process.kill() for job in running))
         errors = dict(zip(map(id, running), results, strict=True))
-        gone = [
-            (name, job) for name, job in jobs if not isinstance(errors.get(id(job)), BaseException)
-        ]
+        gone = [(name, job) for name, job in jobs if errors.get(id(job)) is None]
         for name, job in gone:
             if self._jobs.get(name) is job:
                 del self._jobs[name]
-        await asyncio.gather(
-            *(job.task for _, job in gone if job.task is not None), return_exceptions=True
-        )
-        failed = [result for result in results if isinstance(result, BaseException)]
+        failed = [result for result in results if result is not None]
+        try:
+            await asyncio.gather(
+                *(job.task for _, job in gone if job.task is not None), return_exceptions=True
+            )
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+        if cancelled is not None:
+            _log(*failed)
+            raise cancelled
+        _log(*failed[1:])
         if failed:
             raise failed[0]
 
     async def _shell(self, args: dict[str, Any]) -> dict[str, Any]:
         a = ShellArgs.model_validate(args)
         if a.background:
-            return {"job": await asyncio.shield(self._start(a.command))}
+            starting = asyncio.ensure_future(self._start(a.command))
+            await join([starting])
+            return {"job": starting.result()}
         spawning = asyncio.create_task(self.backend.spawn(a.command))
         try:
             process = await asyncio.shield(spawning)
         except asyncio.CancelledError:
-            await asyncio.shield(_reap(spawning))
+            try:
+                await join([spawning])
+            finally:
+                if not spawning.cancelled() and spawning.exception() is None:
+                    _log(*await _see_through(spawning.result().kill()))
             raise
         out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
         reading = _reading(process, out, err)
+        code: int | None = None
         try:
-            code: int | None
-            try:
-                async with asyncio.timeout(self.timeout):
-                    code = await process.wait()
-                timed_out = False
-            except TimeoutError:
-                timed_out = True
-            await process.kill()
+            async with asyncio.timeout(self.timeout):
+                code = await process.wait()
+            timed_out = False
+        except TimeoutError:
+            timed_out = True
+        except BaseException:
+            _discard(reading)
+            _log(*await _see_through(process.kill()))
+            raise
+        try:
+            [error] = await _see_through(process.kill())
+            if error is not None:
+                raise error
             if timed_out:
                 code = await _exit_code(process)
             await _settle(reading)
-        except BaseException:
+        finally:
             _discard(reading)
-            await process.kill()
-            raise
         return {
             "exit_code": code,
             "stdout": out.take(),
@@ -591,7 +615,9 @@ class Workspace:
                 async with asyncio.timeout(a.wait):
                     await job.ended.wait()
         if a.stop and not job.ended.is_set():
-            await job.process.kill()
+            [error] = await _see_through(job.process.kill())
+            if error is not None:
+                raise error
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout_at(deadline):
                     await job.ended.wait()

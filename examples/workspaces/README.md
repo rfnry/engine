@@ -35,9 +35,10 @@ wrote `.docker/config.json` there put `HTTP_PROXY` into the next command's conta
 `DOCKER_CONFIG` points outside the workspace, and the command's own variables go in with `-e`.
 
 The client passes the engine's SIGTERM on to the container, so the timeout and `stop.now()` stop
-it. SIGKILL stops only the client, so a command that ignores SIGTERM would keep its container
-running; `timeout -s KILL` inside ends it at the same limit. Each command takes about a quarter of
-a second to start.
+it. SIGKILL stops only the client: the container of a command that ignores SIGTERM runs on, and so
+does any container still running at a second stop, which SIGKILLs the client at once, until
+`timeout -s KILL` inside ends it at the same limit. Each command takes about a quarter of a second
+to start.
 
 The caps bound one command; how many run at once is yours to cap — a semaphore around runs — and
 `--cgroup-parent` can put every workspace container under one slice, where a limit on the slice
@@ -61,11 +62,12 @@ workspace = Workspace(Docker("acme-work", workdir="/work"), scope="acme", timeou
 ```
 
 The engine's signals do not pass through `docker exec`, so each command runs with a tag of its own
-in its environment, `RFNRY_JOB`, which everything it starts inherits; `kill()` sends SIGTERM, then
-SIGKILL a second later, to every process in the container carrying it. A process that clears its
-environment escapes, as one that calls `setsid` escapes `Local`. When a command exits while
-something it started still holds its output, the `docker` client takes about two seconds to return.
-Starting the container with `--init`, limiting it and removing it are yours, as above.
+in its environment, `RFNRY_JOB`, which everything it starts inherits; `kill()` sends SIGTERM to
+every process in the container carrying it, gives the command a second to end, then sends them
+SIGKILL, and a second stop sends SIGKILL at once. A process that clears its environment escapes, as
+one that calls `setsid` escapes `Local`. When a command exits while something it started still holds
+its output, the `docker` client takes about two seconds to return. Starting the container with
+`--init`, limiting it and removing it are yours, as above.
 
 ## Running
 

@@ -305,29 +305,37 @@ async def test_a_call_cut_by_a_stop_is_recorded_once_when_its_handler_raises(
 ) -> None:
     stop = Stop()
 
+    async def slow_second(args: dict[str, Any]) -> Any:
+        if args["order_id"] == "A-2":
+            await asyncio.sleep(60)
+        return await lookup_order(args)
+
     async def closed(event: Event) -> None:
         if isinstance(event, ToolResultReady):
-            if event.step.stopped and event.call_id == "c2":
+            if event.step.stopped:
                 raise ConnectionResetError("the socket closed")
-            if not event.step.stopped:
-                stop.now()
-                await asyncio.sleep(1)
+            stop.now()
+            await asyncio.sleep(0.01)
 
     calls = [
         ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"}),
         ToolCall(id="c2", name="lookup_order", args={"order_id": "A-2"}),
     ]
+    tools = [
+        Tool("lookup_order", body=slow_second),
+        *(t for t in TOOLS if t.name != "lookup_order"),
+    ]
     kept = Kept()
     engine = Engine(
         fixtures,
         generation=Scripted(Reply(tool_calls=calls, stop_reason="tool_use")),
-        tools=TOOLS,
+        tools=tools,
         refinery=kept,
     )
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "x", on_event=closed, stop=stop)
     [run] = kept.runs
-    assert [(s.args["order_id"], s.stopped) for s in run.steps] == [("A-1", True), ("A-2", True)]
+    assert [(s.args["order_id"], s.stopped) for s in run.steps] == [("A-1", False), ("A-2", True)]
     assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "c2"]
 
 

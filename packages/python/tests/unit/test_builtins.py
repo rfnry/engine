@@ -1,14 +1,15 @@
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from rfnry_engine import Local, Process
 from rfnry_engine.errors import InputError
 from rfnry_engine.jail import Jail
-from rfnry_engine.models import Audio, Document, Image
+from rfnry_engine.models import Audio, Document, Image, Text
 from rfnry_engine.tools import builtins as builtins_module
-from rfnry_engine.tools.builtins import builtins, load_tool
+from rfnry_engine.tools.builtins import _contents, builtins, load_tool, preload_parts
 from rfnry_engine.tools.tools import Tools
 
 SUPPORT = Path(__file__).parents[1] / "fixtures" / "agents" / "support"
@@ -230,6 +231,99 @@ async def test_load_follows_the_jail(media: Path, tmp_path: Path) -> None:
     for path in ["knowledge/link.pdf", "../outside.pdf", str(outside)]:
         with pytest.raises(InputError, match="outside the agent directory"):
             await tools.dispatch("Load", {"path": path})
+
+
+async def test_load_resolves_a_folder_file_once(
+    media: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resolved: list[str | Path] = []
+    resolve = Jail.resolve
+
+    def counted(self: Jail, path: str | Path) -> Path:
+        resolved.append(path)
+        return resolve(self, path)
+
+    monkeypatch.setattr(Jail, "resolve", counted)
+    assert await Tools([load_tool(media)]).dispatch("Load", {"path": "knowledge/rates.pdf"}) == [
+        Document(media_type="application/pdf", name="rates.pdf", data=PDF)
+    ]
+    assert resolved == ["knowledge/rates.pdf"]
+
+
+async def test_load_names_and_types_a_link_by_the_file_it_opens(media: Path) -> None:
+    knowledge = media / "knowledge"
+    (knowledge / "report.pdf").write_bytes(PDF)
+    (knowledge / "report").symlink_to("report.pdf")
+    (knowledge / "notes").symlink_to("notes.md")
+    (knowledge / "photo.png").symlink_to("photo.jpg")
+    tools = Tools([load_tool(media)])
+    for link, part in {
+        "report": Document(media_type="application/pdf", name="report.pdf", data=PDF),
+        "notes": Document(media_type="text/markdown", name="notes.md", data=b"plain\n"),
+        "photo.png": Image(media_type="image/jpeg", data=JPEG),
+    }.items():
+        assert await tools.dispatch("Load", {"path": f"knowledge/{link}"}) == [part], link
+
+
+async def test_load_names_a_file_by_its_path_where_the_system_cannot_name_it(
+    media: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (media / "knowledge" / "report").symlink_to("rates.pdf")
+    monkeypatch.setattr(builtins_module, "_OPEN_FILES", str(tmp_path / "nowhere"))
+    assert await Tools([load_tool(media)]).dispatch("Load", {"path": "knowledge/report"}) == [
+        Document(media_type="application/pdf", name="report", data=PDF)
+    ]
+
+
+NOTES = b"# Notes\n\x00 kept as bytes\n"
+
+
+@pytest.mark.parametrize(
+    ("link", "target", "part"),
+    [
+        ("notes", "notes.md", Document(media_type="text/markdown", name="notes.md", data=NOTES)),
+        ("call", "call.mp3", Audio(media_type="audio/mpeg", data=MP3)),
+        ("photo.png", "photo.jpg", Image(media_type="image/jpeg", data=JPEG)),
+    ],
+)
+async def test_preload_names_and_types_a_link_as_load_does(
+    media: Path, link: str, target: str, part: Document | Audio | Image
+) -> None:
+    knowledge = media / "knowledge"
+    (knowledge / "notes.md").write_bytes(NOTES)
+    (knowledge / link).symlink_to(target)
+    name = f"knowledge/{link}"
+    parts, _ = preload_parts([name], None, Jail(media))
+    assert parts == [Text(text=f"<<<{name}>>>"), part]
+    assert await Tools([load_tool(media)]).dispatch("Load", {"path": name}) == [part]
+
+
+@pytest.mark.parametrize("by", ["Load", "preload"])
+async def test_a_file_removed_after_it_was_opened_keeps_its_own_name(
+    media: Path, monkeypatch: pytest.MonkeyPatch, by: str
+) -> None:
+    opened = Jail.open
+
+    def removing(self: Jail, path: str | Path, *args: Any) -> int:
+        fd = opened(self, path, *args)
+        (media / "knowledge" / "rates.pdf").unlink()
+        return fd
+
+    monkeypatch.setattr(Jail, "open", removing)
+    part = Document(media_type="application/pdf", name="rates.pdf", data=PDF)
+    name = "knowledge/rates.pdf"
+    if by == "Load":
+        assert await Tools([load_tool(media)]).dispatch("Load", {"path": name}) == [part]
+    else:
+        parts, _ = preload_parts([name], None, Jail(media))
+        assert parts == [Text(text=f"<<<{name}>>>"), part]
+
+
+async def test_a_file_whose_name_only_looks_removed_keeps_it(media: Path) -> None:
+    (media / "knowledge" / "rates (deleted)").write_bytes(PDF)
+    assert await Tools([load_tool(media)]).dispatch(
+        "Load", {"path": "knowledge/rates (deleted)"}
+    ) == [Document(media_type="application/pdf", name="rates (deleted)", data=PDF)]
 
 
 async def test_load_reaches_the_workspace_when_the_run_has_one(media: Path, tmp_path: Path) -> None:
@@ -488,3 +582,39 @@ async def test_read_and_load_go_through_any_backend_with_their_limits() -> None:
         Image(media_type="image/png", data=PNG)
     ]
     assert files.limits == [5 * 1024 * 1024, 20 * 1024 * 1024]
+
+
+async def test_what_the_system_refuses_is_said_with_the_model_s_path(tmp_path: Path) -> None:
+    root = tmp_path / "agent"
+    (root / "locked").mkdir(parents=True)
+    (root / "locked" / "a.md").write_text("a\n")
+    (root / "closed.md").write_text("closed\n")
+    (root / "locked").chmod(0o300)
+    (root / "closed.md").chmod(0o000)
+    tools = Tools([*builtins(root), load_tool(root)])
+    try:
+        with pytest.raises(InputError, match="^builtins: cannot list locked: Permission denied$"):
+            await tools.dispatch("LS", {"path": "locked"})
+        for name in ["Read", "Load"]:
+            with pytest.raises(
+                InputError, match="^builtins: cannot read closed.md: Permission denied$"
+            ):
+                await tools.dispatch(name, {"path": "closed.md"})
+        assert await tools.dispatch("Read", {"path": "locked/a.md"}) == "a\n"
+    finally:
+        (root / "locked").chmod(0o700)
+        (root / "closed.md").chmod(0o600)
+
+
+def test_a_file_far_over_the_limit_is_refused_without_reading_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with (tmp_path / "sparse.bin").open("wb") as file:
+        file.truncate(1 << 40)
+
+    def never(*_: Any, **__: Any) -> Any:
+        raise AssertionError("opened for reading")
+
+    monkeypatch.setattr("rfnry_engine.tools.builtins.open", never, raising=False)
+    with pytest.raises(InputError, match="^builtins: file exceeds 10 bytes: sparse.bin$"):
+        _contents(Jail(tmp_path), "sparse.bin", 10)

@@ -162,6 +162,52 @@ async def test_stopping_now_ends_a_wait_for_approval_of_a_delegate(tmp_path: Pat
     assert step.tool == "Delegate" and step.stopped and step.approved is None
 
 
+@pytest.mark.parametrize("tool", ["refund", "Delegate"])
+async def test_each_press_cancels_a_wait_for_approval_once(tmp_path: Path, tool: str) -> None:
+    refunds, stop = Refunds(), Stop()
+    asked, release = asyncio.Event(), asyncio.Event()
+    cancels, cleaned = 0, False
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        nonlocal cancels, cleaned
+        asked.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancels += 1
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    cancels += 1
+            cleaned = True
+            raise
+        return True
+
+    call = (
+        use("refund", order="A-1") if tool == "refund" else use("Delegate", agent="desk", input="x")
+    )
+    engine = Engine(make_tree(tmp_path), generation=Scripted(call, text_reply("never")))
+    agent = "desk" if tool == "refund" else "lead"
+    running = asyncio.create_task(
+        engine.run(agent, "acme", "x", tools=refunds.tools(), approve=approve, stop=stop)
+    )
+    try:
+        await asyncio.wait_for(asked.wait(), 5)
+        stop.now()
+        await asyncio.sleep(0.05)
+        assert cancels == 1 and not running.done()
+        stop.now()
+        await asyncio.sleep(0.05)
+        assert cancels == 2 and not running.done()
+    finally:
+        release.set()
+    run = await asyncio.wait_for(running, 5)
+    assert isinstance(run, Generation) and run.stopped == "now" and cleaned
+    [step] = run.steps
+    assert step.tool == tool and step.stopped and step.approved is None
+
+
 async def test_delegated_children_are_asked_too(tmp_path: Path) -> None:
     refunds, approver = Refunds(), Approver()
     llm = Scripted(

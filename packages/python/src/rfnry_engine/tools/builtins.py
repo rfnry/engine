@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import mimetypes
+import os
+import stat
 import time
 from collections.abc import Collection, Iterable, Mapping
 from fnmatch import fnmatch
@@ -25,6 +28,7 @@ _HEAD_LIMIT = 250
 _GREP_BYTES = 50 * 1024 * 1024
 _GREP_SECONDS = 10.0
 _SNIFF = 8192
+_OPEN_FILES = "/proc/self/fd"
 
 
 class ReadArgs(BaseModel):
@@ -66,10 +70,6 @@ class LSArgs(BaseModel):
 
 def _hidden(rel: Path) -> bool:
     return any(part.startswith(".") and part != ".." for part in rel.parts)
-
-
-def _text(path: Path) -> str | None:
-    return _decoded(path.read_bytes())
 
 
 _SIGNATURES = {
@@ -121,21 +121,50 @@ def _handed(path: Path, data: bytes, shown: str, media_types: Collection[str] | 
 
 
 def preload_parts(
-    files: list[tuple[str, Path]], media_types: Collection[str] | None
+    names: list[str], media_types: Collection[str] | None, jail: Jail
 ) -> tuple[list[Part], dict[str, bytes]]:
     parts: list[Part] = []
     read: dict[str, bytes] = {}
-    for name, path in files:
-        size = path.stat().st_size
-        if size > _LOAD_BYTES:
-            raise InputError(f"builtins: file exceeds {_LOAD_BYTES} bytes: {name}")
-        data = read[name] = path.read_bytes()
-        text = _decoded(data) if size <= _MAX_BYTES else None
+    for name in names:
+        opened, data = _contents(jail, name, _LOAD_BYTES)
+        read[name] = data
+        text = _decoded(data) if len(data) <= _MAX_BYTES else None
         if text is None:
-            parts += [Text(text=f"<<<{name}>>>"), _handed(path, data, name, media_types)]
+            parts += [Text(text=f"<<<{name}>>>"), _handed(opened, data, name, media_types)]
         else:
             parts.append(Text(text=f"<<<{name}>>>\n{text}"))
     return parts, read
+
+
+def _name_of(fd: int, path: str, removed: bool) -> Path:
+    try:
+        opened = os.readlink(f"{_OPEN_FILES}/{fd}")
+    except OSError:
+        return Path(path)
+    return Path(opened.removesuffix(" (deleted)") if removed else opened)
+
+
+def _contents(jail: Jail, path: str, limit: int) -> tuple[Path, bytes]:
+    try:
+        fd = jail.open(path)
+        try:
+            found = os.fstat(fd)
+            if not stat.S_ISREG(found.st_mode):
+                raise InputError(f"builtins: not a file: {path}")
+            if found.st_size > limit:
+                raise InputError(f"builtins: file exceeds {limit} bytes: {path}")
+            opened = _name_of(fd, path, found.st_nlink == 0)
+            with open(fd, "rb", closefd=False) as file:
+                data = file.read(limit + 1)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ENXIO):
+            raise InputError(f"builtins: not a file: {path}") from None
+        raise InputError(f"builtins: cannot read {path}: {exc.strerror}") from None
+    if len(data) > limit:
+        raise InputError(f"builtins: file exceeds {limit} bytes: {path}")
+    return opened, data
 
 
 def _lines(data: bytes, a: ReadArgs) -> str:
@@ -188,12 +217,7 @@ class _Directory:
 
     def read(self, args: dict[str, Any]) -> Result:
         a = ReadArgs.model_validate(args)
-        target = self.jail.resolve(a.path)
-        if not target.is_file():
-            raise InputError(f"builtins: not a file: {a.path}")
-        if target.stat().st_size > _MAX_BYTES:
-            raise InputError(f"builtins: file exceeds {_MAX_BYTES} bytes: {a.path}")
-        return _lines(target.read_bytes(), a)
+        return _lines(_contents(self.jail, a.path, _MAX_BYTES)[1], a)
 
     def _files_under(self, base: Path, glob: str | None) -> tuple[list[Path], bool]:
         if base.is_file():
@@ -239,16 +263,24 @@ class _Directory:
         for path in paths:
             rel = self._shown(path)
             try:
-                size = path.stat().st_size
-                if size > _MAX_BYTES:
+                fd = self.jail.open(path)
+            except (InputError, OSError):
+                continue
+            try:
+                found = os.fstat(fd)
+                if not stat.S_ISREG(found.st_mode) or found.st_size > _MAX_BYTES:
                     continue
-                if scanned + size > _GREP_BYTES:
+                if scanned + found.st_size > _GREP_BYTES:
                     exhausted = True
                     break
-                scanned += size
-                text = _text(path)
+                scanned += found.st_size
+                with open(fd, "rb", closefd=False) as file:
+                    data = file.read(_MAX_BYTES + 1)
             except OSError:
                 continue
+            finally:
+                os.close(fd)
+            text = _decoded(data) if len(data) <= _MAX_BYTES else None
             if text is None:
                 continue
             if a.mode == "files":
@@ -295,15 +327,23 @@ class _Directory:
 
     def ls(self, args: dict[str, Any]) -> str:
         a = LSArgs.model_validate(args)
-        target = self.jail.resolve(a.path) if a.path else self.root
-        if not target.is_dir():
-            raise InputError(f"builtins: not a directory: {a.path}")
-        entries = [
-            p for p in sorted(target.iterdir(), key=lambda p: p.name) if not p.name.startswith(".")
-        ]
+        path = a.path or "."
+        try:
+            fd = self.jail.open(path, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with os.scandir(fd) as found:
+                    entries = sorted(
+                        (e for e in found if not e.name.startswith(".")), key=lambda e: e.name
+                    )
+                shown = [f"{e.name}/" if e.is_dir() else e.name for e in entries[: a.limit]]
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+                raise InputError(f"builtins: not a directory: {path}") from None
+            raise InputError(f"builtins: cannot list {path}: {exc.strerror}") from None
         if not entries:
             return "(empty)"
-        shown = [f"{p.name}/" if p.is_dir() else p.name for p in entries[: a.limit]]
         suffix = f"\n[truncated to {a.limit} of {len(entries)}]" if len(entries) > a.limit else ""
         return "\n".join(shown) + suffix
 
@@ -360,12 +400,8 @@ def load_tool(
     jail = Jail(folder, also=reads)
 
     def load(path: str) -> list[Part]:
-        target = jail.resolve(path)
-        if not target.is_file():
-            raise InputError(f"builtins: not a file: {path}")
-        if target.stat().st_size > _LOAD_BYTES:
-            raise InputError(f"builtins: file exceeds {_LOAD_BYTES} bytes: {path}")
-        return [_handed(target, target.read_bytes(), path, media_types)]
+        opened, data = _contents(jail, path, _LOAD_BYTES)
+        return [_handed(opened, data, path, media_types)]
 
     async def body(args: dict[str, Any]) -> Result:
         a = LoadAnywhereArgs.model_validate(args)

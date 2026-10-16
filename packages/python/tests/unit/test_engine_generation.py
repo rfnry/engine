@@ -38,7 +38,7 @@ from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Fixed, Scripted, Streaming, generation_record, said, text_reply
+from .fakes import TOOLS, Fixed, Scripted, Streaming, said, text_reply
 
 
 def _tool_use(*calls: ToolCall) -> Reply:
@@ -698,9 +698,3 @@ async def test_a_run_stopped_before_any_reply_has_no_stop_reason(fixtures: Path)
     stop.now()
     run = await engine_for(fixtures, Scripted()).run("billing", "acme", "x", stop=stop)
     assert isinstance(run, Generation) and run.stopped == "now" and run.stop_reason is None
-
-
-def test_a_run_recorded_before_the_stop_reason_was_kept_reads_none() -> None:
-    body = generation_record().model_dump(mode="json")
-    del body["stop_reason"]
-    assert Generation.model_validate(body).stop_reason is None

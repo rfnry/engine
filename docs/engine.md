@@ -343,8 +343,7 @@ Neither sees what varies per run and is not the agent — the input, the history
 — so two runs of an unchanged folder share it and any edit changes it. The model is `run.model`; the
 code behind a tool is yours to version. A decision run carries one too, its `tools` the fingerprint
 of no tools and its `questions` the questions it asked ([Decision agents](#decision-agents)), and
-each delegated or routed run carries its own. A run recorded before fingerprints were kept reads
-back with `None`.
+each delegated or routed run carries its own.
 
 Keep the conversation yourself and pass it back. `run.conversation` is the history the run was
 sent, the input, every assistant turn — its text in `content`, its calls in `tool_calls`, its
@@ -430,10 +429,12 @@ run = await engine.run("support", scope="acme", input=message, task="triage",
 ```
 
 A `ToolCallStarted` carries the call's `args`, and a `ToolResultReady` its `step`: the same `Step`
-the run records, sent however the call ended — a result, an error, a refusal, a delegation, a stop —
-so a step can be shown, in a conversation or anywhere, while the run goes on. A call the engine
-answers without running it sends neither: `Output`, a call after an accepted `Output`, a call in a
-reply that was cut short. Its step is in `run.steps`.
+the run records, sent once however the call ended — a result, an error, a refusal, a delegation, a
+stop — so a step can be shown, in a conversation or anywhere, while the run goes on. A call
+`stop.now()` cuts off sends its `ToolResultReady` whether or not it had started, an `Output`
+included; any other call the engine answers without running it sends neither: an `Output` it accepts
+or refuses, a call after an accepted `Output`, a call in a reply that was cut short. Its step is in
+`run.steps`.
 
 Every model call is a turn, and a `TextDelta` carries the `turn` that said it, from 0. Text of a
 turn that ends in tool calls — "Let me look that up." — is said beside them; a run that ends in
@@ -461,13 +462,31 @@ that ended on its own), `run.steps` are the steps it took, `run.reply` is the la
 produced — text streamed before `now()` included — or `""`, and it is recorded like any run. A tool
 call cut off by `now()` is answered with the error `stopped by the user` and its `Step` has
 `stopped=True`, so every tool call in `run.conversation` has its result and the next run continues
-from it. A stop set before the run starts ends it before the first model call; one set after it
-ended does nothing. A stop reaches delegated and routed runs, which end the same way at their own
-next boundary. With `after_step()` pending the inbox is not read. Whatever is still in the inbox
-when the run ends stays there — the engine never starts a run; you do, with those messages as its
-input. A decision run never reads the inbox: its questions are one call, and a stop or an inbox
-rides to the run it routes to. "Pause, please" is a message in the inbox: the model reads it at the
-next boundary and wraps up in its own words.
+from it. A call the stop finds not yet running never runs: a stop from a handler of a call's
+`ToolCallStarted` comes before its tool runs, and one from a handler of a reply's `TextDelta` before
+any of the reply's calls. A handler still running when a stop cancels its call, or a streamed
+`TextDelta` handler, is cancelled with that work, so a kill switch does its own work, such as an
+audit, before it calls `stop.now()`. A call that already has its result keeps it, and the stop waits
+for an `on_event` still handling its `ToolResultReady` to return: a handler can stop the run on what
+a tool returned; a slow one delays the stop, and cancelling the run cancels it. Cancelling the run's
+task cancels its model call and every tool call still running, delegations and their runs included,
+and re-raises once all of them have ended, as an `asyncio.TaskGroup` does — a call whose tool
+returns after the cancel ends with it, before its `ToolResultReady` — and a stop waits the same way
+for the work it cancels, so a tool that ignores cancellation holds either one. The first stop is
+graceful: a workspace command is sent SIGTERM and given a second to end, and one the workspace is
+already stopping on its own — a `Shell` past its timeout, the kill after a `Shell` ended,
+`Job(stop=true)` or `close()` — counts as stopped once, so the first stop lets its second run out. A
+second stop — `stop.now()` again, or cancelling a run that is already stopping — ends what is still
+running at once, with no grace period: each further `now()` cancels once more every tool call still
+running but a running `Delegate` call, whose run takes the same `now()`, and a call whose
+`ToolResultReady` handler the stop waits for; each further cancel cancels everything still running
+once more; and a workspace kills its command outright. A stop set before the run starts ends it
+before the first model call; one set after it ended does nothing. A stop reaches delegated and
+routed runs, which end the same way at their own next boundary. With `after_step()` pending the
+inbox is not read. Whatever is still in the inbox when the run ends stays there — the engine never
+starts a run; you do, with those messages as its input. A decision run never reads the inbox: its
+questions are one call, and a stop or an inbox rides to the run it routes to. "Pause, please" is a
+message in the inbox: the model reads it at the next boundary and wraps up in its own words.
 
 A run that ended continues from its record, on any process, after any restart. With a refinery
 attached every run that returns is recorded with its conversation: keep the run id beside what you
@@ -1029,12 +1048,20 @@ On `Local`, `Write`, `Edit`, `Read` and `Load` stay inside the directory: they r
 leaves it, symlinks included. What the system refuses reaches the model with its reason and the
 model's own path, never the path on your machine: `workspace: cannot write notes.txt/x: Not a
 directory`. `Shell` reaches what the process running it can reach, so the real boundary is the
-sandbox in front of the shell, or the machine.
+sandbox in front of the shell, or the machine. `Local` reads and writes files in a thread, which a
+cancel cannot stop, so a `Write` or `Edit` cancelled while it writes returns once the file is
+written, and one past the workspace's `timeout`, like a workspace `Read` or `Load` past
+`tool_timeout`, returns its `TimeoutError` only once its thread has ended.
 
 The workspace root and the folders above it must be out of the model's reach: `Local` checks every
 call against the folder it was made with, but a `Local` made later on a path the model could rename
 follows the rename. The bubblewrap recipe binds the root itself, so a sandboxed model never sees
 its parent.
+
+`Local` refuses a root that is no longer the folder it was made with, by its directory inode number.
+On a filesystem whose directory inode numbers are not stable — overlayfs without `xino`, FUSE
+without `use_ino` — that check refuses a valid root, so such a filesystem is not supported as a
+workspace root.
 
 Binding the whole system read-only (`--ro-bind / /`) is not enough: a command could still read
 every other tenant's directory and every secret on disk. Mount only what commands need — the
@@ -1062,8 +1089,21 @@ class Backend(Protocol):
 
 `spawn` starts a command in the workspace with no input and returns at once a `Process`: its
 `stdout` and `stderr`, read until they end, `wait()` for its exit code, and `kill()` to end it and
-everything it started. A stop or a cancel that comes while `spawn` runs lets it return, then kills
-what it started. `read` refuses a file larger than `limit`; `write` creates parent directories. A
+everything it started. Every kill the workspace starts runs to its end, and the call that started it
+waits for it: a stop or a cancel of a `Shell` call, of `Job(stop=true)` or of `close()` returns once
+the kill has returned, however many cancels come meanwhile, and one that comes while `spawn` runs
+waits for it to return, then for the kill of what it started — with `background=true`, for its job
+to be listed, so `close()` stops it. So `spawn` and `kill()` must return promptly. A kill counts as
+the first stop, so a second ends a command at once: the next cancel after the one that started a
+kill — even one that comes while `spawn` still runs, or at the same moment — cancels that kill,
+once, and so does the second cancel during a kill the workspace started on its own, for a command
+past its timeout or that has ended, `Job(stop=true)` or `close()`. The call still waits for the
+kill: a cancelled `kill()` must still end the command and everything it started, at once, before it
+returns; `Local` sends SIGKILL in a `finally`, and so does the Docker backend in
+`examples/workspaces/`. A `kill()` that raises is the call's error; when the call is already leaving
+with a cancellation, or with the error of a `wait()` that raised, it is logged as an error instead,
+`workspace: could not stop the command: …`, and the kill that follows a job's end puts its error in
+the job's output. `read` refuses a file larger than `limit`; `write` creates parent directories. A
 path is the model's, relative to the workspace, and what it can reach is the backend's to decide; an
 error a backend raises reaches the model as the tool's error. A backend may have a `description`,
 which ends `Shell`'s description, as `Local` takes one.
@@ -1078,11 +1118,11 @@ An agent without `workspace: true` never sees these tools, even when the run has
 plain agent, a root with no `AGENT.md`, gets them whenever one is passed; an agent with it, run
 without one, is a `ConfigurationError`, and so is a decision agent that declares it. Delegated and
 routed agents receive the run's workspace on the same terms. `stop.now()` stops a running command
-the same way the timeout does, and leaves jobs running. You own the workspace and its lifetime: a
-temporary directory per run, or one kept for a project. A workspace belongs to one tenant, the one
-its `scope` names: a run, a tool or a replay of another scope refuses it before anything runs —
-`engine: workspace belongs to scope 'acme', not 'globex'` — so a workspace, its files and its jobs
-never cross tenants.
+the same way the timeout does, and a second one kills it at once; either leaves jobs running. You
+own the workspace and its lifetime: a temporary directory per run, or one kept for a project. A
+workspace belongs to one tenant, the one its `scope` names: a run, a tool or a replay of another
+scope refuses it before anything runs — `engine: workspace belongs to scope 'acme', not 'globex'` —
+so a workspace, its files and its jobs never cross tenants.
 
 ### Approving tool calls
 
@@ -1221,21 +1261,19 @@ datasets:
 | `preference` | human correction | tags, fingerprint, prompt (system, preload, messages), chosen (the correction), rejected (the reply) |
 | `decision` | question of a decision run | task, tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
 
-Every row carries its run's `tags`, `{}` for a run that had none or was recorded before tags were
-kept, and its `fingerprint`, `{"agent": …, "tools": …, "questions": …}` or `null` for a run recorded
-before fingerprints were kept — `questions` is `null` for a generation run and for a decision run
-recorded before it was kept; group or filter the rows by them in your own code.
+Every row carries its run's `tags`, `{}` for a run that had none, and its `fingerprint`,
+`{"agent": …, "tools": …, "questions": …}` — `questions` is `null` for a generation run; group or
+filter the rows by them in your own code.
 
 The first two are a generation agent's episodes and the corrections people made to them. A
 generation row's `tools` is what the model was offered — `{name, description, input_schema}` each —
 `preload` the parts `preload: true` sent ahead of `messages`, `[]` without it, and `conversation` is
 `run.conversation` in order: history, input, assistant turns with their `tool_calls` (`{id, name,
 args}`), tool results with `is_error`, the final reply. Together they fit standard fine-tuning and
-eval formats with a few lines of mapping; the library writes no vendor's format. A run recorded
-before `tools` or `preload` was kept exports it as `[]`. Parts are written inline, their bytes as
-base64, so a row is self-contained; strip the media from a row you do not want it in. The third is a
-decision agent's answers beside what turned out true: a calibrated model is one whose 0.8 was right
-80% of the time, and this is the table that says whether it was:
+eval formats with a few lines of mapping; the library writes no vendor's format. Parts are written
+inline, their bytes as base64, so a row is self-contained; strip the media from a row you do not
+want it in. The third is a decision agent's answers beside what turned out true: a calibrated model
+is one whose 0.8 was right 80% of the time, and this is the table that says whether it was:
 
 ```json
 {"run_id": "…", "holdout": false, "agent": "frontdesk", "tags": {"arm": "b"}, "question_id": "intent", "answer": "billing",
@@ -1280,7 +1318,7 @@ input, history and context go too. What a record does not keep is yours to pass
 again — `expect=`, `approve=`, and the `tools=` and `workspace=` the runs were given. Replays given
 one workspace share its files and its jobs, and a job outlives the replay that started it: close the
 workspace when the replays are done. The candidate delegates and routes as it does, so a run with
-children replays as one run. A run recorded before `context` was kept replays without it.
+children replays as one run.
 
 `repeat=3` replays each run three times: each attempt is a run of its own and a pair of its own,
 `pair.attempt` counts them from 0, and the three come one after another; `limit=` still counts
@@ -1402,14 +1440,18 @@ deadline. The child run it starts is bounded by its own tool calls and `max_step
 The builtins are bounded whatever the deadline. `Read` returns UTF-8 text and refuses anything else
 with a pointer to `Load`; `offset` and `limit` select lines. `Load` takes any file up to 20 MB and
 hands it over as an image, audio or a document part, whichever its type says. The type comes from
-the file's name, and for PNG, JPEG, GIF, WebP and PDF the first bytes must agree — a `.png` that is
-not one is refused rather than sent — while a file with no known name is typed by its bytes or sent
-as `application/octet-stream`. What the model can take is the adapter's `media_types`, and past that
-the vendor's. `Grep` searches text only and skips the rest; `Glob` and `LS` list every file. Neither
-`Read` nor `Grep` reads a file over 5 MB. `Grep` stops after scanning 50 MB and notes the cut. A
-search that runs past 10 s in one call is an `InputError` the model can act on. `Glob` and `Grep`
-walk at most 100,000 entries and note the cut. A tool that reads the agent's directory itself
-resolves paths with `Jail`, which refuses one that leaves the directory, as the builtins do.
+the name of the file it opens, so a link goes by its target's name (by its own where the system
+cannot say which file it opened, as on macOS), and for PNG, JPEG, GIF, WebP and PDF the first bytes
+must agree — a `.png` that is not one is refused rather than sent — while a file with no known name
+is typed by its bytes or sent as `application/octet-stream`. What the model can take is the
+adapter's `media_types`, and past that the vendor's. `Grep` searches text only and skips the rest;
+`Glob` and `LS` list every file. Neither `Read` nor `Grep` reads a file over 5 MB. `Grep` stops
+after scanning 50 MB and notes the cut. A search that runs past 10 s in one call is an `InputError`
+the model can act on. `Glob` and `Grep` walk at most 100,000 entries and note the cut. A tool that
+reads the agent's directory itself resolves paths with `Jail`, which refuses one that leaves the
+directory, as the builtins do. `Jail.open` opens a file the way the builtins and `Local` do: from a
+place it checks is still the folder it was given, one folder at a time without following a link, so
+a link swapped in after the check is refused.
 
 Tools that belong to a tenant go on the call that names the tenant:
 

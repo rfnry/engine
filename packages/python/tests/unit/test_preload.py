@@ -1,7 +1,6 @@
 import json
 import mimetypes
 import shutil
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +9,7 @@ import pytest
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import tools_fingerprint
+from rfnry_engine.jail import Jail
 from rfnry_engine.models import (
     Document,
     GenerationModel,
@@ -23,7 +23,7 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import Generation
 from rfnry_engine.refinery.labels import Review
-from rfnry_engine.refinery.refinery import Refinery, flatten
+from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
 
@@ -34,7 +34,6 @@ from .fakes import (
     Scripted,
     by_hand,
     delegating,
-    generation_record,
     lead,
     said,
     text_reply,
@@ -111,7 +110,6 @@ async def test_preload_all_puts_every_rule_skill_and_knowledge_file_before_the_m
     assert run.messages == [Message(role="user", content="Charged twice.")]
     assert all(message.content != parts for message in run.conversation)
     assert [t.name for t in first[2]] == [t.name for t in plain.calls[0][2]]
-    assert run.fingerprint is not None and before.fingerprint is not None
     assert run.fingerprint.agent != before.fingerprint.agent
 
 
@@ -132,6 +130,28 @@ async def test_a_binary_knowledge_file_goes_in_as_the_part_load_hands_over(
         assert isinstance(loaded, list) and len(loaded) == 1
         at = run.preload.index(Text(text=f"<<<{name}>>>"))
         assert run.preload[at + 1 : at + 2] == loaded
+
+
+async def test_a_preloaded_link_goes_in_as_the_part_load_hands_over(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    support = root / "support"
+    furnish(support)
+    (support / "knowledge" / "notes.md").write_bytes(b"# Notes\n\x00 kept as bytes\n")
+    (support / "knowledge" / "notes").symlink_to("notes.md")
+    preload_all(support)
+    built = engine(root, Scripted(text_reply("ok")))
+    run = await built.run("support", "acme", "What does express cost?")
+    assert isinstance(run, Generation)
+    loaded = await EngineTools(built, agent="support", scope="acme").dispatch(
+        "Load", {"path": "knowledge/notes"}
+    )
+    assert loaded == [
+        Document(media_type="text/markdown", name="notes.md", data=b"# Notes\n\x00 kept as bytes\n")
+    ]
+    at = run.preload.index(Text(text="<<<knowledge/notes>>>"))
+    assert run.preload[at + 1 : at + 2] == loaded
 
 
 class RuleFollower:
@@ -346,22 +366,6 @@ async def test_the_preload_is_recorded_read_back_exported_and_left_to_the_candid
     ]
 
 
-async def test_a_run_recorded_before_preload_was_kept_reads_back_and_exports_an_empty_preload(
-    storage: Storage,
-) -> None:
-    refinery = Refinery(storage)
-    run = generation_record()
-    [stored] = flatten(run, datetime.now(UTC))
-    old = {key: value for key, value in stored.body.items() if key != "preload"}
-    await storage.put_run("acme", stored.model_copy(update={"body": old}))
-    assert Generation.model_validate(old).preload == []
-    await refinery.review("acme", run.run_id, Review(correction="Better."))
-    bucket = MemoryBucket()
-    await refinery.export("acme", bucket)
-    rows = {key.split("/")[2]: json.loads(data) for key, data in bucket.objects.items()}
-    assert rows["generation"]["preload"] == [] and rows["preference"]["prompt"]["preload"] == []
-
-
 class PicturesAndDocuments(Scripted):
     media_types = {"image/*", "application/pdf"}
 
@@ -437,11 +441,18 @@ def test_the_preload_and_the_fingerprint_come_from_one_read_of_each_file(
     opened: list[Path] = []
     original = Path.open
 
+    jailed = Jail.open
+
     def counting(self: Path, *args: Any, **kwargs: Any) -> Any:
         opened.append(self)
         return original(self, *args, **kwargs)
 
+    def walking(self: Jail, path: str | Path, *args: Any) -> int:
+        opened.append(self.root / path)
+        return jailed(self, path, *args)
+
     monkeypatch.setattr(Path, "open", counting)
+    monkeypatch.setattr(Jail, "open", walking)
     spec = engine(root, Scripted())._agents["support"]
     monkeypatch.undo()
     preloaded = ["knowledge/diagram.png", "knowledge/plans.md", "knowledge/rates.pdf"]

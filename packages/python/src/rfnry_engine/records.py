@@ -65,7 +65,7 @@ EventHandler = Callable[[Event], Awaitable[None]]
 class Fingerprint(BaseModel):
     agent: str
     tools: str
-    questions: str | None = None
+    questions: str | None
 
 
 class Generation(BaseModel):
@@ -80,7 +80,7 @@ class Generation(BaseModel):
     at: datetime
     duration_ms: int
     model: str | None
-    fingerprint: Fingerprint | None = None
+    fingerprint: Fingerprint
     input: State
     system: str
     preload: list[Part] = Field(default_factory=list)
@@ -113,7 +113,7 @@ class Decision(BaseModel):
     at: datetime
     duration_ms: int
     model: str | None
-    fingerprint: Fingerprint | None = None
+    fingerprint: Fingerprint
     state: State
     questions: dict[str, Question]
     runtime: list[str] = Field(default_factory=list)
