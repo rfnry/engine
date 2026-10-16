@@ -425,33 +425,37 @@ async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_han
     assert asyncio.all_tasks() <= before
 
 
+@pytest.mark.parametrize("stopper", ["a holding handler", "a handler that returned", "the caller"])
 async def test_cancelling_a_run_cancels_the_handler_of_a_call_that_swallowed_the_stop(
-    tmp_path: Path,
+    tmp_path: Path, stopper: str
 ) -> None:
-    stop = Stop()
+    stop, entered = Stop(), asyncio.Event()
     held = {"c1": asyncio.Event(), "c2": asyncio.Event()}
     left = {"c1": asyncio.Event(), "c2": asyncio.Event()}
 
     async def holding(event: Event) -> None:
-        if isinstance(event, ToolResultReady):
-            if event.call_id == "c2":
-                stop.now()
-            held[event.call_id].set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                left[event.call_id].set()
+        if not isinstance(event, ToolResultReady):
+            return
+        if event.call_id == "c2":
+            stop.now()
+            if stopper == "a handler that returned":
+                return
+        held[event.call_id].set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            left[event.call_id].set()
 
     async def swallows(args: dict[str, Any]) -> str:
+        entered.set()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.sleep(30)
         return "kept going"
 
     before = asyncio.all_tasks()
-    calls = [
-        ToolCall(id="c1", name="swallows", args={}),
-        ToolCall(id="c2", name="lookup", args={"order_id": "A-1"}),
-    ]
+    calls = [ToolCall(id="c1", name="swallows", args={})]
+    if stopper != "the caller":
+        calls.append(ToolCall(id="c2", name="lookup", args={"order_id": "A-1"}))
     tools = Tools([Tool("swallows", body=swallows), Tool("lookup", body=lookup)])
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     running = asyncio.create_task(
@@ -460,12 +464,15 @@ async def test_cancelling_a_run_cancels_the_handler_of_a_call_that_swallowed_the
         )
     )
     async with asyncio.timeout(2):
-        await held["c2"].wait()
+        await entered.wait()
+        if stopper == "the caller":
+            stop.now()
         await held["c1"].wait()
+    await asyncio.sleep(0.05)
     running.cancel()
     async with asyncio.timeout(2):
-        await left["c1"].wait()
-        await left["c2"].wait()
+        for call_id in ["c1", "c2"] if stopper == "a holding handler" else ["c1"]:
+            await left[call_id].wait()
     with pytest.raises(asyncio.CancelledError):
         async with asyncio.timeout(2):
             await running

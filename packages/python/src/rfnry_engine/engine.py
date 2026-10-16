@@ -813,8 +813,7 @@ class Engine:
                     for task in tasks:
                         if task not in finishing:
                             task.cancel()
-                    if finishing:
-                        await asyncio.wait(finishing)
+                    await asyncio.wait(tasks)
             except BaseException:
                 for call, task in zip(batch, tasks, strict=True):
                     if task in finishing or any(call is done for done, _ in ran):
