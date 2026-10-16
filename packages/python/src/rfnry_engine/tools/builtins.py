@@ -389,8 +389,7 @@ def load_tool(
     jail = Jail(folder, also=reads)
 
     def load(path: str) -> list[Part]:
-        target = jail.resolve(path)
-        return [_handed(target, _contents(jail, path, _LOAD_BYTES), path, media_types)]
+        return [_handed(Path(path), _contents(jail, path, _LOAD_BYTES), path, media_types)]
 
     async def body(args: dict[str, Any]) -> Result:
         a = LoadAnywhereArgs.model_validate(args)

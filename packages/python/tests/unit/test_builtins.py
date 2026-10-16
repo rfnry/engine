@@ -233,6 +233,31 @@ async def test_load_follows_the_jail(media: Path, tmp_path: Path) -> None:
             await tools.dispatch("Load", {"path": path})
 
 
+async def test_load_resolves_a_folder_file_once(
+    media: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resolved: list[str | Path] = []
+    resolve = Jail.resolve
+
+    def counted(self: Jail, path: str | Path) -> Path:
+        resolved.append(path)
+        return resolve(self, path)
+
+    monkeypatch.setattr(Jail, "resolve", counted)
+    assert await Tools([load_tool(media)]).dispatch("Load", {"path": "knowledge/rates.pdf"}) == [
+        Document(media_type="application/pdf", name="rates.pdf", data=PDF)
+    ]
+    assert resolved == ["knowledge/rates.pdf"]
+
+
+async def test_load_names_a_link_by_its_own_name_and_types_it_by_its_bytes(media: Path) -> None:
+    (media / "knowledge" / "report.pdf").write_bytes(PDF)
+    (media / "knowledge" / "report").symlink_to("report.pdf")
+    assert await Tools([load_tool(media)]).dispatch("Load", {"path": "knowledge/report"}) == [
+        Document(media_type="application/pdf", name="report", data=PDF)
+    ]
+
+
 async def test_load_reaches_the_workspace_when_the_run_has_one(media: Path, tmp_path: Path) -> None:
     work = tmp_path / "work"
     work.mkdir()

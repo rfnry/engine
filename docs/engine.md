@@ -1424,17 +1424,17 @@ deadline. The child run it starts is bounded by its own tool calls and `max_step
 The builtins are bounded whatever the deadline. `Read` returns UTF-8 text and refuses anything else
 with a pointer to `Load`; `offset` and `limit` select lines. `Load` takes any file up to 20 MB and
 hands it over as an image, audio or a document part, whichever its type says. The type comes from
-the file's name, and for PNG, JPEG, GIF, WebP and PDF the first bytes must agree — a `.png` that is
-not one is refused rather than sent — while a file with no known name is typed by its bytes or sent
-as `application/octet-stream`. What the model can take is the adapter's `media_types`, and past that
-the vendor's. `Grep` searches text only and skips the rest; `Glob` and `LS` list every file. Neither
-`Read` nor `Grep` reads a file over 5 MB. `Grep` stops after scanning 50 MB and notes the cut. A
-search that runs past 10 s in one call is an `InputError` the model can act on. `Glob` and `Grep`
-walk at most 100,000 entries and note the cut. A tool that reads the agent's directory itself
-resolves paths with `Jail`, which refuses one that leaves the directory, as the builtins do.
-`Jail.open` opens a file the way the builtins and `Local` do: from a place it checks is still the
-folder it was given, one folder at a time without following a link, so a link swapped in after the
-check is refused.
+the name the path ends in, a link's own name rather than its target's, and for PNG, JPEG, GIF, WebP
+and PDF the first bytes must agree — a `.png` that is not one is refused rather than sent — while a
+file with no known name is typed by its bytes or sent as `application/octet-stream`. What the model
+can take is the adapter's `media_types`, and past that the vendor's. `Grep` searches text only and
+skips the rest; `Glob` and `LS` list every file. Neither `Read` nor `Grep` reads a file over 5 MB.
+`Grep` stops after scanning 50 MB and notes the cut. A search that runs past 10 s in one call is an
+`InputError` the model can act on. `Glob` and `Grep` walk at most 100,000 entries and note the cut.
+A tool that reads the agent's directory itself resolves paths with `Jail`, which refuses one that
+leaves the directory, as the builtins do. `Jail.open` opens a file the way the builtins and `Local`
+do: from a place it checks is still the folder it was given, one folder at a time without following
+a link, so a link swapped in after the check is refused.
 
 Tools that belong to a tenant go on the call that names the tenant:
 
