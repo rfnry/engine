@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Callable, Collection, Mapping
 from functools import cached_property
 from pathlib import Path

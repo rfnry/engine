@@ -747,7 +747,7 @@ def ended(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-    except (ProcessLookupError, FileNotFoundError):
+    except ProcessLookupError, FileNotFoundError:
         return True
     return state == "Z"
 

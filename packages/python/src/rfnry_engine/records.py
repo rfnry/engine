@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any, Literal
@@ -133,7 +131,7 @@ class Decision(BaseModel):
             return value
         try:
             parts = PARTS.validate_python(value, from_attributes=True)
-        except (ValidationError, InputError):
+        except ValidationError, InputError:
             return value
         return parts if any(not isinstance(part, Text) for part in parts) else value
 

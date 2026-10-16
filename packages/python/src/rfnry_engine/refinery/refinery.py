@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import json
 from collections import deque
@@ -402,7 +400,7 @@ class Refinery:
         concurrency: int = 1,
         repeat: int = 1,
         conversation: Callable[[Run], Sequence[object] | HistoryLike] | None = None,
-    ) -> AsyncGenerator[Replay, None]:
+    ) -> AsyncGenerator[Replay]:
         if not scope:
             raise InputError("refinery: scope is required")
         if workspace is not None and workspace.scope != scope:
@@ -489,7 +487,7 @@ class Refinery:
                 )
             return Replay(recorded=recorded, labels=labels, attempt=attempt, candidate=run)
 
-        async def pairs() -> AsyncGenerator[Replay, None]:
+        async def pairs() -> AsyncGenerator[Replay]:
             chosen = await self._replayable(
                 scope,
                 agent,

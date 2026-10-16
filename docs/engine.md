@@ -162,6 +162,8 @@ A root of agent directories, a generation model, and `tools` — the bodies behi
 agents declare, one list for the whole tree ([Tools](#tools) builds it). One call runs an agent for
 a tenant and returns its record.
 
+rfnry-engine needs Python 3.14 or later.
+
 ## Core features
 
 ### An agent is a directory

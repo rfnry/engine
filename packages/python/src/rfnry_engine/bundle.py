@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 from rfnry_engine.models import ToolSpec
