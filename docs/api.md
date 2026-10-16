@@ -439,7 +439,7 @@ A person's handle on a running run, passed as `run(stop=)`; it reaches the runs 
 def now(self) -> None: ...
 ```
 
-Cancels the model call in flight and every tool call still running. The run returns with `stopped="now"`, and each call it cut off is answered with the error `stopped by the user`. A call that already has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady` to return, so a slow handler delays it; cancelling the run cancels the handler.
+Cancels the model call in flight and every tool call still running; a call it finds not yet running never runs, so a stop from an `on_event` handler of a call's `ToolCallStarted`, or of a reply's `TextDelta`, comes before the tool runs. The run returns with `stopped="now"`, and each call it cut off is answered with the error `stopped by the user`. A call that already has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady` to return, so a slow handler delays it; cancelling the run cancels the handler.
 
 ### `Stop.after_step`
 
@@ -586,7 +586,7 @@ class ToolCallStarted(BaseModel):
     args: dict[str, Any]
 ```
 
-Sent to `on_event` when a tool call starts, before any approval, with the arguments the model gave it.
+Sent to `on_event` when a tool call starts, before any approval, with the arguments the model gave it. A handler that calls `Stop.now()` stops the call before its tool runs.
 
 ### `ToolResultReady`
 

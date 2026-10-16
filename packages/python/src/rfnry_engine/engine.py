@@ -706,6 +706,8 @@ class Engine:
                 )
             )
             began = time.monotonic()
+            if requested(stop) == "now":
+                return await cut(call, began)
             child_run_id: str | None = None
             stopped = False
             content: Content
@@ -791,6 +793,10 @@ class Engine:
 
         async def run_batch(batch: list[ToolCall]) -> bool:
             began = time.monotonic()
+            if requested(stop) == "now":
+                for call in batch:
+                    answer(call, await cut(call, began))
+                return True
             tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
             stopped = await wait(tasks, stop)
             if stopped:

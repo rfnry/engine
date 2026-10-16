@@ -180,8 +180,8 @@ async def test_a_stop_from_a_result_handler_sends_each_result_once(
     tmp_path: Path, pause: float
 ) -> None:
     calls = [
-        ToolCall(id="c1", name="lookup", args={"order_id": "A-1"}),
-        ToolCall(id="c2", name="slow", args={}),
+        ToolCall(id="c1", name="slow", args={}),
+        ToolCall(id="c2", name="lookup", args={"order_id": "A-1"}),
     ]
     stop = Stop()
     handler = StopOn(stop, ToolResultReady, pause)
@@ -196,10 +196,10 @@ async def test_a_stop_from_a_result_handler_sends_each_result_once(
     events = handler.of(run.run_id)
     check(run, calls, events)
     assert [(s.result, s.stopped) for s in run.steps] == [
-        ('{"order": "A-1", "status": "shipped"}', False),
         (STOPPED, True),
+        ('{"order": "A-1", "status": "shipped"}', False),
     ]
-    first = [e for e in events if isinstance(e, ToolResultReady) and e.call_id == "c1"]
+    first = [e for e in events if isinstance(e, ToolResultReady) and e.call_id == "c2"]
     assert handler.handled == first
 
 
@@ -259,6 +259,110 @@ async def test_a_stop_from_a_text_handler_sends_each_delta_once(tmp_path: Path) 
     assert isinstance(run, Generation) and run.stopped == "now" and run.reply == "Let "
     assert [e.text for e in handler.events if isinstance(e, TextDelta)] == ["Let "]
     assert handler.of(run.run_id) == [] and run.steps == []
+
+
+class Destroy:
+    def __init__(self) -> None:
+        self.destroyed: list[str] = []
+
+    async def __call__(self, args: dict[str, Any]) -> str:
+        await asyncio.sleep(0)
+        self.destroyed.append(args["order_id"])
+        return "destroyed"
+
+
+def answered(run: Generation) -> list[str | None]:
+    return [m.tool_call_id for m in run.conversation if m.role == "tool"]
+
+
+async def test_a_stop_from_a_calls_start_handler_stops_the_tool_before_it_runs(
+    tmp_path: Path,
+) -> None:
+    destroy, stop, collect = Destroy(), Stop(), Collect()
+
+    async def kill(event: Event) -> None:
+        await collect(event)
+        if isinstance(event, ToolCallStarted) and event.call_id == "c1":
+            stop.now()
+
+    calls = [ToolCall(id="c1", name="destroy", args={"order_id": "A-1"})]
+    llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
+    run = await asyncio.wait_for(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "lead",
+            "acme",
+            "Destroy A-1",
+            tools=Tools([Tool("destroy", body=destroy)]),
+            stop=stop,
+            on_event=kill,
+        ),
+        2,
+    )
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert destroy.destroyed == []
+    check(run, calls, collect.of(run.run_id))
+    assert [(s.result, s.is_error, s.stopped) for s in run.steps] == [(STOPPED, True, True)]
+    assert answered(run) == ["c1"]
+
+
+async def test_a_stop_from_a_text_handler_stops_the_batch_before_it_runs(tmp_path: Path) -> None:
+    destroy, stop, collect = Destroy(), Stop(), Collect()
+
+    async def kill(event: Event) -> None:
+        await collect(event)
+        if isinstance(event, TextDelta):
+            stop.now()
+
+    calls = [
+        ToolCall(id="c1", name="destroy", args={"order_id": "A-1"}),
+        ToolCall(id="c2", name="destroy", args={"order_id": "A-2"}),
+    ]
+    llm = Scripted(Reply(text="Destroying both.", tool_calls=calls, stop_reason="tool_use"))
+    run = await asyncio.wait_for(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "lead",
+            "acme",
+            "Destroy A-1 and A-2",
+            tools=Tools([Tool("destroy", body=destroy)]),
+            stop=stop,
+            on_event=kill,
+        ),
+        2,
+    )
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert run.reply == "Destroying both." and destroy.destroyed == []
+    events = collect.of(run.run_id)
+    assert [e.call_id for e in events if isinstance(e, ToolResultReady)] == ["c1", "c2"]
+    assert not any(isinstance(e, ToolCallStarted) for e in events)
+    assert [e.step for e in events if isinstance(e, ToolResultReady)] == run.steps
+    assert [(s.result, s.is_error, s.stopped) for s in run.steps] == [(STOPPED, True, True)] * 2
+    assert answered(run) == ["c1", "c2"]
+
+
+async def test_a_stop_from_a_text_handler_answers_an_output_beside_it_as_stopped(
+    tmp_path: Path,
+) -> None:
+    stop, collect = Stop(), Collect()
+
+    async def kill(event: Event) -> None:
+        await collect(event)
+        if isinstance(event, TextDelta):
+            stop.now()
+
+    output = ToolCall(id="o1", name="Output", args={"ok": True})
+    llm = Scripted(Reply(text="Verdict.", tool_calls=[output], stop_reason="tool_use"))
+    run = await asyncio.wait_for(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "lead", "acme", "Judge", expect=Verdict, stop=stop, on_event=kill
+        ),
+        2,
+    )
+    assert isinstance(run, Generation) and run.stopped == "now" and run.reply == "Verdict."
+    assert [(s.tool, s.result, s.stopped) for s in run.steps] == [("Output", STOPPED, True)]
+    events = collect.of(run.run_id)
+    assert [(type(e), e.call_id) for e in events] == [(ToolResultReady, "o1")]
+    assert [e.step for e in events if isinstance(e, ToolResultReady)] == run.steps
+    assert answered(run) == ["o1"]
 
 
 async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_handler(
