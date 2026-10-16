@@ -2,19 +2,15 @@
 
 ## Description
 
-rfnry-engine is an agent harness with built-in dataset generation.
+Agent harness with built-in dataset generation
 
-It is the scaffolding that turns a model into an agent — the loop, the tools, delegation between agents — as a small library: an agent is a folder of markdown, running on a generation model, a decision model, or both. Opt-in, it records every run, gathers labels from people, the world and models, and exports datasets to evaluate, improve or train what comes next.
-
-It is a library, not a framework. The consumer brings the models, the storage connection, the functions behind tools, the conversation history, the bucket and the telemetry. The library never writes to disk on its own — the only writes are a model's, inside a `Workspace` the consumer passes to a run — never owns a background loop, never sees a credential. Tenancy is by construction: every run names its scope, every stored row carries it, nothing reads across scopes.
+It is a library, not a framework. The consumer brings the models, the storage connection, the functions behind tools, the conversation history, the bucket and the telemetry. The library never writes to disk on its own — the only writes are a model's, inside a `Workspace` the consumer passes to a run — and never sees a credential. It never owns a background loop: the only task it keeps reads the output of a job a model started in a `Workspace`, and it ends with the job or when the consumer closes the workspace. Tenancy is by construction: every run names its scope, every stored row carries it, nothing reads across scopes.
 
 ## Documentation
 
-`docs/engine.md` is the library's contract with its consumers: description, philosophy, every public verb, minimal examples. It documents the API as designed and is updated in the same change as any change to the public surface. It is also the complexity gauge: if a change makes the documentation harder to write or an example longer, the design is wrong — rework the change, not the docs.
+Documentation in `docs/engine.md` and `docs/api.md`.
 
-`docs/api.md` is the reference: every public name with its exact signature, what it returns and what it raises; a test keeps it in step with the code, and it changes in the same change as the public surface.
-
-Designs and implementation plans live only in `docs/plans/`, as `YYYY-MM-DD-<topic>-design.md` and `YYYY-MM-DD-<topic>-plan.md` — not in `docs/superpowers/`, not at the repo root. The folder is gitignored: plans are local working documents, not part of the library.
+Designs and implementation plans live only in `docs/plans/`, as `YYYY-MM-DD-<topic>-design.md` and `YYYY-MM-DD-<topic>-plan.md`. The folder is gitignored: plans are local working documents, not part of the library.
 
 ## Checklists
 
@@ -33,7 +29,7 @@ Designs and implementation plans live only in `docs/plans/`, as `YYYY-MM-DD-<top
 **Apply these to every change; they guard the shape of the codebase.**
 
 1. **Stay inside the concern.** This library does one thing: run markdown agents on generation and decision models, and record, label and export what they did. Consumer-land, never here: model providers and adapters, conversation persistence and history windowing, per-tenant agent state, telemetry, security, scheduling, object stores, credentials.
-2. **Lib, not framework.** The consumer calls us; we never take over their application — no plugin registries, no config DSLs, no scaffolding, no inversion of control, no background loops, no disk writes of our own; the only writes are a model's, inside a `Workspace` the consumer passes to a run.
+2. **Lib, not framework.** The consumer calls us; we never take over their application — no plugin registries, no config DSLs, no scaffolding, no inversion of control, no background loops, no disk writes of our own; the only writes are a model's, inside a `Workspace` the consumer passes to a run, and the only task we keep reads the output of a job a model started there, until the job ends or the consumer closes the workspace.
 3. **Simple over abstract.** The smallest API and fewest moving parts that add the capability. Duplicate a few lines before adding a shared abstraction; an abstraction earns its place only when it removes more than it adds. No speculative layers — the pre-change checklist decides what the future needs.
 4. **No comments, no docstrings.** The code is the explanation; if it needs one, rename or restructure until it doesn't. The reason for a design decision lives in the commit message and, when it shapes the product, in `docs/engine.md`.
 5. **Documentation is the contract.** Any change to the public surface updates `docs/engine.md` in the same change. A breaking change is anything that makes an example in the docs stop working; it is named as such in the commit, and the docs change before the code ships.
