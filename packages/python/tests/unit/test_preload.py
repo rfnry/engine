@@ -132,6 +132,28 @@ async def test_a_binary_knowledge_file_goes_in_as_the_part_load_hands_over(
         assert run.preload[at + 1 : at + 2] == loaded
 
 
+async def test_a_preloaded_link_goes_in_as_the_part_load_hands_over(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    support = root / "support"
+    furnish(support)
+    (support / "knowledge" / "notes.md").write_bytes(b"# Notes\n\x00 kept as bytes\n")
+    (support / "knowledge" / "notes").symlink_to("notes.md")
+    preload_all(support)
+    built = engine(root, Scripted(text_reply("ok")))
+    run = await built.run("support", "acme", "What does express cost?")
+    assert isinstance(run, Generation)
+    loaded = await EngineTools(built, agent="support", scope="acme").dispatch(
+        "Load", {"path": "knowledge/notes"}
+    )
+    assert loaded == [
+        Document(media_type="text/markdown", name="notes.md", data=b"# Notes\n\x00 kept as bytes\n")
+    ]
+    at = run.preload.index(Text(text="<<<knowledge/notes>>>"))
+    assert run.preload[at + 1 : at + 2] == loaded
+
+
 class RuleFollower:
     def __init__(self) -> None:
         self.calls: list[list[Message]] = []

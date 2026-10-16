@@ -7,9 +7,9 @@ import pytest
 from rfnry_engine import Local, Process
 from rfnry_engine.errors import InputError
 from rfnry_engine.jail import Jail
-from rfnry_engine.models import Audio, Document, Image
+from rfnry_engine.models import Audio, Document, Image, Text
 from rfnry_engine.tools import builtins as builtins_module
-from rfnry_engine.tools.builtins import _contents, builtins, load_tool
+from rfnry_engine.tools.builtins import _contents, builtins, load_tool, preload_parts
 from rfnry_engine.tools.tools import Tools
 
 SUPPORT = Path(__file__).parents[1] / "fixtures" / "agents" / "support"
@@ -273,6 +273,57 @@ async def test_load_names_a_file_by_its_path_where_the_system_cannot_name_it(
     assert await Tools([load_tool(media)]).dispatch("Load", {"path": "knowledge/report"}) == [
         Document(media_type="application/pdf", name="report", data=PDF)
     ]
+
+
+NOTES = b"# Notes\n\x00 kept as bytes\n"
+
+
+@pytest.mark.parametrize(
+    ("link", "target", "part"),
+    [
+        ("notes", "notes.md", Document(media_type="text/markdown", name="notes.md", data=NOTES)),
+        ("call", "call.mp3", Audio(media_type="audio/mpeg", data=MP3)),
+        ("photo.png", "photo.jpg", Image(media_type="image/jpeg", data=JPEG)),
+    ],
+)
+async def test_preload_names_and_types_a_link_as_load_does(
+    media: Path, link: str, target: str, part: Document | Audio | Image
+) -> None:
+    knowledge = media / "knowledge"
+    (knowledge / "notes.md").write_bytes(NOTES)
+    (knowledge / link).symlink_to(target)
+    name = f"knowledge/{link}"
+    parts, _ = preload_parts([(name, knowledge / link)], None, Jail(media))
+    assert parts == [Text(text=f"<<<{name}>>>"), part]
+    assert await Tools([load_tool(media)]).dispatch("Load", {"path": name}) == [part]
+
+
+@pytest.mark.parametrize("by", ["Load", "preload"])
+async def test_a_file_removed_after_it_was_opened_keeps_its_own_name(
+    media: Path, monkeypatch: pytest.MonkeyPatch, by: str
+) -> None:
+    opened = Jail.open
+
+    def removing(self: Jail, path: str | Path, *args: Any) -> int:
+        fd = opened(self, path, *args)
+        (media / "knowledge" / "rates.pdf").unlink()
+        return fd
+
+    monkeypatch.setattr(Jail, "open", removing)
+    part = Document(media_type="application/pdf", name="rates.pdf", data=PDF)
+    name = "knowledge/rates.pdf"
+    if by == "Load":
+        assert await Tools([load_tool(media)]).dispatch("Load", {"path": name}) == [part]
+    else:
+        parts, _ = preload_parts([(name, media / name)], None, Jail(media))
+        assert parts == [Text(text=f"<<<{name}>>>"), part]
+
+
+async def test_a_file_whose_name_only_looks_removed_keeps_it(media: Path) -> None:
+    (media / "knowledge" / "rates (deleted)").write_bytes(PDF)
+    assert await Tools([load_tool(media)]).dispatch(
+        "Load", {"path": "knowledge/rates (deleted)"}
+    ) == [Document(media_type="application/pdf", name="rates (deleted)", data=PDF)]
 
 
 async def test_load_reaches_the_workspace_when_the_run_has_one(media: Path, tmp_path: Path) -> None:

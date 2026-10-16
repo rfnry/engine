@@ -125,21 +125,23 @@ def preload_parts(
 ) -> tuple[list[Part], dict[str, bytes]]:
     parts: list[Part] = []
     read: dict[str, bytes] = {}
-    for name, path in files:
-        data = read[name] = _contents(jail, name, _LOAD_BYTES)[1]
+    for name, _ in files:
+        opened, data = _contents(jail, name, _LOAD_BYTES)
+        read[name] = data
         text = _decoded(data) if len(data) <= _MAX_BYTES else None
         if text is None:
-            parts += [Text(text=f"<<<{name}>>>"), _handed(path, data, name, media_types)]
+            parts += [Text(text=f"<<<{name}>>>"), _handed(opened, data, name, media_types)]
         else:
             parts.append(Text(text=f"<<<{name}>>>\n{text}"))
     return parts, read
 
 
-def _name_of(fd: int, path: str) -> Path:
+def _name_of(fd: int, path: str, removed: bool) -> Path:
     try:
-        return Path(os.readlink(f"{_OPEN_FILES}/{fd}"))
+        opened = os.readlink(f"{_OPEN_FILES}/{fd}")
     except OSError:
         return Path(path)
+    return Path(opened.removesuffix(" (deleted)") if removed else opened)
 
 
 def _contents(jail: Jail, path: str, limit: int) -> tuple[Path, bytes]:
@@ -151,7 +153,7 @@ def _contents(jail: Jail, path: str, limit: int) -> tuple[Path, bytes]:
                 raise InputError(f"builtins: not a file: {path}")
             if found.st_size > limit:
                 raise InputError(f"builtins: file exceeds {limit} bytes: {path}")
-            opened = _name_of(fd, path)
+            opened = _name_of(fd, path, found.st_nlink == 0)
             with open(fd, "rb", closefd=False) as file:
                 data = file.read(limit + 1)
         finally:
