@@ -2,7 +2,7 @@ import asyncio
 import subprocess
 from typing import Any
 
-from rfnry_engine import Workspace
+from rfnry_engine import InputError, Workspace
 
 from docker import Docker
 
@@ -23,7 +23,17 @@ def tool(workspace: Workspace, name: str) -> Any:
     return next(t for t in workspace.tools() if t.name == name)
 
 
+async def refused(call: Any, message: str) -> None:
+    try:
+        await call
+    except InputError as exc:
+        assert message in str(exc), exc
+    else:
+        raise AssertionError(f"expected: {message}")
+
+
 async def main() -> None:
+    subprocess.run(["docker", "rm", "-f", NAME], check=False, capture_output=True)
     subprocess.run(
         [
             *("docker", "run", "-d", "--rm", "--init", "--name", NAME),
@@ -36,6 +46,11 @@ async def main() -> None:
         async with Workspace(Docker(NAME), scope="check", timeout=60) as workspace:
             shell, job = tool(workspace, "Shell"), tool(workspace, "Job")
             await tool(workspace, "Write").call({"path": "site/index.html", "content": "hello\n"})
+            box = Docker(NAME)
+            assert await box.read("site/index.html", 100) == b"hello\n"
+            await refused(box.read("site/index.html", 2), "file exceeds 2 bytes")
+            await refused(box.read("site", 100), "not a file")
+            await refused(box.read("missing.txt", 100), "not a file")
             serve = "python3 -m http.server 8000 --bind 127.0.0.1 --directory site"
             assert await shell.call({"command": serve, "background": True}) == {"job": "j1"}
             fetched = await shell.call({"command": FETCH})

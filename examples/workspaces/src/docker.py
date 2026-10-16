@@ -13,6 +13,16 @@ TAGGED = (
 )
 READ = 'test -f "$1" || exit 3; [ "$(wc -c < "$1")" -le "$2" ] || exit 4; cat -- "$1"'
 WRITE = 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"'
+GRACE = 1.0
+
+
+def cause(stderr: bytes) -> str:
+    lines = stderr.decode(errors="replace").strip().splitlines()
+    line = lines[0].strip() if lines else ""
+    private = (str(Path.cwd()), str(Path.home()))
+    if not line or any(p in line for p in private):
+        return ""
+    return f": {line}"
 
 
 class Docker:
@@ -43,34 +53,44 @@ class Docker:
         return Inside(self, await client.spawn(command), tag)
 
     async def read(self, path: str, limit: int) -> bytes:
-        code, out = await self.script(READ, path, str(limit))
+        code, out, err = await self.script(READ, path, str(limit))
         if code == 3:
             raise InputError(f"docker: not a file: {path}")
         if code == 4:
             raise InputError(f"docker: file exceeds {limit} bytes: {path}")
         if code:
-            raise InputError(f"docker: could not read {path}")
+            raise InputError(f"docker: could not read {path}{cause(err)}")
         return out
 
     async def write(self, path: str, data: bytes) -> None:
-        code, _ = await self.script(WRITE, path, data=data)
+        code, _, err = await self.script(WRITE, path, data=data)
         if code:
-            raise InputError(f"docker: could not write {path}")
+            raise InputError(f"docker: could not write {path}{cause(err)}")
 
     async def signal(self, tag: str, name: str) -> None:
-        await self.script(TAGGED, tag, name)
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(GRACE):
+                await self.script(TAGGED, tag, name)
 
-    async def script(self, text: str, *args: str, data: bytes | None = None) -> tuple[int, bytes]:
+    async def script(
+        self, text: str, *args: str, data: bytes | None = None
+    ) -> tuple[int, bytes, bytes]:
         process = await asyncio.create_subprocess_exec(
             *("docker", "exec", "-i", "-w", self.workdir, self.container),
             *("sh", "-c", text, "sh", *args),
             stdin=asyncio.subprocess.PIPE if data is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             env=self.env,
         )
-        out, _ = await process.communicate(data)
-        return process.returncode or 0, out
+        try:
+            out, err = await process.communicate(data)
+        except BaseException:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+            raise
+        return process.returncode or 0, out, err
 
 
 class Inside:
@@ -88,7 +108,7 @@ class Inside:
         await self.docker.signal(self.tag, "TERM")
         try:
             with contextlib.suppress(TimeoutError):
-                async with asyncio.timeout(1.0):
+                async with asyncio.timeout(GRACE):
                     await self.client.wait()
         finally:
             await self.docker.signal(self.tag, "KILL")
