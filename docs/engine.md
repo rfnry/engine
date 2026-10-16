@@ -473,10 +473,11 @@ and re-raises once all of them have ended, as an `asyncio.TaskGroup` does — a 
 returns after the cancel ends with it, before its `ToolResultReady` — and a stop waits the same way
 for the work it cancels, so a tool that ignores cancellation holds either one. The first stop is
 graceful: a workspace command is sent SIGTERM and given a second to end, and one the workspace is
-already stopping, past its timeout, counts as stopped once, so the first stop lets its second run
-out. A second stop — `stop.now()` again, or cancelling a run that is already stopping — ends what is
-still running at once, with no grace period: each further `now()` cancels once more every tool call
-still running but a running `Delegate` call, whose run takes the same `now()`, and a call whose
+already stopping on its own — a `Shell` past its timeout, the kill after a `Shell` ended,
+`Job(stop=true)` or `close()` — counts as stopped once, so the first stop lets its second run out. A
+second stop — `stop.now()` again, or cancelling a run that is already stopping — ends what is still
+running at once, with no grace period: each further `now()` cancels once more every tool call still
+running but a running `Delegate` call, whose run takes the same `now()`, and a call whose
 `ToolResultReady` handler the stop waits for; each further cancel cancels everything still running
 once more; and a workspace kills its command outright. A stop set before the run starts ends it
 before the first model call; one set after it ended does nothing. A stop reaches delegated and

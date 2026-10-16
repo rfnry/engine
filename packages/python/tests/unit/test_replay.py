@@ -674,19 +674,21 @@ async def test_a_replay_closed_under_a_cancel_returns_once_its_runs_have_ended(
             await entered.wait()
         await asyncio.sleep(0.05)
         assert cancels == 1
-        reading.cancel()
-        await asyncio.sleep(0.05)
-        assert not reading.done() and not died.is_set() and cancels == 2
+        for count in (1, 2):
+            reading.cancel()
+            await asyncio.sleep(0.05)
+            assert not reading.done() and not died.is_set() and cancels == count
     finally:
         release.set()
     with pytest.raises(asyncio.CancelledError):
         async with asyncio.timeout(2):
             await reading
-    assert died.is_set()
+    assert died.is_set() and cancels == 2
 
 
+@pytest.mark.parametrize("together", [False, True])
 async def test_each_cancel_of_a_reader_cancels_its_replay_once(
-    tmp_path: Path, storage: Storage
+    tmp_path: Path, storage: Storage, together: bool
 ) -> None:
     refinery = Refinery(storage)
     recorder = Engine(graded(tmp_path), decision=Answering(), refinery=refinery)
@@ -723,8 +725,10 @@ async def test_each_cancel_of_a_reader_cancels_its_replay_once(
     try:
         async with asyncio.timeout(2):
             await entered.wait()
-        for count in (1, 2):
+        for count in (2,) if together else (1, 2):
             reading.cancel()
+            if together:
+                reading.cancel()
             await asyncio.sleep(0.05)
             assert not reading.done() and not died.is_set() and cancels == count
     finally:

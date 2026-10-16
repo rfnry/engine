@@ -47,14 +47,16 @@ async def wait(
     tasks: Sequence[asyncio.Future[Any]],
     stop: Stop | None,
     spared: Callable[[], Collection[asyncio.Future[Any]]] = tuple,
+    calm: int | None = None,
 ) -> bool:
     runner = asyncio.current_task()
-    calm = 0 if runner is None else runner.cancelling()
+    if calm is None:
+        calm = 0 if runner is None else runner.cancelling()
     seen = taken = 0
     cancelled: asyncio.CancelledError | None = None
 
     def owed() -> bool:
-        return cancelled is not None and runner is not None and runner.cancelling() - calm > taken
+        return runner is not None and runner.cancelling() - calm > taken
 
     while pending := [task for task in tasks if not task.done()]:
         watched = set(pending)
@@ -66,9 +68,10 @@ async def wait(
             await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError as exc:
             cancelled = cancelled or exc
-            taken += 1
-            for task in pending:
-                task.cancel()
+            if owed():
+                taken += 1
+                for task in pending:
+                    task.cancel()
             continue
         if owed():
             taken += 1
@@ -91,7 +94,7 @@ async def wait(
 async def cancel(tasks: Sequence[asyncio.Future[Any]]) -> None:
     for task in tasks:
         task.cancel()
-    await wait(tasks, None)
+    await wait(tasks, None, calm=1)
 
 
 async def join(tasks: Sequence[asyncio.Future[Any]]) -> None:
