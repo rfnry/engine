@@ -601,27 +601,39 @@ async def test_a_second_cancel_kills_the_command_at_once(root: Path) -> None:
     assert await group_gone(root)
 
 
-@pytest.mark.parametrize("stopping", ["close", "Job"])
-async def test_a_cancel_while_a_job_is_stopped_kills_it_at_once(root: Path, stopping: str) -> None:
-    ws = workspace(root)
-    await tool(ws, "Shell").call({"command": TRAPPED, "background": True})
-    await written_pid(root / "child.pid")
-    task = asyncio.create_task(
-        ws.close() if stopping == "close" else tool(ws, "Job").call({"id": "j1", "stop": True})
-    )
-    await asyncio.sleep(0.2)
+@pytest.mark.parametrize("cancels", [1, 2])
+@pytest.mark.parametrize("stopping", ["timeout", "close", "Job"])
+async def test_a_kill_the_workspace_started_takes_one_cancel_as_the_first_stop(
+    root: Path, stopping: str, cancels: int
+) -> None:
+    ws = workspace(root, timeout=0.3 if stopping == "timeout" else 120)
+    if stopping == "timeout":
+        task = asyncio.create_task(shell(ws, TRAPPED))
+        await written_pid(root / "child.pid")
+        await asyncio.sleep(0.4)
+    else:
+        await tool(ws, "Shell").call({"command": TRAPPED, "background": True})
+        await written_pid(root / "child.pid")
+        task = asyncio.create_task(
+            ws.close() if stopping == "close" else tool(ws, "Job").call({"id": "j1", "stop": True})
+        )
+        await asyncio.sleep(0.2)
     assert not task.done()
     began = time.monotonic()
-    for _ in range(2):
+    task.cancel()
+    if cancels == 2:
+        await asyncio.sleep(0.2)
+        assert not task.done()
         task.cancel()
-        await asyncio.sleep(0.01)
     done, _ = await asyncio.wait({task}, timeout=5)
+    took = time.monotonic() - began
     assert task in done and task.cancelled()
-    assert time.monotonic() - began < 0.5
+    assert 0.6 < took < 1.6 if cancels == 1 else took < 0.5
     assert await group_gone(root)
-    async with asyncio.timeout(5):
-        await ws._jobs["j1"].ended.wait()
-        await ws.close()
+    if stopping != "timeout":
+        async with asyncio.timeout(5):
+            await ws._jobs["j1"].ended.wait()
+            await ws.close()
 
 
 class Gated(Local):

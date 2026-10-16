@@ -897,11 +897,15 @@ def logged(caplog: pytest.LogCaptureFixture) -> list[str]:
     ]
 
 
-async def cancel_twice_during_the_kill(
-    task: asyncio.Task[Any], machine: Slow, count: int = 1
+async def cancel_during_the_kill(
+    task: asyncio.Task[Any], machine: Slow, count: int = 1, *, own: bool = False
 ) -> None:
     try:
         await until(lambda: kills(machine) == count, "the kill starting")
+        if own:
+            task.cancel()
+            await asyncio.sleep(0.05)
+            assert not task.done() and machine.cut == 0
         task.cancel()
         await until(lambda: machine.cut == count, "the cancel cutting the kill")
         task.cancel()
@@ -930,7 +934,7 @@ async def test_a_cancelled_shell_returns_once_its_one_kill_has_finished(
     if path == "cancel":
         await asyncio.sleep(0.01)
         task.cancel()
-    await cancel_twice_during_the_kill(task, machine)
+    await cancel_during_the_kill(task, machine, own=path != "cancel")
     await asyncio.sleep(0)
     assert kills(machine) == machine.finished == 1
     assert not pending(before)
@@ -950,7 +954,7 @@ async def test_a_command_cancelled_while_it_starts_returns_once_it_is_stopped(
         await asyncio.sleep(0.01)
     finally:
         machine.begin.set()
-    await cancel_twice_during_the_kill(task, machine)
+    await cancel_during_the_kill(task, machine)
     await asyncio.sleep(0)
     assert kills(machine) == machine.finished == 1
     assert not pending(before)
@@ -987,7 +991,7 @@ async def test_a_cancelled_job_stop_returns_once_its_kill_has_finished() -> None
     ws = Workspace(machine, scope="acme")
     await background(ws, "serve")
     task = asyncio.create_task(tool(ws, "Job").call({"id": "j1", "stop": True}))
-    await cancel_twice_during_the_kill(task, machine)
+    await cancel_during_the_kill(task, machine, own=True)
     await finished(ws)
     assert kills(machine) == machine.finished == 2
     assert not pending(before)
@@ -1000,7 +1004,7 @@ async def test_a_cancelled_close_returns_once_every_kill_has_finished() -> None:
     await background(ws, "serve")
     await background(ws, "watch")
     closing = asyncio.create_task(ws.close())
-    await cancel_twice_during_the_kill(closing, machine, count=2)
+    await cancel_during_the_kill(closing, machine, count=2, own=True)
     await finished(ws, "j1")
     await finished(ws, "j2")
     assert kills(machine) == machine.finished == 4
@@ -1014,7 +1018,7 @@ async def test_a_kill_that_fails_while_close_is_cancelled_is_logged(
     ws = Workspace(machine, scope="acme")
     await background(ws, "serve")
     closing = asyncio.create_task(ws.close())
-    await cancel_twice_during_the_kill(closing, machine)
+    await cancel_during_the_kill(closing, machine, own=True)
     assert logged(caplog) == [LOST]
     machine.fails = False
     async with asyncio.timeout(5):
@@ -1035,7 +1039,7 @@ async def test_a_cancelled_job_reader_ends_once_its_one_kill_has_finished(exits:
         ran.exit(0)
     else:
         task.cancel()
-    await cancel_twice_during_the_kill(task, machine)
+    await cancel_during_the_kill(task, machine, own=exits)
     assert ran.kills == machine.finished == 1
     assert ws._jobs["j1"].ended.is_set()
     await asyncio.sleep(0)

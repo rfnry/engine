@@ -383,13 +383,16 @@ def _log(*errors: BaseException | None) -> None:
 
 async def _see_through(*kills: Awaitable[None]) -> list[BaseException | None]:
     killing = [asyncio.ensure_future(kill) for kill in kills]
+    caller = asyncio.current_task()
     cancelled: asyncio.CancelledError | None = None
+    hurried = False
     while pending := [task for task in killing if not task.done()]:
         try:
             await asyncio.wait(pending)
         except asyncio.CancelledError as exc:
-            if cancelled is None:
-                cancelled = exc
+            cancelled = cancelled or exc
+            if not hurried and caller is not None and caller.cancelling() > 1:
+                hurried = True
                 for task in pending:
                     task.cancel()
     errors = [None if task.cancelled() else task.exception() for task in killing]
