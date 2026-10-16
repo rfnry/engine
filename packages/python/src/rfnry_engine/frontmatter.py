@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 from pydantic import BaseModel, ValidationError
@@ -12,7 +13,13 @@ _FRONTMATTER = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
 _BOOL = "tag:yaml.org,2002:bool"
 
 
-class _Loader(getattr(yaml, "CSafeLoader", yaml.SafeLoader)):  # type: ignore[misc]
+if TYPE_CHECKING:
+    _Base = yaml.SafeLoader
+else:
+    _Base = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+class _Loader(_Base):
     pass
 
 

@@ -463,16 +463,18 @@ call cut off by `now()` is answered with the error `stopped by the user` and its
 `stopped=True`, so every tool call in `run.conversation` has its result and the next run continues
 from it. A call the stop finds not yet running never runs: a stop from a handler of a call's
 `ToolCallStarted` comes before its tool runs, and one from a handler of a reply's `TextDelta` before
-any of the reply's calls. A call that already has its result keeps it, and the stop waits for an
-`on_event` still handling its `ToolResultReady` to return: a handler can stop the run on what a tool
-returned; a slow one delays the stop, and cancelling the run cancels it. A stop set before the run
-starts ends it before the first model call; one set after it ended does nothing. A stop reaches
-delegated and routed runs, which end the same way at their own next boundary. With `after_step()`
-pending the inbox is not read. Whatever is still in the inbox when the run ends stays there — the
-engine never starts a run; you do, with those messages as its input. A decision run never reads the
-inbox: its questions are one call, and a stop or an inbox rides to the run it routes to. "Pause,
-please" is a message in the inbox: the model reads it at the next boundary and wraps up in its own
-words.
+any of the reply's calls. A handler running inside work the stop cancels — a call's
+`ToolCallStarted` handler, or a streamed `TextDelta` handler — is cancelled with that work, so a
+kill switch does its own work, such as an audit, before it calls `stop.now()`. A call that already
+has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady`
+to return: a handler can stop the run on what a tool returned; a slow one delays the stop, and
+cancelling the run cancels it. A stop set before the run starts ends it before the first model call;
+one set after it ended does nothing. A stop reaches delegated and routed runs, which end the same
+way at their own next boundary. With `after_step()` pending the inbox is not read. Whatever is still
+in the inbox when the run ends stays there — the engine never starts a run; you do, with those
+messages as its input. A decision run never reads the inbox: its questions are one call, and a stop
+or an inbox rides to the run it routes to. "Pause, please" is a message in the inbox: the model
+reads it at the next boundary and wraps up in its own words.
 
 A run that ended continues from its record, on any process, after any restart. With a refinery
 attached every run that returns is recorded with its conversation: keep the run id beside what you
@@ -1074,10 +1076,10 @@ class Backend(Protocol):
 `stdout` and `stderr`, read until they end, `wait()` for its exit code, and `kill()` to end it and
 everything it started. `spawn` must return promptly: a stop or a cancel that comes while it runs
 waits for it to return, then kills what it started, and a second cancel cannot cut that kill short.
-`read` refuses a file larger than `limit`; `write` creates parent directories. A
-path is the model's, relative to the workspace, and what it can reach is the backend's to decide; an
-error a backend raises reaches the model as the tool's error. A backend may have a `description`,
-which ends `Shell`'s description, as `Local` takes one.
+`read` refuses a file larger than `limit`; `write` creates parent directories. A path is the
+model's, relative to the workspace, and what it can reach is the backend's to decide; an error a
+backend raises reaches the model as the tool's error. A backend may have a `description`, which ends
+`Shell`'s description, as `Local` takes one.
 
 The library has no notion of a secret. A key a user types is the run's input; a key you put in
 `Local(env=)` is the commands' environment, which a command can print. Either way the record keeps

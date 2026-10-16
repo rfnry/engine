@@ -439,7 +439,7 @@ A person's handle on a running run, passed as `run(stop=)`; it reaches the runs 
 def now(self) -> None: ...
 ```
 
-Cancels the model call in flight and every tool call still running; a call it finds not yet running never runs, so a stop from an `on_event` handler of a call's `ToolCallStarted`, or of a reply's `TextDelta`, comes before the tool runs. The run returns with `stopped="now"`, and each call it cut off is answered with the error `stopped by the user`. A call that already has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady` to return, so a slow handler delays it; cancelling the run cancels the handler.
+Cancels the model call in flight and every tool call still running; a call it finds not yet running never runs, so a stop from an `on_event` handler of a call's `ToolCallStarted`, or of a reply's `TextDelta`, comes before the tool runs. A handler running inside work the stop cancels, a `ToolCallStarted` handler or a streamed `TextDelta` handler, is cancelled with that work, so a kill switch does its own work, such as an audit, before it calls `stop.now()`. The run returns with `stopped="now"`, and each call it cut off is answered with the error `stopped by the user`. A call that already has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady` to return, so a slow handler delays it; cancelling the run cancels the handler.
 
 ### `Stop.after_step`
 
@@ -586,7 +586,7 @@ class ToolCallStarted(BaseModel):
     args: dict[str, Any]
 ```
 
-Sent to `on_event` when a tool call starts, before any approval, with the arguments the model gave it. A handler that calls `Stop.now()` stops the call before its tool runs.
+Sent to `on_event` when a tool call starts, before any approval, with the arguments the model gave it. A handler that calls `Stop.now()` stops the call before its tool runs, and a handler still running when a stop cancels its call is cancelled with it, so a kill switch does its own work, such as an audit, before it calls `Stop.now()`.
 
 ### `ToolResultReady`
 
@@ -818,7 +818,7 @@ class Jail:
     also: list[Path]
 ```
 
-Keeps paths inside one directory, `root`, or inside one of `also` — the folders an agent reads — all resolved; for a tool of your own that reads the agent's directory, as the builtins do. It notes each place's device and inode when it is made and checks a place by them before it opens anything in it.
+Keeps paths inside one directory, `root`, or inside one of `also` — the folders an agent reads — all resolved; for a tool of your own that reads the agent's directory, as the builtins do. It notes each place's device and inode when it is made and checks a place by them before it opens anything in it. The check covers `root` and every folder of `also`, so it guards an agent's folders as `Local` guards its root; it compares directory inode numbers, so a filesystem where they are not stable — overlayfs without `xino`, FUSE without `use_ino` — is not supported for any place, and a `Jail` made before its place exists refuses every open in it.
 
 ### `Jail.resolve`
 
@@ -934,7 +934,7 @@ class Local:
 
 A `Backend` on this machine. Commands run as `[*shell, command]` in `root`, in a new session, with `env` as their whole environment — by default `PATH`, `HOME` set to `root`, and `LANG`; a sandbox goes in front of the shell, as in `shell=["bwrap", …, "bash", "-c"]`. `kill` sends the command's process group SIGTERM and, a second later, SIGKILL. `read` and `write` stay inside `root`, symlinks resolved. `description` ends `Shell`'s description.
 
-Raises `ConfigurationError` when `root` is not a directory, `shell` is not a non-empty list of non-empty strings, its first word is not on the `PATH` of `env`, or `description` is not a string. `spawn` raises `InputError` when the command cannot start, as when `root` was removed: `workspace: cannot start the command: No such file or directory`. `read` and `write` raise `InputError` for a path outside `root`, through a link that leads out of it or one swapped in while they walk to the file, and for every path once `root` is no longer the folder it was when `Local` was made — replaced, or reached through a link swapped in for it or a folder above it; `read` for a path that is not a file — missing, a directory, a FIFO or a socket, or a path through a file, such as `notes.txt/x` — or a file larger than `limit`; `write` for a directory, a FIFO or a socket, and a path through a file as `workspace: cannot write notes.txt/x: Not a directory`. Any other error the system gives is `workspace: cannot read {path}: {reason}` or `workspace: cannot write {path}: {reason}`. Every message names the path as the model gave it, never the path on this machine. That check compares directory inode numbers, so a filesystem where they are not stable — overlayfs without `xino`, FUSE without `use_ino` — refuses a valid root and is not supported as a workspace root.
+Raises `ConfigurationError` when `root` is not a directory, `shell` is not a non-empty list of non-empty strings, its first word is not on the `PATH` of `env`, or `description` is not a string. `spawn` raises `InputError` when the command cannot start, as when `root` was removed: `workspace: cannot start the command: No such file or directory`. `read` and `write` raise `InputError` for a path outside `root`, through a link that leads out of it or one swapped in while they walk to the file, and for every path once `root` is no longer the folder it was when `Local` was made — replaced, or reached through a link swapped in for it or a folder above it; `read` for a path that is not a file — missing, a directory, a FIFO or a socket, or a path through a file, such as `notes.txt/x` — or a file larger than `limit`; `write` for a directory, a FIFO or a socket, and a path through a file as `workspace: cannot write notes.txt/x: Not a directory`. Any other error the system gives is `workspace: cannot read {path}: {reason}` or `workspace: cannot write {path}: {reason}`. Every message names the path as the model gave it, never the path on this machine. The root check compares directory inode numbers, so a filesystem where they are not stable — overlayfs without `xino`, FUSE without `use_ino` — refuses a valid root and is not supported as a workspace root.
 
 ## Storage
 
