@@ -531,7 +531,10 @@ async def test_a_second_stop_kills_a_workspace_command_at_once(
     await group_ended(root)
 
 
-async def test_two_stops_at_once_kill_a_workspace_command_at_once(tmp_path: Path) -> None:
+@pytest.mark.parametrize("push", ["now", "cancel"])
+async def test_two_stops_at_once_kill_a_workspace_command_at_once(
+    tmp_path: Path, push: str
+) -> None:
     root = tmp_path / "work"
     root.mkdir()
     llm = Paced(use(call("Shell", "c1", command=TRAPPED)))
@@ -543,14 +546,23 @@ async def test_two_stops_at_once_kill_a_workspace_command_at_once(tmp_path: Path
     try:
         await until(lambda: written(root / "child.pid"), "the shell writing its child's pid")
         began = time.monotonic()
-        stop.now()
-        stop.now()
-        run = await asyncio.wait_for(task, 5)
+        for _ in range(2):
+            if push == "now":
+                stop.now()
+            else:
+                task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=5)
         took = time.monotonic() - began
     finally:
         task.cancel()
         await asyncio.wait([task])
-    assert isinstance(run, Generation) and run.stopped == "now" and run.steps[0].result == STOPPED
+    assert task in done
+    if push == "cancel":
+        assert task.cancelled()
+    else:
+        run = task.result()
+        assert isinstance(run, Generation) and run.stopped == "now"
+        assert run.steps[0].result == STOPPED
     assert took < 0.5
     await group_ended(root)
 

@@ -29,14 +29,17 @@ def requested(stop: Stop | None) -> Stopped | None:
     return None if stop is None else stop._mode
 
 
+def _ready() -> asyncio.Future[None]:
+    ready = asyncio.get_running_loop().create_future()
+    ready.set_result(None)
+    return ready
+
+
 def _press(stop: Stop, seen: int) -> asyncio.Future[None]:
-    loop = asyncio.get_running_loop()
     if stop._presses > seen:
-        pressed = loop.create_future()
-        pressed.set_result(None)
-        return pressed
+        return _ready()
     if stop._pressed is None:
-        stop._pressed = loop.create_future()
+        stop._pressed = asyncio.get_running_loop().create_future()
     return stop._pressed
 
 
@@ -45,18 +48,33 @@ async def wait(
     stop: Stop | None,
     spared: Callable[[], Collection[asyncio.Future[Any]]] = tuple,
 ) -> bool:
-    seen = 0
+    runner = asyncio.current_task()
+    calm = 0 if runner is None else runner.cancelling()
+    seen = taken = 0
     cancelled: asyncio.CancelledError | None = None
+
+    def owed() -> bool:
+        return cancelled is not None and runner is not None and runner.cancelling() - calm > taken
+
     while pending := [task for task in tasks if not task.done()]:
-        watched = set(pending) if stop is None else {*pending, _press(stop, seen)}
+        watched = set(pending)
+        if stop is not None:
+            watched.add(_press(stop, seen))
+        if owed():
+            watched.add(_ready())
         try:
             await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError as exc:
             cancelled = cancelled or exc
+            taken += 1
             for task in pending:
                 task.cancel()
             continue
-        if stop is not None and stop._presses > seen:
+        if owed():
+            taken += 1
+            for task in pending:
+                task.cancel()
+        elif stop is not None and stop._presses > seen:
             seen += 1
             kept = spared()
             for task in pending:

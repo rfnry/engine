@@ -672,6 +672,35 @@ async def test_each_further_stop_cancels_a_call_still_running_once_more(
     assert asyncio.all_tasks() <= before
 
 
+async def test_two_cancels_of_a_run_at_once_cancel_a_call_still_running_twice(
+    tmp_path: Path,
+) -> None:
+    dying = Absorbing()
+    calls = [ToolCall(id="c1", name="dying", args={})]
+    llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
+    before = asyncio.all_tasks()
+    running = asyncio.create_task(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "lead", "acme", "Check A-1", tools=Tools([Tool("dying", body=dying)])
+        )
+    )
+    try:
+        async with asyncio.timeout(2):
+            await dying.entered.wait()
+            running.cancel()
+            running.cancel()
+            while dying.cancels < 2:
+                await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        assert dying.cancels == 2 and not running.done()
+    finally:
+        dying.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(2):
+            await running
+    assert asyncio.all_tasks() <= before
+
+
 async def test_a_further_stop_reaches_a_delegated_runs_call_and_keeps_the_delegation(
     tmp_path: Path,
 ) -> None:
