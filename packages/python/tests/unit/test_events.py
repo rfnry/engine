@@ -261,6 +261,37 @@ async def test_a_stop_from_a_text_handler_sends_each_delta_once(tmp_path: Path) 
     assert handler.of(run.run_id) == [] and run.steps == []
 
 
+async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_handler(
+    tmp_path: Path,
+) -> None:
+    stop, entered, left = Stop(), asyncio.Event(), asyncio.Event()
+
+    async def stuck(event: Event) -> None:
+        if isinstance(event, ToolResultReady):
+            stop.now()
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                left.set()
+
+    before = asyncio.all_tasks()
+    looked = ToolCall(id="c1", name="lookup", args={"order_id": "A-1"})
+    llm = Scripted(Reply(tool_calls=[looked], stop_reason="tool_use"))
+    running = asyncio.create_task(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "lead", "acme", "Check A-1", tools=TOOLS, stop=stop, on_event=stuck
+        )
+    )
+    await entered.wait()
+    await asyncio.sleep(0.01)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    await asyncio.wait_for(left.wait(), 1)
+    assert asyncio.all_tasks() <= before
+
+
 async def test_a_childs_text_carries_its_own_run_and_its_own_turns(tmp_path: Path) -> None:
     delegate = ToolCall(id="d", name="Delegate", args={"agent": "chat", "input": "Say hi"})
     llm = Scripted(

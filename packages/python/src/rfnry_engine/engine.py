@@ -801,8 +801,7 @@ class Engine:
                     or any(c is done for done, _ in ran)
                 ]
                 await cancel([t for t in tasks if t not in finishing and not t.done()])
-                if finishing:
-                    await asyncio.wait(finishing)
+                await wait(finishing, None)
             for call, task in zip(batch, tasks, strict=True):
                 answer(call, await cut(call, began) if task.cancelled() else task.result())
             return stopped
@@ -949,9 +948,9 @@ class Engine:
             raise RunawayError(f"engine: run exceeded {self.max_steps} steps")
         except Exception as exc:
             for call in asked:
-                built = [step for done, step in ran if done is call]
-                if built and not any(step is kept for step in built for kept in steps):
-                    answer(call, built[-1])
+                built = next((step for done, step in ran if done is call), None)
+                if built is not None and not any(built is kept for kept in steps):
+                    answer(call, built)
             children.extend(delegated.values())
             options.failed.append(finish("", error=exc))
             raise
