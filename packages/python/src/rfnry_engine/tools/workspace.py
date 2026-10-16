@@ -8,7 +8,7 @@ import os
 import shutil
 import signal
 import stat
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -361,40 +361,29 @@ def _discard(reading: list[asyncio.Task[None]]) -> None:
             task.exception()
 
 
-async def _reap(spawning: asyncio.Task[Process]) -> None:
-    hurried = False
-    while not spawning.done():
-        try:
-            await asyncio.wait([spawning])
-        except asyncio.CancelledError:
-            hurried = True
-    if spawning.cancelled() or spawning.exception() is not None:
-        return
-    if hurried:
-        cast(asyncio.Task[None], asyncio.current_task()).cancel()
-    await spawning.result().kill()
-
-
 def _log(*errors: BaseException | None) -> None:
     for error in errors:
         if error is not None:
             logger.error("workspace: could not stop the command: %s", error, exc_info=error)
 
 
-async def _see_through(*kills: Awaitable[None]) -> list[BaseException | None]:
-    killing = [asyncio.ensure_future(kill) for kill in kills]
+async def _see_through(*kills: Coroutine[Any, Any, None]) -> list[BaseException | None]:
+    loop = asyncio.get_running_loop()
+    killing = [asyncio.Task(kill, loop=loop, eager_start=True) for kill in kills]
     caller = asyncio.current_task()
     cancelled: asyncio.CancelledError | None = None
     hurried = False
-    while pending := [task for task in killing if not task.done()]:
+    while True:
+        if not hurried and caller is not None and caller.cancelling() > 1:
+            hurried = True
+            for task in killing:
+                task.cancel()
+        if not (pending := [task for task in killing if not task.done()]):
+            break
         try:
             await asyncio.wait(pending)
         except asyncio.CancelledError as exc:
             cancelled = cancelled or exc
-            if not hurried and caller is not None and caller.cancelling() > 1:
-                hurried = True
-                for task in pending:
-                    task.cancel()
     errors = [None if task.cancelled() else task.exception() for task in killing]
     if cancelled is not None:
         _log(*errors)
@@ -559,7 +548,11 @@ class Workspace:
         try:
             process = await asyncio.shield(spawning)
         except asyncio.CancelledError:
-            _log(*await _see_through(_reap(spawning)))
+            try:
+                await join([spawning])
+            finally:
+                if not spawning.cancelled() and spawning.exception() is None:
+                    _log(*await _see_through(spawning.result().kill()))
             raise
         out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
         reading = _reading(process, out, err)

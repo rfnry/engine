@@ -603,6 +603,18 @@ async def test_a_second_cancel_kills_the_command_at_once(root: Path) -> None:
     assert await group_gone(root)
 
 
+async def test_two_cancels_at_the_same_moment_kill_the_command_at_once(root: Path) -> None:
+    task = asyncio.create_task(shell(workspace(root), TRAPPED))
+    await written_pid(root / "child.pid")
+    began = time.monotonic()
+    task.cancel()
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=5)
+    assert task in done and task.cancelled()
+    assert time.monotonic() - began < 0.5
+    assert await group_gone(root)
+
+
 @pytest.mark.parametrize("cancels", [1, 2])
 @pytest.mark.parametrize("stopping", ["timeout", "close", "Job"])
 async def test_a_kill_the_workspace_started_takes_one_cancel_as_the_first_stop(

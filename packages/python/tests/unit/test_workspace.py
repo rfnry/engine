@@ -985,6 +985,33 @@ async def test_a_second_cancel_while_it_starts_cuts_the_kill_of_what_it_started(
     assert not pending(before)
 
 
+@pytest.mark.parametrize("starting", [False, True])
+async def test_two_cancels_at_the_same_moment_cut_the_kill_they_start(starting: bool) -> None:
+    machine = Late() if starting else Slow()
+    before = asyncio.all_tasks()
+    task = asyncio.create_task(shell(Workspace(machine, scope="acme"), "x"))
+    try:
+        await started(machine)
+        await asyncio.sleep(0.01)
+        task.cancel()
+        task.cancel()
+        await asyncio.sleep(0.01)
+        if isinstance(machine, Late):
+            assert not task.done() and kills(machine) == 0
+            machine.begin.set()
+        await until(lambda: machine.cut == 1, "the second cancel cutting the kill")
+        assert not task.done() and kills(machine) == 1 and machine.finished == 0
+    finally:
+        if isinstance(machine, Late):
+            machine.begin.set()
+        machine.release.set()
+    done, _ = await asyncio.wait({task}, timeout=5)
+    assert task in done and task.cancelled()
+    assert kills(machine) == machine.cut == machine.finished == 1
+    await asyncio.sleep(0)
+    assert not pending(before)
+
+
 async def test_a_cancelled_job_stop_returns_once_its_kill_has_finished() -> None:
     machine = Slow()
     before = asyncio.all_tasks()
