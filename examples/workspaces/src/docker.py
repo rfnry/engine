@@ -16,13 +16,24 @@ WRITE = 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"'
 GRACE = 1.0
 
 
+CAUSES = {
+    "no such file or directory": "no such file",
+    "permission denied": "permission denied",
+    "is a directory": "is a directory",
+    "not a directory": "not a directory",
+    "read-only file system": "read-only file system",
+    "no space left": "no space left",
+    "no such container": "no such container",
+    "cannot connect to the docker daemon": "docker daemon unreachable",
+}
+
+
 def cause(stderr: bytes) -> str:
-    lines = stderr.decode(errors="replace").strip().splitlines()
-    line = lines[0].strip() if lines else ""
-    private = (str(Path.cwd()), str(Path.home()))
-    if not line or any(p in line for p in private):
-        return ""
-    return f": {line}"
+    text = stderr.decode(errors="replace").lower()
+    for known, phrase in CAUSES.items():
+        if known in text:
+            return f": {phrase}"
+    return ""
 
 
 class Docker:
