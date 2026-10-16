@@ -121,11 +121,11 @@ def _handed(path: Path, data: bytes, shown: str, media_types: Collection[str] | 
 
 
 def preload_parts(
-    files: list[tuple[str, Path]], media_types: Collection[str] | None, jail: Jail
+    names: list[str], media_types: Collection[str] | None, jail: Jail
 ) -> tuple[list[Part], dict[str, bytes]]:
     parts: list[Part] = []
     read: dict[str, bytes] = {}
-    for name, _ in files:
+    for name in names:
         opened, data = _contents(jail, name, _LOAD_BYTES)
         read[name] = data
         text = _decoded(data) if len(data) <= _MAX_BYTES else None
