@@ -39,6 +39,7 @@ from rfnry_engine.refinery.labels import (
     Review,
 )
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
+from rfnry_engine.stop import cancel
 from rfnry_engine.tools.tools import ToolsLike
 from rfnry_engine.tools.workspace import Workspace
 
@@ -515,9 +516,7 @@ class Refinery:
                 while running:
                     yield await first()
             finally:
-                for task in running:
-                    task.cancel()
-                await asyncio.gather(*running, return_exceptions=True)
+                await cancel(list(running))
 
         return pairs()
 

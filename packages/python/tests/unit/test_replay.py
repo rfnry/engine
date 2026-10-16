@@ -2,7 +2,7 @@ import asyncio
 import json
 import shutil
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, NotFoundError
 from rfnry_engine.models import (
+    Answer,
     Check,
     CheckAnswer,
     Choice,
@@ -21,8 +22,10 @@ from rfnry_engine.models import (
     HistoryLike,
     Image,
     Message,
+    QuestionLike,
     Reply,
     ScoreAnswer,
+    State,
     Text,
     ToolCall,
     ToolSpec,
@@ -621,6 +624,55 @@ async def test_closing_a_replay_cancels_the_runs_in_flight(
         event.set()
     await asyncio.sleep(0.05)
     assert gate.finished == 1
+
+
+async def test_a_replay_closed_under_a_cancel_returns_once_its_runs_have_ended(
+    tmp_path: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    recorder = Engine(graded(tmp_path), decision=Answering(), refinery=refinery)
+    for text in ["a", "b"]:
+        await recorder.run("grader", "acme", text)
+    entered, release, died = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class SlowToDie(Answering):
+        async def decide(
+            self, state: State, questions: Mapping[str, QuestionLike]
+        ) -> dict[str, Answer]:
+            if state == "a":
+                return await super().decide(state, questions)
+            entered.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                await asyncio.shield(release.wait())
+                died.set()
+                raise
+            raise AssertionError("a cancelled replay must not end on its own")
+
+    async def read_one() -> None:
+        engine = Engine(tmp_path, decision=SlowToDie())
+        async with aclosing(
+            refinery.replay("acme", engine, agent="grader", concurrency=2)
+        ) as pairs:
+            async for _ in pairs:
+                await entered.wait()
+                break
+
+    reading = asyncio.create_task(read_one())
+    try:
+        async with asyncio.timeout(2):
+            await entered.wait()
+        await asyncio.sleep(0.05)
+        reading.cancel()
+        await asyncio.sleep(0.05)
+        assert not reading.done() and not died.is_set()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(2):
+            await reading
+    assert died.is_set()
 
 
 async def recall(args: dict[str, Any]) -> str:

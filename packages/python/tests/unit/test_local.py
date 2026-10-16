@@ -3,6 +3,7 @@ import os
 import re
 import socket
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -589,6 +590,54 @@ async def test_a_second_cancel_still_waits_for_the_kill_to_finish(root: Path) ->
     assert task in done and task.cancelled()
     assert 0.9 < time.monotonic() - began < 3
     assert await gone(int((root / "child.pid").read_text()))
+
+
+class Gated(Local):
+    def __init__(self, root: Path, held: str) -> None:
+        super().__init__(root)
+        self.held = held
+        self.entered, self.release = threading.Event(), threading.Event()
+
+    def _hold(self, verb: str) -> None:
+        if verb == self.held:
+            self.entered.set()
+            assert self.release.wait(5)
+
+    def _read(self, path: str, limit: int) -> bytes:
+        self._hold("read")
+        return super()._read(path, limit)
+
+    def _write(self, path: str, data: bytes) -> None:
+        self._hold("write")
+        super()._write(path, data)
+
+
+@pytest.mark.parametrize(
+    ("name", "held"), [("Write", "write"), ("Edit", "read"), ("Edit", "write")]
+)
+async def test_a_cancelled_write_or_edit_returns_once_its_thread_has_ended(
+    root: Path, name: str, held: str
+) -> None:
+    (root / "notes.txt").write_text("old\n")
+    local = Gated(root, held)
+    args = (
+        {"path": "notes.txt", "content": "new\n"}
+        if name == "Write"
+        else {"path": "notes.txt", "old": "old", "new": "new"}
+    )
+    task = asyncio.create_task(tool(Workspace(local, scope="acme"), name).call(args))
+    try:
+        assert await asyncio.to_thread(local.entered.wait, 2)
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0.05)
+            assert not task.done()
+    finally:
+        local.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(2):
+            await task
+    assert (root / "notes.txt").read_text() == ("old\n" if held == "read" else "new\n")
 
 
 async def test_write_and_edit_reach_the_directory(root: Path, tmp_path: Path) -> None:

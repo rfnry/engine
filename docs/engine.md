@@ -1040,7 +1040,9 @@ On `Local`, `Write`, `Edit`, `Read` and `Load` stay inside the directory: they r
 leaves it, symlinks included. What the system refuses reaches the model with its reason and the
 model's own path, never the path on your machine: `workspace: cannot write notes.txt/x: Not a
 directory`. `Shell` reaches what the process running it can reach, so the real boundary is the
-sandbox in front of the shell, or the machine.
+sandbox in front of the shell, or the machine. `Local` reads and writes files in a thread, which a
+cancel cannot stop, so a `Write` or `Edit` cancelled while it writes returns once the file is
+written.
 
 The workspace root and the folders above it must be out of the model's reach: `Local` checks every
 call against the folder it was made with, but a `Local` made later on a path the model could rename

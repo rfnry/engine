@@ -58,7 +58,7 @@ from rfnry_engine.records import (
     ToolCallStarted,
     ToolResultReady,
 )
-from rfnry_engine.stop import Stop, Stopped, cancel, requested, wait
+from rfnry_engine.stop import Stop, Stopped, cancel, join, requested, wait
 from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
@@ -801,19 +801,20 @@ class Engine:
                 return True
             tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
             stopped = await wait(tasks, stop)
-            if stopped:
-                finishing = [
-                    t
-                    for c, t in zip(batch, tasks, strict=True)
-                    if (spec.agents and c.name == DELEGATE_TOOL)
-                    or any(c is done for done, _ in ran)
-                ]
-                try:
-                    await cancel([t for t in tasks if t not in finishing and not t.done()])
+            try:
+                if stopped:
+                    finishing = [
+                        t
+                        for c, t in zip(batch, tasks, strict=True)
+                        if (spec.agents and c.name == DELEGATE_TOOL)
+                        or any(c is done for done, _ in ran)
+                    ]
+                    for task in tasks:
+                        if task not in finishing:
+                            task.cancel()
                     await wait(finishing, None)
-                except BaseException:
-                    await cancel(tasks)
-                    raise
+            finally:
+                await join(tasks)
             for call, task in zip(batch, tasks, strict=True):
                 answer(call, await cut(call, began) if task.cancelled() else task.result())
             return stopped

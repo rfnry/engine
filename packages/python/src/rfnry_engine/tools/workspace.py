@@ -8,7 +8,7 @@ import os
 import shutil
 import signal
 import stat
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.jail import Jail
+from rfnry_engine.stop import join
 from rfnry_engine.tools.tools import Tool
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,12 @@ def _words(value: Sequence[str], name: str, example: str) -> list[str]:
     return list(value)
 
 
+async def _threaded[T](work: Callable[..., T], *args: Any) -> T:
+    running = asyncio.get_running_loop().run_in_executor(None, work, *args)
+    await join([running])
+    return running.result()
+
+
 class Local:
     def __init__(
         self,
@@ -209,10 +216,10 @@ class Local:
         return _Running(transport, pipes)
 
     async def read(self, path: str, limit: int) -> bytes:
-        return await asyncio.to_thread(self._read, path, limit)
+        return await _threaded(self._read, path, limit)
 
     async def write(self, path: str, data: bytes) -> None:
-        await asyncio.to_thread(self._write, path, data)
+        await _threaded(self._write, path, data)
 
     def _open(self, path: str, flags: int) -> int:
         try:

@@ -1,4 +1,5 @@
 import asyncio
+import gc
 from pathlib import Path
 from typing import Any
 
@@ -370,7 +371,7 @@ async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_han
     tmp_path: Path, dead: bool
 ) -> None:
     stop, entered, left = Stop(), asyncio.Event(), asyncio.Event()
-    dying, died = asyncio.Event(), asyncio.Event()
+    dying, release, died = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def stuck(event: Event) -> None:
         if isinstance(event, ToolResultReady) and event.call_id == "c2":
@@ -386,7 +387,7 @@ async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_han
             await asyncio.sleep(30)
         except asyncio.CancelledError:
             dying.set()
-            await asyncio.shield(asyncio.sleep(0.2))
+            await asyncio.shield(release.wait())
             died.set()
             raise
         return "never"
@@ -403,16 +404,23 @@ async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_han
             "lead", "acme", "Check A-1", tools=tools, stop=stop, on_event=stuck
         )
     )
-    await entered.wait()
-    await dying.wait()
-    if dead:
-        await died.wait()
-        await asyncio.sleep(0.01)
+    async with asyncio.timeout(2):
+        await entered.wait()
+        await dying.wait()
+        if dead:
+            release.set()
+            await died.wait()
+            await asyncio.sleep(0.01)
     running.cancel()
+    async with asyncio.timeout(2):
+        await left.wait()
+    if not dead:
+        assert not died.is_set() and not running.done()
+        release.set()
     with pytest.raises(asyncio.CancelledError):
         async with asyncio.timeout(2):
             await running
-    assert left.is_set() and died.is_set()
+    assert died.is_set()
     assert asyncio.all_tasks() <= before
 
 
@@ -514,6 +522,66 @@ async def test_a_cancelled_run_returns_once_its_model_call_or_approval_has_ended
     )
     await cancel_while_dying(running, dying, 2)
     assert asyncio.all_tasks() <= before
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_a_run_with_a_stop_leaves_no_task_behind(tmp_path: Path, cancelled: bool) -> None:
+    dying = Dying()
+    reply = (
+        Reply(tool_calls=[ToolCall(id="c1", name="dying", args={})], stop_reason="tool_use")
+        if cancelled
+        else text_reply("Done.")
+    )
+    engine = Engine(make_tree(tmp_path), generation=Scripted(reply))
+    me = asyncio.current_task()
+    assert me is not None
+
+    async def cancel_me() -> None:
+        await dying.entered.wait()
+        me.cancel()
+
+    helper = asyncio.create_task(cancel_me())
+    before = asyncio.all_tasks()
+    raised = False
+    try:
+        async with asyncio.timeout(2):
+            await engine.run(
+                "lead", "acme", "Hi", tools=Tools([Tool("dying", body=dying)]), stop=Stop()
+            )
+    except asyncio.CancelledError:
+        me.uncancel()
+        raised = True
+    try:
+        assert raised is cancelled
+        assert asyncio.all_tasks() <= before
+    finally:
+        helper.cancel()
+        await asyncio.wait([helper])
+
+
+async def test_a_batch_whose_calls_all_fail_raises_the_first_and_retrieves_the_rest(
+    tmp_path: Path,
+) -> None:
+    loop = asyncio.get_running_loop()
+    seen: list[dict[str, Any]] = []
+    gc.collect()
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _, context: seen.append(context))
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        raise RuntimeError(f"approval of {call.id} is down")
+
+    calls = [ToolCall(id=f"c{n}", name="lookup", args={"order_id": "A-1"}) for n in (1, 2, 3)]
+    llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
+    try:
+        with pytest.raises(RuntimeError, match="^approval of c1 is down$"):
+            await Engine(make_tree(tmp_path), generation=llm).run(
+                "lead", "acme", "Check A-1", tools=TOOLS, approve=approve
+            )
+        gc.collect()
+    finally:
+        loop.set_exception_handler(previous)
+    assert seen == []
 
 
 @pytest.mark.parametrize(
