@@ -368,7 +368,7 @@ def _log(*errors: BaseException | None) -> None:
             logger.error("workspace: could not stop the command: %s", error, exc_info=error)
 
 
-async def _finish(*kills: Awaitable[None]) -> list[BaseException | None]:
+async def _see_through(*kills: Awaitable[None]) -> list[BaseException | None]:
     killing = [asyncio.ensure_future(kill) for kill in kills]
     cancelled: asyncio.CancelledError | None = None
     while pending := [task for task in killing if not task.done()]:
@@ -402,21 +402,24 @@ class _Job:
     task: asyncio.Task[None] | None = None
 
 
-def _note(kept: _Kept, error: BaseException | None) -> None:
-    if error is not None:
-        kept.add(f"\n{type(error).__name__}: {error}\n".encode())
+def _note(kept: _Kept, error: BaseException | None, said: str = "") -> str:
+    line = "" if error is None else f"\n{type(error).__name__}: {error}\n"
+    if line and line != said:
+        kept.add(line.encode())
+    return line
 
 
 async def _follow(job: _Job) -> None:
     reading = _reading(job.process, job.kept, job.kept)
+    said = ""
     try:
         try:
             job.code = await job.process.wait()
         except Exception as exc:
-            _note(job.kept, exc)
+            said = _note(job.kept, exc)
         finally:
-            [error] = await _finish(job.process.kill())
-            _note(job.kept, error)
+            [error] = await _see_through(job.process.kill())
+            _note(job.kept, error, said)
         await _settle(reading)
     except Exception as exc:
         _note(job.kept, exc)
@@ -509,16 +512,21 @@ class Workspace:
     async def close(self) -> None:
         jobs = list(self._jobs.items())
         running = [job for _, job in jobs if not job.ended.is_set()]
-        results = await _finish(*(job.process.kill() for job in running))
+        results = await _see_through(*(job.process.kill() for job in running))
         errors = dict(zip(map(id, running), results, strict=True))
         gone = [(name, job) for name, job in jobs if errors.get(id(job)) is None]
         for name, job in gone:
             if self._jobs.get(name) is job:
                 del self._jobs[name]
-        await asyncio.gather(
-            *(job.task for _, job in gone if job.task is not None), return_exceptions=True
-        )
         failed = [result for result in results if result is not None]
+        try:
+            await asyncio.gather(
+                *(job.task for _, job in gone if job.task is not None), return_exceptions=True
+            )
+        except asyncio.CancelledError:
+            _log(*failed)
+            raise
+        _log(*failed[1:])
         if failed:
             raise failed[0]
 
@@ -530,7 +538,7 @@ class Workspace:
         try:
             process = await asyncio.shield(spawning)
         except asyncio.CancelledError:
-            _log(*await _finish(_reap(spawning)))
+            _log(*await _see_through(_reap(spawning)))
             raise
         out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
         reading = _reading(process, out, err)
@@ -543,10 +551,10 @@ class Workspace:
             timed_out = True
         except BaseException:
             _discard(reading)
-            _log(*await _finish(process.kill()))
+            _log(*await _see_through(process.kill()))
             raise
         try:
-            [error] = await _finish(process.kill())
+            [error] = await _see_through(process.kill())
             if error is not None:
                 raise error
             if timed_out:
@@ -585,7 +593,7 @@ class Workspace:
                 async with asyncio.timeout(a.wait):
                     await job.ended.wait()
         if a.stop and not job.ended.is_set():
-            [error] = await _finish(job.process.kill())
+            [error] = await _see_through(job.process.kill())
             if error is not None:
                 raise error
             with contextlib.suppress(TimeoutError):

@@ -665,6 +665,36 @@ async def test_a_kill_that_raises_after_a_wait_that_raised_is_in_the_output_too(
     assert result["running"] is False
 
 
+async def test_a_wait_and_a_kill_that_fail_the_same_way_are_in_the_output_once() -> None:
+    class Gone(Machine):
+        async def spawn(self, command: str) -> Command:
+            ran = await super().spawn(command)
+
+            async def wait() -> int:
+                raise RuntimeError("docker: the daemon went away")
+
+            async def kill() -> None:
+                ran.kills += 1
+                ran.stdout.close()
+                ran.stderr.close()
+                raise RuntimeError("docker: the daemon went away")
+
+            ran.wait = wait  # type: ignore[method-assign]
+            ran.kill = kill  # type: ignore[method-assign]
+            return ran
+
+    machine = Gone()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    await finished(ws)
+    assert machine.commands[0].kills == 1
+    assert await tool(ws, "Job").call({"id": "j1"}) == {
+        "output": "\nRuntimeError: docker: the daemon went away\n",
+        "running": False,
+        "exit_code": None,
+    }
+
+
 @pytest.mark.parametrize("kill_fails", [0, 1])
 async def test_a_job_whose_reader_is_cancelled_is_killed_and_ends(kill_fails: int) -> None:
     machine = Dying(kill_fails=kill_fails)
@@ -1017,3 +1047,58 @@ async def test_a_kill_that_raises_on_job_stop_is_raised(caplog: pytest.LogCaptur
     assert listed["running"] is True
     assert logged(caplog) == []
     await ws.close()
+
+
+async def test_a_shell_whose_wait_raises_raises_that_and_logs_its_kills_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    machine = Dying(wait_fails=True, kill_fails=1)
+    with pytest.raises(RuntimeError, match="^docker: wait failed$"):
+        await shell(Workspace(machine, scope="acme"), "x")
+    assert machine.commands[0].kills == 1
+    assert logged(caplog) == [LOST]
+
+
+async def test_close_raises_the_first_failed_kill_and_logs_the_others(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    machine = Dying(kill_fails=2)
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    await background(ws, "watch")
+    with pytest.raises(RuntimeError, match="^docker: kill failed$"):
+        await ws.close()
+    assert logged(caplog) == [LOST]
+    assert [listed["job"] for listed in (await tool(ws, "Jobs").call({}))["jobs"]] == ["j1", "j2"]
+    await ws.close()
+    assert await tool(ws, "Jobs").call({}) == {"jobs": []}
+
+
+async def test_a_close_cancelled_while_it_waits_for_its_jobs_logs_the_kill_that_failed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    machine = Dying(kill_fails=1)
+    before = asyncio.all_tasks()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "build")
+    await background(ws, "serve")
+    serve = machine.commands[1]
+
+    async def stubborn() -> None:
+        serve.kills += 1
+
+    serve.kill = stubborn  # type: ignore[method-assign]
+    closing = asyncio.create_task(ws.close())
+    await until(lambda: "j2" not in ws._jobs, "close forgetting the job it stopped")
+    await asyncio.sleep(0.05)
+    assert not closing.done()
+    closing.cancel()
+    done, _ = await asyncio.wait({closing}, timeout=5)
+    assert closing in done and closing.cancelled()
+    assert logged(caplog) == [LOST]
+    [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
+    assert (listed["job"], listed["running"]) == ("j1", True)
+    async with asyncio.timeout(5):
+        await ws.close()
+    await asyncio.sleep(0)
+    assert not pending(before)
