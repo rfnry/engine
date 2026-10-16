@@ -367,7 +367,9 @@ def _log(*errors: BaseException | None) -> None:
             logger.error("workspace: could not stop the command: %s", error, exc_info=error)
 
 
-async def _see_through(*kills: Coroutine[Any, Any, None]) -> list[BaseException | None]:
+async def _kill_all(
+    *kills: Coroutine[Any, Any, None],
+) -> tuple[list[BaseException | None], asyncio.CancelledError | None]:
     loop = asyncio.get_running_loop()
     killing = [asyncio.Task(kill, loop=loop, eager_start=True) for kill in kills]
     caller = asyncio.current_task()
@@ -384,7 +386,11 @@ async def _see_through(*kills: Coroutine[Any, Any, None]) -> list[BaseException 
             await asyncio.wait(pending)
         except asyncio.CancelledError as exc:
             cancelled = cancelled or exc
-    errors = [None if task.cancelled() else task.exception() for task in killing]
+    return [None if task.cancelled() else task.exception() for task in killing], cancelled
+
+
+async def _see_through(*kills: Coroutine[Any, Any, None]) -> list[BaseException | None]:
+    errors, cancelled = await _kill_all(*kills)
     if cancelled is not None:
         _log(*errors)
         raise cancelled
@@ -520,7 +526,7 @@ class Workspace:
     async def close(self) -> None:
         jobs = list(self._jobs.items())
         running = [job for _, job in jobs if not job.ended.is_set()]
-        results = await _see_through(*(job.process.kill() for job in running))
+        results, cancelled = await _kill_all(*(job.process.kill() for job in running))
         errors = dict(zip(map(id, running), results, strict=True))
         gone = [(name, job) for name, job in jobs if errors.get(id(job)) is None]
         for name, job in gone:
@@ -531,9 +537,11 @@ class Workspace:
             await asyncio.gather(
                 *(job.task for _, job in gone if job.task is not None), return_exceptions=True
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+        if cancelled is not None:
             _log(*failed)
-            raise
+            raise cancelled
         _log(*failed[1:])
         if failed:
             raise failed[0]

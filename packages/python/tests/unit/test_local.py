@@ -644,7 +644,9 @@ async def test_a_kill_the_workspace_started_takes_one_cancel_as_the_first_stop(
     assert task in done and task.cancelled()
     assert 0.6 < took < 1.6 if cancels == 1 else took < 0.5
     assert await group_gone(root)
-    if stopping != "timeout":
+    if stopping == "close":
+        assert ws._jobs == {}
+    elif stopping == "Job":
         async with asyncio.timeout(5):
             await ws._jobs["j1"].ended.wait()
             await ws.close()

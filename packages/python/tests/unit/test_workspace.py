@@ -1032,9 +1032,88 @@ async def test_a_cancelled_close_returns_once_every_kill_has_finished() -> None:
     await background(ws, "watch")
     closing = asyncio.create_task(ws.close())
     await cancel_during_the_kill(closing, machine, count=2, own=True)
-    await finished(ws, "j1")
-    await finished(ws, "j2")
+    assert ws._jobs == {}
     assert kills(machine) == machine.finished == 4
+    await asyncio.sleep(0)
+    assert not pending(before)
+
+
+class Held(Machine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+        self.failing: set[str] = set()
+
+    async def spawn(self, command: str) -> Command:
+        ran = await super().spawn(command)
+        kill = ran.kill
+        machine = self
+
+        async def held() -> None:
+            await machine.release.wait()
+            if command in machine.failing:
+                ran.kills += 1
+                raise RuntimeError("docker: kill failed")
+            await kill()
+
+        ran.kill = held  # type: ignore[method-assign]
+        return ran
+
+
+async def cancel_while_close_kills(ws: Workspace, machine: Held) -> asyncio.Task[None]:
+    closing = asyncio.create_task(ws.close())
+    try:
+        await asyncio.sleep(0.01)
+        closing.cancel()
+        await asyncio.sleep(0.01)
+        assert not closing.done()
+    finally:
+        machine.release.set()
+    return closing
+
+
+async def test_a_close_cancelled_while_it_kills_still_forgets_the_jobs_it_stopped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    machine = Held()
+    machine.failing.add("build")
+    before = asyncio.all_tasks()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "build")
+    await background(ws, "serve")
+    serving = ws._jobs["j2"].task
+    closing = await cancel_while_close_kills(ws, machine)
+    done, _ = await asyncio.wait({closing}, timeout=5)
+    assert closing in done and closing.cancelled()
+    assert serving is not None and serving.done()
+    assert logged(caplog) == [LOST]
+    [listed] = (await tool(ws, "Jobs").call({}))["jobs"]
+    assert (listed["job"], listed["running"]) == ("j1", True)
+    machine.failing.clear()
+    async with asyncio.timeout(5):
+        await ws.close()
+    assert await tool(ws, "Jobs").call({}) == {"jobs": []}
+    await asyncio.sleep(0)
+    assert not pending(before)
+
+
+async def test_a_further_cancel_of_a_cancelled_close_ends_the_jobs_it_waits_for() -> None:
+    machine = Held()
+    before = asyncio.all_tasks()
+    ws = Workspace(machine, scope="acme")
+    await background(ws, "serve")
+    ran = machine.commands[0]
+    ran.stubborn = True
+    reading = ws._jobs["j1"].task
+    closing = await cancel_while_close_kills(ws, machine)
+    await until(lambda: ran.kills == 1, "close stopping the job")
+    await asyncio.sleep(0.05)
+    assert not closing.done() and ws._jobs == {}
+    closing.cancel()
+    done, _ = await asyncio.wait({closing}, timeout=5)
+    assert closing in done and closing.cancelled()
+    assert reading is not None and reading.done() and ran.kills == 2
+    await asyncio.sleep(0)
     assert not pending(before)
 
 
