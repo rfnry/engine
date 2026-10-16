@@ -15,6 +15,8 @@ from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Reply, ToolCall
+from rfnry_engine.records import Generation
+from rfnry_engine.stop import Stop
 from rfnry_engine.tools.workspace import Backend, Local, Process, Stream, Workspace
 
 from .fakes import Scripted, text_reply
@@ -818,6 +820,79 @@ async def test_closing_the_workspace_stops_a_real_job_and_what_it_started(root: 
     pid = await written_pid(root / "child.pid")
     await ws.close()
     assert await gone(pid)
+
+
+class SlowToStart(Local):
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.entered, self.release = asyncio.Event(), asyncio.Event()
+        self.groups: list[int] = []
+
+    async def spawn(self, command: str) -> Process:
+        self.entered.set()
+        await self.release.wait()
+        process = await super().spawn(command)
+        self.groups.append(process._pid)  # type: ignore[attr-defined]
+        return process
+
+
+async def group_ended(group: int) -> bool:
+    for _ in range(100):
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+@pytest.mark.parametrize("how", ["stop", "cancel"])
+async def test_a_job_cut_while_it_starts_is_stopped_by_close(
+    root: Path, tmp_path: Path, how: str
+) -> None:
+    (tmp_path / "plain").mkdir()
+    local = SlowToStart(root)
+    ws = Workspace(local, scope="acme")
+    command = "sleep 30 & wait"
+    call = ToolCall(id="1", name="Shell", args={"command": command, "background": True})
+    llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("ok"))
+    engine = Engine(tmp_path / "plain", generation=llm)
+    stop = Stop()
+    before = asyncio.all_tasks()
+
+    async def app() -> Generation:
+        async with ws:
+            run = await engine.run("plain", "acme", "x", workspace=ws, stop=stop)
+        assert isinstance(run, Generation)
+        return run
+
+    task = asyncio.create_task(app())
+    try:
+        try:
+            async with asyncio.timeout(5):
+                await local.entered.wait()
+            if how == "stop":
+                stop.now()
+            else:
+                task.cancel()
+            await asyncio.sleep(0.05)
+        finally:
+            local.release.set()
+        done, _ = await asyncio.wait({task}, timeout=5)
+        assert task in done
+        if how == "stop":
+            assert task.result().steps[0].stopped
+        else:
+            assert task.cancelled()
+        async with asyncio.timeout(5):
+            while not local.groups:
+                await asyncio.sleep(0.01)
+        assert ws._jobs == {}
+        assert all([await group_ended(group) for group in local.groups])
+        await asyncio.sleep(0)
+        assert asyncio.all_tasks() <= before
+    finally:
+        await ws.close()
 
 
 async def test_read_refuses_a_file_far_over_the_limit_without_reading_it(

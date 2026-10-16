@@ -552,7 +552,9 @@ class Workspace:
     async def _shell(self, args: dict[str, Any]) -> dict[str, Any]:
         a = ShellArgs.model_validate(args)
         if a.background:
-            return {"job": await asyncio.shield(self._start(a.command))}
+            starting = asyncio.ensure_future(self._start(a.command))
+            await join([starting])
+            return {"job": starting.result()}
         spawning = asyncio.create_task(self.backend.spawn(a.command))
         try:
             process = await asyncio.shield(spawning)
