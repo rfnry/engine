@@ -211,15 +211,9 @@ class Local:
     async def write(self, path: str, data: bytes) -> None:
         await asyncio.to_thread(self._write, path, data)
 
-    def _target(self, path: str) -> Path:
-        try:
-            return self._jail.resolve(path)
-        except InputError:
-            raise InputError(f"workspace: path outside the workspace: {path}") from None
-
     def _open(self, path: str, flags: int) -> int:
         try:
-            return self._jail.open(self._target(path), flags)
+            return self._jail.open(path, flags)
         except InputError:
             raise InputError(f"workspace: path outside the workspace: {path}") from None
 

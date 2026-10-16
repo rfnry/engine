@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.jail import Jail
 from rfnry_engine.tools.workspace import Backend, Local, Process, Stream, Workspace
 
 
@@ -224,14 +225,14 @@ async def test_a_link_inside_the_workspace_still_reads_and_writes(local: Local, 
 
 
 def swap_after_the_check(monkeypatch: pytest.MonkeyPatch, swap: Callable[[], None]) -> None:
-    checked = Local._target
+    checked = Jail.resolve
 
-    def swapped(self: Local, path: str) -> Path:
+    def swapped(self: Jail, path: str | Path) -> Path:
         target = checked(self, path)
         swap()
         return target
 
-    monkeypatch.setattr(Local, "_target", swapped)
+    monkeypatch.setattr(Jail, "resolve", swapped)
 
 
 async def call(local: Local, verb: str, path: str) -> None:

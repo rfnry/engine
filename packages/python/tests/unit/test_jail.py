@@ -1,16 +1,17 @@
 import os
 import re
 import stat
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from rfnry_engine import Jail
-from rfnry_engine.errors import InputError
-from rfnry_engine.tools import builtins as builtins_module
+from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.tools.builtins import builtins, load_tool
 from rfnry_engine.tools.tools import Tools
+from rfnry_engine.tree import load_agent
 
 WRITE = os.O_WRONLY | os.O_CREAT
 
@@ -51,11 +52,12 @@ def refused(path: str) -> str:
 
 
 def swap_after_the_check(monkeypatch: pytest.MonkeyPatch, swap: Callable[[], None]) -> None:
-    checked = Jail.resolve
+    checked, opening = Jail.resolve, Jail.open.__code__
 
     def swapped(self: Jail, path: str | Path) -> Path:
         target = checked(self, path)
-        swap()
+        if sys._getframe(1).f_code is opening:
+            swap()
         return target
 
     monkeypatch.setattr(Jail, "resolve", swapped)
@@ -247,20 +249,28 @@ async def test_a_builtin_refuses_a_folder_swapped_for_a_link_between_check_and_o
 
 
 @pytest.mark.parametrize("mode", ["files", "content"])
-async def test_grep_skips_a_file_whose_folder_is_swapped_for_a_link_after_the_walk(
+async def test_grep_skips_a_file_whose_folder_is_swapped_for_a_link_between_check_and_open(
     shelf: Path, outside: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     coding = shelf / "coding"
-    listed = builtins_module._Directory._files_under
-
-    def swapped(
-        self: builtins_module._Directory, base: Path, glob: str | None
-    ) -> tuple[list[Path], bool]:
-        found = listed(self, base, glob)
-        linked(coding / "notes", outside)()
-        return found
-
-    monkeypatch.setattr(builtins_module._Directory, "_files_under", swapped)
-    grep = {"pattern": "secret", "mode": mode}
+    swap_after_the_check(monkeypatch, linked(coding / "notes", outside))
+    grep = {"pattern": "secret|tabs", "mode": mode}
     assert await Tools(builtins(coding)).dispatch("Grep", grep) == "no matches found"
+    assert (coding / "notes").is_symlink()
+
+
+def test_preload_refuses_a_folder_swapped_for_a_link_between_check_and_open(
+    shelf: Path, outside: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    coding = shelf / "coding"
+    (coding / "AGENT.md").write_text(
+        "---\nname: coding\nkind: generation\npreload: true\n---\nYou code.\n"
+    )
+    swap_after_the_check(monkeypatch, linked(coding / "notes", outside))
+    with pytest.raises(
+        ConfigurationError,
+        match=r"^tree: agent 'coding' cannot preload its folder: "
+        r"jail: path outside the agent directory: notes/style\.md$",
+    ):
+        load_agent(coding)
     assert (coding / "notes").is_symlink()

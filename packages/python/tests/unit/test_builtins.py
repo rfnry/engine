@@ -488,3 +488,25 @@ async def test_read_and_load_go_through_any_backend_with_their_limits() -> None:
         Image(media_type="image/png", data=PNG)
     ]
     assert files.limits == [5 * 1024 * 1024, 20 * 1024 * 1024]
+
+
+async def test_what_the_system_refuses_is_said_with_the_model_s_path(tmp_path: Path) -> None:
+    root = tmp_path / "agent"
+    (root / "locked").mkdir(parents=True)
+    (root / "locked" / "a.md").write_text("a\n")
+    (root / "closed.md").write_text("closed\n")
+    (root / "locked").chmod(0o300)
+    (root / "closed.md").chmod(0o000)
+    tools = Tools([*builtins(root), load_tool(root)])
+    try:
+        with pytest.raises(InputError, match="^builtins: cannot list locked: Permission denied$"):
+            await tools.dispatch("LS", {"path": "locked"})
+        for name in ["Read", "Load"]:
+            with pytest.raises(
+                InputError, match="^builtins: cannot read closed.md: Permission denied$"
+            ):
+                await tools.dispatch(name, {"path": "closed.md"})
+        assert await tools.dispatch("Read", {"path": "locked/a.md"}) == "a\n"
+    finally:
+        (root / "locked").chmod(0o700)
+        (root / "closed.md").chmod(0o600)

@@ -9,6 +9,7 @@ import pytest
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import tools_fingerprint
+from rfnry_engine.jail import Jail
 from rfnry_engine.models import (
     Document,
     GenerationModel,
@@ -419,11 +420,18 @@ def test_the_preload_and_the_fingerprint_come_from_one_read_of_each_file(
     opened: list[Path] = []
     original = Path.open
 
+    jailed = Jail.open
+
     def counting(self: Path, *args: Any, **kwargs: Any) -> Any:
         opened.append(self)
         return original(self, *args, **kwargs)
 
+    def walking(self: Jail, path: str | Path, *args: Any) -> int:
+        opened.append(self.root / path)
+        return jailed(self, path, *args)
+
     monkeypatch.setattr(Path, "open", counting)
+    monkeypatch.setattr(Jail, "open", walking)
     spec = engine(root, Scripted())._agents["support"]
     monkeypatch.undo()
     preloaded = ["knowledge/diagram.png", "knowledge/plans.md", "knowledge/rates.pdf"]

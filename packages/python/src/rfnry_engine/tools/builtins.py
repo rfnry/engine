@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import mimetypes
 import os
 import stat
@@ -119,16 +120,13 @@ def _handed(path: Path, data: bytes, shown: str, media_types: Collection[str] | 
 
 
 def preload_parts(
-    files: list[tuple[str, Path]], media_types: Collection[str] | None
+    files: list[tuple[str, Path]], media_types: Collection[str] | None, jail: Jail
 ) -> tuple[list[Part], dict[str, bytes]]:
     parts: list[Part] = []
     read: dict[str, bytes] = {}
     for name, path in files:
-        size = path.stat().st_size
-        if size > _LOAD_BYTES:
-            raise InputError(f"builtins: file exceeds {_LOAD_BYTES} bytes: {name}")
-        data = read[name] = path.read_bytes()
-        text = _decoded(data) if size <= _MAX_BYTES else None
+        data = read[name] = _contents(jail, name, _LOAD_BYTES)
+        text = _decoded(data) if len(data) <= _MAX_BYTES else None
         if text is None:
             parts += [Text(text=f"<<<{name}>>>"), _handed(path, data, name, media_types)]
         else:
@@ -139,18 +137,20 @@ def preload_parts(
 def _contents(jail: Jail, path: str, limit: int) -> bytes:
     try:
         fd = jail.open(path)
-    except OSError:
-        raise InputError(f"builtins: not a file: {path}") from None
-    try:
-        found = os.fstat(fd)
-        if not stat.S_ISREG(found.st_mode):
-            raise InputError(f"builtins: not a file: {path}")
-        if found.st_size > limit:
-            raise InputError(f"builtins: file exceeds {limit} bytes: {path}")
-        with open(fd, "rb", closefd=False) as file:
-            return file.read()
-    finally:
-        os.close(fd)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise InputError(f"builtins: not a file: {path}")
+            with open(fd, "rb", closefd=False) as file:
+                data = file.read(limit + 1)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ENXIO):
+            raise InputError(f"builtins: not a file: {path}") from None
+        raise InputError(f"builtins: cannot read {path}: {exc.strerror}") from None
+    if len(data) > limit:
+        raise InputError(f"builtins: file exceeds {limit} bytes: {path}")
+    return data
 
 
 def _lines(data: bytes, a: ReadArgs) -> str:
@@ -261,11 +261,12 @@ class _Directory:
                     break
                 scanned += found.st_size
                 with open(fd, "rb", closefd=False) as file:
-                    text = _decoded(file.read())
+                    data = file.read(_MAX_BYTES + 1)
             except OSError:
                 continue
             finally:
                 os.close(fd)
+            text = _decoded(data) if len(data) <= _MAX_BYTES else None
             if text is None:
                 continue
             if a.mode == "files":
@@ -312,18 +313,21 @@ class _Directory:
 
     def ls(self, args: dict[str, Any]) -> str:
         a = LSArgs.model_validate(args)
+        path = a.path or "."
         try:
-            fd = self.jail.open(a.path or ".", os.O_RDONLY | os.O_DIRECTORY)
-        except OSError:
-            raise InputError(f"builtins: not a directory: {a.path}") from None
-        try:
-            with os.scandir(fd) as found:
-                entries = sorted(
-                    (e for e in found if not e.name.startswith(".")), key=lambda e: e.name
-                )
-            shown = [f"{e.name}/" if e.is_dir() else e.name for e in entries[: a.limit]]
-        finally:
-            os.close(fd)
+            fd = self.jail.open(path, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with os.scandir(fd) as found:
+                    entries = sorted(
+                        (e for e in found if not e.name.startswith(".")), key=lambda e: e.name
+                    )
+                shown = [f"{e.name}/" if e.is_dir() else e.name for e in entries[: a.limit]]
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+                raise InputError(f"builtins: not a directory: {path}") from None
+            raise InputError(f"builtins: cannot list {path}: {exc.strerror}") from None
         if not entries:
             return "(empty)"
         suffix = f"\n[truncated to {a.limit} of {len(entries)}]" if len(entries) > a.limit else ""

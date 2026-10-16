@@ -280,6 +280,7 @@ def load_agent(
             preload_parts(
                 sorted([*content(root, True), *_under(reads, lambda folder: folder.preloaded)]),
                 media_types,
+                Jail(root, also=[folder.place for folder in reads.values()]),
             )
             if front.preload
             else ([], {})
