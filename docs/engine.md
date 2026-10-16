@@ -1091,22 +1091,22 @@ class Backend(Protocol):
 `stdout` and `stderr`, read until they end, `wait()` for its exit code, and `kill()` to end it and
 everything it started. Every kill the workspace starts runs to its end, and the call that started it
 waits for it: a stop or a cancel of a `Shell` call, of `Job(stop=true)` or of `close()` returns once
-the kill has returned, however many cancels come meanwhile, and one that comes while `spawn` runs
-waits for it to return, then for the kill of what it started — with `background=true`, for its job
-to be listed, so `close()` stops it. So `spawn` and `kill()` must return promptly. A kill counts as
-the first stop, so a second ends a command at once: the next cancel after the one that started a
-kill — even one that comes while `spawn` still runs, or at the same moment — cancels that kill,
-once, and so does the second cancel during a kill the workspace started on its own, for a command
-past its timeout or that has ended, `Job(stop=true)` or `close()`. The call still waits for the
-kill: a cancelled `kill()` must still end the command and everything it started, at once, before it
-returns; `Local` sends SIGKILL in a `finally`, and so does the Docker backend in
-`examples/workspaces/`. A `kill()` that raises is the call's error; when the call is already leaving
-with a cancellation, or with the error of a `wait()` that raised, it is logged as an error instead,
-`workspace: could not stop the command: …`, and the kill that follows a job's end puts its error in
-the job's output. `read` refuses a file larger than `limit`; `write` creates parent directories. A
-path is the model's, relative to the workspace, and what it can reach is the backend's to decide; an
-error a backend raises reaches the model as the tool's error. A backend may have a `description`,
-which ends `Shell`'s description, as `Local` takes one.
+the kill has returned — `close()` once the jobs it stopped have ended too — however many cancels come
+meanwhile, and one that comes while `spawn` runs waits for it to return, then for the kill of what
+it started — with `background=true`, for its job to be listed, so `close()` stops it. So `spawn` and
+`kill()` must return promptly. A kill counts as the first stop, so a second ends a command at once:
+the next cancel after the one that started a kill — even one that comes while `spawn` still runs, or
+at the same moment — cancels that kill, once, and so does the second cancel during a kill the
+workspace started on its own, for a command past its timeout or that has ended, `Job(stop=true)` or
+`close()`. The call still waits for the kill: a cancelled `kill()` must still end the command and
+everything it started, at once, before it returns; `Local` sends SIGKILL in a `finally`, and so does
+the Docker backend in `examples/workspaces/`. A `kill()` that raises is the call's error; when the
+call is already leaving with a cancellation, or with the error of a `wait()` that raised, it is
+logged as an error instead, `workspace: could not stop the command: …`, and the kill that follows a
+job's end puts its error in the job's output. `read` refuses a file larger than `limit`; `write`
+creates parent directories. A path is the model's, relative to the workspace, and what it can reach
+is the backend's to decide; an error a backend raises reaches the model as the tool's error. A
+backend may have a `description`, which ends `Shell`'s description, as `Local` takes one.
 
 The library has no notion of a secret. A key a user types is the run's input; a key you put in
 `Local(env=)` is the commands' environment, which a command can print. Either way the record keeps
