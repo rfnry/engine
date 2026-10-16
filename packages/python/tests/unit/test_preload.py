@@ -1,7 +1,6 @@
 import json
 import mimetypes
 import shutil
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +22,7 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import Generation
 from rfnry_engine.refinery.labels import Review
-from rfnry_engine.refinery.refinery import Refinery, flatten
+from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
 
@@ -34,7 +33,6 @@ from .fakes import (
     Scripted,
     by_hand,
     delegating,
-    generation_record,
     lead,
     said,
     text_reply,
@@ -344,22 +342,6 @@ async def test_the_preload_is_recorded_read_back_exported_and_left_to_the_candid
         *history,
         Message(role="user", content="Charged twice."),
     ]
-
-
-async def test_a_run_recorded_before_preload_was_kept_reads_back_and_exports_an_empty_preload(
-    storage: Storage,
-) -> None:
-    refinery = Refinery(storage)
-    run = generation_record()
-    [stored] = flatten(run, datetime.now(UTC))
-    old = {key: value for key, value in stored.body.items() if key != "preload"}
-    await storage.put_run("acme", stored.model_copy(update={"body": old}))
-    assert Generation.model_validate(old).preload == []
-    await refinery.review("acme", run.run_id, Review(correction="Better."))
-    bucket = MemoryBucket()
-    await refinery.export("acme", bucket)
-    rows = {key.split("/")[2]: json.loads(data) for key, data in bucket.objects.items()}
-    assert rows["generation"]["preload"] == [] and rows["preference"]["prompt"]["preload"] == []
 
 
 class PicturesAndDocuments(Scripted):

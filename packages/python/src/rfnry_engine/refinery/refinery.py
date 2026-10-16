@@ -83,7 +83,7 @@ def children_of(rows: list[RunRow]) -> dict[str, list[RunRow]]:
 
 def unflatten(row: RunRow, under: dict[str, list[RunRow]]) -> dict[str, Any]:
     body = dict(row.body)
-    named = [step.get("child_run_id") for step in body.get("steps", [])]
+    named = [step["child_run_id"] for step in body.get("steps", [])]
     order = {run_id: index for index, run_id in enumerate(named) if run_id is not None}
     children = sorted(
         under.get(row.run_id, []),
@@ -105,7 +105,7 @@ def read_back(row: RunRow, under: dict[str, list[RunRow]]) -> Run:
 
 
 def printed(row: RunRow) -> Fingerprint | None:
-    body = row.body.get("fingerprint")
+    body = row.body["fingerprint"]
     return None if body is None else Fingerprint.model_validate(body)
 
 
@@ -274,7 +274,7 @@ class Refinery:
             stamps.append(row.at)
         groups: dict[tuple[str, str], list[dict[str, object]]] = {}
         for run in runs:
-            if run.body.get("error") is not None and not run.body.get("answers"):
+            if run.body["error"] is not None and not run.body.get("answers"):
                 continue
             holdout = is_holdout(run.run_id, holdout_percent=holdout_percent)
             own = labels.get(run.run_id, [])

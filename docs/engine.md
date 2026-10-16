@@ -343,8 +343,7 @@ Neither sees what varies per run and is not the agent — the input, the history
 — so two runs of an unchanged folder share it and any edit changes it. The model is `run.model`; the
 code behind a tool is yours to version. A decision run carries one too, its `tools` the fingerprint
 of no tools and its `questions` the questions it asked ([Decision agents](#decision-agents)), and
-each delegated or routed run carries its own. A run recorded before fingerprints were kept reads
-back with `None`.
+each delegated or routed run carries its own.
 
 Keep the conversation yourself and pass it back. `run.conversation` is the history the run was
 sent, the input, every assistant turn — its text in `content`, its calls in `tool_calls`, its
@@ -1221,19 +1220,17 @@ datasets:
 | `preference` | human correction | tags, fingerprint, prompt (system, preload, messages), chosen (the correction), rejected (the reply) |
 | `decision` | question of a decision run | task, tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
 
-Every row carries its run's `tags`, `{}` for a run that had none or was recorded before tags were
-kept, and its `fingerprint`, `{"agent": …, "tools": …, "questions": …}` or `null` for a run recorded
-before fingerprints were kept — `questions` is `null` for a generation run and for a decision run
-recorded before it was kept; group or filter the rows by them in your own code.
+Every row carries its run's `tags`, `{}` for a run that had none, and its `fingerprint`,
+`{"agent": …, "tools": …, "questions": …}` — `questions` is `null` for a generation run; group or
+filter the rows by them in your own code.
 
 The first two are a generation agent's episodes and the corrections people made to them. A
 generation row's `tools` is what the model was offered — `{name, description, input_schema}` each —
 `preload` the parts `preload: true` sent ahead of `messages`, `[]` without it, and `conversation` is
 `run.conversation` in order: history, input, assistant turns with their `tool_calls` (`{id, name,
 args}`), tool results with `is_error`, the final reply. Together they fit standard fine-tuning and
-eval formats with a few lines of mapping; the library writes no vendor's format. A run recorded
-before `tools` or `preload` was kept exports it as `[]`. Parts are written inline, their bytes as
-base64, so a row is self-contained; strip the media from a row you do not want it in. The third is a
+eval formats with a few lines of mapping; the library writes no vendor's format. Parts are written
+inline, their bytes as base64, so a row is self-contained; strip the media from a row you do not want it in. The third is a
 decision agent's answers beside what turned out true: a calibrated model is one whose 0.8 was right
 80% of the time, and this is the table that says whether it was:
 
@@ -1280,7 +1277,7 @@ input, history and context go too. What a record does not keep is yours to pass
 again — `expect=`, `approve=`, and the `tools=` and `workspace=` the runs were given. Replays given
 one workspace share its files and its jobs, and a job outlives the replay that started it: close the
 workspace when the replays are done. The candidate delegates and routes as it does, so a run with
-children replays as one run. A run recorded before `context` was kept replays without it.
+children replays as one run.
 
 `repeat=3` replays each run three times: each attempt is a run of its own and a pair of its own,
 `pair.attempt` counts them from 0, and the three come one after another; `limit=` still counts

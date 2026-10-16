@@ -61,7 +61,7 @@ def judge_state(row: RunRow) -> dict[str, Any]:
             for s in body["steps"]
         ],
     }
-    return state if body.get("error") is None else {**state, "error": body["error"]}
+    return state if body["error"] is None else {**state, "error": body["error"]}
 
 
 class TeacherAnswers(BaseModel):

@@ -11,11 +11,10 @@ from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError
 from rfnry_engine.models import Document, Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Generation, Step
-from rfnry_engine.refinery.export import generation_row
 from rfnry_engine.refinery.holdout import is_holdout
 from rfnry_engine.refinery.labels import Outcome, Review
 from rfnry_engine.refinery.postgres import PostgresStorage
-from rfnry_engine.refinery.refinery import Refinery, flatten
+from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import RunRow, Storage
 from rfnry_engine.tools.tools import Tool
 
@@ -386,27 +385,6 @@ async def test_a_run_offered_no_tools_exports_an_empty_list(storage: Storage) ->
     ]
 
 
-async def test_a_run_stored_before_tools_were_recorded_still_loads_and_exports(
-    storage: Storage,
-) -> None:
-    refinery = Refinery(storage)
-    run = generation_record()
-    [stored] = flatten(run, datetime.now(UTC))
-    old = {key: value for key, value in stored.body.items() if key != "tools"}
-    await storage.put_run("acme", stored.model_copy(update={"body": old}))
-    assert Generation.model_validate(old).tools == []
-    bucket = MemoryBucket()
-    await refinery.export("acme", bucket)
-    [row] = _lines(next(iter(bucket.objects.values())))
-    assert row["tools"] == [] and row["conversation"] == old["conversation"]
-    bare = {key: value for key, value in old.items() if key != "conversation"}
-    await storage.put_run("acme", stored.model_copy(update={"body": bare}))
-    bucket = MemoryBucket()
-    await refinery.export("acme", bucket)
-    [row] = _lines(next(iter(bucket.objects.values())))
-    assert row["tools"] == [] and row["conversation"] == []
-
-
 async def test_a_generation_row_carries_the_context_its_run_was_given(storage: Storage) -> None:
     refinery = Refinery(storage)
     given = generation_record().model_copy(update={"context": "Acme is on the enterprise plan."})
@@ -485,11 +463,3 @@ async def test_a_router_whose_routed_run_failed_exports_its_answers(storage: Sto
     assert key.startswith("acme/frontdesk/decision/")
     [row] = _lines(bucket.objects[key])
     assert row["run_id"] == router.run_id and row["question_id"] == "urgent"
-
-
-async def test_a_run_recorded_before_start_was_kept_exports_start_zero(storage: Storage) -> None:
-    refinery = Refinery(storage)
-    await refinery.record(generation_record())
-    [row] = await storage.runs("acme")
-    old = row.model_copy(update={"body": {k: v for k, v in row.body.items() if k != "start"}})
-    assert generation_row(old, [], holdout=False)["start"] == 0

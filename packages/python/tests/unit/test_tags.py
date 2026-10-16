@@ -192,22 +192,3 @@ async def test_every_dataset_row_carries_the_tags(storage: Storage) -> None:
     assert [row["tags"] for row in rows["generation"]] == [TAGS]
     assert [row["tags"] for row in rows["preference"]] == [TAGS]
     assert [row["tags"] for row in rows["decision"]] == [{"arm": "a"}]
-
-
-async def test_a_run_stored_before_tags_exports_empty_tags(storage: Storage) -> None:
-    refinery = Refinery(storage)
-    generation, decision = generation_record(), decision_record()
-    await refinery.record(generation)
-    await refinery.record(decision)
-    await refinery.review("acme", generation.run_id, Review(correction="Refund in full."))
-    for run_id in (generation.run_id, decision.run_id):
-        row = await storage.get_run("acme", run_id)
-        assert row is not None
-        await storage.put_run(
-            "acme",
-            row.model_copy(update={"body": {k: v for k, v in row.body.items() if k != "tags"}}),
-        )
-    bucket = MemoryBucket()
-    exported = await refinery.export("acme", bucket)
-    assert exported.rows == {"generation": 1, "preference": 1, "decision": 1}
-    assert all(row["tags"] == {} for data in bucket.objects.values() for row in _lines(data))

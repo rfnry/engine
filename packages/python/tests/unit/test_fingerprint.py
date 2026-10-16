@@ -24,7 +24,6 @@ from .fakes import (
     by_hand,
     decision_record,
     delegate_triage,
-    generation_record,
     lookup_order,
     now,
     text_reply,
@@ -242,25 +241,6 @@ async def test_the_record_and_every_exported_row_carry_the_fingerprint(
     assert rows["decision"] and all(
         row["fingerprint"] == child.model_dump() for row in rows["decision"]
     )
-
-
-async def test_a_run_recorded_before_fingerprints_and_context_reads_back_and_exports(
-    storage: Storage,
-) -> None:
-    refinery = Refinery(storage)
-    for record in (generation_record(), decision_record()):
-        [stored] = flatten(record, datetime.now(UTC))
-        old = {k: v for k, v in stored.body.items() if k not in ("fingerprint", "context")}
-        await storage.put_run("acme", stored.model_copy(update={"body": old}))
-        read = await refinery.run("acme", record.run_id)
-        assert read.fingerprint is None
-        assert not isinstance(read, Generation) or read.context is None
-    bucket = MemoryBucket()
-    await refinery.export("acme", bucket)
-    rows = [
-        json.loads(line) for data in bucket.objects.values() for line in data.decode().splitlines()
-    ]
-    assert len(rows) == 2 and all(row["fingerprint"] is None for row in rows)
 
 
 async def test_a_tool_call_does_not_move_the_fingerprint(fixtures: Path) -> None:

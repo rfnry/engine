@@ -335,13 +335,9 @@ async def test_a_generation_with_its_tools_round_trips(storage: Storage) -> None
     await Refinery(storage).record(run)
     got = await storage.get_run("a", "g")
     assert got is not None and Generation.model_validate(got.body) == run
-    old = {key: value for key, value in got.body.items() if key != "tools"}
-    await storage.put_run("a", got.model_copy(update={"body": old}))
-    again = await storage.get_run("a", "g")
-    assert again is not None and Generation.model_validate(again.body).tools == []
 
 
-async def test_tags_round_trip_and_old_bodies_read_as_no_tags(storage: Storage) -> None:
+async def test_tags_round_trip(storage: Storage) -> None:
     at = datetime.now(UTC)
     decision = Decision(
         run_id="d",
@@ -379,10 +375,6 @@ async def test_tags_round_trip_and_old_bodies_read_as_no_tags(storage: Storage) 
         got = await storage.get_run("a", run_id)
         assert got is not None and got.body["tags"] == {"arm": "b", "commit": "a81d07b"}
         assert kind.model_validate(got.body).tags == {"arm": "b", "commit": "a81d07b"}
-        old = {key: value for key, value in got.body.items() if key != "tags"}
-        await storage.put_run("a", got.model_copy(update={"body": old}))
-        again = await storage.get_run("a", run_id)
-        assert again is not None and kind.model_validate(again.body).tags == {}
 
 
 def _tagged(
@@ -562,7 +554,7 @@ async def test_a_tree_reads_back_with_its_one_record_stamp(storage: Storage) -> 
     assert (await refinery.export("a", MemoryBucket())).watermark == stamp
 
 
-async def test_fingerprints_and_context_round_trip_and_old_bodies_read_as_none(
+async def test_fingerprints_and_context_round_trip(
     storage: Storage,
 ) -> None:
     refinery = Refinery(storage)
@@ -587,20 +579,6 @@ async def test_fingerprints_and_context_round_trip_and_old_bodies_read_as_none(
     assert len(rows) >= 3 and all(
         row["fingerprint"] == runs[row["run_id"]].model_dump(mode="json")["fingerprint"]
         for row in rows
-    )
-    for stored in await storage.run_tree("a", run_ids=[run.run_id]):
-        old = {k: v for k, v in stored.body.items() if k not in ("fingerprint", "context")}
-        await storage.put_run("a", stored.model_copy(update={"body": old}))
-    again = await refinery.run("a", run.run_id)
-    assert isinstance(again, Decision) and isinstance(again.routed_to, Generation)
-    assert again.fingerprint is None and again.routed_to.fingerprint is None
-    assert again.routed_to.context is None
-    bucket = MemoryBucket()
-    await refinery.export("a", bucket)
-    assert all(
-        json.loads(line)["fingerprint"] is None
-        for data in bucket.objects.values()
-        for line in data.decode().splitlines()
     )
 
 
@@ -813,7 +791,7 @@ async def test_a_state_of_parts_round_trips_as_parts_and_replays(
     assert pair.error is None and looking.calls[0][0] == parts
 
 
-async def test_start_prefix_and_usage_round_trip_and_old_bodies_read_without_them(
+async def test_start_prefix_and_usage_round_trip(
     storage: Storage,
 ) -> None:
     written = Message(
@@ -849,18 +827,6 @@ async def test_start_prefix_and_usage_round_trip_and_old_bodies_read_without_the
     data = bucket.objects[key]
     [row] = [json.loads(line) for line in data.splitlines()]
     assert row["start"] == 4 and row["conversation"][-1]["prefix"] == "0123456789abcdef"
-    old = {key: value for key, value in got.body.items() if key != "start"}
-    for listed in ("messages", "conversation"):
-        old[listed] = [
-            {k: v for k, v in message.items() if k not in ("prefix", "usage")}
-            for message in got.body[listed]
-        ]
-    await storage.put_run("a", got.model_copy(update={"body": old}))
-    again = await storage.get_run("a", "w")
-    assert again is not None
-    back = Generation.model_validate(again.body)
-    assert back.start == 0 and back.conversation[-1].prefix is None
-    assert back.conversation[-1].usage is None
 
 
 async def test_a_failed_run_and_its_failed_child_read_back_as_recorded(storage: Storage) -> None:
