@@ -23,7 +23,6 @@ long: >-
 """
 
 CONTRACT = """---
-name: contract
 description: Fetch an order by id
 input:
   order_id: {type: string, description: The order id, required: true}
@@ -32,7 +31,6 @@ Returns the order as JSON.
 """
 
 WORDED = """---
-name: worded
 description: Look an order up by its number
 ---
 Say which order you looked up.
@@ -55,7 +53,7 @@ def code(*names: str) -> dict[str, Tool]:
 def agent(root: Path, name: str = "a", front: str = "kind: generation\n") -> Path:
     folder = root / name
     folder.mkdir(parents=True)
-    (folder / "AGENT.md").write_text(f"---\nname: {name}\n{front}---\nYou are {name}.\n")
+    (folder / "AGENT.md").write_text(f"---\n{front}---\nYou are {name}.\n")
     return folder
 
 
@@ -124,16 +122,16 @@ def test_a_tool_with_no_description_anywhere_is_refused(tmp_path: Path) -> None:
             "duplicate key 'lookup_order'",
         ),
         ("TOOLS.md", "lookup_order:\n", "frontmatter: missing"),
-        ("tools/lookup_order.md", "---\nname: lookup_order\n---\n", "listed in TOOLS.md"),
+        ("tools/lookup_order.md", "---\ninput: {q: {type: string}}\n---\n", "listed in TOOLS.md"),
         (
             "tools/lookup_order.md",
-            "---\nname: lookup_order\ndescription: ' '\n---\n",
+            "---\ndescription: ' '\n---\n",
             "no description",
         ),
         (
             "tools/lookup_order.md",
             "---\nname: other\ndescription: Find\n---\n",
-            "must live in other.md",
+            "remove the name: line",
         ),
     ],
 )

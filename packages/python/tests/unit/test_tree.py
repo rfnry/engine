@@ -36,10 +36,8 @@ def test_generation_agent_carries_body_agents_tools_tasks() -> None:
 
 def test_a_tool_file_is_a_contract_or_a_name(tmp_path: Path) -> None:
     (tmp_path / "a" / "tools").mkdir(parents=True)
-    (tmp_path / "a" / "AGENT.md").write_text("---\nname: a\nkind: generation\n---\n")
-    (tmp_path / "a" / "tools" / "x.md").write_text(
-        "---\nname: x\ninput: {q: {type: string}}\n---\n"
-    )
+    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\n---\n")
+    (tmp_path / "a" / "tools" / "x.md").write_text("---\ninput: {q: {type: string}}\n---\n")
     with pytest.raises(ConfigurationError, match="description"):
         load_agent(tmp_path / "a")
 
@@ -60,14 +58,18 @@ def test_validate_tree_accepts_the_fixture() -> None:
 
 def test_single_agent_root(tmp_path: Path) -> None:
     (tmp_path / "solo").mkdir()
-    (tmp_path / "solo" / "AGENT.md").write_text("---\nname: solo\nkind: generation\n---\nHi\n")
+    (tmp_path / "solo" / "AGENT.md").write_text("---\nkind: generation\n---\nHi\n")
     assert list(load_tree(tmp_path / "solo")) == ["solo"]
 
 
-def test_name_must_match_directory(tmp_path: Path) -> None:
+def test_the_folder_names_the_agent(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nname: b\nkind: generation\n---\n")
-    with pytest.raises(ConfigurationError):
+    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\n---\n")
+    assert load_agent(tmp_path / "a").name == "a"
+    (tmp_path / "a" / "AGENT.md").write_text("---\nname: a\nkind: generation\n---\n")
+    with pytest.raises(
+        ConfigurationError, match="unknown key 'name'.*; its folder or file names it"
+    ):
         load_agent(tmp_path / "a")
 
 
@@ -75,7 +77,7 @@ def test_route_must_point_at_existing_agents(tmp_path: Path) -> None:
     (tmp_path / "d").mkdir()
     (tmp_path / "d" / "questions").mkdir()
     (tmp_path / "d" / "AGENT.md").write_text(
-        "---\nname: d\nkind: decision\nroute: {by: q, to: {x: ghost}}\n---\n"
+        "---\nkind: decision\nroute: {by: q, to: {x: ghost}}\n---\n"
     )
     (tmp_path / "d" / "questions" / "q.md").write_text(
         "---\ntype: choice\noptions: {x: X, y: Y}\n---\nWhich?\n"
@@ -87,7 +89,7 @@ def test_route_must_point_at_existing_agents(tmp_path: Path) -> None:
 def test_question_with_one_option_is_refused(tmp_path: Path) -> None:
     (tmp_path / "d").mkdir()
     (tmp_path / "d" / "questions").mkdir()
-    (tmp_path / "d" / "AGENT.md").write_text("---\nname: d\nkind: decision\n---\n")
+    (tmp_path / "d" / "AGENT.md").write_text("---\nkind: decision\n---\n")
     (tmp_path / "d" / "questions" / "q.md").write_text(
         "---\ntype: choice\noptions: {x: X}\n---\n?\n"
     )
@@ -118,7 +120,7 @@ def _agent(
     tools: tuple[str, ...] = (),
 ) -> None:
     (root / name).mkdir(parents=True)
-    (root / name / "AGENT.md").write_text(f"---\nname: {name}\n{front}---\n")
+    (root / name / "AGENT.md").write_text(f"---\n{front}---\n")
     for qid, text in (questions or {}).items():
         (root / name / "questions").mkdir(exist_ok=True)
         (root / name / "questions" / f"{qid}.md").write_text(text)
@@ -153,7 +155,7 @@ def test_each_kind_holds_only_what_it_can_use(
     tmp_path: Path, front: str, questions: dict[str, str], tools: tuple[str, ...], message: str
 ) -> None:
     _agent(tmp_path, "a", front, questions, tools)
-    with pytest.raises(ConfigurationError, match=f"^tree: {message}$"):
+    with pytest.raises(ConfigurationError, match=f"^tree: {message}(;|$)"):
         load_agent(tmp_path / "a")
 
 
@@ -171,7 +173,7 @@ def test_each_kind_holds_only_what_it_can_use(
 def test_routes_and_agents_must_resolve(tmp_path: Path, front: str, message: str) -> None:
     _agent(tmp_path, "a", front, {"q": CHOICE, "urgent": CHECK})
     _agent(tmp_path, "b", "kind: generation\n")
-    with pytest.raises(ConfigurationError, match=f"^tree: {message}$"):
+    with pytest.raises(ConfigurationError, match=f"^tree: {message}(;|$)"):
         validate_tree(load_tree(tmp_path))
 
 
@@ -188,13 +190,13 @@ def test_routes_and_agents_must_resolve(tmp_path: Path, front: str, message: str
         ),
         (
             "kind: generation\n",
-            "---\nname: t\ndescription: T\nsummary: S\n---\n",
+            "---\ndescription: T\nsummary: S\n---\n",
             "summary",
             "t.md",
         ),
         (
             "kind: generation\n",
-            "---\nname: t\ndescription: T\ninput:\n  q: {type: string, requried: true}\n---\n",
+            "---\ndescription: T\ninput:\n  q: {type: string, requried: true}\n---\n",
             "input.q.requried",
             "t.md",
         ),
@@ -210,15 +212,17 @@ def test_an_unknown_frontmatter_key_is_refused_by_name(
     path = tmp_path / "a" / ("tools/t.md" if tool is not None else "AGENT.md")
     with pytest.raises(ConfigurationError) as refused:
         load_agent(tmp_path / "a")
-    assert str(refused.value) == f"frontmatter: unknown key {key!r} in {path}"
-    assert str(refused.value).endswith(where)
+    said = str(refused.value)
+    assert said.startswith(f"frontmatter: unknown key {key!r} in {path}")
+    assert said.split(";")[0].endswith(where)
+    assert ("; check its spelling" if "." in key else "; it takes ") in said
 
 
 def test_only_true_and_false_are_booleans_in_frontmatter(tmp_path: Path) -> None:
     _agent(tmp_path, "a", "kind: generation\nworkspace: true\n")
     (tmp_path / "a" / "tools").mkdir()
     (tmp_path / "a" / "tools" / "t.md").write_text(
-        "---\nname: t\ndescription: T\ninput:\n"
+        "---\ndescription: T\ninput:\n"
         "  q: {type: string, required: true}\n"
         "  r: {type: string, required: yes}\n"
         "  s: {type: string, required: False}\n"
@@ -259,7 +263,9 @@ def test_an_unknown_key_in_a_question_is_refused_by_name(tmp_path: Path) -> None
     with pytest.raises(ConfigurationError) as refused:
         load_agent(tmp_path / "d")
     path = tmp_path / "d" / "questions" / "q.md"
-    assert str(refused.value) == f"frontmatter: unknown key 'optoins' in {path}"
+    assert str(refused.value) == (
+        f"frontmatter: unknown key 'optoins' in {path}; it takes type, instructions, options, levels, yes, no"
+    )
 
 
 def test_a_question_takes_structure_through_its_frontmatter(tmp_path: Path) -> None:
@@ -329,7 +335,7 @@ def test_a_question_has_its_instructions_in_its_frontmatter_or_its_body(
     path = tmp_path / "d" / "questions" / "q.md"
     with pytest.raises(ConfigurationError) as refused:
         load_agent(tmp_path / "d")
-    assert str(refused.value) == f"tree: question {path} {message}"
+    assert str(refused.value).startswith(f"tree: question {path} {message}; ")
 
 
 @pytest.mark.parametrize(
@@ -388,7 +394,7 @@ def test_a_decision_agent_s_task_is_a_folder_not_a_file(tmp_path: Path) -> None:
     _agent(tmp_path, "a", "kind: decision\n", {"q": CHECK})
     (tmp_path / "a" / "tasks").mkdir()
     (tmp_path / "a" / "tasks" / "grade.md").write_text("Grade it.\n")
-    message = "^tree: decision agent 'a' keeps each task's questions in tasks/<task>/; got tasks/grade.md$"
+    message = "^tree: decision agent 'a' has tasks/grade.md, but keeps each task's questions in a folder; move it to tasks/grade/$"
     with pytest.raises(ConfigurationError, match=message):
         load_agent(tmp_path / "a")
 
@@ -403,7 +409,7 @@ def test_a_task_adds_questions_so_it_repeats_no_id_of_questions(tmp_path: Path) 
     _task(tmp_path, "a", "grade", "pick", CHOICE)
     _task(tmp_path, "a", "grade", "tone")
     _task(tmp_path, "a", "grade", "urgent")
-    message = "^tree: decision agent 'a' asks 'tone', 'urgent' in both questions/ and tasks/grade/$"
+    message = "^tree: decision agent 'a' asks 'tone', 'urgent' in both questions/ and tasks/grade/; rename one$"
     with pytest.raises(ConfigurationError, match=message):
         load_agent(tmp_path / "a")
 
@@ -465,7 +471,7 @@ def test_a_route_to_a_decision_agent_that_could_never_ask_anything_is_refused(
     _router(tmp_path, to)
     message = (
         "^tree: route of 'a' gives decision agent 'b' nothing to ask: it has no questions/ "
-        "and the route names no task with questions$"
+        "and the route names no task with questions; give it questions/"
     )
     with pytest.raises(ConfigurationError, match=message):
         validate_tree(load_tree(tmp_path))
@@ -479,7 +485,7 @@ def test_a_route_names_only_a_task_its_agent_has(
     tmp_path: Path, to: str, agent: str, task: str
 ) -> None:
     _router(tmp_path, to)
-    message = f"^tree: route of 'a' points at agent '{agent}', which has no task '{task}'$"
+    message = f"^tree: route of 'a' points at agent '{agent}', which has no task '{task}';"
     with pytest.raises(ConfigurationError, match=message):
         validate_tree(load_tree(tmp_path))
 
@@ -555,13 +561,13 @@ def test_reads_names_a_readable_folder_of_the_root(
     (tmp_path / "elsewhere").mkdir()
     (root / "outside").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
     (root / "loop").symlink_to(root, target_is_directory=True)
-    with pytest.raises(ConfigurationError, match=f"^tree: {message}$"):
+    with pytest.raises(ConfigurationError, match=f"^tree: {message}(;|$)"):
         load_tree(root)
 
 
 def test_a_single_agent_root_reads_nothing(tmp_path: Path) -> None:
     _agent(tmp_path, "solo", "kind: generation\nreads: [books]\n")
-    with pytest.raises(ConfigurationError, match="reads unknown folder 'books'"):
+    with pytest.raises(ConfigurationError, match="root agent 'solo' cannot declare reads:"):
         load_tree(tmp_path / "solo")
 
 
@@ -575,7 +581,5 @@ def test_reads_needs_the_agent_s_folder_inside_the_root_not_a_link_to_elsewhere(
     message = r"^tree: agent 'coding' declares reads: but its folder is a link to "
     with pytest.raises(ConfigurationError, match=message):
         load_tree(root)
-    (tmp_path / "elsewhere" / "coding" / "AGENT.md").write_text(
-        "---\nname: coding\nkind: generation\n---\n"
-    )
+    (tmp_path / "elsewhere" / "coding" / "AGENT.md").write_text("---\nkind: generation\n---\n")
     assert load_tree(root)["coding"].reads == {}

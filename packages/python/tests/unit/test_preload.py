@@ -246,7 +246,7 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
     [
         (
             "kind: decision\npreload: true\n",
-            "^tree: decision agent 'a' cannot declare preload:$",
+            "^tree: decision agent 'a' cannot declare preload:; a decision agent reads no files",
         ),
         ("kind: generation\npreload: some\n", "^frontmatter: invalid agent .*AGENT.md"),
     ],
@@ -255,7 +255,7 @@ def test_preload_is_true_and_a_decision_agent_cannot_declare_it(
     tmp_path: Path, front: str, message: str
 ) -> None:
     (tmp_path / "a" / "questions").mkdir(parents=True)
-    (tmp_path / "a" / "AGENT.md").write_text(f"---\nname: a\n{front}---\n", encoding="utf-8")
+    (tmp_path / "a" / "AGENT.md").write_text(f"---\n{front}---\n", encoding="utf-8")
     (tmp_path / "a" / "questions" / "q.md").write_text("---\ntype: check\n---\nIs it?\n")
     with pytest.raises(ConfigurationError, match=message):
         Engine(tmp_path, generation=Scripted(), decision=Answering())
@@ -269,7 +269,7 @@ def test_a_preloaded_file_that_is_not_the_type_its_name_says_is_refused_when_the
     preload_all(root / "support")
     with pytest.raises(
         ConfigurationError,
-        match=r"^tree: agent 'support' cannot preload its folder: builtins: diagram.png is not the image/png its name says$",
+        match=r"^tree: agent 'support' cannot preload its folder: builtins: diagram.png is not the image/png its name says; move that file out of its folders, or drop preload: true$",
     ):
         engine(root, Scripted())
 
@@ -388,7 +388,10 @@ async def test_a_file_over_load_s_cap_is_refused_when_the_tree_loads_with_load_s
     preload_all(root / "support")
     with pytest.raises(ConfigurationError) as refused:
         engine(root, Scripted())
-    assert str(refused.value) == f"tree: agent 'support' cannot preload its folder: {load}"
+    assert str(refused.value) == (
+        f"tree: agent 'support' cannot preload its folder: {load}; "
+        "move that file out of its folders, or drop preload: true"
+    )
 
 
 async def test_a_text_file_over_read_s_cap_goes_in_as_load_hands_it(
@@ -427,7 +430,10 @@ async def test_a_file_the_model_does_not_take_is_refused_when_the_tree_loads_wit
     preload_all(root / "support")
     with pytest.raises(ConfigurationError) as refused:
         engine(root, PicturesAndDocuments())
-    assert str(refused.value) == f"tree: agent 'support' cannot preload its folder: {load}"
+    assert str(refused.value) == (
+        f"tree: agent 'support' cannot preload its folder: {load}; "
+        "move that file out of its folders, or drop preload: true"
+    )
     assert engine(root, Scripted()).agents["support"].kind == "generation"
 
 
@@ -486,7 +492,7 @@ async def test_preload_all_sends_every_file_but_agent_md_and_the_declarations(
 def test_preload_all_sends_the_read_folders_too_in_path_order(tmp_path: Path) -> None:
     (tmp_path / "coding").mkdir()
     (tmp_path / "coding" / "AGENT.md").write_text(
-        "---\nname: coding\nkind: generation\nreads: [books]\npreload: true\n---\nHi\n"
+        "---\nkind: generation\nreads: [books]\npreload: true\n---\nHi\n"
     )
     (tmp_path / "coding" / "notes.md").write_text("Own.\n")
     (tmp_path / "books").mkdir()

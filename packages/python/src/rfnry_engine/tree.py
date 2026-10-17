@@ -15,8 +15,8 @@ from pydantic import (
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
-from rfnry_engine.folders import content, declares, entries, joined, listing
-from rfnry_engine.frontmatter import parse_frontmatter_doc
+from rfnry_engine.folders import DECLARED, content, declares, entries, joined, listing
+from rfnry_engine.frontmatter import parse_frontmatter_doc, plainly
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Check, Choice, Part, Question, Score
 from rfnry_engine.tools.builtins import preload_parts
@@ -52,7 +52,6 @@ class RouteSpec(BaseModel):
 class AgentFront(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str
     kind: Kind
     description: str = ""
     agents: list[str] = Field(default_factory=list)
@@ -84,7 +83,6 @@ class ToolField(BaseModel):
 class ToolFront(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str
     description: str | None = None
     input: dict[str, ToolField] | None = None
 
@@ -130,12 +128,12 @@ def _question(path: Path) -> Question:
     written = body.strip()
     if front.instructions is not None and written:
         raise ConfigurationError(
-            f"tree: question {path} gives instructions both in its frontmatter and in its body"
+            f"tree: question {path} gives instructions both in its frontmatter and in its body; keep one"
         )
     instructions = front.instructions or written
     if not instructions:
         raise ConfigurationError(
-            f"tree: question {path} gives no instructions, in its body or its frontmatter"
+            f"tree: question {path} gives no instructions, in its body or its frontmatter; write the question under its frontmatter"
         )
     try:
         if front.type == "choice":
@@ -144,7 +142,7 @@ def _question(path: Path) -> Question:
             return Score(instructions=instructions, levels=front.levels or [])
         return Check(instructions=instructions, yes=front.yes, no=front.no)
     except ValidationError as exc:
-        raise ConfigurationError(f"tree: invalid question {path}: {exc}") from exc
+        raise ConfigurationError(f"tree: invalid question {path}; {plainly(exc)}") from exc
 
 
 def _listed(path: Path) -> dict[str, ToolDecl]:
@@ -167,15 +165,13 @@ def _listed(path: Path) -> dict[str, ToolDecl]:
 
 def _tool_file(path: Path) -> ToolDecl:
     front, body = parse_frontmatter_doc(_read(path), model=ToolFront, source=path, label="tool")
-    if front.name != path.stem:
-        raise ConfigurationError(f"tree: tool {front.name!r} must live in {front.name}.md: {path}")
     if front.description is None or not front.description.strip():
         raise ConfigurationError(
             f"tree: tool file {path} gives no description; a tool that only needs its name is listed in TOOLS.md"
         )
     written = body.strip()
     description = f"{front.description}\n\n{written}" if written else front.description
-    return ToolDecl(name=front.name, description=description, input=front.input)
+    return ToolDecl(name=path.stem, description=description, input=front.input)
 
 
 def _tools(directory: Path, agent: str) -> dict[str, ToolDecl]:
@@ -184,7 +180,7 @@ def _tools(directory: Path, agent: str) -> dict[str, ToolDecl]:
     twice = sorted(name for name in filed if name in listed)
     if twice:
         raise ConfigurationError(
-            f"tree: agent {agent!r} declares {', '.join(map(repr, twice))} in both TOOLS.md and tools/"
+            f"tree: agent {agent!r} declares {', '.join(map(repr, twice))} in both TOOLS.md and tools/; keep one"
         )
     return dict(sorted({**listed, **filed}.items()))
 
@@ -227,16 +223,25 @@ class _Folder:
 
 
 def _reads(
-    front: AgentFront, directory: Path, folders: Mapping[str, _Folder]
+    agent: str, front: AgentFront, directory: Path, folders: Mapping[str, _Folder], whole: bool
 ) -> dict[str, _Folder]:
+    if whole and front.reads:
+        raise ConfigurationError(
+            f"tree: root agent {agent!r} cannot declare reads:; it holds its whole folder already"
+        )
     if front.kind == "decision" and front.reads:
-        raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare reads:")
+        raise ConfigurationError(
+            f"tree: decision agent {agent!r} cannot declare reads:; a decision agent reads no files, so give it what it needs in its input or its questions"
+        )
     for name in front.reads:
         if name.startswith(".") or name == directory.name or name not in folders:
-            raise ConfigurationError(f"tree: agent {front.name!r} reads unknown folder {name!r}")
+            choices = ", ".join(sorted(n for n in folders if n != directory.name)) or "none"
+            raise ConfigurationError(
+                f"tree: agent {agent!r} reads unknown folder {name!r}; reads: names a folder beside it in the root, one of: {choices}"
+            )
     if front.reads and directory.resolve().parent != directory.parent.resolve():
         raise ConfigurationError(
-            f"tree: agent {front.name!r} declares reads: but its folder is a link to {directory.resolve()}; reads: needs the agent's folder inside the root"
+            f"tree: agent {agent!r} declares reads: but its folder is a link to {directory.resolve()}; reads: needs the agent's folder inside the root, so link the whole root instead"
         )
     return {name: folders[name] for name in front.reads}
 
@@ -249,11 +254,11 @@ def _under(
     ]
 
 
-def _readable(root: Path) -> dict[str, Path]:
+def _readable(root: Path, whole: bool = False) -> dict[str, Path]:
     jail = Jail(root)
     found: dict[str, Path] = {}
     for child in sorted(root.iterdir()):
-        if child.name.startswith(".") or not child.is_dir():
+        if child.name.startswith(".") or not child.is_dir() or (whole and child.name in DECLARED):
             continue
         try:
             place = jail.resolve(child)
@@ -268,6 +273,9 @@ def load_agent(
     directory: Path,
     media_types: Collection[str] | None = None,
     folders: Mapping[str, _Folder] | None = None,
+    name: str | None = None,
+    sub: Collection[str] = (),
+    whole: bool = False,
 ) -> AgentSpec:
     front, body = parse_frontmatter_doc(
         _read(directory / "AGENT.md"),
@@ -275,18 +283,15 @@ def load_agent(
         source=directory / "AGENT.md",
         label="agent",
     )
-    if front.name != directory.name:
-        raise ConfigurationError(
-            f"tree: agent {front.name!r} must live in a directory named {front.name!r}: {directory}"
-        )
+    agent = name or directory.resolve().name
     questions = _questions(directory / "questions")
-    tools = _tools(directory, front.name)
+    tools = _tools(directory, agent)
     tasks = [p.stem for p in _markdown_files(directory / "tasks")]
     task_questions: dict[str, dict[str, Question]] = {}
     if front.kind == "decision":
         if tasks:
             raise ConfigurationError(
-                f"tree: decision agent {front.name!r} keeps each task's questions in tasks/<task>/; got tasks/{tasks[0]}.md"
+                f"tree: decision agent {agent!r} has tasks/{tasks[0]}.md, but keeps each task's questions in a folder; move it to tasks/{tasks[0]}/"
             )
         task_questions = {p.name: _questions(p) for p in _folders(directory / "tasks")}
         tasks = list(task_questions)
@@ -294,30 +299,38 @@ def load_agent(
         clash = [qid for qid in asked if qid in questions]
         if clash:
             raise ConfigurationError(
-                f"tree: decision agent {front.name!r} asks {', '.join(map(repr, clash))} in both questions/ and tasks/{task}/"
+                f"tree: decision agent {agent!r} asks {', '.join(map(repr, clash))} in both questions/ and tasks/{task}/; rename one"
             )
     if front.kind == "decision" and tools:
-        raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare tools")
+        raise ConfigurationError(
+            f"tree: decision agent {agent!r} cannot declare tools; tools are for generation agents, so give them to one it routes to"
+        )
     if front.kind == "decision" and front.workspace:
         raise ConfigurationError(
-            f"tree: decision agent {front.name!r} cannot declare workspace: true"
+            f"tree: decision agent {agent!r} cannot declare workspace: true; a workspace is for generation agents"
         )
     if front.kind == "decision" and front.preload:
-        raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare preload:")
+        raise ConfigurationError(
+            f"tree: decision agent {agent!r} cannot declare preload:; a decision agent reads no files, so give it what it needs in its input or its questions"
+        )
     if front.kind == "generation" and questions:
-        raise ConfigurationError(f"tree: generation agent {front.name!r} cannot declare questions/")
+        raise ConfigurationError(
+            f"tree: generation agent {agent!r} cannot declare questions/; questions are for decision agents, so make it kind: decision or move them to one"
+        )
     if front.kind == "generation" and front.route is not None:
-        raise ConfigurationError(f"tree: generation agent {front.name!r} cannot declare route:")
-    reads = _reads(front, directory, folders or {})
+        raise ConfigurationError(
+            f"tree: generation agent {agent!r} cannot declare route:; routes are for decision agents"
+        )
+    reads = _reads(agent, front, directory, folders or {}, whole)
     root = directory.resolve()
     files = sorted([*content(root, False), *_under(reads, lambda folder: folder.files)])
     try:
         preload, read = (
             preload_parts(
                 sorted(
-                    name
-                    for name, _ in [
-                        *content(root, True),
+                    rel
+                    for rel, _ in [
+                        *content(root, True, sub),
                         *_under(reads, lambda folder: folder.preloaded),
                     ]
                 ),
@@ -329,11 +342,11 @@ def load_agent(
         )
     except InputError as exc:
         raise ConfigurationError(
-            f"tree: agent {front.name!r} cannot preload its folder: {exc}"
+            f"tree: agent {agent!r} cannot preload its folder: {exc}; move that file out of its folders, or drop preload: true"
         ) from exc
     return AgentSpec(
         root=root,
-        name=front.name,
+        name=agent,
         kind=front.kind,
         description=front.description,
         body=body.strip(),
@@ -347,7 +360,7 @@ def load_agent(
         task_questions=task_questions,
         preload=preload,
         listing=joined(
-            entries(root, True), {name: folder.mapped for name, folder in reads.items()}
+            entries(root, True, sub), {name: folder.mapped for name, folder in reads.items()}
         ),
         reads={name: folder.place for name, folder in reads.items()},
     )
@@ -372,27 +385,37 @@ def plain_agent(root: Path, name: str) -> AgentSpec:
     )
 
 
-def _unnamed(name: str | None, root: Path) -> None:
-    if name is not None:
-        raise ConfigurationError(f"tree: name= names a root with no AGENT.md; {root} has agents")
-
-
 def load_tree(
     root: Path, media_types: Collection[str] | None = None, name: str | None = None
 ) -> dict[str, AgentSpec]:
     root = Path(root)
-    if (root / "AGENT.md").is_file():
-        _unnamed(name, root)
-        spec = load_agent(root, media_types)
-        return {spec.name: spec}
-    folders = {name: _Folder(place) for name, place in _readable(root).items()}
+    whole = (root / "AGENT.md").is_file()
+    folders = {child: _Folder(place) for child, place in _readable(root, whole).items()}
     agents = {
-        child.name: load_agent(child, media_types, folders)
+        child.name: load_agent(child, media_types, folders, child.name)
         for child in sorted(root.iterdir())
-        if child.is_dir() and (child / "AGENT.md").is_file()
+        if child.is_dir()
+        and not child.name.startswith(".")
+        and not (whole and child.name in DECLARED)
+        and (child / "AGENT.md").is_file()
     }
+    if whole:
+        spec = load_agent(root, media_types, {}, name, sub=set(agents), whole=True)
+        if spec.name in agents:
+            fix = (
+                "rename that folder, or pass Engine(name=) another name"
+                if name is not None
+                else "rename the folder, or pass Engine(name=) for the root"
+            )
+            raise ConfigurationError(
+                f"tree: the root agent and the agent in {root / spec.name} are both named {spec.name!r}; {fix}"
+            )
+        return {spec.name: spec, **agents}
     if agents:
-        _unnamed(name, root)
+        if name is not None:
+            raise ConfigurationError(
+                f"tree: name= names the root's own agent, and {root} has no AGENT.md, only agents in its folders; drop name=, or give the root an AGENT.md"
+            )
         return agents
     spec = plain_agent(root, name or root.resolve().name)
     return {spec.name: spec}
@@ -402,28 +425,32 @@ def validate_tree(agents: dict[str, AgentSpec]) -> None:
     for spec in agents.values():
         for name in spec.agents:
             if name not in agents:
-                raise ConfigurationError(f"tree: agent {spec.name!r} names unknown agent {name!r}")
+                raise ConfigurationError(
+                    f"tree: agent {spec.name!r} names unknown agent {name!r}; agents: names agents of this tree: {', '.join(sorted(agents))}"
+                )
         if spec.route is None:
             continue
         question = spec.questions.get(spec.route.by)
         if not isinstance(question, Choice):
-            raise ConfigurationError(f"tree: route of {spec.name!r} must name a choice question")
+            raise ConfigurationError(
+                f"tree: route of {spec.name!r} must name a choice question; by: names a choice question in its questions/"
+            )
         for option, target in spec.route.to.items():
             if option not in question.options:
                 raise ConfigurationError(
-                    f"tree: route of {spec.name!r} maps unknown option {option!r}"
+                    f"tree: route of {spec.name!r} maps unknown option {option!r}; the options of {spec.route.by!r} are {', '.join(question.options)}"
                 )
             routed = agents.get(target.agent)
             if routed is None:
                 raise ConfigurationError(
-                    f"tree: route of {spec.name!r} points at unknown agent {target.agent!r}"
+                    f"tree: route of {spec.name!r} points at unknown agent {target.agent!r}; the tree has {', '.join(sorted(agents))}"
                 )
             if target.task is not None and target.task not in routed.tasks:
                 raise ConfigurationError(
-                    f"tree: route of {spec.name!r} points at agent {target.agent!r}, which has no task {target.task!r}"
+                    f"tree: route of {spec.name!r} points at agent {target.agent!r}, which has no task {target.task!r}; its tasks are {', '.join(routed.tasks) or 'none'}"
                 )
             tasked = None if target.task is None else routed.task_questions.get(target.task)
             if routed.kind == "decision" and not routed.questions and not tasked:
                 raise ConfigurationError(
-                    f"tree: route of {spec.name!r} gives decision agent {target.agent!r} nothing to ask: it has no questions/ and the route names no task with questions"
+                    f"tree: route of {spec.name!r} gives decision agent {target.agent!r} nothing to ask: it has no questions/ and the route names no task with questions; give it questions/, or name one of its tasks in the route"
                 )

@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, RootModel, ValidationError
 
 from rfnry_engine.errors import ConfigurationError
 
@@ -66,9 +66,23 @@ def described(path: Path) -> str | None:
         raise ConfigurationError(f"frontmatter: invalid YAML in {path}: {exc}") from exc
     said = data.get("description") if isinstance(data, dict) else None
     if said is not None and not isinstance(said, str):
-        raise ConfigurationError(f"frontmatter: description must be a string in {path}")
+        raise ConfigurationError(
+            f"frontmatter: description must be a string in {path}; write it as one line of text"
+        )
     collapsed = " ".join(said.split()) if said else ""
     return collapsed or None
+
+
+def _said(message: str) -> str:
+    message = message.removeprefix("Value error, ")
+    return message[:1].lower() + message[1:]
+
+
+def plainly(exc: ValidationError) -> str:
+    return "; ".join(
+        f"{'.'.join(map(str, error['loc'])) or 'the file'}: {_said(error['msg'])}"
+        for error in exc.errors(include_url=False)
+    )
 
 
 def parse_frontmatter_doc[T: BaseModel](
@@ -80,7 +94,9 @@ def parse_frontmatter_doc[T: BaseModel](
 ) -> tuple[T, str]:
     split = split_frontmatter(raw)
     if split is None:
-        raise ConfigurationError(f"frontmatter: missing in {source}")
+        raise ConfigurationError(
+            f"frontmatter: missing in {source}; start the file with a block of YAML between two --- lines"
+        )
     front_raw, body = split
     try:
         data = yaml.load(front_raw, Loader=_Loader) or {}
@@ -95,8 +111,25 @@ def parse_frontmatter_doc[T: BaseModel](
             if error["type"] == "extra_forbidden"
         ]
         if unknown:
+            others = [key for key in unknown if key != "name"]
+            fix = "; ".join(
+                [
+                    *(
+                        ["its folder or file names it, so remove the name: line"]
+                        if "name" in unknown
+                        else []
+                    ),
+                    *(
+                        []
+                        if not others
+                        else ["check its spelling"]
+                        if any("." in key for key in others) or issubclass(model, RootModel)
+                        else [f"it takes {', '.join(model.model_fields)}"]
+                    ),
+                ]
+            )
             raise ConfigurationError(
-                f"frontmatter: unknown key {', '.join(map(repr, unknown))} in {source}"
+                f"frontmatter: unknown key {', '.join(map(repr, unknown))} in {source}; {fix}"
             ) from exc
-        raise ConfigurationError(f"frontmatter: invalid {label} {source}: {exc}") from exc
+        raise ConfigurationError(f"frontmatter: invalid {label} {source}; {plainly(exc)}") from exc
     return config, body.lstrip("\n")

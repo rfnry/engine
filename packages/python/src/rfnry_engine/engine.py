@@ -318,8 +318,16 @@ class Engine:
             raise ConfigurationError("engine: history_walk must be positive")
         if history_chars <= 0:
             raise ConfigurationError("engine: history_chars must be positive")
-        if name is not None and not name:
-            raise ConfigurationError("engine: name must not be empty")
+        if name is not None and (
+            not name.strip()
+            or name != name.strip()
+            or name.startswith(".")
+            or "/" in name
+            or "\\" in name
+        ):
+            raise ConfigurationError(
+                f"engine: name must name one folder, not blank, hidden, padded or with slashes; got {name!r}"
+            )
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"engine: root is not a directory: {root}")

@@ -22,8 +22,7 @@ def tree(root: Path, **agents: str) -> Path:
     for name, front in agents.items():
         (root / name).mkdir(parents=True)
         (root / name / "AGENT.md").write_text(
-            f"---\nname: {name}\nkind: generation\ndescription: {name.title()}\n{front}---\n"
-            f"You are {name}.\n",
+            f"---\nkind: generation\ndescription: {name.title()}\n{front}---\nYou are {name}.\n",
             encoding="utf-8",
         )
     return root
@@ -260,7 +259,7 @@ class Deciding:
 def decision(root: Path, name: str, front: str = "") -> None:
     (root / name / "questions").mkdir(parents=True)
     (root / name / "AGENT.md").write_text(
-        f"---\nname: {name}\nkind: decision\ndescription: Sorts\n{front}---\nSort it.\n",
+        f"---\nkind: decision\ndescription: Sorts\n{front}---\nSort it.\n",
         encoding="utf-8",
     )
     (root / name / "questions" / "intent.md").write_text(

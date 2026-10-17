@@ -117,13 +117,13 @@ async def test_the_depth_guard_holds_across_the_tool(fixtures: Path) -> None:
 async def test_a_call_through_the_tool_resets_the_route_chain(tmp_path: Path) -> None:
     (tmp_path / "r" / "questions").mkdir(parents=True)
     (tmp_path / "r" / "AGENT.md").write_text(
-        "---\nname: r\nkind: decision\nroute: {by: go, to: {next: g}}\n---\n"
+        "---\nkind: decision\nroute: {by: go, to: {next: g}}\n---\n"
     )
     (tmp_path / "r" / "questions" / "go.md").write_text(
         "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
     )
     (tmp_path / "g").mkdir()
-    (tmp_path / "g" / "AGENT.md").write_text("---\nname: g\nkind: generation\n---\nhi\n")
+    (tmp_path / "g" / "AGENT.md").write_text("---\nkind: generation\n---\nhi\n")
     llm = Scripted(calling("r", "again"), text_reply("inner done"), text_reply("outer done"))
     engine = Engine(tmp_path, generation=llm, decision=Answering())
     run = await engine.run("r", "acme", "start", tools=engine.tool("r", scope="acme"))

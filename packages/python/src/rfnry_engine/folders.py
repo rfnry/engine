@@ -1,5 +1,5 @@
 import os
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 from rfnry_engine.errors import InputError
@@ -24,7 +24,9 @@ def _inside(jail: Jail, entry: Path) -> bool:
     return True
 
 
-def _walk(folder: Path, declared: bool) -> tuple[list[str], list[tuple[str, Path]]]:
+def _walk(
+    folder: Path, declared: bool, skip: Collection[str] = ()
+) -> tuple[list[str], list[tuple[str, Path]]]:
     folder = folder.resolve()
     jail = Jail(folder)
     dirs: list[str] = []
@@ -37,7 +39,7 @@ def _walk(folder: Path, declared: bool) -> tuple[list[str], list[tuple[str, Path
             name
             for name in names
             if not name.startswith(".")
-            and not (declared and top and name in DECLARED)
+            and not (declared and top and (name in DECLARED or name in skip))
             and _inside(jail, here / name)
         ]
         dirs += [name if top else f"{at}/{name}" for name in names]
@@ -50,21 +52,22 @@ def _walk(folder: Path, declared: bool) -> tuple[list[str], list[tuple[str, Path
     return sorted(dirs), sorted(files)
 
 
-def content(folder: Path, declared: bool) -> list[tuple[str, Path]]:
-    return _walk(folder, declared)[1]
+def content(folder: Path, declared: bool, skip: Collection[str] = ()) -> list[tuple[str, Path]]:
+    return _walk(folder, declared, skip)[1]
 
 
-def entries(folder: Path, declared: bool) -> list[str]:
-    dirs, files = _walk(folder, declared)
+def entries(folder: Path, declared: bool, skip: Collection[str] = ()) -> list[str]:
+    dirs, files = _walk(folder, declared, skip)
     children: dict[str, list[tuple[str, str, bool]]] = {}
     for rel in dirs:
         parent, _, name = rel.rpartition("/")
         children.setdefault(parent, []).append((name, f"{name}/", True))
     for rel, path in files:
         said = described(path) if path.suffix == ".md" else None
-        if said is not None:
-            parent, _, name = rel.rpartition("/")
-            children.setdefault(parent, []).append((name, f"{name} — {said}", False))
+        parent, _, name = rel.rpartition("/")
+        children.setdefault(parent, []).append(
+            (name, name if said is None else f"{name} — {said}", False)
+        )
     lines: list[str] = []
 
     def render(parent: str, indent: int) -> None:

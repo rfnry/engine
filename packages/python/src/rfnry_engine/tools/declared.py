@@ -45,12 +45,12 @@ def declared_tools(spec: AgentSpec, code: dict[str, Tool]) -> list[Tool]:
         implementation = code.get(name)
         if implementation is None or implementation.body is None:
             raise ConfigurationError(
-                f"declared: agent {spec.name!r} declares tool {name!r} but no Tool with a body was given"
+                f"declared: agent {spec.name!r} declares tool {name!r} but no Tool with a body was given; pass Engine(tools=) a Tool named {name!r} with a body"
             )
         description = implementation.description if decl.description is None else decl.description
         if not description:
             raise ConfigurationError(
-                f"declared: agent {spec.name!r} declares tool {name!r} with no description, in TOOLS.md or the Tool"
+                f"declared: agent {spec.name!r} declares tool {name!r} with no description, in TOOLS.md or the Tool; describe it in either"
             )
         if decl.input is None:
             tools.append(
@@ -89,13 +89,16 @@ def check_declarations(
         clash = sorted(name for name in spec.tools if name in taken)
         if clash:
             raise ConfigurationError(
-                f"declared: agent {spec.name!r} declares {', '.join(map(repr, clash))}, the name of a tool the engine gives it"
+                f"declared: agent {spec.name!r} declares {', '.join(map(repr, clash))}, the name of a tool the engine gives it; rename yours"
             )
         if bodies:
             declared_tools(spec, code)
         declared.update(spec.tools)
     undeclared = sorted(name for name in code if name not in declared)
     if undeclared:
-        raise ConfigurationError(
-            f"declared: tools declared by no agent: {undeclared}; declare each in its agent's TOOLS.md or tools/"
+        fix = (
+            "a root with no AGENT.md declares no tools, so pass them with run(tools=)"
+            if any(spec.plain for spec in agents.values())
+            else "declare each in its agent's TOOLS.md or tools/"
         )
+        raise ConfigurationError(f"declared: tools declared by no agent: {undeclared}; {fix}")
