@@ -1513,10 +1513,11 @@ into an agent already in the same chain of routes is refused.
 
 Called inside a run, a consult is part of that run's foreground, as a delegated run is: its run
 takes the caller's `stop` and `on_event`. The caller's `stop.now()` reaches the consult instead of
-cancelling its call, so the consult ends with its record, and the caller's step reads `stopped by
-the user`, as a stopped `Delegate` step does; `after_step()` ends it after its current step. A
-consult a tool of yours starts in a task of its own — two at once, say — is in the foreground too.
-Its events reach the caller's handler, told apart by `agent` and `run_id`:
+cancelling its call, so the consult ends with its record, and whatever else the call was doing is
+cut once the consult has taken the stop, and the caller's step reads `stopped by the user`, as a
+stopped `Delegate` step does; `after_step()` ends it after its current step. A consult a tool of
+yours starts in a task of its own — two at once, say — is in the foreground too. Its events reach
+the caller's handler, told apart by `agent` and `run_id`:
 
 ```python
 async def status(event):

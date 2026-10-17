@@ -433,3 +433,37 @@ async def test_a_getter_returning_none_leaves_the_consult_outside_the_caller_s_s
     assert isinstance(run, Generation)
     assert (run.steps[0].result, run.steps[0].stopped) == (STOPPED, True)
     assert kept.of("billing") == []
+
+
+@pytest.mark.parametrize("order", ["after", "beside"])
+async def test_the_rest_of_a_call_is_cut_once_its_consult_took_the_stop(
+    tmp_path: Path, order: str
+) -> None:
+    kept = Kept()
+    billing = Gated()
+    back = Engine(tree(tmp_path / "back", billing=""), generation=billing, refinery=kept)
+    consult = back.tool("billing", scope="acme")
+
+    async def mixed(args: dict[str, Any]) -> str:
+        asking = consult.dispatch("billing", {"input": "a"})
+        if order == "after":
+            await asking
+            await asyncio.sleep(30)
+        else:
+            await asyncio.gather(asking, asyncio.sleep(30))
+        return "never"
+
+    outer = Script(use(ToolCall(id="m1", name="mixed", args={})), text_reply("never"))
+    front = Engine(tree(tmp_path / "front", support=""), generation=outer, refinery=kept)
+    stop = Stop()
+    tools = Tools([Tool("mixed", "Consult, then work", body=mixed)])
+    task = asyncio.create_task(front.run("support", "acme", "x", tools=tools, stop=stop))
+    await until(lambda: billing.calls == 1, "the consult")
+    began = time.monotonic()
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert time.monotonic() - began < 0.5
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert (run.steps[0].result, run.steps[0].stopped) == (STOPPED, True)
+    [inner] = kept.of("billing")
+    assert inner.stopped == "now"

@@ -1,3 +1,4 @@
+import asyncio
 import contextvars
 import copy
 import json
@@ -163,9 +164,15 @@ def child_result(child: Any) -> str:
 class Foreground:
     stop: Stop | None
     on_event: EventHandler | None
+    task: asyncio.Future[Any] | None = None
     stopped: bool = False
     live: int = 0
+    pressed: bool = False
     over: bool = False
+
+    def settle(self) -> None:
+        if self.live == 0 and not self.over and self.task is not None:
+            self.task.cancel()
 
 
 FOREGROUND: contextvars.ContextVar[Foreground | None] = contextvars.ContextVar(
@@ -189,6 +196,8 @@ def taking(stop: Stop | None) -> Iterator[None]:
         yield
     finally:
         here.live -= 1
+        if here.live == 0 and here.pressed:
+            asyncio.get_running_loop().call_soon(here.settle)
 
 
 def halted(run: Run) -> bool:

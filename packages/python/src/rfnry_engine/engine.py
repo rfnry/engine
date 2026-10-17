@@ -751,7 +751,7 @@ class Engine:
                 raise ConfigurationError(
                     f"engine: approve must return True or False; got {approved!r}"
                 )
-            here = Foreground(stop, on_event)
+            here = Foreground(stop, on_event, asyncio.current_task())
             foregrounds[id(call)] = here
             FOREGROUND.set(here)
             try:
@@ -833,13 +833,15 @@ class Engine:
             tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
 
             def finishing() -> list[asyncio.Task[Step]]:
-                return [
-                    task
-                    for call, task in zip(batch, tasks, strict=True)
-                    if id(call) in approving
-                    or any(call is done for done, _ in ran)
-                    or (id(call) in foregrounds and foregrounds[id(call)].live > 0)
-                ]
+                kept = []
+                for call, task in zip(batch, tasks, strict=True):
+                    here = foregrounds.get(id(call))
+                    if here is not None and here.live > 0:
+                        here.pressed = True
+                        kept.append(task)
+                    elif id(call) in approving or any(call is done for done, _ in ran):
+                        kept.append(task)
+                return kept
 
             stopped = await wait(tasks, stop, finishing)
             for call, task in zip(batch, tasks, strict=True):
