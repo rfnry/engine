@@ -1,8 +1,8 @@
 import contextvars
 import copy
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError
 
 from rfnry_engine.errors import DelegationDepthError, DelegationLoopError, InputError
 from rfnry_engine.models import ToolCall
-from rfnry_engine.records import EventHandler, Generation, Run
+from rfnry_engine.records import Decision, EventHandler, Generation, Run
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, ToolsLike
 from rfnry_engine.tree import AgentSpec
@@ -164,6 +164,8 @@ class Foreground:
     stop: Stop | None
     on_event: EventHandler | None
     stopped: bool = False
+    live: int = 0
+    over: bool = False
 
 
 FOREGROUND: contextvars.ContextVar[Foreground | None] = contextvars.ContextVar(
@@ -171,10 +173,34 @@ FOREGROUND: contextvars.ContextVar[Foreground | None] = contextvars.ContextVar(
 )
 
 
+def current() -> Foreground | None:
+    here = FOREGROUND.get()
+    return None if here is None or here.over else here
+
+
+@contextmanager
+def taking(stop: Stop | None) -> Iterator[None]:
+    here = current()
+    if stop is None or here is None or here.stop is not stop:
+        yield
+        return
+    here.live += 1
+    try:
+        yield
+    finally:
+        here.live -= 1
+
+
+def halted(run: Run) -> bool:
+    while isinstance(run, Decision) and run.routed_to is not None:
+        run = run.routed_to
+    return isinstance(run, Generation) and run.stopped is not None
+
+
 def hooks(
     on_event: EventHandler | None, stop: Callable[[], Stop | None] | None
 ) -> tuple[EventHandler | None, Stop | None]:
-    here = FOREGROUND.get()
+    here = current()
     return (
         on_event if on_event is not None or here is None else here.on_event,
         stop() if stop is not None else None if here is None else here.stop,
@@ -182,8 +208,8 @@ def hooks(
 
 
 def returned(run: Run) -> Run:
-    here = FOREGROUND.get()
-    if here is not None and isinstance(run, Generation) and run.stopped is not None:
+    here = current()
+    if here is not None and halted(run):
         here.stopped = True
     return run
 

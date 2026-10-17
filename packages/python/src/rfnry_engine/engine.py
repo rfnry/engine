@@ -56,7 +56,7 @@ from rfnry_engine.records import (
     ToolCallStarted,
     ToolResultReady,
 )
-from rfnry_engine.stop import Stop, Stopped, requested, running, under, wait
+from rfnry_engine.stop import Stop, Stopped, requested, wait
 from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
@@ -65,11 +65,13 @@ from rfnry_engine.tools.delegate import (
     Foreground,
     child_result,
     enter,
+    halted,
     hooks,
     permit,
     returned,
     run_arguments,
     run_result,
+    taking,
 )
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
@@ -406,10 +408,12 @@ class Engine:
             run = await self._run(spec, scope, input, options, None)
         except Exception:
             if record and options.failed:
-                await self._record(options.failed[-1])
+                with taking(stop):
+                    await self._record(options.failed[-1])
             raise
         if record:
-            await self._record(run)
+            with taking(stop):
+                await self._record(run)
         return run
 
     async def _record(self, run: Run) -> None:
@@ -487,10 +491,10 @@ class Engine:
         if options.task is not None and options.task not in spec.tasks:
             raise NotFoundError(f"engine: agent {spec.name!r} has no task {options.task!r}")
         async with enter(spec.name, self.max_depth, routed=routed):
-            with under(options.stop):
-                if spec.kind == "generation":
+            if spec.kind == "generation":
+                with taking(options.stop):
                     return await self._generation(spec, scope, input, options, parent_run_id)
-                return await self._decision(spec, scope, input, options, parent_run_id)
+            return await self._decision(spec, scope, input, options, parent_run_id)
 
     async def _decision(
         self,
@@ -660,6 +664,7 @@ class Engine:
         delegated: dict[str, Run] = {}
         ran: list[tuple[ToolCall, Step]] = []
         approving: set[int] = set()
+        foregrounds: dict[int, Foreground] = {}
         asked: list[ToolCall] = []
         usage = Usage()
         calls = 0
@@ -711,7 +716,7 @@ class Engine:
                     delegated[kept.run_id] = kept
                 return _failure(exc), True, None if kept is None else kept.run_id, False
             delegated[child.run_id] = child
-            if isinstance(child, Generation) and child.stopped is not None:
+            if halted(child):
                 return STOPPED, True, child.run_id, True
             return child_result(child), False, child.run_id, False
 
@@ -746,27 +751,31 @@ class Engine:
                 raise ConfigurationError(
                     f"engine: approve must return True or False; got {approved!r}"
                 )
-            if approved is False:
-                content, is_error = f"NotApproved: {call.name} was not approved", True
-            elif spec.agents and call.name == DELEGATE_TOOL:
-                content, is_error, child_run_id, stopped = await delegate(call)
-            else:
-                limit = None if call.name in bounded_by_workspace else self.tool_timeout
-                deadline = asyncio.timeout(limit)
-                here = Foreground(stop, on_event)
-                FOREGROUND.set(here)
-                try:
-                    async with deadline:
-                        result = await surface.dispatch(call.name, call.args)
-                    content, is_error = _content(result), False
-                except Exception as exc:
-                    if deadline.expired():
-                        content = f"TimeoutError: {call.name} timed out after {limit:g}s"
-                    else:
-                        content = f"{type(exc).__name__}: {exc}"
-                    is_error = True
-                if here.stopped:
-                    content, is_error, stopped = STOPPED, True, True
+            here = Foreground(stop, on_event)
+            foregrounds[id(call)] = here
+            FOREGROUND.set(here)
+            try:
+                if approved is False:
+                    content, is_error = f"NotApproved: {call.name} was not approved", True
+                elif spec.agents and call.name == DELEGATE_TOOL:
+                    content, is_error, child_run_id, stopped = await delegate(call)
+                else:
+                    limit = None if call.name in bounded_by_workspace else self.tool_timeout
+                    deadline = asyncio.timeout(limit)
+                    try:
+                        async with deadline:
+                            result = await surface.dispatch(call.name, call.args)
+                        content, is_error = _content(result), False
+                    except Exception as exc:
+                        if deadline.expired():
+                            content = f"TimeoutError: {call.name} timed out after {limit:g}s"
+                        else:
+                            content = f"{type(exc).__name__}: {exc}"
+                        is_error = True
+                    if here.stopped:
+                        content, is_error, stopped = STOPPED, True, True
+            finally:
+                here.over = True
             step = Step(
                 tool=call.name,
                 args=call.args,
@@ -829,12 +838,13 @@ class Engine:
                     for call, task in zip(batch, tasks, strict=True)
                     if id(call) in approving
                     or any(call is done for done, _ in ran)
-                    or running(stop, task)
+                    or (id(call) in foregrounds and foregrounds[id(call)].live > 0)
                 ]
 
             stopped = await wait(tasks, stop, finishing)
             for call, task in zip(batch, tasks, strict=True):
                 answer(call, await cut(call, began) if task.cancelled() else task.result())
+                foregrounds.pop(id(call), None)
             return stopped
 
         def drain() -> None:

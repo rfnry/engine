@@ -1,5 +1,6 @@
 import asyncio
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -7,12 +8,12 @@ import pytest
 
 from rfnry_engine import Stop
 from rfnry_engine.engine import Engine
-from rfnry_engine.models import Message, Reply, ToolCall, ToolSpec
-from rfnry_engine.records import Event, Generation, Run
+from rfnry_engine.models import Message, QuestionLike, Reply, ToolCall, ToolSpec
+from rfnry_engine.records import Decision, Event, Generation, Run
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import text_reply
+from .fakes import answer_to, text_reply
 
 STOPPED = "stopped by the user"
 
@@ -243,3 +244,192 @@ async def test_engine_tools_delegate_takes_the_hooks_outside_a_run(tmp_path: Pat
     chat.gate.set()
     assert await tools.dispatch("Delegate", {"agent": "chat", "input": "again"}) == "Refunded."
     assert set(seen) == {"chat"}
+
+
+class Deciding:
+    def __init__(self, seconds: float = 0.0) -> None:
+        self.seconds = seconds
+        self.calls = 0
+
+    async def decide(self, state: Any, questions: Mapping[str, QuestionLike]) -> dict[str, Any]:
+        self.calls += 1
+        await asyncio.sleep(self.seconds)
+        return {qid: answer_to(question) for qid, question in questions.items()}
+
+
+def decision(root: Path, name: str, front: str = "") -> None:
+    (root / name / "questions").mkdir(parents=True)
+    (root / name / "AGENT.md").write_text(
+        f"---\nname: {name}\nkind: decision\ndescription: Sorts\n{front}---\nSort it.\n",
+        encoding="utf-8",
+    )
+    (root / name / "questions" / "intent.md").write_text(
+        "---\ntype: choice\noptions:\n  other: Anything else\n  billing: Payments\n---\nWhich?\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize("through", ["engine.tool", "Delegate"])
+async def test_a_stop_cuts_a_decision_run_at_once(tmp_path: Path, through: str) -> None:
+    kept = Kept()
+    deciding = Deciding(5.0)
+    if through == "engine.tool":
+        decision(tmp_path / "back", "triage")
+        back = Engine(tmp_path / "back", decision=deciding, refinery=kept)
+        asking = use(ToolCall(id="c1", name="triage", args={"input": "x"}))
+        extra: dict[str, Any] = {"tools": back.tool("triage", scope="acme")}
+        root = tree(tmp_path / "front", support="")
+    else:
+        root = tree(tmp_path / "front", support="agents: [triage]\n")
+        decision(root, "triage")
+        asking = use(ToolCall(id="d1", name="Delegate", args={"agent": "triage", "input": "x"}))
+        extra = {}
+    front = Engine(
+        root, generation=Script(asking, text_reply("never")), decision=deciding, refinery=kept
+    )
+    stop = Stop()
+    task = asyncio.create_task(front.run("support", "acme", "x", stop=stop, **extra))
+    await until(lambda: deciding.calls == 1, "the decision call")
+    began = time.monotonic()
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert time.monotonic() - began < 0.5
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert (run.steps[0].result, run.steps[0].stopped) == (STOPPED, True)
+    assert [r.agent for r in kept.runs] == ["support"]
+
+
+async def test_consults_a_tool_starts_in_tasks_of_their_own_keep_their_records(
+    tmp_path: Path,
+) -> None:
+    kept = Kept()
+    billing = Gated()
+    back = Engine(tree(tmp_path / "back", billing=""), generation=billing, refinery=kept)
+    consult = back.tool("billing", scope="acme")
+
+    async def both(args: dict[str, Any]) -> str:
+        async with asyncio.TaskGroup() as group:
+            first = group.create_task(consult.dispatch("billing", {"input": "a"}))
+            second = group.create_task(consult.dispatch("billing", {"input": "b"}))
+        return f"{first.result()} {second.result()}"
+
+    outer = Script(use(ToolCall(id="b1", name="both", args={})), text_reply("never"))
+    front = Engine(tree(tmp_path / "front", support=""), generation=outer, refinery=kept)
+    stop = Stop()
+    fan = Tools([Tool("both", "Ask billing twice", body=both)])
+    task = asyncio.create_task(front.run("support", "acme", "x", tools=fan, stop=stop))
+    await until(lambda: billing.calls == 2, "both consults")
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert (run.steps[0].result, run.steps[0].stopped) == (STOPPED, True)
+    assert [r.stopped for r in kept.of("billing")] == ["now", "now"]
+
+
+class Writing(Kept):
+    def __init__(self) -> None:
+        super().__init__()
+        self.writing = asyncio.Event()
+
+    async def record(self, run: Run) -> None:
+        if run.agent == "billing":
+            self.writing.set()
+            await asyncio.sleep(0.3)
+        await super().record(run)
+
+
+async def test_a_further_stop_lets_a_consult_s_record_be_written(tmp_path: Path) -> None:
+    kept = Writing()
+    billing = Gated()
+    front = Engine(
+        tree(tmp_path / "front", support=""),
+        generation=Script(consulting(), text_reply("never")),
+        refinery=kept,
+    )
+    back = Engine(tree(tmp_path / "back", billing=""), generation=billing, refinery=kept)
+    stop = Stop()
+    consult = back.tool("billing", scope="acme")
+    task = asyncio.create_task(front.run("support", "acme", "x", tools=consult, stop=stop))
+    await until(lambda: billing.calls == 1, "the consult")
+    stop.now()
+    await asyncio.wait_for(kept.writing.wait(), 2)
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert isinstance(run, Generation) and run.stopped == "now"
+    [inner] = kept.of("billing")
+    assert inner.stopped == "now"
+
+
+async def test_a_consult_whose_routed_run_was_stopped_reads_stopped(tmp_path: Path) -> None:
+    kept = Kept()
+    billing = Gated()
+    back_root = tree(tmp_path / "back", billing="")
+    decision(back_root, "desk", "route:\n  by: intent\n  to: {billing: billing}\n")
+    back = Engine(back_root, generation=billing, decision=Deciding(), refinery=kept)
+    outer = Script(use(ToolCall(id="c1", name="desk", args={"input": "x"})), text_reply("never"))
+    front = Engine(tree(tmp_path / "front", support=""), generation=outer, refinery=kept)
+    stop = Stop()
+    consult = back.tool("desk", scope="acme")
+    task = asyncio.create_task(front.run("support", "acme", "x", tools=consult, stop=stop))
+    await until(lambda: billing.calls == 1, "the routed run")
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert isinstance(run, Generation)
+    assert (run.steps[0].result, run.steps[0].stopped) == (STOPPED, True)
+    [desk] = [r for r in kept.runs if isinstance(r, Decision)]
+    assert isinstance(desk.routed_to, Generation) and desk.routed_to.stopped == "now"
+
+
+async def test_a_task_that_outlives_its_call_does_not_take_the_call_s_hooks(
+    tmp_path: Path,
+) -> None:
+    kept = Kept()
+    billing = Gated()
+    back = Engine(tree(tmp_path / "back", billing=""), generation=billing, refinery=kept)
+    consult = back.tool("billing", scope="acme")
+    go = asyncio.Event()
+    later: list[asyncio.Task[Any]] = []
+
+    async def spawn(args: dict[str, Any]) -> str:
+        async def after() -> Any:
+            await go.wait()
+            return await consult.dispatch("billing", {"input": "later"})
+
+        later.append(asyncio.create_task(after()))
+        return "spawned"
+
+    seen: list[str] = []
+
+    async def show(event: Event) -> None:
+        seen.append(event.agent)
+
+    outer = Script(use(ToolCall(id="s1", name="spawn", args={})), text_reply("Done."))
+    front = Engine(tree(tmp_path / "front", support=""), generation=outer, refinery=kept)
+    stop = Stop()
+    spawning = Tools([Tool("spawn", "Spawn", body=spawn)])
+    run = await front.run("support", "acme", "x", tools=spawning, on_event=show, stop=stop)
+    assert isinstance(run, Generation) and run.reply == "Done."
+    stop.now()
+    go.set()
+    billing.gate.set()
+    assert await asyncio.wait_for(later[0], 2) == "Refunded."
+    assert "billing" not in seen
+    [late] = kept.of("billing")
+    assert late.stopped is None
+
+
+async def test_a_getter_returning_none_leaves_the_consult_outside_the_caller_s_stop(
+    tmp_path: Path,
+) -> None:
+    kept = Kept()
+    billing = Gated()
+    front, back = engines(tmp_path, Script(consulting(), text_reply("never")), billing, kept)
+    stop = Stop()
+    consult = back.tool("billing", scope="acme", stop=lambda: None)
+    task = asyncio.create_task(front.run("support", "acme", "x", tools=consult, stop=stop))
+    await until(lambda: billing.calls == 1, "the consult")
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert isinstance(run, Generation)
+    assert (run.steps[0].result, run.steps[0].stopped) == (STOPPED, True)
+    assert kept.of("billing") == []

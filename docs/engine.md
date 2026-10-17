@@ -480,17 +480,18 @@ already stopping on its own — a `Shell` past its timeout, the kill after a `Sh
 `Job(stop=true)` or `close()` — counts as stopped once, so the first stop lets its second run out. A
 second stop — `stop.now()` again, or cancelling a run that is already stopping — ends what is still
 running at once, with no grace period: each further `now()` cancels once more every tool call still
-running but a call running a run under the same stop — a `Delegate` call, or a consult through
-`engine.tool` — whose run takes the same `now()`, and a call whose `ToolResultReady` handler the
-stop waits for; each further cancel cancels everything still running once more; and a workspace
-kills its command outright. A stop set before the run starts ends it before the first model call;
-one set after it ended does nothing. A stop reaches delegated and routed runs, and the runs an
-`engine.tool` starts while the run calls it, which end the same way at their own next boundary. With
-`after_step()` pending the inbox is not read. Whatever is still in the inbox when the run ends stays
-there — the engine never starts a run; you do, with those messages as its input. A decision run
-never reads the inbox: its questions are one call, and a stop or an inbox rides to the run it routes
-to. "Pause, please" is a message in the inbox: the model reads it at the next boundary and wraps up
-in its own words.
+running but a call whose generation run — a delegated one, or a consult through `engine.tool` —
+takes the same `now()`, and a call whose `ToolResultReady` handler the stop waits for; each further
+cancel cancels everything still running once more; and a workspace kills its command outright. A
+stop set before the run starts ends it before the first model call; one set after it ended does
+nothing. A stop reaches delegated and routed runs, and the runs an `engine.tool` starts while the
+run calls it, which end the same way at their own next boundary. With `after_step()` pending the
+inbox is not read. Whatever is still in the inbox when the run ends stays there — the engine never
+starts a run; you do, with those messages as its input. A decision run never reads the inbox: its
+questions are one call, and a stop or an inbox rides to the run it routes to; a stop that finds a
+delegated or consulted decision run still asking cancels its call, as it cancels a model call in
+flight, and that run is not recorded. "Pause, please" is a message in the inbox: the model reads it
+at the next boundary and wraps up in its own words.
 
 A run that ended continues from its record, on any process, after any restart. With a refinery
 attached every run that returns is recorded with its conversation: keep the run id beside what you
@@ -1512,9 +1513,10 @@ into an agent already in the same chain of routes is refused.
 
 Called inside a run, a consult is part of that run's foreground, as a delegated run is: its run
 takes the caller's `stop` and `on_event`. The caller's `stop.now()` reaches the consult instead of
-cancelling its call, so the consult ends with its record, and the caller's step reads `stopped by the
-user`, as a stopped `Delegate` step does; `after_step()` ends it after its current step. Its events
-reach the caller's handler, told apart by `agent` and `run_id`:
+cancelling its call, so the consult ends with its record, and the caller's step reads `stopped by
+the user`, as a stopped `Delegate` step does; `after_step()` ends it after its current step. A
+consult a tool of yours starts in a task of its own — two at once, say — is in the foreground too.
+Its events reach the caller's handler, told apart by `agent` and `run_id`:
 
 ```python
 async def status(event):
@@ -1546,8 +1548,10 @@ def barge_in():
     turn["stop"] = Stop()               # the next turn's consults run normally
 ```
 
-Given inside a run, these win over the caller's. `EngineTools` takes the same two for the `Delegate`
-it dispatches outside a run.
+Given inside a run, these win over the caller's: a `stop` of your own, or `None` from the function,
+leaves the consult out of the caller's foreground, and the caller's stop cancels its call as it
+cancels any tool's. Outside a run, a stopped consult's `dispatch` returns what its run produced.
+`EngineTools` takes the same two for the `Delegate` it dispatches outside a run.
 
 ## Storage
 
