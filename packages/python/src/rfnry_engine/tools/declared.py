@@ -43,17 +43,26 @@ def declared_tools(spec: AgentSpec, code: dict[str, Tool]) -> list[Tool]:
             raise ConfigurationError(
                 f"declared: agent {spec.name!r} declares tool {name!r} but no Tool with a body was given"
             )
-        if decl.description is None:
-            if not implementation.description:
-                raise ConfigurationError(
-                    f"declared: agent {spec.name!r} adopts tool {name!r} by name, but the Tool has no description"
+        description = implementation.description if decl.description is None else decl.description
+        if not description:
+            raise ConfigurationError(
+                f"declared: agent {spec.name!r} declares tool {name!r} with no description, in TOOLS.md or the Tool"
+            )
+        if decl.input is None:
+            tools.append(
+                Tool(
+                    name,
+                    description,
+                    body=implementation.body,
+                    args=implementation.args,
+                    input_schema=implementation.input_schema,
                 )
-            tools.append(implementation)
+            )
             continue
         tools.append(
             Tool(
                 name,
-                decl.description,
+                description,
                 body=implementation.body,
                 args=_args_model(decl),
                 input_schema=_schema(decl),

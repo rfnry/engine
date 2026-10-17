@@ -3,7 +3,15 @@ from functools import cached_property
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    RootModel,
+    ValidationError,
+    field_validator,
+)
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
@@ -73,12 +81,15 @@ class ToolField(BaseModel):
     required: bool = False
 
 
-class ToolFront(BaseModel):
+class ToolEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str
     description: str | None = None
     input: dict[str, ToolField] | None = None
+
+
+class ToolsFront(RootModel[dict[str, ToolEntry | None]]):
+    pass
 
 
 class ToolDecl(BaseModel):
@@ -135,20 +146,22 @@ def _question(path: Path) -> Question:
         raise ConfigurationError(f"tree: invalid question {path}: {exc}") from exc
 
 
-def _tool_decl(path: Path) -> ToolDecl:
-    front, body = parse_frontmatter_doc(_read(path), model=ToolFront, source=path, label="tool")
-    if front.name != path.stem:
-        raise ConfigurationError(f"tree: tool {front.name!r} must live in {front.name}.md: {path}")
-    if front.description is None:
-        if front.input is not None or body.strip():
-            raise ConfigurationError(
-                f"tree: tool file {path} adopts a code tool by name, so it takes no input or description; give it a description to make it a contract"
-            )
-        return ToolDecl(name=front.name, description=None, input=None)
-    description = (
-        front.description if not body.strip() else f"{front.description}\n\n{body.strip()}"
-    )
-    return ToolDecl(name=front.name, description=description, input=dict(front.input or {}))
+def _tools(path: Path) -> dict[str, ToolDecl]:
+    if not path.is_file():
+        return {}
+    front, body = parse_frontmatter_doc(_read(path), model=ToolsFront, source=path, label="tools")
+    if body.strip():
+        raise ConfigurationError(
+            f"tree: {path} holds its tools in its frontmatter; write guidance in AGENT.md or a file of the folder"
+        )
+    return {
+        name: ToolDecl(
+            name=name,
+            description=None if entry is None else entry.description,
+            input=None if entry is None else entry.input,
+        )
+        for name, entry in front.root.items()
+    }
 
 
 def _markdown_files(directory: Path) -> list[Path]:
@@ -242,7 +255,7 @@ def load_agent(
             f"tree: agent {front.name!r} must live in a directory named {front.name!r}: {directory}"
         )
     questions = _questions(directory / "questions")
-    tools = {p.stem: _tool_decl(p) for p in _markdown_files(directory / "tools")}
+    tools = _tools(directory / "TOOLS.md")
     tasks = [p.stem for p in _markdown_files(directory / "tasks")]
     task_questions: dict[str, dict[str, Question]] = {}
     if front.kind == "decision":
@@ -259,7 +272,7 @@ def load_agent(
                 f"tree: decision agent {front.name!r} asks {', '.join(map(repr, clash))} in both questions/ and tasks/{task}/"
             )
     if front.kind == "decision" and tools:
-        raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare tools/")
+        raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare TOOLS.md")
     if front.kind == "decision" and front.workspace:
         raise ConfigurationError(
             f"tree: decision agent {front.name!r} cannot declare workspace: true"

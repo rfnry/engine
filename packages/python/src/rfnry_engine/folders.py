@@ -6,7 +6,8 @@ from rfnry_engine.errors import InputError
 from rfnry_engine.frontmatter import described
 from rfnry_engine.jail import Jail
 
-DECLARED = frozenset({"tools", "tasks", "questions"})
+DECLARED = frozenset({"tasks", "questions"})
+DECLARATIONS = frozenset({"AGENT.md", "TOOLS.md"})
 
 
 def declares(folder: Path) -> bool:
@@ -42,7 +43,7 @@ def _walk(folder: Path, declared: bool) -> tuple[list[str], list[tuple[str, Path
         dirs += [name if top else f"{at}/{name}" for name in names]
         for name in filenames:
             path = here / name
-            if name.startswith(".") or (declared and top and name == "AGENT.md"):
+            if name.startswith(".") or (declared and top and name in DECLARATIONS):
                 continue
             if path.is_file() and _inside(jail, path):
                 files.append((name if top else f"{at}/{name}", path))

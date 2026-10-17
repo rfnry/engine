@@ -458,11 +458,9 @@ async def test_a_tool_named_history_is_refused_on_every_run(fixtures: Path, tmp_
     engine = Engine(fixtures, generation=Scripted(text_reply("x")), tools=TOOLS)
     with pytest.raises(ConfigurationError, match=COLLIDES):
         await engine.run("support", "acme", "x", tools=Tools([Tool("History", "Mine", body=mine)]))
-    (tmp_path / "desk" / "tools").mkdir(parents=True)
+    (tmp_path / "desk").mkdir(parents=True)
     (tmp_path / "desk" / "AGENT.md").write_text("---\nname: desk\nkind: generation\n---\nHelp.\n")
-    (tmp_path / "desk" / "tools" / "History.md").write_text(
-        "---\nname: History\ndescription: Mine\n---\n"
-    )
+    (tmp_path / "desk" / "TOOLS.md").write_text("---\nHistory:\n  description: Mine\n---\n")
     declared = Engine(tmp_path, generation=Scripted(), tools=[Tool("History", body=mine)])
     with pytest.raises(ConfigurationError, match=COLLIDES):
         await declared.run("desk", "acme", "x")

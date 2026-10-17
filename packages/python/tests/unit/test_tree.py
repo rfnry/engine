@@ -34,16 +34,6 @@ def test_generation_agent_carries_body_agents_tools_tasks() -> None:
     assert adoption.description is None and adoption.input is None
 
 
-def test_a_tool_file_is_a_contract_or_a_name(tmp_path: Path) -> None:
-    (tmp_path / "a" / "tools").mkdir(parents=True)
-    (tmp_path / "a" / "AGENT.md").write_text("---\nname: a\nkind: generation\n---\n")
-    (tmp_path / "a" / "tools" / "x.md").write_text(
-        "---\nname: x\ninput: {q: {type: string}}\n---\n"
-    )
-    with pytest.raises(ConfigurationError, match="description"):
-        load_agent(tmp_path / "a")
-
-
 def test_decision_agent_carries_typed_questions_and_route() -> None:
     agents = load_tree(FIXTURES)
     severity = agents["triage"].questions["severity"]
@@ -122,9 +112,8 @@ def _agent(
     for qid, text in (questions or {}).items():
         (root / name / "questions").mkdir(exist_ok=True)
         (root / name / "questions" / f"{qid}.md").write_text(text)
-    for tool in tools:
-        (root / name / "tools").mkdir(exist_ok=True)
-        (root / name / "tools" / f"{tool}.md").write_text(f"---\nname: {tool}\n---\n")
+    if tools:
+        (root / name / "TOOLS.md").write_text("---\n" + "".join(f"{t}:\n" for t in tools) + "---\n")
 
 
 CHOICE = "---\ntype: choice\noptions: {x: X, y: Y}\n---\nWhich?\n"
@@ -134,7 +123,7 @@ CHECK = "---\ntype: check\n---\nIs it?\n"
 @pytest.mark.parametrize(
     ("front", "questions", "tools", "message"),
     [
-        ("kind: decision\n", {"q": CHECK}, ("t",), "decision agent 'a' cannot declare tools/"),
+        ("kind: decision\n", {"q": CHECK}, ("t",), "decision agent 'a' cannot declare TOOLS.md"),
         (
             "kind: decision\nworkspace: true\n",
             {"q": CHECK},
@@ -189,15 +178,15 @@ def test_routes_and_agents_must_resolve(tmp_path: Path, front: str, message: str
         ),
         (
             "kind: generation\n",
-            "---\nname: t\ndescription: T\nsummary: S\n---\n",
-            "summary",
-            "t.md",
+            "---\nt: {description: T, summary: S}\n---\n",
+            "t.summary",
+            "TOOLS.md",
         ),
         (
             "kind: generation\n",
-            "---\nname: t\ndescription: T\ninput:\n  q: {type: string, requried: true}\n---\n",
-            "input.q.requried",
-            "t.md",
+            "---\nt:\n  description: T\n  input:\n    q: {type: string, requried: true}\n---\n",
+            "t.input.q.requried",
+            "TOOLS.md",
         ),
     ],
 )
@@ -206,9 +195,8 @@ def test_an_unknown_frontmatter_key_is_refused_by_name(
 ) -> None:
     _agent(tmp_path, "a", front, {"q": CHOICE} if "decision" in front else {})
     if tool is not None:
-        (tmp_path / "a" / "tools").mkdir()
-        (tmp_path / "a" / "tools" / "t.md").write_text(tool)
-    path = tmp_path / "a" / ("tools/t.md" if tool is not None else "AGENT.md")
+        (tmp_path / "a" / "TOOLS.md").write_text(tool)
+    path = tmp_path / "a" / ("TOOLS.md" if tool is not None else "AGENT.md")
     with pytest.raises(ConfigurationError) as refused:
         load_agent(tmp_path / "a")
     assert str(refused.value) == f"frontmatter: unknown key {key!r} in {path}"
@@ -217,12 +205,11 @@ def test_an_unknown_frontmatter_key_is_refused_by_name(
 
 def test_only_true_and_false_are_booleans_in_frontmatter(tmp_path: Path) -> None:
     _agent(tmp_path, "a", "kind: generation\nworkspace: true\n")
-    (tmp_path / "a" / "tools").mkdir()
-    (tmp_path / "a" / "tools" / "t.md").write_text(
-        "---\nname: t\ndescription: T\ninput:\n"
-        "  q: {type: string, required: true}\n"
-        "  r: {type: string, required: yes}\n"
-        "  s: {type: string, required: False}\n"
+    (tmp_path / "a" / "TOOLS.md").write_text(
+        "---\nt:\n  description: T\n  input:\n"
+        "    q: {type: string, required: true}\n"
+        "    r: {type: string, required: yes}\n"
+        "    s: {type: string, required: False}\n"
         "---\n"
     )
     spec = load_agent(tmp_path / "a")
