@@ -15,8 +15,8 @@ from pydantic import (
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
-from rfnry_engine.folders import content, declares, entries, joined, listing
-from rfnry_engine.frontmatter import parse_frontmatter_doc
+from rfnry_engine.folders import DECLARED, content, declares, entries, joined, listing
+from rfnry_engine.frontmatter import parse_frontmatter_doc, plainly
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Check, Choice, Part, Question, Score
 from rfnry_engine.tools.builtins import preload_parts
@@ -142,7 +142,7 @@ def _question(path: Path) -> Question:
             return Score(instructions=instructions, levels=front.levels or [])
         return Check(instructions=instructions, yes=front.yes, no=front.no)
     except ValidationError as exc:
-        raise ConfigurationError(f"tree: invalid question {path}: {exc}") from exc
+        raise ConfigurationError(f"tree: invalid question {path}; {plainly(exc)}") from exc
 
 
 def _listed(path: Path) -> dict[str, ToolDecl]:
@@ -254,11 +254,11 @@ def _under(
     ]
 
 
-def _readable(root: Path) -> dict[str, Path]:
+def _readable(root: Path, whole: bool = False) -> dict[str, Path]:
     jail = Jail(root)
     found: dict[str, Path] = {}
     for child in sorted(root.iterdir()):
-        if child.name.startswith(".") or not child.is_dir():
+        if child.name.startswith(".") or not child.is_dir() or (whole and child.name in DECLARED):
             continue
         try:
             place = jail.resolve(child)
@@ -291,7 +291,7 @@ def load_agent(
     if front.kind == "decision":
         if tasks:
             raise ConfigurationError(
-                f"tree: decision agent {agent!r} keeps each task's questions in tasks/<task>/; got tasks/{tasks[0]}.md"
+                f"tree: decision agent {agent!r} has tasks/{tasks[0]}.md, but keeps each task's questions in a folder; move it to tasks/{tasks[0]}/"
             )
         task_questions = {p.name: _questions(p) for p in _folders(directory / "tasks")}
         tasks = list(task_questions)
@@ -389,17 +389,26 @@ def load_tree(
     root: Path, media_types: Collection[str] | None = None, name: str | None = None
 ) -> dict[str, AgentSpec]:
     root = Path(root)
-    folders = {child: _Folder(place) for child, place in _readable(root).items()}
+    whole = (root / "AGENT.md").is_file()
+    folders = {child: _Folder(place) for child, place in _readable(root, whole).items()}
     agents = {
-        child.name: load_agent(child, media_types, folders)
+        child.name: load_agent(child, media_types, folders, child.name)
         for child in sorted(root.iterdir())
-        if child.is_dir() and (child / "AGENT.md").is_file()
+        if child.is_dir()
+        and not child.name.startswith(".")
+        and not (whole and child.name in DECLARED)
+        and (child / "AGENT.md").is_file()
     }
-    if (root / "AGENT.md").is_file():
+    if whole:
         spec = load_agent(root, media_types, {}, name, sub=set(agents), whole=True)
         if spec.name in agents:
+            fix = (
+                "rename that folder, or pass Engine(name=) another name"
+                if name is not None
+                else "rename the folder, or pass Engine(name=) for the root"
+            )
             raise ConfigurationError(
-                f"tree: the root agent and the agent in {root / spec.name} are both named {spec.name!r}; rename the folder, or pass Engine(name=) for the root"
+                f"tree: the root agent and the agent in {root / spec.name} are both named {spec.name!r}; {fix}"
             )
         return {spec.name: spec, **agents}
     if agents:

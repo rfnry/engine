@@ -109,3 +109,95 @@ def test_every_tree_error_says_its_fix() -> None:
             if "; " not in said and "{exc}" not in said:
                 silent.append(f"{module}:{node.lineno}: {said}")
     assert silent == []
+
+
+async def test_a_linked_agent_folder_is_named_by_its_link(tmp_path: Path) -> None:
+    write(tmp_path / "elsewhere/payments/AGENT.md", "---\nkind: generation\n---\nYou bill.\n")
+    (tmp_path / "root").mkdir()
+    (tmp_path / "root/billing").symlink_to(
+        tmp_path / "elsewhere/payments", target_is_directory=True
+    )
+    engine = Engine(tmp_path / "root", generation=Scripted(text_reply("ok")))
+    assert list(engine.agents) == ["billing"]
+    run = await engine.run("billing", "acme", "x")
+    assert run.agent == "billing"
+
+
+def test_a_linked_sub_agent_keeps_its_own_name_beside_the_root(tmp_path: Path) -> None:
+    root = orchestra(tmp_path / "desk")
+    write(tmp_path / "elsewhere/desk/AGENT.md", "---\nkind: generation\n---\nA kid.\n")
+    (root / "kid").symlink_to(tmp_path / "elsewhere/desk", target_is_directory=True)
+    tree = load_tree(root)
+    assert tree["kid"].name == "kid" and tree["desk"].root == root.resolve()
+
+
+def test_hidden_and_declaration_folders_are_never_sub_agents(tmp_path: Path) -> None:
+    root = orchestra(tmp_path / "desk")
+    write(root / ".draft/AGENT.md", "---\nkind: generation\n---\nNot an agent.\n")
+    write(root / "tasks/AGENT.md", "Not an agent: a task of the root agent.\n")
+    write(root / "tasks/close.md", "Close the ticket.\n")
+    tree = load_tree(root)
+    assert list(tree) == ["desk", "billing", "triage"]
+    assert sorted(tree["desk"].tasks) == ["AGENT", "close"]
+    write(root / "billing/AGENT.md", "---\nkind: generation\nreads: [tasks]\n---\nYou bill.\n")
+    with pytest.raises(ConfigurationError, match="reads unknown folder 'tasks'"):
+        load_tree(root)
+
+
+def test_a_hidden_folder_is_never_an_agent_of_a_tree(tmp_path: Path) -> None:
+    write(tmp_path / ".draft/AGENT.md", "---\nkind: generation\n---\nHidden.\n")
+    write(tmp_path / "live/AGENT.md", "---\nkind: generation\n---\nLive.\n")
+    assert list(load_tree(tmp_path)) == ["live"]
+
+
+def test_a_plain_root_is_told_to_pass_tools_on_the_run(tmp_path: Path) -> None:
+    write(tmp_path / "notes.md", "Notes.\n")
+
+    async def body(args: dict[str, object]) -> str:
+        return "x"
+
+    with pytest.raises(ConfigurationError, match=r"run\(tools=\)"):
+        Engine(tmp_path, generation=Scripted(), tools=[rfnry_engine.Tool("x", "X", body=body)])
+
+
+def test_an_unknown_key_beside_name_is_named_in_the_fix_too(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", "---\nname: a\nkind: generation\nwrokspace: true\n---\nHi.\n")
+    with pytest.raises(ConfigurationError) as refused:
+        load_tree(tmp_path)
+    said = str(refused.value)
+    assert "remove the name: line" in said and "it takes kind" in said
+
+
+def test_a_decision_task_file_is_told_where_it_goes(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", "---\nkind: decision\n---\nSort.\n")
+    write(tmp_path / "a/questions/q.md", "---\ntype: check\n---\nIs it?\n")
+    write(tmp_path / "a/tasks/grade.md", "Grade it.\n")
+    with pytest.raises(ConfigurationError, match=r"; move it to tasks/grade/"):
+        load_tree(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        ("---\ndescription: No kind\n---\nHi.\n", "kind: field required"),
+        ("---\nkind: generator\n---\nHi.\n", "kind: input should be 'generation' or 'decision'"),
+    ],
+)
+def test_an_invalid_field_is_said_plainly(tmp_path: Path, text: str, said: str) -> None:
+    write(tmp_path / "a/AGENT.md", text)
+    with pytest.raises(ConfigurationError) as refused:
+        load_tree(tmp_path)
+    assert said in str(refused.value) and "pydantic" not in str(refused.value)
+
+
+def test_a_root_name_clash_from_engine_name_says_to_pick_another(tmp_path: Path) -> None:
+    root = orchestra(tmp_path / "desk")
+    with pytest.raises(ConfigurationError, match="pass Engine\\(name=\\) another name"):
+        Engine(root, generation=Scripted(), name="billing")
+
+
+@pytest.mark.parametrize("name", [" ", "a/b", "a\\b"])
+def test_a_name_that_is_not_one_folder_name_is_refused(tmp_path: Path, name: str) -> None:
+    write(tmp_path / "notes.md", "Notes.\n")
+    with pytest.raises(ConfigurationError, match="engine: name"):
+        Engine(tmp_path, generation=Scripted(), name=name)

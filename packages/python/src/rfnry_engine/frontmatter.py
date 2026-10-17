@@ -73,6 +73,13 @@ def described(path: Path) -> str | None:
     return collapsed or None
 
 
+def plainly(exc: ValidationError) -> str:
+    return "; ".join(
+        f"{'.'.join(map(str, error['loc'])) or 'the file'}: {error['msg'][:1].lower()}{error['msg'][1:]}"
+        for error in exc.errors(include_url=False)
+    )
+
+
 def parse_frontmatter_doc[T: BaseModel](
     raw: str,
     *,
@@ -99,15 +106,25 @@ def parse_frontmatter_doc[T: BaseModel](
             if error["type"] == "extra_forbidden"
         ]
         if unknown:
-            fix = (
-                "its folder or file names it, so remove the name: line"
-                if "name" in unknown
-                else "check its spelling"
-                if any("." in key for key in unknown) or issubclass(model, RootModel)
-                else f"it takes {', '.join(model.model_fields)}"
+            others = [key for key in unknown if key != "name"]
+            fix = "; ".join(
+                [
+                    *(
+                        ["its folder or file names it, so remove the name: line"]
+                        if "name" in unknown
+                        else []
+                    ),
+                    *(
+                        []
+                        if not others
+                        else ["check its spelling"]
+                        if any("." in key for key in others) or issubclass(model, RootModel)
+                        else [f"it takes {', '.join(model.model_fields)}"]
+                    ),
+                ]
             )
             raise ConfigurationError(
                 f"frontmatter: unknown key {', '.join(map(repr, unknown))} in {source}; {fix}"
             ) from exc
-        raise ConfigurationError(f"frontmatter: invalid {label} {source}: {exc}") from exc
+        raise ConfigurationError(f"frontmatter: invalid {label} {source}; {plainly(exc)}") from exc
     return config, body.lstrip("\n")

@@ -180,13 +180,14 @@ agents/
     tasks/triage.md       a named task, chosen per run
 ```
 
-`AGENT.md` makes a directory an agent, named after its folder. `Engine(root)` loads each direct child
-of `root` that has an `AGENT.md` as an agent, and every other child as a plain folder, read by the
-agents that name it and never run. When `root` itself has an `AGENT.md`, the root is an agent too —
-named after its folder, or by `Engine(root, name=)` — and the children with one are its sub-agents,
-which it calls through `agents:` like any other; without one, the root is only a tree, as when code
-orchestrates the agents. The frontmatter of `AGENT.md` names the kind and what the agent may call —
-not the agent's name, which is its folder's; its body is the persona:
+`AGENT.md` makes a directory an agent, named after its folder. `Engine(root)` loads each direct
+child of `root` that has an `AGENT.md` as an agent, and every other child as a plain folder, read by
+the agents that name it and never run. A hidden folder is never an agent. When `root` itself has an
+`AGENT.md`, the root is an agent too — named after its folder, or by `Engine(root, name=)` — and the
+children with one are its sub-agents — all but its own `tools/`, `tasks/` and `questions/`, which
+stay its declarations — which it calls through `agents:` like any other; without one, the root is
+only a tree, as when code orchestrates the agents. The frontmatter of `AGENT.md` names the kind and
+what the agent may call — not the agent's name, which is its folder's; its body is the persona:
 
 ```markdown
 ---
@@ -223,16 +224,16 @@ line of what the file holds, so the model knows what to open without opening it.
 keys are left alone, so a folder written for another tool — `skills/<name>/SKILL.md` with `name:`
 and `description:` — works as it is. `AGENT.md`, `TOOLS.md` and the folders `tools/`, `tasks/` and
 `questions/` stay out of the map, since the prompt already holds them, and so do a root agent's
-sub-agents, which it reaches through `agents:`. Frontmatter that is not valid YAML — a key named
+sub-agents, which it reaches through `agents:` — their folders stay readable to its tools, as its
+declarations do, and count in its fingerprint. Frontmatter that is not valid YAML — a key named
 twice included, as YAML forbids, in any file of the folder — or a `description:` that is not a
-string, is a `ConfigurationError` naming the file when the tree loads, so a typo never drops a file
-from the map. Everything else the model reads when it needs it, with the `Read`, `Grep`, `Glob`,
-`LS` and `Load` tools, and it can read only inside its own directory and the folders it reads.
-`Read` returns a text file as text. `Load` hands the model any other file as it is — an image, a
-PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in the folder as
-it came, the model reads it with its own understanding of images and documents, there is no parser
-in between, and nothing is loaded until the model asks — unless the agent sets `preload: true`,
-below.
+string, is a `ConfigurationError` naming the file when the tree loads, so a typo is caught before
+any run. Everything else the model reads when it needs it, with the `Read`, `Grep`, `Glob`, `LS` and
+`Load` tools, and it can read only inside its own directory and the folders it reads. `Read` returns
+a text file as text. `Load` hands the model any other file as it is — an image, a PDF, a recording,
+a spreadsheet — so a price list, a diagram or a scanned form sits in the folder as it came, the
+model reads it with its own understanding of images and documents, there is no parser in between,
+and nothing is loaded until the model asks — unless the agent sets `preload: true`, below.
 
 A root holds agents and plain folders side by side, and an agent reads other folders of its root by
 naming them in `reads:` — plain folders, or other agents' folders:
@@ -1343,11 +1344,13 @@ both runs with their models and fingerprints, and what you compare is yours.
 
 The engine reads a folder; a new version of the agents is a new `Engine`. Keep the tree in a git
 repository — people who do not write code edit it in the host's web UI, and every change is a
-reviewed pull request — check each commit out into a folder of its own, build an engine from it,
-and swap which engine new runs use. A run in flight finishes on the engine it started with. Rolling
-back is loading an older commit, and since a commit's folder never changes, a half-written
-checkout is never live. Agents read their files as they work, so remove an old folder only once
-its runs have finished. The checkout is yours — `git worktree add`, a clone, an archive:
+reviewed pull request — check each commit out into a folder of its own, build an engine from it, and
+swap which engine new runs use. A run in flight finishes on the engine it started with. Rolling back
+is loading an older commit, and since a commit's folder never changes, a half-written checkout is
+never live. Agents read their files as they work, so remove an old folder only once its runs have
+finished. A root that is itself an agent is named after its folder, so give it `Engine(name=)` when
+each commit lands in a folder of its own, and every commit keeps one name. The checkout is yours —
+`git worktree add`, a clone, an archive:
 
 ```python
 def load(commit):
@@ -1371,8 +1374,8 @@ it. A tag says what you meant to load, and a checkout with an uncommitted edit c
 `run.fingerprint.agent` is taken from the files the engine read, so two runs are the same agent when
 their fingerprints match, whatever their tags say. The same tag is an A/B test: load two commits
 side by side, send each user to one by a stable hash of their id, tag the run with its arm, and
-group the exported rows by `tags["arm"]` to compare the labels and outcomes of whole versions of
-the tree.
+group the exported rows by `tags["arm"]` to compare the labels and outcomes of whole versions of the
+tree.
 
 ## Tools
 

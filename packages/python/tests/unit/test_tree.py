@@ -394,7 +394,7 @@ def test_a_decision_agent_s_task_is_a_folder_not_a_file(tmp_path: Path) -> None:
     _agent(tmp_path, "a", "kind: decision\n", {"q": CHECK})
     (tmp_path / "a" / "tasks").mkdir()
     (tmp_path / "a" / "tasks" / "grade.md").write_text("Grade it.\n")
-    message = "^tree: decision agent 'a' keeps each task's questions in tasks/<task>/; got tasks/grade.md$"
+    message = "^tree: decision agent 'a' has tasks/grade.md, but keeps each task's questions in a folder; move it to tasks/grade/$"
     with pytest.raises(ConfigurationError, match=message):
         load_agent(tmp_path / "a")
 
