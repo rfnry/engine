@@ -434,7 +434,7 @@ async def test_stop_now_kills_a_workspace_shell(tmp_path: Path) -> None:
         try:
             os.kill(pid, 0)
             state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-        except (ProcessLookupError, FileNotFoundError):
+        except ProcessLookupError, FileNotFoundError:
             return True
         return state == "Z"
 
@@ -469,7 +469,7 @@ def ended(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-    except (ProcessLookupError, FileNotFoundError):
+    except ProcessLookupError, FileNotFoundError:
         return True
     return state == "Z"
 
@@ -629,6 +629,8 @@ async def test_stop_now_leaves_a_workspace_job_running(tmp_path: Path) -> None:
         assert isinstance(run, Generation) and run.stopped == "now"
         os.kill(int((root / "job.pid").read_text()), 0)
         jobs = next(t for t in work.tools() if t.name == "Jobs")
-        assert [listed["running"] for listed in (await jobs.call({}))["jobs"]] == [True]
+        listed = await jobs.call({})
+        assert isinstance(listed, dict)
+        assert [job["running"] for job in listed["jobs"]] == [True]
     finally:
         await work.close()

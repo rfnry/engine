@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Any, Protocol, runtime_checkable
 
 from rfnry_engine.refinery.labels import Label

@@ -5,6 +5,7 @@ import pytest
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.models import Document
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 
@@ -78,5 +79,5 @@ async def test_an_agent_reads_another_agent_s_folder_in_full(tmp_path: Path) -> 
     assert await tools.dispatch("Read", {"path": "../writing/tasks/draft.md"}) == "Draft it.\n"
     loaded = await tools.dispatch("Load", {"path": "../writing/tasks/draft.md"})
     assert isinstance(loaded, list) and len(loaded) == 1
-    assert loaded[0].data == b"Draft it.\n"
+    assert isinstance(loaded[0], Document) and loaded[0].data == b"Draft it.\n"
     assert engine._spec("coding").listing == "../writing/"

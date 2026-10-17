@@ -1,10 +1,10 @@
-from __future__ import annotations
-
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.models import HistoryLike, ToolCall
+from rfnry_engine.records import EventHandler
+from rfnry_engine.stop import Stop
 from rfnry_engine.tools.builtins import builtins, load_tool
 from rfnry_engine.tools.declared import declared_tools
 from rfnry_engine.tools.delegate import delegate_tool
@@ -29,6 +29,8 @@ class EngineTools(Tools):
         approve: Callable[[str, ToolCall], Awaitable[bool]] | None = None,
         history: Sequence[object] | HistoryLike | None = None,
         start: int = 0,
+        on_event: EventHandler | None = None,
+        stop: Callable[[], Stop | None] | None = None,
     ) -> None:
         if not scope:
             raise InputError("engine_tools: scope is required")
@@ -78,7 +80,9 @@ class EngineTools(Tools):
         if room is not None:
             items.extend(room.tools())
         if spec.agents:
-            items.append(delegate_tool(engine, spec, scope, tools, workspace, tags, approve))
+            items.append(
+                delegate_tool(engine, spec, scope, tools, workspace, tags, approve, on_event, stop)
+            )
         if tools is not None:
             items.append(tools)
         super().__init__(items)

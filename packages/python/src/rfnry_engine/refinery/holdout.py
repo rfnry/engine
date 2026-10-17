@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import hashlib
 
 from rfnry_engine.errors import InputError

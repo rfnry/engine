@@ -747,7 +747,7 @@ def ended(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-    except (ProcessLookupError, FileNotFoundError):
+    except ProcessLookupError, FileNotFoundError:
         return True
     return state == "Z"
 
@@ -1062,6 +1062,12 @@ class Held:
         return self.messages[start:stop]
 
 
+def given(
+    source: Sequence[object] | HistoryLike,
+) -> Callable[[Run], Sequence[object] | HistoryLike]:
+    return lambda run: source
+
+
 async def replayed(
     refinery: Refinery,
     candidate: Engine,
@@ -1091,7 +1097,7 @@ async def test_a_windowed_run_replays_with_its_conversation_and_history(
     for source in (whole, deque(whole), held):
         llm = Scripted(text_reply("Yes."))
         candidate = Engine(fixtures, generation=llm, tools=TOOLS)
-        pair = await replayed(refinery, candidate, "support", lambda run, kept=source: kept)
+        pair = await replayed(refinery, candidate, "support", given(source))
         assert pair.error is None and isinstance(pair.candidate, Generation)
         assert pair.candidate.start == 4
         assert said(llm.calls[0][1]) == window
@@ -1162,7 +1168,7 @@ async def test_a_conversation_shorter_than_the_recorded_start_gives_the_pair_an_
         (EARLIER[:5], 5),
         (Held(EARLIER[:5]), 5),
     ):
-        pair = await replayed(refinery, candidate, "support", lambda run, kept=short: kept)
+        pair = await replayed(refinery, candidate, "support", given(short))
         assert pair.error == (
             f"InputError: refinery: the conversation has no message at position {end}, "
             "before the recorded input at position 6"
@@ -1186,7 +1192,7 @@ async def test_history_in_a_replay_reads_before_the_input_and_never_past_it(
             text_reply("Yes."),
         )
         candidate = Engine(fixtures, generation=llm, tools=TOOLS)
-        pair = await replayed(refinery, candidate, "support", lambda run, kept=source: kept)
+        pair = await replayed(refinery, candidate, "support", given(source))
         assert pair.error is None
         [result] = [m for m in llm.calls[1][1] if m.role == "tool"][-1:]
         seen = json.dumps(result.model_dump(mode="json"))

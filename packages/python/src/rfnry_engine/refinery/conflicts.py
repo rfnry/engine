@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 
 from rfnry_engine.refinery.labels import Conflict, Label

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import errno
@@ -370,8 +368,7 @@ def _log(*errors: BaseException | None) -> None:
 async def _kill_all(
     *kills: Coroutine[Any, Any, None],
 ) -> tuple[list[BaseException | None], asyncio.CancelledError | None]:
-    loop = asyncio.get_running_loop()
-    killing = [asyncio.Task(kill, loop=loop, eager_start=True) for kill in kills]
+    killing = [asyncio.create_task(kill, eager_start=True) for kill in kills]
     caller = asyncio.current_task()
     cancelled: asyncio.CancelledError | None = None
     hurried = False

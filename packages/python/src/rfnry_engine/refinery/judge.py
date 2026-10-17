@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from typing import Any
 
@@ -40,7 +38,7 @@ def without_media(value: Any) -> Any:
     if value.get("type") in PART_TYPES:
         try:
             part = PART.validate_python(value)
-        except (ValidationError, InputError):
+        except ValidationError, InputError:
             part = None
         if part is not None and part.model_dump(mode="json") == value:
             return placeholder(part)

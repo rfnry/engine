@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import errno
 import mimetypes
@@ -264,7 +262,7 @@ class _Directory:
             rel = self._shown(path)
             try:
                 fd = self.jail.open(path)
-            except (InputError, OSError):
+            except InputError, OSError:
                 continue
             try:
                 found = os.fstat(fd)

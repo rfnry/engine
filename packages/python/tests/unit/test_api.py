@@ -1,3 +1,4 @@
+import annotationlib
 import ast
 import dataclasses
 import importlib
@@ -55,7 +56,11 @@ PROTOCOLS = [value for value in EXPORTED.values() if is_protocol(value)]
 def same(real: object, declared: object) -> bool:
     if isinstance(declared, property):
         return isinstance(real, property)
-    return inspect.isfunction(real) and inspect.signature(real) == inspect.signature(declared)
+    return (
+        inspect.isfunction(real)
+        and callable(declared)
+        and inspect.signature(real) == inspect.signature(declared)
+    )
 
 
 def implemented(cls: type) -> list[type]:
@@ -96,6 +101,9 @@ MODULES = [
 PRIVATE = {
     name: module for module in MODULES for name in defined_at_top(module) if name not in EXPORTED
 }
+
+
+SOURCE = annotationlib.Format.STRING
 
 
 def normal(annotation: object) -> str:
@@ -139,7 +147,7 @@ def documented(node: Function) -> list[tuple[str, Any, str, Any]]:
 
 
 def check_function(node: Function, real: Any) -> None:
-    signature = inspect.signature(real)
+    signature = inspect.signature(real, annotation_format=SOURCE)
     expected = [
         (p.name, p.kind, normal(p.annotation), p.default) for p in signature.parameters.values()
     ]
@@ -151,7 +159,7 @@ def check_function(node: Function, real: Any) -> None:
 def fields(cls: Any) -> dict[str, tuple[str, Any]]:
     declared = {}
     for klass in reversed(cls.__mro__):
-        declared.update(inspect.get_annotations(klass))
+        declared.update(inspect.get_annotations(klass, format=SOURCE))
     if issubclass(cls, BaseModel):
         return {
             name: (
@@ -162,7 +170,7 @@ def fields(cls: Any) -> dict[str, tuple[str, Any]]:
         }
     return {
         f.name: (
-            normal(f.type),
+            normal(declared[f.name]),
             f.default
             if f.default is not dataclasses.MISSING
             else EMPTY
@@ -189,7 +197,7 @@ def check_class(node: ast.ClassDef, cls: Any) -> None:
         assert [name for name in attributes if name not in properties] == list(real), node.name
         for name, s in attributes.items():
             if name in properties:
-                returned = inspect.get_annotations(properties[name].fget)["return"]
+                returned = inspect.get_annotations(properties[name].fget, format=SOURCE)["return"]
                 assert written(s.annotation) == normal(returned), f"{node.name}.{name}"
             else:
                 assert (written(s.annotation), value(s.value)) == real[name], f"{node.name}.{name}"
@@ -199,7 +207,7 @@ def check_class(node: ast.ClassDef, cls: Any) -> None:
     assert set(properties) <= set(attributes), node.name
     for name, s in attributes.items():
         if name in properties:
-            returned = inspect.get_annotations(properties[name].fget)["return"]
+            returned = inspect.get_annotations(properties[name].fget, format=SOURCE)["return"]
             assert written(s.annotation) == normal(returned), f"{node.name}.{name}"
         else:
             assert f"self.{name} = " in inspect.getsource(cls), f"{node.name}.{name}"

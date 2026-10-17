@@ -265,6 +265,7 @@ async def test_a_failed_run_keeps_the_step_of_a_tool_that_already_ran(fixtures: 
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "Where is A-1?", on_event=closed)
     [run] = kept.runs
+    assert isinstance(run, Generation)
     assert [s.tool for s in run.steps] == ["lookup_order"]
     assert [m.role for m in run.conversation] == ["user", "assistant", "tool"]
 
@@ -296,6 +297,7 @@ async def test_a_failed_batch_keeps_every_step_that_ran_in_the_order_asked(
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "x", on_event=closed)
     [run] = kept.runs
+    assert isinstance(run, Generation)
     assert [s.args["order_id"] for s in run.steps] == ["A-1", "A-2"]
     assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "c2"]
 
@@ -335,6 +337,7 @@ async def test_a_call_cut_by_a_stop_is_recorded_once_when_its_handler_raises(
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "x", on_event=closed, stop=stop)
     [run] = kept.runs
+    assert isinstance(run, Generation)
     assert [(s.args["order_id"], s.stopped) for s in run.steps] == [("A-1", False), ("A-2", True)]
     assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "c2"]
 
@@ -355,6 +358,7 @@ async def test_a_call_repeated_in_a_later_turn_is_recorded_in_each(fixtures: Pat
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "Where is A-1?", on_event=closed)
     [run] = kept.runs
+    assert isinstance(run, Generation)
     assert [s.tool for s in run.steps] == ["lookup_order", "lookup_order"]
     roles = [m.role for m in run.conversation]
     assert roles == ["user", "assistant", "tool", "assistant", "tool"]
