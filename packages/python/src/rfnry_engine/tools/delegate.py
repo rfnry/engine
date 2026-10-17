@@ -3,13 +3,15 @@ import copy
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
 
 from rfnry_engine.errors import DelegationDepthError, DelegationLoopError, InputError
 from rfnry_engine.models import ToolCall
-from rfnry_engine.records import Generation
+from rfnry_engine.records import EventHandler, Generation, Run
+from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, ToolsLike
 from rfnry_engine.tree import AgentSpec
 
@@ -157,6 +159,35 @@ def child_result(child: Any) -> str:
     return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
 
 
+@dataclass
+class Foreground:
+    stop: Stop | None
+    on_event: EventHandler | None
+    stopped: bool = False
+
+
+FOREGROUND: contextvars.ContextVar[Foreground | None] = contextvars.ContextVar(
+    "foreground", default=None
+)
+
+
+def hooks(
+    on_event: EventHandler | None, stop: Callable[[], Stop | None] | None
+) -> tuple[EventHandler | None, Stop | None]:
+    here = FOREGROUND.get()
+    return (
+        on_event if on_event is not None or here is None else here.on_event,
+        stop() if stop is not None else None if here is None else here.stop,
+    )
+
+
+def returned(run: Run) -> Run:
+    here = FOREGROUND.get()
+    if here is not None and isinstance(run, Generation) and run.stopped is not None:
+        here.stopped = True
+    return run
+
+
 def delegate_tool(
     engine: Engine,
     spec: AgentSpec,
@@ -165,20 +196,27 @@ def delegate_tool(
     workspace: Workspace | None = None,
     tags: Mapping[str, str] | None = None,
     approve: Callable[[str, ToolCall], Awaitable[bool]] | None = None,
+    on_event: EventHandler | None = None,
+    stop: Callable[[], Stop | None] | None = None,
 ) -> Tool:
     async def body(args: dict[str, Any]) -> str:
         parsed = permit(spec, args)
+        watching, held = hooks(on_event, stop)
         return child_result(
-            await engine.run(
-                parsed.agent,
-                scope,
-                parsed.input,
-                task=parsed.task,
-                questions=parsed.questions,
-                tools=tools,
-                workspace=workspace,
-                tags=tags,
-                approve=approve,
+            returned(
+                await engine.run(
+                    parsed.agent,
+                    scope,
+                    parsed.input,
+                    task=parsed.task,
+                    questions=parsed.questions,
+                    tools=tools,
+                    workspace=workspace,
+                    tags=tags,
+                    approve=approve,
+                    on_event=watching,
+                    stop=held,
+                )
             )
         )
 

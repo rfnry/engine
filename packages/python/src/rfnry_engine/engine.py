@@ -56,14 +56,18 @@ from rfnry_engine.records import (
     ToolCallStarted,
     ToolResultReady,
 )
-from rfnry_engine.stop import Stop, Stopped, requested, wait
+from rfnry_engine.stop import Stop, Stopped, requested, running, under, wait
 from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
+    FOREGROUND,
     AgentArgs,
+    Foreground,
     child_result,
     enter,
+    hooks,
     permit,
+    returned,
     run_arguments,
     run_result,
 )
@@ -428,6 +432,8 @@ class Engine:
         workspace: Workspace | None = None,
         tags: Mapping[str, str] | None = None,
         approve: Approve | None = None,
+        on_event: EventHandler | None = None,
+        stop: Callable[[], Stop | None] | None = None,
     ) -> Tools:
         if not scope:
             raise InputError("engine: scope is required")
@@ -439,6 +445,7 @@ class Engine:
         tagged = _tags(tags)
 
         async def body(args: dict[str, Any]) -> Result:
+            watching, held = hooks(on_event, stop)
             run = await self.run(
                 agent,
                 scope,
@@ -450,8 +457,10 @@ class Engine:
                 workspace=workspace,
                 tags=tagged,
                 approve=approve,
+                on_event=watching,
+                stop=held,
             )
-            return run_result(run)
+            return run_result(returned(run))
 
         described = spec.description if description is None else description
         schema = {
@@ -478,9 +487,10 @@ class Engine:
         if options.task is not None and options.task not in spec.tasks:
             raise NotFoundError(f"engine: agent {spec.name!r} has no task {options.task!r}")
         async with enter(spec.name, self.max_depth, routed=routed):
-            if spec.kind == "generation":
-                return await self._generation(spec, scope, input, options, parent_run_id)
-            return await self._decision(spec, scope, input, options, parent_run_id)
+            with under(options.stop):
+                if spec.kind == "generation":
+                    return await self._generation(spec, scope, input, options, parent_run_id)
+                return await self._decision(spec, scope, input, options, parent_run_id)
 
     async def _decision(
         self,
@@ -743,6 +753,8 @@ class Engine:
             else:
                 limit = None if call.name in bounded_by_workspace else self.tool_timeout
                 deadline = asyncio.timeout(limit)
+                here = Foreground(stop, on_event)
+                FOREGROUND.set(here)
                 try:
                     async with deadline:
                         result = await surface.dispatch(call.name, call.args)
@@ -753,6 +765,8 @@ class Engine:
                     else:
                         content = f"{type(exc).__name__}: {exc}"
                     is_error = True
+                if here.stopped:
+                    content, is_error, stopped = STOPPED, True, True
             step = Step(
                 tool=call.name,
                 args=call.args,
@@ -813,9 +827,9 @@ class Engine:
                 return [
                     task
                     for call, task in zip(batch, tasks, strict=True)
-                    if (spec.agents and call.name == DELEGATE_TOOL)
-                    or id(call) in approving
+                    if id(call) in approving
                     or any(call is done for done, _ in ran)
+                    or running(stop, task)
                 ]
 
             stopped = await wait(tasks, stop, finishing)

@@ -480,15 +480,17 @@ already stopping on its own — a `Shell` past its timeout, the kill after a `Sh
 `Job(stop=true)` or `close()` — counts as stopped once, so the first stop lets its second run out. A
 second stop — `stop.now()` again, or cancelling a run that is already stopping — ends what is still
 running at once, with no grace period: each further `now()` cancels once more every tool call still
-running but a running `Delegate` call, whose run takes the same `now()`, and a call whose
-`ToolResultReady` handler the stop waits for; each further cancel cancels everything still running
-once more; and a workspace kills its command outright. A stop set before the run starts ends it
-before the first model call; one set after it ended does nothing. A stop reaches delegated and
-routed runs, which end the same way at their own next boundary. With `after_step()` pending the
-inbox is not read. Whatever is still in the inbox when the run ends stays there — the engine never
-starts a run; you do, with those messages as its input. A decision run never reads the inbox: its
-questions are one call, and a stop or an inbox rides to the run it routes to. "Pause, please" is a
-message in the inbox: the model reads it at the next boundary and wraps up in its own words.
+running but a call running a run under the same stop — a `Delegate` call, or a consult through
+`engine.tool` — whose run takes the same `now()`, and a call whose `ToolResultReady` handler the
+stop waits for; each further cancel cancels everything still running once more; and a workspace
+kills its command outright. A stop set before the run starts ends it before the first model call;
+one set after it ended does nothing. A stop reaches delegated and routed runs, and the runs an
+`engine.tool` starts while the run calls it, which end the same way at their own next boundary. With
+`after_step()` pending the inbox is not read. Whatever is still in the inbox when the run ends stays
+there — the engine never starts a run; you do, with those messages as its input. A decision run
+never reads the inbox: its questions are one call, and a stop or an inbox rides to the run it routes
+to. "Pause, please" is a message in the inbox: the model reads it at the next boundary and wraps up
+in its own words.
 
 A run that ended continues from its record, on any process, after any restart. With a refinery
 attached every run that returns is recorded with its conversation: keep the run id beside what you
@@ -1507,6 +1509,45 @@ its run is not the caller's child — to nest with lineage, name the agent in `a
 `Delegate`, `max_depth` counts the whole stack across it; a call through it starts a new input, so
 the route chain resets there: an agent may reach a fresh run of itself through it, and only a route
 into an agent already in the same chain of routes is refused.
+
+Called inside a run, a consult is part of that run's foreground, as a delegated run is: its run
+takes the caller's `stop` and `on_event`. The caller's `stop.now()` reaches the consult instead of
+cancelling its call, so the consult ends with its record, and the caller's step reads `stopped by the
+user`, as a stopped `Delegate` step does; `after_step()` ends it after its current step. Its events
+reach the caller's handler, told apart by `agent` and `run_id`:
+
+```python
+async def status(event):
+    if isinstance(event, ToolCallStarted):
+        print(event.agent, "is using", event.tool)          # billing is using lookup_order
+
+consult, stop = engine.tool("billing", scope="acme", name="consult"), Stop()
+run = await engine.run("support", scope="acme", input=message, tools=consult,
+                       on_event=status, stop=stop)
+```
+
+A stop flows down, never up: a consult that is stopped ends alone, and its caller reads `stopped by
+the user` and carries on. Outside a run — a live voice model, a loop of your own — pass the hooks
+yourself. `on_event` rides every call; `stop` is a function called at each call that returns the
+`Stop` of the turn the call belongs to, since a `Stop` belongs to one run and the tool lives as long
+as the session:
+
+```python
+turn = {"stop": Stop()}
+
+async def say_progress(event):
+    if isinstance(event, ToolCallStarted):
+        await voice.say("Checking that now.")
+
+consult = engine.tool("billing", scope="acme", on_event=say_progress, stop=lambda: turn["stop"])
+
+def barge_in():
+    turn["stop"].now()                  # stops the consult running now; it is recorded, stopped
+    turn["stop"] = Stop()               # the next turn's consults run normally
+```
+
+Given inside a run, these win over the caller's. `EngineTools` takes the same two for the `Delegate`
+it dispatches outside a run.
 
 ## Storage
 

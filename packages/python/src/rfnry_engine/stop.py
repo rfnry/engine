@@ -1,5 +1,6 @@
 import asyncio
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any, Literal
 
 Stopped = Literal["now", "after_step"]
@@ -10,6 +11,7 @@ class Stop:
         self._mode: Stopped | None = None
         self._presses = 0
         self._pressed: asyncio.Future[None] | None = None
+        self._runs: list[asyncio.Task[Any]] = []
 
     def now(self) -> None:
         self._mode = "now"
@@ -25,6 +27,23 @@ class Stop:
 
 def requested(stop: Stop | None) -> Stopped | None:
     return None if stop is None else stop._mode
+
+
+@contextmanager
+def under(stop: Stop | None) -> Iterator[None]:
+    task = asyncio.current_task()
+    if stop is None or task is None:
+        yield
+        return
+    stop._runs.append(task)
+    try:
+        yield
+    finally:
+        stop._runs.remove(task)
+
+
+def running(stop: Stop | None, task: asyncio.Future[Any]) -> bool:
+    return stop is not None and task in stop._runs
 
 
 def _ready() -> asyncio.Future[None]:
