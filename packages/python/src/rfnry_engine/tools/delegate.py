@@ -171,7 +171,8 @@ class Foreground:
     over: bool = False
 
     def settle(self) -> None:
-        if self.live == 0 and not self.over and self.task is not None:
+        if self.pressed and self.live == 0 and not self.over and self.task is not None:
+            self.pressed = False
             self.task.cancel()
 
 

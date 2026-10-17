@@ -467,3 +467,33 @@ async def test_the_rest_of_a_call_is_cut_once_its_consult_took_the_stop(
     assert (run.steps[0].result, run.steps[0].stopped) == (STOPPED, True)
     [inner] = kept.of("billing")
     assert inner.stopped == "now"
+
+
+async def test_one_press_cuts_the_rest_of_a_call_once(tmp_path: Path) -> None:
+    billing = Gated()
+    back = Engine(tree(tmp_path / "back", billing=""), generation=billing)
+    consult = back.tool("billing", scope="acme")
+    seen: list[int] = []
+
+    async def work() -> None:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            running = asyncio.current_task()
+            seen.append(0 if running is None else running.cancelling())
+            raise
+
+    async def mixed(args: dict[str, Any]) -> str:
+        await asyncio.gather(consult.dispatch("billing", {"input": "a"}), work())
+        return "never"
+
+    outer = Script(use(ToolCall(id="m1", name="mixed", args={})), text_reply("never"))
+    front = Engine(tree(tmp_path / "front", support=""), generation=outer)
+    stop = Stop()
+    tools = Tools([Tool("mixed", "Consult beside work", body=mixed)])
+    task = asyncio.create_task(front.run("support", "acme", "x", tools=tools, stop=stop))
+    await until(lambda: billing.calls == 1, "the consult")
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert seen == [1]
