@@ -87,6 +87,15 @@ class ToolEntry(BaseModel):
     description: str | None = None
     input: dict[str, ToolField] | None = None
 
+    @field_validator("description")
+    @classmethod
+    def _said(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError(
+                "tree: a description must say something; leave it out to use the code's"
+            )
+        return value
+
 
 class ToolsFront(RootModel[dict[str, ToolEntry | None]]):
     pass

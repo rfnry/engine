@@ -2,9 +2,9 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from rfnry_engine import CallInfo, Engine, EngineTools, current_call
+from rfnry_engine import CallInfo, Engine, EngineTools, Stop, current_call
 from rfnry_engine.models import Reply, ToolCall
-from rfnry_engine.records import Event, Generation, ToolCallStarted
+from rfnry_engine.records import Event, Generation, ToolCallStarted, ToolResultReady
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import Scripted, text_reply
@@ -125,3 +125,92 @@ async def test_outside_a_run_there_is_no_call(tmp_path: Path) -> None:
     surface = EngineTools(engine, agent="desk", scope="acme", tools=seen.tools())
     await surface.dispatch("probe", {})
     assert seen.calls == [None, None]
+
+
+class Slow:
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.calls = 0
+        self.entered = asyncio.Event()
+
+    async def generate(self, system: str, messages: list[Any], tools: list[Any]) -> Reply:
+        self.calls += 1
+        if self.calls > 1:
+            return text_reply("ok")
+        self.entered.set()
+        await asyncio.sleep(self.seconds)
+        return use(ToolCall(id="n1", name="ping", args={}))
+
+
+async def ping(args: dict[str, Any]) -> str:
+    return "pong"
+
+
+async def test_a_consult_from_approve_stays_out_of_the_run_s_stop(tmp_path: Path) -> None:
+    notifier = Slow(0.3)
+    notify = Engine(tree(tmp_path / "back", notifier=""), generation=notifier).tool(
+        "notifier", scope="acme", tools=Tools([Tool("ping", "Ping", body=ping)])
+    )
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        await notify.dispatch("notifier", {"input": "May it refund?"})
+        return True
+
+    async def refund(args: dict[str, Any]) -> dict[str, str]:
+        return {"refunded": "R-1"}
+
+    llm = Scripted(use(ToolCall(id="r1", name="refund", args={})), text_reply("never"))
+    engine = Engine(tree(tmp_path / "front", desk=""), generation=llm)
+    stop = Stop()
+    task = asyncio.create_task(
+        engine.run(
+            "desk",
+            "acme",
+            "x",
+            tools=Tools([Tool("refund", "Refund", body=refund)]),
+            approve=approve,
+            stop=stop,
+        )
+    )
+    await asyncio.wait_for(notifier.entered.wait(), 2)
+    stop.after_step()
+    run = await asyncio.wait_for(task, 2)
+    assert isinstance(run, Generation) and run.stopped == "after_step"
+    step = run.steps[0]
+    assert (step.approved, step.stopped, step.is_error) == (True, False, False)
+    assert "R-1" in str(step.result)
+
+
+async def test_a_cut_call_s_result_handler_sees_the_call(tmp_path: Path) -> None:
+    started = asyncio.Event()
+    finished: list[CallInfo | None] = []
+
+    async def slow(args: dict[str, Any]) -> str:
+        started.set()
+        await asyncio.sleep(30)
+        return "never"
+
+    async def watch(event: Event) -> None:
+        if isinstance(event, ToolResultReady):
+            finished.append(current_call())
+
+    llm = Scripted(use(ToolCall(id="s1", name="slow", args={})), text_reply("never"))
+    engine = Engine(tree(tmp_path, desk=""), generation=llm)
+    stop = Stop()
+    task = asyncio.create_task(
+        engine.run(
+            "desk",
+            "acme",
+            "x",
+            tools=Tools([Tool("slow", "Slow", body=slow)]),
+            on_event=watch,
+            stop=stop,
+        )
+    )
+    await asyncio.wait_for(started.wait(), 2)
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert isinstance(run, Generation) and run.steps[0].stopped
+    assert finished == [
+        CallInfo(run_id=run.run_id, agent="desk", scope="acme", tool="slow", call_id="s1")
+    ]

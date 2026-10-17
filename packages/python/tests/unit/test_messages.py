@@ -12,6 +12,10 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("tools/workspace.py", "error"): "a backend's kill() error reaches the caller as it is",
     ("tools/workspace.py", "cancelled"): "a cancel that came during a kill goes on once it ends",
     ("stop.py", "cancelled"): "a cancel that came while tasks ended goes on once they have",
+    (
+        "frontmatter.py",
+        "yaml.constructor.ConstructorError(None, None, f'duplicate key {key!r}', key_node.start_mark)",
+    ): "a YAML error, which parse_frontmatter_doc reports as frontmatter: invalid YAML in its file",
 }
 
 

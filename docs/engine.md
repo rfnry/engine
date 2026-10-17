@@ -1408,12 +1408,14 @@ An entry with nothing under it adopts the code tool as it is, description and sc
 validation instead of the code's — arguments it does not name are refused — so a tool can be
 reworded in the tree and keep its arguments in code, or be declared whole in the tree with only its
 body in code. The model reads each tool's description beside its schema, and the first line of it in
-the prompt's list of tools. A tool with no description in either place is a `ConfigurationError`, and
-so is a body under the frontmatter: guidance goes in `AGENT.md` or a file of the folder. Bodies and
-code tools go on the engine, one list for the whole tree. A body returns a string, a dict (the model reads it as JSON) or a list of
-parts, which reach the model as the tool result — a PDF the model reads itself, an image it looks
-at. `Load` already does that for files in the agent's directory and the folders it reads; a tool
-does it for what lives elsewhere, such as your own store:
+the prompt's list of tools. A tool with no description in either place is a `ConfigurationError`,
+and so are a blank `description:`, a tool named twice, a tool named like one the engine gives the
+agent — the builtins, `History`, `Delegate` with `agents:`, a workspace's with `workspace: true` —
+and a body under the frontmatter: guidance goes in `AGENT.md` or a file of the folder. Bodies and
+code tools go on the engine, one list for the whole tree. A body returns a string, a dict (the model
+reads it as JSON) or a list of parts, which reach the model as the tool result — a PDF the model
+reads itself, an image it looks at. `Load` already does that for files in the agent's directory and
+the folders it reads; a tool does it for what lives elsewhere, such as your own store:
 
 ```python
 class InvoiceArgs(BaseModel):
@@ -1473,7 +1475,8 @@ async def refund(args):
 
 The run's `approve` and its handlers for the call see it too, and so do tasks the body starts, after
 the call ends. A delegated run's calls, and those of a run an `engine.tool` call starts, name their
-own run; `None` outside a run's tool call.
+own run, while the rest of such a run — its model calls, its text handlers — runs inside the
+caller's call and sees that one; `None` outside a run's tool call.
 
 Tools that belong to a tenant go on the call that names the tenant:
 
@@ -1671,8 +1674,8 @@ Everything the package exports, by role.
   `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`,
   `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by,
   `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
-- **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Jail`, `Workspace`, `Backend`, `Process`,
-  `Local`.
+- **Give models tools:** `Tool`, `Tools`, `EngineTools`, `current_call`, `CallInfo`, `Jail`,
+  `Workspace`, `Backend`, `Process`, `Local`.
 - **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Replay`,
   `Bucket`, `is_holdout`.
 - **Store:** `Storage`, `PostgresStorage`, `RunRow`, `LabelRow`.

@@ -1,13 +1,13 @@
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import BaseModel, ValidationError
 
 from rfnry_engine.errors import ConfigurationError
 
-_FRONTMATTER = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
+_FRONTMATTER = re.compile(r"^---\n(?:(.*?)\n)?---[ \t]*(?:\n(.*))?\Z", re.DOTALL)
 _BOOL = "tag:yaml.org,2002:bool"
 
 
@@ -18,7 +18,16 @@ else:
 
 
 class _Loader(_Base):
-    pass
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        seen: list[Any] = []
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"duplicate key {key!r}", key_node.start_mark
+                )
+            seen.append(key)
+        return super().construct_mapping(node, deep=deep)
 
 
 _Loader.yaml_implicit_resolvers = {
@@ -31,10 +40,10 @@ _Loader.add_implicit_resolver(
 
 
 def split_frontmatter(raw: str) -> tuple[str, str] | None:
-    match = _FRONTMATTER.match(raw)
+    match = _FRONTMATTER.match(raw.removeprefix("\ufeff"))
     if match is None:
         return None
-    return match.group(1), match.group(2)
+    return match.group(1) or "", match.group(2) or ""
 
 
 _HEAD = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)

@@ -461,9 +461,8 @@ async def test_a_tool_named_history_is_refused_on_every_run(fixtures: Path, tmp_
     (tmp_path / "desk").mkdir(parents=True)
     (tmp_path / "desk" / "AGENT.md").write_text("---\nname: desk\nkind: generation\n---\nHelp.\n")
     (tmp_path / "desk" / "TOOLS.md").write_text("---\nHistory:\n  description: Mine\n---\n")
-    declared = Engine(tmp_path, generation=Scripted(), tools=[Tool("History", body=mine)])
-    with pytest.raises(ConfigurationError, match=COLLIDES):
-        await declared.run("desk", "acme", "x")
+    with pytest.raises(ConfigurationError, match="declares 'History', the name of a tool"):
+        Engine(tmp_path, generation=Scripted(), tools=[Tool("History", body=mine)])
 
 
 async def test_history_never_shows_what_a_source_hands_back_past_stop(fixtures: Path) -> None:

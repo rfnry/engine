@@ -4,10 +4,13 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.tools.declared import declared_tools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tree import load_agent, load_tree
+
+from .fakes import Scripted
 
 TOOLS = """---
 lookup_order:
@@ -135,3 +138,59 @@ def test_a_reader_does_not_see_another_agent_s_tools_md(tmp_path: Path) -> None:
     tree = load_tree(tmp_path)
     assert "../owner/\n  notes.md — Notes" in tree["reader"].listing
     assert "TOOLS.md" not in tree["reader"].listing
+
+
+@pytest.mark.parametrize(
+    ("text", "names"),
+    [
+        ("---\nlookup_order:\n---", ["lookup_order"]),
+        ("---\nlookup_order:\n---   \n", ["lookup_order"]),
+        ("---\n---\n", []),
+        ("﻿---\nlookup_order:\n---\n", ["lookup_order"]),
+    ],
+)
+def test_a_frontmatter_only_file_reads_however_it_ends(
+    tmp_path: Path, text: str, names: list[str]
+) -> None:
+    (agent(tmp_path) / "TOOLS.md").write_text(text, encoding="utf-8")
+    assert list(load_agent(tmp_path / "a").tools) == names
+
+
+def test_a_tool_listed_twice_is_refused(tmp_path: Path) -> None:
+    (agent(tmp_path) / "TOOLS.md").write_text(
+        "---\nlookup_order:\n  description: First\nlookup_order:\n---\n"
+    )
+    with pytest.raises(ConfigurationError, match="duplicate key 'lookup_order'"):
+        load_agent(tmp_path / "a")
+
+
+@pytest.mark.parametrize("blank", ["''", "'   '"])
+def test_a_blank_description_is_refused(tmp_path: Path, blank: str) -> None:
+    (agent(tmp_path) / "TOOLS.md").write_text(f"---\nlookup_order:\n  description: {blank}\n---\n")
+    with pytest.raises(ConfigurationError, match="TOOLS.md"):
+        load_agent(tmp_path / "a")
+
+
+def test_a_tree_still_on_tools_files_is_told_about_tools_md(tmp_path: Path) -> None:
+    folder = agent(tmp_path)
+    (folder / "tools").mkdir()
+    (folder / "tools" / "lookup_order.md").write_text("---\nname: lookup_order\n---\n")
+    with pytest.raises(ConfigurationError, match="TOOLS.md"):
+        Engine(tmp_path, generation=Scripted(), tools=[Tool("lookup_order", "Look", body=echo)])
+
+
+@pytest.mark.parametrize(
+    ("front", "name"),
+    [
+        ("kind: generation\n", "Read"),
+        ("kind: generation\n", "History"),
+        ("kind: generation\nagents: [a]\n", "Delegate"),
+        ("kind: generation\nworkspace: true\n", "Shell"),
+    ],
+)
+def test_a_tool_named_like_a_builtin_is_refused_at_build(
+    tmp_path: Path, front: str, name: str
+) -> None:
+    (agent(tmp_path, front=front) / "TOOLS.md").write_text(f"---\n{name}:\n---\n")
+    with pytest.raises(ConfigurationError, match=f"'{name}'"):
+        Engine(tmp_path, generation=Scripted(), tools=[Tool(name, "Mine", body=echo)])

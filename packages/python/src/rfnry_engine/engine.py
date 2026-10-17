@@ -22,6 +22,7 @@ from rfnry_engine.errors import (
 )
 from rfnry_engine.fingerprint import questions_fingerprint, tools_fingerprint
 from rfnry_engine.foreground import (
+    CALL,
     FOREGROUND,
     CallInfo,
     Foreground,
@@ -683,11 +684,22 @@ class Engine:
             if on_event is not None:
                 await on_event(event)
 
+        def called(call: ToolCall) -> CallInfo:
+            return CallInfo(
+                run_id=run_id, agent=spec.name, scope=scope, tool=call.name, call_id=call.id
+            )
+
         async def hand_over(call: ToolCall, step: Step) -> Step:
             if runner is not None and runner.cancelling() > calm:
                 raise asyncio.CancelledError("engine: the run was cancelled")
             ran.append((call, step))
-            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step))
+            token = CALL.set(called(call))
+            try:
+                await emit(
+                    ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step)
+                )
+            finally:
+                CALL.reset(token)
             return step
 
         async def delta(text: str) -> None:
@@ -724,16 +736,7 @@ class Engine:
             return child_result(child), False, child.run_id, False
 
         async def call_tool(call: ToolCall) -> Step:
-            here = Foreground(
-                stop,
-                on_event,
-                asyncio.current_task(),
-                CallInfo(
-                    run_id=run_id, agent=spec.name, scope=scope, tool=call.name, call_id=call.id
-                ),
-            )
-            foregrounds[id(call)] = here
-            FOREGROUND.set(here)
+            CALL.set(called(call))
             await emit(
                 ToolCallStarted(
                     run_id=run_id,
@@ -764,6 +767,9 @@ class Engine:
                 raise ConfigurationError(
                     f"engine: approve must return True or False; got {approved!r}"
                 )
+            here = Foreground(stop, on_event, asyncio.current_task())
+            foregrounds[id(call)] = here
+            FOREGROUND.set(here)
             try:
                 if approved is False:
                     content, is_error = f"NotApproved: {call.name} was not approved", True

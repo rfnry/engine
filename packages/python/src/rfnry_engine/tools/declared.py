@@ -3,7 +3,11 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, create_model
 
 from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.tools.builtins import BUILTINS
+from rfnry_engine.tools.delegate import DELEGATE_TOOL
+from rfnry_engine.tools.history import HISTORY_TOOL
 from rfnry_engine.tools.tools import Tool
+from rfnry_engine.tools.workspace import WORKSPACE_NAMES
 from rfnry_engine.tree import AgentSpec, ToolDecl
 
 _PYTHON: dict[str, Any] = {
@@ -76,9 +80,22 @@ def check_declarations(
 ) -> None:
     declared: set[str] = set()
     for spec in agents.values():
+        taken = {
+            *BUILTINS,
+            HISTORY_TOOL,
+            *([DELEGATE_TOOL] if spec.agents else []),
+            *(WORKSPACE_NAMES if spec.workspace else []),
+        }
+        clash = sorted(name for name in spec.tools if name in taken)
+        if clash:
+            raise ConfigurationError(
+                f"declared: agent {spec.name!r} declares {', '.join(map(repr, clash))}, the name of a tool the engine gives it"
+            )
         if bodies:
             declared_tools(spec, code)
         declared.update(spec.tools)
     undeclared = sorted(name for name in code if name not in declared)
     if undeclared:
-        raise ConfigurationError(f"declared: tools declared by no agent: {undeclared}")
+        raise ConfigurationError(
+            f"declared: tools declared by no agent: {undeclared}; name each in its agent's TOOLS.md"
+        )

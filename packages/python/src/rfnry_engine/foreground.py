@@ -26,7 +26,6 @@ class Foreground:
     stop: Stop | None
     on_event: EventHandler | None
     task: asyncio.Future[Any] | None = None
-    call: CallInfo | None = None
     stopped: bool = False
     live: int = 0
     pressed: bool = False
@@ -86,6 +85,8 @@ def returned(run: Run) -> Run:
     return run
 
 
+CALL: contextvars.ContextVar[CallInfo | None] = contextvars.ContextVar("call", default=None)
+
+
 def current_call() -> CallInfo | None:
-    here = FOREGROUND.get()
-    return None if here is None else here.call
+    return CALL.get()
