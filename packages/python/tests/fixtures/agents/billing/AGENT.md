@@ -1,5 +1,4 @@
 ---
-name: billing
 kind: generation
 description: Answers billing questions
 ---

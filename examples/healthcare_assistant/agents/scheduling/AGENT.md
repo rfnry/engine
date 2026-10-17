@@ -1,5 +1,4 @@
 ---
-name: scheduling
 kind: generation
 description: Drafts the front desk's reply to a patient's scheduling request
 ---

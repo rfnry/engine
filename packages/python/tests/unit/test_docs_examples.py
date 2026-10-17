@@ -179,7 +179,7 @@ def write(path: Path, text: str) -> None:
 
 
 def agent(name: str, kind: str, body: str = "") -> str:
-    return f"---\nname: {name}\nkind: {kind}\ndescription: The {name} agent\n---\n{body}\n"
+    return f"---\nkind: {kind}\ndescription: The {name} agent\n---\n{body}\n"
 
 
 def question(kind: str, extra: str = "") -> str:
@@ -192,20 +192,25 @@ def skills_folder(tmp_path: Path) -> Path:
 
 
 def tree(root: Path) -> None:
-    write(root / "support/AGENT.md", markdown("name: support"))
+    write(
+        root / "support/AGENT.md", markdown("description: Handles technical support conversations")
+    )
     write(
         root / "support/rules/refunds.md",
         "---\ndescription: When a refund is owed\n---\nA double charge is refunded in full.\n",
     )
     write(root / "support/tasks/triage.md", "Triage the message.\n")
     write(root / "support/TOOLS.md", markdown("fetch_invoice: Fetch"))
-    write(root / "support/tools/lookup_order.md", markdown("name: lookup_order"))
-    write(root / "frontdesk/AGENT.md", markdown("name: frontdesk"))
+    write(
+        root / "support/tools/lookup_order.md",
+        markdown("description: Fetch an order by id\ninput:"),
+    )
+    write(root / "frontdesk/AGENT.md", markdown("description: Routes an incoming message"))
     write(
         root / "frontdesk/questions/intent.md",
         markdown("Which department should handle this message?"),
     )
-    write(root / "coder/AGENT.md", markdown("name: coder").split("\n", 1)[1])
+    write(root / "coder/AGENT.md", markdown("description: Writes and runs code").split("\n", 1)[1])
     write(root / "billing/AGENT.md", agent("billing", "generation"))
     write(root / "teacher/AGENT.md", agent("teacher", "generation"))
     write(root / "triage/AGENT.md", agent("triage", "decision"))
@@ -383,7 +388,7 @@ async def test_the_question_the_model_composes_reaches_the_decision_agent(
 def test_the_route_entry_with_a_task_loads(tmp_path: Path) -> None:
     root = tmp_path / "agents"
     tree(root)
-    front = markdown("name: frontdesk").split("route:")[0]
+    front = markdown("description: Routes an incoming message").split("route:")[0]
     write(root / "frontdesk/AGENT.md", f"{front}{ROUTE}---\n")
     agents = load_tree(root)
     validate_tree(agents)
@@ -392,7 +397,7 @@ def test_the_route_entry_with_a_task_loads(tmp_path: Path) -> None:
 
 
 def test_the_agent_that_preloads_its_folder_loads(tmp_path: Path) -> None:
-    write(tmp_path / "tagger/AGENT.md", markdown("name: tagger"))
+    write(tmp_path / "tagger/AGENT.md", markdown("description: Tags each incoming document"))
     write(tmp_path / "tagger/rules/house.md", "Tag by department.\n")
     spec = load_agent(tmp_path / "tagger")
     assert spec.kind == "generation" and spec.body.startswith("Tag the document.")

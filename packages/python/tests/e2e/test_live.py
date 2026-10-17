@@ -57,7 +57,7 @@ async def test_a_coder_writes_and_runs_code(adapters: Any, tmp_path: Path) -> No
     agents = tmp_path / "agents" / "coder"
     agents.mkdir(parents=True)
     (agents / "AGENT.md").write_text(
-        "---\nname: coder\nkind: generation\ndescription: Writes and runs code\nworkspace: true\n---\n"
+        "---\nkind: generation\ndescription: Writes and runs code\nworkspace: true\n---\n"
         "You write Python files with Write and run them with Shell. Reply with the program's output only.\n",
         encoding="utf-8",
     )

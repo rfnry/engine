@@ -695,7 +695,7 @@ AREA = Choice(
 
 def grader(root: Path, urgent: str = "Is it urgent?") -> Path:
     for path, text in {
-        "grader/AGENT.md": "---\nname: grader\nkind: decision\n---\n",
+        "grader/AGENT.md": "---\nkind: decision\n---\n",
         "grader/questions/urgent.md": f"---\ntype: check\n---\n{urgent}\n",
         "grader/tasks/tone/polite.md": "---\ntype: check\n---\nPolite?\n",
     }.items():

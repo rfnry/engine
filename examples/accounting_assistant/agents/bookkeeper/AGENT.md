@@ -1,5 +1,4 @@
 ---
-name: bookkeeper
 kind: generation
 description: Works through bookkeeping tasks on a client's ledger for Acme Books' accountants
 workspace: true

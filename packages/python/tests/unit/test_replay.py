@@ -758,7 +758,7 @@ async def test_a_second_cancel_of_a_reader_kills_its_replays_command_at_once(
 ) -> None:
     (tmp_path / "coder").mkdir()
     (tmp_path / "coder/AGENT.md").write_text(
-        "---\nname: coder\nkind: generation\nworkspace: true\n---\nYou code.\n"
+        "---\nkind: generation\nworkspace: true\n---\nYou code.\n"
     )
     work = tmp_path / "work"
     work.mkdir()
@@ -810,7 +810,7 @@ async def test_the_tools_and_workspace_a_run_had_are_the_caller_s(
 ) -> None:
     (tmp_path / "coder").mkdir()
     (tmp_path / "coder/AGENT.md").write_text(
-        "---\nname: coder\nkind: generation\nworkspace: true\n---\nYou code.\n"
+        "---\nkind: generation\nworkspace: true\n---\nYou code.\n"
     )
     (tmp_path / "work").mkdir()
     work = Workspace(Local(tmp_path / "work"), scope="acme")
@@ -853,7 +853,7 @@ async def test_a_bad_call_is_refused_before_anything_is_read(
 
 def graded(root: Path, urgent: str = "Is it urgent?") -> Path:
     for path, text in {
-        "grader/AGENT.md": "---\nname: grader\nkind: decision\n---\n",
+        "grader/AGENT.md": "---\nkind: decision\n---\n",
         "grader/questions/urgent.md": f"---\ntype: check\n---\n{urgent}\n",
         "grader/tasks/tone/polite.md": f"---\ntype: check\n---\n{urgent} Polite?\n",
     }.items():
@@ -908,7 +908,7 @@ async def test_a_routed_decision_replays_with_the_router_s_task_not_the_routed_r
     storage: Storage,
 ) -> None:
     for path, text in {
-        "desk/AGENT.md": "---\nname: desk\nkind: decision\nroute: {by: team, to: {b: grader}}\n---\n",
+        "desk/AGENT.md": "---\nkind: decision\nroute: {by: team, to: {b: grader}}\n---\n",
         "desk/questions/team.md": "---\ntype: choice\noptions: {a: A, b: B}\n---\nWhich?\n",
         "desk/tasks/audit/angry.md": "---\ntype: check\n---\nAngry?\n",
     }.items():

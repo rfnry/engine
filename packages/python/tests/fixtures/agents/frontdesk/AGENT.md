@@ -1,5 +1,4 @@
 ---
-name: frontdesk
 kind: decision
 description: Routes an incoming message
 route:

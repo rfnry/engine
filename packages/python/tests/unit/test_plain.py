@@ -100,14 +100,18 @@ async def test_a_decision_only_engine_refuses_it(tmp_path: Path) -> None:
         await engine.run("notes", "acme", "x")
 
 
-@pytest.mark.parametrize("single", [True, False])
-def test_name_on_a_root_with_agents_is_refused(tmp_path: Path, single: bool) -> None:
-    agent = tmp_path if single else tmp_path / "a"
-    agent.mkdir(exist_ok=True)
-    (agent / "AGENT.md").write_text(f"---\nname: {agent.name}\nkind: generation\n---\nHi\n")
+def test_name_names_a_root_agent(tmp_path: Path) -> None:
+    (tmp_path / "AGENT.md").write_text("---\nkind: generation\n---\nHi\n")
+    assert list(Engine(tmp_path, generation=Scripted(), name="writer").agents) == ["writer"]
+    assert list(Engine(tmp_path, generation=Scripted()).agents) == [tmp_path.name]
+
+
+def test_name_on_a_root_that_is_only_a_tree_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\n---\nHi\n")
     with pytest.raises(
         ConfigurationError,
-        match=r"^tree: name= names a root with no AGENT\.md; .* has agents$",
+        match=r"^tree: name= names the root's own agent, and .* has no AGENT\.md, only agents in its folders; drop name=",
     ):
         Engine(tmp_path, generation=Scripted(), name="writer")
 

@@ -14,8 +14,7 @@ def tree(root: Path, **agents: str) -> Path:
     for name, front in agents.items():
         (root / name).mkdir(parents=True)
         (root / name / "AGENT.md").write_text(
-            f"---\nname: {name}\nkind: generation\ndescription: {name.title()}\n{front}---\n"
-            f"You are {name}.\n",
+            f"---\nkind: generation\ndescription: {name.title()}\n{front}---\nYou are {name}.\n",
             encoding="utf-8",
         )
     return root

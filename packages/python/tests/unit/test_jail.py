@@ -263,14 +263,12 @@ def test_preload_refuses_a_folder_swapped_for_a_link_between_check_and_open(
     shelf: Path, outside: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     coding = shelf / "coding"
-    (coding / "AGENT.md").write_text(
-        "---\nname: coding\nkind: generation\npreload: true\n---\nYou code.\n"
-    )
+    (coding / "AGENT.md").write_text("---\nkind: generation\npreload: true\n---\nYou code.\n")
     swap_after_the_check(monkeypatch, linked(coding / "notes", outside))
     with pytest.raises(
         ConfigurationError,
         match=r"^tree: agent 'coding' cannot preload its folder: "
-        r"jail: path outside the agent directory: notes/style\.md$",
+        r"jail: path outside the agent directory: notes/style\.md; move that file out of its folders, or drop preload: true$",
     ):
         load_agent(coding)
     assert (coding / "notes").is_symlink()

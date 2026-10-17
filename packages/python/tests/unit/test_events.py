@@ -30,7 +30,7 @@ def make_tree(tmp_path: Path) -> Path:
     }.items():
         (root / name).mkdir(parents=True)
         (root / name / "AGENT.md").write_text(
-            f"---\nname: {name}\n{front}\n---\nYou are {name}.\n", encoding="utf-8"
+            f"---\n{front}\n---\nYou are {name}.\n", encoding="utf-8"
         )
     return root
 

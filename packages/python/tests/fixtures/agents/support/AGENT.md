@@ -1,5 +1,4 @@
 ---
-name: support
 kind: generation
 description: Handles technical support conversations
 agents: [triage]
