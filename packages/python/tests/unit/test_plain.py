@@ -119,6 +119,6 @@ def test_name_on_a_root_that_is_only_a_tree_is_refused(tmp_path: Path) -> None:
 def test_an_empty_name_is_refused(tmp_path: Path) -> None:
     with pytest.raises(
         ConfigurationError,
-        match="^engine: name must name one folder, not blank and without slashes; got ''$",
+        match="^engine: name must name one folder, not blank, hidden, padded or with slashes; got ''$",
     ):
         Engine(notes(tmp_path / "notes"), generation=Scripted(), name="")

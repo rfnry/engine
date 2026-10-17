@@ -280,7 +280,8 @@ run = await engine.run("writer", scope="acme", input="Draft the launch note.",
 ```
 
 `name=` on a root that is only a tree — agents in its folders, no `AGENT.md` of its own — is a
-`ConfigurationError`, and so is an empty one.
+`ConfigurationError`, and so is a name that is not one folder's: blank, hidden, padded with spaces
+or holding a slash.
 
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its
 `kind`, `description`, the `agents` it may call and the folders it `reads`.
@@ -1700,10 +1701,10 @@ Everything the package exports, by role.
 ## Errors
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
-`AGENT.md`, `Engine(name=)` on a root that is only a tree, or empty, a `name:` in an `AGENT.md` or a
-tool file — the folder or the file names it — a sub-agent named like the root agent, an unknown key
-in the frontmatter of an `AGENT.md`, a tool file or a question (`frontmatter: unknown key
-'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a
+`AGENT.md`, `Engine(name=)` on a root that is only a tree, or not one folder's name, a `name:` in an
+`AGENT.md` or a tool file — the folder or the file names it — a sub-agent named like the root agent,
+an unknown key in the frontmatter of an `AGENT.md`, a tool file or a question (`frontmatter: unknown
+key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a
 `description:` that is not a string in a file the map would show, a decision agent with `preload:
 true` or tools, a declaration the Tools section refuses, a `reads:` naming no folder of the root or
 the agent's own, `reads:` on a decision agent, on a root agent or on an agent whose folder is a link

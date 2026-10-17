@@ -73,9 +73,14 @@ def described(path: Path) -> str | None:
     return collapsed or None
 
 
+def _said(message: str) -> str:
+    message = message.removeprefix("Value error, ")
+    return message[:1].lower() + message[1:]
+
+
 def plainly(exc: ValidationError) -> str:
     return "; ".join(
-        f"{'.'.join(map(str, error['loc'])) or 'the file'}: {error['msg'][:1].lower()}{error['msg'][1:]}"
+        f"{'.'.join(map(str, error['loc'])) or 'the file'}: {_said(error['msg'])}"
         for error in exc.errors(include_url=False)
     )
 

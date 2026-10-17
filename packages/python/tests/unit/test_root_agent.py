@@ -196,7 +196,7 @@ def test_a_root_name_clash_from_engine_name_says_to_pick_another(tmp_path: Path)
         Engine(root, generation=Scripted(), name="billing")
 
 
-@pytest.mark.parametrize("name", [" ", "a/b", "a\\b"])
+@pytest.mark.parametrize("name", [" ", "a/b", "a\\b", ".", "..", ".hidden", " lead", "lead\n"])
 def test_a_name_that_is_not_one_folder_name_is_refused(tmp_path: Path, name: str) -> None:
     write(tmp_path / "notes.md", "Notes.\n")
     with pytest.raises(ConfigurationError, match="engine: name"):
