@@ -814,6 +814,27 @@ The tools `agent` runs with under `scope`, as a `Tools` to drive without a model
 
 Raises `InputError` when `scope` is empty, `workspace` belongs to another scope, `start` is negative, `start` is above 0 without a `history`, or `start` is past the end of a list `history`. Raises `NotFoundError` when the tree has no agent `agent`. Raises `ConfigurationError` when the agent declares `workspace: true` and no `workspace` is given, a tool it declares has no body, or two tools share a name. A tool it declares or `tools` holds named `History` is a `ConfigurationError` whatever `start` is: the name is the builtin's on every run.
 
+### `current_call`
+
+```python
+def current_call() -> CallInfo | None: ...
+```
+
+The tool call the code runs inside: a tool's body, the run's `approve` and `on_event` handlers for that call, and the tasks the body starts — they keep answering for it after it ends. `None` outside a run's tool call: a `Tools.dispatch` or an `EngineTools` call of your own. A delegated run's calls, and the calls of a run an `engine.tool` call starts, name their own run.
+
+### `CallInfo`
+
+```python
+class CallInfo(BaseModel):
+    run_id: str
+    agent: str
+    scope: str
+    tool: str
+    call_id: str
+```
+
+What `current_call` returns: the run's id, its agent and scope, the tool called and the id of the call, as `ToolCall.id` and `Step` carry it. Frozen, so it can be kept and compared.
+
 ### `Jail`
 
 ```python

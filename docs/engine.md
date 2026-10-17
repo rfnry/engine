@@ -1460,6 +1460,21 @@ directory, as the builtins do. `Jail.open` opens a file the way the builtins and
 place it checks is still the folder it was given, one folder at a time without following a link, so
 a link swapped in after the check is refused.
 
+A body learns the call it serves with `current_call()`, a `CallInfo`: the run's id, its agent and
+scope, the tool and the call's id — so a side effect can carry the run that caused it, as an audit
+row or a header does:
+
+```python
+async def refund(args):
+    call = current_call()                                  # None outside a run
+    await payments.refund(args["charge_id"], reference=call.run_id if call else None)
+    return {"refunded": args["charge_id"]}
+```
+
+The run's `approve` and its handlers for the call see it too, and so do tasks the body starts, after
+the call ends. A delegated run's calls, and those of a run an `engine.tool` call starts, name their
+own run; `None` outside a run's tool call.
+
 Tools that belong to a tenant go on the call that names the tenant:
 
 ```python

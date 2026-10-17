@@ -3,6 +3,7 @@ import rfnry_engine
 EXPECTED = {
     "Engine",
     "AgentInfo",
+    "CallInfo",
     "Refinery",
     "PostgresStorage",
     "Storage",
@@ -64,6 +65,7 @@ EXPECTED = {
     "ToolResultReady",
     "Event",
     "confidence",
+    "current_call",
     "is_holdout",
     "EngineException",
     "ConfigurationError",

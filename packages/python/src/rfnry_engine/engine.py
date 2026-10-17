@@ -21,6 +21,15 @@ from rfnry_engine.errors import (
     RunawayError,
 )
 from rfnry_engine.fingerprint import questions_fingerprint, tools_fingerprint
+from rfnry_engine.foreground import (
+    FOREGROUND,
+    CallInfo,
+    Foreground,
+    halted,
+    hooks,
+    returned,
+    taking,
+)
 from rfnry_engine.models import (
     Answer,
     ChoiceAnswer,
@@ -60,18 +69,12 @@ from rfnry_engine.stop import Stop, Stopped, requested, wait
 from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
-    FOREGROUND,
     AgentArgs,
-    Foreground,
     child_result,
     enter,
-    halted,
-    hooks,
     permit,
-    returned,
     run_arguments,
     run_result,
-    taking,
 )
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
@@ -721,6 +724,16 @@ class Engine:
             return child_result(child), False, child.run_id, False
 
         async def call_tool(call: ToolCall) -> Step:
+            here = Foreground(
+                stop,
+                on_event,
+                asyncio.current_task(),
+                CallInfo(
+                    run_id=run_id, agent=spec.name, scope=scope, tool=call.name, call_id=call.id
+                ),
+            )
+            foregrounds[id(call)] = here
+            FOREGROUND.set(here)
             await emit(
                 ToolCallStarted(
                     run_id=run_id,
@@ -751,9 +764,6 @@ class Engine:
                 raise ConfigurationError(
                     f"engine: approve must return True or False; got {approved!r}"
                 )
-            here = Foreground(stop, on_event, asyncio.current_task())
-            foregrounds[id(call)] = here
-            FOREGROUND.set(here)
             try:
                 if approved is False:
                     content, is_error = f"NotApproved: {call.name} was not approved", True
