@@ -81,23 +81,15 @@ class ToolField(BaseModel):
     required: bool = False
 
 
-class ToolEntry(BaseModel):
+class ToolFront(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    name: str
     description: str | None = None
     input: dict[str, ToolField] | None = None
 
-    @field_validator("description")
-    @classmethod
-    def _said(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError(
-                "tree: a description must say something; leave it out to use the code's"
-            )
-        return value
 
-
-class ToolsFront(RootModel[dict[str, ToolEntry | None]]):
+class ToolsFront(RootModel[dict[str, str | None]]):
     pass
 
 
@@ -155,22 +147,46 @@ def _question(path: Path) -> Question:
         raise ConfigurationError(f"tree: invalid question {path}: {exc}") from exc
 
 
-def _tools(path: Path) -> dict[str, ToolDecl]:
+def _listed(path: Path) -> dict[str, ToolDecl]:
     if not path.is_file():
         return {}
     front, body = parse_frontmatter_doc(_read(path), model=ToolsFront, source=path, label="tools")
     if body.strip():
         raise ConfigurationError(
-            f"tree: {path} holds its tools in its frontmatter; write guidance in AGENT.md or a file of the folder"
+            f"tree: {path} lists its tools in its frontmatter; a tool that needs more has a file in tools/"
+        )
+    blank = [name for name, said in front.root.items() if said is not None and not said.strip()]
+    if blank:
+        raise ConfigurationError(
+            f"tree: {path} gives {', '.join(map(repr, blank))} a blank description; leave it out to use the code's"
         )
     return {
-        name: ToolDecl(
-            name=name,
-            description=None if entry is None else entry.description,
-            input=None if entry is None else entry.input,
-        )
-        for name, entry in front.root.items()
+        name: ToolDecl(name=name, description=said, input=None) for name, said in front.root.items()
     }
+
+
+def _tool_file(path: Path) -> ToolDecl:
+    front, body = parse_frontmatter_doc(_read(path), model=ToolFront, source=path, label="tool")
+    if front.name != path.stem:
+        raise ConfigurationError(f"tree: tool {front.name!r} must live in {front.name}.md: {path}")
+    if front.description is None or not front.description.strip():
+        raise ConfigurationError(
+            f"tree: tool file {path} gives no description; a tool that only needs its name is listed in TOOLS.md"
+        )
+    written = body.strip()
+    description = f"{front.description}\n\n{written}" if written else front.description
+    return ToolDecl(name=front.name, description=description, input=front.input)
+
+
+def _tools(directory: Path, agent: str) -> dict[str, ToolDecl]:
+    listed = _listed(directory / "TOOLS.md")
+    filed = {p.stem: _tool_file(p) for p in _markdown_files(directory / "tools")}
+    twice = sorted(name for name in filed if name in listed)
+    if twice:
+        raise ConfigurationError(
+            f"tree: agent {agent!r} declares {', '.join(map(repr, twice))} in both TOOLS.md and tools/"
+        )
+    return dict(sorted({**listed, **filed}.items()))
 
 
 def _markdown_files(directory: Path) -> list[Path]:
@@ -264,7 +280,7 @@ def load_agent(
             f"tree: agent {front.name!r} must live in a directory named {front.name!r}: {directory}"
         )
     questions = _questions(directory / "questions")
-    tools = _tools(directory / "TOOLS.md")
+    tools = _tools(directory, front.name)
     tasks = [p.stem for p in _markdown_files(directory / "tasks")]
     task_questions: dict[str, dict[str, Question]] = {}
     if front.kind == "decision":
@@ -281,7 +297,7 @@ def load_agent(
                 f"tree: decision agent {front.name!r} asks {', '.join(map(repr, clash))} in both questions/ and tasks/{task}/"
             )
     if front.kind == "decision" and tools:
-        raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare TOOLS.md")
+        raise ConfigurationError(f"tree: decision agent {front.name!r} cannot declare tools")
     if front.kind == "decision" and front.workspace:
         raise ConfigurationError(
             f"tree: decision agent {front.name!r} cannot declare workspace: true"

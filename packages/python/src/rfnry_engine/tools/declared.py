@@ -97,5 +97,5 @@ def check_declarations(
     undeclared = sorted(name for name in code if name not in declared)
     if undeclared:
         raise ConfigurationError(
-            f"declared: tools declared by no agent: {undeclared}; name each in its agent's TOOLS.md"
+            f"declared: tools declared by no agent: {undeclared}; declare each in its agent's TOOLS.md or tools/"
         )
