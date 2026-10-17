@@ -10,6 +10,7 @@ from rfnry_engine.errors import (
     RunawayError,
     StorageError,
 )
+from rfnry_engine.foreground import CallInfo, current_call
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import (
     Answer,
@@ -77,6 +78,7 @@ __version__ = "0.1.1"
 
 __all__ = [
     "AgentInfo",
+    "CallInfo",
     "Answer",
     "AnswerLike",
     "Bucket",
@@ -142,6 +144,7 @@ __all__ = [
     "Local",
     "Process",
     "confidence",
+    "current_call",
     "is_holdout",
     "Text",
     "Image",

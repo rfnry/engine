@@ -19,6 +19,8 @@ from rfnry_engine.models import Audio, Document, Image, Part, Text
 from rfnry_engine.tools.tools import Result, Tool
 from rfnry_engine.tools.workspace import Backend
 
+BUILTINS = frozenset({"Read", "Grep", "Glob", "LS", "Load"})
+
 _MAX_BYTES = 5 * 1024 * 1024
 _LOAD_BYTES = 20 * 1024 * 1024
 _MAX_WALK = 100_000

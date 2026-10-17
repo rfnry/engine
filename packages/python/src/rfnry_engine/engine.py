@@ -21,6 +21,16 @@ from rfnry_engine.errors import (
     RunawayError,
 )
 from rfnry_engine.fingerprint import questions_fingerprint, tools_fingerprint
+from rfnry_engine.foreground import (
+    CALL,
+    FOREGROUND,
+    CallInfo,
+    Foreground,
+    halted,
+    hooks,
+    returned,
+    taking,
+)
 from rfnry_engine.models import (
     Answer,
     ChoiceAnswer,
@@ -60,18 +70,12 @@ from rfnry_engine.stop import Stop, Stopped, requested, wait
 from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
-    FOREGROUND,
     AgentArgs,
-    Foreground,
     child_result,
     enter,
-    halted,
-    hooks,
     permit,
-    returned,
     run_arguments,
     run_result,
-    taking,
 )
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
@@ -680,11 +684,22 @@ class Engine:
             if on_event is not None:
                 await on_event(event)
 
+        def called(call: ToolCall) -> CallInfo:
+            return CallInfo(
+                run_id=run_id, agent=spec.name, scope=scope, tool=call.name, call_id=call.id
+            )
+
         async def hand_over(call: ToolCall, step: Step) -> Step:
             if runner is not None and runner.cancelling() > calm:
                 raise asyncio.CancelledError("engine: the run was cancelled")
             ran.append((call, step))
-            await emit(ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step))
+            token = CALL.set(called(call))
+            try:
+                await emit(
+                    ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step)
+                )
+            finally:
+                CALL.reset(token)
             return step
 
         async def delta(text: str) -> None:
@@ -721,6 +736,7 @@ class Engine:
             return child_result(child), False, child.run_id, False
 
         async def call_tool(call: ToolCall) -> Step:
+            CALL.set(called(call))
             await emit(
                 ToolCallStarted(
                     run_id=run_id,

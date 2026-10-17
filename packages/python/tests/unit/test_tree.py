@@ -122,9 +122,8 @@ def _agent(
     for qid, text in (questions or {}).items():
         (root / name / "questions").mkdir(exist_ok=True)
         (root / name / "questions" / f"{qid}.md").write_text(text)
-    for tool in tools:
-        (root / name / "tools").mkdir(exist_ok=True)
-        (root / name / "tools" / f"{tool}.md").write_text(f"---\nname: {tool}\n---\n")
+    if tools:
+        (root / name / "TOOLS.md").write_text("---\n" + "".join(f"{t}:\n" for t in tools) + "---\n")
 
 
 CHOICE = "---\ntype: choice\noptions: {x: X, y: Y}\n---\nWhich?\n"
@@ -134,7 +133,7 @@ CHECK = "---\ntype: check\n---\nIs it?\n"
 @pytest.mark.parametrize(
     ("front", "questions", "tools", "message"),
     [
-        ("kind: decision\n", {"q": CHECK}, ("t",), "decision agent 'a' cannot declare tools/"),
+        ("kind: decision\n", {"q": CHECK}, ("t",), "decision agent 'a' cannot declare tools"),
         (
             "kind: decision\nworkspace: true\n",
             {"q": CHECK},

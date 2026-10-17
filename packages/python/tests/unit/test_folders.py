@@ -15,6 +15,7 @@ def write(path: Path, text: str) -> None:
 def coding(root: Path) -> Path:
     write(root / "AGENT.md", "---\nname: coding\nkind: generation\ndescription: Codes\n---\nHi\n")
     write(root / "tools/run.md", "---\nname: run\ndescription: Runs\n---\n")
+    write(root / "TOOLS.md", "---\nwalk: Walks\n---\n")
     write(root / "tasks/review.md", "---\ndescription: Reviews\n---\nReview it.\n")
     write(root / "questions/q.md", "---\ntype: check\n---\nIs it?\n")
     write(root / "notes/style.md", "---\ndescription: The house style\n---\nTabs never.\n")
@@ -141,7 +142,8 @@ def test_content_leaves_out_what_the_prompt_already_holds(tmp_path: Path) -> Non
         "skills/pdf/reference.md",
     ]
     plain = [rel for rel, _ in content(root, False)]
-    assert "AGENT.md" in plain and "tools/run.md" in plain and "tasks/review.md" in plain
+    assert "AGENT.md" in plain and "TOOLS.md" in plain and "tools/run.md" in plain
+    assert "tasks/review.md" in plain
 
 
 def test_a_file_named_like_a_declaration_folder_is_content(tmp_path: Path) -> None:
