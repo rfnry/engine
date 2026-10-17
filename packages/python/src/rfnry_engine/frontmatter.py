@@ -9,6 +9,7 @@ from rfnry_engine.errors import ConfigurationError
 
 _FRONTMATTER = re.compile(r"^---\n(?:(.*?)\n)?---[ \t]*(?:\n(.*))?\Z", re.DOTALL)
 _BOOL = "tag:yaml.org,2002:bool"
+_MERGE = "tag:yaml.org,2002:merge"
 
 
 if TYPE_CHECKING:
@@ -21,6 +22,8 @@ class _Loader(_Base):
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
         seen: list[Any] = []
         for key_node, _ in node.value:
+            if key_node.tag == _MERGE:
+                continue
             key = self.construct_object(key_node, deep=deep)
             if key in seen:
                 raise yaml.constructor.ConstructorError(
@@ -51,7 +54,7 @@ _HEAD = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
 
 def described(path: Path) -> str | None:
     try:
-        raw = path.read_bytes().decode("utf-8")
+        raw = path.read_bytes().decode("utf-8").removeprefix("\ufeff")
     except UnicodeDecodeError:
         return None
     match = _HEAD.match(raw)

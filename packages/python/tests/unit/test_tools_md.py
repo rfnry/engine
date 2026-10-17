@@ -194,3 +194,27 @@ def test_a_tool_named_like_a_builtin_is_refused_at_build(
     (agent(tmp_path, front=front) / "TOOLS.md").write_text(f"---\n{name}:\n---\n")
     with pytest.raises(ConfigurationError, match=f"'{name}'"):
         Engine(tmp_path, generation=Scripted(), tools=[Tool(name, "Mine", body=echo)])
+
+
+def test_entries_may_share_fields_through_yaml_merge_keys(tmp_path: Path) -> None:
+    (agent(tmp_path) / "TOOLS.md").write_text(
+        "---\n"
+        "lookup_order:\n"
+        "  description: Find an order\n"
+        "  input: &order\n"
+        "    order_id: {type: string, required: true}\n"
+        "refund_order:\n"
+        "  description: Refund an order\n"
+        "  input:\n"
+        "    <<: *order\n"
+        "    amount: {type: number, required: true}\n"
+        "---\n"
+    )
+    refund = load_agent(tmp_path / "a").tools["refund_order"]
+    assert refund.input is not None and list(refund.input) == ["order_id", "amount"]
+
+
+def test_a_described_file_after_a_byte_order_mark_is_in_the_map(tmp_path: Path) -> None:
+    folder = agent(tmp_path)
+    (folder / "notes.md").write_text("﻿---\ndescription: Notes\n---\nBody\n", encoding="utf-8")
+    assert "notes.md — Notes" in load_agent(folder).listing

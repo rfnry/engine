@@ -218,14 +218,15 @@ though the model can still find it with `LS` and `Glob`. Other frontmatter keys 
 folder written for another tool — `skills/<name>/SKILL.md` with `name:` and `description:` — works
 as it is. `AGENT.md`, `TOOLS.md` and the folders `tasks/` and `questions/` stay out of the map: the
 prompt already holds them; a folder named `tools/` is content like any other. Frontmatter that is
-not valid YAML, or a `description:` that is not a string, is a `ConfigurationError` naming the file
-when the tree loads, so a typo never drops a file from the map. Everything else the model reads when
-it needs it, with the `Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can read only inside its
-own directory and the folders it reads. `Read` returns a text file as text. `Load` hands the model
-any other file as it is — an image, a PDF, a recording, a spreadsheet — so a price list, a diagram
-or a scanned form sits in the folder as it came, the model reads it with its own understanding of
-images and documents, there is no parser in between, and nothing is loaded until the model asks —
-unless the agent sets `preload: true`, below.
+not valid YAML — a key named twice included, as YAML forbids, in any file of the folder — or a
+`description:` that is not a string, is a `ConfigurationError` naming the file when the tree loads,
+so a typo never drops a file from the map. Everything else the model reads when it needs it, with
+the `Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can read only inside its own directory and
+the folders it reads. `Read` returns a text file as text. `Load` hands the model any other file as
+it is — an image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form
+sits in the folder as it came, the model reads it with its own understanding of images and
+documents, there is no parser in between, and nothing is loaded until the model asks — unless the
+agent sets `preload: true`, below.
 
 A root holds agents and plain folders side by side, and an agent reads other folders of its root by
 naming them in `reads:` — plain folders, or other agents' folders:
