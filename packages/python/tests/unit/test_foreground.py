@@ -496,3 +496,44 @@ async def test_one_press_cuts_the_rest_of_a_call_once(tmp_path: Path) -> None:
     run = await asyncio.wait_for(task, 2)
     assert isinstance(run, Generation) and run.stopped == "now"
     assert seen == [1]
+
+
+@pytest.mark.parametrize("own", [True, False])
+async def test_a_stop_before_a_call_returns_cuts_it_and_its_consult_keeps_its_record(
+    tmp_path: Path, own: bool
+) -> None:
+    kept = Writing()
+    billing = Script(text_reply("Refunded."))
+    back = Engine(tree(tmp_path / "back", billing=""), generation=billing, refinery=kept)
+    consult = back.tool("billing", scope="acme")
+
+    async def asking(args: dict[str, Any]) -> Any:
+        work = consult.dispatch("billing", {"input": "Was I charged twice?"})
+        return await (work if own else asyncio.create_task(work))
+
+    outer = Script(use(ToolCall(id="a1", name="ask", args={})), text_reply("never"))
+    front = Engine(tree(tmp_path / "front", support=""), generation=outer, refinery=kept)
+    stop = Stop()
+    tools = Tools([Tool("ask", "Ask billing", body=asking)])
+    task = asyncio.create_task(front.run("support", "acme", "x", tools=tools, stop=stop))
+    await asyncio.wait_for(kept.writing.wait(), 2)
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert (run.steps[0].result, run.steps[0].stopped) == (STOPPED, True)
+    [inner] = kept.of("billing")
+    assert inner.stopped is None and inner.reply == "Refunded."
+
+
+async def test_a_run_that_ended_is_recorded_through_a_cancel_during_its_write(
+    tmp_path: Path,
+) -> None:
+    kept = Writing()
+    back = Engine(tree(tmp_path, billing=""), generation=Script(text_reply("ok")), refinery=kept)
+    task = asyncio.create_task(back.run("billing", "acme", "x"))
+    await asyncio.wait_for(kept.writing.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 2)
+    [run] = kept.of("billing")
+    assert run.reply == "ok"

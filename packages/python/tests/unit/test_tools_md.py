@@ -242,3 +242,59 @@ def test_a_described_file_after_a_byte_order_mark_is_in_the_map(tmp_path: Path) 
     folder = agent(tmp_path)
     (folder / "notes.md").write_text("﻿---\ndescription: Notes\n---\nBody\n", encoding="utf-8")
     assert "notes.md — Notes" in load_agent(folder).listing
+
+
+async def test_an_input_may_use_any_property_name(tmp_path: Path) -> None:
+    folder = agent(tmp_path)
+    (folder / "tools").mkdir()
+    (folder / "tools" / "odd.md").write_text(
+        "---\ndescription: Odd names\ninput:\n"
+        "  _x: {type: string, required: true}\n"
+        "  model_config: {type: string}\n"
+        "  schema: {type: integer}\n"
+        "---\n"
+    )
+    tools = Tools(declared_tools(load_agent(folder), {"odd": Tool("odd", "Odd", body=echo)}))
+    [shown] = tools.definitions()
+    assert list(shown["input_schema"]["properties"]) == ["_x", "model_config", "schema"]
+    assert shown["input_schema"]["required"] == ["_x"]
+    given = await tools.dispatch("odd", {"_x": "a", "model_config": "b", "schema": 3})
+    assert given == {"given": ["_x", "model_config", "schema"]}
+    with pytest.raises(InputError, match="extra"):
+        await tools.dispatch("odd", {"_x": "a", "other": 1})
+    with pytest.raises(InputError):
+        await tools.dispatch("odd", {"model_config": "b"})
+
+
+@pytest.mark.parametrize(
+    ("front", "line", "fix"),
+    [
+        (
+            "kind: generation\ndescription: Refunds: what we owe\n",
+            3,
+            "quote a value that holds ': '",
+        ),
+        ("kind: generation\n\tagents: []\n", 3, "indent with spaces, not tabs"),
+        ("kind: generation\ndescription: 'open\n", 3, "close the quote"),
+        ("kind: generation\nkind: decision\n", 3, "remove one of them"),
+    ],
+)
+def test_a_yaml_mistake_is_said_on_one_line_with_its_place_and_fix(
+    tmp_path: Path, front: str, line: int, fix: str
+) -> None:
+    folder = tmp_path / "a"
+    folder.mkdir()
+    (folder / "AGENT.md").write_text(f"---\n{front}---\nHi.\n")
+    with pytest.raises(ConfigurationError) as refused:
+        load_agent(folder)
+    said = str(refused.value)
+    assert "\n" not in said and f"at line {line}" in said and fix in said
+
+
+def test_a_yaml_mistake_in_a_map_file_is_said_the_same_way(tmp_path: Path) -> None:
+    folder = agent(tmp_path)
+    (folder / "notes.md").write_text("---\ndescription: Notes: ours\n---\nBody\n")
+    with pytest.raises(ConfigurationError) as refused:
+        load_agent(folder)
+    said = str(refused.value)
+    assert "\n" not in said and "notes.md at line 2" in said and "quote" in said

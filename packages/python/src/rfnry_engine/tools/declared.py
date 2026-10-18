@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.tools.builtins import BUILTINS
@@ -33,10 +33,17 @@ def _schema(decl: ToolDecl) -> dict[str, Any]:
 
 def _args_model(decl: ToolDecl) -> type[BaseModel]:
     fields: dict[str, Any] = {}
-    for name, field in (decl.input or {}).items():
+    for at, (name, field) in enumerate((decl.input or {}).items()):
         python = _PYTHON[field.type]
-        fields[name] = (python, ...) if field.required else (python | None, None)
-    return create_model(f"{decl.name}_args", __config__=ConfigDict(extra="forbid"), **fields)
+        fields[f"field_{at}"] = (
+            (python, Field(alias=name))
+            if field.required
+            else (python | None, Field(default=None, alias=name))
+        )
+    config = ConfigDict(
+        extra="forbid", serialize_by_alias=True, validate_by_alias=True, validate_by_name=False
+    )
+    return create_model(f"{decl.name}_args", __config__=config, **fields)
 
 
 def declared_tools(spec: AgentSpec, code: dict[str, Tool]) -> list[Tool]:

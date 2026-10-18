@@ -52,6 +52,27 @@ def split_frontmatter(raw: str) -> tuple[str, str] | None:
 _HEAD = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
 
 
+_FIXES = (
+    ("tab", "indent with spaces, not tabs"),
+    (
+        "mapping values are not allowed",
+        "quote a value that holds ': ', or line the key up with the keys above it",
+    ),
+    ("duplicate key", "remove one of them"),
+    ("end of stream", "close the quote"),
+    ("could not find expected ':'", "write each entry as key: value"),
+    ("did not find expected key", "line the key up with the keys around it"),
+)
+
+
+def _unreadable(exc: yaml.YAMLError) -> tuple[str, str, str]:
+    problem = getattr(exc, "problem", None) or str(exc).splitlines()[0]
+    mark = getattr(exc, "problem_mark", None)
+    place = "" if mark is None else f" at line {mark.line + 2}, column {mark.column + 1}"
+    fix = next((fix for sign, fix in _FIXES if sign in problem), "fix the YAML there")
+    return place, problem, fix
+
+
 def described(path: Path) -> str | None:
     try:
         raw = path.read_bytes().decode("utf-8").removeprefix("\ufeff")
@@ -63,7 +84,10 @@ def described(path: Path) -> str | None:
     try:
         data = yaml.load(match.group(1), Loader=_Loader)
     except yaml.YAMLError as exc:
-        raise ConfigurationError(f"frontmatter: invalid YAML in {path}: {exc}") from exc
+        place, problem, fix = _unreadable(exc)
+        raise ConfigurationError(
+            f"frontmatter: invalid YAML in {path}{place}: {problem}; {fix}"
+        ) from exc
     said = data.get("description") if isinstance(data, dict) else None
     if said is not None and not isinstance(said, str):
         raise ConfigurationError(
@@ -101,7 +125,10 @@ def parse_frontmatter_doc[T: BaseModel](
     try:
         data = yaml.load(front_raw, Loader=_Loader) or {}
     except yaml.YAMLError as exc:
-        raise ConfigurationError(f"frontmatter: invalid YAML in {source}: {exc}") from exc
+        place, problem, fix = _unreadable(exc)
+        raise ConfigurationError(
+            f"frontmatter: invalid YAML in {source}{place}: {problem}; {fix}"
+        ) from exc
     try:
         config = model.model_validate(data)
     except ValidationError as exc:

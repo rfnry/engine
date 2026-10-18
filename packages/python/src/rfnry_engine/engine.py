@@ -66,7 +66,7 @@ from rfnry_engine.records import (
     ToolCallStarted,
     ToolResultReady,
 )
-from rfnry_engine.stop import Stop, Stopped, requested, wait
+from rfnry_engine.stop import Stop, Stopped, join, requested, wait
 from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
@@ -420,12 +420,10 @@ class Engine:
             run = await self._run(spec, scope, input, options, None)
         except Exception:
             if record and options.failed:
-                with taking(stop):
-                    await self._record(options.failed[-1])
+                await join([asyncio.ensure_future(self._record(options.failed[-1]))])
             raise
         if record:
-            with taking(stop):
-                await self._record(run)
+            await join([asyncio.ensure_future(self._record(run))])
         return run
 
     async def _record(self, run: Run) -> None:

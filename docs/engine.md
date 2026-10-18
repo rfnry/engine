@@ -227,13 +227,14 @@ and `description:` — works as it is. `AGENT.md`, `TOOLS.md` and the folders `t
 sub-agents, which it reaches through `agents:` — their folders stay readable to its tools, as its
 declarations do, and count in its fingerprint. Frontmatter that is not valid YAML — a key named
 twice included, as YAML forbids, in any file of the folder — or a `description:` that is not a
-string, is a `ConfigurationError` naming the file when the tree loads, so a typo is caught before
-any run. Everything else the model reads when it needs it, with the `Read`, `Grep`, `Glob`, `LS` and
-`Load` tools, and it can read only inside its own directory and the folders it reads. `Read` returns
-a text file as text. `Load` hands the model any other file as it is — an image, a PDF, a recording,
-a spreadsheet — so a price list, a diagram or a scanned form sits in the folder as it came, the
-model reads it with its own understanding of images and documents, there is no parser in between,
-and nothing is loaded until the model asks — unless the agent sets `preload: true`, below.
+string, is a `ConfigurationError` naming the file, the line and what to change when the tree loads,
+so a typo is caught before any run. Everything else the model reads when it needs it, with the
+`Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can read only inside its own directory and the
+folders it reads. `Read` returns a text file as text. `Load` hands the model any other file as it is
+— an image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in
+the folder as it came, the model reads it with its own understanding of images and documents, there
+is no parser in between, and nothing is loaded until the model asks — unless the agent sets
+`preload: true`, below.
 
 A root holds agents and plain folders side by side, and an agent reads other folders of its root by
 naming them in `reads:` — plain folders, or other agents' folders:
@@ -380,19 +381,19 @@ part from another library is read by its fields.
 
 Pass `record=False` to run without the refinery recording it — a replay, an evaluation, a dry run.
 
-A run that raises instead of returning — the vendor refused the call, the adapter broke the
-contract (`ModelError`), the loop passed `max_steps` (`RunawayError`) — returns no record; the
-exception is what you have, the same one the adapter or the engine raised. With a refinery
-attached, the run is recorded first, as far as it got: `error` says what ended it —
-`"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. Its conversation can
-hold a tool call with no result, when the run failed between the call and its result, and `run()`
-refuses such a history: go on from the history the run was given. A run refused before its
-first model call — a bad input, an agent or task the tree does not have, a route loop — has
-nothing to record, and a run whose task you cancel is not recorded; `stop=` ends a run with its
-record. A delegated run that fails stays under its parent in `children`, its step the error the
-parent's model was given, and the parent goes on; a routed run that fails fails its router, which
-is recorded with its answers and the failed run in `routed_to`, or `None` when the routed run was
-refused before its first model call.
+A run that raises instead of returning — the vendor refused the call, the adapter broke the contract
+(`ModelError`), the loop passed `max_steps` (`RunawayError`) — returns no record; the exception is
+what you have, the same one the adapter or the engine raised. With a refinery attached, the run is
+recorded first, as far as it got: `error` says what ended it — `"ModelError: …"` — `reply` is `""`
+and `stop_reason` is its last reply's. Its conversation can hold a tool call with no result, when
+the run failed between the call and its result, and `run()` refuses such a history: go on from the
+history the run was given. A run refused before its first model call — a bad input, an agent or task
+the tree does not have, a route loop — has nothing to record, and a run whose task you cancel before
+it ends is not recorded — one that has ended is recorded even when a cancel lands while its record
+is written; `stop=` ends a run with its record. A delegated run that fails stays under its parent in
+`children`, its step the error the parent's model was given, and the parent goes on; a routed run
+that fails fails its router, which is recorded with its answers and the failed run in `routed_to`,
+or `None` when the routed run was refused before its first model call.
 
 Pass `tags=` to mark a run with what you will group it by later — the commit of the tree, an
 experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64
@@ -1550,10 +1551,11 @@ into an agent already in the same chain of routes is refused.
 Called inside a run, a consult is part of that run's foreground, as a delegated run is: its run
 takes the caller's `stop` and `on_event`. The caller's `stop.now()` reaches the consult instead of
 cancelling its call, so the consult ends with its record, and whatever else the call was doing is
-cut once the consult has taken the stop, and the caller's step reads `stopped by the user`, as a
-stopped `Delegate` step does; `after_step()` ends it after its current step. A consult a tool of
-yours starts in a task of its own — two at once, say — is in the foreground too. Its events reach
-the caller's handler, told apart by `agent` and `run_id`:
+cut once the consult has taken the stop — a stop that lands before a call returns cuts it, even when
+its consult had just finished, and that consult keeps its record — and the caller's step reads
+`stopped by the user`, as a stopped `Delegate` step does; `after_step()` ends it after its current
+step. A consult a tool of yours starts in a task of its own — two at once, say — is in the
+foreground too. Its events reach the caller's handler, told apart by `agent` and `run_id`:
 
 ```python
 async def status(event):
