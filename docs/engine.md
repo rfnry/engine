@@ -390,10 +390,11 @@ the run failed between the call and its result, and `run()` refuses such a histo
 history the run was given. A run refused before its first model call — a bad input, an agent or task
 the tree does not have, a route loop — has nothing to record, and a run whose task you cancel before
 it ends is not recorded — one that has ended is recorded even when a cancel lands while its record
-is written; `stop=` ends a run with its record. A delegated run that fails stays under its parent in
-`children`, its step the error the parent's model was given, and the parent goes on; a routed run
-that fails fails its router, which is recorded with its answers and the failed run in `routed_to`,
-or `None` when the routed run was refused before its first model call.
+is written, and a further cancel cuts a write that hangs; `stop=` ends a run with its record. A
+delegated run that fails stays under its parent in `children`, its step the error the parent's model
+was given, and the parent goes on; a routed run that fails fails its router, which is recorded with
+its answers and the failed run in `routed_to`, or `None` when the routed run was refused before its
+first model call.
 
 Pass `tags=` to mark a run with what you will group it by later — the commit of the tree, an
 experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64
