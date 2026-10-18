@@ -298,3 +298,41 @@ def test_a_yaml_mistake_in_a_map_file_is_said_the_same_way(tmp_path: Path) -> No
         load_agent(folder)
     said = str(refused.value)
     assert "\n" not in said and "notes.md at line 2" in said and "quote" in said
+
+
+@pytest.mark.parametrize(
+    ("front", "line", "fix"),
+    [
+        ("kind: generation\ndescription: 'open\nagents: []\n", 3, "close the quote"),
+        ("kind: generation\ndescription\nagents: []\n", 3, "key: value"),
+        ("kind: generation\nagents: [a, b\n", 3, "close the ["),
+        ("kind: generation\ndescription: bad\x1bhere\n", 3, "remove the control character"),
+    ],
+)
+def test_a_yaml_mistake_is_placed_where_it_starts(
+    tmp_path: Path, front: str, line: int, fix: str
+) -> None:
+    folder = tmp_path / "a"
+    folder.mkdir()
+    (folder / "AGENT.md").write_text(f"---\n{front}---\nHi.\n")
+    with pytest.raises(ConfigurationError) as refused:
+        load_agent(folder)
+    said = str(refused.value)
+    assert "\n" not in said and f"at line {line}," in said and fix in said
+
+
+@pytest.mark.parametrize(
+    ("text", "fix"),
+    [
+        ("kind: generation\n\tagents: []\n", "indent with spaces, not tabs"),
+        ("kind: generation\n  agents: []\nx: 1\n", "line the key up"),
+    ],
+)
+def test_pure_pyyaml_mistakes_get_the_same_fixes(text: str, fix: str) -> None:
+    import yaml
+
+    from rfnry_engine.frontmatter import _unreadable
+
+    with pytest.raises(yaml.YAMLError) as raised:
+        yaml.load(text, Loader=yaml.SafeLoader)
+    assert fix in _unreadable(raised.value, text)[2]

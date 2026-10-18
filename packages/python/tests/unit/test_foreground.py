@@ -338,7 +338,7 @@ class Writing(Kept):
 
 
 @pytest.mark.parametrize("further", [False, True])
-async def test_one_stop_lets_a_consult_s_record_be_written_and_a_further_one_cuts_it(
+async def test_a_consult_s_record_is_written_through_every_stop(
     tmp_path: Path, further: bool
 ) -> None:
     kept = Writing()
@@ -359,7 +359,7 @@ async def test_one_stop_lets_a_consult_s_record_be_written_and_a_further_one_cut
         stop.now()
     run = await asyncio.wait_for(task, 2)
     assert isinstance(run, Generation) and run.stopped == "now"
-    assert [r.stopped for r in kept.of("billing")] == ([] if further else ["now"])
+    assert [r.stopped for r in kept.of("billing")] == ["now"]
 
 
 async def test_a_consult_whose_routed_run_was_stopped_reads_stopped(tmp_path: Path) -> None:
@@ -528,20 +528,6 @@ async def test_a_stop_before_a_call_returns_cuts_it_and_its_consult_keeps_its_re
     assert inner.stopped is None and inner.reply == "Refunded."
 
 
-async def test_a_run_that_ended_is_recorded_through_a_cancel_during_its_write(
-    tmp_path: Path,
-) -> None:
-    kept = Writing()
-    back = Engine(tree(tmp_path, billing=""), generation=Script(text_reply("ok")), refinery=kept)
-    task = asyncio.create_task(back.run("billing", "acme", "x"))
-    await asyncio.wait_for(kept.writing.wait(), 2)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 2)
-    [run] = kept.of("billing")
-    assert run.reply == "ok"
-
-
 class Hung(Kept):
     def __init__(self) -> None:
         super().__init__()
@@ -552,14 +538,16 @@ class Hung(Kept):
         await asyncio.Event().wait()
 
 
-async def test_a_second_cancel_cuts_a_record_write_that_hangs(tmp_path: Path) -> None:
-    kept = Hung()
-    back = Engine(tree(tmp_path, billing=""), generation=Script(text_reply("ok")), refinery=kept)
-    task = asyncio.create_task(back.run("billing", "acme", "x"))
-    await asyncio.wait_for(kept.writing.wait(), 2)
-    task.cancel()
-    await asyncio.sleep(0.05)
-    assert not task.done()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 2)
+async def test_a_tool_deadline_bounds_a_consult_whose_record_write_hangs(tmp_path: Path) -> None:
+    back = Engine(
+        tree(tmp_path / "back", billing=""), generation=Script(text_reply("ok")), refinery=Hung()
+    )
+    outer = Script(consulting(), text_reply("Carried on."))
+    front = Engine(tree(tmp_path / "front", support=""), generation=outer, tool_timeout=0.2)
+    began = time.monotonic()
+    run = await asyncio.wait_for(
+        front.run("support", "acme", "x", tools=back.tool("billing", scope="acme")), 2
+    )
+    assert time.monotonic() - began < 1.0
+    assert isinstance(run, Generation) and run.reply == "Carried on."
+    assert str(run.steps[0].result).startswith("TimeoutError")

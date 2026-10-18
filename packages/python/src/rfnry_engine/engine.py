@@ -420,16 +420,13 @@ class Engine:
             run = await self._run(spec, scope, input, options, None)
         except Exception:
             if record and options.failed:
-                await self._kept(options.failed[-1])
+                with taking(stop):
+                    await self._record(options.failed[-1])
             raise
         if record:
-            await self._kept(run)
+            with taking(stop):
+                await self._record(run)
         return run
-
-    async def _kept(self, run: Run) -> None:
-        runner = asyncio.current_task()
-        writing = asyncio.ensure_future(self._record(run))
-        await wait([writing], None, calm=None if runner is None else runner.cancelling() + 1)
 
     async def _record(self, run: Run) -> None:
         if self.refinery is None:
@@ -799,7 +796,7 @@ class Engine:
                         else:
                             content = f"{type(exc).__name__}: {exc}"
                         is_error = True
-                    if here.stopped:
+                    if here.stopped or here.pressed:
                         content, is_error, stopped = STOPPED, True, True
             finally:
                 here.over = True
