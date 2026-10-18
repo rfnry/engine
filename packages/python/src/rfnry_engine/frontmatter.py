@@ -81,16 +81,19 @@ def _unreadable(exc: yaml.YAMLError, text: str) -> tuple[str, str, str]:
     mark = getattr(exc, "problem_mark", None)
     if context.startswith(_STARTED):
         mark = getattr(exc, "context_mark", None) or mark
-    position = getattr(exc, "position", None)
+    character = getattr(exc, "character", None)
+    position = text.find(chr(character)) if isinstance(character, int) else -1
     if mark is not None:
         line, column = mark.line, mark.column
-    elif isinstance(position, int):
+    elif position >= 0:
         line = text.count("\n", 0, position)
         column = position - (text.rfind("\n", 0, position) + 1)
     else:
         line = column = -1
     place = "" if line < 0 else f" at line {line + 2}, column {column + 1}"
-    said = f"{problem} {context}"
+    lines = text.split("\n")
+    at = lines[line][column : column + 1] if 0 <= line < len(lines) else ""
+    said = "tab character" if at == "\t" else f"{problem} {context}"
     fix = next((fix for sign, fix in _FIXES if sign in said), "fix the YAML there")
     return place, problem, fix
 

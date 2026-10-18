@@ -307,6 +307,7 @@ def test_a_yaml_mistake_in_a_map_file_is_said_the_same_way(tmp_path: Path) -> No
         ("kind: generation\ndescription\nagents: []\n", 3, "key: value"),
         ("kind: generation\nagents: [a, b\n", 3, "close the ["),
         ("kind: generation\ndescription: bad\x1bhere\n", 3, "remove the control character"),
+        ("kind: generation\nagents:\n\t- a\n", 4, "indent with spaces, not tabs"),
     ],
 )
 def test_a_yaml_mistake_is_placed_where_it_starts(
@@ -321,10 +322,22 @@ def test_a_yaml_mistake_is_placed_where_it_starts(
     assert "\n" not in said and f"at line {line}," in said and fix in said
 
 
+def test_a_control_character_is_placed_past_wide_characters(tmp_path: Path) -> None:
+    folder = tmp_path / "a"
+    folder.mkdir()
+    front = f"kind: generation\ndescription: {'ñ' * 40}\nx: abcdefg\x07\n"
+    (folder / "AGENT.md").write_text(f"---\n{front}---\nHi.\n")
+    with pytest.raises(ConfigurationError) as refused:
+        load_agent(folder)
+    assert "at line 4, column 11:" in str(refused.value)
+
+
 @pytest.mark.parametrize(
     ("text", "fix"),
     [
         ("kind: generation\n\tagents: []\n", "indent with spaces, not tabs"),
+        ("kind: generation\nagents:\n\t- a\n", "indent with spaces, not tabs"),
+        ("x: abc\x07\n", "remove the control character"),
         ("kind: generation\n  agents: []\nx: 1\n", "line the key up"),
     ],
 )
