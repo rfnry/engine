@@ -52,6 +52,52 @@ def split_frontmatter(raw: str) -> tuple[str, str] | None:
 _HEAD = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
 
 
+_STARTED = (
+    "while scanning a quoted scalar",
+    "while scanning a simple key",
+    "while parsing a flow",
+)
+_FIXES = (
+    ("tab character", "indent with spaces, not tabs"),
+    ("character '\\t'", "indent with spaces, not tabs"),
+    ("unacceptable character", "remove the control character"),
+    ("quoted scalar", "close the quote"),
+    ("could not find expected ':'", "write each entry as key: value"),
+    ("expected ',' or ']'", "close the [ with ]"),
+    ("expected ',' or '}'", "close the { with }"),
+    (
+        "mapping values are not allowed",
+        "quote a value that holds ': ', or line the key up with the keys above it",
+    ),
+    ("duplicate key", "remove one of them"),
+    ("did not find expected key", "line the key up with the keys around it"),
+    ("expected <block end>", "line the key up with the keys around it"),
+)
+
+
+def _unreadable(exc: yaml.YAMLError, text: str) -> tuple[str, str, str]:
+    problem = getattr(exc, "problem", None) or str(exc).splitlines()[0]
+    context = getattr(exc, "context", None) or ""
+    mark = getattr(exc, "problem_mark", None)
+    if context.startswith(_STARTED):
+        mark = getattr(exc, "context_mark", None) or mark
+    character = getattr(exc, "character", None)
+    position = text.find(chr(character)) if isinstance(character, int) else -1
+    if mark is not None:
+        line, column = mark.line, mark.column
+    elif position >= 0:
+        line = text.count("\n", 0, position)
+        column = position - (text.rfind("\n", 0, position) + 1)
+    else:
+        line = column = -1
+    place = "" if line < 0 else f" at line {line + 2}, column {column + 1}"
+    lines = text.split("\n")
+    at = lines[line][column : column + 1] if 0 <= line < len(lines) else ""
+    said = "tab character" if at == "\t" else f"{problem} {context}"
+    fix = next((fix for sign, fix in _FIXES if sign in said), "fix the YAML there")
+    return place, problem, fix
+
+
 def described(path: Path) -> str | None:
     try:
         raw = path.read_bytes().decode("utf-8").removeprefix("\ufeff")
@@ -63,7 +109,10 @@ def described(path: Path) -> str | None:
     try:
         data = yaml.load(match.group(1), Loader=_Loader)
     except yaml.YAMLError as exc:
-        raise ConfigurationError(f"frontmatter: invalid YAML in {path}: {exc}") from exc
+        place, problem, fix = _unreadable(exc, match.group(1))
+        raise ConfigurationError(
+            f"frontmatter: invalid YAML in {path}{place}: {problem}; {fix}"
+        ) from exc
     said = data.get("description") if isinstance(data, dict) else None
     if said is not None and not isinstance(said, str):
         raise ConfigurationError(
@@ -101,7 +150,10 @@ def parse_frontmatter_doc[T: BaseModel](
     try:
         data = yaml.load(front_raw, Loader=_Loader) or {}
     except yaml.YAMLError as exc:
-        raise ConfigurationError(f"frontmatter: invalid YAML in {source}: {exc}") from exc
+        place, problem, fix = _unreadable(exc, front_raw)
+        raise ConfigurationError(
+            f"frontmatter: invalid YAML in {source}{place}: {problem}; {fix}"
+        ) from exc
     try:
         config = model.model_validate(data)
     except ValidationError as exc:

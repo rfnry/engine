@@ -796,7 +796,7 @@ class Engine:
                         else:
                             content = f"{type(exc).__name__}: {exc}"
                         is_error = True
-                    if here.stopped:
+                    if here.stopped or here.pressed:
                         content, is_error, stopped = STOPPED, True, True
             finally:
                 here.over = True

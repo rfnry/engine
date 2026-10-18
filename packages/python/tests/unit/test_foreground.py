@@ -337,7 +337,10 @@ class Writing(Kept):
         await super().record(run)
 
 
-async def test_a_further_stop_lets_a_consult_s_record_be_written(tmp_path: Path) -> None:
+@pytest.mark.parametrize("further", [False, True])
+async def test_a_consult_s_record_is_written_through_every_stop(
+    tmp_path: Path, further: bool
+) -> None:
     kept = Writing()
     billing = Gated()
     front = Engine(
@@ -352,11 +355,11 @@ async def test_a_further_stop_lets_a_consult_s_record_be_written(tmp_path: Path)
     await until(lambda: billing.calls == 1, "the consult")
     stop.now()
     await asyncio.wait_for(kept.writing.wait(), 2)
-    stop.now()
+    if further:
+        stop.now()
     run = await asyncio.wait_for(task, 2)
     assert isinstance(run, Generation) and run.stopped == "now"
-    [inner] = kept.of("billing")
-    assert inner.stopped == "now"
+    assert [r.stopped for r in kept.of("billing")] == ["now"]
 
 
 async def test_a_consult_whose_routed_run_was_stopped_reads_stopped(tmp_path: Path) -> None:
@@ -496,3 +499,55 @@ async def test_one_press_cuts_the_rest_of_a_call_once(tmp_path: Path) -> None:
     run = await asyncio.wait_for(task, 2)
     assert isinstance(run, Generation) and run.stopped == "now"
     assert seen == [1]
+
+
+@pytest.mark.parametrize("own", [True, False])
+async def test_a_stop_before_a_call_returns_cuts_it_and_its_consult_keeps_its_record(
+    tmp_path: Path, own: bool
+) -> None:
+    kept = Writing()
+    billing = Script(text_reply("Refunded."))
+    back = Engine(tree(tmp_path / "back", billing=""), generation=billing, refinery=kept)
+    consult = back.tool("billing", scope="acme")
+
+    async def asking(args: dict[str, Any]) -> Any:
+        work = consult.dispatch("billing", {"input": "Was I charged twice?"})
+        return await (work if own else asyncio.create_task(work))
+
+    outer = Script(use(ToolCall(id="a1", name="ask", args={})), text_reply("never"))
+    front = Engine(tree(tmp_path / "front", support=""), generation=outer, refinery=kept)
+    stop = Stop()
+    tools = Tools([Tool("ask", "Ask billing", body=asking)])
+    task = asyncio.create_task(front.run("support", "acme", "x", tools=tools, stop=stop))
+    await asyncio.wait_for(kept.writing.wait(), 2)
+    stop.now()
+    run = await asyncio.wait_for(task, 2)
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert (run.steps[0].result, run.steps[0].stopped) == (STOPPED, True)
+    [inner] = kept.of("billing")
+    assert inner.stopped is None and inner.reply == "Refunded."
+
+
+class Hung(Kept):
+    def __init__(self) -> None:
+        super().__init__()
+        self.writing = asyncio.Event()
+
+    async def record(self, run: Run) -> None:
+        self.writing.set()
+        await asyncio.Event().wait()
+
+
+async def test_a_tool_deadline_bounds_a_consult_whose_record_write_hangs(tmp_path: Path) -> None:
+    back = Engine(
+        tree(tmp_path / "back", billing=""), generation=Script(text_reply("ok")), refinery=Hung()
+    )
+    outer = Script(consulting(), text_reply("Carried on."))
+    front = Engine(tree(tmp_path / "front", support=""), generation=outer, tool_timeout=0.2)
+    began = time.monotonic()
+    run = await asyncio.wait_for(
+        front.run("support", "acme", "x", tools=back.tool("billing", scope="acme")), 2
+    )
+    assert time.monotonic() - began < 1.0
+    assert isinstance(run, Generation) and run.reply == "Carried on."
+    assert str(run.steps[0].result).startswith("TimeoutError")
