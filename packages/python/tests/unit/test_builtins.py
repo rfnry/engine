@@ -560,6 +560,39 @@ async def test_read_reaches_the_workspace_when_the_run_has_one(media: Path, tmp_
         await both.dispatch("Read", {"path": "../agent/knowledge/notes.md", "where": "workspace"})
 
 
+async def test_a_path_the_folder_lacks_says_how_to_reach_the_workspace(
+    media: Path, tmp_path: Path
+) -> None:
+    work = tmp_path / "work"
+    (work / "task_folder").mkdir(parents=True)
+    (work / "task_folder" / "a.csv").write_text("x\n")
+    both = Tools([*builtins(media, None, Local(work)), load_tool(media, Local(work))])
+    with pytest.raises(
+        InputError,
+        match="^builtins: not a directory of your folder: task_folder; Shell lists your workspace$",
+    ):
+        await both.dispatch("LS", {"path": "task_folder"})
+    for name, verb in [("Read", "reads"), ("Load", "loads")]:
+        with pytest.raises(
+            InputError,
+            match=(
+                f"^builtins: not a file of your folder: task_folder/a.csv; "
+                f'{name} with where="workspace" {verb} from your workspace$'
+            ),
+        ):
+            await both.dispatch(name, {"path": "task_folder/a.csv"})
+    with pytest.raises(InputError, match="^builtins: not a directory: knowledge/notes.md$"):
+        await both.dispatch("LS", {"path": "knowledge/notes.md"})
+    with pytest.raises(InputError, match="^builtins: not a file: knowledge$"):
+        await both.dispatch("Read", {"path": "knowledge"})
+    alone = Tools([*builtins(media), load_tool(media)])
+    with pytest.raises(InputError, match="^builtins: not a directory: task_folder$"):
+        await alone.dispatch("LS", {"path": "task_folder"})
+    for name in ["Read", "Load"]:
+        with pytest.raises(InputError, match="^builtins: not a file: task_folder/a.csv$"):
+            await alone.dispatch(name, {"path": "task_folder/a.csv"})
+
+
 async def test_read_and_load_go_through_any_backend_with_their_limits() -> None:
     class Files:
         def __init__(self) -> None:
