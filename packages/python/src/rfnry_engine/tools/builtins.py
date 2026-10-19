@@ -144,7 +144,7 @@ def _name_of(fd: int, path: str, removed: bool) -> Path:
     return Path(opened.removesuffix(" (deleted)") if removed else opened)
 
 
-def _contents(jail: Jail, path: str, limit: int) -> tuple[Path, bytes]:
+def _contents(jail: Jail, path: str, limit: int, missing: str = "") -> tuple[Path, bytes]:
     try:
         fd = jail.open(path)
         try:
@@ -159,6 +159,8 @@ def _contents(jail: Jail, path: str, limit: int) -> tuple[Path, bytes]:
         finally:
             os.close(fd)
     except OSError as exc:
+        if exc.errno == errno.ENOENT and missing:
+            raise InputError(f"builtins: not a file of your folder: {path}; {missing}") from None
         if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ENXIO):
             raise InputError(f"builtins: not a file: {path}") from None
         raise InputError(f"builtins: cannot read {path}: {exc.strerror}") from None
@@ -197,8 +199,11 @@ def _read_tool(read: Tool, workspace: Backend | None) -> Tool:
 
 
 class _Directory:
-    def __init__(self, root: Path, reads: Mapping[str, Path] | None = None) -> None:
+    def __init__(
+        self, root: Path, reads: Mapping[str, Path] | None = None, workspace: bool = False
+    ) -> None:
         self.root = Path(root).resolve()
+        self.workspace = workspace
         self.reads = {name: Path(folder).resolve() for name, folder in (reads or {}).items()}
         self.jail = Jail(self.root, also=self.reads.values())
 
@@ -217,7 +222,8 @@ class _Directory:
 
     def read(self, args: dict[str, Any]) -> Result:
         a = ReadArgs.model_validate(args)
-        return _lines(_contents(self.jail, a.path, _MAX_BYTES)[1], a)
+        missing = 'Read with where="workspace" reads from your workspace' if self.workspace else ""
+        return _lines(_contents(self.jail, a.path, _MAX_BYTES, missing)[1], a)
 
     def _files_under(self, base: Path, glob: str | None) -> tuple[list[Path], bool]:
         if base.is_file():
@@ -339,6 +345,10 @@ class _Directory:
             finally:
                 os.close(fd)
         except OSError as exc:
+            if exc.errno == errno.ENOENT and self.workspace:
+                raise InputError(
+                    f"builtins: not a directory of your folder: {path}; Shell lists your workspace"
+                ) from None
             if exc.errno in (errno.ENOENT, errno.ENOTDIR):
                 raise InputError(f"builtins: not a directory: {path}") from None
             raise InputError(f"builtins: cannot list {path}: {exc.strerror}") from None
@@ -351,7 +361,7 @@ class _Directory:
 def builtins(
     root: Path, reads: Mapping[str, Path] | None = None, workspace: Backend | None = None
 ) -> list[Tool]:
-    directory = _Directory(root, reads)
+    directory = _Directory(root, reads, workspace is not None)
 
     def threaded(handler: Any) -> Any:
         async def body(args: dict[str, Any]) -> Result:
@@ -398,9 +408,12 @@ def load_tool(
     reads: Iterable[Path] = (),
 ) -> Tool:
     jail = Jail(folder, also=reads)
+    missing = (
+        'Load with where="workspace" loads from your workspace' if workspace is not None else ""
+    )
 
     def load(path: str) -> list[Part]:
-        opened, data = _contents(jail, path, _LOAD_BYTES)
+        opened, data = _contents(jail, path, _LOAD_BYTES, missing)
         return [_handed(opened, data, path, media_types)]
 
     async def body(args: dict[str, Any]) -> Result:

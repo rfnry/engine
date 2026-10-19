@@ -1069,7 +1069,10 @@ writes a file exactly, and `Edit(path, old, new, all=false)` replaces one exact 
 `all=true` every one — helpers that send only what changes and leave a clean step in the record; the
 shell can do both too. `Read` and `Load` take `where="workspace"`: `Read` for a text file of the
 workspace, with `offset` and `limit` selecting lines, `Load` to hand the model a file as it is, so
-an agent looks at the chart it just plotted. Both go through the backend. Each command starts fresh
+an agent looks at the chart it just plotted. Both go through the backend. `LS`, `Grep` and `Glob`
+stay on the folder; a path the folder does not hold, given to `LS`, `Read` or `Load` of a run with a
+workspace, is answered with the way to the workspace: `builtins: not a directory of your folder:
+task_folder; Shell lists your workspace`. Each command starts fresh
 in the directory, so a `cd` or a variable does not carry over, and the tool's description tells the
 model so, along with its limits.
 
