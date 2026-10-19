@@ -4,6 +4,8 @@
 
 A contract reviewer for a law firm's lawyers, checking a contract against the firm's playbook. It shows the refinery: every run is recorded, a lawyer's review becomes a label on it, and the firm exports datasets with every label and its source. Look at `Refinery(PostgresStorage(pool))` passed to `Engine(..., refinery=)`, `refinery.review(...)` and `refinery.export(..., since=)` in `src/harness.py`.
 
+It also shows a chat a frontend can sit on, over a WebSocket: the reviewer's thinking, text and tool calls as they happen, a `drafter` sub-agent's work nested under the call that asked for it, messages queued while it works and marked read when the model reads them, a stop, and `/task` and `/skill` commands from a menu. Look at `src/chat.py`: `OFFERED` is the menu, `engine.agents` gives each entry its description, `engine.run(..., on_event=, stop=, inbox=, task=, skill=)` runs a turn, and the inbox's leftovers start the next. `src/thinking.py` asks the model to think and streams it with `on_delta(text, reasoning=True)`. The agent's task is in `agents/reviewer/tasks/`, its skills in `agents/reviewer/skills/`.
+
 ## Running
 
 ```bash
@@ -41,3 +43,26 @@ curl -s -X POST localhost:8000/export -H 'X-Tenant: firm-acme'
 ```json
 {"keys": ["firm-acme/reviewer/generation/20260930T155456384618Z.jsonl", "firm-acme/reviewer/preference/20260930T155456384618Z.jsonl"], "rows": {"generation": 1, "preference": 1}, "watermark": "2026-09-30T15:54:56.375064Z"}
 ```
+
+## Chat
+
+```bash
+websocat 'ws://localhost:8000/chat?firm=firm-acme&contract=northwind-msa'
+```
+
+The server sends the menu first:
+
+```json
+{"type": "menu", "tasks": {"review": "Review the whole contract against the playbook"}, "skills": {"redline": "How to write a redline the firm signs off on", "risk": "How to rate a departure from the playbook as low, medium or high"}}
+```
+
+Send a message, a command, or a stop:
+
+```json
+{"text": "Is the indemnity acceptable for our client?"}
+{"text": "/skill redline clause 4"}
+{"text": "/task review"}
+{"type": "stop"}
+```
+
+Every event of the run comes back with its type: `RunStarted`, `ReasoningDelta`, `TextDelta`, `ToolCallStarted`, `ToolResultReady` and `MessagesTaken`, each with the `run_id` it belongs to. A sub-agent's `RunStarted` names the reviewer's call in `call`, so its events go under that call. A message sent while a reply is being written is answered `{"type": "queued"}` and joins the run at its next step; `{"type": "read", "count": n}` says the first `n` queued messages reached the model. A command waits for the reply, and one not on the menu is answered `{"type": "refused", "reason": ...}`. Each reply ends with `{"type": "done", "run_id": ..., "stopped": ..., "reply": ...}`.

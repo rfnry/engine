@@ -3,7 +3,7 @@ from pathlib import Path
 
 from rfnry_engine import Engine, PostgresStorage, Refinery, Review
 
-from providers import AnthropicProvider
+from thinking import ThinkingProvider
 from utils import Folder
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,7 +19,7 @@ async def setup(pool) -> None:
     global refinery, engine
     refinery = Refinery(PostgresStorage(pool))
     await refinery.initialize()
-    engine = Engine(ROOT / "agents", generation=AnthropicProvider(), refinery=refinery)
+    engine = Engine(ROOT / "agents", generation=ThinkingProvider(), refinery=refinery)
 
 
 async def run(firm: str, contract: str, question: str) -> dict:
