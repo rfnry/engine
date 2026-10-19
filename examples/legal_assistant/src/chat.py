@@ -46,6 +46,7 @@ class Chat:
         self.work: asyncio.Task[None] | None = None
         self.sending = asyncio.Lock()
         self.open = True
+        self.halted = False
 
     async def send(self, *frames: dict[str, Any]) -> None:
         async with self.sending:
@@ -69,8 +70,10 @@ class Chat:
         if not isinstance(said, dict):
             await self.send(frame("refused", reason="send a JSON object"))
             return
-        text = str(said.get("text", "")).strip()
+        text = said.get("text", "")
+        text = text.strip() if isinstance(text, str) else ""
         if said.get("type") == "stop":
+            self.halted = True
             self.stop.now()
         elif not text:
             await self.send(frame("refused", text=text, reason="say something"))
@@ -87,6 +90,7 @@ class Chat:
                 await self.send(frame("refused", text=text, reason=str(error)))
                 return
             self.stop = Stop()
+            self.halted = False
             self.work = asyncio.create_task(self.answer(text, invoked))
 
     async def answer(self, text: str, invoked: dict[str, str]) -> None:
@@ -108,18 +112,22 @@ class Chat:
                 return
             self.conversation = run.conversation
             done = frame("done", run_id=run.run_id, stopped=run.stopped, reply=run.reply)
-            if run.stopped is not None or not self.open or self.inbox.empty():
+            if run.stopped is not None or self.halted or not self.open or self.inbox.empty():
                 await self.rest(done)
                 return
+            await self.send(done)
+            if self.halted or not self.open:
+                await self.rest()
+                return
             text, invoked = self.inbox.get_nowait(), {}
-            await self.send(done, frame("read", count=1))
+            await self.send(frame("read", count=1))
 
-    async def rest(self, done: dict[str, Any]) -> None:
+    async def rest(self, *frames: dict[str, Any]) -> None:
         unsent: list[str] = []
         while not self.inbox.empty():
             unsent.append(self.inbox.get_nowait())
         self.work = None
-        await self.send(done, *([frame("unsent", texts=unsent)] if unsent else []))
+        await self.send(*frames, *([frame("unsent", texts=unsent)] if unsent else []))
 
     async def close(self) -> None:
         self.open = False

@@ -10,9 +10,9 @@ def _read(path: Path) -> str:
 
 
 def read_body(path: Path) -> str:
-    text = _read(path)
+    text = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
     split = split_frontmatter(text)
-    return text if split is None else split[1].strip()
+    return (text if split is None else split[1]).strip()
 
 
 def build_bundle(

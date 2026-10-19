@@ -336,3 +336,11 @@ def test_a_block_between_dashes_that_holds_no_keys_says_so(tmp_path: Path) -> No
     assert said.endswith(
         "write key: value lines between the two --- lines, or start the file without ---"
     )
+
+
+def test_a_block_after_a_blank_line_is_body_in_the_map_and_in_the_prompt(tmp_path: Path) -> None:
+    from rfnry_engine.bundle import read_body
+
+    root = reviewer(tmp_path, **{"skills/risk.md": "\n---\ndescription: Rate it\n---\nRate.\n"})
+    assert Engine(root).agents["reviewer"].skills == {"risk": ""}
+    assert read_body(root / "reviewer" / "skills" / "risk.md").startswith("---\ndescription")
