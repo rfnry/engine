@@ -292,3 +292,47 @@ async def test_the_skill_is_recorded_replayed_and_exported(
     [rows] = [data for key, data in bucket.objects.items() if "/generation/" in key]
     [row] = [json.loads(line) for line in rows.decode().splitlines()]
     assert row["skill"] == "redline" and row["task"] is None
+
+
+def test_a_task_that_is_not_utf8_is_refused_with_its_path(tmp_path: Path) -> None:
+    root = reviewer(tmp_path)
+    (root / "reviewer" / "tasks").mkdir()
+    (root / "reviewer" / "tasks" / "review.md").write_bytes("Revisão\n".encode("latin-1"))
+    with pytest.raises(ConfigurationError, match=r"^tree: .*review\.md is not UTF-8 text; "):
+        Engine(root)
+
+
+def test_a_skill_that_is_not_utf8_is_refused_when_the_tree_loads(tmp_path: Path) -> None:
+    root = reviewer(tmp_path)
+    (root / "reviewer" / "skills").mkdir()
+    (root / "reviewer" / "skills" / "risk.md").write_bytes("Risco: médio\n".encode("latin-1"))
+    with pytest.raises(ConfigurationError, match=r"^tree: .*risk\.md is not UTF-8 text; "):
+        Engine(root)
+
+
+@pytest.mark.parametrize("name", ["tasks/review.md", "skills/review.md"])
+async def test_a_byte_order_mark_never_reaches_the_model(tmp_path: Path, name: str) -> None:
+    root = reviewer(tmp_path, **{name: "\ufeffReview it.\n"})
+    llm = Scripted(text_reply("Done."))
+    tasked = name.startswith("tasks")
+    await Engine(root, generation=llm).run(
+        "reviewer",
+        "acme",
+        "x",
+        task="review" if tasked else None,
+        skill=None if tasked else "review",
+    )
+    system, messages, _ = llm.calls[0]
+    sent = json.dumps([m.model_dump(mode="json") for m in messages], ensure_ascii=False)
+    assert "\ufeff" not in system and "\ufeff" not in sent
+
+
+def test_a_block_between_dashes_that_holds_no_keys_says_so(tmp_path: Path) -> None:
+    root = reviewer(tmp_path, **{"tasks/review.md": "---\nJust a rule above.\n---\nReview.\n"})
+    with pytest.raises(ConfigurationError) as refused:
+        Engine(root)
+    said = str(refused.value)
+    assert said.startswith("frontmatter: ") and "TaskFront" not in said
+    assert said.endswith(
+        "write key: value lines between the two --- lines, or start the file without ---"
+    )

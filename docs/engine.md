@@ -426,9 +426,10 @@ attached, the run is recorded first, as far as it got: `error` says what ended i
 `"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. Its conversation can
 hold a tool call with no result, when the run failed between the call and its result, and `run()`
 refuses such a history: go on from the history the run was given. A run refused before its
-first model call — a bad input, an agent or task the tree does not have, a route loop — has
+first model call — a bad input, an agent, task or skill the tree does not have, a route loop — has
 nothing to record, and a run whose task you cancel is not recorded; `stop=` ends a run with its
-record. A delegated run that fails stays under its parent in `children`, its step the error the
+record. A generation run whose `on_event` raises on its `RunStarted` had started: it is recorded
+with that `error` and no model call. A delegated run that fails stays under its parent in `children`, its step the error the
 parent's model was given, and the parent goes on; a routed run that fails fails its router, which
 is recorded with its answers and the failed run in `routed_to`, or `None` when the routed run was
 refused before its first model call.
@@ -493,7 +494,7 @@ delegated or routed run sends its own `run_id` and counts its own turns.
 Every generation run sends a `RunStarted` first, before anything else. Its `call` is the tool call
 the run works for — the `Delegate` call that started a delegated run, the call an `engine.tool`
 consult was made in, the call that started the decision run a run was routed by — or `None` for a
-run you start. A frontend places every later event of that `run_id` under that call, so a sub-agent's
+run started outside any tool call. A frontend places every later event of that `run_id` under that call, so a sub-agent's
 text, reasoning and tool calls show nested under the call that asked for them, at any depth. A
 decision run sends no events: the `ToolCallStarted` and `ToolResultReady` of the call that asked it
 show it. A `ReasoningDelta` is the model's reasoning as the adapter streams it, with its turn, to show
@@ -530,10 +531,12 @@ call cut off by `now()` is answered with the error `stopped by the user` and its
 from it. A call the stop finds not yet running never runs: a stop from a handler of a call's
 `ToolCallStarted` comes before its tool runs, and one from a handler of a reply's `TextDelta` before
 any of the reply's calls. A handler still running when a stop cancels its call, or a streamed
-`TextDelta` handler, is cancelled with that work, so a kill switch does its own work, such as an
-audit, before it calls `stop.now()`. A call that already has its result keeps it, and the stop waits
-for an `on_event` still handling its `ToolResultReady` to return: a handler can stop the run on what
-a tool returned; a slow one delays the stop, and cancelling the run cancels it. Cancelling the run's
+`TextDelta` or `ReasoningDelta` handler, is cancelled with that work, so a kill switch does its own
+work, such as an audit, before it calls `stop.now()`. A call that already has its result keeps it,
+and the stop waits for an `on_event` still handling its `ToolResultReady` to return: a handler can
+stop the run on what a tool returned; a slow one delays the stop, and cancelling the run cancels it.
+The stop waits the same way for a handler of a `RunStarted` or a `MessagesTaken`, which the run sends
+between its steps, and one such handler sets ends the run before its next model call. Cancelling the run's
 task cancels its model call and every tool call still running, delegations and their runs included,
 and re-raises once all of them have ended, as an `asyncio.TaskGroup` does — a call whose tool
 returns after the cancel ends with it, before its `ToolResultReady` — and a stop waits the same way

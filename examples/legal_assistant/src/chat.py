@@ -10,6 +10,10 @@ AGENT = "reviewer"
 OFFERED = {"task": ["review"], "skill": ["redline", "risk"]}
 
 
+def frame(kind: str, **body: Any) -> dict[str, Any]:
+    return {"type": kind, **body}
+
+
 def menu() -> dict[str, dict[str, str]]:
     agent = harness.engine.agents[AGENT]
     have = {"task": agent.tasks, "skill": agent.skills}
@@ -28,7 +32,7 @@ def command(text: str) -> tuple[dict[str, str], str]:
     name, _, rest = rest.strip().partition(" ")
     if name not in OFFERED[kind]:
         raise ValueError(f"/{kind} takes one of {', '.join(OFFERED[kind])}")
-    return {kind: name}, rest
+    return {kind: name}, rest or text
 
 
 class Chat:
@@ -43,57 +47,79 @@ class Chat:
         self.sending = asyncio.Lock()
         self.open = True
 
-    async def send(self, kind: str, **body: Any) -> None:
+    async def send(self, *frames: dict[str, Any]) -> None:
         async with self.sending:
-            if self.open:
-                await self.socket.send_json({"type": kind, **body})
+            for each in frames:
+                if not self.open:
+                    return
+                try:
+                    await self.socket.send_json(each)
+                except WebSocketDisconnect, RuntimeError, OSError:
+                    self.open = False
+                    self.stop.now()
 
     async def show(self, event: Event) -> None:
-        await self.send(type(event).__name__, **event.model_dump(mode="json"))
+        shown = frame(type(event).__name__, **event.model_dump(mode="json"))
         if isinstance(event, MessagesTaken):
-            await self.send("read", count=len(event.messages))
+            await self.send(shown, frame("read", count=len(event.messages)))
+        else:
+            await self.send(shown)
 
-    async def receive(self, said: dict[str, Any]) -> None:
-        text = str(said.get("text", ""))
+    async def receive(self, said: object) -> None:
+        if not isinstance(said, dict):
+            await self.send(frame("refused", reason="send a JSON object"))
+            return
+        text = str(said.get("text", "")).strip()
         if said.get("type") == "stop":
             self.stop.now()
-        elif self.work is not None and not self.work.done():
+        elif not text:
+            await self.send(frame("refused", text=text, reason="say something"))
+        elif self.work is not None:
             if text.startswith("/"):
-                await self.send("refused", text=text, reason="a command waits for the reply")
+                await self.send(frame("refused", text=text, reason="a command waits for the reply"))
             else:
                 self.inbox.put_nowait(text)
-                await self.send("queued", text=text)
+                await self.send(frame("queued", text=text))
         else:
             try:
                 invoked, text = command(text)
             except ValueError as error:
-                await self.send("refused", text=text, reason=str(error))
+                await self.send(frame("refused", text=text, reason=str(error)))
                 return
+            self.stop = Stop()
             self.work = asyncio.create_task(self.answer(text, invoked))
 
     async def answer(self, text: str, invoked: dict[str, str]) -> None:
         while True:
-            self.stop = Stop()
-            run = await harness.engine.run(
-                AGENT,
-                scope=self.firm,
-                input=text,
-                history=self.conversation,
-                context=harness.CONTRACTS[self.contract],
-                on_event=self.show,
-                stop=self.stop,
-                inbox=self.inbox,
-                **invoked,
-            )
+            try:
+                run = await harness.engine.run(
+                    AGENT,
+                    scope=self.firm,
+                    input=text,
+                    history=self.conversation,
+                    context=harness.CONTRACTS[self.contract],
+                    on_event=self.show,
+                    stop=self.stop,
+                    inbox=self.inbox,
+                    **invoked,
+                )
+            except Exception as error:
+                await self.rest(frame("failed", reason=f"{type(error).__name__}: {error}"))
+                return
             self.conversation = run.conversation
-            idle = self.inbox.empty()
-            if idle:
-                self.work = None
-            await self.send("done", run_id=run.run_id, stopped=run.stopped, reply=run.reply)
-            if idle:
+            done = frame("done", run_id=run.run_id, stopped=run.stopped, reply=run.reply)
+            if run.stopped is not None or not self.open or self.inbox.empty():
+                await self.rest(done)
                 return
             text, invoked = self.inbox.get_nowait(), {}
-            await self.send("read", count=1)
+            await self.send(done, frame("read", count=1))
+
+    async def rest(self, done: dict[str, Any]) -> None:
+        unsent: list[str] = []
+        while not self.inbox.empty():
+            unsent.append(self.inbox.get_nowait())
+        self.work = None
+        await self.send(done, *([frame("unsent", texts=unsent)] if unsent else []))
 
     async def close(self) -> None:
         self.open = False
@@ -104,9 +130,11 @@ class Chat:
 
 async def serve(socket: WebSocket, firm: str, contract: str) -> None:
     chat = Chat(socket, firm, contract)
-    await chat.send("menu", **menu())
+    await chat.send(frame("menu", **menu()))
     try:
         while True:
             await chat.receive(await socket.receive_json())
     except WebSocketDisconnect:
+        pass
+    finally:
         await chat.close()

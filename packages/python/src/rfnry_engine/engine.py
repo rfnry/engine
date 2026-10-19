@@ -386,7 +386,7 @@ class Engine:
                 agents=spec.agents,
                 reads=list(spec.reads),
                 tasks=dict(spec.tasks),
-                skills={name: skill.description for name, skill in spec.skills.items()},
+                skills={called: skill.description for called, skill in spec.skills.items()},
             )
             for name, spec in self._agents.items()
         }
@@ -703,12 +703,12 @@ class Engine:
             )
         )
         hashed = len(history)
-        said = _content(input)
+        opening = _content(input)
         if options.skill is not None:
             skill = spec.skills[options.skill]
             body = await asyncio.to_thread(read_body, spec.root / skill.path)
-            said = _invoked(skill.path, body, said)
-        messages = [*history, Message(role="user", content=said)]
+            opening = _invoked(skill.path, body, opening)
+        messages = [*history, Message(role="user", content=opening)]
         sent = list(messages)
         steps: list[Step] = []
         children: list[Run] = []
@@ -988,6 +988,9 @@ class Engine:
                     await emit(
                         MessagesTaken(run_id=run_id, agent=spec.name, turn=turn, messages=taken)
                     )
+                    mode = requested(stop)
+                    if mode is not None:
+                        return finish(said, mode)
                 streamed.clear()
                 after = await asyncio.to_thread(marked)
                 asking = asyncio.ensure_future(ask())

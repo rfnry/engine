@@ -16,7 +16,7 @@ from pydantic import (
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
 from rfnry_engine.folders import DECLARED, content, declares, entries, joined, listing
-from rfnry_engine.frontmatter import described, parse_frontmatter_doc, plainly, split_frontmatter
+from rfnry_engine.frontmatter import description, parse_frontmatter_doc, plainly, split_frontmatter
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Check, Choice, Part, Question, Score
 from rfnry_engine.tools.builtins import preload_parts
@@ -130,7 +130,10 @@ class AgentSpec(BaseModel):
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigurationError(f"tree: {path} is not UTF-8 text; save it as UTF-8") from exc
 
 
 def _question(path: Path) -> Question:
@@ -221,7 +224,7 @@ def _skills(files: list[tuple[str, Path]], agent: str) -> dict[str, Skill]:
             raise ConfigurationError(
                 f"tree: agent {agent!r} has the skill {name!r} as both skills/{name}.md and skills/{name}/SKILL.md; keep one"
             )
-        found[name] = Skill(path=rel, description=described(path) or "")
+        found[name] = Skill(path=rel, description=description(_read(path), path) or "")
     return dict(sorted(found.items()))
 
 

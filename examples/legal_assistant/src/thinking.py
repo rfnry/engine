@@ -9,7 +9,10 @@ class ThinkingProvider(AnthropicProvider):
     def _request(
         self, system: str, messages: list[Message], tools: list[ToolSpec]
     ) -> dict[str, Any]:
-        return {**super()._request(system, messages, tools), "thinking": {"type": "adaptive"}}
+        return {
+            **super()._request(system, messages, tools),
+            "thinking": {"type": "adaptive", "display": "summarized"},
+        }
 
     async def generate_stream(
         self, system: str, messages: list[Message], tools: list[ToolSpec], on_delta: OnDelta

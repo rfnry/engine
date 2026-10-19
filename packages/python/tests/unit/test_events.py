@@ -1195,3 +1195,44 @@ async def test_a_run_stopped_before_it_starts_still_says_it_started(tmp_path: Pa
     )
     assert isinstance(run, Generation) and run.stopped == "now"
     assert collect.events == [RunStarted(run_id=run.run_id, agent="chat", call=None)]
+
+
+class Kept:
+    def __init__(self) -> None:
+        self.runs: list[Any] = []
+
+    async def record(self, run: Any) -> None:
+        self.runs.append(run)
+
+
+async def test_a_routed_run_whose_start_handler_raises_sits_in_its_router(tmp_path: Path) -> None:
+    root = tree(
+        tmp_path,
+        {
+            "router": "kind: decision\ndescription: Routes\nroute:\n  by: team\n  to: {billing: chat}",
+            "chat": "kind: generation\ndescription: Talks",
+        },
+    )
+    (root / "router" / "questions").mkdir()
+    (root / "router" / "questions" / "team.md").write_text(
+        "---\ntype: choice\noptions: {billing: Charges, other: Anything else}\n---\nWhich team?\n",
+        encoding="utf-8",
+    )
+
+    async def breaking(event: Event) -> None:
+        if isinstance(event, RunStarted):
+            raise RuntimeError("the socket is gone")
+
+    kept = Kept()
+    decision = Fixed(
+        {"team": ChoiceAnswer(choice="billing", probabilities={"billing": 0.9, "other": 0.1})}
+    )
+    llm = Scripted()
+    engine = Engine(root, generation=llm, decision=decision, refinery=kept)
+    with pytest.raises(RuntimeError, match="the socket is gone"):
+        await engine.run("router", "acme", "Charged twice", on_event=breaking)
+    [router] = kept.runs
+    assert isinstance(router, Decision) and isinstance(router.routed_to, Generation)
+    routed = router.routed_to
+    assert routed.error == "RuntimeError: the socket is gone" and routed.calls == 0
+    assert llm.calls == []

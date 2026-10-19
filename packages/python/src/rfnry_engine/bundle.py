@@ -6,7 +6,7 @@ from rfnry_engine.tree import AgentSpec
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+    return path.read_text(encoding="utf-8-sig").strip() if path.is_file() else ""
 
 
 def read_body(path: Path) -> str:

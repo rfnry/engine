@@ -765,3 +765,34 @@ async def test_a_stop_from_the_taken_handler_ends_the_run_before_the_model_reads
     )
     assert isinstance(run, Generation) and run.stopped == "now" and run.reply == ""
     assert run.conversation[-1] == Message(role="user", content="wait for me")
+
+
+@pytest.mark.parametrize("mode", ["now", "after_step"])
+async def test_a_stop_from_the_taken_handler_comes_before_a_fast_model_call(
+    tmp_path: Path, mode: str
+) -> None:
+    inbox: asyncio.Queue[Any] = asyncio.Queue()
+    stop = Stop()
+
+    async def sending(args: dict[str, Any]) -> str:
+        inbox.put_nowait("wait for me")
+        return "sent"
+
+    def pressing(event: Any) -> None:
+        if isinstance(event, MessagesTaken):
+            getattr(stop, mode)()
+
+    llm = Paced(use(call("send", "c1")), use(call("send", "c2")), text_reply("never"))
+    run = await Engine(make_tree(tmp_path), generation=llm).run(
+        "chat",
+        "acme",
+        "x",
+        tools=Tools([Tool("send", body=sending)]),
+        inbox=inbox,
+        stop=stop,
+        on_event=Seen(pressing),
+    )
+    assert isinstance(run, Generation) and run.stopped == mode
+    assert len(llm.calls) == 1 and run.calls == 1
+    assert run.conversation[-1] == Message(role="user", content="wait for me")
+    assert inbox.empty()
