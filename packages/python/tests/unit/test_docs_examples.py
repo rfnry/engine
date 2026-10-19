@@ -200,6 +200,10 @@ def tree(root: Path) -> None:
         "---\ndescription: When a refund is owed\n---\nA double charge is refunded in full.\n",
     )
     write(root / "support/tasks/triage.md", "Triage the message.\n")
+    write(
+        root / "support/skills/escalate.md",
+        "---\ndescription: Hand a conversation to a person\n---\nSay so, then stop.\n",
+    )
     write(root / "support/TOOLS.md", markdown("fetch_invoice: Fetch"))
     write(
         root / "support/tools/lookup_order.md",

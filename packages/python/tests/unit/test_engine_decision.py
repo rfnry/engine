@@ -205,7 +205,7 @@ async def test_a_routing_agent_s_unknown_task_is_not_found_before_it_is_asked(
 ) -> None:
     dm = Fixed(_intent("other", 0.9))
     engine = Engine(fixtures, generation=Scripted(), decision=dm, tools=TOOLS)
-    with pytest.raises(NotFoundError, match="^engine: agent 'frontdesk' has no task 'triage'$"):
+    with pytest.raises(NotFoundError, match="^engine: agent 'frontdesk' has no task 'triage'; "):
         await engine.run("frontdesk", "acme", "x", task="triage")
     assert dm.calls == []
 

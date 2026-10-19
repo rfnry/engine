@@ -324,7 +324,7 @@ async def test_a_task_is_looked_up_like_an_agent_and_never_a_path_out_of_tasks(
     llm = Scripted(text_reply("x"))
     refinery = Refinery(storage)
     engine = engine_for(fixtures, llm, refinery=refinery)
-    message = f"^engine: agent 'support' has no task {re.escape(repr(task))}$"
+    message = f"^engine: agent 'support' has no task {re.escape(repr(task))}; its tasks are triage$"
     with pytest.raises(NotFoundError, match=message):
         await engine.run("support", "acme", "x", task=task)
     assert llm.calls == [] and await refinery.storage.runs("acme") == []

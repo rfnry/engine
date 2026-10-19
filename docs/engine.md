@@ -175,11 +175,11 @@ agents/
   support/
     AGENT.md              who the agent is
     rules/refunds.md      any folders and files, all in the map; a description adds a line
-    skills/escalate.md
+    skills/escalate.md    how to do a thing: the model's to choose, or a person's to ask for
     knowledge/rates.pdf   text, images, PDFs, anything — read when needed
     TOOLS.md              the code tools it may call, by name
     tools/refund.md       a tool whose contract is written out
-    tasks/triage.md       a named task, chosen per run
+    tasks/triage.md       what to do: a named task, chosen per run
 ```
 
 `AGENT.md` makes a directory an agent, named after its folder. `Engine(root)` loads each direct
@@ -287,7 +287,8 @@ run = await engine.run("writer", scope="acme", input="Draft the launch note.",
 or holding a slash.
 
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its
-`kind`, `description`, the `agents` it may call and the folders it `reads`.
+`kind`, `description`, the `agents` it may call, the folders it `reads`, and its `tasks` and
+`skills`, [below](#tasks-and-skills).
 
 An agent that needs its whole folder on every run — a few house rules applied to thousands of
 documents — asks for it, with `preload: true`:
@@ -315,6 +316,41 @@ own folder, a delegated or routed one included. A decision agent reads no files,
 one is a `ConfigurationError` when the tree loads; so is a file neither `Read` nor `Load` would hand
 over — over 20 MB, of a type the generation model's `media_types` does not name, or not the type its
 name says — with `Load`'s own message.
+
+### Tasks and skills
+
+A task is what the agent is to do on a run; a skill is how to do something. A task file of a
+generation agent, `tasks/<name>.md`, may open with a `description:`, the only key it takes; its body
+is what the model receives, in its system prompt, on a run that names it with `task=`, and the
+frontmatter never reaches the prompt. A decision agent's tasks are folders of questions,
+[below](#decision-agents).
+
+A skill is `skills/<name>.md`, or `skills/<name>/SKILL.md` for one that keeps files of its own
+beside it, in a generation agent's own folder; a skill folder written for another tool works as it
+is, its other keys left alone. Skills are files in the map, with their descriptions, and the model
+opens one when it judges it fits, as it opens any file. A person can also ask for one — `/skill
+escalate` in a chat — and the run is given it with `skill=`:
+
+```python
+run = await engine.run("support", scope="acme", input="A third complaint this week.", skill="escalate")
+run.skill                                            # "escalate"
+```
+
+The skill goes in front of the input, in the same user message: a text part of `<<<SKILL
+skills/escalate.md>>>` on its own line and the file's body without its frontmatter, then the input
+as it came. It is part of the conversation, so a run that continues from it still has the skill,
+while a task lives in the system prompt of the run that names it. Delegated and routed runs never
+take the caller's skill. `run.skill` records it, an exported generation row carries it, and a replay
+asks the candidate for it again, so the candidate's own skill file is the one read.
+
+`engine.agents[name].tasks` and `.skills` map each to its description, `""` when it has none: the
+menu a frontend can offer. Which of them a person may invoke is yours to decide — the same tree may
+serve people with different menus — and nothing is invoked unless you pass `task=` or `skill=`. A
+name the agent does not have is a `NotFoundError` before any model call, naming the ones it has —
+`engine: agent 'support' has no skill 'refund'; its skills are escalate` — and `skill=` on a
+decision agent is an `InputError`. When the tree loads, one skill as both `skills/x.md` and
+`skills/x/SKILL.md` is a `ConfigurationError`, and so is a task file with any key but
+`description:`. Names that start with `_` or `.` are neither tasks nor skills.
 
 ### Running an agent
 
@@ -1287,7 +1323,7 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | task, context, tags, model, fingerprint, system, preload, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
+| `generation` | generation run | task, skill, context, tags, model, fingerprint, system, preload, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
 | `preference` | human correction | tags, fingerprint, prompt (system, preload, messages), chosen (the correction), rejected (the reply) |
 | `decision` | question of a decision run | task, tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
 
@@ -1340,8 +1376,8 @@ reviewed or the world reported on; `tags=` those whose tags contain these, as `d
 matches; `fingerprint=` the runs one version produced — the `run.fingerprint` of any of them, its
 `agent`, `tools` and `questions` all equal; `limit=` the first so many. Each is
 `candidate.run(agent, scope, …, record=False)` with the recorded input — parts as parts — the
-history sent before it, the task and the `context`, so the candidate sees what the recorded run
-saw. A decision run replays its state and its task, and asks its runtime questions again as they
+history sent before it, the task, the skill and the `context`, so the candidate sees what the
+recorded run saw, its own skill file read for a recorded skill. A decision run replays its state and its task, and asks its runtime questions again as they
 were recorded while the questions of its folder come from the candidate's folder — a runtime id the
 candidate's folder now asks fails that pair; when its route reached a generation run, that run's
 input, history and context go too. What a record does not keep is yours to pass
