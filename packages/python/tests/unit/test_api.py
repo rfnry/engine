@@ -203,7 +203,10 @@ def check_class(node: ast.ClassDef, cls: Any) -> None:
                 assert (written(s.annotation), value(s.value)) == real[name], f"{node.name}.{name}"
         return
     if getattr(cls, "_is_protocol", False):
-        assert set(attributes) | set(methods) == set(properties) | set(verbs(cls)), node.name
+        called = {"__call__"} & set(vars(cls))
+        assert set(attributes) | set(methods) == set(properties) | set(verbs(cls)) | called, (
+            node.name
+        )
     assert set(properties) <= set(attributes), node.name
     for name, s in attributes.items():
         if name in properties:

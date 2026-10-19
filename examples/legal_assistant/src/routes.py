@@ -1,9 +1,10 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, WebSocket
 from pydantic import BaseModel
 from rfnry_engine import NotFoundError, Review
 
+import chat
 import harness
 
 router = APIRouter()
@@ -20,6 +21,15 @@ async def ask(body: Ask, firm: Tenant) -> dict:
     if body.contract not in harness.CONTRACTS:
         raise HTTPException(404, f"there is no contract {body.contract}")
     return await harness.run(firm, body.contract, body.question)
+
+
+@router.websocket("/chat")
+async def talk(socket: WebSocket, firm: str, contract: str) -> None:
+    if contract not in harness.CONTRACTS:
+        await socket.close(code=4404, reason=f"there is no contract {contract}")
+        return
+    await socket.accept()
+    await chat.serve(socket, firm, contract)
 
 
 @router.post("/runs/{run_id}/review")

@@ -100,10 +100,14 @@ def _unreadable(exc: yaml.YAMLError, text: str) -> tuple[str, str, str]:
 
 def described(path: Path) -> str | None:
     try:
-        raw = path.read_bytes().decode("utf-8").removeprefix("\ufeff")
+        raw = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError:
         return None
-    match = _HEAD.match(raw)
+    return description(raw, path)
+
+
+def description(raw: str, path: Path) -> str | None:
+    match = _HEAD.match(raw.removeprefix("\ufeff"))
     if match is None:
         return None
     try:
@@ -154,6 +158,10 @@ def parse_frontmatter_doc[T: BaseModel](
         raise ConfigurationError(
             f"frontmatter: invalid YAML in {source}{place}: {problem}; {fix}"
         ) from exc
+    if not isinstance(data, dict):
+        raise ConfigurationError(
+            f"frontmatter: {source} holds no keys between its --- lines; write key: value lines between the two --- lines, or start the file without ---"
+        )
     try:
         config = model.model_validate(data)
     except ValidationError as exc:

@@ -443,6 +443,8 @@ class Refinery:
                     record=False,
                 )
             sent = run.messages[-1].content if run.messages else None
+            if run.skill is not None and isinstance(sent, list):
+                sent = sent[1:] or None
             history: Sequence[object] | HistoryLike = run.messages[:-1]
             start = 0
             if conversation is not None:
@@ -464,6 +466,7 @@ class Refinery:
                 scope,
                 sent if isinstance(sent, list) else run.input,
                 task=recorded.task,
+                skill=run.skill,
                 questions=asked,
                 history=history,
                 start=start,

@@ -1,6 +1,6 @@
 import base64
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, Protocol, Self, runtime_checkable
 
 from pydantic import (
@@ -360,6 +360,10 @@ class GenerationModel(Protocol):
     ) -> ReplyLike: ...
 
 
+class OnDelta(Protocol):
+    async def __call__(self, text: str, *, reasoning: bool = False) -> None: ...
+
+
 @runtime_checkable
 class StreamingGenerationModel(Protocol):
     async def generate_stream(
@@ -367,7 +371,7 @@ class StreamingGenerationModel(Protocol):
         system: str,
         messages: list[Message],
         tools: list[ToolSpec],
-        on_delta: Callable[[str], Awaitable[None]],
+        on_delta: OnDelta,
     ) -> ReplyLike: ...
 
 

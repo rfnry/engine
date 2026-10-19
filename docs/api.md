@@ -26,11 +26,20 @@ class StreamingGenerationModel(Protocol):
         system: str,
         messages: list[Message],
         tools: list[ToolSpec],
-        on_delta: Callable[[str], Awaitable[None]],
+        on_delta: OnDelta,
     ) -> ReplyLike: ...
 ```
 
-A generation model that also streams. When a run has `on_event`, the engine calls `generate_stream` instead of `generate` and the adapter awaits `on_delta` with each piece of text as it arrives; it returns the whole reply, as `generate` does.
+A generation model that also streams. When a run has `on_event`, the engine calls `generate_stream` instead of `generate`; the adapter awaits `on_delta(text)` with each piece of the reply's text as it arrives and `on_delta(text, reasoning=True)` with each piece of the model's reasoning its vendor streams, and returns the whole reply, as `generate` does. An adapter that never passes `reasoning=` streams text alone.
+
+### `OnDelta`
+
+```python
+class OnDelta(Protocol):
+    async def __call__(self, text: str, *, reasoning: bool = False) -> None: ...
+```
+
+What `generate_stream` is handed. Text goes out as a `TextDelta`, reasoning as a `ReasoningDelta`, each with the turn. An adapter that annotates `on_delta` as `Callable[[str], Awaitable[None]]` still fits, since it never passes `reasoning`.
 
 ### `DecisionModel`
 
@@ -382,6 +391,7 @@ async def run(
     input: State,
     *,
     task: str | None = None,
+    skill: str | None = None,
     questions: Mapping[str, QuestionLike] | None = None,
     history: Sequence[object] | HistoryLike | None = None,
     start: int = 0,
@@ -398,11 +408,11 @@ async def run(
 ) -> Run: ...
 ```
 
-Runs `agent` for the tenant `scope` on `input` and returns its record: a `Generation` for a generation agent, a `Decision` for a decision agent. A generation agent's `task` puts `tasks/<task>.md` in its system prompt; a decision agent's adds the questions in `tasks/<task>/` to those of `questions/`, which every run asks. `questions` are a decision agent's runtime questions, read by their fields and asked with the folder's in the same call. `history` is a list of messages or a `HistoryLike`, and the run sends its messages from position `start` on — `start=0` sends them all; a routed run is given both, a delegated run neither. A route's run gets the task its route entry names, if any, never the router's task or runtime questions. With a refinery attached, a run is recorded unless `record=False` — one that raises after its first model call too, as far as it got and with its `error`, before the exception reaches you — and a recording that fails is logged, never raised. `EventHandler` is `Callable[[Event], Awaitable[None]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets, and `tools` rides this run only; `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`, called with the agent's name and the call.
+Runs `agent` for the tenant `scope` on `input` and returns its record: a `Generation` for a generation agent, a `Decision` for a decision agent. A generation agent's `task` puts the body of `tasks/<task>.md`, without its frontmatter, in its system prompt; a decision agent's adds the questions in `tasks/<task>/` to those of `questions/`, which every run asks. A generation agent's `skill` puts its skill — `skills/<skill>.md` or `skills/<skill>/SKILL.md` — in front of `input`, in the same user message, as a `Text` of `<<<SKILL <path>>>>` on a line of its own followed by the file's body without its frontmatter; the input follows as its own parts, and an empty input adds none. Delegated and routed runs never take the caller's skill. `questions` are a decision agent's runtime questions, read by their fields and asked with the folder's in the same call. `history` is a list of messages or a `HistoryLike`, and the run sends its messages from position `start` on — `start=0` sends them all; a routed run is given both, a delegated run neither. A route's run gets the task its route entry names, if any, never the router's task or runtime questions. With a refinery attached, a run is recorded unless `record=False` — one that raises after its first model call, or from its `RunStarted` handler, too, as far as it got and with its `error`, before the exception reaches you — and a recording that fails is logged, never raised. `EventHandler` is `Callable[[Event], Awaitable[None]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets, and `tools` rides this run only; `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`, called with the agent's name and the call.
 
 Cancelling the task that runs it cancels the model call in flight and every tool call still running, a `Delegate` call and the run it started included, and re-raises the cancellation once all of them have ended, as `asyncio.TaskGroup` does; a tool that ignores cancellation holds it. Each further cancel meanwhile, two that land at the same moment counted as two, does not end the wait: it cancels once more everything still running, so a workspace command still being stopped is killed at once, with no grace period.
 
-Raises `InputError` when `scope` is empty, `workspace` belongs to another scope, a generation agent is given `questions`, a runtime question does not fit the contract or has an empty id or one the run already asks from `questions/` or its task, a decision run has no question to ask, a decision agent is given media its model does not declare in `media_types`, `tags` are outside their limits, `history` does not fit the contract or breaks a tool call from its result (a result whose call is not in it, or a call with no result), `start` is negative, past the end of a list `history`, or given without a `history`, or `input` mixes parts with other values. Raises `NotFoundError` when the tree has no agent `agent`, or the agent has no task `task`, before any model is called. Raises `ConfigurationError` when the model for the agent's kind is absent, a decision agent routes to a generation agent without a generation model, an agent with `workspace: true` runs without a `workspace`, `tools` repeats a name the agent already has, a tool it declares or `tools` holds is named `History`, a tool named `Output` collides with `expect`, or `approve` returns anything but `True` or `False`. Raises `ModelError` when an adapter's result does not fit the contract. Raises `RunawayError` when the loop passes `max_steps`. Raises `DelegationLoopError` when a route reaches an agent already in the same chain of routes, and `DelegationDepthError` when a route goes deeper than `max_depth`.
+Raises `InputError` when `scope` is empty, `workspace` belongs to another scope, a generation agent is given `questions`, a runtime question does not fit the contract or has an empty id or one the run already asks from `questions/` or its task, a decision run has no question to ask, a decision agent is given media its model does not declare in `media_types`, `tags` are outside their limits, `history` does not fit the contract or breaks a tool call from its result (a result whose call is not in it, or a call with no result), `start` is negative, past the end of a list `history`, or given without a `history`, or `input` mixes parts with other values. Raises `InputError` when a decision agent is given a `skill`. Raises `NotFoundError` when the tree has no agent `agent`, or the agent has no task `task` or no skill `skill`, before any model is called; the message names the tasks or skills it has. Raises `ConfigurationError` when the model for the agent's kind is absent, a decision agent routes to a generation agent without a generation model, an agent with `workspace: true` runs without a `workspace`, `tools` repeats a name the agent already has, a tool it declares or `tools` holds is named `History`, a tool named `Output` collides with `expect`, or `approve` returns anything but `True` or `False`. Raises `ModelError` when an adapter's result does not fit the contract. Raises `RunawayError` when the loop passes `max_steps`. Raises `DelegationLoopError` when a route reaches an agent already in the same chain of routes, and `DelegationDepthError` when a route goes deeper than `max_depth`.
 
 ### `Engine.tool`
 
@@ -443,7 +453,7 @@ A person's handle on a running run, passed as `run(stop=)`; it reaches the runs 
 def now(self) -> None: ...
 ```
 
-Cancels the model call in flight and every tool call still running, except a call with a generation run going under the same stop — one a `Delegate` call or an `engine.tool` started, from the call's task or one it made — which is waited for while that run takes the stop, and then cut, with whatever else it was doing, as any call is; a call waiting on a decision run, one model call, is cancelled as a model call in flight is; a call it finds not yet running never runs, so a stop from an `on_event` handler of a call's `ToolCallStarted`, or of a reply's `TextDelta`, comes before the tool runs. A handler still running when a stop cancels its call, or a streamed `TextDelta` handler, is cancelled with that work, so a kill switch does its own work, such as an audit, before it calls `stop.now()`. The run returns with `stopped="now"`, and each call it cut off is answered with the error `stopped by the user`. A call that already has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady` to return, so a slow handler delays it; cancelling the run cancels the handler. The run returns once the work the stop cancelled has ended, so a tool that ignores cancellation holds the stop, as it holds a cancel of the run. `now()` is safe to call any number of times: each call after the first, while the run is stopping, cancels once more every tool call still running — not a call with a generation run under the same stop, whose run takes that `now()` itself, nor a call whose `ToolResultReady` handler the stop waits for — so a workspace command still being stopped is killed at once, with no grace period, as it is when the stopping run is cancelled.
+Cancels the model call in flight and every tool call still running, except a call with a generation run going under the same stop — one a `Delegate` call or an `engine.tool` started, from the call's task or one it made — which is waited for while that run takes the stop, and then cut, with whatever else it was doing, as any call is; a call waiting on a decision run, one model call, is cancelled as a model call in flight is; a call it finds not yet running never runs, so a stop from an `on_event` handler of a call's `ToolCallStarted`, or of a reply's `TextDelta`, comes before the tool runs. A handler still running when a stop cancels its call, or a streamed `TextDelta` or `ReasoningDelta` handler, is cancelled with that work, so a kill switch does its own work, such as an audit, before it calls `stop.now()`. The run returns with `stopped="now"`, and each call it cut off is answered with the error `stopped by the user`. A call that already has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady` to return, so a slow handler delays it; cancelling the run cancels the handler. The run returns once the work the stop cancelled has ended, so a tool that ignores cancellation holds the stop, as it holds a cancel of the run. `now()` is safe to call any number of times: each call after the first, while the run is stopping, cancels once more every tool call still running — not a call with a generation run under the same stop, whose run takes that `now()` itself, nor a call whose `ToolResultReady` handler the stop waits for — so a workspace command still being stopped is killed at once, with no grace period, as it is when the stopping run is cancelled.
 
 ### `Stop.after_step`
 
@@ -464,9 +474,11 @@ class AgentInfo(BaseModel):
     description: str
     agents: list[str]
     reads: list[str]
+    tasks: dict[str, str]
+    skills: dict[str, str]
 ```
 
-An agent as the engine loaded it, in `Engine.agents`: its name, its kind, its description, the agents it may call and the folders of its root it reads. `Kind` is `Literal["generation", "decision"]`.
+An agent as the engine loaded it, in `Engine.agents`: its name, its kind, its description, the agents it may call, the folders of its root it reads, its tasks and its skills, each to its `description:` — `""` for one without, and for every task of a decision agent, which has no skills. `Kind` is `Literal["generation", "decision"]`.
 
 ### `Generation`
 
@@ -479,6 +491,7 @@ class Generation(BaseModel):
     scope: str
     tags: dict[str, str] = {}
     task: str | None = None
+    skill: str | None = None
     context: str | None = None
     at: datetime
     duration_ms: int
@@ -502,7 +515,7 @@ class Generation(BaseModel):
     added: list[Message]
 ```
 
-The record of a generation run: the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. `model` is the model the replies reported; when none did, as in a run stopped during its first model call, it is the adapter's `model` attribute if that is a non-empty string, else `None`. An accepted `Output` makes `reply` its JSON. `preload` is what `preload: true` sent, `[]` without it: the files sorted by relative path character by character, a file `Read` returns as a `Text` of `<<<path>>>` on a line of its own followed by what `Read` returns, any other file as a `Text` of `<<<path>>>` followed by the part `Load` returns; every model call receives it as one user message ahead of the messages, and neither `messages` nor `conversation` holds it. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. `start` is the position in the history the run began at, `0` when it was sent whole. `added` is computed from the record: the input and every message after it, `conversation` from the input on — what a caller keeps. `StopReason` is `Literal["end_turn", "tool_use", "max_tokens", "error"]`; `stop_reason` is the last reply's `stop_reason` — `"max_tokens"` for a reply the model's limit cut off, `"tool_use"` after an accepted `Output` — and `None` when no reply came back. `error` is `None` for a run that returned; a run that raised after its first model call is recorded with `error` as `"<Type>: <message>"`, `reply` `""` and what it had done by then.
+The record of a generation run: the `task` and `skill` it was run with, the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. `model` is the model the replies reported; when none did, as in a run stopped during its first model call, it is the adapter's `model` attribute if that is a non-empty string, else `None`. An accepted `Output` makes `reply` its JSON. `preload` is what `preload: true` sent, `[]` without it: the files sorted by relative path character by character, a file `Read` returns as a `Text` of `<<<path>>>` on a line of its own followed by what `Read` returns, any other file as a `Text` of `<<<path>>>` followed by the part `Load` returns; every model call receives it as one user message ahead of the messages, and neither `messages` nor `conversation` holds it. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. `start` is the position in the history the run began at, `0` when it was sent whole. `added` is computed from the record: the input and every message after it, `conversation` from the input on — what a caller keeps. `StopReason` is `Literal["end_turn", "tool_use", "max_tokens", "error"]`; `stop_reason` is the last reply's `stop_reason` — `"max_tokens"` for a reply the model's limit cut off, `"tool_use"` after an accepted `Output` — and `None` when no reply came back. `error` is `None` for a run that returned; a run that raised after its first model call, or from its `RunStarted` handler, is recorded with `error` as `"<Type>: <message>"`, `reply` `""` and what it had done by then.
 
 ### `Decision`
 
@@ -529,7 +542,7 @@ class Decision(BaseModel):
     added: list[Message]
 ```
 
-The record of a decision run: the task it was given, the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder or the task and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported — its `model` attribute, a non-empty string, when the call reports no model — and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. `added` is the `added` of the run its route started, `[]` when it routed nowhere. `error` is set, and `answers` empty, when the decision model's call raised; a routed run that failed sits in `routed_to` with its own `error`, or `routed_to` is `None` when the routed run was refused before its first model call, and the router carries the same `error`.
+The record of a decision run: the task it was given, the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder or the task and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported — its `model` attribute, a non-empty string, when the call reports no model — and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. `added` is the `added` of the run its route started, `[]` when it routed nowhere. `error` is set, and `answers` empty, when the decision model's call raised; a routed run that failed sits in `routed_to` with its own `error`, or `routed_to` is `None` when the routed run was refused before its first model call, and the router carries the same `error`; a routed run whose `RunStarted` handler raised had started, and sits in `routed_to`.
 
 ### `Run`
 
@@ -567,6 +580,17 @@ class Step(BaseModel):
 
 One tool call of a generation run: the tool, its arguments, its result, whether it failed, when it finished and how long it took. `child_run_id` names the run a `Delegate` started, `stopped` marks a call `Stop.now()` cut off, or one whose `Delegate` or `engine.tool` run a stop ended, and `approved` is what `approve` answered, `None` when nobody was asked.
 
+### `RunStarted`
+
+```python
+class RunStarted(BaseModel):
+    run_id: str
+    agent: str
+    call: CallInfo | None
+```
+
+Sent to `on_event` once by every generation run, before anything else it sends — also by a run that a stop set before it started ends before its first model call. `call` is the tool call the run works for, as `current_call` sees it when the run starts: the caller's `Delegate` call for a delegated run, the caller's call for a run an `engine.tool` call started inside a run, the call that started the decision run for a run it routes to, `None` for a run started outside any tool call. Every later event with this `run_id` belongs under `call`, so sub-agents nest at any depth. A decision run sends no events; the `ToolCallStarted` and `ToolResultReady` of the call that asked it show it. A stop waits for its handler, and one the handler sets ends the run before its first model call; a handler that raises fails the run, recorded with that `error` and no model call.
+
 ### `TextDelta`
 
 ```python
@@ -578,6 +602,30 @@ class TextDelta(BaseModel):
 ```
 
 Text from the model, sent to `on_event` as it is produced; from a model that does not stream, the whole text of each reply. `turn` is the model call of the run that said it, from 0: text of a turn that ended in tool calls was said beside them, and a run that ends in text replies with its last turn's text. A delegated or routed run sends its own `run_id` and counts its own turns.
+
+### `ReasoningDelta`
+
+```python
+class ReasoningDelta(BaseModel):
+    run_id: str
+    agent: str
+    turn: int
+    text: str
+```
+
+The model's reasoning, sent to `on_event` as a streaming adapter passes it with `on_delta(text, reasoning=True)`; `turn` as in `TextDelta`. It is not part of the reply or the conversation: a reply's reasoning is recorded as the adapter returned it, in `Message.reasoning`, and reasoning streamed before `Stop.now()` is not kept. A model that does not stream, or does not stream its reasoning, sends none.
+
+### `MessagesTaken`
+
+```python
+class MessagesTaken(BaseModel):
+    run_id: str
+    agent: str
+    turn: int
+    messages: list[Message]
+```
+
+Sent to `on_event` when a run takes messages from its `inbox`, at a step boundary: `messages` are the `role="user"` messages it appended to the conversation, in the order the inbox held them, and `turn` is the model call about to read them. The inbox is first in, first out and the run takes all it holds, so they are the first `len(messages)` items put on it that no earlier event reported. Nothing taken, an inbox not read because `Stop.after_step()` is pending, and messages left when the run ends send none. A stop waits for its handler, and one the handler sets ends the run before that model call, the messages already in its conversation.
 
 ### `ToolCallStarted`
 
@@ -607,7 +655,7 @@ Sent to `on_event` once, when a tool call is done: `step` is the `Step` the run 
 ### `Event`
 
 ```python
-Event = TextDelta | ToolCallStarted | ToolResultReady
+Event = RunStarted | TextDelta | ReasoningDelta | MessagesTaken | ToolCallStarted | ToolResultReady
 ```
 
 What `on_event` receives.
@@ -833,7 +881,7 @@ class CallInfo(BaseModel):
     call_id: str
 ```
 
-What `current_call` returns: the run's id, its agent and scope, the tool called and the id of the call, as `ToolCall.id` carries it. Frozen, so it can be kept and compared.
+What `current_call` returns, and what `RunStarted.call` holds: the run's id, its agent and scope, the tool called and the id of the call, as `ToolCall.id` carries it. Frozen, so it can be kept and compared.
 
 ### `Jail`
 
@@ -1206,7 +1254,7 @@ def replay(
 ) -> AsyncGenerator[Replay]: ...
 ```
 
-Runs `candidate` on what the top-level runs of `agent` in `scope` were given and yields a `Replay` for each, oldest first by when the run started. `holdout` keeps the held-out runs, by the same hash and `holdout_percent` as `export`; `labeled` the runs with a `human` or `world` label; `tags` the runs whose tags contain these, as `delete_runs` matches; `fingerprint` the runs whose fingerprint equals it, all three parts; `limit` the first so many. Each replay is `candidate.run(agent, scope, …, record=False)` with the recorded input — parts read back as parts — the history (the messages sent before the input) with `start=0`, so without `History` — or, given `conversation`, what it returns for the recorded run, cut before the recorded input, with the recorded `start`, so the candidate has the same window and `History` over everything before it — the task and the `context`; a decision run replays its state, its task and its runtime questions as recorded, the rest of its questions coming from the candidate's folder, and when its route reached a generation run, that run's input, history and context. `expect`, `approve`, `tools` and `workspace` are passed to every replay. `conversation` is called once per replay, with the recorded top-level run, and applies to the generation run it replays; a decision run that reaches no generation run never calls it, and a `conversation` that raises, or that returns a conversation ending before the recorded input, gives the pair its `error`. It gives the recorded window only when the run was sent its conversation with `start`: a run recorded with `start=0` on a list the app had already cut replays on the conversation's first messages instead. `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets. The candidate's tools run for real. Each run is replayed `repeat` times, each attempt a run of its own yielded as a pair of its own whose `attempt` counts from 0; the attempts of a run come one after another, in attempt order, and `limit` counts recorded runs, not attempts. At most `concurrency` replays run at once, attempts included, and while a pair is being read at most `concurrency - 1` run, so with the default a replay starts when its pair is asked for. Pairs are yielded in that order either way. Closing the generator, or cancelling its reader while it waits for a pair, cancels each replay still running and waits for them to end. That close stands for the reader's first cancel: each cancel of the reader beyond its first, two at the same moment counted as two, cancels them once more, so a second ends a replay's workspace command at once. The close returns once they have ended, and a cancelled reader then raises `CancelledError`. A candidate that raises yields its pair with `error` and the replay goes on, the other attempts of the same run included. Nothing is recorded and no label is written.
+Runs `candidate` on what the top-level runs of `agent` in `scope` were given and yields a `Replay` for each, oldest first by when the run started. `holdout` keeps the held-out runs, by the same hash and `holdout_percent` as `export`; `labeled` the runs with a `human` or `world` label; `tags` the runs whose tags contain these, as `delete_runs` matches; `fingerprint` the runs whose fingerprint equals it, all three parts; `limit` the first so many. Each replay is `candidate.run(agent, scope, …, record=False)` with the recorded input — parts read back as parts — the history (the messages sent before the input) with `start=0`, so without `History` — or, given `conversation`, what it returns for the recorded run, cut before the recorded input, with the recorded `start`, so the candidate has the same window and `History` over everything before it — the task, the skill, which the candidate reads from its own folder, and the `context`; a decision run replays its state, its task and its runtime questions as recorded, the rest of its questions coming from the candidate's folder, and when its route reached a generation run, that run's input, history and context. `expect`, `approve`, `tools` and `workspace` are passed to every replay. `conversation` is called once per replay, with the recorded top-level run, and applies to the generation run it replays; a decision run that reaches no generation run never calls it, and a `conversation` that raises, or that returns a conversation ending before the recorded input, gives the pair its `error`. It gives the recorded window only when the run was sent its conversation with `start`: a run recorded with `start=0` on a list the app had already cut replays on the conversation's first messages instead. `Approve` is `Callable[[str, ToolCall], Awaitable[bool]]`; `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets. The candidate's tools run for real. Each run is replayed `repeat` times, each attempt a run of its own yielded as a pair of its own whose `attempt` counts from 0; the attempts of a run come one after another, in attempt order, and `limit` counts recorded runs, not attempts. At most `concurrency` replays run at once, attempts included, and while a pair is being read at most `concurrency - 1` run, so with the default a replay starts when its pair is asked for. Pairs are yielded in that order either way. Closing the generator, or cancelling its reader while it waits for a pair, cancels each replay still running and waits for them to end. That close stands for the reader's first cancel: each cancel of the reader beyond its first, two at the same moment counted as two, cancels them once more, so a second ends a replay's workspace command at once. The close returns once they have ended, and a cancelled reader then raises `CancelledError`. A candidate that raises yields its pair with `error` and the replay goes on, the other attempts of the same run included. Nothing is recorded and no label is written.
 
 Raises `InputError` when `scope` is empty, `workspace` belongs to another scope, `holdout_percent` is outside 0 to 100, `tags` is empty, or `limit`, `concurrency` or `repeat` is below 1. Raises `NotFoundError` when the candidate has no agent `agent`. Each check happens when `replay` is called, before anything is read; a storage's `StorageError` is raised by the first pair.
 

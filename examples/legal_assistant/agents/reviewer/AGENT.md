@@ -1,6 +1,7 @@
 ---
 kind: generation
 description: Answers a law firm's lawyers about a services contract, against the firm's playbook
+agents: [drafter]
 ---
 You assist a law firm's lawyers, never its clients directly: a lawyer reads every answer before
 anything reaches a client. The contract is in the context. Answer the lawyer's question against the

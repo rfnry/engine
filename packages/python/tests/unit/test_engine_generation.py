@@ -269,7 +269,13 @@ async def test_each_delta_names_its_turn_and_the_reply_is_the_last_turns_text(
     run = await engine_for(fixtures, llm).run("support", "acme", "Where is A-1?", on_event=collect)
     assert isinstance(run, Generation)
     order = [e.turn if isinstance(e, TextDelta) else type(e).__name__ for e in seen]
-    assert [kind for kind, _ in groupby(order)] == [0, "ToolCallStarted", "ToolResultReady", 1]
+    assert [kind for kind, _ in groupby(order)] == [
+        "RunStarted",
+        0,
+        "ToolCallStarted",
+        "ToolResultReady",
+        1,
+    ]
     deltas = [e for e in seen if isinstance(e, TextDelta)]
     assert "".join(e.text for e in deltas if e.turn == 0) == "Let me look that up."
     assert "".join(e.text for e in deltas if e.turn == 1) == run.reply == "A-1 shipped today."
@@ -318,7 +324,7 @@ async def test_a_task_is_looked_up_like_an_agent_and_never_a_path_out_of_tasks(
     llm = Scripted(text_reply("x"))
     refinery = Refinery(storage)
     engine = engine_for(fixtures, llm, refinery=refinery)
-    message = f"^engine: agent 'support' has no task {re.escape(repr(task))}$"
+    message = f"^engine: agent 'support' has no task {re.escape(repr(task))}; its tasks are triage$"
     with pytest.raises(NotFoundError, match=message):
         await engine.run("support", "acme", "x", task=task)
     assert llm.calls == [] and await refinery.storage.runs("acme") == []

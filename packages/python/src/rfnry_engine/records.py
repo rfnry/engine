@@ -2,7 +2,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
 from rfnry_engine.errors import InputError
 from rfnry_engine.models import (
@@ -34,11 +34,41 @@ class Step(BaseModel):
     approved: bool | None = None
 
 
+class CallInfo(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    run_id: str
+    agent: str
+    scope: str
+    tool: str
+    call_id: str
+
+
+class RunStarted(BaseModel):
+    run_id: str
+    agent: str
+    call: CallInfo | None
+
+
 class TextDelta(BaseModel):
     run_id: str
     agent: str
     turn: int
     text: str
+
+
+class ReasoningDelta(BaseModel):
+    run_id: str
+    agent: str
+    turn: int
+    text: str
+
+
+class MessagesTaken(BaseModel):
+    run_id: str
+    agent: str
+    turn: int
+    messages: list[Message]
 
 
 class ToolCallStarted(BaseModel):
@@ -56,7 +86,7 @@ class ToolResultReady(BaseModel):
     step: Step
 
 
-Event = TextDelta | ToolCallStarted | ToolResultReady
+Event = RunStarted | TextDelta | ReasoningDelta | MessagesTaken | ToolCallStarted | ToolResultReady
 EventHandler = Callable[[Event], Awaitable[None]]
 
 
@@ -74,6 +104,7 @@ class Generation(BaseModel):
     scope: str
     tags: dict[str, str] = Field(default_factory=dict)
     task: str | None = None
+    skill: str | None = None
     context: str | None = None
     at: datetime
     duration_ms: int

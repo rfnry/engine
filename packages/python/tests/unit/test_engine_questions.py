@@ -313,9 +313,11 @@ async def test_a_routing_agent_s_task_adds_to_its_questions_and_is_not_passed_on
 async def test_an_unknown_task_is_not_found_as_an_unknown_agent_is(tmp_path: Path) -> None:
     root = grader(tmp_path)
     dm = Answering()
-    with pytest.raises(NotFoundError, match="^engine: agent 'grader' has no task 'ghost'$"):
+    with pytest.raises(NotFoundError, match="^engine: agent 'grader' has no task 'ghost'; "):
         await Engine(root, decision=dm).run("grader", "acme", "x", task="ghost")
-    with pytest.raises(NotFoundError, match="^engine: agent 'blank' has no task 'tone'$"):
+    with pytest.raises(
+        NotFoundError, match="^engine: agent 'blank' has no task 'tone'; it has no tasks$"
+    ):
         await Engine(root, decision=dm).run("blank", "acme", "x", task="tone", questions=RUNTIME)
     assert dm.calls == []
 

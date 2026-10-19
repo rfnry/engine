@@ -26,7 +26,7 @@ def test_generation_agent_carries_body_agents_tools_tasks() -> None:
     support = load_tree(FIXTURES)["support"]
     assert support.body.startswith("You are the support desk")
     assert support.agents == ["triage"]
-    assert support.tasks == ["triage"]
+    assert support.tasks == {"triage": ""}
     contract = support.tools["lookup_order"]
     assert contract.input is not None and contract.input["order_id"].required is True
     assert contract.description is not None and "Returns the order as JSON." in contract.description
@@ -356,7 +356,7 @@ def test_structure_in_frontmatter_is_an_object_or_a_list_of_json(tmp_path: Path,
 def test_a_decision_agent_may_have_no_questions_of_its_own(tmp_path: Path) -> None:
     _agent(tmp_path, "a", "kind: decision\n")
     spec = load_agent(tmp_path / "a")
-    assert spec.questions == {} and spec.tasks == [] and spec.task_questions == {}
+    assert spec.questions == {} and spec.tasks == {} and spec.task_questions == {}
 
 
 def test_a_decision_agent_s_tasks_are_folders_of_questions(tmp_path: Path) -> None:
@@ -372,7 +372,7 @@ def test_a_decision_agent_s_tasks_are_folders_of_questions(tmp_path: Path) -> No
     (tmp_path / "a" / "tasks" / "_drafts" / "x.md").write_text(CHECK)
     (tmp_path / "a" / "tasks" / "_index.md").write_text("grade, sort\n")
     spec = load_agent(tmp_path / "a")
-    assert spec.tasks == ["grade", "sort"] and set(spec.questions) == {"urgent"}
+    assert spec.tasks == {"grade": "", "sort": ""} and set(spec.questions) == {"urgent"}
     assert {task: sorted(qs) for task, qs in spec.task_questions.items()} == {
         "grade": ["pick", "tone"],
         "sort": ["q"],
@@ -427,7 +427,7 @@ def test_a_decision_agent_s_questions_may_all_live_in_tasks(tmp_path: Path) -> N
     _agent(tmp_path, "a", "kind: decision\n")
     _task(tmp_path, "a", "grade", "tone")
     spec = load_agent(tmp_path / "a")
-    assert spec.questions == {} and spec.tasks == ["grade"]
+    assert spec.questions == {} and spec.tasks == {"grade": ""}
 
 
 def test_a_routing_agent_may_declare_tasks(tmp_path: Path) -> None:
@@ -436,7 +436,7 @@ def test_a_routing_agent_may_declare_tasks(tmp_path: Path) -> None:
     _task(tmp_path, "a", "grade", "tone")
     agents = load_tree(tmp_path)
     validate_tree(agents)
-    assert agents["a"].tasks == ["grade"] and set(agents["a"].questions) == {"q"}
+    assert agents["a"].tasks == {"grade": ""} and set(agents["a"].questions) == {"q"}
 
 
 def test_a_delegate_target_needs_no_questions_of_its_own(tmp_path: Path) -> None:

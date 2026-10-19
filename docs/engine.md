@@ -94,11 +94,13 @@ them is accepted as it is.
 
 Structured output is a tool call — the model is offered an `Output` tool — so an adapter needs
 nothing beyond tool support. An adapter that also implements `generate_stream(system, messages,
-tools, on_delta)` streams text when the caller asks for events. An adapter that has `media_types`,
-the file types its model takes — `{"image/*", "application/pdf"}` — lets `Load` refuse the rest with
-an error the model can act on, instead of the next model call failing; without it, `Load` hands the
-model any file. An adapter that has `model`, the name of the model it calls, names the run's model
-before any reply does.
+tools, on_delta)` streams when the caller asks for events: it awaits `on_delta(text)` with the
+reply's text as it arrives and `on_delta(text, reasoning=True)` with the model's reasoning, when its
+vendor streams it; one that never passes `reasoning=` streams text alone. An adapter that has
+`media_types`, the file types its model takes — `{"image/*", "application/pdf"}` — lets `Load`
+refuse the rest with an error the model can act on, instead of the next model call failing; without
+it, `Load` hands the model any file. An adapter that has `model`, the name of the model it calls,
+names the run's model before any reply does.
 
 A decision model answers three kinds of question:
 
@@ -173,11 +175,11 @@ agents/
   support/
     AGENT.md              who the agent is
     rules/refunds.md      any folders and files, all in the map; a description adds a line
-    skills/escalate.md
+    skills/escalate.md    how to do a thing: the model's to choose, or a person's to ask for
     knowledge/rates.pdf   text, images, PDFs, anything — read when needed
     TOOLS.md              the code tools it may call, by name
     tools/refund.md       a tool whose contract is written out
-    tasks/triage.md       a named task, chosen per run
+    tasks/triage.md       what to do: a named task, chosen per run
 ```
 
 `AGENT.md` makes a directory an agent, named after its folder. `Engine(root)` loads each direct
@@ -285,7 +287,8 @@ run = await engine.run("writer", scope="acme", input="Draft the launch note.",
 or holding a slash.
 
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its
-`kind`, `description`, the `agents` it may call and the folders it `reads`.
+`kind`, `description`, the `agents` it may call, the folders it `reads`, and its `tasks` and
+`skills`, [below](#tasks-and-skills).
 
 An agent that needs its whole folder on every run — a few house rules applied to thousands of
 documents — asks for it, with `preload: true`:
@@ -313,6 +316,41 @@ own folder, a delegated or routed one included. A decision agent reads no files,
 one is a `ConfigurationError` when the tree loads; so is a file neither `Read` nor `Load` would hand
 over — over 20 MB, of a type the generation model's `media_types` does not name, or not the type its
 name says — with `Load`'s own message.
+
+### Tasks and skills
+
+A task is what the agent is to do on a run; a skill is how to do something. A task file of a
+generation agent, `tasks/<name>.md`, may open with a `description:`, the only key it takes; its body
+is what the model receives, in its system prompt, on a run that names it with `task=`, and the
+frontmatter never reaches the prompt. A decision agent's tasks are folders of questions,
+[below](#decision-agents).
+
+A skill is `skills/<name>.md`, or `skills/<name>/SKILL.md` for one that keeps files of its own
+beside it, in a generation agent's own folder; a skill folder written for another tool works as it
+is, its other keys left alone. Skills are files in the map, with their descriptions, and the model
+opens one when it judges it fits, as it opens any file. A person can also ask for one — `/skill
+escalate` in a chat — and the run is given it with `skill=`:
+
+```python
+run = await engine.run("support", scope="acme", input="A third complaint this week.", skill="escalate")
+run.skill                                            # "escalate"
+```
+
+The skill goes in front of the input, in the same user message: a text part of `<<<SKILL
+skills/escalate.md>>>` on its own line and the file's body without its frontmatter, then the input
+as it came. It is part of the conversation, so a run that continues from it still has the skill,
+while a task lives in the system prompt of the run that names it. Delegated and routed runs never
+take the caller's skill. `run.skill` records it, an exported generation row carries it, and a replay
+asks the candidate for it again, so the candidate's own skill file is the one read.
+
+`engine.agents[name].tasks` and `.skills` map each to its description, `""` when it has none: the
+menu a frontend can offer. Which of them a person may invoke is yours to decide — the same tree may
+serve people with different menus — and nothing is invoked unless you pass `task=` or `skill=`. A
+name the agent does not have is a `NotFoundError` before any model call, naming the ones it has —
+`engine: agent 'support' has no skill 'refund'; its skills are escalate` — and `skill=` on a
+decision agent is an `InputError`. When the tree loads, one skill as both `skills/x.md` and
+`skills/x/SKILL.md` is a `ConfigurationError`, and so is a task file with any key but
+`description:`. Names that start with `_` or `.` are neither tasks nor skills.
 
 ### Running an agent
 
@@ -388,9 +426,10 @@ attached, the run is recorded first, as far as it got: `error` says what ended i
 `"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. Its conversation can
 hold a tool call with no result, when the run failed between the call and its result, and `run()`
 refuses such a history: go on from the history the run was given. A run refused before its
-first model call — a bad input, an agent or task the tree does not have, a route loop — has
+first model call — a bad input, an agent, task or skill the tree does not have, a route loop — has
 nothing to record, and a run whose task you cancel is not recorded; `stop=` ends a run with its
-record. A delegated run that fails stays under its parent in `children`, its step the error the
+record. A generation run whose `on_event` raises on its `RunStarted` had started: it is recorded
+with that `error` and no model call. A delegated run that fails stays under its parent in `children`, its step the error the
 parent's model was given, and the parent goes on; a routed run that fails fails its router, which
 is recorded with its answers and the failed run in `routed_to`, or `None` when the routed run was
 refused before its first model call.
@@ -426,7 +465,8 @@ answered with an error saying so, so every call in `run.conversation` has its re
 Name a task to put `tasks/<task>.md` in front of the model — a decision agent's task adds a set of
 questions, [below](#decision-agents) — pass `context=` to add facts about this
 tenant that do not belong in the tree — the record keeps it as `run.context` — and pass `on_event=`
-to receive text deltas, tool starts and tool results as they happen:
+to see the run as it happens: where it starts, its reasoning and its text, the messages it takes from
+the inbox, its tool calls and their results:
 
 ```python
 async def show(event):
@@ -451,6 +491,17 @@ turn that ends in tool calls — "Let me look that up." — is said beside them;
 text replies with its last turn's text, so `run.reply` is that text and nothing said before it. A
 delegated or routed run sends its own `run_id` and counts its own turns.
 
+Every generation run sends a `RunStarted` first, before anything else. Its `call` is the tool call
+the run works for — the `Delegate` call that started a delegated run, the call an `engine.tool`
+consult was made in, the call that started the decision run a run was routed by — or `None` for a
+run started outside any tool call. A frontend places every later event of that `run_id` under that call, so a sub-agent's
+text, reasoning and tool calls show nested under the call that asked for them, at any depth. A
+decision run sends no events: the `ToolCallStarted` and `ToolResultReady` of the call that asked it
+show it. A `ReasoningDelta` is the model's reasoning as the adapter streams it, with its turn, to show
+apart from the reply: it never becomes part of the reply or the conversation, which keeps the
+reasoning as the adapter returned it, and reasoning streamed before `stop.now()` is not kept. A model
+that does not stream its reasoning sends none.
+
 A person can stop or steer a run while it works. Pass `stop=Stop()` and call `stop.now()` to cancel
 the model call in flight and every tool still running, or `stop.after_step()` to let the current
 tool calls finish and end before the next model call. Pass `inbox=asyncio.Queue()` and put a string
@@ -467,6 +518,11 @@ run = await work
 run.stopped, run.reply, run.steps
 ```
 
+When the run takes messages it sends a `MessagesTaken` with them and the turn about to read them.
+The inbox is first in, first out and the run takes everything waiting, so a frontend can show a
+message as sent but not yet read, and mark the first `len(event.messages)` as read when the event
+arrives. Messages still waiting when the run ends were never read and send nothing.
+
 A stopped run returns, never raises: `run.stopped` is `"now"` or `"after_step"` (`None` for a run
 that ended on its own), `run.steps` are the steps it took, `run.reply` is the last text the model
 produced — text streamed before `now()` included — or `""`, and it is recorded like any run. A tool
@@ -475,10 +531,12 @@ call cut off by `now()` is answered with the error `stopped by the user` and its
 from it. A call the stop finds not yet running never runs: a stop from a handler of a call's
 `ToolCallStarted` comes before its tool runs, and one from a handler of a reply's `TextDelta` before
 any of the reply's calls. A handler still running when a stop cancels its call, or a streamed
-`TextDelta` handler, is cancelled with that work, so a kill switch does its own work, such as an
-audit, before it calls `stop.now()`. A call that already has its result keeps it, and the stop waits
-for an `on_event` still handling its `ToolResultReady` to return: a handler can stop the run on what
-a tool returned; a slow one delays the stop, and cancelling the run cancels it. Cancelling the run's
+`TextDelta` or `ReasoningDelta` handler, is cancelled with that work, so a kill switch does its own
+work, such as an audit, before it calls `stop.now()`. A call that already has its result keeps it,
+and the stop waits for an `on_event` still handling its `ToolResultReady` to return: a handler can
+stop the run on what a tool returned; a slow one delays the stop, and cancelling the run cancels it.
+The stop waits the same way for a handler of a `RunStarted` or a `MessagesTaken`, which the run sends
+between its steps, and one such handler sets ends the run before its next model call. Cancelling the run's
 task cancels its model call and every tool call still running, delegations and their runs included,
 and re-raises once all of them have ended, as an `asyncio.TaskGroup` does — a call whose tool
 returns after the cancel ends with it, before its `ToolResultReady` — and a stop waits the same way
@@ -1268,7 +1326,7 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | task, context, tags, model, fingerprint, system, preload, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
+| `generation` | generation run | task, skill, context, tags, model, fingerprint, system, preload, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
 | `preference` | human correction | tags, fingerprint, prompt (system, preload, messages), chosen (the correction), rejected (the reply) |
 | `decision` | question of a decision run | task, tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
 
@@ -1321,8 +1379,8 @@ reviewed or the world reported on; `tags=` those whose tags contain these, as `d
 matches; `fingerprint=` the runs one version produced — the `run.fingerprint` of any of them, its
 `agent`, `tools` and `questions` all equal; `limit=` the first so many. Each is
 `candidate.run(agent, scope, …, record=False)` with the recorded input — parts as parts — the
-history sent before it, the task and the `context`, so the candidate sees what the recorded run
-saw. A decision run replays its state and its task, and asks its runtime questions again as they
+history sent before it, the task, the skill and the `context`, so the candidate sees what the
+recorded run saw, its own skill file read for a recorded skill. A decision run replays its state and its task, and asks its runtime questions again as they
 were recorded while the questions of its folder come from the candidate's folder — a runtime id the
 candidate's folder now asks fails that pair; when its route reached a generation run, that run's
 input, history and context go too. What a record does not keep is yours to pass
@@ -1686,10 +1744,11 @@ Everything the package exports, by role.
 
 - **Run things:** `Engine`, `AgentInfo`, `Stop`, `HistoryLike`.
 - **What a run returns:** `Generation`, `Decision`, `Run`, `Step`, `Fingerprint`; events
-  `TextDelta`, `ToolCallStarted`, `ToolResultReady`, `Event`.
-- **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `DecisionModel`; `Message`,
-  `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`,
-  `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`,
+  `RunStarted`, `TextDelta`, `ReasoningDelta`, `MessagesTaken`, `ToolCallStarted`,
+  `ToolResultReady`, `Event`.
+- **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `OnDelta`, `DecisionModel`;
+  `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`,
+  `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`,
   `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by,
   `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
 - **Give models tools:** `Tool`, `Tools`, `EngineTools`, `current_call`, `CallInfo`, `Jail`,

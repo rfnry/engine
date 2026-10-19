@@ -205,7 +205,7 @@ async def test_a_routing_agent_s_unknown_task_is_not_found_before_it_is_asked(
 ) -> None:
     dm = Fixed(_intent("other", 0.9))
     engine = Engine(fixtures, generation=Scripted(), decision=dm, tools=TOOLS)
-    with pytest.raises(NotFoundError, match="^engine: agent 'frontdesk' has no task 'triage'$"):
+    with pytest.raises(NotFoundError, match="^engine: agent 'frontdesk' has no task 'triage'; "):
         await engine.run("frontdesk", "acme", "x", task="triage")
     assert dm.calls == []
 
@@ -245,7 +245,11 @@ async def test_a_route_forwards_everything_the_run_was_given(fixtures: Path) -> 
     assert messages[:2] == history and "<<<CONTEXT>>>\nTeam plan" in system
     assert {"ping", "Output"} <= {spec.name for spec in specs}
     assert Verdict.model_validate_json(run.routed_to.reply).refund is True
-    assert [type(e).__name__ for e in events] == ["ToolCallStarted", "ToolResultReady"]
+    assert [type(e).__name__ for e in events] == [
+        "RunStarted",
+        "ToolCallStarted",
+        "ToolResultReady",
+    ]
 
 
 async def test_a_decision_agent_refuses_media_before_the_model_is_called(fixtures: Path) -> None:

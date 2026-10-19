@@ -16,7 +16,7 @@ from pydantic import (
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
 from rfnry_engine.folders import DECLARED, content, declares, entries, joined, listing
-from rfnry_engine.frontmatter import parse_frontmatter_doc, plainly
+from rfnry_engine.frontmatter import description, parse_frontmatter_doc, plainly, split_frontmatter
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Check, Choice, Part, Question, Score
 from rfnry_engine.tools.builtins import preload_parts
@@ -91,10 +91,21 @@ class ToolsFront(RootModel[dict[str, str | None]]):
     pass
 
 
+class TaskFront(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    description: str | None = None
+
+
 class ToolDecl(BaseModel):
     name: str
     description: str | None
     input: dict[str, ToolField] | None
+
+
+class Skill(BaseModel):
+    path: str
+    description: str
 
 
 class AgentSpec(BaseModel):
@@ -107,7 +118,7 @@ class AgentSpec(BaseModel):
     route: RouteSpec | None
     questions: dict[str, Question]
     tools: dict[str, ToolDecl]
-    tasks: list[str]
+    tasks: dict[str, str]
     fingerprint: str
     workspace: bool = False
     task_questions: dict[str, dict[str, Question]] = Field(default_factory=dict)
@@ -115,10 +126,14 @@ class AgentSpec(BaseModel):
     listing: str = ""
     reads: dict[str, Path] = Field(default_factory=dict)
     plain: bool = False
+    skills: dict[str, Skill] = Field(default_factory=dict)
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigurationError(f"tree: {path} is not UTF-8 text; save it as UTF-8") from exc
 
 
 def _question(path: Path) -> Question:
@@ -183,6 +198,34 @@ def _tools(directory: Path, agent: str) -> dict[str, ToolDecl]:
             f"tree: agent {agent!r} declares {', '.join(map(repr, twice))} in both TOOLS.md and tools/; keep one"
         )
     return dict(sorted({**listed, **filed}.items()))
+
+
+def _task(path: Path) -> str:
+    raw = _read(path)
+    if split_frontmatter(raw) is None:
+        return ""
+    front, _ = parse_frontmatter_doc(raw, model=TaskFront, source=path, label="task")
+    return " ".join((front.description or "").split())
+
+
+def _skills(files: list[tuple[str, Path]], agent: str) -> dict[str, Skill]:
+    found: dict[str, Skill] = {}
+    for rel, path in files:
+        match rel.split("/"):
+            case ["skills", file] if file.endswith(".md"):
+                name = file.removesuffix(".md")
+            case ["skills", name, "SKILL.md"]:
+                pass
+            case _:
+                continue
+        if name.startswith(("_", ".")):
+            continue
+        if name in found:
+            raise ConfigurationError(
+                f"tree: agent {agent!r} has the skill {name!r} as both skills/{name}.md and skills/{name}/SKILL.md; keep one"
+            )
+        found[name] = Skill(path=rel, description=description(_read(path), path) or "")
+    return dict(sorted(found.items()))
 
 
 def _markdown_files(directory: Path) -> list[Path]:
@@ -286,15 +329,18 @@ def load_agent(
     agent = name or directory.resolve().name
     questions = _questions(directory / "questions")
     tools = _tools(directory, agent)
-    tasks = [p.stem for p in _markdown_files(directory / "tasks")]
+    task_files = _markdown_files(directory / "tasks")
     task_questions: dict[str, dict[str, Question]] = {}
     if front.kind == "decision":
-        if tasks:
+        if task_files:
+            first = task_files[0].stem
             raise ConfigurationError(
-                f"tree: decision agent {agent!r} has tasks/{tasks[0]}.md, but keeps each task's questions in a folder; move it to tasks/{tasks[0]}/"
+                f"tree: decision agent {agent!r} has tasks/{first}.md, but keeps each task's questions in a folder; move it to tasks/{first}/"
             )
         task_questions = {p.name: _questions(p) for p in _folders(directory / "tasks")}
-        tasks = list(task_questions)
+        tasks = dict.fromkeys(task_questions, "")
+    else:
+        tasks = {p.stem: _task(p) for p in task_files}
     for task, asked in task_questions.items():
         clash = [qid for qid in asked if qid in questions]
         if clash:
@@ -363,6 +409,7 @@ def load_agent(
             entries(root, True, sub), {name: folder.mapped for name, folder in reads.items()}
         ),
         reads={name: folder.place for name, folder in reads.items()},
+        skills={} if front.kind == "decision" else _skills(content(root, True, sub), agent),
     )
 
 
@@ -378,10 +425,11 @@ def plain_agent(root: Path, name: str) -> AgentSpec:
         route=None,
         questions={},
         tools={},
-        tasks=[],
+        tasks={},
         fingerprint=folder_fingerprint(content(root, False), {}),
         listing=listing(root, False, {}),
         plain=True,
+        skills=_skills(content(root, False), name),
     )
 
 

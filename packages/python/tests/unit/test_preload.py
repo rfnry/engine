@@ -463,7 +463,7 @@ def test_the_preload_and_the_fingerprint_come_from_one_read_of_each_file(
     monkeypatch.undo()
     preloaded = ["knowledge/diagram.png", "knowledge/plans.md", "knowledge/rates.pdf"]
     preloaded += ["rules/chargebacks/disputed.md", "rules/refunds.md", "skills/escalate.md"]
-    opens = {name: 2 if name.endswith(".md") else 1 for name in preloaded}
+    opens = {name: 1 + name.endswith(".md") + name.startswith("skills/") for name in preloaded}
     assert {name: opened.count(support / name) for name in preloaded} == opens
     assert spec.fingerprint == by_hand(support)
 

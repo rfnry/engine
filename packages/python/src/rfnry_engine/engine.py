@@ -13,7 +13,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
-from rfnry_engine.bundle import build_bundle
+from rfnry_engine.bundle import build_bundle, read_body
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
@@ -24,7 +24,6 @@ from rfnry_engine.fingerprint import questions_fingerprint, tools_fingerprint
 from rfnry_engine.foreground import (
     CALL,
     FOREGROUND,
-    CallInfo,
     Foreground,
     halted,
     hooks,
@@ -56,11 +55,15 @@ from rfnry_engine.models import (
     settle,
 )
 from rfnry_engine.records import (
+    CallInfo,
     Decision,
     EventHandler,
     Fingerprint,
     Generation,
+    MessagesTaken,
+    ReasoningDelta,
     Run,
+    RunStarted,
     Step,
     TextDelta,
     ToolCallStarted,
@@ -102,6 +105,7 @@ class _Options:
     workspace: Workspace | None
     stop: Stop | None = None
     inbox: asyncio.Queue[Any] | None = None
+    skill: str | None = None
     tags: dict[str, str] = field(default_factory=dict)
     approve: Approve | None = None
     questions: Mapping[str, Question] = field(default_factory=dict)
@@ -116,6 +120,8 @@ class AgentInfo(BaseModel):
     description: str
     agents: list[str]
     reads: list[str]
+    tasks: dict[str, str]
+    skills: dict[str, str]
 
 
 class Recorder(Protocol):
@@ -277,6 +283,28 @@ def _assistant(reply: Reply, prefix: str) -> Message:
     )
 
 
+def _invoked(path: str, body: str, said: Content) -> list[Part]:
+    rest: list[Part] = said if isinstance(said, list) else [Text(text=said)] if said else []
+    return [Text(text=f"<<<SKILL {path}>>>\n{body}"), *rest]
+
+
+def _skilled(spec: AgentSpec, skill: str | None) -> str | None:
+    if skill is None:
+        return None
+    if spec.kind == "decision":
+        raise InputError(
+            f"engine: decision agent {spec.name!r} takes no skill; skills are for generation agents"
+        )
+    if skill not in spec.skills:
+        have = (
+            f"its skills are {', '.join(spec.skills)}"
+            if spec.skills
+            else "it has no skills; a skill is skills/<name>.md or skills/<name>/SKILL.md"
+        )
+        raise NotFoundError(f"engine: agent {spec.name!r} has no skill {skill!r}; {have}")
+    return skill
+
+
 def _failure(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
@@ -357,6 +385,8 @@ class Engine:
                 description=spec.description,
                 agents=spec.agents,
                 reads=list(spec.reads),
+                tasks=dict(spec.tasks),
+                skills={called: skill.description for called, skill in spec.skills.items()},
             )
             for name, spec in self._agents.items()
         }
@@ -374,6 +404,7 @@ class Engine:
         input: State,
         *,
         task: str | None = None,
+        skill: str | None = None,
         questions: Mapping[str, QuestionLike] | None = None,
         history: Sequence[object] | HistoryLike | None = None,
         start: int = 0,
@@ -396,6 +427,7 @@ class Engine:
             )
         spec = self._spec(agent)
         asked = _asked(spec, questions)
+        invoked = _skilled(spec, skill)
         tagged = _tags(tags)
         held = history if history is None or isinstance(history, HistoryLike) else list(history)
         given = await _window(held, start)
@@ -410,6 +442,7 @@ class Engine:
             workspace=workspace,
             stop=stop,
             inbox=inbox,
+            skill=invoked,
             tags=tagged,
             approve=approve,
             questions=asked,
@@ -501,7 +534,8 @@ class Engine:
         routed: bool = False,
     ) -> Run:
         if options.task is not None and options.task not in spec.tasks:
-            raise NotFoundError(f"engine: agent {spec.name!r} has no task {options.task!r}")
+            have = f"its tasks are {', '.join(spec.tasks)}" if spec.tasks else "it has no tasks"
+            raise NotFoundError(f"engine: agent {spec.name!r} has no task {options.task!r}; {have}")
         async with enter(spec.name, self.max_depth, routed=routed):
             if spec.kind == "generation":
                 with taking(options.stop):
@@ -669,7 +703,12 @@ class Engine:
             )
         )
         hashed = len(history)
-        messages = [*history, Message(role="user", content=_content(input))]
+        opening = _content(input)
+        if options.skill is not None:
+            skill = spec.skills[options.skill]
+            body = await asyncio.to_thread(read_body, spec.root / skill.path)
+            opening = _invoked(skill.path, body, opening)
+        messages = [*history, Message(role="user", content=opening)]
         sent = list(messages)
         steps: list[Step] = []
         children: list[Run] = []
@@ -710,7 +749,10 @@ class Engine:
                 CALL.reset(token)
             return step
 
-        async def delta(text: str) -> None:
+        async def delta(text: str, *, reasoning: bool = False) -> None:
+            if reasoning:
+                await emit(ReasoningDelta(run_id=run_id, agent=spec.name, turn=turn, text=text))
+                return
             streamed.append(text)
             await emit(TextDelta(run_id=run_id, agent=spec.name, turn=turn, text=text))
 
@@ -728,6 +770,7 @@ class Engine:
                     history=[],
                     expect=None,
                     inbox=None,
+                    skill=None,
                     start=0,
                     source=None,
                     failed=failed,
@@ -873,10 +916,13 @@ class Engine:
                 foregrounds.pop(id(call), None)
             return stopped
 
-        def drain() -> None:
+        def drain() -> list[Message]:
+            taken: list[Message] = []
             while inbox is not None and not inbox.empty():
-                messages.append(Message(role="user", content=_content(inbox.get_nowait())))
+                taken.append(Message(role="user", content=_content(inbox.get_nowait())))
                 inbox.task_done()
+            messages.extend(taken)
+            return taken
 
         def marked() -> str:
             nonlocal digest, hashed
@@ -908,6 +954,7 @@ class Engine:
                 scope=scope,
                 tags=dict(options.tags),
                 task=options.task,
+                skill=options.skill,
                 context=options.context,
                 at=at,
                 duration_ms=int((time.monotonic() - started) * 1000),
@@ -931,12 +978,19 @@ class Engine:
             )
 
         try:
+            await emit(RunStarted(run_id=run_id, agent=spec.name, call=CALL.get()))
             for turn in range(self.max_steps):
                 mode = requested(stop)
                 if mode is not None:
                     return finish(said, mode)
-                if turn:
-                    drain()
+                taken = drain() if turn else []
+                if taken:
+                    await emit(
+                        MessagesTaken(run_id=run_id, agent=spec.name, turn=turn, messages=taken)
+                    )
+                    mode = requested(stop)
+                    if mode is not None:
+                        return finish(said, mode)
                 streamed.clear()
                 after = await asyncio.to_thread(marked)
                 asking = asyncio.ensure_future(ask())

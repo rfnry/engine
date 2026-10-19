@@ -7,13 +7,21 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from rfnry_engine import Event, Stop, TextDelta, ToolCallStarted, ToolResultReady
+from rfnry_engine import (
+    ChoiceAnswer,
+    Event,
+    RunStarted,
+    Stop,
+    TextDelta,
+    ToolCallStarted,
+    ToolResultReady,
+)
 from rfnry_engine.engine import Engine
-from rfnry_engine.models import Reply, ToolCall
-from rfnry_engine.records import Generation
+from rfnry_engine.models import Message, Reply, ToolCall
+from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import Scripted, Streaming, text_reply
+from .fakes import Fixed, Scripted, Streaming, text_reply
 
 STOPPED = "stopped by the user"
 
@@ -984,3 +992,247 @@ async def test_a_childs_text_carries_its_own_run_and_its_own_turns(tmp_path: Pat
         (child.run_id, "chat", 0, "Hi from chat."),
         (run.run_id, "lead", 1, "Chat says hi."),
     ]
+
+
+class ByAgent:
+    def __init__(self, lead: list[Reply], **others: Any) -> None:
+        self.lead = lead
+        self.others = others
+
+    async def generate(self, system: str, messages: list[Message], tools: list[Any]) -> Reply:
+        for name, answer in self.others.items():
+            if f"You are {name}." in system:
+                reply: Reply = answer(messages) if callable(answer) else answer.pop(0)
+                return reply
+        return self.lead.pop(0)
+
+
+def looking(messages: list[Message]) -> Reply:
+    if len(messages) == 1:
+        call = ToolCall(id=f"r-{messages[0].content}", name="lookup", args={"order_id": "A-1"})
+        return Reply(tool_calls=[call], stop_reason="tool_use")
+    return text_reply(f"Found {messages[0].content}.")
+
+
+def tree(tmp_path: Path, agents: dict[str, str]) -> Path:
+    root = tmp_path / "agents"
+    for name, front in agents.items():
+        (root / name).mkdir(parents=True)
+        (root / name / "AGENT.md").write_text(
+            f"---\n{front}\n---\nYou are {name}.\n", encoding="utf-8"
+        )
+    return root
+
+
+def started(collect: Collect) -> dict[str, RunStarted]:
+    return {e.run_id: e for e in collect.events if isinstance(e, RunStarted)}
+
+
+async def test_a_run_says_it_started_before_anything_else(tmp_path: Path) -> None:
+    collect = Collect()
+    run = await Engine(make_tree(tmp_path), generation=Scripted(text_reply("Hi."))).run(
+        "chat", "acme", "Hi", on_event=collect
+    )
+    assert collect.events[0] == RunStarted(run_id=run.run_id, agent="chat", call=None)
+    assert [type(e) for e in collect.events] == [RunStarted, TextDelta]
+
+
+async def test_each_sub_agent_names_the_call_it_works_for_before_its_first_tool(
+    tmp_path: Path,
+) -> None:
+    split = [
+        ToolCall(id="d1", name="Delegate", args={"agent": "chat", "input": "A"}),
+        ToolCall(id="d2", name="Delegate", args={"agent": "chat", "input": "B"}),
+    ]
+    llm = ByAgent(
+        [Reply(tool_calls=split, stop_reason="tool_use"), text_reply("Both.")], chat=looking
+    )
+    collect = Collect()
+    run = await Engine(make_tree(tmp_path), generation=llm).run(
+        "lead", "acme", "Split", tools=TOOLS, on_event=collect
+    )
+    assert isinstance(run, Generation) and run.reply == "Both."
+    runs = started(collect)
+    assert runs[run.run_id].call is None and len(runs) == 3
+    for child in run.children:
+        assert isinstance(child, Generation)
+        call = runs[child.run_id].call
+        assert call is not None
+        assert (call.run_id, call.agent, call.scope, call.tool) == (
+            run.run_id,
+            "lead",
+            "acme",
+            "Delegate",
+        )
+        assert call.call_id == {"A": "d1", "B": "d2"}[str(child.input)]
+        own = [e for e in collect.events if e.run_id == child.run_id]
+        assert [type(e) for e in own] == [RunStarted, ToolCallStarted, ToolResultReady, TextDelta]
+
+
+async def test_a_grandchild_names_its_parents_call(tmp_path: Path) -> None:
+    root = tree(
+        tmp_path,
+        {
+            "lead": "kind: generation\nagents: [mid]",
+            "mid": "kind: generation\ndescription: Middle\nagents: [leaf]",
+            "leaf": "kind: generation\ndescription: Leaf",
+        },
+    )
+    llm = ByAgent(
+        [
+            Reply(
+                tool_calls=[
+                    ToolCall(id="d1", name="Delegate", args={"agent": "mid", "input": "go"})
+                ],
+                stop_reason="tool_use",
+            ),
+            text_reply("Done."),
+        ],
+        mid=[
+            Reply(
+                tool_calls=[
+                    ToolCall(id="m1", name="Delegate", args={"agent": "leaf", "input": "go"})
+                ],
+                stop_reason="tool_use",
+            ),
+            text_reply("Mid done."),
+        ],
+        leaf=[text_reply("Leaf done.")],
+    )
+    collect = Collect()
+    run = await Engine(root, generation=llm).run("lead", "acme", "Go", on_event=collect)
+    assert isinstance(run, Generation)
+    [mid] = run.children
+    assert isinstance(mid, Generation)
+    [leaf] = mid.children
+    runs = started(collect)
+    mid_call, leaf_call = runs[mid.run_id].call, runs[leaf.run_id].call
+    assert mid_call is not None and (mid_call.run_id, mid_call.call_id) == (run.run_id, "d1")
+    assert leaf_call is not None and (leaf_call.run_id, leaf_call.call_id) == (mid.run_id, "m1")
+
+
+async def test_a_run_routed_under_a_delegated_decision_names_the_delegate_call(
+    tmp_path: Path,
+) -> None:
+    root = tree(
+        tmp_path,
+        {
+            "lead": "kind: generation\nagents: [router]",
+            "router": "kind: decision\ndescription: Routes\nroute:\n  by: team\n  to: {billing: chat}",
+            "chat": "kind: generation\ndescription: Talks",
+        },
+    )
+    (root / "router" / "questions").mkdir()
+    (root / "router" / "questions" / "team.md").write_text(
+        "---\ntype: choice\noptions: {billing: Charges, other: Anything else}\n---\nWhich team?\n",
+        encoding="utf-8",
+    )
+    llm = ByAgent(
+        [
+            Reply(
+                tool_calls=[
+                    ToolCall(
+                        id="d1", name="Delegate", args={"agent": "router", "input": "Charged twice"}
+                    )
+                ],
+                stop_reason="tool_use",
+            ),
+            text_reply("Routed."),
+        ],
+        chat=[text_reply("Billing here.")],
+    )
+    decision = Fixed(
+        {"team": ChoiceAnswer(choice="billing", probabilities={"billing": 0.9, "other": 0.1})}
+    )
+    collect = Collect()
+    run = await Engine(root, generation=llm, decision=decision).run(
+        "lead", "acme", "Help", on_event=collect
+    )
+    assert isinstance(run, Generation)
+    [router] = run.children
+    assert isinstance(router, Decision) and isinstance(router.routed_to, Generation)
+    call = started(collect)[router.routed_to.run_id].call
+    assert call is not None and (call.run_id, call.call_id) == (run.run_id, "d1")
+    assert all(e.run_id != router.run_id for e in collect.events)
+
+
+async def test_a_consult_made_inside_a_tool_names_that_tool_call(tmp_path: Path) -> None:
+    llm = ByAgent(
+        [
+            Reply(
+                tool_calls=[ToolCall(id="c1", name="ask_chat", args={"input": "Hi"})],
+                stop_reason="tool_use",
+            ),
+            text_reply("Asked."),
+        ],
+        chat=[text_reply("Hello.")],
+    )
+    engine = Engine(make_tree(tmp_path), generation=llm)
+    collect = Collect()
+    run = await engine.run(
+        "lead",
+        "acme",
+        "Ask",
+        tools=engine.tool("chat", scope="acme", name="ask_chat"),
+        on_event=collect,
+    )
+    assert isinstance(run, Generation) and run.reply == "Asked."
+    [consult] = [e for e in collect.events if isinstance(e, RunStarted) and e.agent == "chat"]
+    assert consult.call is not None
+    assert (consult.call.run_id, consult.call.tool, consult.call.call_id) == (
+        run.run_id,
+        "ask_chat",
+        "c1",
+    )
+
+
+async def test_a_run_stopped_before_it_starts_still_says_it_started(tmp_path: Path) -> None:
+    stop = Stop()
+    stop.now()
+    collect = Collect()
+    run = await Engine(make_tree(tmp_path), generation=Scripted()).run(
+        "chat", "acme", "Hi", on_event=collect, stop=stop
+    )
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert collect.events == [RunStarted(run_id=run.run_id, agent="chat", call=None)]
+
+
+class Kept:
+    def __init__(self) -> None:
+        self.runs: list[Any] = []
+
+    async def record(self, run: Any) -> None:
+        self.runs.append(run)
+
+
+async def test_a_routed_run_whose_start_handler_raises_sits_in_its_router(tmp_path: Path) -> None:
+    root = tree(
+        tmp_path,
+        {
+            "router": "kind: decision\ndescription: Routes\nroute:\n  by: team\n  to: {billing: chat}",
+            "chat": "kind: generation\ndescription: Talks",
+        },
+    )
+    (root / "router" / "questions").mkdir()
+    (root / "router" / "questions" / "team.md").write_text(
+        "---\ntype: choice\noptions: {billing: Charges, other: Anything else}\n---\nWhich team?\n",
+        encoding="utf-8",
+    )
+
+    async def breaking(event: Event) -> None:
+        if isinstance(event, RunStarted):
+            raise RuntimeError("the socket is gone")
+
+    kept = Kept()
+    decision = Fixed(
+        {"team": ChoiceAnswer(choice="billing", probabilities={"billing": 0.9, "other": 0.1})}
+    )
+    llm = Scripted()
+    engine = Engine(root, generation=llm, decision=decision, refinery=kept)
+    with pytest.raises(RuntimeError, match="the socket is gone"):
+        await engine.run("router", "acme", "Charged twice", on_event=breaking)
+    [router] = kept.runs
+    assert isinstance(router, Decision) and isinstance(router.routed_to, Generation)
+    routed = router.routed_to
+    assert routed.error == "RuntimeError: the socket is gone" and routed.calls == 0
+    assert llm.calls == []

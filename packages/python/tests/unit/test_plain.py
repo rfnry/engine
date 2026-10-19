@@ -23,7 +23,15 @@ async def test_a_root_without_agent_md_is_one_agent_named_for_its_folder(tmp_pat
     llm = Scripted(text_reply("Drafted."))
     engine = Engine(notes(tmp_path / "notes"), generation=llm)
     assert engine.agents == {
-        "notes": AgentInfo(name="notes", kind="generation", description="", agents=[], reads=[])
+        "notes": AgentInfo(
+            name="notes",
+            kind="generation",
+            description="",
+            agents=[],
+            reads=[],
+            tasks={},
+            skills={},
+        )
     }
     run = await engine.run("notes", "acme", "Draft the note.", context="You write release notes.")
     assert isinstance(run, Generation) and run.reply == "Drafted."
