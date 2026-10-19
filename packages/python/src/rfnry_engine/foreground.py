@@ -5,20 +5,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
-
-from rfnry_engine.records import Decision, EventHandler, Generation, Run
+from rfnry_engine.records import CallInfo, Decision, EventHandler, Generation, Run
 from rfnry_engine.stop import Stop
-
-
-class CallInfo(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    run_id: str
-    agent: str
-    scope: str
-    tool: str
-    call_id: str
 
 
 @dataclass

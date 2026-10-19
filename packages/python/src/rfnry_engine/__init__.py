@@ -10,7 +10,7 @@ from rfnry_engine.errors import (
     RunawayError,
     StorageError,
 )
-from rfnry_engine.foreground import CallInfo, current_call
+from rfnry_engine.foreground import current_call
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import (
     Answer,
@@ -29,6 +29,7 @@ from rfnry_engine.models import (
     HistoryLike,
     Image,
     Message,
+    OnDelta,
     Part,
     Question,
     QuestionLike,
@@ -45,11 +46,15 @@ from rfnry_engine.models import (
     confidence,
 )
 from rfnry_engine.records import (
+    CallInfo,
     Decision,
     Event,
     Fingerprint,
     Generation,
+    MessagesTaken,
+    ReasoningDelta,
     Run,
+    RunStarted,
     Step,
     TextDelta,
     ToolCallStarted,
@@ -109,12 +114,15 @@ __all__ = [
     "LabelRow",
     "Labeled",
     "Message",
+    "MessagesTaken",
     "ModelError",
     "NotFoundError",
+    "OnDelta",
     "Outcome",
     "PostgresStorage",
     "Question",
     "QuestionLike",
+    "ReasoningDelta",
     "Refinery",
     "Replay",
     "Reply",
@@ -122,6 +130,7 @@ __all__ = [
     "Review",
     "Run",
     "RunRow",
+    "RunStarted",
     "RunawayError",
     "Score",
     "ScoreAnswer",

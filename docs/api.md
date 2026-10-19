@@ -26,11 +26,20 @@ class StreamingGenerationModel(Protocol):
         system: str,
         messages: list[Message],
         tools: list[ToolSpec],
-        on_delta: Callable[[str], Awaitable[None]],
+        on_delta: OnDelta,
     ) -> ReplyLike: ...
 ```
 
-A generation model that also streams. When a run has `on_event`, the engine calls `generate_stream` instead of `generate` and the adapter awaits `on_delta` with each piece of text as it arrives; it returns the whole reply, as `generate` does.
+A generation model that also streams. When a run has `on_event`, the engine calls `generate_stream` instead of `generate`; the adapter awaits `on_delta(text)` with each piece of the reply's text as it arrives and `on_delta(text, reasoning=True)` with each piece of the model's reasoning its vendor streams, and returns the whole reply, as `generate` does. An adapter that never passes `reasoning=` streams text alone.
+
+### `OnDelta`
+
+```python
+class OnDelta(Protocol):
+    async def __call__(self, text: str, *, reasoning: bool = False) -> None: ...
+```
+
+What `generate_stream` is handed. Text goes out as a `TextDelta`, reasoning as a `ReasoningDelta`, each with the turn. An adapter that annotates `on_delta` as `Callable[[str], Awaitable[None]]` still fits, since it never passes `reasoning`.
 
 ### `DecisionModel`
 
@@ -567,6 +576,17 @@ class Step(BaseModel):
 
 One tool call of a generation run: the tool, its arguments, its result, whether it failed, when it finished and how long it took. `child_run_id` names the run a `Delegate` started, `stopped` marks a call `Stop.now()` cut off, or one whose `Delegate` or `engine.tool` run a stop ended, and `approved` is what `approve` answered, `None` when nobody was asked.
 
+### `RunStarted`
+
+```python
+class RunStarted(BaseModel):
+    run_id: str
+    agent: str
+    call: CallInfo | None
+```
+
+Sent to `on_event` once by every generation run, before anything else it sends — also by a run that a stop set before it started ends before its first model call. `call` is the tool call the run works for, as `current_call` sees it when the run starts: the caller's `Delegate` call for a delegated run, the caller's call for a run an `engine.tool` call started inside a run, the call that started the decision run for a run it routes to, `None` for a run you start. Every later event with this `run_id` belongs under `call`, so sub-agents nest at any depth. A decision run sends no events; the `ToolCallStarted` and `ToolResultReady` of the call that asked it show it.
+
 ### `TextDelta`
 
 ```python
@@ -578,6 +598,30 @@ class TextDelta(BaseModel):
 ```
 
 Text from the model, sent to `on_event` as it is produced; from a model that does not stream, the whole text of each reply. `turn` is the model call of the run that said it, from 0: text of a turn that ended in tool calls was said beside them, and a run that ends in text replies with its last turn's text. A delegated or routed run sends its own `run_id` and counts its own turns.
+
+### `ReasoningDelta`
+
+```python
+class ReasoningDelta(BaseModel):
+    run_id: str
+    agent: str
+    turn: int
+    text: str
+```
+
+The model's reasoning, sent to `on_event` as a streaming adapter passes it with `on_delta(text, reasoning=True)`; `turn` as in `TextDelta`. It is not part of the reply or the conversation: a reply's reasoning is recorded as the adapter returned it, in `Message.reasoning`, and reasoning streamed before `Stop.now()` is not kept. A model that does not stream, or does not stream its reasoning, sends none.
+
+### `MessagesTaken`
+
+```python
+class MessagesTaken(BaseModel):
+    run_id: str
+    agent: str
+    turn: int
+    messages: list[Message]
+```
+
+Sent to `on_event` when a run takes messages from its `inbox`, at a step boundary: `messages` are the `role="user"` messages it appended to the conversation, in the order the inbox held them, and `turn` is the model call about to read them. The inbox is first in, first out and the run takes all it holds, so they are the first `len(messages)` items put on it that no earlier event reported. Nothing taken, an inbox not read because `Stop.after_step()` is pending, and messages left when the run ends send none.
 
 ### `ToolCallStarted`
 
@@ -607,7 +651,7 @@ Sent to `on_event` once, when a tool call is done: `step` is the `Step` the run 
 ### `Event`
 
 ```python
-Event = TextDelta | ToolCallStarted | ToolResultReady
+Event = RunStarted | TextDelta | ReasoningDelta | MessagesTaken | ToolCallStarted | ToolResultReady
 ```
 
 What `on_event` receives.
@@ -833,7 +877,7 @@ class CallInfo(BaseModel):
     call_id: str
 ```
 
-What `current_call` returns: the run's id, its agent and scope, the tool called and the id of the call, as `ToolCall.id` carries it. Frozen, so it can be kept and compared.
+What `current_call` returns, and what `RunStarted.call` holds: the run's id, its agent and scope, the tool called and the id of the call, as `ToolCall.id` carries it. Frozen, so it can be kept and compared.
 
 ### `Jail`
 

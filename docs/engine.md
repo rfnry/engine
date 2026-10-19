@@ -94,11 +94,13 @@ them is accepted as it is.
 
 Structured output is a tool call — the model is offered an `Output` tool — so an adapter needs
 nothing beyond tool support. An adapter that also implements `generate_stream(system, messages,
-tools, on_delta)` streams text when the caller asks for events. An adapter that has `media_types`,
-the file types its model takes — `{"image/*", "application/pdf"}` — lets `Load` refuse the rest with
-an error the model can act on, instead of the next model call failing; without it, `Load` hands the
-model any file. An adapter that has `model`, the name of the model it calls, names the run's model
-before any reply does.
+tools, on_delta)` streams when the caller asks for events: it awaits `on_delta(text)` with the
+reply's text as it arrives and `on_delta(text, reasoning=True)` with the model's reasoning, when its
+vendor streams it; one that never passes `reasoning=` streams text alone. An adapter that has
+`media_types`, the file types its model takes — `{"image/*", "application/pdf"}` — lets `Load`
+refuse the rest with an error the model can act on, instead of the next model call failing; without
+it, `Load` hands the model any file. An adapter that has `model`, the name of the model it calls,
+names the run's model before any reply does.
 
 A decision model answers three kinds of question:
 
@@ -426,7 +428,8 @@ answered with an error saying so, so every call in `run.conversation` has its re
 Name a task to put `tasks/<task>.md` in front of the model — a decision agent's task adds a set of
 questions, [below](#decision-agents) — pass `context=` to add facts about this
 tenant that do not belong in the tree — the record keeps it as `run.context` — and pass `on_event=`
-to receive text deltas, tool starts and tool results as they happen:
+to see the run as it happens: where it starts, its reasoning and its text, the messages it takes from
+the inbox, its tool calls and their results:
 
 ```python
 async def show(event):
@@ -451,6 +454,17 @@ turn that ends in tool calls — "Let me look that up." — is said beside them;
 text replies with its last turn's text, so `run.reply` is that text and nothing said before it. A
 delegated or routed run sends its own `run_id` and counts its own turns.
 
+Every generation run sends a `RunStarted` first, before anything else. Its `call` is the tool call
+the run works for — the `Delegate` call that started a delegated run, the call an `engine.tool`
+consult was made in, the call that started the decision run a run was routed by — or `None` for a
+run you start. A frontend places every later event of that `run_id` under that call, so a sub-agent's
+text, reasoning and tool calls show nested under the call that asked for them, at any depth. A
+decision run sends no events: the `ToolCallStarted` and `ToolResultReady` of the call that asked it
+show it. A `ReasoningDelta` is the model's reasoning as the adapter streams it, with its turn, to show
+apart from the reply: it never becomes part of the reply or the conversation, which keeps the
+reasoning as the adapter returned it, and reasoning streamed before `stop.now()` is not kept. A model
+that does not stream its reasoning sends none.
+
 A person can stop or steer a run while it works. Pass `stop=Stop()` and call `stop.now()` to cancel
 the model call in flight and every tool still running, or `stop.after_step()` to let the current
 tool calls finish and end before the next model call. Pass `inbox=asyncio.Queue()` and put a string
@@ -466,6 +480,11 @@ stop.after_step()
 run = await work
 run.stopped, run.reply, run.steps
 ```
+
+When the run takes messages it sends a `MessagesTaken` with them and the turn about to read them.
+The inbox is first in, first out and the run takes everything waiting, so a frontend can show a
+message as sent but not yet read, and mark the first `len(event.messages)` as read when the event
+arrives. Messages still waiting when the run ends were never read and send nothing.
 
 A stopped run returns, never raises: `run.stopped` is `"now"` or `"after_step"` (`None` for a run
 that ended on its own), `run.steps` are the steps it took, `run.reply` is the last text the model
@@ -1686,10 +1705,11 @@ Everything the package exports, by role.
 
 - **Run things:** `Engine`, `AgentInfo`, `Stop`, `HistoryLike`.
 - **What a run returns:** `Generation`, `Decision`, `Run`, `Step`, `Fingerprint`; events
-  `TextDelta`, `ToolCallStarted`, `ToolResultReady`, `Event`.
-- **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `DecisionModel`; `Message`,
-  `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`, `Document`,
-  `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`,
+  `RunStarted`, `TextDelta`, `ReasoningDelta`, `MessagesTaken`, `ToolCallStarted`,
+  `ToolResultReady`, `Event`.
+- **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `OnDelta`, `DecisionModel`;
+  `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`,
+  `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`,
   `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by,
   `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
 - **Give models tools:** `Tool`, `Tools`, `EngineTools`, `current_call`, `CallInfo`, `Jail`,

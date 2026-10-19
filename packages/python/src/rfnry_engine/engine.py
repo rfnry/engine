@@ -24,7 +24,6 @@ from rfnry_engine.fingerprint import questions_fingerprint, tools_fingerprint
 from rfnry_engine.foreground import (
     CALL,
     FOREGROUND,
-    CallInfo,
     Foreground,
     halted,
     hooks,
@@ -56,11 +55,15 @@ from rfnry_engine.models import (
     settle,
 )
 from rfnry_engine.records import (
+    CallInfo,
     Decision,
     EventHandler,
     Fingerprint,
     Generation,
+    MessagesTaken,
+    ReasoningDelta,
     Run,
+    RunStarted,
     Step,
     TextDelta,
     ToolCallStarted,
@@ -710,7 +713,10 @@ class Engine:
                 CALL.reset(token)
             return step
 
-        async def delta(text: str) -> None:
+        async def delta(text: str, *, reasoning: bool = False) -> None:
+            if reasoning:
+                await emit(ReasoningDelta(run_id=run_id, agent=spec.name, turn=turn, text=text))
+                return
             streamed.append(text)
             await emit(TextDelta(run_id=run_id, agent=spec.name, turn=turn, text=text))
 
@@ -873,10 +879,13 @@ class Engine:
                 foregrounds.pop(id(call), None)
             return stopped
 
-        def drain() -> None:
+        def drain() -> list[Message]:
+            taken: list[Message] = []
             while inbox is not None and not inbox.empty():
-                messages.append(Message(role="user", content=_content(inbox.get_nowait())))
+                taken.append(Message(role="user", content=_content(inbox.get_nowait())))
                 inbox.task_done()
+            messages.extend(taken)
+            return taken
 
         def marked() -> str:
             nonlocal digest, hashed
@@ -931,12 +940,16 @@ class Engine:
             )
 
         try:
+            await emit(RunStarted(run_id=run_id, agent=spec.name, call=CALL.get()))
             for turn in range(self.max_steps):
                 mode = requested(stop)
                 if mode is not None:
                     return finish(said, mode)
-                if turn:
-                    drain()
+                taken = drain() if turn else []
+                if taken:
+                    await emit(
+                        MessagesTaken(run_id=run_id, agent=spec.name, turn=turn, messages=taken)
+                    )
                 streamed.clear()
                 after = await asyncio.to_thread(marked)
                 asking = asyncio.ensure_future(ask())

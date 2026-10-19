@@ -2,14 +2,16 @@ import asyncio
 import json
 import re
 import shutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
 
+from rfnry_engine import OnDelta, ReasoningDelta, RunStarted, Stop, TextDelta
 from rfnry_engine.engine import Engine
-from rfnry_engine.models import Message, Reply, ToolCall, Usage
-from rfnry_engine.records import Generation
+from rfnry_engine.models import Message, Reply, ToolCall, ToolSpec, Usage
+from rfnry_engine.records import Event, Generation
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import TOOLS, Scripted, now, text_reply
@@ -259,3 +261,96 @@ async def test_a_message_that_arrives_mid_run_is_under_the_next_prefix(fixtures:
         "support", "acme", "Thanks.", history=first.conversation, context=CONTEXT
     )
     assert isinstance(second, Generation) and second.messages[4].reasoning == THOUGHT
+
+
+class Thinking(Scripted):
+    def __init__(self, *replies: Reply, thoughts: list[str], pressed: Stop | None = None) -> None:
+        super().__init__(*replies)
+        self.thoughts = thoughts
+        self.pressed = pressed
+
+    async def generate_stream(
+        self, system: str, messages: list[Message], tools: list[ToolSpec], on_delta: OnDelta
+    ) -> Reply:
+        reply = await self.generate(system, messages, tools)
+        for thought in self.thoughts:
+            await on_delta(thought, reasoning=True)
+            await asyncio.sleep(0)
+        if self.pressed is not None:
+            await asyncio.sleep(30)
+        await on_delta(reply.text)
+        return reply
+
+
+class Plain(Scripted):
+    async def generate_stream(
+        self,
+        system: str,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> Reply:
+        reply = await self.generate(system, messages, tools)
+        await on_delta(reply.text)
+        return reply
+
+
+class Seen:
+    def __init__(self) -> None:
+        self.events: list[Event] = []
+
+    async def __call__(self, event: Event) -> None:
+        self.events.append(event)
+
+
+async def test_reasoning_streams_as_its_own_events_before_the_text(fixtures: Path) -> None:
+    llm = Thinking(text_reply("Refund in full."), thoughts=["The rule says ", "refund."])
+    seen = Seen()
+    run = await Engine(fixtures, generation=llm, tools=TOOLS).run(
+        "support", "acme", "Charged twice.", on_event=seen
+    )
+    assert isinstance(run, Generation) and run.reply == "Refund in full."
+    assert seen.events[1:] == [
+        ReasoningDelta(run_id=run.run_id, agent="support", turn=0, text="The rule says "),
+        ReasoningDelta(run_id=run.run_id, agent="support", turn=0, text="refund."),
+        TextDelta(run_id=run.run_id, agent="support", turn=0, text="Refund in full."),
+    ]
+    assert all(m.content != "The rule says " for m in run.conversation)
+
+
+async def test_an_adapter_that_streams_no_reasoning_works_as_before(fixtures: Path) -> None:
+    seen = Seen()
+    run = await Engine(fixtures, generation=Plain(text_reply("Hi.")), tools=TOOLS).run(
+        "support", "acme", "Hi", on_event=seen
+    )
+    assert isinstance(run, Generation) and run.reply == "Hi."
+    assert [type(e) for e in seen.events] == [RunStarted, TextDelta]
+
+
+async def test_a_stop_during_reasoning_keeps_no_reasoning_and_no_text(fixtures: Path) -> None:
+    stop = Stop()
+
+    class Pressing(Seen):
+        async def __call__(self, event: Event) -> None:
+            await super().__call__(event)
+            if isinstance(event, ReasoningDelta):
+                stop.now()
+
+    llm = Thinking(text_reply("never"), thoughts=["Thinking"], pressed=stop)
+    run = await asyncio.wait_for(
+        Engine(fixtures, generation=llm, tools=TOOLS).run(
+            "support", "acme", "Charged twice.", on_event=Pressing(), stop=stop
+        ),
+        5,
+    )
+    assert isinstance(run, Generation) and run.stopped == "now" and run.reply == ""
+    assert [m.role for m in run.conversation] == ["user"]
+
+
+async def test_a_reply_that_is_not_streamed_sends_no_reasoning(fixtures: Path) -> None:
+    seen = Seen()
+    llm = Scripted(text_reply("Refund in full.", reasoning=THOUGHT))
+    await Engine(fixtures, generation=llm, tools=TOOLS).run(
+        "support", "acme", "Charged twice.", on_event=seen
+    )
+    assert not any(isinstance(e, ReasoningDelta) for e in seen.events)

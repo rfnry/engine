@@ -18,7 +18,7 @@ from rfnry_engine.models import (
     ToolSpec,
     Usage,
 )
-from rfnry_engine.records import Decision, Event, Generation, Run, ToolResultReady
+from rfnry_engine.records import Decision, Event, Generation, Run, TextDelta, ToolResultReady
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, Tools
 
@@ -242,7 +242,8 @@ async def test_an_event_handler_that_raises_fails_the_run_and_it_is_recorded(
     fixtures: Path,
 ) -> None:
     async def closed(event: Event) -> None:
-        raise ConnectionResetError("the socket closed")
+        if isinstance(event, TextDelta):
+            raise ConnectionResetError("the socket closed")
 
     kept = Kept()
     reply = text_reply("Done.", usage=Usage(input=10, output=5), model="m-1")
@@ -253,6 +254,22 @@ async def test_an_event_handler_that_raises_fails_the_run_and_it_is_recorded(
     assert isinstance(run, Generation) and run.error == "ConnectionResetError: the socket closed"
     assert run.calls == 1 and run.usage == Usage(input=10, output=5) and run.model == "m-1"
     assert [m.role for m in run.conversation] == ["user", "assistant"]
+
+
+async def test_a_handler_that_raises_on_the_start_fails_the_run_before_any_model_call(
+    fixtures: Path,
+) -> None:
+    async def closed(event: Event) -> None:
+        raise ConnectionResetError("the socket closed")
+
+    kept = Kept()
+    llm = Scripted(text_reply("Done."))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=kept)
+    with pytest.raises(ConnectionResetError):
+        await engine.run("support", "acme", "x", on_event=closed)
+    [run] = kept.runs
+    assert isinstance(run, Generation) and run.error == "ConnectionResetError: the socket closed"
+    assert run.calls == 0 and llm.calls == [] and [m.role for m in run.conversation] == ["user"]
 
 
 async def test_a_failed_run_keeps_the_step_of_a_tool_that_already_ran(fixtures: Path) -> None:

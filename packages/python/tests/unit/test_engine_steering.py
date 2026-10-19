@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from rfnry_engine import Stop
+from rfnry_engine import MessagesTaken, Stop
 from rfnry_engine.engine import Engine
 from rfnry_engine.models import ChoiceAnswer, Message, Part, Reply, Text, ToolCall, ToolSpec
 from rfnry_engine.records import Decision, Generation
@@ -634,3 +634,134 @@ async def test_stop_now_leaves_a_workspace_job_running(tmp_path: Path) -> None:
         assert [job["running"] for job in listed["jobs"]] == [True]
     finally:
         await work.close()
+
+
+class Seen:
+    def __init__(self, then: Callable[[Any], None] | None = None) -> None:
+        self.events: list[Any] = []
+        self.then = then
+
+    async def __call__(self, event: Any) -> None:
+        self.events.append(event)
+        if self.then is not None:
+            self.then(event)
+
+
+def kinds(seen: Seen) -> list[str]:
+    return [type(e).__name__ for e in seen.events]
+
+
+async def test_taken_messages_are_announced_before_the_turn_that_reads_them(tmp_path: Path) -> None:
+    inbox: asyncio.Queue[Any] = asyncio.Queue()
+    parts: list[Part] = [Text(text="and this")]
+
+    async def sending(args: dict[str, Any]) -> str:
+        inbox.put_nowait("also check the tests")
+        inbox.put_nowait(parts)
+        return "read"
+
+    llm = Paced(use(call("send", "c1")), text_reply("Checked both."))
+    seen = Seen()
+    run = await Engine(make_tree(tmp_path), generation=llm).run(
+        "chat",
+        "acme",
+        "work",
+        tools=Tools([Tool("send", body=sending)]),
+        inbox=inbox,
+        on_event=seen,
+    )
+    assert isinstance(run, Generation)
+    taken = [
+        Message(role="user", content="also check the tests"),
+        Message(role="user", content=parts),
+    ]
+    assert [e for e in seen.events if isinstance(e, MessagesTaken)] == [
+        MessagesTaken(run_id=run.run_id, agent="chat", turn=1, messages=taken)
+    ]
+    assert kinds(seen) == [
+        "RunStarted",
+        "ToolCallStarted",
+        "ToolResultReady",
+        "MessagesTaken",
+        "TextDelta",
+    ]
+    assert llm.calls[1][-2:] == taken
+
+
+async def test_nothing_taken_announces_nothing(tmp_path: Path) -> None:
+    inbox: asyncio.Queue[Any] = asyncio.Queue()
+    llm = Paced(use(call("fast", "c1")), text_reply("ok"))
+    seen = Seen()
+    await Engine(make_tree(tmp_path), generation=llm).run(
+        "chat", "acme", "x", tools=Tools([Tool("fast", body=fast)]), inbox=inbox, on_event=seen
+    )
+    assert "MessagesTaken" not in kinds(seen)
+
+
+async def test_an_inbox_not_read_announces_nothing(tmp_path: Path) -> None:
+    inbox: asyncio.Queue[Any] = asyncio.Queue()
+    stop = Stop()
+
+    async def sending(args: dict[str, Any]) -> str:
+        inbox.put_nowait("wait")
+        stop.after_step()
+        return "ok"
+
+    seen = Seen()
+    run = await Engine(make_tree(tmp_path), generation=Paced(use(call("send", "c1")))).run(
+        "chat",
+        "acme",
+        "x",
+        tools=Tools([Tool("send", body=sending)]),
+        inbox=inbox,
+        stop=stop,
+        on_event=seen,
+    )
+    assert isinstance(run, Generation) and run.stopped == "after_step"
+    assert "MessagesTaken" not in kinds(seen) and inbox.get_nowait() == "wait"
+
+
+async def test_a_leftover_message_is_not_announced(tmp_path: Path) -> None:
+    inbox: asyncio.Queue[Any] = asyncio.Queue()
+    llm = Paced((0.1, text_reply("Done.")))
+    seen = Seen()
+    task = asyncio.create_task(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "chat", "acme", "hi", inbox=inbox, on_event=seen
+        )
+    )
+    await llm.entered.wait()
+    inbox.put_nowait("one more thing")
+    await task
+    assert "MessagesTaken" not in kinds(seen) and inbox.get_nowait() == "one more thing"
+
+
+async def test_a_stop_from_the_taken_handler_ends_the_run_before_the_model_reads_them(
+    tmp_path: Path,
+) -> None:
+    inbox: asyncio.Queue[Any] = asyncio.Queue()
+    stop = Stop()
+
+    async def sending(args: dict[str, Any]) -> str:
+        inbox.put_nowait("wait for me")
+        return "sent"
+
+    def pressing(event: Any) -> None:
+        if isinstance(event, MessagesTaken):
+            stop.now()
+
+    llm = Paced(use(call("send", "c1")), (30.0, text_reply("never")))
+    run = await asyncio.wait_for(
+        Engine(make_tree(tmp_path), generation=llm).run(
+            "chat",
+            "acme",
+            "x",
+            tools=Tools([Tool("send", body=sending)]),
+            inbox=inbox,
+            stop=stop,
+            on_event=Seen(pressing),
+        ),
+        5,
+    )
+    assert isinstance(run, Generation) and run.stopped == "now" and run.reply == ""
+    assert run.conversation[-1] == Message(role="user", content="wait for me")
