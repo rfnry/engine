@@ -66,3 +66,41 @@ Send a message, a command, or a stop:
 ```
 
 Every event of the run comes back with its type: `RunStarted`, `ReasoningDelta`, `TextDelta`, `ToolCallStarted`, `ToolResultReady` and `MessagesTaken`, each with the `run_id` it belongs to. A sub-agent's `RunStarted` names the reviewer's call in `call`, so its events go under that call. A message sent while a reply is being written is answered `{"type": "queued"}`: the model reads it at the run's next step when it makes another tool call, or in a run of its own once the reply ends, and `{"type": "read", "count": n}` says the first `n` queued messages joined the conversation for the model's next call; a stop pressed right then ends the run before that call, and they stay in the conversation for the next reply. A stop ends the reply, and messages still queued come back as `{"type": "unsent", "texts": [...]}`, to put back in the input. A command waits for the reply, and one not on the menu is answered `{"type": "refused", "reason": ...}`; a command with no text sends itself as the message. Each reply ends with `{"type": "done", "run_id": ..., "stopped": ..., "reply": ...}`, or `{"type": "failed", "reason": ...}`.
+
+A live run, the person's frames marked `>>`, the server's as it sent them, with each run of deltas joined into one frame and long values shortened:
+
+```text
+>> {"text": "/skill redline clause 4"}
+{"type": "RunStarted", "run_id": "04e0f4…", "agent": "reviewer", "call": null}
+{"type": "ReasoningDelta", "run_id": "04e0f4…", "agent": "reviewer", "turn": 0, "text": "Let me check the playbook and risk notes on clause 4's indemnity provisions."}
+{"type": "ToolCallStarted", "run_id": "04e0f4…", "agent": "reviewer", "call_id": "toolu_…EDmzt", "tool": "Read", "args": {"path": "rules/playbook.md"}}
+>> {"text": "Also flag the late-payment interest in clause 2."}
+{"type": "ToolCallStarted", "run_id": "04e0f4…", "agent": "reviewer", "call_id": "toolu_…TdPyC", "tool": "Read", "args": {"path": "skills/risk.md"}}
+{"type": "queued", "text": "Also flag the late-payment interest in clause 2."}
+{"type": "ToolResultReady", "run_id": "04e0f4…", "agent": "reviewer", "call_id": "toolu_…EDmzt", "step": {"tool": "Read", "result": "…", "is_error": false, "stopped": false, "duration_ms": 4, …}}
+{"type": "ToolResultReady", "run_id": "04e0f4…", "agent": "reviewer", "call_id": "toolu_…TdPyC", "step": {…}}
+{"type": "MessagesTaken", "run_id": "04e0f4…", "agent": "reviewer", "turn": 1, "messages": [{"role": "user", "content": "Also flag the late-payment interest in clause 2.", …}]}
+{"type": "read", "count": 1}
+{"type": "ReasoningDelta", "run_id": "04e0f4…", "agent": "reviewer", "turn": 1, "text": "I should delegate drafting work for both clause 4 and clause 2."}
+{"type": "ToolCallStarted", "run_id": "04e0f4…", "agent": "reviewer", "call_id": "toolu_…Po4HB", "tool": "Delegate", "args": {"agent": "drafter", "input": "Draft replacement text for Clause 4 (Indemnity) …"}}
+{"type": "ToolCallStarted", "run_id": "04e0f4…", "agent": "reviewer", "call_id": "toolu_…zxR3D6", "tool": "Delegate", "args": {"agent": "drafter", "input": "Draft replacement text for Clause 2 (Fees and Payment) …"}}
+{"type": "RunStarted", "run_id": "864087…", "agent": "drafter", "call": {"run_id": "04e0f4…", "agent": "reviewer", "scope": "firm-acme", "tool": "Delegate", "call_id": "toolu_…Po4HB"}}
+{"type": "RunStarted", "run_id": "455187…", "agent": "drafter", "call": {"run_id": "04e0f4…", "agent": "reviewer", "scope": "firm-acme", "tool": "Delegate", "call_id": "toolu_…zxR3D6"}}
+{"type": "TextDelta", "run_id": "455187…", "agent": "drafter", "turn": 0, "text": "2. Fees and Payment. Customer shall pay each invoice within thirty (30) days of its date. Overdue amounts bear interest at one percent (1%) per month until paid."}
+{"type": "ToolResultReady", "run_id": "04e0f4…", "agent": "reviewer", "call_id": "toolu_…zxR3D6", "step": {"tool": "Delegate", "child_run_id": "455187…", …}}
+{"type": "TextDelta", "run_id": "864087…", "agent": "drafter", "turn": 0, "text": "4. Indemnity. Each party shall defend, indemnify and hold harmless the other party against any third-party claim, loss or expense arising out of the indemnifying party's breach of this Agreement, negligence or willful misconduct."}
+{"type": "ToolResultReady", "run_id": "04e0f4…", "agent": "reviewer", "call_id": "toolu_…Po4HB", "step": {"tool": "Delegate", "child_run_id": "864087…", …}}
+{"type": "TextDelta", "run_id": "04e0f4…", "agent": "reviewer", "turn": 2, "text": "**Clause 4 – Indemnity** - Playbook position: indemnity should be mutual …"}
+{"type": "done", "run_id": "04e0f4…", "stopped": null, "reply": "**Clause 4 – Indemnity** …"}
+```
+
+The reviewer read its `risk` skill on its own, took the queued message at the next step, and handed both redlines to two `drafter` runs at once, each placed under its `Delegate` call. A stop pressed while a drafter was writing ended its call `stopped by the user`, the reply `stopped: "now"`, and sent a message queued at that moment back:
+
+```text
+>> {"text": "Actually, only clause 5 matters."}
+>> {"type": "stop"}
+{"type": "queued", "text": "Actually, only clause 5 matters."}
+{"type": "ToolResultReady", "run_id": "…", "agent": "reviewer", "call_id": "toolu_…UhGN1Y", "step": {"tool": "Delegate", "result": "stopped by the user", "is_error": true, "stopped": true, …}}
+{"type": "done", "run_id": "…", "stopped": "now", "reply": ""}
+{"type": "unsent", "texts": ["Actually, only clause 5 matters."]}
+```
