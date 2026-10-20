@@ -495,7 +495,7 @@ delegated or routed run sends its own `run_id` and counts its own turns.
 Every generation run sends a `RunStarted` first, before anything else. Its `call` is the tool call
 the run works for — the `Delegate` call that started a delegated run, the call an `engine.tool`
 consult was made in, the call that started the decision run a run was routed by — or `None` for a
-run started outside any tool call. A frontend places every later event of that `run_id` under that call, so a sub-agent's
+run started outside any tool call or from a call made in another scope. A frontend places every later event of that `run_id` under that call, so a sub-agent's
 text, reasoning and tool calls show nested under the call that asked for them, at any depth. A
 decision run sends no events: the `ToolCallStarted` and `ToolResultReady` of the call that asked it
 show it. A `ReasoningDelta` is the model's reasoning as the adapter streams it, with its turn, to show

@@ -976,7 +976,7 @@ class Engine:
             )
 
         try:
-            await emit(RunStarted(run_id=run_id, agent=spec.name, call=CALL.get()))
+            await emit(RunStarted(run_id=run_id, agent=spec.name, call=caller))
             for turn in range(self.max_steps):
                 mode = requested(stop)
                 if mode is not None:

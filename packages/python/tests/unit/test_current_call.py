@@ -341,9 +341,17 @@ async def test_a_consult_in_another_scope_records_none(tmp_path: Path) -> None:
         text_reply("Paid."),
         text_reply("Done."),
     )
-    await engine.run("support", "acme", "x", tools=engine.tool("billing", scope="other"))
+    events: list[Event] = []
+
+    async def watch(event: Event) -> None:
+        events.append(event)
+
+    tools = engine.tool("billing", scope="other", on_event=watch)
+    await engine.run("support", "acme", "x", tools=tools)
     consult = keeping.of("billing")
     assert consult.scope == "other" and consult.call is None
+    [started] = [e for e in events if isinstance(e, RunStarted) and e.run_id == consult.run_id]
+    assert started.call is None
 
 
 async def test_a_run_a_tool_body_starts_after_the_call_ended_records_that_call(
