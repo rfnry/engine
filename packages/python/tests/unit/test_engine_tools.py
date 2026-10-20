@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
@@ -96,3 +97,36 @@ async def test_an_adapter_editing_a_builtin_schema_changes_no_later_run(fixtures
     await engine.run("billing", "acme", "hi")
     await engine.run("billing", "acme", "hi")
     assert seen_types == ["string", "string"]
+
+
+def test_a_schema_from_args_is_generated_once_and_shared_with_no_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Args(BaseModel):
+        x: int
+
+    async def look(args: dict[str, Any]) -> str:
+        return "ok"
+
+    made: list[int] = []
+    real = Args.model_json_schema
+
+    def counted(*a: Any, **k: Any) -> dict[str, Any]:
+        made.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(Args, "model_json_schema", counted)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\n---\nHi\n")
+    (tmp_path / "a" / "TOOLS.md").write_text("---\nlook: Look\n---\n")
+    engine = Engine(tmp_path, generation=Scripted(), tools=[Tool("look", body=look, args=Args)])
+
+    def schema(scope: str) -> dict[str, Any]:
+        surface = EngineTools(engine, agent="a", scope=scope)
+        [found] = [d for d in surface.definitions() if d["name"] == "look"]
+        return dict(found["input_schema"])
+
+    first = schema("acme")
+    first["properties"]["x"]["title"] = "changed"
+    again = schema("other")
+    assert len(made) == 1 and again["properties"]["x"]["title"] == "X"

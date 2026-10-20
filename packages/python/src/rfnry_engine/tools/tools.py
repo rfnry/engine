@@ -1,7 +1,6 @@
-import json
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from functools import cache, partial
+from functools import partial
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ValidationError
@@ -23,11 +22,6 @@ class ToolsLike(Protocol):
     ) -> str | dict[str, Any] | list[Any]: ...
 
 
-@cache
-def _described(args: type[BaseModel]) -> str:
-    return json.dumps(args.model_json_schema())
-
-
 @dataclass(frozen=True)
 class Tool:
     name: str
@@ -40,8 +34,7 @@ class Tool:
         if self.input_schema is not None:
             return self.input_schema
         if self.args is not None:
-            schema: dict[str, Any] = json.loads(_described(self.args))
-            return schema
+            return self.args.model_json_schema()
         return {"type": "object", "properties": {}}
 
     def definition(self) -> dict[str, Any]:

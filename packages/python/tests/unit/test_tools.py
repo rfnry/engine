@@ -72,23 +72,3 @@ async def test_union_only_without_and_foreign_sets() -> None:
 async def test_a_tool_without_a_body_cannot_be_dispatched() -> None:
     with pytest.raises(ConfigurationError, match="nobody"):
         await Tools([Tool("nobody", "No body")]).dispatch("nobody", {})
-
-
-def test_a_schema_from_args_is_generated_once_and_shared_with_no_caller(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class Args(BaseModel):
-        x: int
-
-    made: list[int] = []
-    real = Args.model_json_schema
-
-    def counted(*a: Any, **k: Any) -> dict[str, Any]:
-        made.append(1)
-        return real(*a, **k)
-
-    monkeypatch.setattr(Args, "model_json_schema", counted)
-    first = Tool("t", args=Args).schema()
-    first["properties"]["x"]["title"] = "changed"
-    again = Tool("t", args=Args).schema()
-    assert len(made) == 1 and again["properties"]["x"]["title"] == "X"
