@@ -8,8 +8,9 @@ from rfnry_engine.errors import InputError, NotFoundError
 from rfnry_engine.models import Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.refinery.labels import Outcome, Review
+from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery, label_of
-from rfnry_engine.refinery.storage import Storage
+from rfnry_engine.refinery.storage import RunRow, Storage
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool
 
@@ -415,3 +416,16 @@ async def test_messages_are_the_start_of_the_conversation_however_a_run_ends(
     for run in runs:
         if isinstance(run, Generation):
             assert run.conversation[: len(run.messages)] == run.messages
+
+
+async def test_a_recorded_tree_is_one_put_runs(pool: Any, storage: Storage) -> None:
+    calls: list[int] = []
+
+    class Counting(PostgresStorage):
+        async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
+            calls.append(len(rows))
+            await super().put_runs(scope, rows)
+
+    refinery = Refinery(Counting(pool))
+    await refinery.record(generation_record(children=[decision_record(), decision_record()]))
+    assert calls == [3]

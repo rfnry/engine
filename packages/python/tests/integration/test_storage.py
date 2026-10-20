@@ -39,6 +39,7 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import Decision, Fingerprint, Generation
 from rfnry_engine.refinery.labels import Outcome, Review
+from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery, label_of
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 from rfnry_engine.stop import Stop
@@ -87,10 +88,10 @@ def _label(
 
 
 async def test_put_get_upsert_roundtrip(storage: Storage) -> None:
-    await storage.put_run("a", _run("a", "r1"))
+    await storage.put_runs("a", [_run("a", "r1")])
     got = await storage.get_run("a", "r1")
     assert got is not None and got.body == {"reply": "r1", "nested": {"n": [1, 2]}}
-    await storage.put_run("a", _run("a", "r1", agent="billing"))
+    await storage.put_runs("a", [_run("a", "r1", agent="billing")])
     got = await storage.get_run("a", "r1")
     assert got is not None and got.agent == "billing"
     assert await storage.get_run("a", "ghost") is None
@@ -98,11 +99,11 @@ async def test_put_get_upsert_roundtrip(storage: Storage) -> None:
 
 async def test_runs_filters_order_and_limit(storage: Storage) -> None:
     t0 = datetime.now(UTC)
-    await storage.put_run("a", _run("a", "old", at=t0 - timedelta(minutes=2)))
-    await storage.put_run(
-        "a", _run("a", "mid", agent="billing", kind="decision", at=t0 - timedelta(minutes=1))
+    await storage.put_runs("a", [_run("a", "old", at=t0 - timedelta(minutes=2))])
+    await storage.put_runs(
+        "a", [_run("a", "mid", agent="billing", kind="decision", at=t0 - timedelta(minutes=1))]
     )
-    await storage.put_run("a", _run("a", "new", at=t0))
+    await storage.put_runs("a", [_run("a", "new", at=t0)])
     assert [r.run_id for r in await storage.runs("a")] == ["new", "mid", "old"]
     assert [r.run_id for r in await storage.runs("a", kind="generation")] == ["new", "old"]
     assert [r.run_id for r in await storage.runs("a", since=t0 - timedelta(minutes=1))] == ["new"]
@@ -119,10 +120,10 @@ async def test_runs_filters_order_and_limit(storage: Storage) -> None:
 
 async def test_runs_since_selects_what_was_recorded_after_it(storage: Storage) -> None:
     t0 = datetime.now(UTC)
-    await storage.put_run(
-        "a", _run("a", "long", at=t0 - timedelta(minutes=5), recorded=t0 + timedelta(seconds=1))
+    await storage.put_runs(
+        "a", [_run("a", "long", at=t0 - timedelta(minutes=5), recorded=t0 + timedelta(seconds=1))]
     )
-    await storage.put_run("a", _run("a", "quick", at=t0, recorded=t0))
+    await storage.put_runs("a", [_run("a", "quick", at=t0, recorded=t0)])
     assert [r.run_id for r in await storage.runs("a", since=t0)] == ["long"]
     got = await storage.get_run("a", "long")
     assert got is not None and got.recorded == t0 + timedelta(seconds=1)
@@ -146,7 +147,7 @@ async def test_an_export_finds_a_run_recorded_after_its_watermark(storage: Stora
 
 async def test_labels_filters_and_order(storage: Storage) -> None:
     t0 = datetime.now(UTC)
-    await storage.put_run("a", _run("a", "r1"))
+    await storage.put_runs("a", [_run("a", "r1")])
     await storage.put_label("a", _label("a", "l2", "r1", source="world", at=t0))
     await storage.put_label("a", _label("a", "l1", "r1", at=t0 - timedelta(seconds=1)))
     await storage.put_label("a", _label("a", "l3", "r2", at=t0 + timedelta(seconds=1)))
@@ -158,9 +159,9 @@ async def test_labels_filters_and_order(storage: Storage) -> None:
 
 async def test_runs_by_id_and_labels_since_find_late_labels(storage: Storage) -> None:
     t0 = datetime.now(UTC)
-    await storage.put_run("a", _run("a", "r1", at=t0 - timedelta(minutes=2)))
-    await storage.put_run("a", _run("a", "r2", at=t0 - timedelta(minutes=1)))
-    await storage.put_run("b", _run("b", "r1", at=t0))
+    await storage.put_runs("a", [_run("a", "r1", at=t0 - timedelta(minutes=2))])
+    await storage.put_runs("a", [_run("a", "r2", at=t0 - timedelta(minutes=1))])
+    await storage.put_runs("b", [_run("b", "r1", at=t0)])
     await storage.put_label("a", _label("a", "l1", "r1", at=t0 + timedelta(seconds=1)))
     late = {label.run_id for label in await storage.labels("a", since=t0)}
     assert late == {"r1"}
@@ -221,15 +222,15 @@ async def test_reviews_racing_on_one_label_id_store_one_label(storage: Storage) 
 
 async def test_scope_mismatch_is_refused(storage: Storage) -> None:
     with pytest.raises(StorageError):
-        await storage.put_run("a", _run("b", "r1"))
+        await storage.put_runs("a", [_run("b", "r1")])
     with pytest.raises(StorageError):
         await storage.put_label("a", _label("b", "l1", "r1"))
 
 
 async def test_delete_and_count(storage: Storage) -> None:
-    await storage.put_run("a", _run("a", "r1"))
+    await storage.put_runs("a", [_run("a", "r1")])
     await storage.put_label("a", _label("a", "l1", "r1"))
-    await storage.put_run("b", _run("b", "r2"))
+    await storage.put_runs("b", [_run("b", "r2")])
     assert await storage.count_scope("a") == 2
     assert await storage.delete_scope("a") == 2
     assert await storage.count_scope("a") == 0 and await storage.count_scope("b") == 1
@@ -243,7 +244,7 @@ async def test_bodies_round_trip_exactly(storage: Storage) -> None:
         "big": 1e16,
         "tiny": 1.5e-7,
     }
-    await storage.put_run("a", _run("a", "r1").model_copy(update={"body": body}))
+    await storage.put_runs("a", [_run("a", "r1").model_copy(update={"body": body})])
     await storage.put_label("a", _label("a", "l1", "r1").model_copy(update={"body": body}))
     got = await storage.get_run("a", "r1")
     assert got is not None
@@ -257,7 +258,7 @@ async def test_ties_order_by_code_point_whatever_the_collation(storage: Storage)
     at = datetime.now(UTC)
     ids = ["ab", "B", "a-b", "_z", "a"]
     for run_id in ids:
-        await storage.put_run("a", _run("a", run_id, at=at))
+        await storage.put_runs("a", [_run("a", run_id, at=at)])
         await storage.put_label("a", _label("a", run_id, run_id, at=at))
     assert [r.run_id for r in await storage.runs("a")] == sorted(ids, reverse=True)
     assert [label.label_id for label in await storage.labels("a")] == sorted(ids)
@@ -278,21 +279,23 @@ async def test_a_body_with_parts_round_trips(storage: Storage) -> None:
         ),
     ]
     body = {"conversation": [m.model_dump(mode="json") for m in conversation]}
-    await storage.put_run(
+    await storage.put_runs(
         "a",
-        RunRow(
-            scope="a",
-            run_id="p",
-            parent_run_id=None,
-            agent="support",
-            kind="generation",
-            task=None,
-            at=datetime.now(UTC),
-            recorded=datetime.now(UTC),
-            duration_ms=1,
-            model="m",
-            body=body,
-        ),
+        [
+            RunRow(
+                scope="a",
+                run_id="p",
+                parent_run_id=None,
+                agent="support",
+                kind="generation",
+                task=None,
+                at=datetime.now(UTC),
+                recorded=datetime.now(UTC),
+                duration_ms=1,
+                model="m",
+                body=body,
+            )
+        ],
     )
     got = await storage.get_run("a", "p")
     assert got is not None and got.body == body
@@ -406,7 +409,7 @@ async def test_run_tree_follows_parent_run_id_down_every_level(storage: Storage)
         _run("b", "stranger", parent="root", at=t0),
     ]
     for row in rows:
-        await storage.put_run(row.scope, row)
+        await storage.put_runs(row.scope, [row])
     tree = await storage.run_tree("a", run_ids=["root"])
     assert [r.run_id for r in tree] == ["root", "child", "grandchild", "second"]
     assert all(r.scope == "a" for r in tree) and tree[1].body == rows[1].body
@@ -428,20 +431,20 @@ async def test_run_tree_follows_parent_run_id_down_every_level(storage: Storage)
 
 
 async def test_run_tree_finds_orphans_and_survives_a_cycle(storage: Storage) -> None:
-    await storage.put_run("a", _run("a", "orphan", parent="gone"))
-    await storage.put_run("a", _run("a", "x", parent="y"))
-    await storage.put_run("a", _run("a", "y", parent="x"))
+    await storage.put_runs("a", [_run("a", "orphan", parent="gone")])
+    await storage.put_runs("a", [_run("a", "x", parent="y")])
+    await storage.put_runs("a", [_run("a", "y", parent="x")])
     assert [r.run_id for r in await storage.run_tree("a", run_ids=["gone"])] == ["orphan"]
     assert {r.run_id for r in await storage.run_tree("a", run_ids=["x"])} == {"x", "y"}
 
 
 async def test_run_tree_by_tags_is_containment_and_takes_descendants(storage: Storage) -> None:
     t0 = datetime.now(UTC)
-    await storage.put_run("a", _tagged("a", "r1", {"customer": "c-81", "arm": "b"}, at=t0))
-    await storage.put_run("a", _run("a", "r1-child", parent="r1", at=t0 + timedelta(seconds=1)))
-    await storage.put_run("a", _tagged("a", "r2", {"customer": "c-82"}, at=t0))
-    await storage.put_run("a", _run("a", "untagged", at=t0))
-    await storage.put_run("b", _tagged("b", "r3", {"customer": "c-81"}, at=t0))
+    await storage.put_runs("a", [_tagged("a", "r1", {"customer": "c-81", "arm": "b"}, at=t0)])
+    await storage.put_runs("a", [_run("a", "r1-child", parent="r1", at=t0 + timedelta(seconds=1))])
+    await storage.put_runs("a", [_tagged("a", "r2", {"customer": "c-82"}, at=t0)])
+    await storage.put_runs("a", [_run("a", "untagged", at=t0)])
+    await storage.put_runs("b", [_tagged("b", "r3", {"customer": "c-81"}, at=t0)])
 
     async def found(tags: dict[str, str]) -> list[str]:
         return [r.run_id for r in await storage.run_tree("a", tags=tags)]
@@ -459,9 +462,9 @@ async def test_run_tree_by_tags_is_containment_and_takes_descendants(storage: St
 
 async def test_tags_match_beside_bodies_json_cannot_hold(storage: Storage) -> None:
     hostile = {"reply": "a\x00b \ud800 \udc00 퀀 \\u0000 \\\x00 \\ud800", "k\x00": "\x00"}
-    await storage.put_run("a", _tagged("a", "nul", {"customer": "c-81"}, extra=hostile))
-    await storage.put_run("a", _tagged("a", "emoji", {"customer": "😀", "hangul": "퀀"}))
-    await storage.put_run("a", _tagged("a", "other", {"customer": "😁"}))
+    await storage.put_runs("a", [_tagged("a", "nul", {"customer": "c-81"}, extra=hostile)])
+    await storage.put_runs("a", [_tagged("a", "emoji", {"customer": "😀", "hangul": "퀀"})])
+    await storage.put_runs("a", [_tagged("a", "other", {"customer": "😁"})])
     assert [r.run_id for r in await storage.run_tree("a", tags={"customer": "c-81"})] == ["nul"]
     assert [r.run_id for r in await storage.run_tree("a", tags={"customer": "😀"})] == ["emoji"]
     assert [r.run_id for r in await storage.run_tree("a", tags={"hangul": "퀀"})] == ["emoji"]
@@ -473,12 +476,12 @@ async def test_tags_match_beside_bodies_json_cannot_hold(storage: Storage) -> No
 
 async def test_delete_runs_takes_descendants_and_labels_in_its_scope(storage: Storage) -> None:
     t0 = datetime.now(UTC)
-    await storage.put_run("a", _tagged("a", "r1", {"customer": "c-81"}, at=t0))
-    await storage.put_run("a", _run("a", "r1-child", parent="r1", at=t0))
-    await storage.put_run("a", _run("a", "r1-grandchild", parent="r1-child", at=t0))
-    await storage.put_run("a", _tagged("a", "r2", {"customer": "c-82"}, at=t0))
-    await storage.put_run("b", _tagged("b", "r1", {"customer": "c-81"}, at=t0))
-    await storage.put_run("b", _run("b", "r1-child", parent="r1", at=t0))
+    await storage.put_runs("a", [_tagged("a", "r1", {"customer": "c-81"}, at=t0)])
+    await storage.put_runs("a", [_run("a", "r1-child", parent="r1", at=t0)])
+    await storage.put_runs("a", [_run("a", "r1-grandchild", parent="r1-child", at=t0)])
+    await storage.put_runs("a", [_tagged("a", "r2", {"customer": "c-82"}, at=t0)])
+    await storage.put_runs("b", [_tagged("b", "r1", {"customer": "c-81"}, at=t0)])
+    await storage.put_runs("b", [_run("b", "r1-child", parent="r1", at=t0)])
     for scope, label_id, run_id in (
         ("a", "l1", "r1"),
         ("a", "l2", "r1-grandchild"),
@@ -848,3 +851,40 @@ async def test_a_failed_run_and_its_failed_child_read_back_as_recorded(storage: 
     [kid] = back.children
     assert isinstance(kid, Decision) and kid.answers == {}
     assert kid.error == "TimeoutError: decide timed out"
+
+
+async def test_put_runs_stores_a_tree_whole(storage: Storage) -> None:
+    await storage.put_runs("a", [_run("a", "root"), _run("a", "child", parent="root")])
+    assert [r.run_id for r in await storage.run_tree("a", run_ids=["root"])] == ["root", "child"]
+
+
+async def test_put_runs_with_a_row_of_another_scope_stores_nothing(storage: Storage) -> None:
+    with pytest.raises(StorageError, match="^postgres: row scope does not match the call scope$"):
+        await storage.put_runs("a", [_run("a", "r1"), _run("b", "r2")])
+    assert await storage.count_scope("a") == 0 and await storage.count_scope("b") == 0
+
+
+async def test_put_runs_stores_nothing_when_the_database_refuses_a_row(storage: Storage) -> None:
+    bad = _run("a", "r2").model_copy(update={"duration_ms": 2**40})
+    with pytest.raises(StorageError, match="^postgres: storage rejected put_runs: "):
+        await storage.put_runs("a", [_run("a", "r1"), bad])
+    assert await storage.get_run("a", "r1") is None
+
+
+async def test_put_runs_with_no_rows_does_nothing(storage: Storage) -> None:
+    await storage.put_runs("a", [])
+    assert await storage.count_scope("a") == 0
+
+
+async def test_a_row_without_tags_matches_no_tag_selector(storage: Storage) -> None:
+    await storage.put_runs("a", [_run("a", "plain")])
+    assert await storage.run_tree("a", tags={"customer": "c-81"}) == []
+    stored = await storage.get_run("a", "plain")
+    assert stored is not None and stored.body == _run("a", "plain").body
+
+
+async def test_initialize_makes_the_indexes_and_runs_again(pool: Any) -> None:
+    await PostgresStorage(pool).initialize()
+    records = await pool.fetch("SELECT indexname FROM pg_indexes WHERE tablename = 'engine_runs'")
+    names = {r["indexname"] for r in records}
+    assert {"ix_engine_runs_scope_parent", "ix_engine_runs_tags"} <= names

@@ -162,8 +162,7 @@ class Refinery:
     async def record(self, run: Run) -> None:
         if not run.scope:
             raise InputError("refinery: scope is required")
-        for row in flatten(run, datetime.now(UTC)):
-            await self.storage.put_run(row.scope, row)
+        await self.storage.put_runs(run.scope, flatten(run, datetime.now(UTC)))
 
     async def run(self, scope: str, run_id: str) -> Run:
         if not scope:

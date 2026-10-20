@@ -50,21 +50,23 @@ async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
     assert not await refinery.verify_absent("tenant-a")
     assert await refinery.delete_scope("tenant-a") == 2
     assert await refinery.verify_absent("tenant-a")
-    await storage.put_run(
+    await storage.put_runs(
         "tenant-a",
-        RunRow(
-            scope="tenant-a",
-            run_id="orphan",
-            parent_run_id=None,
-            agent="x",
-            kind="generation",
-            task=None,
-            at=run.at,
-            recorded=run.at,
-            duration_ms=0,
-            model=None,
-            body={},
-        ),
+        [
+            RunRow(
+                scope="tenant-a",
+                run_id="orphan",
+                parent_run_id=None,
+                agent="x",
+                kind="generation",
+                task=None,
+                at=run.at,
+                recorded=run.at,
+                duration_ms=0,
+                model=None,
+                body={},
+            )
+        ],
     )
     assert not await refinery.verify_absent("tenant-a")
 
@@ -107,6 +109,6 @@ async def test_nothing_of_one_customer_survives_its_erasure(storage: Storage) ->
     with pytest.raises(NotFoundError):
         await refinery.review("desk", gone.run_id, Review(stance="approval"))
     stray = next(row for row in flatten(gone, gone.at) if row.run_id == gone.routed_to.run_id)
-    await storage.put_run("desk", stray)
+    await storage.put_runs("desk", [stray])
     assert not await refinery.verify_absent("desk", run_ids=[gone.run_id])
     assert not await refinery.verify_absent("desk", tags={"customer": "c-81"})
