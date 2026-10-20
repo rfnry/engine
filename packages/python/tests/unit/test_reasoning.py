@@ -3,6 +3,7 @@ import base64
 import json
 import re
 import shutil
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -179,7 +180,20 @@ def long_window() -> list[Message]:
     return window
 
 
-async def test_a_long_window_with_reasoning_gives_the_loop_turns(fixtures: Path) -> None:
+def slowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    extend = chain.extend
+
+    def slow(digest: bytes, message: Message) -> bytes:
+        time.sleep(0.00005)
+        return extend(digest, message)
+
+    monkeypatch.setattr(chain, "extend", slow)
+
+
+async def test_a_long_window_with_reasoning_gives_the_loop_turns(
+    fixtures: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slowed(monkeypatch)
     ticks = 0
     seen: list[int] = []
 
@@ -207,9 +221,51 @@ async def test_a_long_window_with_reasoning_gives_the_loop_turns(fixtures: Path)
     assert ticks_at_first_call >= 5
 
 
-async def test_cancelling_a_run_while_its_window_is_hashed_raises_at_once(
-    fixtures: Path,
+async def test_a_window_of_large_images_gives_the_loop_turns_while_it_is_hashed(
+    fixtures: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    ticks = 0
+    marks: list[int] = []
+    opening = chain.opening
+
+    def opened(*args: Any) -> bytes:
+        marks.append(ticks)
+        return opening(*args)
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    class Counting(Scripted):
+        async def generate(
+            self, system: str, messages: list[Message], tools: list[ToolSpec]
+        ) -> Reply:
+            marks.append(ticks)
+            return await super().generate(system, messages, tools)
+
+    monkeypatch.setattr(chain, "opening", opened)
+    photo = Image(media_type="image/png", data=PNG + bytes(2 * 1024 * 1024))
+    history: list[Message] = []
+    for i in range(20):
+        history.append(Message(role="user", content=[Text(text=f"Photo {i}."), photo]))
+        history.append(Message(role="assistant", content=f"Seen {i}.", reasoning=THOUGHT))
+    engine = Engine(fixtures, generation=Counting(text_reply("ok")), tools=TOOLS)
+    ticking = asyncio.create_task(ticker())
+    try:
+        run = await engine.run("support", "acme", "Which?", history=history)
+    finally:
+        ticking.cancel()
+    assert isinstance(run, Generation)
+    hashing_started, model_called = marks
+    assert model_called - hashing_started >= 3
+
+
+async def test_cancelling_a_run_while_its_window_is_hashed_raises_at_once(
+    fixtures: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slowed(monkeypatch)
     llm = Scripted(text_reply("ok"))
     engine = Engine(fixtures, generation=llm, tools=TOOLS)
     task = asyncio.create_task(engine.run("support", "acme", "Which?", history=long_window()))

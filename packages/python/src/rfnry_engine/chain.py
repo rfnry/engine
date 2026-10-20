@@ -1,12 +1,13 @@
 import asyncio
 import hashlib
 import json
+import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
 from rfnry_engine.models import Content, Message, Part, Text, ToolSpec
 
-YIELD_EVERY = 100
+YIELD_AFTER = 0.003
 
 
 def _part(part: Part) -> dict[str, Any]:
@@ -54,6 +55,7 @@ class Chain:
         self._head = head
         self._digest: bytes | None = None
         self._hashed = 0
+        self._busy = 0.0
 
     async def settle(self, history: list[Message]) -> list[Message]:
         given = [index for index, message in enumerate(history) if message.reasoning is not None]
@@ -73,8 +75,11 @@ class Chain:
         if self._digest is None:
             self._digest = self._head()
         while self._hashed < end:
+            began = time.perf_counter()
             self._digest = extend(self._digest, messages[self._hashed])
             self._hashed += 1
-            if self._hashed % YIELD_EVERY == 0:
+            self._busy += time.perf_counter() - began
+            if self._busy > YIELD_AFTER:
+                self._busy = 0.0
                 await asyncio.sleep(0)
         return self._digest
