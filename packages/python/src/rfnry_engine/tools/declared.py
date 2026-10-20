@@ -84,9 +84,10 @@ def declared_tools(spec: AgentSpec, code: dict[str, Tool]) -> list[Tool]:
 
 def check_declarations(
     agents: dict[str, AgentSpec], code: dict[str, Tool], *, bodies: bool
-) -> None:
+) -> dict[str, list[Tool]]:
     declared: set[str] = set()
-    for spec in agents.values():
+    built: dict[str, list[Tool]] = {}
+    for key, spec in agents.items():
         taken = {
             *BUILTINS,
             HISTORY_TOOL,
@@ -99,7 +100,7 @@ def check_declarations(
                 f"declared: agent {spec.name!r} declares {', '.join(map(repr, clash))}, the name of a tool the engine gives it; rename yours"
             )
         if bodies:
-            declared_tools(spec, code)
+            built[key] = declared_tools(spec, code)
         declared.update(spec.tools)
     undeclared = sorted(name for name in code if name not in declared)
     if undeclared:
@@ -109,3 +110,4 @@ def check_declarations(
             else "declare each in its agent's TOOLS.md or tools/"
         )
         raise ConfigurationError(f"declared: tools declared by no agent: {undeclared}; {fix}")
+    return built

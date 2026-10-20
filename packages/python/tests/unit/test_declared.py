@@ -4,10 +4,15 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.tools import declared
 from rfnry_engine.tools.declared import check_declarations, declared_tools
+from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tree import load_tree
+
+from .fakes import Scripted
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "agents"
 
@@ -76,3 +81,38 @@ def test_without_bodies_only_undeclared_code_tools_are_refused() -> None:
     check_declarations(agents, {}, bodies=False)
     with pytest.raises(ConfigurationError, match="weather"):
         check_declarations(agents, {"weather": Tool("weather", "Forecast", body=now)}, bodies=False)
+
+
+def _lookup_tree(root: Path) -> None:
+    (root / "a" / "tools").mkdir(parents=True)
+    (root / "a" / "AGENT.md").write_text("---\nkind: generation\n---\nHi\n")
+    (root / "a" / "tools" / "lookup.md").write_text(
+        "---\ndescription: Look up\ninput:\n  id: {type: string, required: true}\n---\nBody\n"
+    )
+
+
+def test_declared_argument_classes_are_made_when_the_tree_loads_not_per_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _lookup_tree(tmp_path)
+    made: list[str] = []
+    real = declared._args_model
+
+    def counted(decl: Any) -> Any:
+        made.append(decl.name)
+        return real(decl)
+
+    monkeypatch.setattr(declared, "_args_model", counted)
+    engine = Engine(tmp_path, generation=Scripted(), tools=[Tool("lookup", "Look up", body=lookup)])
+    loaded = len(made)
+    EngineTools(engine, agent="a", scope="acme")
+    EngineTools(engine, agent="a", scope="acme")
+    assert loaded == 1 and len(made) == 1
+
+
+def test_tools_without_a_generation_model_still_carry_their_contracts(tmp_path: Path) -> None:
+    _lookup_tree(tmp_path)
+    engine = Engine(tmp_path, tools=[Tool("lookup", "Look up", body=lookup)])
+    surface = EngineTools(engine, agent="a", scope="acme")
+    [found] = [d for d in surface.definitions() if d["name"] == "lookup"]
+    assert found["input_schema"]["required"] == ["id"]

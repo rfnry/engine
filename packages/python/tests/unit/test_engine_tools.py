@@ -9,7 +9,7 @@ from rfnry_engine.models import Document
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Scripted
+from .fakes import TOOLS, Scripted, text_reply
 
 
 async def test_engine_tools_is_the_agents_surface(fixtures: Path) -> None:
@@ -79,3 +79,20 @@ async def test_an_agent_reads_another_agent_s_folder_in_full(tmp_path: Path) -> 
     assert isinstance(loaded, list) and len(loaded) == 1
     assert isinstance(loaded[0], Document) and loaded[0].data == b"Draft it.\n"
     assert engine._spec("coding").listing == "../writing/"
+
+
+async def test_an_adapter_editing_a_builtin_schema_changes_no_later_run(fixtures: Path) -> None:
+    seen_types: list[str] = []
+
+    class Editing(Scripted):
+        async def generate(self, system: Any, messages: Any, tools: Any) -> Any:
+            [read] = [t for t in tools if t.name == "Read"]
+            seen_types.append(read.input_schema["properties"]["path"]["type"])
+            read.input_schema["properties"]["path"]["type"] = "integer"
+            return await super().generate(system, messages, tools)
+
+    model = Editing(text_reply("one"), text_reply("two"))
+    engine = Engine(fixtures, generation=model, tools=TOOLS)
+    await engine.run("billing", "acme", "hi")
+    await engine.run("billing", "acme", "hi")
+    assert seen_types == ["string", "string"]

@@ -53,7 +53,7 @@ class EngineTools(Tools):
             raise ConfigurationError(
                 f"engine_tools: agent {agent!r} declares workspace: true; pass workspace= to the run"
             )
-        declared = declared_tools(spec, engine.tools)
+        declared = engine._declared.get(agent) or declared_tools(spec, engine.tools)
         given = [] if tools is None else [d["name"] for d in tools.definitions()]
         if HISTORY_TOOL in [*(t.name for t in declared), *given]:
             raise ConfigurationError(

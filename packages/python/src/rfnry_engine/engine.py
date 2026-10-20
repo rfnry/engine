@@ -374,7 +374,7 @@ class Engine:
         self.history_chars = history_chars
         self._agents = load_tree(self.root, getattr(generation, "media_types", None), name)
         validate_tree(self._agents)
-        check_declarations(self._agents, self.tools, bodies=generation is not None)
+        self._declared = check_declarations(self._agents, self.tools, bodies=generation is not None)
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
