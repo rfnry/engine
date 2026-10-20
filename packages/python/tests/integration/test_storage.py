@@ -865,7 +865,7 @@ async def test_put_runs_with_a_row_of_another_scope_stores_nothing(storage: Stor
 
 
 async def test_put_runs_stores_nothing_when_the_database_refuses_a_row(storage: Storage) -> None:
-    bad = _run("a", "r2").model_copy(update={"duration_ms": 2**40})
+    bad = _run("a", "r2", agent="a\x00b")
     with pytest.raises(StorageError, match="^postgres: storage rejected put_runs: "):
         await storage.put_runs("a", [_run("a", "r1"), bad])
     assert await storage.get_run("a", "r1") is None
@@ -885,6 +885,8 @@ async def test_a_row_without_tags_matches_no_tag_selector(storage: Storage) -> N
 
 async def test_initialize_makes_the_indexes_and_runs_again(pool: Any) -> None:
     await PostgresStorage(pool).initialize()
-    records = await pool.fetch("SELECT indexname FROM pg_indexes WHERE tablename = 'engine_runs'")
+    records = await pool.fetch(
+        "SELECT indexname FROM pg_indexes WHERE tablename = 'engine_runs' AND schemaname = current_schema()"
+    )
     names = {r["indexname"] for r in records}
     assert {"ix_engine_runs_scope_parent", "ix_engine_runs_tags"} <= names
