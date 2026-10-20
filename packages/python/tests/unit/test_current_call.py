@@ -4,10 +4,18 @@ from typing import Any
 
 from rfnry_engine import CallInfo, Engine, EngineTools, Stop, current_call
 from rfnry_engine.models import Reply, ToolCall
-from rfnry_engine.records import Event, Generation, ToolCallStarted, ToolResultReady
+from rfnry_engine.records import (
+    Decision,
+    Event,
+    Generation,
+    Run,
+    RunStarted,
+    ToolCallStarted,
+    ToolResultReady,
+)
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import Scripted, text_reply
+from .fakes import Answering, Scripted, text_reply
 
 
 def tree(root: Path, **agents: str) -> Path:
@@ -213,3 +221,167 @@ async def test_a_cut_call_s_result_handler_sees_the_call(tmp_path: Path) -> None
     assert finished == [
         CallInfo(run_id=run.run_id, agent="desk", scope="acme", tool="slow", call_id="s1")
     ]
+
+
+class Keeping:
+    def __init__(self) -> None:
+        self.runs: list[Run] = []
+
+    async def record(self, run: Run) -> None:
+        self.runs.append(run)
+
+    def of(self, agent: str) -> Run:
+        [found] = [r for r in self.runs if r.agent == agent]
+        return found
+
+
+def router(root: Path, name: str, target: str) -> None:
+    (root / name / "questions").mkdir(parents=True)
+    (root / name / "AGENT.md").write_text(
+        f"---\nkind: decision\nroute: {{by: go, to: {{next: {target}}}}}\n---\n"
+    )
+    (root / name / "questions" / "go.md").write_text(
+        "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
+    )
+
+
+def delegate(agent: str, call_id: str) -> ToolCall:
+    return ToolCall(id=call_id, name="Delegate", args={"agent": agent, "input": "go"})
+
+
+async def test_a_run_outside_any_call_records_none(tmp_path: Path) -> None:
+    keeping = Keeping()
+    engine = Engine(tree(tmp_path, desk=""), generation=Scripted(text_reply("x")), refinery=keeping)
+    run = await engine.run("desk", "acme", "x")
+    assert run.call is None
+
+
+async def parallel(tmp_path: Path, events: list[Event] | None = None) -> Generation:
+    async def watch(event: Event) -> None:
+        if events is not None:
+            events.append(event)
+
+    llm = Scripted(
+        use(delegate("child", "d1"), delegate("child", "d2")),
+        text_reply("one"),
+        text_reply("two"),
+        text_reply("done"),
+    )
+    engine = Engine(tree(tmp_path, lead="agents: [child]\n", child=""), generation=llm)
+    run = await engine.run("lead", "acme", "x", on_event=watch)
+    assert isinstance(run, Generation)
+    return run
+
+
+async def test_parallel_delegated_runs_record_their_own_delegate_calls(tmp_path: Path) -> None:
+    run = await parallel(tmp_path)
+    assert {c.call.call_id for c in run.children if c.call} == {"d1", "d2"}
+    assert all(
+        c.call is not None and c.call.run_id == run.run_id and c.call.tool == "Delegate"
+        for c in run.children
+    )
+
+
+async def test_call_matches_run_started_wherever_both_exist(tmp_path: Path) -> None:
+    events: list[Event] = []
+    run = await parallel(tmp_path, events)
+    started = [e for e in events if isinstance(e, RunStarted)]
+    by_id = {r.run_id: r for r in [run, *run.children]}
+    assert len(started) == 3
+    assert all(by_id[e.run_id].call == e.call for e in started)
+
+
+async def test_a_routed_run_records_the_call_its_router_worked_for(tmp_path: Path) -> None:
+    tree(tmp_path, lead="agents: [r]\n", target="")
+    router(tmp_path, "r", "target")
+    llm = Scripted(use(delegate("r", "d1")), text_reply("routed"), text_reply("done"))
+    engine = Engine(tmp_path, generation=llm, decision=Answering())
+    run = await engine.run("lead", "acme", "x")
+    assert isinstance(run, Generation)
+    [routing] = run.children
+    assert isinstance(routing, Decision) and routing.routed_to is not None
+    assert routing.call is not None and routing.call.call_id == "d1"
+    assert routing.routed_to.call == routing.call
+
+
+def consulting(tmp_path: Path, keeping: Keeping, *replies: Reply) -> Engine:
+    return Engine(
+        tree(tmp_path, support="", billing=""), generation=Scripted(*replies), refinery=keeping
+    )
+
+
+async def test_a_consult_inside_a_run_records_the_callers_call(tmp_path: Path) -> None:
+    keeping = Keeping()
+    engine = consulting(
+        tmp_path,
+        keeping,
+        use(ToolCall(id="b1", name="billing", args={"input": "paid?"})),
+        text_reply("Paid."),
+        text_reply("Done."),
+    )
+    await engine.run("support", "acme", "x", tools=engine.tool("billing", scope="acme"))
+    outer, consult = keeping.of("support"), keeping.of("billing")
+    assert consult.call is not None
+    assert consult.call.run_id == outer.run_id and consult.call.call_id == "b1"
+
+
+async def test_a_consult_outside_any_run_records_none(tmp_path: Path) -> None:
+    keeping = Keeping()
+    engine = consulting(tmp_path, keeping, text_reply("Paid."))
+    await engine.tool("billing", scope="acme").dispatch("billing", {"input": "x"})
+    assert keeping.of("billing").call is None
+
+
+async def test_a_consult_in_another_scope_records_none(tmp_path: Path) -> None:
+    keeping = Keeping()
+    engine = consulting(
+        tmp_path,
+        keeping,
+        use(ToolCall(id="b1", name="billing", args={"input": "paid?"})),
+        text_reply("Paid."),
+        text_reply("Done."),
+    )
+    await engine.run("support", "acme", "x", tools=engine.tool("billing", scope="other"))
+    consult = keeping.of("billing")
+    assert consult.scope == "other" and consult.call is None
+
+
+async def test_a_run_a_tool_body_starts_after_the_call_ended_records_that_call(
+    tmp_path: Path,
+) -> None:
+    keeping = Keeping()
+    engine = consulting(
+        tmp_path,
+        keeping,
+        use(ToolCall(id="t1", name="spawn", args={})),
+        text_reply("Done."),
+        text_reply("Later."),
+    )
+    spawned: list[asyncio.Task[Run]] = []
+
+    async def spawn(args: dict[str, Any]) -> str:
+        spawned.append(asyncio.create_task(engine.run("billing", "acme", "later")))
+        return "started"
+
+    outer = await engine.run("support", "acme", "x", tools=Tools([Tool("spawn", "Go", body=spawn)]))
+    later = await spawned[0]
+    assert later.call is not None
+    assert later.call.call_id == "t1" and later.call.run_id == outer.run_id
+
+
+class Failing:
+    async def decide(self, state: Any, questions: Any) -> Any:
+        raise RuntimeError("down")
+
+
+async def test_a_failed_decision_run_keeps_its_call(tmp_path: Path) -> None:
+    (tmp_path / "judge" / "questions").mkdir(parents=True)
+    (tmp_path / "judge" / "AGENT.md").write_text("---\nkind: decision\n---\n")
+    (tmp_path / "judge" / "questions" / "ok.md").write_text("---\ntype: check\n---\nOk?\n")
+    tree(tmp_path, lead="agents: [judge]\n")
+    llm = Scripted(use(delegate("judge", "d1")), text_reply("done"))
+    engine = Engine(tmp_path, generation=llm, decision=Failing())
+    run = await engine.run("lead", "acme", "x")
+    assert isinstance(run, Generation)
+    [child] = run.children
+    assert child.error is not None and child.call is not None and child.call.call_id == "d1"

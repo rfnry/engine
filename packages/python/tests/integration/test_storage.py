@@ -1,5 +1,6 @@
 import asyncio
 import json
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -890,3 +891,36 @@ async def test_initialize_makes_the_indexes_and_runs_again(pool: Any) -> None:
     )
     names = {r["indexname"] for r in records}
     assert {"ix_engine_runs_scope_parent", "ix_engine_runs_tags"} <= names
+
+
+async def test_a_recorded_call_reads_back(storage: Storage, tmp_path: Path) -> None:
+    for name, front in (
+        ("lead", "kind: generation\nagents: [child, triage]"),
+        ("child", "kind: generation"),
+    ):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "AGENT.md").write_text(f"---\n{front}\n---\nYou are {name}.\n")
+    shutil.copytree(FIXTURES / "triage", tmp_path / "triage")
+    refinery = Refinery(storage)
+    engine = Engine(
+        tmp_path,
+        generation=Scripted(
+            Reply(
+                tool_calls=[
+                    ToolCall(id="g1", name="Delegate", args={"agent": "child", "input": "x"}),
+                    ToolCall(id="d1", name="Delegate", args={"agent": "triage", "input": "y"}),
+                ],
+                stop_reason="tool_use",
+            ),
+            text_reply("Billed."),
+            text_reply("Done."),
+        ),
+        decision=Desk(),
+        refinery=refinery,
+    )
+    run = await engine.run("lead", "a", "go")
+    assert isinstance(run, Generation)
+    assert {c.call.call_id for c in run.children if c.call} == {"g1", "d1"}
+    again = await Refinery(storage).run("a", run.run_id)
+    assert isinstance(again, Generation)
+    assert [c.call for c in again.children] == [c.call for c in run.children]

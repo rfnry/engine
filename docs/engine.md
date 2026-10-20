@@ -928,6 +928,8 @@ the target does not have, questions for a generation agent, a question that does
 target already asks, or a decision run with nothing to ask reaches the model as a tool error it can
 read and act on, and the run goes on.
 
+A run records the call it worked for in `call`, the same `CallInfo` its `RunStarted` carries, so a run a tool of yours started links back to the run that called it.
+
 Depth is capped (`max_depth`, default 5). Within it an agent may name itself in `agents:` and hand a
 sub-problem to a fresh run of itself, and two agents may call each other. A route is different: it
 forwards the same input, so a route into an agent that already decided it — in the same chain of

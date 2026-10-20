@@ -100,6 +100,7 @@ class Generation(BaseModel):
     kind: Literal["generation"] = "generation"
     run_id: str
     parent_run_id: str | None = None
+    call: CallInfo | None = None
     agent: str
     scope: str
     tags: dict[str, str] = Field(default_factory=dict)
@@ -135,6 +136,7 @@ class Decision(BaseModel):
     kind: Literal["decision"] = "decision"
     run_id: str
     parent_run_id: str | None = None
+    call: CallInfo | None = None
     agent: str
     scope: str
     tags: dict[str, str] = Field(default_factory=dict)

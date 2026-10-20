@@ -313,6 +313,11 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _caller(scope: str) -> CallInfo | None:
+    call = CALL.get()
+    return call if call is not None and call.scope == scope else None
+
+
 def _declared(model: object) -> str | None:
     named = getattr(model, "model", None)
     return named if isinstance(named, str) and named else None
@@ -550,6 +555,7 @@ class Engine:
         options: _Options,
         parent_run_id: str | None,
     ) -> Decision:
+        caller = _caller(scope)
         model_ = self.decision
         if model_ is None:
             raise ConfigurationError(
@@ -583,6 +589,7 @@ class Engine:
             return Decision(
                 run_id=run_id,
                 parent_run_id=parent_run_id,
+                call=caller,
                 agent=spec.name,
                 scope=scope,
                 tags=dict(options.tags),
@@ -641,6 +648,7 @@ class Engine:
         options: _Options,
         parent_run_id: str | None,
     ) -> Generation:
+        caller = _caller(scope)
         model_ = self.generation
         if model_ is None:
             raise ConfigurationError(
@@ -939,6 +947,7 @@ class Engine:
             return Generation(
                 run_id=run_id,
                 parent_run_id=parent_run_id,
+                call=caller,
                 agent=spec.name,
                 scope=scope,
                 tags=dict(options.tags),
