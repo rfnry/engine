@@ -48,6 +48,12 @@ def flatten(run: Run, recorded: datetime) -> list[RunRow]:
     body = run.model_dump(mode="json")
     children: list[Run] = []
     if isinstance(run, Generation):
+        if run.conversation[: len(run.messages)] != run.messages:
+            raise InputError(
+                f"refinery: run {run.run_id!r} records messages that are not the start of its conversation"
+            )
+        del body["messages"]
+        body["sent"] = len(run.messages)
         body["children"] = []
         children = list(run.children)
     elif isinstance(run, Decision):
@@ -90,6 +96,7 @@ def unflatten(row: RunRow, under: dict[str, list[RunRow]]) -> dict[str, Any]:
     )
     nested = [unflatten(child, under) for child in children]
     if row.kind == "generation":
+        body["messages"] = body["conversation"][: body.pop("sent")]
         body["children"] = nested
     else:
         body["routed_to"] = nested[0] if nested else None

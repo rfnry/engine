@@ -1710,7 +1710,10 @@ class Conflict(BaseModel): run_id, corrections
 ```
 
 A row's `body` is the run's record, or the label, as JSON, with a run's children and routed run
-left out: each is a row of its own, joined by `parent_run_id`. `runs` returns the newest first and
+left out: each is a row of its own, joined by `parent_run_id`. A generation row's body keeps its
+`conversation` and `sent`, the number of its first messages sent at the start, in place of a second
+copy as `messages`; `refinery.run` reads `messages` back as `conversation[:sent]`, and
+`refinery.record` refuses a run whose `messages` are not the start of its `conversation`. `runs` returns the newest first and
 `labels` the oldest first; `unlabeled_by="judge"` keeps the runs no label from that source names.
 `run_tree` returns the runs a selector matches — `run_ids`, or `tags` by containment — and every run
 under them, oldest first; `refinery.run` reads a run back from it. `delete_runs` removes the same

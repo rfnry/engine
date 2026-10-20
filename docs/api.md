@@ -1095,7 +1095,7 @@ class RunRow(BaseModel):
     body: dict[str, Any]
 ```
 
-A stored run. `body` is the run's record as JSON with its children and routed run left out, each a row of its own joined by `parent_run_id`; `at` is when the run started and `recorded` when the refinery stored it.
+A stored run. `body` is the run's record as JSON with its children and routed run left out, each a row of its own joined by `parent_run_id`, and a generation's `messages` replaced by `sent`, their count, since they are the start of its `conversation`; read a run back with `Refinery.run`; `at` is when the run started and `recorded` when the refinery stored it.
 
 ### `LabelRow`
 
@@ -1138,7 +1138,7 @@ async def record(self, run: Run) -> None: ...
 
 Stores `run` and every run delegated or routed under it, all stamped with one `recorded` time: what an engine with a refinery does after each run not made with `record=False`.
 
-Raises `InputError` when the run's scope is empty.
+Raises `InputError` when the run's scope is empty, or a generation's `messages` are not the start of its `conversation`; nothing is stored then.
 
 ### `Refinery.run`
 

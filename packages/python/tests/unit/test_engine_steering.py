@@ -268,9 +268,8 @@ async def test_a_stopped_run_is_recorded_and_continues_cleanly(
     stop.now()
     run = await asyncio.wait_for(task, 2)
     assert isinstance(run, Generation)
-    row = await refinery.storage.get_run("acme", run.run_id)
-    assert row is not None
-    stored = Generation.model_validate(row.body)
+    stored = await refinery.run("acme", run.run_id)
+    assert isinstance(stored, Generation)
     assert stored.stopped == "now" and stored.steps[0].stopped
     await refinery.review(
         "acme", run.run_id, Review(stance="objection", correction="Do it differently.")

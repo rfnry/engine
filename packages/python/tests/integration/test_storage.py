@@ -333,9 +333,9 @@ async def test_a_generation_with_its_tools_round_trips(storage: Storage) -> None
         reply="Found it.",
         usage=Usage(),
     )
-    await Refinery(storage).record(run)
-    got = await storage.get_run("a", "g")
-    assert got is not None and Generation.model_validate(got.body) == run
+    refinery = Refinery(storage)
+    await refinery.record(run)
+    assert await refinery.run("a", "g") == run
 
 
 async def test_tags_round_trip(storage: Storage) -> None:
@@ -373,11 +373,12 @@ async def test_tags_round_trip(storage: Storage) -> None:
         children=[decision],
         tags={"arm": "b", "commit": "a81d07b"},
     )
-    await Refinery(storage).record(run)
-    for run_id, kind in (("g", Generation), ("d", Decision)):
+    refinery = Refinery(storage)
+    await refinery.record(run)
+    for run_id in ("g", "d"):
         got = await storage.get_run("a", run_id)
         assert got is not None and got.body["tags"] == {"arm": "b", "commit": "a81d07b"}
-        assert kind.model_validate(got.body).tags == {"arm": "b", "commit": "a81d07b"}
+        assert (await refinery.run("a", run_id)).tags == {"arm": "b", "commit": "a81d07b"}
 
 
 def _tagged(
@@ -823,8 +824,7 @@ async def test_start_prefix_and_usage_round_trip(
     )
     refinery = Refinery(storage)
     await refinery.record(run)
-    got = await storage.get_run("a", "w")
-    assert got is not None and Generation.model_validate(got.body) == run
+    assert await refinery.run("a", "w") == run
     bucket = MemoryBucket()
     exported = await refinery.export("a", bucket)
     [key] = [k for k in exported.keys if k.startswith("a/support/generation/")]

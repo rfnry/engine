@@ -513,8 +513,13 @@ class Gate:
 
 async def recorded_inputs(refinery: Refinery, texts: list[str]) -> None:
     for minute, text in enumerate(texts):
+        message = Message(role="user", content=text)
         run = generation_record().model_copy(
-            update={"input": text, "messages": [Message(role="user", content=text)]}
+            update={
+                "input": text,
+                "messages": [message],
+                "conversation": [message, Message(role="assistant", content="ok")],
+            }
         )
         await put(refinery, run, f"r{minute}", minute)
 
