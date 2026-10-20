@@ -12,7 +12,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tree import load_tree
 
-from .fakes import Scripted
+from .fakes import Scripted, text_reply
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "agents"
 
@@ -116,3 +116,24 @@ def test_tools_without_a_generation_model_still_carry_their_contracts(tmp_path: 
     surface = EngineTools(engine, agent="a", scope="acme")
     [found] = [d for d in surface.definitions() if d["name"] == "lookup"]
     assert found["input_schema"]["required"] == ["id"]
+
+
+async def test_an_adapter_editing_a_declared_schema_changes_no_later_run_in_any_scope(
+    tmp_path: Path,
+) -> None:
+    _lookup_tree(tmp_path)
+    seen: list[str] = []
+
+    class Editing(Scripted):
+        async def generate(self, system: Any, messages: Any, tools: Any) -> Any:
+            [found] = [t for t in tools if t.name == "lookup"]
+            seen.append(found.input_schema["properties"]["id"]["type"])
+            found.input_schema["properties"]["id"]["type"] = "integer"
+            return await super().generate(system, messages, tools)
+
+    model = Editing(text_reply("one"), text_reply("two"))
+    engine = Engine(tmp_path, generation=model, tools=[Tool("lookup", "Look up", body=lookup)])
+    first = await engine.run("a", "acme", "hi")
+    second = await engine.run("a", "other", "hi")
+    assert seen == ["string", "string"]
+    assert first.fingerprint.tools == second.fingerprint.tools

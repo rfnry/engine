@@ -1,5 +1,6 @@
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import replace
 from functools import cache
 from typing import TYPE_CHECKING
@@ -69,7 +70,10 @@ class EngineTools(Tools):
             raise ConfigurationError(
                 f"engine_tools: agent {agent!r} declares workspace: true; pass workspace= to the run"
             )
-        declared = engine._declared.get(agent) or declared_tools(spec, engine.tools)
+        declared = [
+            replace(tool, input_schema=deepcopy(tool.input_schema))
+            for tool in engine._declared.get(agent) or declared_tools(spec, engine.tools)
+        ]
         given = [] if tools is None else [d["name"] for d in tools.definitions()]
         if HISTORY_TOOL in [*(t.name for t in declared), *given]:
             raise ConfigurationError(
