@@ -1010,6 +1010,139 @@ generation agents and refuses the decision ones; with only `decision=` the rever
 agent whose route reaches a generation agent is refused before its questions are asked. Nothing
 about an agent changes when the other kind of model is absent — only which agents you can run.
 
+### Orchestrating
+
+The library runs agents and records what they did. The order they run in is yours or the model's: your
+code decides in a workflow, and the model decides when it delegates, routes or calls a tool of yours.
+Start with a workflow in code, where you know the steps, and add autonomy only where a fixed step
+breaks. There is no graph, planner or task board here to configure; what follows is what you write on
+top of the public surface, and every block runs in the test suite.
+
+A workflow is code. Tag every run with the workflow's id, so `run_tree(tags=)` and
+`delete_runs(tags=)` reach all of it:
+
+```python
+workflow = {"workflow": "refund-17"}
+
+billed = await engine.run("billing", scope="acme", input=message, tags=workflow)
+answered = await engine.run("support", scope="acme", input=billed.reply, tags=workflow)
+
+parts = await asyncio.gather(
+    *(engine.run("support", scope="acme", input=part, tags=workflow) for part in (message, text))
+)
+
+routed = await engine.run("frontdesk", scope="acme", input=message, tags=workflow)
+routed.routed_to.agent                  # the department the router chose
+```
+
+One run after another, runs side by side, and a route: the three patterns a workflow is made of.
+
+A budget across a tree is an `on_event` that counts `RunStarted`, which every generation run in the
+tree sends, and presses a `Stop` when the count runs out. Decision runs send no events, so they are
+not counted:
+
+```python
+class Budget:
+    def __init__(self, runs):
+        self.left, self.stop = runs, Stop()
+
+    async def __call__(self, event):
+        if isinstance(event, RunStarted):
+            self.left -= 1
+            if self.left < 0:
+                self.stop.after_step()
+
+budget = Budget(50)
+run = await engine.run("support", scope="acme", input=message, on_event=budget, stop=budget.stop)
+```
+
+Two agents that write `guide.md` into one workspace overwrite each other. Give each run a copy of
+its own, have it claim work before it does it, and merge when a child comes back. A `Backend` is
+yours, so the copy is a directory per run, named by `current_call().run_id`: inside a tool or a
+backend, `current_call()` is the call the running run is making. `RunStarted.call` names the run that
+started a child, and the parent's `ToolResultReady` for its `Delegate` step carries
+`step.child_run_id`, which is where you merge. How a directory is copied and merged (worktrees, a
+copy, a container per run) is yours too:
+
+```python
+from rfnry_engine import Local, RunStarted, Tool, ToolResultReady, Tools, Workspace, current_call
+
+class PerRun:
+    def __init__(self, base):
+        self.base, self.parent, self.merged = Path(base), {}, []
+
+    def here(self):
+        call = current_call()
+        place = self.base / (call.run_id if call else "main")
+        place.mkdir(parents=True, exist_ok=True)
+        return Local(place)
+
+    async def spawn(self, command): return await self.here().spawn(command)
+    async def read(self, path, limit): return await self.here().read(path, limit)
+    async def write(self, path, data): await self.here().write(path, data)
+
+    async def on_event(self, event):
+        if isinstance(event, RunStarted) and event.call:
+            self.parent[event.run_id] = event.call.run_id
+        if isinstance(event, ToolResultReady) and event.step.child_run_id:
+            self.merged.append(event.step.child_run_id)
+
+claims = {}
+
+async def claim(args):
+    me = current_call().run_id
+    return {"claimed": claims.setdefault(args["task"], me) == me, "by": claims[args["task"]]}
+
+backend = PerRun("work")
+tools = Tools([Tool("claim", "Take a task for this run", body=claim, input_schema={
+    "type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]})])
+run = await engine.run("lead", scope="acme", input=task, tools=tools, on_event=backend.on_event,
+                       workspace=Workspace(backend, scope="acme"))
+```
+
+Work in the background is two tools of yours: one starts `engine.run` in a task you keep, one reads
+the task. You cancel these tasks and bound how many there are. The run they start records the call
+that started it, so its record links back to the run that asked for it:
+
+```python
+jobs = {}
+
+async def start(args):
+    jobs[str(len(jobs))] = asyncio.create_task(
+        engine.run("support", scope="acme", input=args["input"])
+    )
+    return {"job": str(len(jobs) - 1)}
+
+async def check(args):
+    job = jobs[args["job"]]
+    return {"running": not job.done(), "reply": None if not job.done() else job.result().reply}
+
+tools = Tools([
+    Tool("start", "Start support on an input", body=start, input_schema={
+        "type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]}),
+    Tool("check", "Read a job started earlier", body=check, input_schema={
+        "type": "object", "properties": {"job": {"type": "string"}}, "required": ["job"]}),
+])
+outer = await engine.run("boss", scope="acme", input=task, tools=tools)
+```
+
+Whether a team is worth it is measured, not assumed. Replay the holdout with a one-agent candidate
+beside the team, and compare the grades and what each spent over the whole tree, summed over
+`children` and `routed_to`; a run a tool of yours started as a consult is not a child, and is
+reached by its `call`:
+
+```python
+def spent(run):
+    below = run.children if isinstance(run, Generation) else [run.routed_to] if run.routed_to else []
+    usage, calls = run.usage, run.calls if isinstance(run, Generation) else 1
+    for child in below:
+        more, made = spent(child)
+        usage, calls = usage + more, calls + made
+    return usage, calls
+
+team, alone = [spent(await engine.run(a, scope="acme", input=message)) for a in ("support", "billing")]
+```
+
 ### Workspace
 
 > `Workspace` gives the model a real shell, and **a shell is not confined by its directory**.
@@ -1760,7 +1893,13 @@ await refinery.verify_absent("acme", tags={"customer": "c-81"})
 delegated or routed from them, and every label on any of them, in one transaction; it returns the
 number of rows removed. A tag matches by containment: `{"customer": "c-81"}` matches a run tagged
 `{"customer": "c-81", "arm": "b"}`. `verify_absent` takes the same selectors; without them it checks
-the whole scope. Datasets you exported before are files you hold — drop the customer's rows from
+the whole scope.
+
+A run a tool started inside another run's call, such as a consult from `engine.tool`, is a run of
+its own, and `delete_runs(run_ids=)` does not reach it: ids reach what a run delegated and routed,
+not its consults. Erase those by tags. Give `engine.tool(tags=)`, or the `engine.run(tags=)` of your
+own tool, the tags of the person it serves, and `delete_runs(tags=)` removes the consult with its
+caller. Datasets you exported before are files you hold — drop the customer's rows from
 them yourself; every row carries its run's tags.
 
 ## At a glance

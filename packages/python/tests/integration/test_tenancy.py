@@ -5,6 +5,7 @@ from unit.fakes import TOOLS, Desk, MemoryBucket, Scripted, delegate_triage, tex
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import NotFoundError
+from rfnry_engine.models import Reply, ToolCall
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.labels import Outcome, Review
 from rfnry_engine.refinery.refinery import Refinery, flatten
@@ -112,3 +113,35 @@ async def test_nothing_of_one_customer_survives_its_erasure(storage: Storage) ->
     await storage.put_runs("desk", [stray])
     assert not await refinery.verify_absent("desk", run_ids=[gone.run_id])
     assert not await refinery.verify_absent("desk", tags={"customer": "c-81"})
+
+
+def consulting() -> Scripted:
+    ask = ToolCall(id="c1", name="billing", args={"input": "Charged twice"})
+    return Scripted(
+        Reply(tool_calls=[ask], stop_reason="tool_use"),
+        text_reply("Refunded."),
+        text_reply("Done."),
+    )
+
+
+async def test_a_consult_given_the_customers_tags_is_erased_with_its_caller(
+    storage: Storage,
+) -> None:
+    refinery = Refinery(storage)
+    tags = {"customer": "c-81"}
+    desk = Engine(FIXTURES, generation=consulting(), refinery=refinery, tools=TOOLS)
+    consult = desk.tool("billing", scope="acme", tags=tags)
+    await desk.run("support", "acme", "Charged twice", tools=consult, tags=tags)
+    assert len(await storage.runs("acme")) == 2
+    assert await refinery.delete_runs("acme", tags=tags) == 2
+    assert await refinery.verify_absent("acme", tags=tags)
+
+
+async def test_erasing_a_run_by_id_leaves_the_consults_it_made(storage: Storage) -> None:
+    refinery = Refinery(storage)
+    desk = Engine(FIXTURES, generation=consulting(), refinery=refinery, tools=TOOLS)
+    consult = desk.tool("billing", scope="acme")
+    outer = await desk.run("support", "acme", "Charged twice", tools=consult)
+    [made] = [r for r in await storage.runs("acme") if r.run_id != outer.run_id]
+    assert await refinery.delete_runs("acme", run_ids=[outer.run_id]) == 1
+    assert [r.run_id for r in await storage.runs("acme")] == [made.run_id]

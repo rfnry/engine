@@ -60,6 +60,10 @@ ILLUSTRATIVE = {
     "class Conversation:": "needs a database pool; a list stands in for it in the block above",
     "refinery = Refinery(PostgresStorage(pool))": "needs a Postgres pool; the integration tier runs PostgresStorage",
     "pool = await asyncpg.create_pool(dsn)": "needs a Postgres pool and rfnry-memory",
+    "from rfnry_engine import Local, RunStarted, Tool, ToolResultReady, Tools, Workspace, current_call": (
+        "needs agents that declare `workspace: true`"
+    ),
+    "jobs = {}": "needs a model that calls start and then check",
 }
 
 SIGNATURES = {
@@ -91,6 +95,8 @@ SETUPS = {
     'engine = Engine(Path("skills"), generation=llm, name="writer")': Setup(
         replace={'Path("skills")': "skills"}
     ),
+    "class Budget:": Setup(replies=(delegating("triage"),), intent="technical"),
+    "def spent(run):": Setup(replies=(delegating("triage"),), intent="technical"),
     "class Verdict(BaseModel):": Setup(
         replies=(
             Reply(
