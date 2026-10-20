@@ -191,8 +191,9 @@ the same runtime questions on a new model show in neither. When you would rather
 ### Level 2: choose models on evidence
 
 When a new model ships, replay the same holdout with it. Build an engine on the candidate adapter —
-the same folder, the same tools — and compare the grade rate, `pair.candidate.usage` and
-`pair.candidate.duration_ms` against what you run today. When the two fingerprints match, the model
+the same folder, the same tools — and compare the grade rate, the whole tree's usage and model calls (`spent` in
+[Orchestrating](engine.md#orchestrating)) and `pair.candidate.duration_ms` against what you run today.
+Not `pair.candidate.usage` alone: a candidate that delegates spends in its children. When the two fingerprints match, the model
 is the only thing that differs, and `pair.candidate.model` names it. The answer to "is the local
 model good enough for this task?" is a number measured on your own labeled questions, not a
 benchmark.

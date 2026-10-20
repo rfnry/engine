@@ -13,11 +13,13 @@ _DDL = [
         scope TEXT NOT NULL, run_id TEXT NOT NULL, parent_run_id TEXT NULL,
         agent TEXT NOT NULL, kind TEXT NOT NULL, task TEXT NULL,
         at TIMESTAMPTZ NOT NULL, recorded TIMESTAMPTZ NOT NULL,
-        duration_ms INTEGER NOT NULL, model TEXT NULL, body JSON NOT NULL,
+        duration_ms INTEGER NOT NULL, model TEXT NULL, body JSON NOT NULL, tags JSONB NOT NULL,
         PRIMARY KEY (scope, run_id))
     """,
     "CREATE INDEX IF NOT EXISTS ix_engine_runs_scope_at ON engine_runs (scope, at)",
     "CREATE INDEX IF NOT EXISTS ix_engine_runs_scope_recorded ON engine_runs (scope, recorded)",
+    "CREATE INDEX IF NOT EXISTS ix_engine_runs_scope_parent ON engine_runs (scope, parent_run_id)",
+    "CREATE INDEX IF NOT EXISTS ix_engine_runs_tags ON engine_runs USING GIN (tags jsonb_path_ops)",
     """
     CREATE TABLE IF NOT EXISTS engine_labels (
         scope TEXT NOT NULL, label_id TEXT NOT NULL, run_id TEXT NOT NULL,
@@ -84,9 +86,7 @@ def _tree(
         )
     if tags is not None:
         params.append(json.dumps(tags))
-        conditions.append(
-            f"({_as_jsonb('body::text')} -> 'tags') @> {_as_jsonb(f'${len(params)}::text')}"
-        )
+        conditions.append(f"tags @> {_as_jsonb(f'${len(params)}::text')}")
     sql = (
         "WITH RECURSIVE tree(run_id) AS (SELECT run_id FROM engine_runs WHERE "
         + " AND ".join(conditions)
@@ -114,26 +114,35 @@ class PostgresStorage:
             for ddl in _DDL:
                 await conn.execute(ddl)
 
-    async def put_run(self, scope: str, row: RunRow) -> None:
-        if row.scope != scope:
+    async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
+        if any(row.scope != scope for row in rows):
             raise StorageError("postgres: row scope does not match the call scope")
-        async with self._guard("put_run"), self._pool.acquire() as conn:
-            await conn.execute(
-                f"INSERT INTO engine_runs ({_RUN_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::json) "
+        if not rows:
+            return
+        async with self._guard("put_runs"), self._pool.acquire() as conn, conn.transaction():
+            await conn.executemany(
+                f"INSERT INTO engine_runs ({_RUN_COLUMNS}, tags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::json, "
+                f"{_as_jsonb('$12::text')}) "
                 "ON CONFLICT (scope, run_id) DO UPDATE SET parent_run_id = EXCLUDED.parent_run_id, agent = EXCLUDED.agent, "
                 "kind = EXCLUDED.kind, task = EXCLUDED.task, at = EXCLUDED.at, recorded = EXCLUDED.recorded, "
-                "duration_ms = EXCLUDED.duration_ms, model = EXCLUDED.model, body = EXCLUDED.body",
-                row.scope,
-                row.run_id,
-                row.parent_run_id,
-                row.agent,
-                row.kind,
-                row.task,
-                row.at,
-                row.recorded,
-                row.duration_ms,
-                row.model,
-                json.dumps(row.body),
+                "duration_ms = EXCLUDED.duration_ms, model = EXCLUDED.model, body = EXCLUDED.body, tags = EXCLUDED.tags",
+                [
+                    (
+                        row.scope,
+                        row.run_id,
+                        row.parent_run_id,
+                        row.agent,
+                        row.kind,
+                        row.task,
+                        row.at,
+                        row.recorded,
+                        row.duration_ms,
+                        row.model,
+                        json.dumps(row.body),
+                        json.dumps(row.body.get("tags") or {}),
+                    )
+                    for row in rows
+                ],
             )
 
     async def get_run(self, scope: str, run_id: str) -> RunRow | None:

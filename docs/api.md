@@ -110,7 +110,7 @@ class Message(BaseModel):
 
 One turn of a conversation. An assistant turn carries its text in `content`, its calls in `tool_calls` and its `reasoning` as the model returned it; a tool result has `role="tool"`, the `tool_call_id` it answers, and `is_error` when the call failed.
 
-`prefix` and `usage` are the engine's record of an assistant message it made from a reply, never sent to a model and outside the vocabulary shared with rfnry-memory: `prefix` is the first 16 hex characters of a sha256 over everything sent before the message when it was written — the model, as its adapter names it, the system prompt, the tools, the preloaded files and the earlier messages as sent — and its `reasoning` is sent again only while what precedes it is the same; `usage` is what the call that wrote it reported. A `usage` or `prefix` that does not fit these fields — another library's usage, a prefix that is not 16 hex characters — reads as `None`, so a message from elsewhere is taken without them; only a `prefix` that is dropped costs its `reasoning`, which is not sent again.
+`prefix` and `usage` are the engine's record of an assistant message it made from a reply, never sent to a model and outside the vocabulary shared with rfnry-memory: `prefix` is the first 16 hex characters of a sha256 over everything sent before the message when it was written — the model, as its adapter names it, the system prompt, the tools, the preloaded files and the earlier messages as sent — and its `reasoning` is sent again only while what precedes it is the same; `usage` is what the call that wrote it reported. `prefix` is set on an assistant message whose reply carried reasoning, and is `None` otherwise. A `usage` or `prefix` that does not fit these fields — another library's usage, a prefix that is not 16 hex characters — reads as `None`, so a message from elsewhere is taken without them; only a `prefix` that is dropped costs its `reasoning`, which is not sent again.
 
 ### `HistoryLike`
 
@@ -487,6 +487,7 @@ class Generation(BaseModel):
     kind: Literal["generation"] = "generation"
     run_id: str
     parent_run_id: str | None = None
+    call: CallInfo | None = None
     agent: str
     scope: str
     tags: dict[str, str] = {}
@@ -515,7 +516,7 @@ class Generation(BaseModel):
     added: list[Message]
 ```
 
-The record of a generation run: the `task` and `skill` it was run with, the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. `model` is the model the replies reported; when none did, as in a run stopped during its first model call, it is the adapter's `model` attribute if that is a non-empty string, else `None`. An accepted `Output` makes `reply` its JSON. `preload` is what `preload: true` sent, `[]` without it: the files sorted by relative path character by character, a file `Read` returns as a `Text` of `<<<path>>>` on a line of its own followed by what `Read` returns, any other file as a `Text` of `<<<path>>>` followed by the part `Load` returns; every model call receives it as one user message ahead of the messages, and neither `messages` nor `conversation` holds it. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. `start` is the position in the history the run began at, `0` when it was sent whole. `added` is computed from the record: the input and every message after it, `conversation` from the input on — what a caller keeps. `StopReason` is `Literal["end_turn", "tool_use", "max_tokens", "error"]`; `stop_reason` is the last reply's `stop_reason` — `"max_tokens"` for a reply the model's limit cut off, `"tool_use"` after an accepted `Output` — and `None` when no reply came back. `error` is `None` for a run that returned; a run that raised after its first model call, or from its `RunStarted` handler, is recorded with `error` as `"<Type>: <message>"`, `reply` `""` and what it had done by then.
+The record of a generation run: the `task` and `skill` it was run with, the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. `model` is the model the replies reported; when none did, as in a run stopped during its first model call, it is the adapter's `model` attribute if that is a non-empty string, else `None`. An accepted `Output` makes `reply` its JSON. `preload` is what `preload: true` sent, `[]` without it: the files sorted by relative path character by character, a file `Read` returns as a `Text` of `<<<path>>>` on a line of its own followed by what `Read` returns, any other file as a `Text` of `<<<path>>>` followed by the part `Load` returns; every model call receives it as one user message ahead of the messages, and neither `messages` nor `conversation` holds it. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. `start` is the position in the history the run began at, `0` when it was sent whole. `added` is computed from the record: the input and every message after it, `conversation` from the input on — what a caller keeps. `StopReason` is `Literal["end_turn", "tool_use", "max_tokens", "error"]`; `stop_reason` is the last reply's `stop_reason` — `"max_tokens"` for a reply the model's limit cut off, `"tool_use"` after an accepted `Output` — and `None` when no reply came back. `error` is `None` for a run that returned; a run that raised after its first model call, or from its `RunStarted` handler, is recorded with `error` as `"<Type>: <message>"`, `reply` `""` and what it had done by then. `call` is the tool call the run worked for, as its `RunStarted.call`: the `Delegate` call for a delegated run, the caller's call for an `engine.tool` consult made inside a run, the call a tool body was serving for a run that body or a task it started began, the router's call for a routed run, and `None` outside any tool call or for a call made in another scope.
 
 ### `Decision`
 
@@ -524,6 +525,7 @@ class Decision(BaseModel):
     kind: Literal["decision"] = "decision"
     run_id: str
     parent_run_id: str | None = None
+    call: CallInfo | None = None
     agent: str
     scope: str
     tags: dict[str, str] = {}
@@ -542,7 +544,7 @@ class Decision(BaseModel):
     added: list[Message]
 ```
 
-The record of a decision run: the task it was given, the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder or the task and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported — its `model` attribute, a non-empty string, when the call reports no model — and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. `added` is the `added` of the run its route started, `[]` when it routed nowhere. `error` is set, and `answers` empty, when the decision model's call raised; a routed run that failed sits in `routed_to` with its own `error`, or `routed_to` is `None` when the routed run was refused before its first model call, and the router carries the same `error`; a routed run whose `RunStarted` handler raised had started, and sits in `routed_to`.
+The record of a decision run: the task it was given, the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder or the task and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported — its `model` attribute, a non-empty string, when the call reports no model — and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. `added` is the `added` of the run its route started, `[]` when it routed nowhere. `error` is set, and `answers` empty, when the decision model's call raised; a routed run that failed sits in `routed_to` with its own `error`, or `routed_to` is `None` when the routed run was refused before its first model call, and the router carries the same `error`; a routed run whose `RunStarted` handler raised had started, and sits in `routed_to`. Its `call` is the same as a generation's.
 
 ### `Run`
 
@@ -589,7 +591,7 @@ class RunStarted(BaseModel):
     call: CallInfo | None
 ```
 
-Sent to `on_event` once by every generation run, before anything else it sends — also by a run that a stop set before it started ends before its first model call. `call` is the tool call the run works for, as `current_call` sees it when the run starts: the caller's `Delegate` call for a delegated run, the caller's call for a run an `engine.tool` call started inside a run, the call that started the decision run for a run it routes to, `None` for a run started outside any tool call. Every later event with this `run_id` belongs under `call`, so sub-agents nest at any depth. A decision run sends no events; the `ToolCallStarted` and `ToolResultReady` of the call that asked it show it. A stop waits for its handler, and one the handler sets ends the run before its first model call; a handler that raises fails the run, recorded with that `error` and no model call.
+Sent to `on_event` once by every generation run, before anything else it sends — also by a run that a stop set before it started ends before its first model call. `call` is the tool call the run works for, as `current_call` sees it when the run starts: the caller's `Delegate` call for a delegated run, the caller's call for a run an `engine.tool` call started inside a run, the call that started the decision run for a run it routes to, `None` for a run started outside any tool call or from a call made in another scope. Every later event with this `run_id` belongs under `call`, so sub-agents nest at any depth. A decision run sends no events; the `ToolCallStarted` and `ToolResultReady` of the call that asked it show it. A stop waits for its handler, and one the handler sets ends the run before its first model call; a handler that raises fails the run, recorded with that `error` and no model call.
 
 ### `TextDelta`
 
@@ -1020,7 +1022,7 @@ Raises `ConfigurationError` when `root` is not a directory, `shell` is not a non
 class Storage(Protocol):
     async def initialize(self) -> None: ...
 
-    async def put_run(self, scope: str, row: RunRow) -> None: ...
+    async def put_runs(self, scope: str, rows: list[RunRow]) -> None: ...
 
     async def get_run(self, scope: str, run_id: str) -> RunRow | None: ...
 
@@ -1067,7 +1069,7 @@ class Storage(Protocol):
     async def count_scope(self, scope: str) -> int: ...
 ```
 
-The one storage protocol, as the refinery calls it; `PostgresStorage` implements exactly these methods, as a storage of your own does. Every method but `initialize` takes `scope` first and reads and writes that scope only: `initialize` creates what the storage needs and is safe to run again; `put_run` stores a row, replacing the one with the same id; `put_label` stores a row unless the scope already holds a label with its id, which it never replaces, and returns the row stored under that id, so calls racing on one id all get the same row; `get_run` returns a run or `None`; `runs` returns runs newest first by `at`, at most `limit` or all with `None`, narrowed by `run_ids`, `kind`, `since` (stored after it, by `recorded`) and `unlabeled_by`, which keeps the runs no label from that source names; `labels` returns labels oldest first, narrowed by `run_ids`, `source` and `since`; `run_tree` returns the runs `run_ids` or `tags` (by containment) match and every run under them, oldest first; `delete_runs` removes those runs and every label on them, and `delete_scope` every run and label in the scope, each returning the number of rows removed; `count_scope` counts the scope's runs and labels. A storage raises `StorageError` when a row's scope is not the call's, and `PostgresStorage` raises it whenever the database refuses.
+The one storage protocol, as the refinery calls it; `PostgresStorage` implements exactly these methods, as a storage of your own does. Every method but `initialize` takes `scope` first and reads and writes that scope only: `initialize` creates what the storage needs and is safe to run again; `put_runs` stores every row of one recorded tree in one transaction, replacing rows with the same ids; a row of another scope raises `StorageError` and nothing is stored; `put_label` stores a row unless the scope already holds a label with its id, which it never replaces, and returns the row stored under that id, so calls racing on one id all get the same row; `get_run` returns a run or `None`; `runs` returns runs newest first by `at`, at most `limit` or all with `None`, narrowed by `run_ids`, `kind`, `since` (stored after it, by `recorded`) and `unlabeled_by`, which keeps the runs no label from that source names; `labels` returns labels oldest first, narrowed by `run_ids`, `source` and `since`; `run_tree` returns the runs `run_ids` or `tags` (by containment) match and every run under them, oldest first; `delete_runs` removes those runs and every label on them, and `delete_scope` every run and label in the scope, each returning the number of rows removed; `count_scope` counts the scope's runs and labels. A storage raises `StorageError` when a row's scope is not the call's, and `PostgresStorage` raises it whenever the database refuses.
 
 ### `PostgresStorage`
 
@@ -1095,7 +1097,7 @@ class RunRow(BaseModel):
     body: dict[str, Any]
 ```
 
-A stored run. `body` is the run's record as JSON with its children and routed run left out, each a row of its own joined by `parent_run_id`; `at` is when the run started and `recorded` when the refinery stored it.
+A stored run. `body` is the run's record as JSON with its children and routed run left out, each a row of its own joined by `parent_run_id`, and a generation's `messages` replaced by `sent`, their count, since they are the start of its `conversation`; read a run back with `Refinery.run`; `at` is when the run started and `recorded` when the refinery stored it.
 
 ### `LabelRow`
 
@@ -1138,7 +1140,7 @@ async def record(self, run: Run) -> None: ...
 
 Stores `run` and every run delegated or routed under it, all stamped with one `recorded` time: what an engine with a refinery does after each run not made with `record=False`.
 
-Raises `InputError` when the run's scope is empty.
+Raises `InputError` when the run's scope is empty, or a generation's `messages` are not the start of its `conversation`; nothing is stored then.
 
 ### `Refinery.run`
 

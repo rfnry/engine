@@ -8,8 +8,9 @@ from rfnry_engine.errors import InputError, NotFoundError
 from rfnry_engine.models import Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.refinery.labels import Outcome, Review
+from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery, label_of
-from rfnry_engine.refinery.storage import Storage
+from rfnry_engine.refinery.storage import RunRow, Storage
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool
 
@@ -338,3 +339,93 @@ async def test_every_refinery_verb_needs_a_scope(fixtures: Path, storage: Storag
         with pytest.raises(InputError, match="^refinery: scope is required$"):
             await verb
     assert await refinery.storage.count_scope("") == 0
+
+
+async def test_a_stored_generation_holds_each_message_once(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    llm = Scripted(text_reply("Hello."), text_reply("Again."))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=refinery)
+    first = await engine.run("support", "acme", "Hi")
+    assert isinstance(first, Generation)
+    run = await engine.run("support", "acme", "And?", history=first.conversation)
+    assert isinstance(run, Generation) and len(run.messages) > 1
+    row = await storage.get_run("acme", run.run_id)
+    assert row is not None
+    assert "messages" not in row.body and row.body["sent"] == len(run.messages)
+    assert await refinery.run("acme", run.run_id) == run
+
+
+async def test_a_run_whose_messages_are_not_its_conversations_start_is_refused(
+    storage: Storage,
+) -> None:
+    run = generation_record().model_copy(
+        update={"messages": [Message(role="user", content="other")]}
+    )
+    with pytest.raises(
+        InputError,
+        match=r"^refinery: run '.+' records messages that are not the start of its conversation$",
+    ):
+        await Refinery(storage).record(run)
+    assert await storage.count_scope("acme") == 0
+
+
+class Recorder:
+    def __init__(self) -> None:
+        self.runs: list[Run] = []
+
+    async def record(self, run: Run) -> None:
+        self.runs.append(run)
+
+
+def every(run: Run) -> list[Run]:
+    children = run.children if isinstance(run, Generation) else [run.routed_to]
+    return [run, *(r for child in children if child is not None for r in every(child))]
+
+
+async def test_messages_are_the_start_of_the_conversation_however_a_run_ends(
+    fixtures: Path,
+) -> None:
+    recorder = Recorder()
+    stop = Stop()
+
+    async def halt(args: dict[str, Any]) -> list[Part]:
+        stop.now()
+        return [Text(text="x")]
+
+    lookup = ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"})
+    tool_turn = Reply(tool_calls=[lookup], stop_reason="tool_use")
+
+    def engine(llm: Scripted, tools: list[Tool] = TOOLS) -> Engine:
+        return Engine(fixtures, generation=llm, decision=Desk(), tools=tools, refinery=recorder)
+
+    await engine(Scripted(text_reply("Done."))).run("support", "acme", "Hi")
+    stopped = engine(
+        Scripted(tool_turn, text_reply("x")), [Tool("lookup_order", body=halt), TOOLS[1]]
+    )
+    await stopped.run("support", "acme", "Hi", stop=stop)
+    with pytest.raises(AssertionError):
+        await engine(Scripted(tool_turn)).run("support", "acme", "Hi")
+    routed = engine(Scripted(delegate_triage(), text_reply("Handled.")))
+    await routed.run("frontdesk", "acme", "Down")
+    delegated = engine(Scripted(delegate_triage(), text_reply("Handled.")))
+    await delegated.run("support", "acme", "Down")
+    runs = [r for top in recorder.runs for r in every(top)]
+    assert len(runs) >= 6
+    for run in runs:
+        if isinstance(run, Generation):
+            assert run.conversation[: len(run.messages)] == run.messages
+
+
+async def test_a_recorded_tree_is_one_put_runs(pool: Any, storage: Storage) -> None:
+    calls: list[int] = []
+
+    class Counting(PostgresStorage):
+        async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
+            calls.append(len(rows))
+            await super().put_runs(scope, rows)
+
+    refinery = Refinery(Counting(pool))
+    await refinery.record(generation_record(children=[decision_record(), decision_record()]))
+    assert calls == [3]

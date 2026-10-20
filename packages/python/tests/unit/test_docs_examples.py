@@ -60,6 +60,8 @@ ILLUSTRATIVE = {
     "class Conversation:": "needs a database pool; a list stands in for it in the block above",
     "refinery = Refinery(PostgresStorage(pool))": "needs a Postgres pool; the integration tier runs PostgresStorage",
     "pool = await asyncpg.create_pool(dsn)": "needs a Postgres pool and rfnry-memory",
+    "from pathlib import Path": "needs agents that declare `workspace: true`",
+    "jobs = {}": "needs a model that calls start and then check",
 }
 
 SIGNATURES = {
@@ -90,6 +92,25 @@ class Setup:
 SETUPS = {
     'engine = Engine(Path("skills"), generation=llm, name="writer")': Setup(
         replace={'Path("skills")': "skills"}
+    ),
+    "class Budget:": Setup(
+        replies=(delegating("triage"),),
+        intent="technical",
+        replace={
+            "Budget(50)": "Budget(0)",
+            "stop=budget.stop)": (
+                "stop=budget.stop)\nassert run.stopped == 'after_step' and run.calls == 0"
+            ),
+        },
+    ),
+    "def spent(run):": Setup(
+        replies=(delegating("triage"),),
+        intent="technical",
+        replace={
+            "# calls and tokens the team adds": (
+                "# calls and tokens the team adds\nassert more == (2, 0)"
+            )
+        },
     ),
     "class Verdict(BaseModel):": Setup(
         replies=(

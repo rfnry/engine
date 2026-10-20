@@ -275,14 +275,22 @@ async def test_a_run_with_parts_is_recorded_and_exported_with_its_bytes_as_base6
         duration_ms=1,
     )
     run = generation_record().model_copy(
-        update={"input": parts, "messages": [Message(role="user", content=parts)], "steps": [step]}
+        update={
+            "input": parts,
+            "messages": [Message(role="user", content=parts)],
+            "conversation": [
+                Message(role="user", content=parts),
+                Message(role="assistant", content="ok"),
+            ],
+            "steps": [step],
+        }
     )
     refinery = Refinery(storage)
     await refinery.record(run)
-    stored = await refinery.storage.get_run("acme", run.run_id)
-    assert stored is not None
-    assert Generation.model_validate(stored.body).messages == run.messages
-    assert Generation.model_validate(stored.body).steps[0].result == step.result
+    stored = await refinery.run("acme", run.run_id)
+    assert isinstance(stored, Generation)
+    assert stored.messages == run.messages
+    assert stored.steps[0].result == step.result
     bucket = MemoryBucket()
     await refinery.export("acme", bucket)
     [row] = _lines(next(data for key, data in bucket.objects.items() if "/generation/" in key))

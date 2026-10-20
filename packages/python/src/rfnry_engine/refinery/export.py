@@ -15,6 +15,11 @@ def export_key(scope: str, agent: str, dataset: str, stamp: str) -> str:
     return f"{scope}/{agent}/{dataset}/{stamp}.jsonl"
 
 
+def _messages(body: dict[str, Any]) -> list[Any]:
+    messages: list[Any] = body["conversation"][: body["sent"]]
+    return messages
+
+
 def _fingerprint(body: dict[str, Any]) -> dict[str, Any]:
     fingerprint: dict[str, Any] = body["fingerprint"]
     return fingerprint
@@ -49,7 +54,7 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
         "system": body["system"],
         "preload": body["preload"],
         "start": body["start"],
-        "messages": body["messages"],
+        "messages": _messages(body),
         "tools": body["tools"],
         "conversation": body["conversation"],
         "steps": body["steps"],
@@ -71,7 +76,7 @@ def preference_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[
             "prompt": {
                 "system": row.body["system"],
                 "preload": row.body["preload"],
-                "messages": row.body["messages"],
+                "messages": _messages(row.body),
             },
             "chosen": label.review.correction,
             "rejected": row.body["reply"],

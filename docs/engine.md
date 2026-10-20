@@ -322,7 +322,8 @@ name says — with `Load`'s own message.
 A task is what the agent is to do on a run; a skill is how to do something. A task file of a
 generation agent, `tasks/<name>.md`, may open with a `description:`, the only key it takes; its body
 is what the model receives, in its system prompt, on a run that names it with `task=`, and the
-frontmatter never reaches the prompt. A decision agent's tasks are folders of questions,
+frontmatter never reaches the prompt. A task's body and a skill's body are read when the tree
+loads, so editing either file afterwards changes no prompt; build a new `Engine`. A decision agent's tasks are folders of questions,
 [below](#decision-agents).
 
 A skill is `skills/<name>.md`, or `skills/<name>/SKILL.md` for one that keeps files of its own
@@ -494,7 +495,7 @@ delegated or routed run sends its own `run_id` and counts its own turns.
 Every generation run sends a `RunStarted` first, before anything else. Its `call` is the tool call
 the run works for — the `Delegate` call that started a delegated run, the call an `engine.tool`
 consult was made in, the call that started the decision run a run was routed by — or `None` for a
-run started outside any tool call. A frontend places every later event of that `run_id` under that call, so a sub-agent's
+run started outside any tool call or from a call made in another scope. A frontend places every later event of that `run_id` under that call, so a sub-agent's
 text, reasoning and tool calls show nested under the call that asked for them, at any depth. A
 decision run sends no events: the `ToolCallStarted` and `ToolResultReady` of the call that asked it
 show it. A `ReasoningDelta` is the model's reasoning as the adapter streams it, with its turn, to show
@@ -721,16 +722,16 @@ what came before them changed — and the run goes on without it.
 
 Reasoning goes back only where it was given. Some vendors bind a model's reasoning to the exact
 conversation it was given in and refuse it anywhere else. Every assistant message the engine makes
-from a reply carries `prefix`, a short hash of everything sent before it — the model, as its adapter
-names it, the system prompt, the tools, the preloaded files and the messages — and `usage`, what the
-call that wrote it reported. A message's `reasoning` is sent again only when what comes before it is
-still the same; otherwise the message goes without it, its text and calls as they were, and
-`run.messages` shows it as sent. So a history you cut or edited, a changed `context=`, `task=` or
-`tools=`, another agent, another model and a replay never send reasoning a vendor would refuse. A
-run stopped after a step and continued after a change ahead of its history — a new date in
-`context=`, a moved window — sends its last tool call without its reasoning; a vendor that wants
-reasoning back on an open tool loop may refuse that, and handling it is the adapter's job. `prefix`
-and `usage` are the engine's record; no model sees them.
+from a reply carries `usage`, what the call that wrote it reported, and, when the reply carries
+reasoning, `prefix`, a short hash of everything sent before it — the model, as its adapter names it,
+the system prompt, the tools, the preloaded files and the messages. A message's `reasoning` is sent
+again only when what comes before it is still the same; otherwise the message goes without it, its
+text and calls as they were, and `run.messages` shows it as sent. So a history you cut or edited, a
+changed `context=`, `task=` or `tools=`, another agent, another model and a replay never send
+reasoning a vendor would refuse. A run stopped after a step and continued after a change ahead of
+its history — a new date in `context=`, a moved window — sends its last tool call without its
+reasoning; a vendor that wants reasoning back on an open tool loop may refuse that, and handling it
+is the adapter's job. `prefix` and `usage` are the engine's record; no model sees them.
 
 Caching is the adapter's. An adapter that marks a cache point has every call of a window read from
 the cache what the last call sent; a new window restarts it, and so does any change ahead of the
@@ -927,6 +928,8 @@ the target does not have, questions for a generation agent, a question that does
 target already asks, or a decision run with nothing to ask reaches the model as a tool error it can
 read and act on, and the run goes on.
 
+A run records the call it worked for in `call`, the same `CallInfo` its `RunStarted` carries, so a run a tool of yours started links back to the run that called it.
+
 Depth is capped (`max_depth`, default 5). Within it an agent may name itself in `agents:` and hand a
 sub-problem to a fresh run of itself, and two agents may call each other. A route is different: it
 forwards the same input, so a route into an agent that already decided it — in the same chain of
@@ -1006,6 +1009,144 @@ One message, four model calls, one record. With only `generation=` the same tree
 generation agents and refuses the decision ones; with only `decision=` the reverse, and a decision
 agent whose route reaches a generation agent is refused before its questions are asked. Nothing
 about an agent changes when the other kind of model is absent — only which agents you can run.
+
+### Orchestrating
+
+The library runs agents and records what they did. The order they run in is yours or the model's: your
+code decides in a workflow, and the model decides when it delegates, routes or calls a tool of yours.
+Start with a workflow in code, where you know the steps, and add autonomy only where a fixed step
+breaks. There is no graph, planner or task board here to configure; what follows is what you write on
+top of the public surface, and every block runs in the test suite.
+
+A workflow is code. Tag every run with the workflow's id, so `run_tree(tags=)` and
+`delete_runs(tags=)` reach all of it:
+
+```python
+workflow = {"workflow": "refund-17"}
+
+billed = await engine.run("billing", scope="acme", input=message, tags=workflow)
+answered = await engine.run("support", scope="acme", input=billed.reply, tags=workflow)
+
+parts = await asyncio.gather(
+    *(engine.run("support", scope="acme", input=part, tags=workflow) for part in (message, text))
+)
+
+routed = await engine.run("frontdesk", scope="acme", input=message, tags=workflow)
+routed.routed_to.agent                  # the department the router chose
+```
+
+One run after another, runs side by side, and a route: the three patterns a workflow is made of.
+
+A budget across a tree is an `on_event` that counts `RunStarted`, which every generation run in the
+tree sends, and presses a `Stop` when the count runs out. Decision runs send no events, so they are
+not counted:
+
+```python
+class Budget:
+    def __init__(self, runs):
+        self.left, self.stop = runs, Stop()
+
+    async def __call__(self, event):
+        if isinstance(event, RunStarted):
+            self.left -= 1
+            if self.left < 0:
+                self.stop.after_step()
+
+budget = Budget(50)
+run = await engine.run("support", scope="acme", input=message, on_event=budget, stop=budget.stop)
+```
+
+Two agents that write `guide.md` into one workspace overwrite each other. Give each run a copy of
+its own, have it claim work before it does it, and merge when a child comes back. A `Backend` is
+yours, so the copy is a directory per run, named by `current_call().run_id`: inside a tool or a
+backend, `current_call()` is the call the running run is making. `RunStarted.call` names the run that
+started a child, and the parent's `ToolResultReady` for its `Delegate` step carries
+`step.child_run_id`, which is where you merge. How a directory is copied and merged (worktrees, a
+copy, a container per run) is yours too:
+
+```python
+from pathlib import Path
+
+from rfnry_engine import Local, RunStarted, Tool, ToolResultReady, Tools, Workspace, current_call
+
+class PerRun:
+    def __init__(self, base):
+        self.base, self.parent, self.merged = Path(base), {}, []
+
+    def here(self):
+        call = current_call()
+        place = self.base / (call.run_id if call else "main")
+        place.mkdir(parents=True, exist_ok=True)
+        return Local(place)
+
+    async def spawn(self, command): return await self.here().spawn(command)
+    async def read(self, path, limit): return await self.here().read(path, limit)
+    async def write(self, path, data): await self.here().write(path, data)
+
+    async def on_event(self, event):
+        if isinstance(event, RunStarted) and event.call:
+            self.parent[event.run_id] = event.call.run_id
+        if isinstance(event, ToolResultReady) and event.step.child_run_id:
+            self.merged.append(event.step.child_run_id)
+
+claims = {}
+
+async def claim(args):
+    me = current_call().run_id
+    return {"claimed": claims.setdefault(args["task"], me) == me, "by": claims[args["task"]]}
+
+backend = PerRun("work")
+tools = Tools([Tool("claim", "Take a task for this run", body=claim, input_schema={
+    "type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]})])
+run = await engine.run("lead", scope="acme", input=task, tools=tools, on_event=backend.on_event,
+                       workspace=Workspace(backend, scope="acme"))
+```
+
+Work in the background is two tools of yours: one starts `engine.run` in a task you keep, one reads
+the task. You cancel these tasks and bound how many there are. The run they start records the call
+that started it, so its record links back to the run that asked for it:
+
+```python
+jobs = {}
+
+async def start(args):
+    jobs[str(len(jobs))] = asyncio.create_task(
+        engine.run("support", scope="acme", input=args["input"])
+    )
+    return {"job": str(len(jobs) - 1)}
+
+async def check(args):
+    job = jobs[args["job"]]
+    return {"running": not job.done(), "reply": None if not job.done() else job.result().reply}
+
+tools = Tools([
+    Tool("start", "Start support on an input", body=start, input_schema={
+        "type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]}),
+    Tool("check", "Read a job started earlier", body=check, input_schema={
+        "type": "object", "properties": {"job": {"type": "string"}}, "required": ["job"]}),
+])
+outer = await engine.run("boss", scope="acme", input=task, tools=tools)
+```
+
+Whether a team is worth it is measured, not assumed. Run the team and a single agent on the same
+input and compare what each spent over the whole tree, summed over `children` and `routed_to`. A
+run a tool of yours started as a consult is not a child: it links back to its caller through its
+`call`, and `spent` does not count it. Over the holdout, with the grades beside the cost, the same
+comparison is a replay of each, as [`evaluation.md`](evaluation.md#replaying-the-holdout) shows:
+
+```python
+def spent(run):
+    below = run.children if isinstance(run, Generation) else [run.routed_to] if run.routed_to else []
+    usage, calls = run.usage, run.calls if isinstance(run, Generation) else 1
+    for child in below:
+        more, made = spent(child)
+        usage, calls = usage + more, calls + made
+    return usage, calls
+
+team, team_calls = spent(await engine.run("support", scope="acme", input=message))
+alone, alone_calls = spent(await engine.run("billing", scope="acme", input=message))
+more = team_calls - alone_calls, team.output - alone.output    # calls and tokens the team adds
+```
 
 ### Workspace
 
@@ -1410,8 +1551,9 @@ repository — people who do not write code edit it in the host's web UI, and ev
 reviewed pull request — check each commit out into a folder of its own, build an engine from it, and
 swap which engine new runs use. A run in flight finishes on the engine it started with. Rolling back
 is loading an older commit, and since a commit's folder never changes, a half-written checkout is
-never live. Agents read their files as they work, so remove an old folder only once its runs have
-finished. A root that is itself an agent is named after its folder, so give it `Engine(name=)` when
+never live. What an agent's prompt holds — `AGENT.md`, the map, the preload, a named task, an invoked skill —
+is what the engine loaded at `Engine()`; what the model reads with a tool is read from disk when it
+asks, so remove an old folder only once its runs have finished. A root that is itself an agent is named after its folder, so give it `Engine(name=)` when
 each commit lands in a folder of its own, and every commit keeps one name. The checkout is yours —
 `git worktree add`, a clone, an archive:
 
@@ -1439,6 +1581,22 @@ their fingerprints match, whatever their tags say. The same tag is an A/B test: 
 side by side, send each user to one by a stable hash of their id, tag the run with its arm, and
 group the exported rows by `tags["arm"]` to compare the labels and outcomes of whole versions of the
 tree.
+
+### Running many at once
+
+One `Engine` per process serves every run at once; scale out with processes. A run in flight is tied to the
+process that started it, so route a chat's later messages, its stop and its inbox to that process.
+
+The tools' file work (`Read`, `Grep`, `Glob`, `LS`, `Load`, the history search, and `Local`'s file reads and
+writes; its commands are processes of their own) runs on the event loop's default executor, `min(32, cpus + 4)`
+threads. When many runs search at once, size it with
+`loop.set_default_executor(ThreadPoolExecutor(64))`. A turn that calls no file tool never waits on it.
+
+The FILES map goes out with every model call, roughly 6 tokens per file. A corpus of thousands of files belongs
+behind a retrieval tool, not in an agent's folder.
+
+With reasoning on, a run's CPU grows with the history it is sent. The window is yours; see
+[Long conversations](#long-conversations).
 
 ## Tools
 
@@ -1662,7 +1820,7 @@ The refinery is the only part of the library that stores anything, and it stores
 docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
 ```
 
-`initialize()` creates two tables, `engine_runs` and `engine_labels`, and is safe to run again. A
+`initialize()` creates two tables, `engine_runs` and `engine_labels`, and their indexes — among them `(scope, parent_run_id)`, which a run's tree is found by, and a GIN index on the `tags` column of `engine_runs`, which tag selection uses — and is safe to run again. It never alters a table: on a database made by an earlier version, drop `engine_runs` and `engine_labels` yourself before `initialize()`. A
 run's row keeps `at`, when the run started, and `recorded`, when the refinery stored it — one stamp
 for a run and every child run under it — and `runs(since=)` reads `recorded`. The tables are
 prefixed `engine_` so one database can also hold rfnry-memory's and rfnry-thread's:
@@ -1681,7 +1839,7 @@ what an engine with a refinery does after each run not made with `record=False`:
 ```python
 class Storage(Protocol):
     async def initialize(self) -> None
-    async def put_run(self, scope: str, row: RunRow) -> None
+    async def put_runs(self, scope: str, rows: list[RunRow]) -> None  # every row of one recorded tree, in one transaction
     async def get_run(self, scope: str, run_id: str) -> RunRow | None
     async def runs(self, scope: str, *, run_ids: list[str] | None = None, kind: str | None = None,
                    since: datetime | None = None, unlabeled_by: str | None = None,
@@ -1708,7 +1866,10 @@ class Conflict(BaseModel): run_id, corrections
 ```
 
 A row's `body` is the run's record, or the label, as JSON, with a run's children and routed run
-left out: each is a row of its own, joined by `parent_run_id`. `runs` returns the newest first and
+left out: each is a row of its own, joined by `parent_run_id`. A generation row's body keeps its
+`conversation` and `sent`, the number of its first messages sent at the start, in place of a second
+copy as `messages`; `refinery.run` reads `messages` back as `conversation[:sent]`, and
+`refinery.record` refuses a run whose `messages` are not the start of its `conversation`. `runs` returns the newest first and
 `labels` the oldest first; `unlabeled_by="judge"` keeps the runs no label from that source names.
 `run_tree` returns the runs a selector matches — `run_ids`, or `tags` by containment — and every run
 under them, oldest first; `refinery.run` reads a run back from it. `delete_runs` removes the same
@@ -1738,7 +1899,13 @@ await refinery.verify_absent("acme", tags={"customer": "c-81"})
 delegated or routed from them, and every label on any of them, in one transaction; it returns the
 number of rows removed. A tag matches by containment: `{"customer": "c-81"}` matches a run tagged
 `{"customer": "c-81", "arm": "b"}`. `verify_absent` takes the same selectors; without them it checks
-the whole scope. Datasets you exported before are files you hold — drop the customer's rows from
+the whole scope.
+
+A run a tool started inside another run's call, such as a consult from `engine.tool`, is a run of
+its own, and `delete_runs(run_ids=)` does not reach it: ids reach what a run delegated and routed,
+not its consults. Erase those by tags. Give `engine.tool(tags=)`, or the `engine.run(tags=)` of your
+own tool, the tags of the person it serves, and `delete_runs(tags=)` removes the consult with its
+caller. Datasets you exported before are files you hold — drop the customer's rows from
 them yourself; every row carries its run's tags.
 
 ## At a glance

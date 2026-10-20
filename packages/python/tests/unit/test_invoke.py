@@ -339,8 +339,52 @@ def test_a_block_between_dashes_that_holds_no_keys_says_so(tmp_path: Path) -> No
 
 
 def test_a_block_after_a_blank_line_is_body_in_the_map_and_in_the_prompt(tmp_path: Path) -> None:
-    from rfnry_engine.bundle import read_body
+    from rfnry_engine.frontmatter import body_of
 
     root = reviewer(tmp_path, **{"skills/risk.md": "\n---\ndescription: Rate it\n---\nRate.\n"})
     assert Engine(root).agents["reviewer"].skills == {"risk": ""}
-    assert read_body(root / "reviewer" / "skills" / "risk.md").startswith("---\ndescription")
+    assert body_of((root / "reviewer/skills/risk.md").read_text(encoding="utf-8")).startswith(
+        "---\ndescription"
+    )
+
+
+async def test_a_task_edited_after_the_tree_loads_reaches_no_prompt(tmp_path: Path) -> None:
+    root = reviewer(
+        tmp_path, **{"tasks/review.md": "---\ndescription: Review it\n---\nReview the clause.\n"}
+    )
+    llm = Scripted(text_reply("Done."))
+    engine = Engine(root, generation=llm)
+    (root / "reviewer/tasks/review.md").write_text("Changed.\n", encoding="utf-8")
+    await engine.run("reviewer", "acme", "Look.", task="review")
+    assert "Review the clause." in llm.calls[0][0] and "Changed." not in llm.calls[0][0]
+
+
+async def test_an_invoked_skill_edited_after_the_tree_loads_is_the_loaded_one(
+    tmp_path: Path,
+) -> None:
+    root = reviewer(
+        tmp_path, **{"skills/risk.md": "---\ndescription: Rate it\n---\nRate the risk.\n"}
+    )
+    llm = Scripted(text_reply("Done."))
+    engine = Engine(root, generation=llm)
+    (root / "reviewer/skills/risk.md").write_text("Changed.\n", encoding="utf-8")
+    await engine.run("reviewer", "acme", "Look.", skill="risk")
+    sent = llm.calls[0][1][-1].content[0]
+    assert isinstance(sent, Text) and "Rate the risk." in sent.text and "Changed." not in sent.text
+
+
+async def test_a_skill_the_model_reads_with_read_is_the_file_on_disk(tmp_path: Path) -> None:
+    root = reviewer(
+        tmp_path, **{"skills/risk.md": "---\ndescription: Rate it\n---\nRate the risk.\n"}
+    )
+    llm = Scripted(
+        Reply(
+            tool_calls=[ToolCall(id="r1", name="Read", args={"path": "skills/risk.md"})],
+            stop_reason="tool_use",
+        ),
+        text_reply("Done."),
+    )
+    engine = Engine(root, generation=llm)
+    (root / "reviewer/skills/risk.md").write_text("Changed.\n", encoding="utf-8")
+    run = await engine.run("reviewer", "acme", "Look.")
+    assert isinstance(run, Generation) and run.steps[0].result == "Changed.\n"

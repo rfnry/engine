@@ -13,7 +13,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
-from rfnry_engine.bundle import build_bundle, read_body
+from rfnry_engine.bundle import build_bundle
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
@@ -272,7 +272,7 @@ def _state(spec: AgentSpec, value: State, media_types: Collection[str] | None) -
     return parts
 
 
-def _assistant(reply: Reply, prefix: str) -> Message:
+def _assistant(reply: Reply, prefix: str | None) -> Message:
     return Message(
         role="assistant",
         content=reply.text,
@@ -311,6 +311,11 @@ def _failure(exc: BaseException) -> str:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _caller(scope: str) -> CallInfo | None:
+    call = CALL.get()
+    return call if call is not None and call.scope == scope else None
 
 
 def _declared(model: object) -> str | None:
@@ -374,7 +379,7 @@ class Engine:
         self.history_chars = history_chars
         self._agents = load_tree(self.root, getattr(generation, "media_types", None), name)
         validate_tree(self._agents)
-        check_declarations(self._agents, self.tools, bodies=generation is not None)
+        self._declared = check_declarations(self._agents, self.tools, bodies=generation is not None)
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
@@ -550,6 +555,7 @@ class Engine:
         options: _Options,
         parent_run_id: str | None,
     ) -> Decision:
+        caller = _caller(scope)
         model_ = self.decision
         if model_ is None:
             raise ConfigurationError(
@@ -583,6 +589,7 @@ class Engine:
             return Decision(
                 run_id=run_id,
                 parent_run_id=parent_run_id,
+                call=caller,
                 agent=spec.name,
                 scope=scope,
                 tags=dict(options.tags),
@@ -641,6 +648,7 @@ class Engine:
         options: _Options,
         parent_run_id: str | None,
     ) -> Generation:
+        caller = _caller(scope)
         model_ = self.generation
         if model_ is None:
             raise ConfigurationError(
@@ -688,8 +696,7 @@ class Engine:
             agent=spec.fingerprint, tools=tools_fingerprint(specs), questions=None
         )
         targets = [self._agents[name] for name in spec.agents]
-        system = await asyncio.to_thread(
-            build_bundle,
+        system = build_bundle(
             spec,
             task=options.task,
             tools=specs,
@@ -697,17 +704,14 @@ class Engine:
             context=options.context,
         )
         preload = [Message(role="user", content=list(spec.preload))] if spec.preload else []
-        history, digest = await asyncio.to_thread(
-            lambda: chain.settle(
-                options.history, chain.opening(_declared(model_), system, specs, list(spec.preload))
-            )
+        chained = chain.Chain(
+            lambda: chain.opening(_declared(model_), system, specs, spec.preload_digest)
         )
-        hashed = len(history)
+        history = await chained.settle(options.history)
         opening = _content(input)
         if options.skill is not None:
             skill = spec.skills[options.skill]
-            body = await asyncio.to_thread(read_body, spec.root / skill.path)
-            opening = _invoked(skill.path, body, opening)
+            opening = _invoked(skill.path, skill.body, opening)
         messages = [*history, Message(role="user", content=opening)]
         sent = list(messages)
         steps: list[Step] = []
@@ -924,13 +928,6 @@ class Engine:
             messages.extend(taken)
             return taken
 
-        def marked() -> str:
-            nonlocal digest, hashed
-            for message in messages[hashed:]:
-                digest = chain.extend(digest, message)
-            hashed = len(messages)
-            return chain.mark(digest)
-
         async def ask() -> Reply:
             sending = [
                 *preload,
@@ -950,6 +947,7 @@ class Engine:
             return Generation(
                 run_id=run_id,
                 parent_run_id=parent_run_id,
+                call=caller,
                 agent=spec.name,
                 scope=scope,
                 tags=dict(options.tags),
@@ -978,7 +976,7 @@ class Engine:
             )
 
         try:
-            await emit(RunStarted(run_id=run_id, agent=spec.name, call=CALL.get()))
+            await emit(RunStarted(run_id=run_id, agent=spec.name, call=caller))
             for turn in range(self.max_steps):
                 mode = requested(stop)
                 if mode is not None:
@@ -992,7 +990,6 @@ class Engine:
                     if mode is not None:
                         return finish(said, mode)
                 streamed.clear()
-                after = await asyncio.to_thread(marked)
                 asking = asyncio.ensure_future(ask())
                 if await wait([asking], stop):
                     partial = "".join(streamed)
@@ -1007,7 +1004,8 @@ class Engine:
                     usage = usage + reply.usage
                 if reply.model:
                     model = reply.model
-                messages.append(_assistant(reply, after))
+                prefix = await chained.stamp(messages) if reply.reasoning is not None else None
+                messages.append(_assistant(reply, prefix))
                 asked = list(reply.tool_calls)
                 ran.clear()
                 if not streaming and reply.text:

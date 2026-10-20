@@ -1,5 +1,11 @@
+import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
+from dataclasses import replace
+from functools import cache
 from typing import TYPE_CHECKING
+
+from pydantic import BaseModel
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.models import HistoryLike, ToolCall
@@ -14,6 +20,17 @@ from rfnry_engine.tools.workspace import Workspace
 
 if TYPE_CHECKING:
     from rfnry_engine.engine import Engine
+
+
+@cache
+def _described(args: type[BaseModel]) -> str:
+    return json.dumps(args.model_json_schema())
+
+
+def _own(item: Tool | ToolsLike) -> Tool | ToolsLike:
+    if isinstance(item, Tool) and item.args is not None and item.input_schema is None:
+        return replace(item, input_schema=json.loads(_described(item.args)))
+    return item
 
 
 class EngineTools(Tools):
@@ -53,7 +70,10 @@ class EngineTools(Tools):
             raise ConfigurationError(
                 f"engine_tools: agent {agent!r} declares workspace: true; pass workspace= to the run"
             )
-        declared = declared_tools(spec, engine.tools)
+        declared = [
+            replace(tool, input_schema=deepcopy(tool.input_schema))
+            for tool in engine._declared.get(agent) or declared_tools(spec, engine.tools)
+        ]
         given = [] if tools is None else [d["name"] for d in tools.definitions()]
         if HISTORY_TOOL in [*(t.name for t in declared), *given]:
             raise ConfigurationError(
@@ -85,4 +105,4 @@ class EngineTools(Tools):
             )
         if tools is not None:
             items.append(tools)
-        super().__init__(items)
+        super().__init__(map(_own, items))
