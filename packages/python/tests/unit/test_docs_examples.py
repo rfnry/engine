@@ -95,7 +95,16 @@ SETUPS = {
     'engine = Engine(Path("skills"), generation=llm, name="writer")': Setup(
         replace={'Path("skills")': "skills"}
     ),
-    "class Budget:": Setup(replies=(delegating("triage"),), intent="technical"),
+    "class Budget:": Setup(
+        replies=(delegating("triage"),),
+        intent="technical",
+        replace={
+            "Budget(50)": "Budget(0)",
+            "stop=budget.stop)": (
+                "stop=budget.stop)\nassert run.stopped == 'after_step' and run.calls == 0"
+            ),
+        },
+    ),
     "def spent(run):": Setup(replies=(delegating("triage"),), intent="technical"),
     "class Verdict(BaseModel):": Setup(
         replies=(

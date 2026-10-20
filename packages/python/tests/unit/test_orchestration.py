@@ -1,6 +1,7 @@
 import ast
 import asyncio
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ import pytest
 
 import rfnry_engine
 from rfnry_engine import Engine, Generation, Message, Reply, ToolCall, ToolSpec
+from rfnry_engine.models import Answer, CheckAnswer, ChoiceAnswer, Decided, Usage
 
 from .test_docs_examples import ILLUSTRATIVE, PYTHON, first_line
 
@@ -144,3 +146,50 @@ async def test_the_background_recipe_returns_a_run_that_links_back(
     assert finished.call.run_id == outer.run_id
     assert finished.call.tool == "start"
     assert json.loads(str(outer.steps[-1].result)) == {"running": False, "reply": "all fixed"}
+
+
+class Counting:
+    def __init__(self, lead: list[Reply]) -> None:
+        self.lead = lead
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        reply = self.lead.pop(0) if "Lead." in system else done("ok")
+        return reply.model_copy(update={"usage": Usage(input=100)})
+
+    async def decide(self, state: Any, questions: Mapping[str, Any]) -> Decided:
+        answers: dict[str, Answer] = {
+            qid: (
+                ChoiceAnswer(choice="go", probabilities={"go": 0.9, "stay": 0.1})
+                if question.type == "choice"
+                else CheckAnswer(probability=0.9)
+            )
+            for qid, question in questions.items()
+        }
+        return Decided(answers=answers, usage=Usage(input=10))
+
+
+async def test_spent_sums_delegated_routed_and_decision_runs(tmp_path: Path) -> None:
+    files = {
+        "lead/AGENT.md": "---\nkind: generation\nagents: [worker, router, judge]\n---\nLead.\n",
+        "worker/AGENT.md": "---\nkind: generation\n---\nWork.\n",
+        "router/AGENT.md": "---\nkind: decision\nroute:\n  by: pick\n  to: {go: worker}\n---\n",
+        "router/questions/pick.md": (
+            "---\ntype: choice\noptions: {go: Go on, stay: Stay}\n---\nWhere to?\n"
+        ),
+        "judge/AGENT.md": "---\nkind: decision\n---\n",
+        "judge/questions/ok.md": "---\ntype: check\n---\nIs it fine?\n",
+    }
+    delegating = calls(
+        ("d0", "Delegate", {"agent": "worker", "input": "a"}),
+        ("d1", "Delegate", {"agent": "router", "input": "b"}),
+        ("d2", "Delegate", {"agent": "judge", "input": "c"}),
+    )
+    model = Counting([delegating, done("merged")])
+    engine = Engine(agents(tmp_path, files), generation=model, decision=model)
+    run = await engine.run("lead", "acme", "go")
+    block = next(b for b in PYTHON if first_line(b) == "def spent(run):")
+    namespace: dict[str, Any] = {name: getattr(rfnry_engine, name) for name in rfnry_engine.__all__}
+    exec(block.split("\nteam, alone")[0], namespace)
+    usage, made = namespace["spent"](run)
+    assert made == 6
+    assert usage.input == 4 * 100 + 2 * 10
