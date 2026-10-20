@@ -1442,6 +1442,21 @@ side by side, send each user to one by a stable hash of their id, tag the run wi
 group the exported rows by `tags["arm"]` to compare the labels and outcomes of whole versions of the
 tree.
 
+### Running many at once
+
+One `Engine` per process serves every run at once; scale out with processes. A run in flight is tied to the
+process that started it, so route a chat's later messages, its stop and its inbox to that process.
+
+The tools' file work (`Read`, `Grep`, `Glob`, `LS`, `Load`, the history search, `Local`) runs on the event loop's
+default executor, `min(32, cpus + 4)` threads. When many runs search at once, size it with
+`loop.set_default_executor(ThreadPoolExecutor(64))`. A turn that calls no file tool never waits on it.
+
+The FILES map goes out with every model call, roughly 6 tokens per file. A corpus of thousands of files belongs
+behind a retrieval tool, not in an agent's folder.
+
+With reasoning on, a run's CPU grows with the history it is sent. The window is yours; see
+[Long conversations](#long-conversations).
+
 ## Tools
 
 One concept, one word. A **tool** is a name, a description, an input schema and a body. A
