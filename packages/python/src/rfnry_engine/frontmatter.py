@@ -49,6 +49,11 @@ def split_frontmatter(raw: str) -> tuple[str, str] | None:
     return match.group(1) or "", match.group(2) or ""
 
 
+def body_of(raw: str) -> str:
+    split = split_frontmatter(raw)
+    return (raw.removeprefix("\ufeff") if split is None else split[1]).strip()
+
+
 _HEAD = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
 
 

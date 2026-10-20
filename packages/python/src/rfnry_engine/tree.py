@@ -16,7 +16,13 @@ from pydantic import (
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
 from rfnry_engine.folders import DECLARED, content, declares, entries, joined, listing
-from rfnry_engine.frontmatter import description, parse_frontmatter_doc, plainly, split_frontmatter
+from rfnry_engine.frontmatter import (
+    body_of,
+    description,
+    parse_frontmatter_doc,
+    plainly,
+    split_frontmatter,
+)
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Check, Choice, Part, Question, Score
 from rfnry_engine.tools.builtins import preload_parts
@@ -106,6 +112,7 @@ class ToolDecl(BaseModel):
 class Skill(BaseModel):
     path: str
     description: str
+    body: str
 
 
 class AgentSpec(BaseModel):
@@ -119,6 +126,7 @@ class AgentSpec(BaseModel):
     questions: dict[str, Question]
     tools: dict[str, ToolDecl]
     tasks: dict[str, str]
+    task_bodies: dict[str, str] = Field(default_factory=dict)
     fingerprint: str
     workspace: bool = False
     task_questions: dict[str, dict[str, Question]] = Field(default_factory=dict)
@@ -200,12 +208,12 @@ def _tools(directory: Path, agent: str) -> dict[str, ToolDecl]:
     return dict(sorted({**listed, **filed}.items()))
 
 
-def _task(path: Path) -> str:
+def _task(path: Path) -> tuple[str, str]:
     raw = _read(path)
     if split_frontmatter(raw) is None:
-        return ""
+        return "", body_of(raw)
     front, _ = parse_frontmatter_doc(raw, model=TaskFront, source=path, label="task")
-    return " ".join((front.description or "").split())
+    return " ".join((front.description or "").split()), body_of(raw)
 
 
 def _skills(files: list[tuple[str, Path]], agent: str) -> dict[str, Skill]:
@@ -224,7 +232,8 @@ def _skills(files: list[tuple[str, Path]], agent: str) -> dict[str, Skill]:
             raise ConfigurationError(
                 f"tree: agent {agent!r} has the skill {name!r} as both skills/{name}.md and skills/{name}/SKILL.md; keep one"
             )
-        found[name] = Skill(path=rel, description=description(_read(path), path) or "")
+        raw = _read(path)
+        found[name] = Skill(path=rel, description=description(raw, path) or "", body=body_of(raw))
     return dict(sorted(found.items()))
 
 
@@ -331,6 +340,7 @@ def load_agent(
     tools = _tools(directory, agent)
     task_files = _markdown_files(directory / "tasks")
     task_questions: dict[str, dict[str, Question]] = {}
+    task_bodies: dict[str, str] = {}
     if front.kind == "decision":
         if task_files:
             first = task_files[0].stem
@@ -340,7 +350,9 @@ def load_agent(
         task_questions = {p.name: _questions(p) for p in _folders(directory / "tasks")}
         tasks = dict.fromkeys(task_questions, "")
     else:
-        tasks = {p.stem: _task(p) for p in task_files}
+        loaded = {p.stem: _task(p) for p in task_files}
+        tasks = {name: said for name, (said, _) in loaded.items()}
+        task_bodies = {name: body for name, (_, body) in loaded.items()}
     for task, asked in task_questions.items():
         clash = [qid for qid in asked if qid in questions]
         if clash:
@@ -401,6 +413,7 @@ def load_agent(
         questions=questions,
         tools=tools,
         tasks=tasks,
+        task_bodies=task_bodies,
         fingerprint=folder_fingerprint(files, read),
         workspace=front.workspace,
         task_questions=task_questions,

@@ -13,7 +13,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
-from rfnry_engine.bundle import build_bundle, read_body
+from rfnry_engine.bundle import build_bundle
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
@@ -688,8 +688,7 @@ class Engine:
             agent=spec.fingerprint, tools=tools_fingerprint(specs), questions=None
         )
         targets = [self._agents[name] for name in spec.agents]
-        system = await asyncio.to_thread(
-            build_bundle,
+        system = build_bundle(
             spec,
             task=options.task,
             tools=specs,
@@ -706,8 +705,7 @@ class Engine:
         opening = _content(input)
         if options.skill is not None:
             skill = spec.skills[options.skill]
-            body = await asyncio.to_thread(read_body, spec.root / skill.path)
-            opening = _invoked(skill.path, body, opening)
+            opening = _invoked(skill.path, skill.body, opening)
         messages = [*history, Message(role="user", content=opening)]
         sent = list(messages)
         steps: list[Step] = []

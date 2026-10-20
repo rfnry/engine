@@ -322,7 +322,8 @@ name says — with `Load`'s own message.
 A task is what the agent is to do on a run; a skill is how to do something. A task file of a
 generation agent, `tasks/<name>.md`, may open with a `description:`, the only key it takes; its body
 is what the model receives, in its system prompt, on a run that names it with `task=`, and the
-frontmatter never reaches the prompt. A decision agent's tasks are folders of questions,
+frontmatter never reaches the prompt. A task's body and a skill's body are read when the tree
+loads, so editing either file afterwards changes no prompt; build a new `Engine`. A decision agent's tasks are folders of questions,
 [below](#decision-agents).
 
 A skill is `skills/<name>.md`, or `skills/<name>/SKILL.md` for one that keeps files of its own
@@ -1410,8 +1411,9 @@ repository — people who do not write code edit it in the host's web UI, and ev
 reviewed pull request — check each commit out into a folder of its own, build an engine from it, and
 swap which engine new runs use. A run in flight finishes on the engine it started with. Rolling back
 is loading an older commit, and since a commit's folder never changes, a half-written checkout is
-never live. Agents read their files as they work, so remove an old folder only once its runs have
-finished. A root that is itself an agent is named after its folder, so give it `Engine(name=)` when
+never live. What an agent's prompt holds — `AGENT.md`, the map, the preload, a named task, an invoked skill —
+is what the engine loaded at `Engine()`; what the model reads with a tool is read from disk when it
+asks, so remove an old folder only once its runs have finished. A root that is itself an agent is named after its folder, so give it `Engine(name=)` when
 each commit lands in a folder of its own, and every commit keeps one name. The checkout is yours —
 `git worktree add`, a clone, an archive:
 
