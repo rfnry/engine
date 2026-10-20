@@ -291,6 +291,37 @@ async def test_reasoning_goes_back_within_a_run_and_to_a_run_with_the_same_histo
     assert llm.calls[2][1][1].reasoning == THOUGHT and second.messages[1].reasoning == THOUGHT
 
 
+async def test_a_run_stamps_on_from_where_settle_stopped_and_both_reasonings_go_back(
+    fixtures: Path,
+) -> None:
+    llm = Scripted(
+        text_reply("One.", reasoning={"r": 1}),
+        text_reply("Two."),
+        text_reply("Three.", reasoning={"r": 3}),
+        text_reply("Four."),
+        text_reply("Five."),
+    )
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    conversation: list[Message] = []
+    for said in ["u1", "u2", "u3"]:
+        run = await engine.run("support", "acme", said, history=conversation)
+        assert isinstance(run, Generation)
+        conversation = run.conversation
+    assert [m.prefix is not None for m in conversation if m.role == "assistant"] == [
+        True,
+        False,
+        True,
+    ]
+    await engine.run("support", "acme", "u4", history=conversation)
+    sent = [m.reasoning for m in llm.calls[3][1] if m.role == "assistant"]
+    assert sent == [{"r": 1}, None, {"r": 3}]
+    edited = list(conversation)
+    edited[2] = edited[2].model_copy(update={"content": "u2 edited"})
+    await engine.run("support", "acme", "u5", history=edited)
+    sent = [m.reasoning for m in llm.calls[4][1] if m.role == "assistant"]
+    assert sent == [{"r": 1}, None, None]
+
+
 async def test_reasoning_is_left_out_once_what_came_before_it_changed(fixtures: Path) -> None:
     llm = Scripted(reading(), text_reply("Refund in full."), *[text_reply("ok") for _ in range(4)])
     engine = Engine(fixtures, generation=llm, tools=TOOLS)
