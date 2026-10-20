@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import re
 import shutil
@@ -6,11 +7,22 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+import pytest
 from pydantic import BaseModel
 
-from rfnry_engine import OnDelta, ReasoningDelta, RunStarted, Stop, TextDelta
+from rfnry_engine import OnDelta, ReasoningDelta, RunStarted, Stop, TextDelta, chain
 from rfnry_engine.engine import Engine
-from rfnry_engine.models import Message, Reply, ToolCall, ToolSpec, Usage
+from rfnry_engine.models import (
+    Document,
+    Image,
+    Message,
+    Part,
+    Reply,
+    Text,
+    ToolCall,
+    ToolSpec,
+    Usage,
+)
 from rfnry_engine.records import Event, Generation
 from rfnry_engine.tools.tools import Tool, Tools
 
@@ -46,15 +58,167 @@ async def test_an_assistant_message_keeps_the_usage_of_the_call_that_wrote_it(
     assert all(m.usage is None for m in run.conversation if m.role != "assistant")
 
 
-async def test_an_assistant_message_carries_the_prefix_it_was_written_after(
+async def test_only_an_assistant_message_with_reasoning_carries_a_prefix(
     fixtures: Path,
 ) -> None:
     llm = Scripted(reading(), text_reply("Refund in full."))
     run = await first_run(Engine(fixtures, generation=llm, tools=TOOLS))
     prefixes = [m.prefix for m in run.conversation if m.role == "assistant"]
-    assert all(p is not None and re.fullmatch(r"[0-9a-f]{16}", p) for p in prefixes)
-    assert len(set(prefixes)) == 2
+    assert prefixes[0] is not None and re.fullmatch(r"[0-9a-f]{16}", prefixes[0])
+    assert prefixes[1] is None
     assert all(m.prefix is None for m in run.conversation if m.role != "assistant")
+
+
+async def test_a_window_without_reasoning_is_never_hashed(
+    fixtures: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hashed: list[str] = []
+    extend, opening = chain.extend, chain.opening
+
+    def extending(digest: bytes, message: Message) -> bytes:
+        hashed.append("extend")
+        return extend(digest, message)
+
+    def opened(*args: Any) -> bytes:
+        hashed.append("opening")
+        return opening(*args)
+
+    monkeypatch.setattr(chain, "extend", extending)
+    monkeypatch.setattr(chain, "opening", opened)
+    history = [
+        Message(role="user" if i % 2 == 0 else "assistant", content=f"Message {i}.")
+        for i in range(40)
+    ]
+    llm = Scripted(text_reply("Refund in full."))
+    run = await Engine(fixtures, generation=llm, tools=TOOLS).run(
+        "support", "acme", "Charged twice.", history=history, context=CONTEXT
+    )
+    assert isinstance(run, Generation) and run.reply == "Refund in full."
+    assert hashed == []
+
+
+PNG = b"\x89PNG\r\n\x1a\n"
+
+
+async def sent_again_after(fixtures: Path, shown: Part, swapped: Part) -> list[Any]:
+    llm = Scripted(reading(), text_reply("Refund in full."), text_reply("ok"), text_reply("ok"))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    first = await engine.run(
+        "support", "acme", [Text(text="Charged twice."), shown], context=CONTEXT
+    )
+    assert isinstance(first, Generation)
+    same = await engine.run(
+        "support", "acme", "Which?", history=first.conversation, context=CONTEXT
+    )
+    opening = first.conversation[0].model_copy(
+        update={"content": [Text(text="Charged twice."), swapped]}
+    )
+    moved = await engine.run(
+        "support",
+        "acme",
+        "Which?",
+        history=[opening, *first.conversation[1:]],
+        context=CONTEXT,
+    )
+    assert isinstance(same, Generation) and isinstance(moved, Generation)
+    assert same.messages[1].reasoning == llm.calls[2][1][1].reasoning
+    assert moved.messages[1].reasoning == llm.calls[3][1][1].reasoning
+    return [same.messages[1].reasoning, moved.messages[1].reasoning]
+
+
+async def test_reasoning_after_an_image_goes_back_while_its_bytes_are_the_same(
+    fixtures: Path,
+) -> None:
+    sent = await sent_again_after(
+        fixtures,
+        Image(media_type="image/png", data=PNG),
+        Image(media_type="image/png", data=PNG + b"\0"),
+    )
+    assert sent == [THOUGHT, None]
+
+
+async def test_reasoning_after_an_image_by_url_goes_back(fixtures: Path) -> None:
+    sent = await sent_again_after(
+        fixtures,
+        Image(media_type="image/png", url="https://files.acme.com/a.png"),
+        Image(media_type="image/png", url="https://files.acme.com/b.png"),
+    )
+    assert sent == [THOUGHT, None]
+
+
+async def test_hashing_never_base64_encodes_media(
+    fixtures: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refused(*args: Any, **kwargs: Any) -> bytes:
+        raise AssertionError("chain: media was base64-encoded")
+
+    monkeypatch.setattr(base64, "b64encode", refused)
+    history = [
+        Message(
+            role="user",
+            content=[
+                Text(text="Charged twice."),
+                Image(media_type="image/png", data=PNG),
+                Document(media_type="application/pdf", data=b"%PDF-1.7", name="invoice.pdf"),
+            ],
+        ),
+        Message(role="assistant", content="Checking.", reasoning=THOUGHT),
+    ]
+    llm = Scripted(text_reply("Refund in full.", reasoning=THOUGHT))
+    run = await Engine(fixtures, generation=llm, tools=TOOLS).run(
+        "support", "acme", "Which?", history=history, context=CONTEXT
+    )
+    assert isinstance(run, Generation) and run.conversation[-1].prefix is not None
+
+
+def long_window() -> list[Message]:
+    window: list[Message] = []
+    for i in range(500):
+        window.append(Message(role="user", content=f"Question {i}."))
+        window.append(Message(role="assistant", content=f"Answer {i}.", reasoning=THOUGHT))
+    return window
+
+
+async def test_a_long_window_with_reasoning_gives_the_loop_turns(fixtures: Path) -> None:
+    ticks = 0
+    seen: list[int] = []
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    class Counting(Scripted):
+        async def generate(
+            self, system: str, messages: list[Message], tools: list[ToolSpec]
+        ) -> Reply:
+            seen.append(ticks)
+            return await super().generate(system, messages, tools)
+
+    engine = Engine(fixtures, generation=Counting(text_reply("ok")), tools=TOOLS)
+    ticking = asyncio.create_task(ticker())
+    try:
+        run = await engine.run("support", "acme", "Which?", history=long_window())
+    finally:
+        ticking.cancel()
+    assert isinstance(run, Generation)
+    ticks_at_first_call = seen[0]
+    assert ticks_at_first_call >= 5
+
+
+async def test_cancelling_a_run_while_its_window_is_hashed_raises_at_once(
+    fixtures: Path,
+) -> None:
+    llm = Scripted(text_reply("ok"))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    task = asyncio.create_task(engine.run("support", "acme", "Which?", history=long_window()))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert llm.calls == []
 
 
 async def test_reasoning_goes_back_within_a_run_and_to_a_run_with_the_same_history(

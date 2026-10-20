@@ -272,7 +272,7 @@ def _state(spec: AgentSpec, value: State, media_types: Collection[str] | None) -
     return parts
 
 
-def _assistant(reply: Reply, prefix: str) -> Message:
+def _assistant(reply: Reply, prefix: str | None) -> Message:
     return Message(
         role="assistant",
         content=reply.text,
@@ -696,12 +696,10 @@ class Engine:
             context=options.context,
         )
         preload = [Message(role="user", content=list(spec.preload))] if spec.preload else []
-        history, digest = await asyncio.to_thread(
-            lambda: chain.settle(
-                options.history, chain.opening(_declared(model_), system, specs, list(spec.preload))
-            )
+        chained = chain.Chain(
+            lambda: chain.opening(_declared(model_), system, specs, spec.preload_digest)
         )
-        hashed = len(history)
+        history = await chained.settle(options.history)
         opening = _content(input)
         if options.skill is not None:
             skill = spec.skills[options.skill]
@@ -922,13 +920,6 @@ class Engine:
             messages.extend(taken)
             return taken
 
-        def marked() -> str:
-            nonlocal digest, hashed
-            for message in messages[hashed:]:
-                digest = chain.extend(digest, message)
-            hashed = len(messages)
-            return chain.mark(digest)
-
         async def ask() -> Reply:
             sending = [
                 *preload,
@@ -990,7 +981,6 @@ class Engine:
                     if mode is not None:
                         return finish(said, mode)
                 streamed.clear()
-                after = await asyncio.to_thread(marked)
                 asking = asyncio.ensure_future(ask())
                 if await wait([asking], stop):
                     partial = "".join(streamed)
@@ -1005,7 +995,8 @@ class Engine:
                     usage = usage + reply.usage
                 if reply.model:
                     model = reply.model
-                messages.append(_assistant(reply, after))
+                prefix = await chained.stamp(messages) if reply.reasoning is not None else None
+                messages.append(_assistant(reply, prefix))
                 asked = list(reply.tool_calls)
                 ran.clear()
                 if not streaming and reply.text:

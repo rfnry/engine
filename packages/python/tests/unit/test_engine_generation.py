@@ -704,3 +704,28 @@ async def test_a_run_stopped_before_any_reply_has_no_stop_reason(fixtures: Path)
     stop.now()
     run = await engine_for(fixtures, Scripted()).run("billing", "acme", "x", stop=stop)
     assert isinstance(run, Generation) and run.stopped == "now" and run.stop_reason is None
+
+
+async def test_a_run_that_calls_no_file_tool_never_uses_the_thread_pool(
+    fixtures: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def pooled(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("engine: the pool was used")
+
+    monkeypatch.setattr(asyncio, "to_thread", pooled)
+    thought = {"thought": "check the rule"}
+    history: list[Message] = []
+    for i in range(5):
+        history.append(Message(role="user", content=f"Question {i}."))
+        history.append(Message(role="assistant", content=f"Answer {i}.", reasoning=thought))
+    read = ToolCall(id="r", name="Read", args={"path": "rules/refunds.md"})
+    llm = Scripted(
+        text_reply("Refund in full.", reasoning=thought), _tool_use(read), text_reply("Done.")
+    )
+    engine = engine_for(fixtures, llm)
+    run = await engine.run("support", "acme", "Charged twice.", history=history)
+    assert isinstance(run, Generation) and run.reply == "Refund in full."
+    reading = await engine.run("support", "acme", "Read the refund rule.")
+    assert isinstance(reading, Generation) and reading.reply == "Done."
+    step = reading.steps[0]
+    assert step.is_error and isinstance(step.result, str) and "the pool was used" in step.result

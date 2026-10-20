@@ -13,6 +13,7 @@ from pydantic import (
     field_validator,
 )
 
+from rfnry_engine.chain import preload_digest
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
 from rfnry_engine.folders import DECLARED, content, declares, entries, joined, listing
@@ -131,6 +132,7 @@ class AgentSpec(BaseModel):
     workspace: bool = False
     task_questions: dict[str, dict[str, Question]] = Field(default_factory=dict)
     preload: list[Part] = Field(default_factory=list)
+    preload_digest: str
     listing: str = ""
     reads: dict[str, Path] = Field(default_factory=dict)
     plain: bool = False
@@ -418,6 +420,7 @@ def load_agent(
         workspace=front.workspace,
         task_questions=task_questions,
         preload=preload,
+        preload_digest=preload_digest(preload),
         listing=joined(
             entries(root, True, sub), {name: folder.mapped for name, folder in reads.items()}
         ),
@@ -440,6 +443,7 @@ def plain_agent(root: Path, name: str) -> AgentSpec:
         tools={},
         tasks={},
         fingerprint=folder_fingerprint(content(root, False), {}),
+        preload_digest=preload_digest([]),
         listing=listing(root, False, {}),
         plain=True,
         skills=_skills(content(root, False), name),
