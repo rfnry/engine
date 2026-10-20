@@ -1065,6 +1065,8 @@ started a child, and the parent's `ToolResultReady` for its `Delegate` step carr
 copy, a container per run) is yours too:
 
 ```python
+from pathlib import Path
+
 from rfnry_engine import Local, RunStarted, Tool, ToolResultReady, Tools, Workspace, current_call
 
 class PerRun:
@@ -1126,10 +1128,11 @@ tools = Tools([
 outer = await engine.run("boss", scope="acme", input=task, tools=tools)
 ```
 
-Whether a team is worth it is measured, not assumed. Replay the holdout with a one-agent candidate
-beside the team, and compare the grades and what each spent over the whole tree, summed over
-`children` and `routed_to`; a run a tool of yours started as a consult is not a child, and is
-reached by its `call`:
+Whether a team is worth it is measured, not assumed. Run the team and a single agent on the same
+input and compare what each spent over the whole tree, summed over `children` and `routed_to`. A
+run a tool of yours started as a consult is not a child: it links back to its caller through its
+`call`, and `spent` does not count it. Over the holdout, with the grades beside the cost, the same
+comparison is a replay of each, as [`evaluation.md`](evaluation.md#replaying-the-holdout) shows:
 
 ```python
 def spent(run):
@@ -1140,7 +1143,9 @@ def spent(run):
         usage, calls = usage + more, calls + made
     return usage, calls
 
-team, alone = [spent(await engine.run(a, scope="acme", input=message)) for a in ("support", "billing")]
+team, team_calls = spent(await engine.run("support", scope="acme", input=message))
+alone, alone_calls = spent(await engine.run("billing", scope="acme", input=message))
+more = team_calls - alone_calls, team.output - alone.output    # calls and tokens the team adds
 ```
 
 ### Workspace
@@ -1582,8 +1587,9 @@ tree.
 One `Engine` per process serves every run at once; scale out with processes. A run in flight is tied to the
 process that started it, so route a chat's later messages, its stop and its inbox to that process.
 
-The tools' file work (`Read`, `Grep`, `Glob`, `LS`, `Load`, the history search, `Local`) runs on the event loop's
-default executor, `min(32, cpus + 4)` threads. When many runs search at once, size it with
+The tools' file work (`Read`, `Grep`, `Glob`, `LS`, `Load`, the history search, and `Local`'s file reads and
+writes; its commands are processes of their own) runs on the event loop's default executor, `min(32, cpus + 4)`
+threads. When many runs search at once, size it with
 `loop.set_default_executor(ThreadPoolExecutor(64))`. A turn that calls no file tool never waits on it.
 
 The FILES map goes out with every model call, roughly 6 tokens per file. A corpus of thousands of files belongs
@@ -1814,7 +1820,7 @@ The refinery is the only part of the library that stores anything, and it stores
 docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
 ```
 
-`initialize()` creates two tables, `engine_runs` and `engine_labels`, and their indexes — among them `(scope, parent_run_id)`, which a run's tree is found by, and a GIN index on the `tags` column of `engine_runs`, which tag selection uses — and is safe to run again. It never alters a table: a database made by an earlier version drops `engine_runs` and `engine_labels` before `initialize()`. A
+`initialize()` creates two tables, `engine_runs` and `engine_labels`, and their indexes — among them `(scope, parent_run_id)`, which a run's tree is found by, and a GIN index on the `tags` column of `engine_runs`, which tag selection uses — and is safe to run again. It never alters a table: on a database made by an earlier version, drop `engine_runs` and `engine_labels` yourself before `initialize()`. A
 run's row keeps `at`, when the run started, and `recorded`, when the refinery stored it — one stamp
 for a run and every child run under it — and `runs(since=)` reads `recorded`. The tables are
 prefixed `engine_` so one database can also hold rfnry-memory's and rfnry-thread's:

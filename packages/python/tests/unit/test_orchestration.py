@@ -13,10 +13,7 @@ from rfnry_engine.models import Answer, CheckAnswer, ChoiceAnswer, Decided, Usag
 
 from .test_docs_examples import ILLUSTRATIVE, PYTHON, first_line
 
-COPY = (
-    "from rfnry_engine import Local, RunStarted, Tool, ToolResultReady, Tools, Workspace, "
-    "current_call"
-)
+COPY = "from pathlib import Path"
 BACKGROUND = "jobs = {}"
 
 
@@ -39,7 +36,6 @@ async def execute(start: str, engine: Engine, **given: Any) -> dict[str, Any]:
     block = next(block for block in PYTHON if first_line(block) == start)
     namespace: dict[str, Any] = {
         **{name: getattr(rfnry_engine, name) for name in rfnry_engine.__all__},
-        "Path": Path,
         "asyncio": asyncio,
         "engine": engine,
         **given,
@@ -189,7 +185,7 @@ async def test_spent_sums_delegated_routed_and_decision_runs(tmp_path: Path) -> 
     run = await engine.run("lead", "acme", "go")
     block = next(b for b in PYTHON if first_line(b) == "def spent(run):")
     namespace: dict[str, Any] = {name: getattr(rfnry_engine, name) for name in rfnry_engine.__all__}
-    exec(block.split("\nteam, alone")[0], namespace)
+    exec(block.split("\n\n")[0], namespace)
     usage, made = namespace["spent"](run)
     assert made == 6
     assert usage.input == 4 * 100 + 2 * 10
