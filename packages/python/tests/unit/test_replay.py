@@ -235,6 +235,11 @@ async def test_the_candidate_is_sent_the_input_history_task_and_context_as_recor
     with_text = await recorder.run("support", "acme", "Plain text.", history=history[1:])
     llm = Echo()
     pairs = await collect(refinery.replay("acme", candidate(fixtures, llm), agent="support"))
+    assert [pair.recorded.run_id for pair in pairs] == [
+        with_parts.run_id,
+        with_object.run_id,
+        with_text.run_id,
+    ], [(pair.recorded.run_id, pair.recorded.at) for pair in pairs]
     assert [pair.error for pair in pairs] == [None, None, None]
     for (system, messages, _), pair, recorded in zip(
         llm.calls, pairs, (with_parts, with_object, with_text), strict=True
