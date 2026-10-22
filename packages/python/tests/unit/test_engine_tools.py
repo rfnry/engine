@@ -127,6 +127,8 @@ def test_a_schema_from_args_is_generated_once_and_shared_with_no_run(
         tmp_path, tools=[Tool("look", body=look, args=Args)], models={"strong": Scripted()}
     )
 
+    made.clear()
+
     def schema(scope: str) -> dict[str, Any]:
         surface = EngineTools(engine, agent="a", scope=scope)
         [found] = [d for d in surface.definitions() if d["name"] == "look"]

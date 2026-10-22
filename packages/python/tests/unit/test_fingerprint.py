@@ -148,20 +148,24 @@ class NowArgs(BaseModel):
     zone: str
 
 
-async def test_a_code_tool_s_schema_or_description_changes_the_tools_fingerprint(
-    fixtures: Path,
-) -> None:
+class ZoneArgs(BaseModel):
+    zone: str = "UTC"
+
+
+async def test_a_code_tool_s_schema_changes_the_tools_fingerprint(fixtures: Path) -> None:
     plain = await generation(fixtures)
     zoned = await generation(
         fixtures,
-        tools=[Tool("lookup_order", body=lookup_order), Tool("now", "UTC", body=now, args=NowArgs)],
+        tools=[Tool("lookup_order", body=lookup_order), Tool("now", body=now, args=NowArgs)],
     )
-    described = await generation(
+    zoned_again = await generation(
         fixtures,
-        tools=[Tool("lookup_order", body=lookup_order), Tool("now", "The time", body=now)],
+        tools=[Tool("lookup_order", body=lookup_order), Tool("now", body=now, args=ZoneArgs)],
     )
-    assert plain.fingerprint.agent == zoned.fingerprint.agent == described.fingerprint.agent
-    assert len({plain.fingerprint.tools, zoned.fingerprint.tools, described.fingerprint.tools}) == 3
+    assert plain.fingerprint.agent == zoned.fingerprint.agent == zoned_again.fingerprint.agent
+    assert (
+        len({plain.fingerprint.tools, zoned.fingerprint.tools, zoned_again.fingerprint.tools}) == 3
+    )
 
 
 class Verdict(BaseModel):

@@ -266,7 +266,7 @@ class Invoices:
 
 TOOLS = [
     Tool("lookup_order", body=lookup_order),
-    Tool("fetch_invoice", "Fetch an invoice PDF by id", body=fetch_invoice, args=InvoiceArgs),
+    Tool("fetch_invoice", body=fetch_invoice, args=InvoiceArgs),
 ]
 
 

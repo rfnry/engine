@@ -134,7 +134,7 @@ class TaskFront(BaseModel):
 
 class ToolDecl(BaseModel):
     name: str
-    description: str | None
+    description: str
     input: dict[str, ToolField] | None
 
 
@@ -207,13 +207,21 @@ def _listed(path: Path) -> dict[str, ToolDecl]:
         raise ConfigurationError(
             f"tree: {path} lists its tools in its frontmatter; a tool that needs more has a file in tools/"
         )
+    bare = [name for name, said in front.root.items() if said is None]
+    if bare:
+        name = bare[0]
+        raise ConfigurationError(
+            f"tree: {path} lists {name!r} without a description; write it as {name}: what it does, or give it a file in tools/"
+        )
     blank = [name for name, said in front.root.items() if said is not None and not said.strip()]
     if blank:
         raise ConfigurationError(
-            f"tree: {path} gives {', '.join(map(repr, blank))} a blank description; leave it out to use the code's"
+            f"tree: {path} gives {', '.join(map(repr, blank))} a blank description; write what it does"
         )
     return {
-        name: ToolDecl(name=name, description=said, input=None) for name, said in front.root.items()
+        name: ToolDecl(name=name, description=said, input=None)
+        for name, said in front.root.items()
+        if said is not None
     }
 
 

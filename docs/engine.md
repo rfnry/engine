@@ -201,7 +201,7 @@ agents/
     rules/refunds.md      any folders and files, all in the map; a description adds a line
     skills/escalate.md    how to do a thing: the model's to choose, or a person's to ask for
     knowledge/rates.pdf   text, images, PDFs, anything — read when needed
-    TOOLS.md              the code tools it may call, by name
+    TOOLS.md              the code tools it may call, each with a line saying what it does
     tools/refund.md       a tool whose contract is written out
     tasks/triage.md       what to do: a named task, chosen per run
 ```
@@ -1675,8 +1675,8 @@ class Tools:
 An agent's tools are declared in its directory. `Read Grep Glob LS Load` come with every generation
 agent, `Delegate` comes with `agents:`, `History` with a run whose `start=` is past the beginning of
 its history, and its name is taken on every run, so a tool of yours named `History` is refused from
-the first; everything else the agent declares. A tool that needs only its name, and perhaps a line
-saying what it does, is listed in `TOOLS.md` — `fetch_invoice:` alone, or with that line:
+the first; everything else the agent declares. A tool that needs only a line saying what it does
+is listed in `TOOLS.md`, name and line, never the name alone:
 
 ```markdown
 ---
@@ -1697,17 +1697,19 @@ input:
 Returns the order as JSON, with its charges.
 ```
 
-What a declaration gives replaces the code tool's part, and what it leaves out is the code's: a bare
-name adopts the code tool as it is; a description is what the model reads instead of the code's; an
-`input:` is the schema and the validation instead of the code's, and arguments it does not name are
-refused. So a tool can be reworded in the tree and keep its arguments in code, or be written out
-whole in the tree with only its body in code. The model reads each tool's description beside its
-schema, and its first line in the prompt's list of tools. A tool with no description in either place
-is a `ConfigurationError`, and so are a blank description, a tool declared twice — in `TOOLS.md`
-and under `tools/`, or twice in `TOOLS.md` — a file under `tools/` with no description, which belongs
-in `TOOLS.md`, a body under `TOOLS.md`'s frontmatter, and a tool named like one the engine gives
-the agent: the builtins, `History`, `Delegate` with `agents:`, a workspace's with
-`workspace: true`. Bodies and code tools go on the engine, one list for the whole tree. A body returns a string, a dict (the model
+A tool is described only in the markdown: the line in `TOOLS.md`, or the `description:` and `input:`
+of its file, are the whole of what the model reads about it, and its first line is what the prompt's
+list of tools shows. Code gives the body, and optionally the types: `args`, a model that checks a
+call, or an `input_schema`, in neither of which any `description` may appear, nor in the `Tool`
+itself, nor in a nested model's docstring. A description in code is a `ConfigurationError` naming
+where it is and where to write it instead, whether or not the engine was given the model that would
+use the tool. An `input:` states the arguments and what each means; beside it `args` still checks
+the call, after `input:` has, and the two must name the same arguments; beside it an `input_schema`
+is refused, being a second schema. A tool listed without a line, a blank line, a tool declared
+twice — in `TOOLS.md` and under `tools/`, or twice in `TOOLS.md` — a file under `tools/` with no
+description, which belongs in `TOOLS.md`, a body under `TOOLS.md`'s frontmatter, and a tool named
+like one the engine gives the agent are `ConfigurationError` too: the builtins, `History`,
+`Delegate` with `agents:`, a workspace's with `workspace: true`. Bodies and code tools go on the engine, one list for the whole tree. A body returns a string, a dict (the model
 reads it as JSON) or a list of parts, which reach the model as the tool result — a PDF the model
 reads itself, an image it looks at. `Load` already does that for files in the agent's directory and
 the folders it reads; a tool does it for what lives elsewhere, such as your own store:
@@ -1722,14 +1724,15 @@ async def fetch_invoice(args):
 
 tools = [
     Tool("lookup_order", body=lookup_order),
-    Tool("fetch_invoice", "Fetch an invoice PDF by id", body=fetch_invoice, args=InvoiceArgs),
+    Tool("fetch_invoice", body=fetch_invoice, args=InvoiceArgs),
 ]
 engine = Engine(root, models={"strong": llm}, tools=tools)
 ```
 
 `args` checks a call's arguments before the body runs, and so does a declared `input:`. A tool given
 only `input_schema`, and a `Tools` of your own, receive the arguments as the model sent them: check
-them in the body, or pass `args`.
+them in the body, or pass `args`. The `Tools` of `run(tools=)` are declared only in code, never
+named in the tree, so they keep their own descriptions, in the `Tool` and in a schema.
 
 A tool the engine was given that no agent declares is a `ConfigurationError`; so is a declaration
 with no body, when the engine has a generation model to run it. So an agent's whole tool surface

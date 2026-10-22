@@ -202,7 +202,7 @@ def test_declared_tools_need_bodies_only_for_agents_whose_model_was_given(tmp_pa
     Engine(
         root,
         models={"strong": Scripted(), "fast": Scripted()},
-        tools=[Tool("fetch", "Fetch", body=noop)],
+        tools=[Tool("fetch", body=noop)],
     )
 
 

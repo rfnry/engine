@@ -120,7 +120,7 @@ async def now(args: dict[str, Any]) -> str:
     return "2026-09-22T00:00:00Z"
 
 
-TOOLS = [Tool("lookup_order", body=lookup_order), Tool("now", "The current UTC time", body=now)]
+TOOLS = [Tool("lookup_order", body=lookup_order), Tool("now", body=now)]
 
 
 def generation_record(

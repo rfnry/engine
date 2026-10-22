@@ -29,9 +29,9 @@ def test_generation_agent_carries_body_agents_tools_tasks() -> None:
     assert support.tasks == {"triage": ""}
     contract = support.tools["lookup_order"]
     assert contract.input is not None and contract.input["order_id"].required is True
-    assert contract.description is not None and "Returns the order as JSON." in contract.description
+    assert "Returns the order as JSON." in contract.description
     adoption = support.tools["now"]
-    assert adoption.description is None and adoption.input is None
+    assert adoption.description == "The current UTC time" and adoption.input is None
 
 
 def test_a_tool_file_is_a_contract_or_a_name(tmp_path: Path) -> None:
@@ -116,7 +116,9 @@ def _agent(
         (root / name / "questions").mkdir(exist_ok=True)
         (root / name / "questions" / f"{qid}.md").write_text(text)
     if tools:
-        (root / name / "TOOLS.md").write_text("---\n" + "".join(f"{t}:\n" for t in tools) + "---\n")
+        (root / name / "TOOLS.md").write_text(
+            "---\n" + "".join(f"{t}: Does {t}\n" for t in tools) + "---\n"
+        )
 
 
 CHOICE = "---\ntype: choice\noptions: {x: X, y: Y}\n---\nWhich?\n"

@@ -20,6 +20,29 @@ _PYTHON: dict[str, Any] = {
     "array": list[Any],
 }
 
+_DATA = {"default", "examples", "const", "enum"}
+_NAMED = {"properties", "$defs", "definitions", "patternProperties"}
+
+
+def prose(schema: object, at: str = "") -> str | None:
+    if isinstance(schema, dict):
+        named = at.rsplit(".", 1)[-1] in _NAMED
+        for key, value in schema.items():
+            if not named and key in _DATA:
+                continue
+            here = f"{at}.{key}" if at else str(key)
+            if not named and key == "description" and isinstance(value, str):
+                return here
+            found = prose(value, here)
+            if found is not None:
+                return found
+    elif isinstance(schema, list):
+        for index, item in enumerate(schema):
+            found = prose(item, f"{at}.{index}" if at else str(index))
+            if found is not None:
+                return found
+    return None
+
 
 def _schema(decl: ToolDecl) -> dict[str, Any]:
     fields = decl.input or {}
@@ -55,16 +78,11 @@ def declared_tools(spec: AgentSpec, code: dict[str, Tool]) -> list[Tool]:
             raise ConfigurationError(
                 f"declared: agent {spec.name!r} declares tool {name!r} but no Tool with a body was given; pass Engine(tools=) a Tool named {name!r} with a body"
             )
-        description = implementation.description if decl.description is None else decl.description
-        if not description:
-            raise ConfigurationError(
-                f"declared: agent {spec.name!r} declares tool {name!r} with no description, in TOOLS.md or the Tool; describe it in either"
-            )
         if decl.input is None:
             tools.append(
                 Tool(
                     name,
-                    description,
+                    decl.description,
                     body=implementation.body,
                     args=implementation.args,
                     input_schema=implementation.input_schema,
@@ -74,8 +92,10 @@ def declared_tools(spec: AgentSpec, code: dict[str, Tool]) -> list[Tool]:
         tools.append(
             Tool(
                 name,
-                description,
-                body=implementation.body,
+                decl.description,
+                body=implementation.call
+                if implementation.args is not None
+                else implementation.body,
                 args=_args_model(decl),
                 input_schema=_schema(decl),
             )
@@ -83,9 +103,42 @@ def declared_tools(spec: AgentSpec, code: dict[str, Tool]) -> list[Tool]:
     return tools
 
 
+def _check_code(code: dict[str, Tool]) -> None:
+    for name, tool in code.items():
+        if tool.description:
+            raise ConfigurationError(
+                f"declared: tool {name!r} carries a description in code; describe it in its agent's TOOLS.md or tools/{name}.md"
+            )
+        schema = tool.input_schema
+        if schema is None and tool.args is not None:
+            schema = tool.args.model_json_schema()
+        where = prose(schema)
+        if where is not None:
+            raise ConfigurationError(
+                f"declared: tool {name!r} carries a description in code at {where}; describe its arguments under input: in tools/{name}.md"
+            )
+
+
+def _check_input(spec: AgentSpec, name: str, decl: ToolDecl, tool: Tool) -> None:
+    if decl.input is None:
+        return
+    if tool.input_schema is not None:
+        raise ConfigurationError(
+            f"declared: agent {spec.name!r} gives tool {name!r} an input: in tools/{name}.md and its Tool an input_schema; keep one, or use args= beside input:"
+        )
+    if tool.args is not None:
+        written = sorted(decl.input)
+        coded = sorted(tool.args.model_json_schema().get("properties", {}))
+        if written != coded:
+            raise ConfigurationError(
+                f"declared: agent {spec.name!r} gives tool {name!r} the arguments {written} in tools/{name}.md and {coded} in its args; make them name the same arguments"
+            )
+
+
 def check_declarations(
     agents: dict[str, AgentSpec], code: dict[str, Tool], given: Collection[str]
 ) -> dict[str, list[Tool]]:
+    _check_code(code)
     declared: set[str] = set()
     built: dict[str, list[Tool]] = {}
     for key, spec in agents.items():
@@ -100,6 +153,9 @@ def check_declarations(
             raise ConfigurationError(
                 f"declared: agent {spec.name!r} declares {', '.join(map(repr, clash))}, the name of a tool the engine gives it; rename yours"
             )
+        for name, decl in spec.tools.items():
+            if name in code:
+                _check_input(spec, name, decl, code[name])
         if spec.model in given:
             built[key] = declared_tools(spec, code)
         declared.update(spec.tools)
