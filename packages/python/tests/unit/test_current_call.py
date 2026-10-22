@@ -332,7 +332,9 @@ async def test_a_consult_outside_any_run_records_none(tmp_path: Path) -> None:
     assert keeping.of("billing").call is None
 
 
-async def test_a_consult_in_another_scope_records_none(tmp_path: Path) -> None:
+async def test_a_consult_in_another_scope_records_none_while_its_event_names_the_call(
+    tmp_path: Path,
+) -> None:
     keeping = Keeping()
     engine = consulting(
         tmp_path,
@@ -347,11 +349,12 @@ async def test_a_consult_in_another_scope_records_none(tmp_path: Path) -> None:
         events.append(event)
 
     tools = engine.tool("billing", scope="other", on_event=watch)
-    await engine.run("support", "acme", "x", tools=tools)
+    outer = await engine.run("support", "acme", "x", tools=tools)
     consult = keeping.of("billing")
     assert consult.scope == "other" and consult.call is None
     [started] = [e for e in events if isinstance(e, RunStarted) and e.run_id == consult.run_id]
-    assert started.call is None
+    assert started.call is not None
+    assert started.call.run_id == outer.run_id and started.call.call_id == "b1"
 
 
 async def test_a_run_a_tool_body_starts_after_the_call_ended_records_that_call(
