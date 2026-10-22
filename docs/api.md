@@ -759,7 +759,7 @@ class Tool:
     input_schema: dict[str, Any] | None = None
 ```
 
-One tool: a name, a description, an input schema and a body. `Body` is `Callable[[dict[str, Any]], Awaitable[Result]]`, an async function of the arguments, where `Result` is `str | dict[str, Any] | list[Part]`; `args` validates the arguments and gives the schema unless `input_schema` does. In `Engine(tools=)` it is the body behind a tool an agent declares, and a declaration with only a name adopts its description and schema.
+One tool: a name, a description, an input schema and a body. `Body` is `Callable[[dict[str, Any]], Awaitable[Result]]`, an async function of the arguments, where `Result` is `str | dict[str, Any] | list[Part]`; `args` validates the arguments and gives the schema unless `input_schema` does; a tool given only `input_schema` receives its arguments as the model sent them. In `Engine(tools=)` it is the body behind a tool an agent declares, and a declaration with only a name adopts its description and schema.
 
 ### `Tool.schema`
 

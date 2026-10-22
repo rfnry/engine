@@ -1674,6 +1674,10 @@ tools = [
 engine = Engine(root, generation=llm, tools=tools)
 ```
 
+`args` checks a call's arguments before the body runs, and so does a declared `input:`. A tool given
+only `input_schema`, and a `Tools` of your own, receive the arguments as the model sent them: check
+them in the body, or pass `args`.
+
 A tool the engine was given that no agent declares is a `ConfigurationError`; so is a declaration
 with no body, when the engine has a generation model to run it. So an agent's whole tool surface
 is readable from its directory, and the engine cannot hand a model something the tree does not
