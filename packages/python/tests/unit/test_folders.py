@@ -133,7 +133,7 @@ def test_read_folders_follow_under_their_path_without_an_agent_s_declarations(
     )
     write(writing / "tasks/x.md", "---\ndescription: A task\n---\n")
     write(writing / "voice.md", "---\ndescription: Voice\n---\n")
-    assert listing(own, True, {"books": books, "writing": writing}) == (
+    assert listing(own, True, {"../books": books, "../writing": writing}) == (
         "a.md — A\n../books/\n  python/\n    async.md — Async\n../writing/\n  voice.md — Voice"
     )
 

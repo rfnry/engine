@@ -1,5 +1,7 @@
+import posixpath
 from collections.abc import Callable, Collection, Mapping
 from functools import cached_property
+from itertools import combinations
 from pathlib import Path
 from typing import Literal
 
@@ -304,51 +306,103 @@ class _Folder:
         return entries(self.place, declares(self.place))
 
 
-def _reads(
-    agent: str, front: AgentFront, directory: Path, folders: Mapping[str, _Folder], whole: bool
-) -> dict[str, _Folder]:
-    if whole and front.reads:
+def from_agent(path: str, reads: Mapping[str, Path]) -> dict[str, Path]:
+    return {posixpath.relpath(name, path): place for name, place in reads.items()}
+
+
+def _tree_folders(root: Path) -> dict[str, Path]:
+    top = root.resolve()
+    found: dict[str, Path] = {}
+    walked = {top}
+
+    def walk(folder: Path, at: str) -> None:
+        holds = declares(folder)
+        for child in sorted(folder.iterdir()):
+            if (
+                child.name.startswith(".")
+                or not child.is_dir()
+                or (holds and child.name in DECLARED)
+            ):
+                continue
+            place = child.resolve()
+            if place == top:
+                continue
+            key = f"{at}/{child.name}" if at else child.name
+            found[key] = place
+            if place not in walked:
+                walked.add(place)
+                walk(child, key)
+
+    walk(root, "")
+    return found
+
+
+def _written(agent: str, name: str) -> str:
+    plain = name.removesuffix("/")
+    segments = plain.split("/")
+    if (
+        not plain
+        or plain.startswith("/")
+        or "\\" in plain
+        or any(not s or s.startswith(".") for s in segments)
+    ):
         raise ConfigurationError(
-            f"tree: root agent {agent!r} cannot declare reads:; it holds its whole folder already"
+            f"tree: agent {agent!r} reads {name!r}, which is not a path from the root; write it as shared/books, with no leading ./ or /, no .. or hidden folder, no empty segment and no backslash"
         )
+    return plain
+
+
+def _reads(
+    agent: str,
+    front: AgentFront,
+    directory: Path,
+    root: Path,
+    path: str,
+    folders: Mapping[str, _Folder],
+) -> dict[str, _Folder]:
     if front.kind == "decision" and front.reads:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot declare reads:; a decision agent reads no files, so give it what it needs in its input or its questions"
         )
-    for name in front.reads:
-        if name.startswith(".") or name == directory.name or name not in folders:
-            choices = ", ".join(sorted(n for n in folders if n != directory.name)) or "none"
+    names = [_written(agent, name) for name in front.reads]
+    for name in names:
+        if name not in folders:
+            choices = ", ".join(sorted(folders)) or "none"
             raise ConfigurationError(
-                f"tree: agent {agent!r} reads unknown folder {name!r}; reads: names a folder beside it in the root, one of: {choices}"
+                f"tree: agent {agent!r} reads unknown folder {name!r}; reads: names a folder by its path from the root, one of: {choices}"
             )
-    if front.reads and directory.resolve().parent != directory.parent.resolve():
+    for name in names:
+        if not folders[name].place.is_relative_to(root.resolve()):
+            raise ConfigurationError(
+                f"tree: agent {agent!r} reads {name!r}, which resolves outside the root to {folders[name].place}; reads: needs a folder resolved inside the root, so drop the link or move the folder in"
+            )
+    for name in names:
+        if path == name or path.startswith(f"{name}/"):
+            raise ConfigurationError(
+                f"tree: agent {agent!r} reads {name!r}, its own folder or one that holds it; reads: names other folders, so drop it"
+            )
+        if path == "." or name.startswith(f"{path}/"):
+            raise ConfigurationError(
+                f"tree: agent {agent!r} reads {name!r}, inside its own folder; its map holds that folder already, so drop it"
+            )
+    for one, other in combinations(names, 2):
+        if one == other or one.startswith(f"{other}/") or other.startswith(f"{one}/"):
+            raise ConfigurationError(
+                f"tree: agent {agent!r} reads {one!r} and {other!r}, one inside the other; keep one"
+            )
+    if names and directory.resolve() != root.resolve() / path:
         raise ConfigurationError(
             f"tree: agent {agent!r} declares reads: but its folder is a link to {directory.resolve()}; reads: needs the agent's folder inside the root, so link the whole root instead"
         )
-    return {name: folders[name] for name in front.reads}
+    return {name: folders[name] for name in names}
 
 
 def _under(
     reads: Mapping[str, _Folder], files: Callable[[_Folder], list[tuple[str, Path]]]
 ) -> list[tuple[str, Path]]:
     return [
-        (f"../{name}/{rel}", path) for name, folder in reads.items() for rel, path in files(folder)
+        (f"{name}/{rel}", path) for name, folder in reads.items() for rel, path in files(folder)
     ]
-
-
-def _readable(root: Path, whole: bool = False) -> dict[str, Path]:
-    jail = Jail(root)
-    found: dict[str, Path] = {}
-    for child in sorted(root.iterdir()):
-        if child.name.startswith(".") or not child.is_dir() or (whole and child.name in DECLARED):
-            continue
-        try:
-            place = jail.resolve(child)
-        except InputError:
-            continue
-        if place != jail.root:
-            found[child.name] = place
-    return found
 
 
 def load_agent(
@@ -356,8 +410,8 @@ def load_agent(
     media_types: Collection[str] | None = None,
     folders: Mapping[str, _Folder] | None = None,
     sub: Collection[str] = (),
-    whole: bool = False,
     path: str = ".",
+    tree_root: Path | None = None,
 ) -> AgentSpec:
     front, body = parse_frontmatter_doc(
         _read(directory / "AGENT.md"),
@@ -409,7 +463,8 @@ def load_agent(
         raise ConfigurationError(
             f"tree: generation agent {agent!r} cannot declare route:; routes are for decision agents"
         )
-    reads = _reads(agent, front, directory, folders or {}, whole)
+    held = _reads(agent, front, directory, tree_root or directory, path, folders or {})
+    reads = {posixpath.relpath(name, path): folder for name, folder in held.items()}
     root = directory.resolve()
     files = sorted([*content(root, False), *_under(reads, lambda folder: folder.files)])
     try:
@@ -454,7 +509,7 @@ def load_agent(
         listing=joined(
             entries(root, True, sub), {name: folder.mapped for name, folder in reads.items()}
         ),
-        reads={name: folder.place for name, folder in reads.items()},
+        reads={name: folder.place for name, folder in held.items()},
         skills={} if front.kind == "decision" else _skills(content(root, True, sub), agent),
     )
 
@@ -485,9 +540,9 @@ def plain_agent(root: Path, name: str) -> AgentSpec:
 def load_tree(root: Path, media_types: Collection[str] | None = None) -> dict[str, AgentSpec]:
     root = Path(root)
     whole = (root / "AGENT.md").is_file()
-    folders = {child: _Folder(place) for child, place in _readable(root, whole).items()}
+    folders = {name: _Folder(place) for name, place in _tree_folders(root).items()}
     specs = [
-        load_agent(child, media_types, folders, path=child.name)
+        load_agent(child, media_types, folders, path=child.name, tree_root=root)
         for child in sorted(root.iterdir())
         if child.is_dir()
         and not child.name.startswith(".")
@@ -496,7 +551,7 @@ def load_tree(root: Path, media_types: Collection[str] | None = None) -> dict[st
     ]
     if whole:
         folder_names = {spec.path for spec in specs}
-        specs.insert(0, load_agent(root, media_types, {}, sub=folder_names, whole=True))
+        specs.insert(0, load_agent(root, media_types, folders, sub=folder_names))
     if specs:
         agents: dict[str, AgentSpec] = {}
         for spec in specs:

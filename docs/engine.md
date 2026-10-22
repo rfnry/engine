@@ -273,10 +273,15 @@ path — `Read` of `../books/python/async.md`, `Grep` with `path="../books"`, `G
 the agent's folder and the folders it reads is reachable. Another agent's folder shows in the map
 without its `AGENT.md` and declarations, which stay readable. `preload: true` sends the folders it
 reads too, under the same paths, and an edit to one changes the fingerprint of every agent that
-reads it. `reads:` names direct children of the root: a name that is not one, starts with `.`, or is
-the agent's own is a `ConfigurationError` when the tree loads, and so is `reads:` on a decision
-agent, which reads no files, on a root agent, which holds its whole folder already, or on an agent
-whose folder is a link to a folder elsewhere — link the whole root instead. The tree is shared by
+reads it. `reads:` names a folder by its path from the root, plain or another agent's — `books`, or
+`shared/books` for a folder deeper in the tree — written with `/` and a trailing `/` allowed; the map
+and the tools spell it from the agent's own folder, `../books/` for an agent directly under the root
+and `../shared/books/` for the deeper one. Each of these is a `ConfigurationError` when the tree
+loads: a path that starts with `./`, `/` or `..`, holds `\`, an empty segment or a hidden one; a
+folder the tree does not have; a link that leaves the root; the agent's own folder or one that
+holds it; a folder inside the agent's own, which its map holds already, so every `reads:` of a root
+agent; two folders one inside the other; `reads:` on a decision agent, which reads no files; and
+`reads:` on an agent whose folder is a link to a folder elsewhere — link the whole root instead. The tree is shared by
 every tenant: it holds how to do the work, never a tenant's data — that comes per run, in the input,
 the history or the workspace. An agent that reads `my_agents/acme/` reads it for every tenant.
 
@@ -389,7 +394,7 @@ run.fingerprint.tools                                # "a02c77e1f4b9d305": the t
 ```
 
 `fingerprint.agent` is a short sha256 over every file the agent reads, by relative path and content:
-its own directory, and each folder it names in `reads:` with that folder's files under `../<name>/`,
+its own directory, and each folder it names in `reads:` with that folder's files under its path from the agent's folder, `../<name>/`,
 as the map shows them — leaving out hidden files and folders, as `LS`, `Glob` and `Grep` do, and
 links that lead out of them. The engine takes it once, when it loads the tree, so an edit to the
 agent or to a folder it reads shows in the next `Engine` built from the folder. `fingerprint.tools`
@@ -1962,9 +1967,10 @@ Everything the package exports, by role.
 — the file names it — an unknown key in the frontmatter of an `AGENT.md`, a tool file or a question (`frontmatter: unknown
 key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a
 `description:` that is not a string in a file the map would show, a decision agent with `preload:
-true` or tools, a declaration the Tools section refuses, a `reads:` naming no folder of the root or
-the agent's own, `reads:` on a decision agent, on a root agent or on an agent whose folder is a link
-to a folder elsewhere, a file `preload: true` would send that neither `Read` nor `Load` would hand
+true` or tools, a declaration the Tools section refuses, a `reads:` that is not a path from the
+root, names no folder of the tree, leaves the root, names the agent's own folder, one that holds it
+or one inside it, or names two folders one inside the other, `reads:` on a decision agent or on an
+agent whose folder is a link to a folder elsewhere, a file `preload: true` would send that neither `Read` nor `Load` would hand
 over — over 20 MB, of a type the model's `media_types` does not name, or not the type its name says
 — a question with instructions both in its frontmatter and in its body or in neither, a decision
 agent with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a route

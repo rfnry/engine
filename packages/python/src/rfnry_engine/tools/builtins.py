@@ -210,7 +210,7 @@ class _Directory:
     def _shown(self, path: Path) -> str:
         for name, folder in self.reads.items():
             if folder in path.parents:
-                return f"../{name}/{path.relative_to(folder).as_posix()}"
+                return f"{name}/{path.relative_to(folder).as_posix()}"
         return path.relative_to(self.root).as_posix()
 
     def _inside(self, path: Path) -> bool:
@@ -309,12 +309,12 @@ class _Directory:
 
     def glob(self, args: dict[str, Any]) -> str:
         a = GlobArgs.model_validate(args)
-        base, pattern, allowed = self.root, a.pattern, True
-        if pattern.startswith("../"):
-            name, _, pattern = pattern[3:].partition("/")
-            allowed = name in self.reads and bool(pattern)
-            base = self.reads.get(name, base)
-        if not allowed or pattern.startswith("/") or ".." in pattern.split("/"):
+        base, pattern = self.root, a.pattern
+        for name, folder in self.reads.items():
+            if pattern.startswith(f"{name}/"):
+                base, pattern = folder, pattern[len(name) + 1 :]
+                break
+        if not pattern or pattern.startswith("/") or ".." in pattern.split("/"):
             raise InputError(
                 "builtins: pattern must be relative and stay inside the agent directory or a folder it reads"
             )

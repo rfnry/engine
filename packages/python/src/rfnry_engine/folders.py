@@ -83,7 +83,7 @@ def entries(folder: Path, declared: bool, skip: Collection[str] = ()) -> list[st
 def joined(own: list[str], reads: Mapping[str, list[str]]) -> str:
     lines = list(own)
     for name, shown in reads.items():
-        lines += [f"../{name}/", *(f"  {line}" for line in shown)]
+        lines += [f"{name}/", *(f"  {line}" for line in shown)]
     return "\n".join(lines)
 
 

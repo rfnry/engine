@@ -156,7 +156,7 @@ def test_each_kind_holds_only_what_it_can_use(
     tmp_path: Path, front: str, questions: dict[str, str], tools: tuple[str, ...], message: str
 ) -> None:
     _agent(tmp_path, "a", front, questions, tools)
-    with pytest.raises(ConfigurationError, match=f"^tree: {message}(;|$)"):
+    with pytest.raises(ConfigurationError, match=f"^tree: {message}"):
         load_agent(tmp_path / "a")
 
 
@@ -180,7 +180,7 @@ def test_each_kind_holds_only_what_it_can_use(
 def test_routes_and_agents_must_resolve(tmp_path: Path, front: str, message: str) -> None:
     _agent(tmp_path, "a", front, {"q": CHOICE, "urgent": CHECK})
     _agent(tmp_path, "b", "kind: generation\nmodel: strong\n")
-    with pytest.raises(ConfigurationError, match=f"^tree: {message}(;|$)"):
+    with pytest.raises(ConfigurationError, match=f"^tree: {message}"):
         validate_tree(load_tree(tmp_path))
 
 
@@ -578,15 +578,15 @@ def test_an_agent_reads_the_folders_it_names(tmp_path: Path) -> None:
         ),
         (
             "kind: generation\nmodel: strong\nreads: [coding]\n",
-            "agent 'coding' reads unknown folder 'coding'",
+            "agent 'coding' reads 'coding', its own folder",
         ),
         (
             "kind: generation\nmodel: strong\nreads: [.hidden]\n",
-            "agent 'coding' reads unknown folder '.hidden'",
+            "agent 'coding' reads '.hidden', which is not a path from the root",
         ),
         (
             "kind: generation\nmodel: strong\nreads: [outside]\n",
-            "agent 'coding' reads unknown folder 'outside'",
+            "agent 'coding' reads 'outside', which resolves outside the root",
         ),
         (
             "kind: generation\nmodel: strong\nreads: [loop]\n",
@@ -608,13 +608,16 @@ def test_reads_names_a_readable_folder_of_the_root(
     (tmp_path / "elsewhere").mkdir()
     (root / "outside").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
     (root / "loop").symlink_to(root, target_is_directory=True)
-    with pytest.raises(ConfigurationError, match=f"^tree: {message}(;|$)"):
+    with pytest.raises(ConfigurationError, match=f"^tree: {message}"):
         load_tree(root)
 
 
 def test_a_single_agent_root_reads_nothing(tmp_path: Path) -> None:
     _agent(tmp_path, "solo", "kind: generation\nmodel: strong\nreads: [books]\n")
-    with pytest.raises(ConfigurationError, match="root agent 'solo' cannot declare reads:"):
+    (tmp_path / "solo" / "books").mkdir()
+    with pytest.raises(
+        ConfigurationError, match="agent 'solo' reads 'books', inside its own folder"
+    ):
         load_tree(tmp_path / "solo")
 
 

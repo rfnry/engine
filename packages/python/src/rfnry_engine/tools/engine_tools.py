@@ -17,6 +17,7 @@ from rfnry_engine.tools.delegate import delegate_tool
 from rfnry_engine.tools.history import HISTORY_TOOL, history_tool
 from rfnry_engine.tools.tools import Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import Workspace
+from rfnry_engine.tree import from_agent
 
 if TYPE_CHECKING:
     from rfnry_engine.engine import Engine
@@ -83,7 +84,7 @@ class EngineTools(Tools):
         media_types = getattr(engine.generation, "media_types", None)
         backend = room.backend if room else None
         items: list[Tool | ToolsLike] = [
-            *builtins(spec.root, spec.reads, backend),
+            *builtins(spec.root, from_agent(spec.path, spec.reads), backend),
             load_tool(spec.root, backend, media_types, spec.reads.values()),
         ]
         if history is not None and start > 0:
