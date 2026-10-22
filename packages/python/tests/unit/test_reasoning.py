@@ -59,6 +59,52 @@ async def test_an_assistant_message_keeps_the_usage_of_the_call_that_wrote_it(
     assert all(m.usage is None for m in run.conversation if m.role != "assistant")
 
 
+async def test_an_assistant_message_keeps_the_model_that_wrote_it(fixtures: Path) -> None:
+    strong = reading().model_copy(update={"model": "model-strong"})
+    fast = text_reply("Refund in full.", model="model-fast")
+    llm = Scripted(strong, fast)
+    run = await first_run(Engine(fixtures, generation=llm, tools=TOOLS))
+    written = [m.model for m in run.conversation if m.role == "assistant"]
+    assert written == ["model-strong", "model-fast"] and run.model == "model-fast"
+    assert all(m.model is None for m in run.conversation if m.role != "assistant")
+    assert all(m.model is None for call in llm.calls for m in call[1])
+
+
+async def test_an_assistant_message_keeps_the_adapters_model_when_the_reply_names_none(
+    fixtures: Path,
+) -> None:
+    llm = Named("model-declared", reading(), text_reply("Refund in full."))
+    run = await first_run(Engine(fixtures, generation=llm, tools=TOOLS))
+    written = [m.model for m in run.conversation if m.role == "assistant"]
+    assert written == ["model-declared", "model-declared"]
+
+
+def test_a_model_from_elsewhere_that_is_not_a_string_reads_as_none() -> None:
+    assert Message.model_validate({"role": "assistant", "model": {"name": "x"}}).model is None
+    assert Message.model_validate({"role": "assistant", "model": "model-a"}).model == "model-a"
+
+
+async def test_the_model_on_a_message_changes_nothing_about_what_reasoning_goes_back(
+    fixtures: Path,
+) -> None:
+    later = {"thought": "the later charge"}
+    thinking = Reply(text="The second one.", reasoning=later)
+    llm = Scripted(reading(), text_reply("Refund in full."), thinking, text_reply("ok"))
+    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    first = await first_run(engine)
+    second = await engine.run(
+        "support", "acme", "Which charge?", history=first.conversation, context=CONTEXT
+    )
+    assert isinstance(second, Generation)
+    history = [
+        m.model_copy(update={"model": "renamed"}) if m.role == "assistant" else m
+        for m in second.conversation
+    ]
+    await engine.run("support", "acme", "Thanks.", history=history, context=CONTEXT)
+    sent = [m.reasoning for m in llm.calls[3][1] if m.role == "assistant"]
+    assert sent == [THOUGHT, None, later]
+
+
 async def test_only_an_assistant_message_with_reasoning_carries_a_prefix(
     fixtures: Path,
 ) -> None:

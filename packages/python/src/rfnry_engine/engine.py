@@ -272,7 +272,7 @@ def _state(spec: AgentSpec, value: State, media_types: Collection[str] | None) -
     return parts
 
 
-def _assistant(reply: Reply, prefix: str | None) -> Message:
+def _assistant(reply: Reply, prefix: str | None, model: str | None) -> Message:
     return Message(
         role="assistant",
         content=reply.text,
@@ -280,6 +280,7 @@ def _assistant(reply: Reply, prefix: str | None) -> Message:
         reasoning=reply.reasoning,
         prefix=prefix,
         usage=reply.usage,
+        model=reply.model or model,
     )
 
 
@@ -931,7 +932,10 @@ class Engine:
         async def ask() -> Reply:
             sending = [
                 *preload,
-                *(m.model_copy(update={"prefix": None, "usage": None}) for m in messages),
+                *(
+                    m.model_copy(update={"prefix": None, "usage": None, "model": None})
+                    for m in messages
+                ),
             ]
             if streaming:
                 return as_reply(
@@ -1005,7 +1009,7 @@ class Engine:
                 if reply.model:
                     model = reply.model
                 prefix = await chained.stamp(messages) if reply.reasoning is not None else None
-                messages.append(_assistant(reply, prefix))
+                messages.append(_assistant(reply, prefix, _declared(model_)))
                 asked = list(reply.tool_calls)
                 ran.clear()
                 if not streaming and reply.text:

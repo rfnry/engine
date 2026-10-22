@@ -106,7 +106,10 @@ def text_reply(text: str, **kwargs: Any) -> Reply:
 
 
 def said(messages: list[Message]) -> list[Message]:
-    return [message.model_copy(update={"prefix": None, "usage": None}) for message in messages]
+    return [
+        message.model_copy(update={"prefix": None, "usage": None, "model": None})
+        for message in messages
+    ]
 
 
 async def lookup_order(args: dict[str, Any]) -> Any:

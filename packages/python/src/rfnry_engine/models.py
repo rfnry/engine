@@ -9,6 +9,7 @@ from pydantic import (
     Field,
     JsonValue,
     ValidationError,
+    ValidationInfo,
     ValidatorFunctionWrapHandler,
     field_serializer,
     field_validator,
@@ -82,15 +83,20 @@ class Message(BaseModel):
     is_error: bool = False
     prefix: str | None = None
     usage: Usage | None = None
+    model: str | None = None
 
-    @field_validator("prefix", "usage", mode="wrap")
+    @field_validator("prefix", "usage", "model", mode="wrap")
     @classmethod
-    def _engines_own(cls, value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
+    def _engines_own(
+        cls, value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo
+    ) -> Any:
         try:
             held = handler(value)
         except ValidationError:
             return None
-        return None if isinstance(held, str) and MARK.fullmatch(held) is None else held
+        if info.field_name == "prefix" and isinstance(held, str) and MARK.fullmatch(held) is None:
+            return None
+        return held
 
 
 MARK = re.compile(r"[0-9a-f]{16}")

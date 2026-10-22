@@ -41,7 +41,9 @@ def opening(model: str | None, system: str, tools: list[ToolSpec], preload: str)
 
 
 def extend(digest: bytes, message: Message) -> bytes:
-    said = message.model_dump(mode="json", exclude={"prefix", "usage", "content"}, fallback=repr)
+    said = message.model_dump(
+        mode="json", exclude={"prefix", "usage", "model", "content"}, fallback=repr
+    )
     said["content"] = _content(message.content)
     return hashlib.sha256(digest + _canonical(said)).digest()
 

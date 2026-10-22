@@ -379,6 +379,7 @@ async def test_a_run_offered_no_tools_exports_an_empty_list(storage: Storage) ->
             "is_error": False,
             "prefix": None,
             "usage": None,
+            "model": None,
         },
         {
             "role": "assistant",
@@ -389,6 +390,7 @@ async def test_a_run_offered_no_tools_exports_an_empty_list(storage: Storage) ->
             "is_error": False,
             "prefix": None,
             "usage": None,
+            "model": None,
         },
     ]
 

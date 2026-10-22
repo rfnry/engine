@@ -106,11 +106,12 @@ class Message(BaseModel):
     is_error: bool = False
     prefix: str | None = None
     usage: Usage | None = None
+    model: str | None = None
 ```
 
 One turn of a conversation. An assistant turn carries its text in `content`, its calls in `tool_calls` and its `reasoning` as the model returned it; a tool result has `role="tool"`, the `tool_call_id` it answers, and `is_error` when the call failed.
 
-`prefix` and `usage` are the engine's record of an assistant message it made from a reply, never sent to a model and outside the vocabulary shared with rfnry-memory: `prefix` is the first 16 hex characters of a sha256 over everything sent before the message when it was written — the model, as its adapter names it, the system prompt, the tools, the preloaded files and the earlier messages as sent — and its `reasoning` is sent again only while what precedes it is the same; `usage` is what the call that wrote it reported. `prefix` is set on an assistant message whose reply carried reasoning, and is `None` otherwise. A `usage` or `prefix` that does not fit these fields — another library's usage, a prefix that is not 16 hex characters — reads as `None`, so a message from elsewhere is taken without them; only a `prefix` that is dropped costs its `reasoning`, which is not sent again.
+`prefix`, `usage` and `model` are the engine's record of an assistant message it made from a reply, never sent to a model and outside the vocabulary shared with rfnry-memory: `prefix` is the first 16 hex characters of a sha256 over everything sent before the message when it was written — the model, as its adapter names it, the system prompt, the tools, the preloaded files and the earlier messages as sent — and its `reasoning` is sent again only while what precedes it is the same; `usage` is what the call that wrote it reported, and `model` the model that wrote it — the one the reply named, else the adapter's `model` attribute — so a run whose adapter changed models mid-run says which wrote each reply, where the run's `model` names the last. `prefix` is set on an assistant message whose reply carried reasoning, and is `None` otherwise. A `usage`, `prefix` or `model` that does not fit these fields — another library's usage, a prefix that is not 16 hex characters, a model that is not a string — reads as `None`, so a message from elsewhere is taken without them; only a `prefix` that is dropped costs its `reasoning`, which is not sent again.
 
 ### `HistoryLike`
 
