@@ -20,7 +20,7 @@ def test_an_agent_is_named_by_its_frontmatter_not_its_folder(tmp_path: Path) -> 
     write(tmp_path / "support_v2/AGENT.md", agent_md("support"))
     tree = load_tree(tmp_path)
     assert list(tree) == ["support"]
-    info = Engine(tmp_path).agents["support"]
+    info = Engine(tmp_path, models={}).agents["support"]
     assert (info.name, info.model, info.path) == ("support", "strong", "support_v2")
 
 
@@ -73,7 +73,7 @@ def test_the_root_agent_and_one_in_its_folder_that_share_a_name_are_refused_with
 def test_the_engine_takes_no_name(tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a"))
     with pytest.raises(TypeError):
-        Engine(tmp_path, name="a")  # type: ignore[call-arg]
+        Engine(tmp_path, name="a", models={})  # type: ignore[call-arg]
 
 
 def test_a_tool_file_with_a_name_line_is_told_its_file_names_it(tmp_path: Path) -> None:

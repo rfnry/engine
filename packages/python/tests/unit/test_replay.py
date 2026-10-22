@@ -83,7 +83,9 @@ async def collect(pairs: Any) -> list[Replay]:
 
 
 def candidate(fixtures: Path, llm: Any = None, **kwargs: Any) -> Engine:
-    return Engine(fixtures, generation=llm or Echo(), decision=Desk(), tools=TOOLS, **kwargs)
+    return Engine(
+        fixtures, tools=TOOLS, **kwargs, models={"strong": llm or Echo(), "judge": Desk()}
+    )
 
 
 async def test_it_replays_the_top_level_runs_of_the_agent_oldest_first(
@@ -92,10 +94,12 @@ async def test_it_replays_the_top_level_runs_of_the_agent_oldest_first(
     refinery = Refinery(storage)
     recorder = Engine(
         fixtures,
-        generation=Scripted(delegate_triage(), text_reply("Handled."), text_reply("Hi.")),
-        decision=Desk(),
         tools=TOOLS,
         refinery=refinery,
+        models={
+            "strong": Scripted(delegate_triage(), text_reply("Handled."), text_reply("Hi.")),
+            "judge": Desk(),
+        },
     )
     first = await recorder.run("support", "acme", "It is down")
     second = await recorder.run("support", "acme", "Hello")
@@ -191,10 +195,10 @@ async def test_a_fingerprint_selects_one_recorded_version(
     root = tmp_path / "agents"
     shutil.copytree(fixtures, root)
     refinery = Refinery(storage)
-    old = Engine(root, generation=Scripted(text_reply("a")), tools=TOOLS, refinery=refinery)
+    old = Engine(root, tools=TOOLS, refinery=refinery, models={"strong": Scripted(text_reply("a"))})
     before = await old.run("support", "acme", "hi")
     (root / "support/rules/refunds.md").write_text("Refund only the second charge.\n")
-    new = Engine(root, generation=Scripted(text_reply("b")), tools=TOOLS, refinery=refinery)
+    new = Engine(root, tools=TOOLS, refinery=refinery, models={"strong": Scripted(text_reply("b"))})
     after = await new.run("support", "acme", "hi")
     await put(refinery, generation_record(), "fixture", 0)
     assert before.fingerprint != after.fingerprint
@@ -212,9 +216,9 @@ async def test_the_candidate_is_sent_the_input_history_task_and_context_as_recor
     refinery = Refinery(storage)
     recorder = Engine(
         fixtures,
-        generation=Scripted(text_reply("one"), text_reply("two"), text_reply("three")),
         tools=TOOLS,
         refinery=refinery,
+        models={"strong": Scripted(text_reply("one"), text_reply("two"), text_reply("three"))},
     )
     parts = [Text(text="Charged twice?"), Image(media_type="image/png", data=b"\x89PNG\r\n\x1a\n")]
     history = [
@@ -269,7 +273,7 @@ class Verdict(BaseModel):
 async def test_expect_and_approve_are_the_caller_s(fixtures: Path, storage: Storage) -> None:
     refinery = Refinery(storage)
     recorder = Engine(
-        fixtures, generation=Scripted(text_reply("ok")), tools=TOOLS, refinery=refinery
+        fixtures, tools=TOOLS, refinery=refinery, models={"strong": Scripted(text_reply("ok"))}
     )
     await recorder.run("support", "acme", "Refund?")
     call = ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"})
@@ -325,7 +329,7 @@ async def test_a_candidate_that_fails_yields_its_error_and_the_replay_goes_on(
         "reply 1",
         "reply 3",
     ]
-    lost = Engine(fixtures, decision=Desk(), tools=TOOLS)
+    lost = Engine(fixtures, tools=TOOLS, models={"judge": Desk()})
     [missing] = await collect(refinery.replay("acme", lost, agent="support", limit=1))
     assert missing.candidate is None and missing.error is not None
     assert missing.error.startswith("ConfigurationError: engine: agent 'support'")
@@ -408,10 +412,9 @@ async def test_a_decision_run_replays_its_state_and_what_its_route_was_given(
     refinery = Refinery(storage)
     recorder = Engine(
         fixtures,
-        generation=Scripted(text_reply("Routed.")),
-        decision=Desk(),
         tools=TOOLS,
         refinery=refinery,
+        models={"strong": Scripted(text_reply("Routed.")), "judge": Desk()},
     )
     triaged = await recorder.run("triage", "acme", {"message": "It is down", "plan": "pro"})
     assert isinstance(triaged, Decision)
@@ -430,7 +433,9 @@ async def test_a_decision_run_replays_its_state_and_what_its_route_was_given(
             "severity": ScoreAnswer(score=0, probabilities=[1, 0, 0, 0]),
         }
     )
-    [pair] = await collect(refinery.replay("acme", Engine(fixtures, decision=dm), agent="triage"))
+    [pair] = await collect(
+        refinery.replay("acme", Engine(fixtures, models={"judge": dm}), agent="triage")
+    )
     assert isinstance(pair.recorded, Decision) and isinstance(pair.candidate, Decision)
     assert dm.calls[0][0] == {"message": "It is down", "plan": "pro"} == triaged.state
     assert pair.candidate.answers["urgent"].confidence == pytest.approx(0.6)
@@ -453,10 +458,9 @@ async def test_a_run_with_children_replays_as_one_run_the_candidate_delegates_as
     refinery = Refinery(storage)
     recorder = Engine(
         fixtures,
-        generation=Scripted(delegate_triage(), text_reply("Escalated.")),
-        decision=Desk(),
         tools=TOOLS,
         refinery=refinery,
+        models={"strong": Scripted(delegate_triage(), text_reply("Escalated.")), "judge": Desk()},
     )
     run = await recorder.run("support", "acme", "It is down")
     assert isinstance(run, Generation) and len(run.children) == 1
@@ -479,16 +483,17 @@ async def test_a_replay_records_nothing_and_labels_nothing(
     refinery = Refinery(storage)
     recorder = Engine(
         fixtures,
-        generation=Scripted(delegate_triage(), text_reply("Handled.")),
-        decision=Desk(),
         tools=TOOLS,
         refinery=refinery,
+        models={"strong": Scripted(delegate_triage(), text_reply("Handled.")), "judge": Desk()},
     )
     run = await recorder.run("support", "acme", "It is down")
     await refinery.review("acme", run.run_id, Review(stance="approval"))
     counted = await storage.count_scope("acme")
     llm = Scripted(delegate_triage(), text_reply("Handled again."))
-    engine = Engine(fixtures, generation=llm, decision=Desk(), tools=TOOLS, refinery=refinery)
+    engine = Engine(
+        fixtures, tools=TOOLS, refinery=refinery, models={"strong": llm, "judge": Desk()}
+    )
     [pair] = await collect(refinery.replay("acme", engine, agent="support", labeled=True))
     assert isinstance(pair.candidate, Generation) and len(pair.candidate.children) == 1
     assert await storage.count_scope("acme") == counted == 3
@@ -642,7 +647,7 @@ async def test_a_replay_closed_under_a_cancel_returns_once_its_runs_have_ended(
     tmp_path: Path, storage: Storage
 ) -> None:
     refinery = Refinery(storage)
-    recorder = Engine(graded(tmp_path), decision=Answering(), refinery=refinery)
+    recorder = Engine(graded(tmp_path), refinery=refinery, models={"judge": Answering()})
     for text in ["a", "b"]:
         await recorder.run("grader", "acme", text)
     entered, release, died = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -670,7 +675,7 @@ async def test_a_replay_closed_under_a_cancel_returns_once_its_runs_have_ended(
             raise AssertionError("a cancelled replay must not end on its own")
 
     async def read_one() -> None:
-        engine = Engine(tmp_path, decision=SlowToDie())
+        engine = Engine(tmp_path, models={"judge": SlowToDie()})
         async with aclosing(
             refinery.replay("acme", engine, agent="grader", concurrency=2)
         ) as pairs:
@@ -701,7 +706,7 @@ async def test_each_cancel_of_a_reader_cancels_its_replay_once(
     tmp_path: Path, storage: Storage, together: bool
 ) -> None:
     refinery = Refinery(storage)
-    recorder = Engine(graded(tmp_path), decision=Answering(), refinery=refinery)
+    recorder = Engine(graded(tmp_path), refinery=refinery, models={"judge": Answering()})
     await recorder.run("grader", "acme", "a")
     entered, release, died = asyncio.Event(), asyncio.Event(), asyncio.Event()
     cancels = 0
@@ -726,7 +731,7 @@ async def test_each_cancel_of_a_reader_cancels_its_replay_once(
             raise AssertionError("a cancelled replay must not end on its own")
 
     async def read() -> None:
-        engine = Engine(tmp_path, decision=SlowToDie())
+        engine = Engine(tmp_path, models={"judge": SlowToDie()})
         async for _ in refinery.replay("acme", engine, agent="grader"):
             raise AssertionError("a cancelled replay must yield nothing")
 
@@ -774,11 +779,11 @@ async def test_a_second_cancel_of_a_reader_kills_its_replays_command_at_once(
     work.mkdir()
     workspace = Workspace(Local(work), scope="acme")
     refinery = Refinery(storage)
-    recorder = Engine(tmp_path, generation=Scripted(text_reply("done")), refinery=refinery)
+    recorder = Engine(tmp_path, refinery=refinery, models={"strong": Scripted(text_reply("done"))})
     await recorder.run("coder", "acme", "fix it", workspace=workspace)
     shell = ToolCall(id="c1", name="Shell", args={"command": TRAPPED})
     engine = Engine(
-        tmp_path, generation=Scripted(Reply(tool_calls=[shell], stop_reason="tool_use"))
+        tmp_path, models={"strong": Scripted(Reply(tool_calls=[shell], stop_reason="tool_use"))}
     )
 
     async def read() -> None:
@@ -826,9 +831,9 @@ async def test_the_tools_and_workspace_a_run_had_are_the_caller_s(
     work = Workspace(Local(tmp_path / "work"), scope="acme")
     memory = Tools([Tool("recall", "Recall a fact", body=recall)])
     refinery = Refinery(storage)
-    recorder = Engine(tmp_path, generation=Scripted(text_reply("done")), refinery=refinery)
+    recorder = Engine(tmp_path, refinery=refinery, models={"strong": Scripted(text_reply("done"))})
     run = await recorder.run("coder", "acme", "fix it", tools=memory, workspace=work)
-    engine = Engine(tmp_path, generation=Echo())
+    engine = Engine(tmp_path, models={"strong": Echo()})
     [bare] = await collect(refinery.replay("acme", engine, agent="coder"))
     assert bare.candidate is None and bare.error is not None
     assert bare.error.startswith("ConfigurationError: engine_tools: agent 'coder'")
@@ -883,12 +888,12 @@ async def test_a_decision_replay_re_asks_runtime_questions_as_recorded_and_the_f
     storage: Storage,
 ) -> None:
     refinery = Refinery(storage)
-    recorder = Engine(graded(tmp_path / "old"), decision=Answering(), refinery=refinery)
+    recorder = Engine(graded(tmp_path / "old"), refinery=refinery, models={"judge": Answering()})
     asked = await recorder.run("grader", "acme", "x", questions={"area": AREA})
     tasked = await recorder.run("grader", "acme", "y", task="tone", questions={"area": AREA})
     plain = await recorder.run("grader", "acme", "z")
     dm = Answering()
-    candidate_ = Engine(graded(tmp_path / "new", "Must it be done today?"), decision=dm)
+    candidate_ = Engine(graded(tmp_path / "new", "Must it be done today?"), models={"judge": dm})
     pairs = await collect(refinery.replay("acme", candidate_, agent="grader"))
     assert [pair.error for pair in pairs] == [None, None, None]
     first, second, third = (pair.candidate for pair in pairs)
@@ -926,13 +931,15 @@ async def test_a_routed_decision_replays_with_the_router_s_task_not_the_routed_r
         (tmp_path / path).write_text(text, encoding="utf-8")
     graded(tmp_path)
     refinery = Refinery(storage)
-    recorded = await Engine(tmp_path, decision=Answering(), refinery=refinery).run(
+    recorded = await Engine(tmp_path, refinery=refinery, models={"judge": Answering()}).run(
         "desk", "acme", "x", task="audit"
     )
     assert isinstance(recorded, Decision) and isinstance(recorded.routed_to, Decision)
     assert recorded.routed_to.task is None
     dm = Answering()
-    [pair] = await collect(refinery.replay("acme", Engine(tmp_path, decision=dm), agent="desk"))
+    [pair] = await collect(
+        refinery.replay("acme", Engine(tmp_path, models={"judge": dm}), agent="desk")
+    )
     assert isinstance(pair.candidate, Decision) and pair.candidate.task == "audit"
     assert [list(asked) for _, asked in dm.calls] == [["team", "angry"], ["urgent"]]
 
@@ -942,12 +949,12 @@ async def test_a_runtime_question_the_candidate_s_folder_now_holds_fails_its_pai
     storage: Storage,
 ) -> None:
     refinery = Refinery(storage)
-    recorder = Engine(graded(tmp_path / "old"), decision=Answering(), refinery=refinery)
+    recorder = Engine(graded(tmp_path / "old"), refinery=refinery, models={"judge": Answering()})
     await recorder.run("grader", "acme", "x", questions={"area": AREA})
     root = graded(tmp_path / "new")
     (root / "grader/questions/area.md").write_text("---\ntype: check\n---\nOrders?\n")
     [pair] = await collect(
-        refinery.replay("acme", Engine(root, decision=Answering()), agent="grader")
+        refinery.replay("acme", Engine(root, models={"judge": Answering()}), agent="grader")
     )
     assert pair.candidate is None
     assert pair.error == (
@@ -959,7 +966,7 @@ async def test_a_fingerprint_selects_decision_runs_by_all_three_parts(
     tmp_path: Path, storage: Storage
 ) -> None:
     refinery = Refinery(storage)
-    recorder = Engine(graded(tmp_path), decision=Answering(), refinery=refinery)
+    recorder = Engine(graded(tmp_path), refinery=refinery, models={"judge": Answering()})
     folder = await recorder.run("grader", "acme", "x")
     runtime = await recorder.run("grader", "acme", "x", questions={"area": AREA})
     again = await recorder.run("grader", "acme", "y", questions={"area": AREA})
@@ -967,7 +974,7 @@ async def test_a_fingerprint_selects_decision_runs_by_all_three_parts(
     prints = [run.fingerprint for run in (folder, runtime, tasked)]
     assert len({p.agent for p in prints}) == 1
     assert len({p.questions for p in prints}) == 3
-    engine = Engine(graded(tmp_path), decision=Answering())
+    engine = Engine(graded(tmp_path), models={"judge": Answering()})
     for run, expected in ((folder, [folder]), (runtime, [runtime, again]), (tasked, [tasked])):
         pairs = await collect(
             refinery.replay("acme", engine, agent="grader", fingerprint=run.fingerprint)
@@ -984,17 +991,19 @@ async def test_a_decision_run_with_media_replays_its_parts(
         media_types = {"image/*"}
 
     refinery = Refinery(storage)
-    recorder = Engine(graded(tmp_path), decision=Seeing(), refinery=refinery)
+    recorder = Engine(graded(tmp_path), refinery=refinery, models={"judge": Seeing()})
     parts = [Text(text="Urgent?"), Image(media_type="image/png", data=b"\x89PNG\r\n\x1a\n")]
     await recorder.run("grader", "acme", parts)
     seeing = Seeing()
     [pair] = await collect(
-        refinery.replay("acme", Engine(graded(tmp_path), decision=seeing), agent="grader")
+        refinery.replay("acme", Engine(graded(tmp_path), models={"judge": seeing}), agent="grader")
     )
     assert isinstance(pair.candidate, Decision) and pair.candidate.state == parts
     assert seeing.calls[0][0] == parts
     [refused] = await collect(
-        refinery.replay("acme", Engine(graded(tmp_path), decision=Answering()), agent="grader")
+        refinery.replay(
+            "acme", Engine(graded(tmp_path), models={"judge": Answering()}), agent="grader"
+        )
     )
     assert refused.error == (
         "InputError: engine: decision agent 'grader' takes text only; got image/png"
@@ -1009,9 +1018,8 @@ async def test_a_parent_whose_child_was_given_a_task_and_questions_replays_as_on
     asked = delegating("grader", "Sorry!", task="tone", questions={"area": PICK})
     recorder = Engine(
         lead(tmp_path),
-        generation=Scripted(asked, text_reply("Graded.")),
-        decision=Answering(),
         refinery=refinery,
+        models={"strong": Scripted(asked, text_reply("Graded.")), "judge": Answering()},
     )
     recorded = await recorder.run("lead", "acme", "Grade this")
     read = await refinery.run("acme", recorded.run_id)
@@ -1027,7 +1035,7 @@ async def test_a_parent_whose_child_was_given_a_task_and_questions_replays_as_on
     llm = Scripted(delegating("grader", "Sorry!", questions={"area": PICK}), text_reply("Again."))
     dm = Answering()
     [pair] = await collect(
-        refinery.replay("acme", Engine(tmp_path, generation=llm, decision=dm), agent="lead")
+        refinery.replay("acme", Engine(tmp_path, models={"strong": llm, "judge": dm}), agent="lead")
     )
     assert pair.error is None and isinstance(pair.candidate, Generation)
     assert pair.candidate.reply == "Again." and pair.candidate.task is None
@@ -1045,7 +1053,7 @@ async def test_a_failed_run_is_replayed_and_its_pair_says_it_failed(
         update={"error": "ModelError: anthropic: overloaded"}
     )
     await refinery.record(failed)
-    candidate = Engine(fixtures, generation=Scripted(text_reply("Refunded.")), tools=TOOLS)
+    candidate = Engine(fixtures, tools=TOOLS, models={"strong": Scripted(text_reply("Refunded."))})
     async with aclosing(refinery.replay("acme", candidate, agent="support")) as pairs:
         [pair] = [p async for p in pairs]
     assert pair.recorded.error == "ModelError: anthropic: overloaded"
@@ -1096,7 +1104,10 @@ async def test_a_windowed_run_replays_with_its_conversation_and_history(
 ) -> None:
     refinery = Refinery(storage)
     recorder = Engine(
-        fixtures, generation=Scripted(text_reply("Still refunded.")), tools=TOOLS, refinery=refinery
+        fixtures,
+        tools=TOOLS,
+        refinery=refinery,
+        models={"strong": Scripted(text_reply("Still refunded."))},
     )
     recorded = await recorder.run("support", "acme", "Is it refunded?", history=EARLIER, start=4)
     assert isinstance(recorded, Generation)
@@ -1106,7 +1117,7 @@ async def test_a_windowed_run_replays_with_its_conversation_and_history(
     held = Held(whole)
     for source in (whole, deque(whole), held):
         llm = Scripted(text_reply("Yes."))
-        candidate = Engine(fixtures, generation=llm, tools=TOOLS)
+        candidate = Engine(fixtures, tools=TOOLS, models={"strong": llm})
         pair = await replayed(refinery, candidate, "support", given(source))
         assert pair.error is None and isinstance(pair.candidate, Generation)
         assert pair.candidate.start == 4
@@ -1121,14 +1132,13 @@ async def test_a_routed_run_replays_its_generation_run_with_the_conversation(
     refinery = Refinery(storage)
     recorder = Engine(
         fixtures,
-        generation=Scripted(text_reply("Rebooted.")),
-        decision=Desk(),
         tools=TOOLS,
         refinery=refinery,
+        models={"strong": Scripted(text_reply("Rebooted.")), "judge": Desk()},
     )
     await recorder.run("frontdesk", "acme", "It is down again.", history=EARLIER, start=4)
     llm = Scripted(text_reply("Try again."))
-    candidate = Engine(fixtures, generation=llm, decision=Desk(), tools=TOOLS)
+    candidate = Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": Desk()})
     seen: list[Run] = []
 
     def conversation(run: Run) -> list[Message]:
@@ -1155,10 +1165,10 @@ async def test_a_conversation_that_raises_gives_the_pair_an_error(
 
     refinery = Refinery(storage)
     recorder = Engine(
-        fixtures, generation=Scripted(text_reply("Ok.")), tools=TOOLS, refinery=refinery
+        fixtures, tools=TOOLS, refinery=refinery, models={"strong": Scripted(text_reply("Ok."))}
     )
     await recorder.run("support", "acme", "Hi.", history=EARLIER, start=4)
-    candidate = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+    candidate = Engine(fixtures, tools=TOOLS, models={"strong": Scripted()})
     pair = await replayed(refinery, candidate, "support", missing)
     assert pair.error == "LookupError: no conversation for this run"
 
@@ -1168,10 +1178,10 @@ async def test_a_conversation_shorter_than_the_recorded_start_gives_the_pair_an_
 ) -> None:
     refinery = Refinery(storage)
     recorder = Engine(
-        fixtures, generation=Scripted(text_reply("Ok.")), tools=TOOLS, refinery=refinery
+        fixtures, tools=TOOLS, refinery=refinery, models={"strong": Scripted(text_reply("Ok."))}
     )
     await recorder.run("support", "acme", "Hi.", history=EARLIER, start=4)
-    candidate = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+    candidate = Engine(fixtures, tools=TOOLS, models={"strong": Scripted()})
     for short, end in (
         (EARLIER[:2], 2),
         (Held(EARLIER[:2]), 4),
@@ -1190,7 +1200,10 @@ async def test_history_in_a_replay_reads_before_the_input_and_never_past_it(
 ) -> None:
     refinery = Refinery(storage)
     recorder = Engine(
-        fixtures, generation=Scripted(text_reply("Still refunded.")), tools=TOOLS, refinery=refinery
+        fixtures,
+        tools=TOOLS,
+        refinery=refinery,
+        models={"strong": Scripted(text_reply("Still refunded."))},
     )
     recorded = await recorder.run("support", "acme", "Is it refunded?", history=EARLIER, start=4)
     assert isinstance(recorded, Generation)
@@ -1201,7 +1214,7 @@ async def test_history_in_a_replay_reads_before_the_input_and_never_past_it(
             Reply(tool_calls=[ToolCall(id="h1", name="History", args={})], stop_reason="tool_use"),
             text_reply("Yes."),
         )
-        candidate = Engine(fixtures, generation=llm, tools=TOOLS)
+        candidate = Engine(fixtures, tools=TOOLS, models={"strong": llm})
         pair = await replayed(refinery, candidate, "support", given(source))
         assert pair.error is None
         [result] = [m for m in llm.calls[1][1] if m.role == "tool"][-1:]
@@ -1222,14 +1235,17 @@ async def test_a_source_that_ignores_stop_never_passes_the_cut(
 
     refinery = Refinery(storage)
     recorder = Engine(
-        fixtures, generation=Scripted(text_reply("Still refunded.")), tools=TOOLS, refinery=refinery
+        fixtures,
+        tools=TOOLS,
+        refinery=refinery,
+        models={"strong": Scripted(text_reply("Still refunded."))},
     )
     recorded = await recorder.run("support", "acme", "Is it refunded?", history=EARLIER, start=4)
     assert isinstance(recorded, Generation)
     later = [Message(role="user", content="Later."), Message(role="assistant", content="Later.")]
     whole = [*EARLIER, *recorded.added, *later]
     llm = Scripted(text_reply("Yes."))
-    candidate = Engine(fixtures, generation=llm, tools=TOOLS)
+    candidate = Engine(fixtures, tools=TOOLS, models={"strong": llm})
     pair = await replayed(refinery, candidate, "support", lambda run: Sloppy(whole))
     assert pair.error is None
     assert said(llm.calls[0][1]) == said(
@@ -1249,7 +1265,7 @@ async def test_a_decision_run_that_routes_nowhere_never_calls_conversation(
     )
     refinery = Refinery(storage)
     recorder = Engine(
-        fixtures, generation=Scripted(), decision=other, tools=TOOLS, refinery=refinery
+        fixtures, tools=TOOLS, refinery=refinery, models={"strong": Scripted(), "judge": other}
     )
     recorded = await recorder.run("frontdesk", "acme", "Hello.")
     assert isinstance(recorded, Decision) and recorded.routed_to is None
@@ -1259,7 +1275,7 @@ async def test_a_decision_run_that_routes_nowhere_never_calls_conversation(
         called.append(run)
         return EARLIER
 
-    candidate = Engine(fixtures, generation=Scripted(), decision=other, tools=TOOLS)
+    candidate = Engine(fixtures, tools=TOOLS, models={"strong": Scripted(), "judge": other})
     pair = await replayed(refinery, candidate, "frontdesk", conversation)
     assert pair.error is None and called == []
 

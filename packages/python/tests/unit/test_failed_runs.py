@@ -73,7 +73,7 @@ async def test_a_run_whose_model_call_fails_is_recorded_then_raised(fixtures: Pa
     error = too_long()
     kept = Kept()
     engine = Engine(
-        fixtures, generation=Breaking(looked_up(), error=error), tools=TOOLS, refinery=kept
+        fixtures, tools=TOOLS, refinery=kept, models={"strong": Breaking(looked_up(), error=error)}
     )
     with pytest.raises(ModelError) as caught:
         await engine.run("support", "acme", "Where is A-1?")
@@ -88,7 +88,9 @@ async def test_a_run_whose_model_call_fails_is_recorded_then_raised(fixtures: Pa
 
 async def test_a_recorder_that_fails_never_hides_why_the_run_failed(fixtures: Path) -> None:
     error = too_long()
-    engine = Engine(fixtures, generation=Breaking(error=error), tools=TOOLS, refinery=Down())
+    engine = Engine(
+        fixtures, tools=TOOLS, refinery=Down(), models={"strong": Breaking(error=error)}
+    )
     with pytest.raises(ModelError) as caught:
         await engine.run("support", "acme", "Where is A-1?")
     assert caught.value is error
@@ -96,7 +98,9 @@ async def test_a_recorder_that_fails_never_hides_why_the_run_failed(fixtures: Pa
 
 async def test_a_failed_run_is_not_recorded_with_record_false(fixtures: Path) -> None:
     kept = Kept()
-    engine = Engine(fixtures, generation=Breaking(error=too_long()), tools=TOOLS, refinery=kept)
+    engine = Engine(
+        fixtures, tools=TOOLS, refinery=kept, models={"strong": Breaking(error=too_long())}
+    )
     with pytest.raises(ModelError):
         await engine.run("support", "acme", "Where is A-1?", record=False)
     assert kept.runs == []
@@ -106,7 +110,9 @@ async def test_a_decision_run_whose_model_fails_is_recorded_without_answers(
     fixtures: Path,
 ) -> None:
     kept = Kept()
-    engine = Engine(fixtures, decision=Refusing(TimeoutError("decide timed out")), refinery=kept)
+    engine = Engine(
+        fixtures, refinery=kept, models={"judge": Refusing(TimeoutError("decide timed out"))}
+    )
     with pytest.raises(TimeoutError):
         await engine.run("triage", "acme", {"message": "It is down"})
     [run] = kept.runs
@@ -118,10 +124,12 @@ async def test_a_delegated_run_that_fails_stays_under_its_parent(fixtures: Path)
     kept = Kept()
     engine = Engine(
         fixtures,
-        generation=Scripted(delegate_triage(), text_reply("I could not triage it.")),
-        decision=Refusing(TimeoutError("decide timed out")),
         tools=TOOLS,
         refinery=kept,
+        models={
+            "strong": Scripted(delegate_triage(), text_reply("I could not triage it.")),
+            "judge": Refusing(TimeoutError("decide timed out")),
+        },
     )
     run = await engine.run("support", "acme", "It is down")
     assert isinstance(run, Generation) and run.error is None
@@ -140,10 +148,9 @@ async def test_a_routed_run_that_fails_fails_its_router_and_both_are_recorded(
     kept = Kept()
     engine = Engine(
         fixtures,
-        generation=Breaking(error=ModelError("anthropic: overloaded")),
-        decision=Desk(),
         tools=TOOLS,
         refinery=kept,
+        models={"strong": Breaking(error=ModelError("anthropic: overloaded")), "judge": Desk()},
     )
     with pytest.raises(ModelError):
         await engine.run("frontdesk", "acme", "It is down")
@@ -162,7 +169,7 @@ async def test_a_routed_run_refused_before_its_first_call_leaves_routed_to_none(
     kept = Kept()
     llm = Scripted()
     engine = Engine(
-        fixtures, generation=llm, decision=Desk(), tools=TOOLS, refinery=kept, max_depth=1
+        fixtures, tools=TOOLS, refinery=kept, max_depth=1, models={"strong": llm, "judge": Desk()}
     )
     with pytest.raises(DelegationDepthError):
         await engine.run("frontdesk", "acme", "It is down")
@@ -177,7 +184,7 @@ async def test_an_approve_that_raises_fails_the_run_and_it_is_recorded(fixtures:
         raise PermissionError("approval service down")
 
     kept = Kept()
-    engine = Engine(fixtures, generation=Scripted(looked_up()), tools=TOOLS, refinery=kept)
+    engine = Engine(fixtures, tools=TOOLS, refinery=kept, models={"strong": Scripted(looked_up())})
     with pytest.raises(PermissionError):
         await engine.run("support", "acme", "Where is A-1?", approve=approve)
     [run] = kept.runs
@@ -198,7 +205,7 @@ async def test_a_run_whose_task_is_cancelled_is_not_recorded(fixtures: Path) -> 
             return text_reply("late")
 
     kept = Kept()
-    engine = Engine(fixtures, generation=Slow(), tools=TOOLS, refinery=kept)
+    engine = Engine(fixtures, tools=TOOLS, refinery=kept, models={"strong": Slow()})
     task = asyncio.ensure_future(engine.run("support", "acme", "x"))
     await waiting.wait()
     task.cancel()
@@ -215,7 +222,7 @@ async def test_a_run_refused_before_its_first_model_call_is_not_recorded(
 
     kept = Kept()
     llm = Scripted()
-    engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=kept)
+    engine = Engine(fixtures, tools=TOOLS, refinery=kept, models={"strong": llm})
     collide = Tools([Tool("Output", "Collides", body=lookup_order)])
     with pytest.raises(ConfigurationError):
         await engine.run("support", "acme", "x", expect=Verdict, tools=collide)
@@ -226,10 +233,10 @@ async def test_a_runaway_run_is_recorded(fixtures: Path) -> None:
     kept = Kept()
     engine = Engine(
         fixtures,
-        generation=Scripted(looked_up(), looked_up()),
         tools=TOOLS,
         refinery=kept,
         max_steps=2,
+        models={"strong": Scripted(looked_up(), looked_up())},
     )
     with pytest.raises(RunawayError):
         await engine.run("support", "acme", "Where is A-1?")
@@ -247,7 +254,7 @@ async def test_an_event_handler_that_raises_fails_the_run_and_it_is_recorded(
 
     kept = Kept()
     reply = text_reply("Done.", usage=Usage(input=10, output=5), model="m-1")
-    engine = Engine(fixtures, generation=Scripted(reply), tools=TOOLS, refinery=kept)
+    engine = Engine(fixtures, tools=TOOLS, refinery=kept, models={"strong": Scripted(reply)})
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "x", on_event=closed)
     [run] = kept.runs
@@ -264,7 +271,7 @@ async def test_a_handler_that_raises_on_the_start_fails_the_run_before_any_model
 
     kept = Kept()
     llm = Scripted(text_reply("Done."))
-    engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=kept)
+    engine = Engine(fixtures, tools=TOOLS, refinery=kept, models={"strong": llm})
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "x", on_event=closed)
     [run] = kept.runs
@@ -278,7 +285,7 @@ async def test_a_failed_run_keeps_the_step_of_a_tool_that_already_ran(fixtures: 
             raise ConnectionResetError("the socket closed")
 
     kept = Kept()
-    engine = Engine(fixtures, generation=Scripted(looked_up()), tools=TOOLS, refinery=kept)
+    engine = Engine(fixtures, tools=TOOLS, refinery=kept, models={"strong": Scripted(looked_up())})
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "Where is A-1?", on_event=closed)
     [run] = kept.runs
@@ -307,9 +314,9 @@ async def test_a_failed_batch_keeps_every_step_that_ran_in_the_order_asked(
     kept = Kept()
     engine = Engine(
         fixtures,
-        generation=Scripted(Reply(tool_calls=calls, stop_reason="tool_use")),
         tools=tools,
         refinery=kept,
+        models={"strong": Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))},
     )
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "x", on_event=closed)
@@ -347,9 +354,9 @@ async def test_a_call_cut_by_a_stop_is_recorded_once_when_its_handler_raises(
     kept = Kept()
     engine = Engine(
         fixtures,
-        generation=Scripted(Reply(tool_calls=calls, stop_reason="tool_use")),
         tools=tools,
         refinery=kept,
+        models={"strong": Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))},
     )
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "x", on_event=closed, stop=stop)
@@ -371,7 +378,7 @@ async def test_a_call_repeated_in_a_later_turn_is_recorded_in_each(fixtures: Pat
 
     again = looked_up()
     kept = Kept()
-    engine = Engine(fixtures, generation=Scripted(again, again), tools=TOOLS, refinery=kept)
+    engine = Engine(fixtures, tools=TOOLS, refinery=kept, models={"strong": Scripted(again, again)})
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "Where is A-1?", on_event=closed)
     [run] = kept.runs
@@ -389,10 +396,9 @@ async def test_a_failed_run_keeps_the_children_that_already_ran(fixtures: Path) 
     kept = Kept()
     engine = Engine(
         fixtures,
-        generation=Scripted(delegate_triage()),
-        decision=Answering(),
         tools=TOOLS,
         refinery=kept,
+        models={"strong": Scripted(delegate_triage()), "judge": Answering()},
     )
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "It is down", on_event=closed)

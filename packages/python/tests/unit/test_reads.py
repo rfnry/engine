@@ -27,7 +27,7 @@ def test_reads_names_a_folder_by_its_path_from_the_root(tmp_path: Path) -> None:
     spec = load_tree(books(tmp_path))["coding"]
     assert spec.reads == {"shared/books": (tmp_path / "shared/books").resolve()}
     assert "../shared/books/\n  python/\n    async.md — Async" in spec.listing
-    assert Engine(tmp_path).agents["coding"].reads == ["shared/books"]
+    assert Engine(tmp_path, models={}).agents["coding"].reads == ["shared/books"]
 
 
 def test_the_fingerprint_follows_the_files_of_a_read_folder(tmp_path: Path) -> None:
@@ -38,7 +38,7 @@ def test_the_fingerprint_follows_the_files_of_a_read_folder(tmp_path: Path) -> N
 
 
 async def test_the_tools_take_a_read_folder_by_the_path_the_map_shows(tmp_path: Path) -> None:
-    surface = EngineTools(Engine(books(tmp_path)), agent="coding", scope="acme")
+    surface = EngineTools(Engine(books(tmp_path), models={}), agent="coding", scope="acme")
     assert "Await." in str(
         await surface.dispatch("Read", {"path": "../shared/books/python/async.md"})
     )
@@ -53,7 +53,7 @@ async def test_the_tools_take_a_read_folder_by_the_path_the_map_shows(tmp_path: 
 
 
 async def test_a_glob_cannot_climb_out_of_a_read_folder(tmp_path: Path) -> None:
-    surface = EngineTools(Engine(books(tmp_path)), agent="coding", scope="acme")
+    surface = EngineTools(Engine(books(tmp_path), models={}), agent="coding", scope="acme")
     with pytest.raises(Exception, match="stay inside"):
         await surface.dispatch("Glob", {"pattern": "../shared/books/../*.md"})
     with pytest.raises(Exception, match="stay inside"):

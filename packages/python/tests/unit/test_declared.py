@@ -65,22 +65,26 @@ async def test_contract_validates_against_the_declared_fields() -> None:
 
 def test_check_declarations_refuses_missing_bodies_and_undeclared_tools() -> None:
     agents = load_tree(FIXTURES)
-    check_declarations(agents, _code(), bodies=True)
+    check_declarations(agents, _code(), given={"strong", "judge"})
     with pytest.raises(ConfigurationError, match="lookup_order"):
-        check_declarations(agents, {"now": _code()["now"]}, bodies=True)
+        check_declarations(agents, {"now": _code()["now"]}, given={"strong", "judge"})
     with pytest.raises(ConfigurationError, match="weather"):
         check_declarations(
-            agents, {**_code(), "weather": Tool("weather", "Forecast", body=now)}, bodies=True
+            agents,
+            {**_code(), "weather": Tool("weather", "Forecast", body=now)},
+            given={"strong", "judge"},
         )
     with pytest.raises(ConfigurationError, match="description"):
-        check_declarations(agents, {**_code(), "now": Tool("now", body=now)}, bodies=True)
+        check_declarations(
+            agents, {**_code(), "now": Tool("now", body=now)}, given={"strong", "judge"}
+        )
 
 
-def test_without_bodies_only_undeclared_code_tools_are_refused() -> None:
+def test_without_a_given_model_only_undeclared_code_tools_are_refused() -> None:
     agents = load_tree(FIXTURES)
-    check_declarations(agents, {}, bodies=False)
+    check_declarations(agents, {}, given=set())
     with pytest.raises(ConfigurationError, match="weather"):
-        check_declarations(agents, {"weather": Tool("weather", "Forecast", body=now)}, bodies=False)
+        check_declarations(agents, {"weather": Tool("weather", "Forecast", body=now)}, given=set())
 
 
 def _lookup_tree(root: Path) -> None:
@@ -103,7 +107,9 @@ def test_declared_argument_classes_are_made_when_the_tree_loads_not_per_run(
         return real(decl)
 
     monkeypatch.setattr(declared, "_args_model", counted)
-    engine = Engine(tmp_path, generation=Scripted(), tools=[Tool("lookup", "Look up", body=lookup)])
+    engine = Engine(
+        tmp_path, tools=[Tool("lookup", "Look up", body=lookup)], models={"strong": Scripted()}
+    )
     loaded = len(made)
     EngineTools(engine, agent="a", scope="acme")
     EngineTools(engine, agent="a", scope="acme")
@@ -112,7 +118,7 @@ def test_declared_argument_classes_are_made_when_the_tree_loads_not_per_run(
 
 def test_tools_without_a_generation_model_still_carry_their_contracts(tmp_path: Path) -> None:
     _lookup_tree(tmp_path)
-    engine = Engine(tmp_path, tools=[Tool("lookup", "Look up", body=lookup)])
+    engine = Engine(tmp_path, tools=[Tool("lookup", "Look up", body=lookup)], models={})
     surface = EngineTools(engine, agent="a", scope="acme")
     [found] = [d for d in surface.definitions() if d["name"] == "lookup"]
     assert found["input_schema"]["required"] == ["id"]
@@ -132,7 +138,9 @@ async def test_an_adapter_editing_a_declared_schema_changes_no_later_run_in_any_
             return await super().generate(system, messages, tools)
 
     model = Editing(text_reply("one"), text_reply("two"))
-    engine = Engine(tmp_path, generation=model, tools=[Tool("lookup", "Look up", body=lookup)])
+    engine = Engine(
+        tmp_path, tools=[Tool("lookup", "Look up", body=lookup)], models={"strong": model}
+    )
     first = await engine.run("a", "acme", "hi")
     second = await engine.run("a", "other", "hi")
     assert seen == ["string", "string"]

@@ -19,7 +19,7 @@ async def setup(pool) -> None:
     global refinery, engine
     refinery = Refinery(PostgresStorage(pool))
     await refinery.initialize()
-    engine = Engine(ROOT / "agents", generation=ThinkingProvider(), refinery=refinery)
+    engine = Engine(ROOT / "agents", models={"strong": ThinkingProvider()}, refinery=refinery)
 
 
 async def run(firm: str, contract: str, question: str) -> dict:

@@ -44,7 +44,7 @@ def calling(name: str, text: str) -> Reply:
 async def test_a_generation_agent_as_a_tool_replies_and_records(fixtures: Path) -> None:
     llm = Scripted(text_reply("Refunded."))
     recorder = Recorded()
-    engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=recorder)
+    engine = Engine(fixtures, tools=TOOLS, refinery=recorder, models={"strong": llm})
     billing = engine.tool("billing", scope="acme", context="Acme is on the enterprise plan.")
     [definition] = billing.definitions()
     assert (
@@ -59,7 +59,7 @@ async def test_a_generation_agent_as_a_tool_replies_and_records(fixtures: Path) 
 
 
 async def test_a_decision_agent_as_a_tool_returns_its_answers(fixtures: Path) -> None:
-    engine = Engine(fixtures, decision=Fixed(TRIAGE))
+    engine = Engine(fixtures, models={"judge": Fixed(TRIAGE)})
     judge = engine.tool("triage", scope="acme", name="judge", description="Judge urgency.")
     assert judge.names == ["judge"] and judge.definitions()[0]["description"] == "Judge urgency."
     result = await judge.dispatch("judge", {"input": "It is down"})
@@ -70,7 +70,7 @@ async def test_a_decision_agent_as_a_tool_returns_its_answers(fixtures: Path) ->
 
 
 async def test_the_tool_composes_and_refuses_bad_calls(fixtures: Path) -> None:
-    engine = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted()})
 
     async def ping(args: dict[str, Any]) -> str:
         return "pong"
@@ -94,7 +94,7 @@ async def test_inside_a_run_it_is_its_own_top_level_run(fixtures: Path) -> None:
         calling("consult", "Charged twice"), text_reply("Refunded."), text_reply("Done.")
     )
     recorder = Recorded()
-    engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=recorder)
+    engine = Engine(fixtures, tools=TOOLS, refinery=recorder, models={"strong": llm})
     run = await engine.run(
         "support", "acme", "Help", tools=engine.tool("billing", scope="acme", name="consult")
     )
@@ -106,7 +106,7 @@ async def test_inside_a_run_it_is_its_own_top_level_run(fixtures: Path) -> None:
 
 async def test_the_depth_guard_holds_across_the_tool(fixtures: Path) -> None:
     llm = Scripted(calling("billing", "again"), text_reply("done"))
-    engine = Engine(fixtures, generation=llm, tools=TOOLS, max_depth=1)
+    engine = Engine(fixtures, tools=TOOLS, max_depth=1, models={"strong": llm})
     run = await engine.run("billing", "acme", "hi", tools=engine.tool("billing", scope="acme"))
     assert isinstance(run, Generation) and run.steps[0].is_error
     assert run.steps[0].result == (
@@ -127,7 +127,7 @@ async def test_a_call_through_the_tool_resets_the_route_chain(tmp_path: Path) ->
         "---\nname: g\nkind: generation\nmodel: strong\n---\nhi\n"
     )
     llm = Scripted(calling("r", "again"), text_reply("inner done"), text_reply("outer done"))
-    engine = Engine(tmp_path, generation=llm, decision=Answering())
+    engine = Engine(tmp_path, models={"strong": llm, "judge": Answering()})
     run = await engine.run("r", "acme", "start", tools=engine.tool("r", scope="acme"))
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     [step] = run.routed_to.steps
@@ -140,7 +140,7 @@ async def test_a_decision_agent_as_a_tool_takes_a_task_and_questions_of_the_call
     tmp_path: Path,
 ) -> None:
     recorder = Recorded()
-    engine = Engine(lead(tmp_path), decision=Answering(), refinery=recorder)
+    engine = Engine(lead(tmp_path), refinery=recorder, models={"judge": Answering()})
     grader = engine.tool("grader", scope="acme")
     [definition] = grader.definitions()
     schema = definition["input_schema"]
@@ -173,7 +173,7 @@ async def test_a_decision_agent_as_a_tool_takes_a_task_and_questions_of_the_call
 async def test_a_generation_agent_as_a_tool_takes_a_task_it_has(tmp_path: Path) -> None:
     llm = Scripted(text_reply("Sorry, it is late."))
     recorder = Recorded()
-    engine = Engine(lead(tmp_path), generation=llm, decision=Answering(), refinery=recorder)
+    engine = Engine(lead(tmp_path), refinery=recorder, models={"strong": llm, "judge": Answering()})
     writer = engine.tool("writer", scope="acme")
     properties = writer.definitions()[0]["input_schema"]["properties"]
     assert list(properties) == ["input", "task"] and properties["task"]["enum"] == ["apology"]
@@ -203,7 +203,7 @@ def _intent(choice: str, p: float) -> dict[str, Answer]:
 async def test_a_routing_agent_as_a_tool_returns_the_reply_it_routed_to(fixtures: Path) -> None:
     llm = Scripted(text_reply("Support here."))
     engine = Engine(
-        fixtures, generation=llm, decision=Fixed(_intent("technical", 0.8)), tools=TOOLS
+        fixtures, tools=TOOLS, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))}
     )
     result = await engine.tool("frontdesk", scope="acme").dispatch(
         "frontdesk", {"input": "The app crashes"}
@@ -214,7 +214,9 @@ async def test_a_routing_agent_as_a_tool_returns_the_reply_it_routed_to(fixtures
 
 async def test_a_routing_agent_that_did_not_route_returns_its_answers_only(fixtures: Path) -> None:
     engine = Engine(
-        fixtures, generation=Scripted(), decision=Fixed(_intent("technical", 0.5)), tools=TOOLS
+        fixtures,
+        tools=TOOLS,
+        models={"strong": Scripted(), "judge": Fixed(_intent("technical", 0.5))},
     )
     result = await engine.tool("frontdesk", scope="acme").dispatch("frontdesk", {"input": "x"})
     assert isinstance(result, dict) and list(result) == ["answers"]
@@ -223,7 +225,7 @@ async def test_a_routing_agent_that_did_not_route_returns_its_answers_only(fixtu
 async def test_a_delegated_routing_agent_hands_back_the_reply_it_routed_to(fixtures: Path) -> None:
     llm = Scripted(text_reply("Support here."))
     engine = Engine(
-        fixtures, generation=llm, decision=Fixed(_intent("technical", 0.8)), tools=TOOLS
+        fixtures, tools=TOOLS, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))}
     )
     run = await engine.run("frontdesk", "acme", "The app crashes")
     handed = json.loads(child_result(run))

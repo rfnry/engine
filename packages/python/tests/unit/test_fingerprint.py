@@ -47,7 +47,7 @@ def tree(fixtures: Path, tmp_path: Path) -> Path:
 
 def engine(root: Path, *replies: Any, tools: list[Tool] = TOOLS, **kwargs: Any) -> Engine:
     llm = Scripted(*(replies or [text_reply("ok")]))
-    return Engine(root, generation=llm, decision=Desk(), tools=tools, **kwargs)
+    return Engine(root, tools=tools, **kwargs, models={"strong": llm, "judge": Desk()})
 
 
 async def generation(root: Path, *, tools: list[Tool] = TOOLS, **kwargs: Any) -> Generation:
@@ -255,7 +255,7 @@ AREA = Choice(
 
 
 def triage(fixtures: Path, root: Path | None = None) -> Engine:
-    return Engine(root or fixtures, decision=Answering())
+    return Engine(root or fixtures, models={"judge": Answering()})
 
 
 async def test_a_decision_run_s_questions_part_is_the_questions_it_asked(fixtures: Path) -> None:
@@ -330,7 +330,9 @@ async def test_the_questions_part_is_recorded_exported(
     storage: Storage,
 ) -> None:
     refinery = Refinery(storage)
-    run = await Engine(fixtures, decision=Desk(), refinery=refinery).run("triage", "acme", "x")
+    run = await Engine(fixtures, refinery=refinery, models={"judge": Desk()}).run(
+        "triage", "acme", "x"
+    )
     assert isinstance(run, Decision)
     assert (await refinery.run("acme", run.run_id)).fingerprint == run.fingerprint
     bucket = MemoryBucket()
@@ -358,9 +360,9 @@ async def test_an_edit_to_a_read_folder_changes_the_fingerprint_of_every_agent_r
         )
     (tmp_path / "books").mkdir()
     (tmp_path / "books" / "a.md").write_text("one\n")
-    before = Engine(tmp_path, generation=Scripted())
+    before = Engine(tmp_path, models={"strong": Scripted()})
     (tmp_path / "books" / "a.md").write_text("two\n")
-    after = Engine(tmp_path, generation=Scripted())
+    after = Engine(tmp_path, models={"strong": Scripted()})
     for name in ("coding", "writing"):
         assert before._spec(name).fingerprint != after._spec(name).fingerprint
     assert before._spec("other").fingerprint == after._spec("other").fingerprint

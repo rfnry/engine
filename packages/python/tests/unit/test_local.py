@@ -748,7 +748,7 @@ async def test_a_workspace_read_or_load_past_the_tool_timeout_returns_once_its_t
     local = Gated(root, "read")
     call = ToolCall(id="1", name=name, args={"path": "notes.txt", "where": "workspace"})
     llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("ok"))
-    engine = Engine(tmp_path / "worker", generation=llm, tool_timeout=0.05)
+    engine = Engine(tmp_path / "worker", tool_timeout=0.05, models={"strong": llm})
     running = asyncio.create_task(
         engine.run("worker", "acme", "x", workspace=Workspace(local, scope="acme"))
     )
@@ -883,7 +883,7 @@ async def test_a_job_cut_while_it_starts_is_stopped_by_close(
     command = "sleep 30 & wait"
     call = ToolCall(id="1", name="Shell", args={"command": command, "background": True})
     llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("ok"))
-    engine = Engine(tmp_path / "worker", generation=llm)
+    engine = Engine(tmp_path / "worker", models={"strong": llm})
     stop = Stop()
     before = asyncio.all_tasks()
 

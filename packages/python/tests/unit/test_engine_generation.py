@@ -48,7 +48,7 @@ def _tool_use(*calls: ToolCall) -> Reply:
 
 
 def engine_for(fixtures: Path, llm: Any, **kwargs: Any) -> Engine:
-    return Engine(fixtures, generation=llm, tools=TOOLS, **kwargs)
+    return Engine(fixtures, tools=TOOLS, **kwargs, models={"strong": llm})
 
 
 async def test_plain_reply_is_the_record(fixtures: Path) -> None:
@@ -186,7 +186,9 @@ async def test_calls_after_an_accepted_output_are_answered_but_never_run(
             ToolCall(id="l", name="lookup_order", args={"order_id": "A-1"}),
         )
     )
-    engine = Engine(fixtures, generation=llm, tools=[Tool("lookup_order", body=lookup), TOOLS[1]])
+    engine = Engine(
+        fixtures, tools=[Tool("lookup_order", body=lookup), TOOLS[1]], models={"strong": llm}
+    )
     run = await engine.run("support", "acme", "x", expect=Verdict)
     assert isinstance(run, Generation) and looked == []
     assert [(m.tool_call_id, m.is_error, m.content) for m in run.conversation[-2:]] == [
@@ -211,7 +213,9 @@ async def test_calls_in_a_reply_that_ran_out_of_room_are_answered_but_never_run(
         stop_reason="max_tokens",
     )
     llm = Scripted(cut, text_reply("It is on its way."))
-    engine = Engine(fixtures, generation=llm, tools=[Tool("lookup_order", body=lookup), TOOLS[1]])
+    engine = Engine(
+        fixtures, tools=[Tool("lookup_order", body=lookup), TOOLS[1]], models={"strong": llm}
+    )
     first = await engine.run("support", "acme", "Where is A-1?")
     assert isinstance(first, Generation) and first.reply == "Let me look" and looked == []
     assert first.conversation[-1] == Message(
@@ -297,8 +301,12 @@ async def test_a_run_that_raises_is_recorded_with_its_children(
     }
     delegate = ToolCall(id="d", name="Delegate", args={"agent": "triage", "input": "It is down"})
     llm = Scripted(_tool_use(delegate), _tool_use(ToolCall(id="c", name="LS", args={})))
-    engine = engine_for(
-        fixtures, llm, decision=Fixed(triage), refinery=Refinery(storage), max_steps=2
+    engine = Engine(
+        fixtures,
+        tools=TOOLS,
+        models={"strong": llm, "judge": Fixed(triage)},
+        refinery=Refinery(storage),
+        max_steps=2,
     )
     with pytest.raises(RunawayError):
         await engine.run("support", "acme", "x")
@@ -311,10 +319,10 @@ async def test_refusals(fixtures: Path) -> None:
         await engine.run("ghost", "acme", "x")
     with pytest.raises(InputError):
         await engine.run("billing", "", "x")
-    with pytest.raises(ConfigurationError):
+    with pytest.raises(ConfigurationError, match="agent .triage. runs on model .judge., which"):
         await engine.run("triage", "acme", "x")
-    with pytest.raises(ConfigurationError):
-        await Engine(fixtures, tools=TOOLS).run("billing", "acme", "x")
+    with pytest.raises(ConfigurationError, match="agent .billing. runs on model .strong., which"):
+        await Engine(fixtures, tools=TOOLS, models={}).run("billing", "acme", "x")
 
 
 @pytest.mark.parametrize("task", ["ghost", "../AGENT", "../../billing/AGENT", "../rules/refunds"])
@@ -384,9 +392,9 @@ async def test_a_slow_declared_tool_times_out(fixtures: Path) -> None:
     )
     engine = Engine(
         fixtures,
-        generation=llm,
         tools=[Tool("lookup_order", body=_slow), TOOLS[1]],
         tool_timeout=0.05,
+        models={"strong": llm},
     )
     run = await engine.run("support", "acme", "x")
     assert isinstance(run, Generation)
@@ -433,7 +441,7 @@ def test_a_root_that_is_not_a_directory_is_refused_by_its_path(tmp_path: Path) -
     for root in (tmp_path / "missing", a_file, str(tmp_path / "missing")):
         expected = f"^engine: root is not a directory: {re.escape(str(root))}$"
         with pytest.raises(ConfigurationError, match=expected):
-            Engine(root, generation=Scripted())
+            Engine(root, models={"strong": Scripted()})
 
 
 class ForeignCall(BaseModel):

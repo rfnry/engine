@@ -67,7 +67,7 @@ def furnish(support: Path) -> None:
 
 
 def engine(root: Path, llm: GenerationModel) -> Engine:
-    return Engine(root, generation=llm, decision=Answering(), tools=TOOLS)
+    return Engine(root, tools=TOOLS, models={"strong": llm, "judge": Answering()})
 
 
 def preloaded(support: Path) -> list[Part]:
@@ -181,7 +181,7 @@ async def test_a_run_applies_a_rule_held_only_in_its_file_without_reading_it(
     assert (support / "rules" / "refunds.md").read_text(encoding="utf-8").endswith(RULE)
     assert (
         "without approval"
-        not in Engine(root, generation=Scripted(), tools=TOOLS)._spec("support").listing
+        not in Engine(root, tools=TOOLS, models={"strong": Scripted()})._spec("support").listing
     )
     reading = RuleFollower()
     on_demand = await engine(root, reading).run("support", "acme", "Charged twice.")
@@ -200,7 +200,7 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
 ) -> None:
     llm = Scripted(text_reply("ok"))
     history = [Message(role="user", content="hi"), Message(role="assistant", content="hello")]
-    await Engine(fixtures, generation=llm, tools=TOOLS).run(
+    await Engine(fixtures, tools=TOOLS, models={"strong": llm}).run(
         "support",
         "acme",
         "Charged twice.",
@@ -261,7 +261,7 @@ def test_preload_is_true_and_a_decision_agent_cannot_declare_it(
     (tmp_path / "a" / "AGENT.md").write_text(f"---\n{front}---\n", encoding="utf-8")
     (tmp_path / "a" / "questions" / "q.md").write_text("---\ntype: check\n---\nIs it?\n")
     with pytest.raises(ConfigurationError, match=message):
-        Engine(tmp_path, generation=Scripted(), decision=Answering())
+        Engine(tmp_path, models={"strong": Scripted(), "judge": Answering()})
 
 
 def test_a_preloaded_file_that_is_not_the_type_its_name_says_is_refused_when_the_tree_loads(
@@ -322,7 +322,9 @@ async def test_a_delegated_agent_preloads_its_own_folder_and_only_its_own(tmp_pa
     preload_all(root / "lead")
     preload_all(root / "writer")
     llm = Scripted(delegating("writer", "Draft it."), text_reply("Drafted."), text_reply("Sent."))
-    run = await Engine(root, generation=llm, decision=Answering()).run("lead", "acme", "Go.")
+    run = await Engine(root, models={"strong": llm, "judge": Answering()}).run(
+        "lead", "acme", "Go."
+    )
     assert isinstance(run, Generation)
     [child] = run.children
     assert isinstance(child, Generation)
@@ -343,7 +345,9 @@ async def test_the_preload_is_recorded_read_back_exported_and_left_to_the_candid
     preload_all(support)
     refinery = Refinery(storage)
     history = [Message(role="user", content="hi"), Message(role="assistant", content="hello")]
-    built = Engine(root, generation=Scripted(text_reply("Sorry.")), tools=TOOLS, refinery=refinery)
+    built = Engine(
+        root, tools=TOOLS, refinery=refinery, models={"strong": Scripted(text_reply("Sorry."))}
+    )
     run = await built.run("support", "acme", "Charged twice.", history=history)
     assert isinstance(run, Generation)
     assert await refinery.run("acme", run.run_id) == run
@@ -358,7 +362,7 @@ async def test_the_preload_is_recorded_read_back_exported_and_left_to_the_candid
     assert rows["generation"]["preload"] == sent
     assert rows["preference"]["prompt"]["preload"] == sent
     candidate_model = Scripted(text_reply("Refunded."))
-    candidate = Engine(root, generation=candidate_model, tools=TOOLS)
+    candidate = Engine(root, tools=TOOLS, models={"strong": candidate_model})
     async for pair in refinery.replay("acme", candidate, agent="support"):
         assert pair.candidate is not None
     [(_, messages, _)] = candidate_model.calls
@@ -500,7 +504,7 @@ def test_preload_all_sends_the_read_folders_too_in_path_order(tmp_path: Path) ->
     (tmp_path / "coding" / "notes.md").write_text("Own.\n")
     (tmp_path / "books").mkdir()
     (tmp_path / "books" / "a.md").write_text("Shared.\n")
-    spec = Engine(tmp_path, generation=Scripted())._spec("coding")
+    spec = Engine(tmp_path, models={"strong": Scripted()})._spec("coding")
     assert spec.preload == [
         Text(text="<<<../books/a.md>>>\nShared.\n"),
         Text(text="<<<notes.md>>>\nOwn.\n"),

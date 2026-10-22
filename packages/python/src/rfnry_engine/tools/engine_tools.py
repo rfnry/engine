@@ -81,7 +81,7 @@ class EngineTools(Tools):
                 f"engine_tools: a tool named {HISTORY_TOOL!r} collides with the builtin"
             )
         room = workspace if spec.workspace else None
-        media_types = getattr(engine.generation, "media_types", None)
+        media_types = getattr(engine.models.get(spec.model), "media_types", None)
         backend = room.backend if room else None
         items: list[Tool | ToolsLike] = [
             *builtins(spec.root, from_agent(spec.path, spec.reads), backend),

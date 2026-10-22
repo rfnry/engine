@@ -210,7 +210,9 @@ def test_a_reader_does_not_see_another_agent_s_declarations(tmp_path: Path) -> N
 def test_a_tree_with_bodies_nobody_declares_is_told_where_to_declare(tmp_path: Path) -> None:
     agent(tmp_path)
     with pytest.raises(ConfigurationError, match="TOOLS.md or tools/"):
-        Engine(tmp_path, generation=Scripted(), tools=[Tool("lookup_order", "Look", body=echo)])
+        Engine(
+            tmp_path, tools=[Tool("lookup_order", "Look", body=echo)], models={"strong": Scripted()}
+        )
 
 
 @pytest.mark.parametrize(
@@ -227,7 +229,7 @@ def test_a_tool_named_like_a_builtin_is_refused_at_build(
 ) -> None:
     (agent(tmp_path, front=front) / "TOOLS.md").write_text(f"---\n{name}:\n---\n")
     with pytest.raises(ConfigurationError, match=f"'{name}'"):
-        Engine(tmp_path, generation=Scripted(), tools=[Tool(name, "Mine", body=echo)])
+        Engine(tmp_path, tools=[Tool(name, "Mine", body=echo)], models={"strong": Scripted()})
 
 
 def test_yaml_merge_keys_pass_the_duplicate_check(tmp_path: Path) -> None:

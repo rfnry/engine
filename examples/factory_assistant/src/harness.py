@@ -8,7 +8,7 @@ from providers import AnthropicProvider
 ROOT = Path(__file__).resolve().parent.parent
 PLANTS = json.loads((ROOT / "data" / "plants.json").read_text())["plants"]
 
-engine = Engine(ROOT / "agents", generation=AnthropicProvider())
+engine = Engine(ROOT / "agents", models={"strong": AnthropicProvider()})
 
 
 async def run(plant: str, question: str) -> dict:

@@ -61,6 +61,7 @@ ILLUSTRATIVE = {
     "refinery = Refinery(PostgresStorage(pool))": "needs a Postgres pool; the integration tier runs PostgresStorage",
     "pool = await asyncpg.create_pool(dsn)": "needs a Postgres pool and rfnry-memory",
     "from pathlib import Path": "needs agents that declare `workspace: true`",
+    'engine = Engine(root, models={"strong": strong_llm, "fast": fast_llm, "judge": dm})': "the test tree has no agent on fast",
     "jobs = {}": "needs a model that calls start and then check",
 }
 
@@ -119,7 +120,7 @@ SETUPS = {
             ),
         )
     ),
-    "engine = Engine(root, generation=llm, decision=dm, tools=tools)": Setup(
+    'engine = Engine(root, models={"strong": llm, "judge": dm}, tools=tools)': Setup(
         replies=(delegating("triage"),), intent="technical"
     ),
     ASKS: Setup(
@@ -286,7 +287,10 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
     (tmp_path / "work").mkdir()
     refinery = Refinery(storage)
     recorded = Engine(
-        root, generation=Model(), decision=Answering("billing"), tools=TOOLS, refinery=refinery
+        root,
+        models={"strong": Model(), "judge": Answering("billing")},
+        tools=TOOLS,
+        refinery=refinery,
     )
     llm, dm = Model(*setup.replies), Answering(setup.intent)
     return {
@@ -298,7 +302,7 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
         "llm": llm,
         "dm": dm,
         "refinery": refinery,
-        "engine": Engine(root, generation=llm, decision=dm, tools=TOOLS, refinery=refinery),
+        "engine": Engine(root, models={"strong": llm, "judge": dm}, tools=TOOLS, refinery=refinery),
         "tools": list(TOOLS),
         "InvoiceArgs": InvoiceArgs,
         "fetch_invoice": fetch_invoice,

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Annotated, Any, Protocol, cast
+from typing import Annotated, Any, NoReturn, Protocol, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
@@ -326,13 +326,60 @@ def _declared(model: object) -> str | None:
     return named if isinstance(named, str) and named else None
 
 
+def _not_given(spec: AgentSpec) -> NoReturn:
+    raise ConfigurationError(
+        f"engine: agent {spec.name!r} runs on model {spec.model!r}, which this engine was not given"
+    )
+
+
+def _kind_clash(spec: AgentSpec, verb: str) -> NoReturn:
+    raise ConfigurationError(
+        f"engine: agent {spec.name!r} is a {spec.kind} agent, and model {spec.model!r} has no {verb}()"
+    )
+
+
+def _models(
+    models: Mapping[str, GenerationModel | DecisionModel],
+) -> dict[str, GenerationModel | DecisionModel]:
+    if not isinstance(models, Mapping):
+        raise ConfigurationError("engine: models must be a mapping of model name to adapter")
+    for name, model in models.items():
+        if not isinstance(name, str) or not name or name != name.strip():
+            raise ConfigurationError(
+                f"engine: model name {name!r} must be non-blank text without padding"
+            )
+        if not isinstance(model, GenerationModel | DecisionModel):
+            raise ConfigurationError(
+                f"engine: model {name!r} has neither generate() nor decide(); pass an adapter that has one"
+            )
+    return dict(models)
+
+
+def _check_models(
+    agents: Mapping[str, AgentSpec], models: Mapping[str, GenerationModel | DecisionModel]
+) -> None:
+    used = sorted({spec.model for spec in agents.values()})
+    for name in sorted(models):
+        if name not in used:
+            raise ConfigurationError(
+                f"engine: no agent runs on model {name!r}; the tree's agents run on {', '.join(used)}"
+            )
+    for spec in agents.values():
+        model = models.get(spec.model)
+        if model is None:
+            continue
+        if spec.kind == "generation" and not isinstance(model, GenerationModel):
+            _kind_clash(spec, "generate")
+        if spec.kind == "decision" and not isinstance(model, DecisionModel):
+            _kind_clash(spec, "decide")
+
+
 class Engine:
     def __init__(
         self,
         root: Path | str,
         *,
-        generation: GenerationModel | None = None,
-        decision: DecisionModel | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel],
         tools: list[Tool] | None = None,
         refinery: Recorder | None = None,
         max_steps: int = 200,
@@ -356,8 +403,7 @@ class Engine:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"engine: root is not a directory: {root}")
-        self.generation = generation
-        self.decision = decision
+        self.models = _models(models)
         self.tools: dict[str, Tool] = {}
         for tool in tools or []:
             if tool.name in self.tools:
@@ -369,9 +415,13 @@ class Engine:
         self.tool_timeout = tool_timeout
         self.history_walk = history_walk
         self.history_chars = history_chars
-        self._agents = load_tree(self.root, getattr(generation, "media_types", None))
+        self._agents = load_tree(
+            self.root,
+            {name: getattr(model, "media_types", None) for name, model in self.models.items()},
+        )
         validate_tree(self._agents)
-        self._declared = check_declarations(self._agents, self.tools, bodies=generation is not None)
+        _check_models(self._agents, self.models)
+        self._declared = check_declarations(self._agents, self.tools, self.models)
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
 
     @property
@@ -551,11 +601,11 @@ class Engine:
         parent_run_id: str | None,
     ) -> Decision:
         caller = _caller(scope)
-        model_ = self.decision
+        model_ = self.models.get(spec.model)
         if model_ is None:
-            raise ConfigurationError(
-                f"engine: agent {spec.name!r} is a decision agent; no decision model was configured"
-            )
+            _not_given(spec)
+        if not isinstance(model_, DecisionModel):
+            _kind_clash(spec, "decide")
         self._check_routes(spec, set())
         folder = dict(spec.questions)
         if options.task is not None:
@@ -628,9 +678,9 @@ class Engine:
         seen.add(spec.name)
         for target in spec.route.to.values() if spec.route is not None else []:
             routed = self._agents[target.agent]
-            if routed.kind == "generation" and self.generation is None:
+            if routed.model not in self.models:
                 raise ConfigurationError(
-                    f"engine: agent {spec.name!r} routes to generation agent {target.agent!r}; no generation model was configured"
+                    f"engine: agent {spec.name!r} routes to agent {target.agent!r}, which runs on model {routed.model!r}, which this engine was not given"
                 )
             if routed.kind == "decision" and target.agent not in seen:
                 self._check_routes(routed, seen)
@@ -644,11 +694,11 @@ class Engine:
         parent_run_id: str | None,
     ) -> Generation:
         caller = _caller(scope)
-        model_ = self.generation
+        model_ = self.models.get(spec.model)
         if model_ is None:
-            raise ConfigurationError(
-                f"engine: agent {spec.name!r} is a generation agent; no generation model was configured"
-            )
+            _not_given(spec)
+        if not isinstance(model_, GenerationModel):
+            _kind_clash(spec, "generate")
         run_id = uuid4().hex
         started = time.monotonic()
         at = _now()

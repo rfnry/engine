@@ -71,7 +71,7 @@ async def test_the_holdout_replay_grades_the_candidate_on_what_each_run_was_give
         (tmp_path / path).write_text(text, encoding="utf-8")
     refinery = Refinery(storage)
     graded = Fixed({"matches": CheckAnswer(probability=0.9)})
-    engine = Engine(tmp_path, generation=Seeing(), decision=graded)
+    engine = Engine(tmp_path, models={"strong": Seeing(), "judge": graded})
     held = [f"run-{i}" for i in range(200) if is_holdout(f"run-{i}")][:4]
     kept = next(f"run-{i}" for i in range(200) if not is_holdout(f"run-{i}"))
     parts = [Text(text="Charged twice?"), Image(media_type="image/png", data=b"\x89PNG\r\n\x1a\n")]
@@ -94,7 +94,7 @@ async def test_the_holdout_replay_grades_the_candidate_on_what_each_run_was_give
     namespace: dict[str, Any] = {
         "refinery": refinery,
         "engine": engine,
-        "candidate": Engine(tmp_path, generation=candidate_model),
+        "candidate": Engine(tmp_path, models={"strong": candidate_model}),
     }
     [block] = [
         textwrap.dedent(b)
@@ -128,7 +128,7 @@ async def test_the_noise_recipe_counts_what_moved_and_the_swing(
     )
     refinery = Refinery(storage)
     held = [f"run-{i}" for i in range(200) if is_holdout(f"run-{i}")][:3]
-    recorder = Engine(tmp_path, generation=Wavering("a", "b", "c"))
+    recorder = Engine(tmp_path, models={"strong": Wavering("a", "b", "c")})
     for run_id in held:
         run = await recorder.run("support", "acme", "Charged twice?")
         await refinery.record(run.model_copy(update={"run_id": run_id}))
@@ -143,7 +143,7 @@ async def test_the_noise_recipe_counts_what_moved_and_the_swing(
 
     namespace: dict[str, Any] = {
         "refinery": refinery,
-        "engine": Engine(tmp_path, generation=Wavering(*replies)),
+        "engine": Engine(tmp_path, models={"strong": Wavering(*replies)}),
         "read_only": read_only,
         "passes": passes,
     }

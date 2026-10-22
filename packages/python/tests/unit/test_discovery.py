@@ -43,7 +43,7 @@ async def test_an_agent_inside_another_s_folder_leaves_its_map_and_stays_readabl
 ) -> None:
     lead = load_tree(team(tmp_path))["lead"]
     assert lead.listing.splitlines() == ["helpers/", "  notes.md", "playbook.md"]
-    surface = EngineTools(Engine(tmp_path), agent="lead", scope="acme")
+    surface = EngineTools(Engine(tmp_path, models={}), agent="lead", scope="acme")
     assert "Warm." in str(await surface.dispatch("Read", {"path": "helpers/writer/voice.md"}))
 
 
@@ -72,7 +72,7 @@ def test_hidden_and_declaration_folders_are_never_searched_for_agents(tmp_path: 
 
 
 async def test_a_folder_without_agent_md_is_never_run(tmp_path: Path) -> None:
-    engine = Engine(team(tmp_path))
+    engine = Engine(team(tmp_path), models={})
     assert "desks" not in engine.agents
     with pytest.raises(NotFoundError):
         await engine.run("desks", "acme", "x")
@@ -159,7 +159,7 @@ async def test_a_link_inside_the_tree_to_a_folder_without_agents_is_ignored(
     assert "desks/books" not in folders
     assert folders["shared/books"] == (tmp_path / "shared/books").resolve()
     assert list(load_tree(tmp_path)) == ["coder", "lead", "triage", "writer"]
-    surface = EngineTools(Engine(tmp_path), agent="coder", scope="acme")
+    surface = EngineTools(Engine(tmp_path, models={}), agent="coder", scope="acme")
     assert "A." in str(await surface.dispatch("Read", {"path": "../shared/books/a.md"}))
 
 
@@ -212,7 +212,7 @@ async def test_a_glob_of_a_read_folder_two_levels_away_is_spelled_from_the_agent
 ) -> None:
     write(tmp_path / "shared/books/a.md", "A.\n")
     write(tmp_path / "team/coder/AGENT.md", agent_md("coder", extra="reads: [shared/books]\n"))
-    surface = EngineTools(Engine(tmp_path), agent="coder", scope="acme")
+    surface = EngineTools(Engine(tmp_path, models={}), agent="coder", scope="acme")
     found = await surface.dispatch("Glob", {"pattern": "../../shared/books/*.md"})
     assert found == "../../shared/books/a.md"
 
@@ -228,7 +228,7 @@ def test_the_engine_logs_the_names_of_the_agents_it_loaded(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     with caplog.at_level(logging.INFO, logger="rfnry_engine"):
-        Engine(team(tmp_path))
+        Engine(team(tmp_path), models={})
     assert [r.getMessage() for r in caplog.records] == [
         "engine: agents loaded [lead, triage, writer]"
     ]

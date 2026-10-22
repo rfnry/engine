@@ -66,10 +66,9 @@ async def test_judge_labels_generation_runs_once(fixtures: Path, storage: Storag
     dm = Fixed(JUDGEMENT)
     engine = Engine(
         fixtures,
-        generation=Scripted(text_reply("Refunded.")),
-        decision=dm,
         refinery=refinery,
         tools=TOOLS,
+        models={"strong": Scripted(text_reply("Refunded.")), "judge": dm},
     )
     run = await engine.run("billing", "acme", "Charged twice.")
     labeled = await refinery.label("acme", engine, judge="judge")
@@ -92,7 +91,7 @@ async def test_teacher_answers_decision_runs(fixtures: Path, storage: Storage) -
     refinery = Refinery(storage)
     llm = Scripted(_teacher_reply())
     engine = Engine(
-        fixtures, generation=llm, decision=Fixed(TRIAGE), refinery=refinery, tools=TOOLS
+        fixtures, refinery=refinery, tools=TOOLS, models={"strong": llm, "judge": Fixed(TRIAGE)}
     )
     run = await engine.run("triage", "acme", {"message": "It is down"})
     labeled = await refinery.label("acme", engine, teacher="teacher")
@@ -110,10 +109,9 @@ async def test_a_failing_labeler_is_reported_per_run(fixtures: Path, storage: St
     refinery = Refinery(storage)
     engine = Engine(
         fixtures,
-        generation=Scripted(text_reply("x")),
-        decision=Fixed({}),
         refinery=refinery,
         tools=TOOLS,
+        models={"strong": Scripted(text_reply("x")), "judge": Fixed({})},
     )
     run = await engine.run("billing", "acme", "hi")
     labeled = await refinery.label("acme", engine, judge="judge")
@@ -130,7 +128,7 @@ async def test_judge_and_teacher_never_label_their_own_runs(
     refinery = Refinery(storage)
     llm = Scripted(text_reply("taught"))
     engine = Engine(
-        fixtures, generation=llm, decision=Fixed(JUDGEMENT), refinery=refinery, tools=TOOLS
+        fixtures, refinery=refinery, tools=TOOLS, models={"strong": llm, "judge": Fixed(JUDGEMENT)}
     )
     await engine.run("teacher", "acme", "x")
     await engine.run("judge", "acme", "x")
@@ -146,7 +144,7 @@ async def test_a_judge_or_teacher_the_tree_cannot_use_is_refused_before_any_run(
     refinery = Refinery(storage)
     llm = Scripted(text_reply("Refunded."))
     dm = Fixed({**TRIAGE, **JUDGEMENT})
-    engine = Engine(fixtures, generation=llm, decision=dm, refinery=refinery, tools=TOOLS)
+    engine = Engine(fixtures, refinery=refinery, tools=TOOLS, models={"strong": llm, "judge": dm})
     await engine.run("billing", "acme", "x")
     await engine.run("triage", "acme", "x")
     refused: list[tuple[str | None, str | None, type[Exception], str]] = [
@@ -293,10 +291,9 @@ async def test_a_teachers_answer_is_the_exported_truth_until_a_person_gives_one(
     refinery = Refinery(storage)
     engine = Engine(
         fixtures,
-        generation=Scripted(_teacher_reply()),
-        decision=Fixed(TRIAGE),
         refinery=refinery,
         tools=TOOLS,
+        models={"strong": Scripted(_teacher_reply()), "judge": Fixed(TRIAGE)},
     )
     run = await engine.run("triage", "acme", {"message": "It is down"})
     await refinery.label("acme", engine, teacher="teacher")
@@ -331,7 +328,7 @@ async def test_the_judge_sees_media_as_placeholders_never_base64(
         Reply(tool_calls=[ToolCall(id="p", name="policy", args={})], stop_reason="tool_use"),
         text_reply("Refunded."),
     )
-    engine = Engine(fixtures, generation=llm, decision=dm, refinery=refinery, tools=TOOLS)
+    engine = Engine(fixtures, refinery=refinery, tools=TOOLS, models={"strong": llm, "judge": dm})
     parts: list[Part] = [
         Text(text="Is this refundable?"),
         Image(media_type="image/jpeg", data=JPEG),
@@ -376,7 +373,7 @@ async def test_the_judge_sees_media_loaded_from_the_folder_as_placeholders(
         ToolCall(id="d", name="Load", args={"path": "knowledge/rates.pdf"}),
     ]
     llm = Scripted(Reply(tool_calls=reads, stop_reason="tool_use"), text_reply("Express is $25."))
-    engine = Engine(root, generation=llm, decision=dm, refinery=refinery, tools=TOOLS)
+    engine = Engine(root, refinery=refinery, tools=TOOLS, models={"strong": llm, "judge": dm})
     await engine.run("billing", "acme", "What does express cost?")
     labeled = await refinery.label("acme", engine, judge="judge")
     assert labeled.judged == 1 and labeled.errors == {}
@@ -400,7 +397,7 @@ async def test_the_judge_sees_media_loaded_from_the_folder_as_placeholders(
 async def test_the_judge_is_told_a_run_failed(fixtures: Path, storage: Storage) -> None:
     refinery = Refinery(storage)
     dm = Fixed(JUDGEMENT)
-    engine = Engine(fixtures, generation=Scripted(), decision=dm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted(), "judge": dm})
     failed = generation_record(agent="billing", reply="").model_copy(
         update={"error": "ModelError: anthropic: overloaded"}
     )
@@ -417,7 +414,7 @@ async def test_the_judge_of_a_run_that_returned_sees_no_error_key(
 ) -> None:
     refinery = Refinery(storage)
     dm = Fixed(JUDGEMENT)
-    engine = Engine(fixtures, generation=Scripted(), decision=dm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted(), "judge": dm})
     await refinery.record(generation_record(agent="billing"))
     await refinery.label("acme", engine, judge="judge")
     state = dm.calls[0][0]
@@ -436,7 +433,9 @@ async def test_the_teacher_answers_a_failed_decision(fixtures: Path, storage: St
         ],
         stop_reason="tool_use",
     )
-    engine = Engine(fixtures, generation=Scripted(taught), decision=Fixed(TRIAGE), tools=TOOLS)
+    engine = Engine(
+        fixtures, tools=TOOLS, models={"strong": Scripted(taught), "judge": Fixed(TRIAGE)}
+    )
     failed = decision_record(agent="triage").model_copy(
         update={"answers": {}, "error": "TimeoutError: decide timed out"}
     )

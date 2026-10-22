@@ -77,7 +77,7 @@ async def test_a_root_agent_delegates_to_the_agents_of_its_folder(tmp_path: Path
         text_reply("billed"),
         text_reply("done"),
     )
-    run = await Engine(root, generation=llm).run("desk", "acme", "Charge them.")
+    run = await Engine(root, models={"strong": llm}).run("desk", "acme", "Charge them.")
     assert isinstance(run, Generation) and run.reply == "done"
     assert [child.agent for child in run.children] == ["billing"]
 
@@ -123,7 +123,7 @@ async def test_a_linked_agent_folder_is_named_by_its_frontmatter_not_its_link(
     (tmp_path / "root/billing").symlink_to(
         tmp_path / "elsewhere/payments", target_is_directory=True
     )
-    engine = Engine(tmp_path / "root", generation=Scripted(text_reply("ok")))
+    engine = Engine(tmp_path / "root", models={"strong": Scripted(text_reply("ok"))})
     assert list(engine.agents) == ["billing"]
     run = await engine.run("billing", "acme", "x")
     assert run.agent == "billing"

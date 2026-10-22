@@ -444,7 +444,7 @@ def _under(
 
 def load_agent(
     directory: Path,
-    media_types: Collection[str] | None = None,
+    media: Mapping[str, Collection[str] | None] | None = None,
     folders: Mapping[str, _Folder] | None = None,
     path: str = ".",
     tree_root: Path | None = None,
@@ -513,7 +513,7 @@ def load_agent(
                         *_under(reads, lambda folder: folder.preloaded),
                     ]
                 ),
-                media_types,
+                (media or {}).get(front.model),
                 Jail(root, also=[folder.place for folder in reads.values()]),
             )
             if front.preload
@@ -550,7 +550,9 @@ def load_agent(
     )
 
 
-def load_tree(root: Path, media_types: Collection[str] | None = None) -> dict[str, AgentSpec]:
+def load_tree(
+    root: Path, media: Mapping[str, Collection[str] | None] | None = None
+) -> dict[str, AgentSpec]:
     root = Path(root)
     found, links = _tree_folders(root)
     _refuse_links(root, found, links)
@@ -562,7 +564,7 @@ def load_tree(root: Path, media_types: Collection[str] | None = None) -> dict[st
     folders = {name: _Folder(place) for name, place in found.items()}
     agents: dict[str, AgentSpec] = {}
     for path in paths:
-        spec = load_agent(root / path, media_types, folders, path=path, tree_root=root)
+        spec = load_agent(root / path, media, folders, path=path, tree_root=root)
         twin = agents.get(spec.name)
         if twin is not None:
             first, second = (root / twin.path / "AGENT.md", root / spec.path / "AGENT.md")

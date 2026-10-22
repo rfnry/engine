@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
@@ -83,7 +84,7 @@ def declared_tools(spec: AgentSpec, code: dict[str, Tool]) -> list[Tool]:
 
 
 def check_declarations(
-    agents: dict[str, AgentSpec], code: dict[str, Tool], *, bodies: bool
+    agents: dict[str, AgentSpec], code: dict[str, Tool], given: Collection[str]
 ) -> dict[str, list[Tool]]:
     declared: set[str] = set()
     built: dict[str, list[Tool]] = {}
@@ -99,7 +100,7 @@ def check_declarations(
             raise ConfigurationError(
                 f"declared: agent {spec.name!r} declares {', '.join(map(repr, clash))}, the name of a tool the engine gives it; rename yours"
             )
-        if bodies:
+        if spec.model in given:
             built[key] = declared_tools(spec, code)
         declared.update(spec.tools)
     undeclared = sorted(name for name in code if name not in declared)

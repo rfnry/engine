@@ -99,7 +99,9 @@ reply's text as it arrives and `on_delta(text, reasoning=True)` with the model's
 vendor streams it; one that never passes `reasoning=` streams text alone. An adapter that has
 `media_types`, the file types its model takes — `{"image/*", "application/pdf"}` — lets `Load`
 refuse the rest with an error the model can act on, instead of the next model call failing; without
-it, `Load` hands the model any file. An adapter that has `model`, the name of the model it calls,
+it, `Load` hands the model any file. Each agent follows the `media_types` of its own model: a file a
+model does not take is a `ConfigurationError` where that agent's `preload: true` would read it, and
+`Load` refuses it for that agent alone. An adapter that has `model`, the name of the model it calls,
 names the run's model before any reply does.
 
 A decision model answers three kinds of question:
@@ -138,6 +140,27 @@ Choice(
 )
 ```
 
+An agent names its model in `AGENT.md` (`model: strong`), and the engine maps those names to
+adapters. The credentials, the endpoint and the vendor's model stay in the adapter you build; the
+tree only says which name an agent runs on, so one tree runs on different models in different
+environments:
+
+```python
+engine = Engine(root, models={"strong": strong_llm, "fast": fast_llm, "judge": dm})
+```
+
+A lead on `strong` delegating to a writer on `fast` is two lines in two `AGENT.md` files, and each
+runs on its own adapter, in one record that names the model of every run. `models` is required,
+and `{}` is allowed for a tree that is only read. Its keys are plain names, like an agent's, and
+each value has `generate` or `decide`; anything else is a `ConfigurationError` when the engine is
+built. The mapping is checked against the tree then too: a model no agent runs on is refused with
+the names the tree uses (`no agent runs on model 'fsat'; the tree's agents run on judge, strong`),
+and so is an agent whose kind its model cannot serve (`agent 'writer' is a generation agent, and
+model 'judge' has no generate()`). An agent whose model was not given is not an error until it
+runs: the others run, and running it, delegating to it or routing to it is a `ConfigurationError`
+saying which model it needs (`agent 'writer' runs on model 'fast', which this engine was not
+given`), before any model is called. `engine.models` holds the mapping given.
+
 Fakes are enough to run everything in tests:
 
 ```python
@@ -154,14 +177,15 @@ class Fixed:
 ## Getting started
 
 ```python
-engine = Engine(root=Path("agents"), generation=llm, tools=tools)
+engine = Engine(root=Path("agents"), models={"strong": llm}, tools=tools)
 
 run = await engine.run("support", scope="acme", input="My invoice was charged twice.")
 print(run.reply)
 ```
 
-A root of agent directories, a generation model, and `tools` — the bodies behind the tools the
-agents declare, one list for the whole tree ([Tools](#tools) builds it). One call runs an agent for
+A root of agent directories, `models` — the adapters, by the names the agents' `model:` give them —
+and `tools`, the bodies behind the tools the agents declare, one list for the whole tree
+([Tools](#tools) builds it). One call runs an agent for
 a tenant and returns its record.
 
 rfnry-engine needs Python 3.14 or later.
@@ -845,7 +869,7 @@ options:
 Run it with a state: a string, an object or a list.
 
 ```python
-engine = Engine(root=Path("agents"), decision=dm)
+engine = Engine(root=Path("agents"), models={"judge": dm})
 
 run = await engine.run("triage", scope="acme", input={"message": text, "plan": "enterprise"})
 run.answers["urgent"].probability     # 0.91
@@ -1013,7 +1037,7 @@ everything the run was given — the same input, parts included, `history`, `con
 `tools`, `workspace`, `on_event`, `stop`, `inbox` and `tags` — and the routed run is attached:
 
 ```python
-engine = Engine(root, generation=llm, decision=dm, tools=tools)
+engine = Engine(root, models={"strong": llm, "judge": dm}, tools=tools)
 
 run = await engine.run("frontdesk", scope="acme", input=message, history=history)
 run.answers["intent"].choice            # "technical"
@@ -1039,10 +1063,10 @@ ask — `questions/`, or questions in the task the entry names; either is a `Con
 the tree loads, since that tree cannot work. A decision agent reached through `Delegate` needs
 neither, since the model can name a task or bring the questions.
 
-One message, four model calls, one record. With only `generation=` the same tree runs its
-generation agents and refuses the decision ones; with only `decision=` the reverse, and a decision
-agent whose route reaches a generation agent is refused before its questions are asked. Nothing
-about an agent changes when the other kind of model is absent — only which agents you can run.
+One message, four model calls, one record. Given only `strong` the same tree runs its generation
+agents and refuses the decision ones; given only `judge` the reverse, and a decision agent whose
+route reaches an agent whose model was not given is refused before its questions are asked. Nothing
+about an agent changes when a model is absent — only which agents you can run.
 
 ### Orchestrating
 
@@ -1418,7 +1442,7 @@ routed runs in place, to continue it anywhere — see [Running an agent](#runnin
 ```python
 refinery = Refinery(PostgresStorage(pool))
 await refinery.initialize()
-engine = Engine(root, generation=llm, decision=dm, tools=tools, refinery=refinery)
+engine = Engine(root, models={"strong": llm, "judge": dm}, tools=tools, refinery=refinery)
 ```
 
 Labels come from three places. A person reviews a run — the button under a reply, the correction a
@@ -1536,7 +1560,7 @@ Replay measures a candidate — a new folder, a new model, any `Engine` you buil
 recorded runs were given. Each pair holds the recorded run, its labels and the candidate's run:
 
 ```python
-candidate = Engine(root, generation=llm, decision=dm, tools=tools)
+candidate = Engine(root, models={"strong": llm, "judge": dm}, tools=tools)
 
 async def read_only(agent, call):
     return call.name in {"Read", "Grep", "Glob", "LS", "Load", "Delegate", "lookup_order"}
@@ -1594,7 +1618,7 @@ whatever folder it lands in. The checkout is yours —
 
 ```python
 def load(commit):
-    return commit, Engine(checkout(commit), generation=llm, decision=dm, tools=tools, refinery=refinery)
+    return commit, Engine(checkout(commit), models={"strong": llm, "judge": dm}, tools=tools, refinery=refinery)
 
 live = load("4f2c9e1")
 commit, engine = live
@@ -1700,7 +1724,7 @@ tools = [
     Tool("lookup_order", body=lookup_order),
     Tool("fetch_invoice", "Fetch an invoice PDF by id", body=fetch_invoice, args=InvoiceArgs),
 ]
-engine = Engine(root, generation=llm, tools=tools)
+engine = Engine(root, models={"strong": llm}, tools=tools)
 ```
 
 `args` checks a call's arguments before the body runs, and so does a declared `input:`. A tool given
@@ -1976,7 +2000,7 @@ Everything the package exports, by role.
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a tree with
 no `AGENT.md`, a link to a folder that holds it or one that would reach an agent twice, a bad
-`AGENT.md` without a plain `name:` or a `model:`, two agents with one name, a `name:` in a tool file
+`AGENT.md` without a plain `name:` or a `model:`, a `models` that is not a mapping of names to adapters, a model no agent runs on, an agent whose model has not its kind's method, two agents with one name, a `name:` in a tool file
 — the file names it — an unknown key in the frontmatter of an `AGENT.md`, a tool file or a question (`frontmatter: unknown
 key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a
 `description:` that is not a string in a file the map would show, a decision agent with `preload:

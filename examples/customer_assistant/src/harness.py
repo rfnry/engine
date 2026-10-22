@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 engine = Engine(
     ROOT / "agents",
-    generation=AnthropicProvider(),
+    models={"strong": AnthropicProvider()},
     tools=[Tool("lookup_order", body=lookup_order)],
 )
 sessions: dict[str, tuple[list[Message], int]] = {}

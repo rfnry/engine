@@ -84,7 +84,7 @@ async def test_the_copy_each_recipe_keeps_each_worker_apart(
         return [write, done(f"done {i}")]
 
     model = Workers([delegates("a", "b"), done("merged")], {"a": writing(1), "b": writing(2)})
-    engine = Engine(agents(tmp_path / "agents", LEAD), generation=model)
+    engine = Engine(agents(tmp_path / "agents", LEAD), models={"strong": model})
     namespace = await execute(COPY, engine, task="go")
     run, backend = namespace["run"], namespace["backend"]
     assert isinstance(run, Generation)
@@ -104,7 +104,7 @@ async def test_the_claim_tool_gives_a_task_to_one_run(
     model = Workers(
         [delegates("a", "b"), done("done")], {"a": [take, done("a")], "b": [take, done("b")]}
     )
-    engine = Engine(agents(tmp_path / "agents", LEAD), generation=model)
+    engine = Engine(agents(tmp_path / "agents", LEAD), models={"strong": model})
     namespace = await execute(COPY, engine, task="go")
     run = namespace["run"]
     results = [json.loads(str(child.steps[0].result)) for child in run.children]
@@ -133,7 +133,7 @@ async def test_the_background_recipe_returns_a_run_that_links_back(
         "boss/AGENT.md": "---\nname: boss\nkind: generation\nmodel: strong\n---\nBoss.\n",
         "support/AGENT.md": "---\nname: support\nkind: generation\nmodel: strong\n---\nSupport.\n",
     }
-    engine = Engine(agents(tmp_path / "agents", files), generation=Boss())
+    engine = Engine(agents(tmp_path / "agents", files), models={"strong": Boss()})
     namespace = await execute(BACKGROUND, engine, task="go")
     outer = namespace["outer"]
     finished = await namespace["jobs"]["0"]
@@ -181,7 +181,7 @@ async def test_spent_sums_delegated_routed_and_decision_runs(tmp_path: Path) -> 
         ("d2", "Delegate", {"agent": "judge", "input": "c"}),
     )
     model = Counting([delegating, done("merged")])
-    engine = Engine(agents(tmp_path, files), generation=model, decision=model)
+    engine = Engine(agents(tmp_path, files), models={"strong": model, "judge": model})
     run = await engine.run("lead", "acme", "go")
     block = next(b for b in PYTHON if first_line(b) == "def spent(run):")
     namespace: dict[str, Any] = {name: getattr(rfnry_engine, name) for name in rfnry_engine.__all__}
