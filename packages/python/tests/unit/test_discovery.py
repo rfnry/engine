@@ -280,3 +280,17 @@ def test_an_unreadable_folder_beside_an_agent_is_skipped(
     with pytest.raises(PermissionError):
         os.scandir(blocked)
     assert list(load_tree(tmp_path)) == ["lead", "triage", "writer"]
+
+
+def test_a_link_that_loops_on_itself_does_not_hide_the_agents_beside_it(tmp_path: Path) -> None:
+    team(tmp_path)
+    (tmp_path / "loop").symlink_to("loop")
+    assert list(load_tree(tmp_path)) == ["lead", "triage", "writer"]
+
+
+def test_a_looping_link_inside_a_group_folder_does_not_hide_the_agent_beside_it(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "team/writer/AGENT.md", agent_md("writer"))
+    (tmp_path / "team/loop").symlink_to("loop")
+    assert list(load_tree(tmp_path)) == ["writer"]

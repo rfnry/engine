@@ -322,10 +322,17 @@ def _linked(path: Path) -> bool:
     return path.is_symlink() or path.is_junction()
 
 
+def _is_folder(entry: os.DirEntry[str]) -> bool:
+    try:
+        return entry.is_dir()
+    except OSError:
+        return False
+
+
 def _subfolders(folder: Path) -> list[Path]:
     try:
         with os.scandir(folder) as entries:
-            return sorted(Path(entry.path) for entry in entries if entry.is_dir())
+            return sorted(Path(entry.path) for entry in entries if _is_folder(entry))
     except OSError:
         return []
 
