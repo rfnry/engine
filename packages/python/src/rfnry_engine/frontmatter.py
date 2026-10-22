@@ -179,11 +179,7 @@ def parse_frontmatter_doc[T: BaseModel](
             others = [key for key in unknown if key != "name"]
             fix = "; ".join(
                 [
-                    *(
-                        ["its folder or file names it, so remove the name: line"]
-                        if "name" in unknown
-                        else []
-                    ),
+                    *(["its file names it, so remove the name: line"] if "name" in unknown else []),
                     *(
                         []
                         if not others

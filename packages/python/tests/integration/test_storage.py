@@ -703,7 +703,7 @@ AREA = Choice(
 
 def grader(root: Path, urgent: str = "Is it urgent?") -> Path:
     for path, text in {
-        "grader/AGENT.md": "---\nkind: decision\n---\n",
+        "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\n---\n",
         "grader/questions/urgent.md": f"---\ntype: check\n---\n{urgent}\n",
         "grader/tasks/tone/polite.md": "---\ntype: check\n---\nPolite?\n",
     }.items():
@@ -922,8 +922,8 @@ async def test_initialize_on_a_table_an_earlier_version_made_says_what_to_do(poo
 
 async def test_a_recorded_call_reads_back(storage: Storage, tmp_path: Path) -> None:
     for name, front in (
-        ("lead", "kind: generation\nagents: [child, triage]"),
-        ("child", "kind: generation"),
+        ("lead", "name: lead\nkind: generation\nmodel: strong\nagents: [child, triage]"),
+        ("child", "name: child\nkind: generation\nmodel: strong"),
     ):
         (tmp_path / name).mkdir()
         (tmp_path / name / "AGENT.md").write_text(f"---\n{front}\n---\nYou are {name}.\n")

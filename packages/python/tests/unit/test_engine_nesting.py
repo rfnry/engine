@@ -98,7 +98,9 @@ async def test_the_whole_chain_frontdesk_support_triage(fixtures: Path) -> None:
 
 async def test_an_agent_delegates_to_a_fresh_run_of_itself(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\nagents: [a]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\nagents: [a]\n---\nhi\n"
+    )
     llm = Scripted(_delegate("a", "the sub-problem"), text_reply("sub done"), text_reply("done"))
     run = await Engine(tmp_path, generation=llm).run("a", "acme", "start")
     assert isinstance(run, Generation) and run.reply == "done"
@@ -113,7 +115,7 @@ async def test_a_delegation_cycle_runs_until_max_depth(tmp_path: Path) -> None:
         (tmp_path / name).mkdir()
         other = "b" if name == "a" else "a"
         (tmp_path / name / "AGENT.md").write_text(
-            f"---\nkind: generation\nagents: [{other}]\n---\nhi\n"
+            f"---\nname: {name}\nkind: generation\nmodel: strong\nagents: [{other}]\n---\nhi\n"
         )
     llm = Scripted(
         _delegate("b", "go"), _delegate("a", "back"), text_reply("b done"), text_reply("a done")
@@ -131,7 +133,7 @@ async def test_a_route_back_into_the_chain_raises(tmp_path: Path) -> None:
     for name, other in (("r1", "r2"), ("r2", "r1")):
         (tmp_path / name / "questions").mkdir(parents=True)
         (tmp_path / name / "AGENT.md").write_text(
-            f"---\nkind: decision\nroute: {{by: go, to: {{next: {other}}}}}\n---\n"
+            f"---\nname: {name}\nkind: decision\nmodel: judge\nroute: {{by: go, to: {{next: {other}}}}}\n---\n"
         )
         (tmp_path / name / "questions" / "go.md").write_text(
             "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
@@ -144,7 +146,7 @@ async def test_a_route_back_into_the_chain_raises(tmp_path: Path) -> None:
 def _router(tmp_path: Path, name: str, target: str) -> None:
     (tmp_path / name / "questions").mkdir(parents=True)
     (tmp_path / name / "AGENT.md").write_text(
-        f"---\nkind: decision\nroute: {{by: go, to: {{next: {target}}}}}\n---\n"
+        f"---\nname: {name}\nkind: decision\nmodel: judge\nroute: {{by: go, to: {{next: {target}}}}}\n---\n"
     )
     (tmp_path / name / "questions" / "go.md").write_text(
         "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
@@ -155,7 +157,9 @@ async def test_a_router_reached_through_delegate_may_route_back_to_the_agent_tha
     tmp_path: Path,
 ) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\nagents: [r]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\nagents: [r]\n---\nhi\n"
+    )
     _router(tmp_path, "r", "a")
     llm = Scripted(_delegate("r", "the sub-problem"), text_reply("sub done"), text_reply("done"))
     run = await Engine(tmp_path, generation=llm, decision=Answering()).run("a", "acme", "start")
@@ -169,7 +173,9 @@ async def test_a_router_reached_through_delegate_may_route_back_to_the_agent_tha
 
 async def test_a_route_loop_below_a_delegate_is_still_refused(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\nagents: [r1]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\nagents: [r1]\n---\nhi\n"
+    )
     _router(tmp_path, "r1", "r2")
     _router(tmp_path, "r2", "r1")
     llm = Scripted(_delegate("r1", "go"), text_reply("a done"))
@@ -183,9 +189,13 @@ async def test_a_route_loop_below_a_delegate_is_still_refused(tmp_path: Path) ->
 
 async def test_depth_is_capped(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\nagents: [b]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\nagents: [b]\n---\nhi\n"
+    )
     (tmp_path / "b").mkdir()
-    (tmp_path / "b" / "AGENT.md").write_text("---\nkind: generation\n---\nhi\n")
+    (tmp_path / "b" / "AGENT.md").write_text(
+        "---\nname: b\nkind: generation\nmodel: strong\n---\nhi\n"
+    )
     llm = Scripted(_delegate("b", "go"), text_reply("a done"))
     run = await Engine(tmp_path, generation=llm, max_depth=1).run("a", "acme", "start")
     assert isinstance(run, Generation) and run.steps[0].is_error
@@ -194,9 +204,13 @@ async def test_depth_is_capped(tmp_path: Path) -> None:
 
 async def test_the_child_serves_the_same_tenant_with_its_context(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\nagents: [b]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\nagents: [b]\n---\nhi\n"
+    )
     (tmp_path / "b").mkdir()
-    (tmp_path / "b" / "AGENT.md").write_text("---\nkind: generation\n---\nhi\n")
+    (tmp_path / "b" / "AGENT.md").write_text(
+        "---\nname: b\nkind: generation\nmodel: strong\n---\nhi\n"
+    )
     llm = Scripted(_delegate("b", "go"), text_reply("b done"), text_reply("a done"))
     run = await Engine(tmp_path, generation=llm).run(
         "a", "acme", "start", context="Acme is enterprise."
@@ -217,9 +231,13 @@ async def test_dispatch_delegate_outside_a_run(fixtures: Path) -> None:
 
 async def test_dispatch_delegate_gives_the_child_the_tenant_tools(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\nagents: [b]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\nagents: [b]\n---\nhi\n"
+    )
     (tmp_path / "b").mkdir()
-    (tmp_path / "b" / "AGENT.md").write_text("---\nkind: generation\n---\nhi\n")
+    (tmp_path / "b" / "AGENT.md").write_text(
+        "---\nname: b\nkind: generation\nmodel: strong\n---\nhi\n"
+    )
 
     async def ping(args: dict[str, Any]) -> str:
         return "pong"
@@ -322,7 +340,7 @@ async def test_delegate_offers_a_task_and_questions_only_when_a_target_takes_the
     root = lead(tmp_path)
     (root / "plain/AGENT.md").parent.mkdir()
     (root / "plain/AGENT.md").write_text(
-        "---\nkind: generation\ndescription: Plain\nagents: [writer]\n---\nHi\n"
+        "---\nname: plain\nkind: generation\nmodel: strong\ndescription: Plain\nagents: [writer]\n---\nHi\n"
     )
     engine = Engine(root, generation=Scripted(), decision=Answering())
     [offered] = EngineTools(engine, agent="lead", scope="acme").only("Delegate").definitions()

@@ -1,5 +1,7 @@
 ---
+name: reviewer
 kind: generation
+model: strong
 description: Answers a law firm's lawyers about a services contract, against the firm's playbook
 agents: [drafter]
 ---

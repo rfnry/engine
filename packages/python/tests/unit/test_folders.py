@@ -13,7 +13,10 @@ def write(path: Path, text: str) -> None:
 
 
 def coding(root: Path) -> Path:
-    write(root / "AGENT.md", "---\nkind: generation\ndescription: Codes\n---\nHi\n")
+    write(
+        root / "AGENT.md",
+        "---\nname: coding\nkind: generation\nmodel: strong\ndescription: Codes\n---\nHi\n",
+    )
     write(root / "tools/run.md", "---\nname: run\ndescription: Runs\n---\n")
     write(root / "TOOLS.md", "---\nwalk: Walks\n---\n")
     write(root / "tasks/review.md", "---\ndescription: Reviews\n---\nReview it.\n")
@@ -119,12 +122,15 @@ def test_read_folders_follow_under_their_path_without_an_agent_s_declarations(
     tmp_path: Path,
 ) -> None:
     own = tmp_path / "coding"
-    write(own / "AGENT.md", "---\nkind: generation\n---\n")
+    write(own / "AGENT.md", "---\nname: own\nkind: generation\nmodel: strong\n---\n")
     write(own / "a.md", "---\ndescription: A\n---\n")
     books = tmp_path / "books"
     write(books / "python/async.md", "---\ndescription: Async\n---\n")
     writing = tmp_path / "writing"
-    write(writing / "AGENT.md", "---\nkind: generation\ndescription: Writes\n---\n")
+    write(
+        writing / "AGENT.md",
+        "---\nname: writing\nkind: generation\nmodel: strong\ndescription: Writes\n---\n",
+    )
     write(writing / "tasks/x.md", "---\ndescription: A task\n---\n")
     write(writing / "voice.md", "---\ndescription: Voice\n---\n")
     assert listing(own, True, {"books": books, "writing": writing}) == (
@@ -148,7 +154,7 @@ def test_content_leaves_out_what_the_prompt_already_holds(tmp_path: Path) -> Non
 
 
 def test_a_file_named_like_a_declaration_folder_is_content(tmp_path: Path) -> None:
-    write(tmp_path / "AGENT.md", "---\nkind: generation\n---\n")
+    write(tmp_path / "AGENT.md", "---\nname: root\nkind: generation\nmodel: strong\n---\n")
     write(tmp_path / "tasks", "a file, not a folder\n")
     assert [rel for rel, _ in content(tmp_path, True)] == ["tasks"]
 
@@ -157,7 +163,7 @@ def test_a_link_out_of_the_folder_is_neither_mapped_nor_content(tmp_path: Path) 
     root = tmp_path / "agent"
     outside = tmp_path / "outside"
     write(outside / "secret.md", "---\ndescription: Secret\n---\n")
-    write(root / "AGENT.md", "---\nkind: generation\n---\n")
+    write(root / "AGENT.md", "---\nname: root\nkind: generation\nmodel: strong\n---\n")
     (root / "linked").symlink_to(outside, target_is_directory=True)
     (root / "secret.md").symlink_to(outside / "secret.md")
     assert listing(root, True, {}) == "" and content(root, True) == []

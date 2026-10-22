@@ -33,8 +33,8 @@ class Verdict(BaseModel):
 def make_tree(tmp_path: Path) -> Path:
     root = tmp_path / "agents"
     for name, front in {
-        "lead": "kind: generation\ndescription: Leads\nagents: [chat]",
-        "chat": "kind: generation\ndescription: Talks",
+        "lead": "name: lead\nkind: generation\nmodel: strong\ndescription: Leads\nagents: [chat]",
+        "chat": "name: chat\nkind: generation\nmodel: strong\ndescription: Talks",
     }.items():
         (root / name).mkdir(parents=True)
         (root / name / "AGENT.md").write_text(
@@ -1073,9 +1073,9 @@ async def test_a_grandchild_names_its_parents_call(tmp_path: Path) -> None:
     root = tree(
         tmp_path,
         {
-            "lead": "kind: generation\nagents: [mid]",
-            "mid": "kind: generation\ndescription: Middle\nagents: [leaf]",
-            "leaf": "kind: generation\ndescription: Leaf",
+            "lead": "name: lead\nkind: generation\nmodel: strong\nagents: [mid]",
+            "mid": "name: mid\nkind: generation\nmodel: strong\ndescription: Middle\nagents: [leaf]",
+            "leaf": "name: leaf\nkind: generation\nmodel: strong\ndescription: Leaf",
         },
     )
     llm = ByAgent(
@@ -1117,9 +1117,9 @@ async def test_a_run_routed_under_a_delegated_decision_names_the_delegate_call(
     root = tree(
         tmp_path,
         {
-            "lead": "kind: generation\nagents: [router]",
-            "router": "kind: decision\ndescription: Routes\nroute:\n  by: team\n  to: {billing: chat}",
-            "chat": "kind: generation\ndescription: Talks",
+            "lead": "name: lead\nkind: generation\nmodel: strong\nagents: [router]",
+            "router": "name: router\nkind: decision\nmodel: judge\ndescription: Routes\nroute:\n  by: team\n  to: {billing: chat}",
+            "chat": "name: chat\nkind: generation\nmodel: strong\ndescription: Talks",
         },
     )
     (root / "router" / "questions").mkdir()
@@ -1209,8 +1209,8 @@ async def test_a_routed_run_whose_start_handler_raises_sits_in_its_router(tmp_pa
     root = tree(
         tmp_path,
         {
-            "router": "kind: decision\ndescription: Routes\nroute:\n  by: team\n  to: {billing: chat}",
-            "chat": "kind: generation\ndescription: Talks",
+            "router": "name: router\nkind: decision\nmodel: judge\ndescription: Routes\nroute:\n  by: team\n  to: {billing: chat}",
+            "chat": "name: chat\nkind: generation\nmodel: strong\ndescription: Talks",
         },
     )
     (root / "router" / "questions").mkdir()

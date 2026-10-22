@@ -90,9 +90,7 @@ class Setup:
 
 
 SETUPS = {
-    'engine = Engine(Path("skills"), generation=llm, name="writer")': Setup(
-        replace={'Path("skills")': "skills"}
-    ),
+    'engine = Engine(Path("skills"), generation=llm)': Setup(replace={'Path("skills")': "skills"}),
     "class Budget:": Setup(
         replies=(delegating("triage"),),
         intent="technical",
@@ -200,7 +198,8 @@ def write(path: Path, text: str) -> None:
 
 
 def agent(name: str, kind: str, body: str = "") -> str:
-    return f"---\nkind: {kind}\ndescription: The {name} agent\n---\n{body}\n"
+    model = "strong" if kind == "generation" else "judge"
+    return f"---\nname: {name}\nkind: {kind}\nmodel: {model}\ndescription: The {name} agent\n---\n{body}\n"
 
 
 def question(kind: str, extra: str = "") -> str:

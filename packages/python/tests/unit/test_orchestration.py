@@ -56,8 +56,8 @@ class Workers:
 
 
 LEAD = {
-    "lead/AGENT.md": "---\nkind: generation\nagents: [worker]\nworkspace: true\n---\nLead.\n",
-    "worker/AGENT.md": "---\nkind: generation\nworkspace: true\n---\nWork.\n",
+    "lead/AGENT.md": "---\nname: lead\nkind: generation\nmodel: strong\nagents: [worker]\nworkspace: true\n---\nLead.\n",
+    "worker/AGENT.md": "---\nname: worker\nkind: generation\nmodel: strong\nworkspace: true\n---\nWork.\n",
 }
 
 
@@ -130,8 +130,8 @@ async def test_the_background_recipe_returns_a_run_that_links_back(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     files = {
-        "boss/AGENT.md": "---\nkind: generation\n---\nBoss.\n",
-        "support/AGENT.md": "---\nkind: generation\n---\nSupport.\n",
+        "boss/AGENT.md": "---\nname: boss\nkind: generation\nmodel: strong\n---\nBoss.\n",
+        "support/AGENT.md": "---\nname: support\nkind: generation\nmodel: strong\n---\nSupport.\n",
     }
     engine = Engine(agents(tmp_path / "agents", files), generation=Boss())
     namespace = await execute(BACKGROUND, engine, task="go")
@@ -166,13 +166,13 @@ class Counting:
 
 async def test_spent_sums_delegated_routed_and_decision_runs(tmp_path: Path) -> None:
     files = {
-        "lead/AGENT.md": "---\nkind: generation\nagents: [worker, router, judge]\n---\nLead.\n",
-        "worker/AGENT.md": "---\nkind: generation\n---\nWork.\n",
-        "router/AGENT.md": "---\nkind: decision\nroute:\n  by: pick\n  to: {go: worker}\n---\n",
+        "lead/AGENT.md": "---\nname: lead\nkind: generation\nmodel: strong\nagents: [worker, router, judge]\n---\nLead.\n",
+        "worker/AGENT.md": "---\nname: worker\nkind: generation\nmodel: strong\n---\nWork.\n",
+        "router/AGENT.md": "---\nname: router\nkind: decision\nmodel: judge\nroute:\n  by: pick\n  to: {go: worker}\n---\n",
         "router/questions/pick.md": (
             "---\ntype: choice\noptions: {go: Go on, stay: Stay}\n---\nWhere to?\n"
         ),
-        "judge/AGENT.md": "---\nkind: decision\n---\n",
+        "judge/AGENT.md": "---\nname: judge\nkind: decision\nmodel: judge\n---\n",
         "judge/questions/ok.md": "---\ntype: check\n---\nIs it fine?\n",
     }
     delegating = calls(

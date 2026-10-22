@@ -63,8 +63,8 @@ async def test_the_holdout_replay_grades_the_candidate_on_what_each_run_was_give
     storage: Storage,
 ) -> None:
     for path, text in {
-        "support/AGENT.md": "---\nkind: generation\n---\nYou help.\n",
-        "grader/AGENT.md": "---\nkind: decision\n---\n",
+        "support/AGENT.md": "---\nname: support\nkind: generation\nmodel: strong\n---\nYou help.\n",
+        "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\n---\n",
         "grader/questions/matches.md": "---\ntype: check\n---\nDoes the reply match?\n",
     }.items():
         (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
@@ -124,7 +124,7 @@ async def test_the_noise_recipe_counts_what_moved_and_the_swing(
 ) -> None:
     (tmp_path / "support").mkdir()
     (tmp_path / "support/AGENT.md").write_text(
-        "---\nkind: generation\n---\nYou help.\n", encoding="utf-8"
+        "---\nname: support\nkind: generation\nmodel: strong\n---\nYou help.\n", encoding="utf-8"
     )
     refinery = Refinery(storage)
     held = [f"run-{i}" for i in range(200) if is_holdout(f"run-{i}")][:3]

@@ -50,10 +50,10 @@ def code(*names: str) -> dict[str, Tool]:
     return {name: Tool(name, "Look up an order", body=echo, args=LookupArgs) for name in names}
 
 
-def agent(root: Path, name: str = "a", front: str = "kind: generation\n") -> Path:
+def agent(root: Path, name: str = "a", front: str = "kind: generation\nmodel: strong\n") -> Path:
     folder = root / name
     folder.mkdir(parents=True)
-    (folder / "AGENT.md").write_text(f"---\n{front}---\nYou are {name}.\n")
+    (folder / "AGENT.md").write_text(f"---\nname: {name}\n{front}---\nYou are {name}.\n")
     return folder
 
 
@@ -172,7 +172,7 @@ def test_a_frontmatter_only_file_reads_however_it_ends(
 
 
 def test_a_decision_agent_declares_no_tools(tmp_path: Path) -> None:
-    folder = agent(tmp_path, front="kind: decision\n")
+    folder = agent(tmp_path, front="kind: decision\nmodel: judge\n")
     (folder / "questions").mkdir()
     (folder / "questions" / "q.md").write_text("---\ntype: check\n---\nIs it?\n")
     (folder / "TOOLS.md").write_text("---\nlookup_order:\n---\n")
@@ -183,7 +183,7 @@ def test_a_decision_agent_declares_no_tools(tmp_path: Path) -> None:
 def test_declarations_are_out_of_the_map_and_the_preload_but_in_the_fingerprint(
     tmp_path: Path,
 ) -> None:
-    folder = agent(tmp_path, front="kind: generation\npreload: true\n")
+    folder = agent(tmp_path, front="kind: generation\nmodel: strong\npreload: true\n")
     both(folder)
     (folder / "notes.md").write_text("---\ndescription: Notes\n---\nRead me.\n")
     spec = load_agent(folder)
@@ -198,7 +198,7 @@ def test_declarations_are_out_of_the_map_and_the_preload_but_in_the_fingerprint(
 
 
 def test_a_reader_does_not_see_another_agent_s_declarations(tmp_path: Path) -> None:
-    agent(tmp_path, "reader", "kind: generation\nreads: [owner]\n")
+    agent(tmp_path, "reader", "kind: generation\nmodel: strong\nreads: [owner]\n")
     owner = agent(tmp_path, "owner")
     both(owner)
     (owner / "notes.md").write_text("---\ndescription: Notes\n---\n")
@@ -216,10 +216,10 @@ def test_a_tree_with_bodies_nobody_declares_is_told_where_to_declare(tmp_path: P
 @pytest.mark.parametrize(
     ("front", "name"),
     [
-        ("kind: generation\n", "Read"),
-        ("kind: generation\n", "History"),
-        ("kind: generation\nagents: [a]\n", "Delegate"),
-        ("kind: generation\nworkspace: true\n", "Shell"),
+        ("kind: generation\nmodel: strong\n", "Read"),
+        ("kind: generation\nmodel: strong\n", "History"),
+        ("kind: generation\nmodel: strong\nagents: [a]\n", "Delegate"),
+        ("kind: generation\nmodel: strong\nworkspace: true\n", "Shell"),
     ],
 )
 def test_a_tool_named_like_a_builtin_is_refused_at_build(
@@ -274,7 +274,11 @@ async def test_an_input_may_use_any_property_name(tmp_path: Path) -> None:
             3,
             "quote a value that holds ': '",
         ),
-        ("kind: generation\n\tagents: []\n", 3, "indent with spaces, not tabs"),
+        (
+            "kind: generation\n\tagents: []\n",
+            3,
+            "indent with spaces, not tabs",
+        ),
         ("kind: generation\ndescription: 'open\n", 3, "close the quote"),
         ("kind: generation\nkind: decision\n", 3, "remove one of them"),
     ],
@@ -303,11 +307,23 @@ def test_a_yaml_mistake_in_a_map_file_is_said_the_same_way(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     ("front", "line", "fix"),
     [
-        ("kind: generation\ndescription: 'open\nagents: []\n", 3, "close the quote"),
+        (
+            "kind: generation\ndescription: 'open\nagents: []\n",
+            3,
+            "close the quote",
+        ),
         ("kind: generation\ndescription\nagents: []\n", 3, "key: value"),
         ("kind: generation\nagents: [a, b\n", 3, "close the ["),
-        ("kind: generation\ndescription: bad\x1bhere\n", 3, "remove the control character"),
-        ("kind: generation\nagents:\n\t- a\n", 4, "indent with spaces, not tabs"),
+        (
+            "kind: generation\ndescription: bad\x1bhere\n",
+            3,
+            "remove the control character",
+        ),
+        (
+            "kind: generation\nagents:\n\t- a\n",
+            4,
+            "indent with spaces, not tabs",
+        ),
     ],
 )
 def test_a_yaml_mistake_is_placed_where_it_starts(
@@ -335,10 +351,16 @@ def test_a_control_character_is_placed_past_wide_characters(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("text", "fix"),
     [
-        ("kind: generation\n\tagents: []\n", "indent with spaces, not tabs"),
-        ("kind: generation\nagents:\n\t- a\n", "indent with spaces, not tabs"),
+        (
+            "kind: generation\nmodel: strong\n\tagents: []\n",
+            "indent with spaces, not tabs",
+        ),
+        (
+            "kind: generation\nmodel: strong\nagents:\n\t- a\n",
+            "indent with spaces, not tabs",
+        ),
         ("x: abc\x07\n", "remove the control character"),
-        ("kind: generation\n  agents: []\nx: 1\n", "line the key up"),
+        ("kind: generation\nmodel: strong\n  agents: []\nx: 1\n", "line the key up"),
     ],
 )
 def test_pure_pyyaml_mistakes_get_the_same_fixes(text: str, fix: str) -> None:

@@ -18,10 +18,10 @@ from rfnry_engine.tools.workspace import Local, Workspace
 from .fakes import Fixed, Scripted, text_reply
 
 AGENTS = {
-    "coder": "kind: generation\ndescription: Writes and runs code\nworkspace: true",
-    "chat": "kind: generation\ndescription: Talks",
-    "lead": "kind: generation\ndescription: Leads\nagents: [coder, chat]",
-    "desk": "kind: decision\ndescription: Sorts\nroute:\n  by: intent\n  to: {code: coder, talk: chat}",
+    "coder": "name: coder\nkind: generation\nmodel: strong\ndescription: Writes and runs code\nworkspace: true",
+    "chat": "name: chat\nkind: generation\nmodel: strong\ndescription: Talks",
+    "lead": "name: lead\nkind: generation\nmodel: strong\ndescription: Leads\nagents: [coder, chat]",
+    "desk": "name: desk\nkind: decision\nmodel: judge\ndescription: Sorts\nroute:\n  by: intent\n  to: {code: coder, talk: chat}",
 }
 INTENT = "---\ntype: choice\noptions:\n  code: Write code\n  talk: Just talk\n---\nWhat is this?\n"
 
@@ -88,7 +88,9 @@ async def test_a_flagged_agent_without_a_workspace_is_refused_before_the_model(
 
 
 def test_a_decision_agent_cannot_declare_a_workspace(tmp_path: Path) -> None:
-    extra = {"judge2": "kind: decision\ndescription: Judges\nworkspace: true"}
+    extra = {
+        "judge2": "name: judge2\nkind: decision\nmodel: judge\ndescription: Judges\nworkspace: true"
+    }
     with pytest.raises(ConfigurationError, match="workspace"):
         Engine(make_tree(tmp_path, extra))
 

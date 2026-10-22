@@ -18,9 +18,9 @@ from rfnry_engine.tools.tools import Tool, Tools
 from .fakes import Fixed, MemoryBucket, Scripted, text_reply
 
 AGENTS = {
-    "desk": "kind: generation\ndescription: Helps customers",
-    "lead": "kind: generation\ndescription: Leads\nagents: [desk]",
-    "router": "kind: decision\ndescription: Sorts\nroute:\n  by: intent\n  to: {help: desk}",
+    "desk": "name: desk\nkind: generation\nmodel: strong\ndescription: Helps customers",
+    "lead": "name: lead\nkind: generation\nmodel: strong\ndescription: Leads\nagents: [desk]",
+    "router": "name: router\nkind: decision\nmodel: judge\ndescription: Sorts\nroute:\n  by: intent\n  to: {help: desk}",
 }
 INTENT = (
     "---\ntype: choice\noptions:\n  help: Needs help\n  other: Anything else\n---\nWhat is this?\n"

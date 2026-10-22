@@ -59,13 +59,39 @@ class RouteSpec(BaseModel):
 class AgentFront(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    name: str
     kind: Kind
+    model: str
     description: str = ""
     agents: list[str] = Field(default_factory=list)
     route: RouteSpec | None = None
     workspace: bool = False
     preload: bool = False
     reads: list[str] = Field(default_factory=list)
+
+    @field_validator("name")
+    @classmethod
+    def _a_name_is_one_plain_word(cls, value: str) -> str:
+        if (
+            not value.strip()
+            or value != value.strip()
+            or value.startswith(".")
+            or "/" in value
+            or "\\" in value
+        ):
+            raise ValueError(
+                f"tree: name must not be blank, hidden, padded or hold a slash, got {value!r}; write a plain name such as name: support"
+            )
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def _a_model_is_plain_text(cls, value: str) -> str:
+        if not value.strip() or value != value.strip():
+            raise ValueError(
+                f"tree: model must not be blank or padded, got {value!r}; write the name of a model the engine is given, such as model: strong"
+            )
+        return value
 
 
 class QuestionFront(BaseModel):
@@ -119,7 +145,9 @@ class Skill(BaseModel):
 class AgentSpec(BaseModel):
     root: Path
     name: str
+    path: str
     kind: Kind
+    model: str
     description: str
     body: str
     agents: list[str]
@@ -327,9 +355,9 @@ def load_agent(
     directory: Path,
     media_types: Collection[str] | None = None,
     folders: Mapping[str, _Folder] | None = None,
-    name: str | None = None,
     sub: Collection[str] = (),
     whole: bool = False,
+    path: str = ".",
 ) -> AgentSpec:
     front, body = parse_frontmatter_doc(
         _read(directory / "AGENT.md"),
@@ -337,7 +365,7 @@ def load_agent(
         source=directory / "AGENT.md",
         label="agent",
     )
-    agent = name or directory.resolve().name
+    agent = front.name
     questions = _questions(directory / "questions")
     tools = _tools(directory, agent)
     task_files = _markdown_files(directory / "tasks")
@@ -407,7 +435,9 @@ def load_agent(
     return AgentSpec(
         root=root,
         name=agent,
+        path=path,
         kind=front.kind,
+        model=front.model,
         description=front.description,
         body=body.strip(),
         agents=front.agents,
@@ -434,7 +464,9 @@ def plain_agent(root: Path, name: str) -> AgentSpec:
     return AgentSpec(
         root=root,
         name=name,
+        path=".",
         kind="generation",
+        model="",
         description="",
         body="",
         agents=[],
@@ -450,39 +482,33 @@ def plain_agent(root: Path, name: str) -> AgentSpec:
     )
 
 
-def load_tree(
-    root: Path, media_types: Collection[str] | None = None, name: str | None = None
-) -> dict[str, AgentSpec]:
+def load_tree(root: Path, media_types: Collection[str] | None = None) -> dict[str, AgentSpec]:
     root = Path(root)
     whole = (root / "AGENT.md").is_file()
     folders = {child: _Folder(place) for child, place in _readable(root, whole).items()}
-    agents = {
-        child.name: load_agent(child, media_types, folders, child.name)
+    specs = [
+        load_agent(child, media_types, folders, path=child.name)
         for child in sorted(root.iterdir())
         if child.is_dir()
         and not child.name.startswith(".")
         and not (whole and child.name in DECLARED)
         and (child / "AGENT.md").is_file()
-    }
+    ]
     if whole:
-        spec = load_agent(root, media_types, {}, name, sub=set(agents), whole=True)
-        if spec.name in agents:
-            fix = (
-                "rename that folder, or pass Engine(name=) another name"
-                if name is not None
-                else "rename the folder, or pass Engine(name=) for the root"
-            )
-            raise ConfigurationError(
-                f"tree: the root agent and the agent in {root / spec.name} are both named {spec.name!r}; {fix}"
-            )
-        return {spec.name: spec, **agents}
-    if agents:
-        if name is not None:
-            raise ConfigurationError(
-                f"tree: name= names the root's own agent, and {root} has no AGENT.md, only agents in its folders; drop name=, or give the root an AGENT.md"
-            )
+        folder_names = {spec.path for spec in specs}
+        specs.insert(0, load_agent(root, media_types, {}, sub=folder_names, whole=True))
+    if specs:
+        agents: dict[str, AgentSpec] = {}
+        for spec in specs:
+            twin = agents.get(spec.name)
+            if twin is not None:
+                first, second = (root / twin.path / "AGENT.md", root / spec.path / "AGENT.md")
+                raise ConfigurationError(
+                    f"tree: {first} and {second} both name the agent {spec.name!r}; rename one"
+                )
+            agents[spec.name] = spec
         return agents
-    spec = plain_agent(root, name or root.resolve().name)
+    spec = plain_agent(root, root.resolve().name)
     return {spec.name: spec}
 
 

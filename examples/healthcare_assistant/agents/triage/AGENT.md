@@ -1,5 +1,7 @@
 ---
+name: triage
 kind: decision
+model: judge
 description: Reads a patient's message to Acme Clinic and says how urgent it is and who handles it
 route:
   by: department

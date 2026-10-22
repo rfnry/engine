@@ -39,7 +39,7 @@ def write(path: Path, text: str) -> None:
 
 
 def grader(root: Path) -> Path:
-    write(root / "grader/AGENT.md", "---\nkind: decision\n---\n")
+    write(root / "grader/AGENT.md", "---\nname: grader\nkind: decision\nmodel: judge\n---\n")
     write(root / "grader/questions/urgent.md", "---\ntype: check\n---\nIs it urgent?\n")
     write(
         root / "grader/tasks/tone/polite.md",
@@ -51,7 +51,7 @@ def grader(root: Path) -> Path:
         "Which register?\n",
     )
     write(root / "grader/tasks/facts/grounded.md", "---\ntype: check\n---\nIs it grounded?\n")
-    write(root / "blank/AGENT.md", "---\nkind: decision\n---\n")
+    write(root / "blank/AGENT.md", "---\nname: blank\nkind: decision\nmodel: judge\n---\n")
     return root
 
 
@@ -191,10 +191,10 @@ async def test_a_route_is_by_a_folder_question_and_runtime_ones_stay_with_the_ro
 async def test_a_routed_decision_run_asks_its_own_folder_only(tmp_path: Path) -> None:
     write(
         tmp_path / "desk/AGENT.md",
-        "---\nkind: decision\nroute: {by: team, to: {b: triage}}\n---\n",
+        "---\nname: desk\nkind: decision\nmodel: judge\nroute: {by: team, to: {b: triage}}\n---\n",
     )
     write(tmp_path / "desk/questions/team.md", "---\ntype: choice\noptions: {a: A, b: B}\n---\n?\n")
-    write(tmp_path / "triage/AGENT.md", "---\nkind: decision\n---\n")
+    write(tmp_path / "triage/AGENT.md", "---\nname: triage\nkind: decision\nmodel: judge\n---\n")
     write(tmp_path / "triage/questions/urgent.md", "---\ntype: check\n---\nUrgent?\n")
     dm = Answering()
     run = await Engine(tmp_path, decision=dm).run("desk", "acme", "x", questions={"angry": ANGRY})
@@ -272,7 +272,7 @@ async def test_a_runtime_id_may_repeat_one_of_a_task_the_run_does_not_name(
 async def test_an_agent_whose_questions_all_live_in_tasks_asks_them_by_task(
     tmp_path: Path,
 ) -> None:
-    write(tmp_path / "tasked/AGENT.md", "---\nkind: decision\n---\n")
+    write(tmp_path / "tasked/AGENT.md", "---\nname: tasked\nkind: decision\nmodel: judge\n---\n")
     write(tmp_path / "tasked/tasks/tone/polite.md", "---\ntype: check\n---\nPolite?\n")
     dm = Answering()
     engine = Engine(tmp_path, decision=dm)
@@ -293,11 +293,11 @@ async def test_a_routing_agent_s_task_adds_to_its_questions_and_is_not_passed_on
 ) -> None:
     write(
         tmp_path / "desk/AGENT.md",
-        "---\nkind: decision\nroute: {by: team, to: {b: triage}}\n---\n",
+        "---\nname: desk\nkind: decision\nmodel: judge\nroute: {by: team, to: {b: triage}}\n---\n",
     )
     write(tmp_path / "desk/questions/team.md", "---\ntype: choice\noptions: {a: A, b: B}\n---\n?\n")
     write(tmp_path / "desk/tasks/audit/angry.md", "---\ntype: check\n---\nAngry?\n")
-    write(tmp_path / "triage/AGENT.md", "---\nkind: decision\n---\n")
+    write(tmp_path / "triage/AGENT.md", "---\nname: triage\nkind: decision\nmodel: judge\n---\n")
     write(tmp_path / "triage/questions/urgent.md", "---\ntype: check\n---\nUrgent?\n")
     write(tmp_path / "triage/tasks/audit/risky.md", "---\ntype: check\n---\nRisky?\n")
     dm = Answering()
@@ -354,13 +354,16 @@ async def test_runtime_questions_and_a_task_are_recorded_and_read_back(
 def desk(root: Path, to: str) -> Path:
     write(
         root / "desk/AGENT.md",
-        f"---\nkind: decision\nroute: {{by: team, to: {to}}}\n---\n",
+        f"---\nname: desk\nkind: decision\nmodel: judge\nroute: {{by: team, to: {to}}}\n---\n",
     )
     write(root / "desk/questions/team.md", "---\ntype: choice\noptions: {a: A, b: B}\n---\n?\n")
     write(root / "desk/tasks/audit/angry.md", "---\ntype: check\n---\nAngry?\n")
-    write(root / "tasked/AGENT.md", "---\nkind: decision\n---\n")
+    write(root / "tasked/AGENT.md", "---\nname: tasked\nkind: decision\nmodel: judge\n---\n")
     write(root / "tasked/tasks/tone/polite.md", "---\ntype: check\n---\nPolite?\n")
-    write(root / "writer/AGENT.md", "---\nkind: generation\n---\nWrite.\n")
+    write(
+        root / "writer/AGENT.md",
+        "---\nname: writer\nkind: generation\nmodel: strong\n---\nWrite.\n",
+    )
     write(root / "writer/tasks/apology.md", "Apologise first.\n")
     return root
 

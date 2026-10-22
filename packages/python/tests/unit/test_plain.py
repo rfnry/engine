@@ -25,7 +25,9 @@ async def test_a_root_without_agent_md_is_one_agent_named_for_its_folder(tmp_pat
     assert engine.agents == {
         "notes": AgentInfo(
             name="notes",
+            path=".",
             kind="generation",
+            model="",
             description="",
             agents=[],
             reads=[],
@@ -42,11 +44,6 @@ async def test_a_root_without_agent_md_is_one_agent_named_for_its_folder(tmp_pat
         + "\n\n<<<CONTEXT>>>\nYou write release notes."
     )
     assert [t.name for t in llm.calls[0][2]] == ["Read", "Grep", "Glob", "LS", "Load"]
-
-
-async def test_name_names_the_plain_agent(tmp_path: Path) -> None:
-    engine = Engine(notes(tmp_path / "notes"), generation=Scripted(), name="writer")
-    assert list(engine.agents) == ["writer"]
 
 
 async def test_its_tools_folder_is_content_and_the_run_s_tools_and_workspace_ride_along(
@@ -106,27 +103,3 @@ async def test_a_decision_only_engine_refuses_it(tmp_path: Path) -> None:
     engine = Engine(notes(tmp_path / "notes"), decision=Fixed({}))
     with pytest.raises(ConfigurationError, match="no generation model was configured"):
         await engine.run("notes", "acme", "x")
-
-
-def test_name_names_a_root_agent(tmp_path: Path) -> None:
-    (tmp_path / "AGENT.md").write_text("---\nkind: generation\n---\nHi\n")
-    assert list(Engine(tmp_path, generation=Scripted(), name="writer").agents) == ["writer"]
-    assert list(Engine(tmp_path, generation=Scripted()).agents) == [tmp_path.name]
-
-
-def test_name_on_a_root_that_is_only_a_tree_is_refused(tmp_path: Path) -> None:
-    (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\n---\nHi\n")
-    with pytest.raises(
-        ConfigurationError,
-        match=r"^tree: name= names the root's own agent, and .* has no AGENT\.md, only agents in its folders; drop name=",
-    ):
-        Engine(tmp_path, generation=Scripted(), name="writer")
-
-
-def test_an_empty_name_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(
-        ConfigurationError,
-        match="^engine: name must name one folder, not blank, hidden, padded or with slashes; got ''$",
-    ):
-        Engine(notes(tmp_path / "notes"), generation=Scripted(), name="")

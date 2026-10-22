@@ -22,7 +22,7 @@ from rfnry_engine.records import Generation
 
 from .fakes import Fixed, MemoryBucket, Scripted, text_reply
 
-REVIEWER = "---\nkind: generation\ndescription: Reviews contracts\n---\nYou review contracts.\n"
+REVIEWER = "---\nname: reviewer\nkind: generation\nmodel: strong\ndescription: Reviews contracts\n---\nYou review contracts.\n"
 
 
 def tree(tmp_path: Path, files: dict[str, str]) -> Path:
@@ -49,8 +49,8 @@ def tasks(tmp_path: Path) -> Path:
                 "---\ndescription: Review  a whole\n  contract\n---\nReview every clause.\n"
             ),
             "reviewer/tasks/triage.md": "Sort the request.\n",
-            "chat/AGENT.md": "---\nkind: generation\ndescription: Talks\n---\nYou talk.\n",
-            "grader/AGENT.md": "---\nkind: decision\ndescription: Grades\n---\n",
+            "chat/AGENT.md": "---\nname: chat\nkind: generation\nmodel: strong\ndescription: Talks\n---\nYou talk.\n",
+            "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades\n---\n",
             "grader/tasks/tone/polite.md": "---\ntype: check\n---\nPolite?\n",
         },
     )
@@ -120,7 +120,7 @@ def skills(tmp_path: Path, **more: str) -> Path:
         tmp_path,
         {
             "reviewer/AGENT.md": (
-                "---\nkind: generation\ndescription: Reviews\nagents: [chat]\nreads: [books]\n"
+                "---\nname: reviewer\nkind: generation\nmodel: strong\ndescription: Reviews\nagents: [chat]\nreads: [books]\n"
                 "---\nYou review contracts.\n"
             ),
             "reviewer/skills/redline/SKILL.md": REDLINE,
@@ -133,8 +133,8 @@ def skills(tmp_path: Path, **more: str) -> Path:
             "reviewer/skills/deep/inner/SKILL.md": "Too deep.\n",
             "reviewer/rules/playbook.md": "The rules.\n",
             "books/skills/borrowed.md": "Not the reviewer's.\n",
-            "chat/AGENT.md": "---\nkind: generation\ndescription: Talks\n---\nYou talk.\n",
-            "grader/AGENT.md": "---\nkind: decision\ndescription: Grades\n---\n",
+            "chat/AGENT.md": "---\nname: chat\nkind: generation\nmodel: strong\ndescription: Talks\n---\nYou talk.\n",
+            "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades\n---\n",
             "grader/questions/ok.md": "---\ntype: check\n---\nOk?\n",
             "grader/skills/x.md": "A file.\n",
             **more,

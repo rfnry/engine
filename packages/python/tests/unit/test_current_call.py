@@ -22,7 +22,7 @@ def tree(root: Path, **agents: str) -> Path:
     for name, front in agents.items():
         (root / name).mkdir(parents=True)
         (root / name / "AGENT.md").write_text(
-            f"---\nkind: generation\ndescription: {name.title()}\n{front}---\nYou are {name}.\n",
+            f"---\nname: {name}\nkind: generation\nmodel: strong\ndescription: {name.title()}\n{front}---\nYou are {name}.\n",
             encoding="utf-8",
         )
     return root
@@ -238,7 +238,7 @@ class Keeping:
 def router(root: Path, name: str, target: str) -> None:
     (root / name / "questions").mkdir(parents=True)
     (root / name / "AGENT.md").write_text(
-        f"---\nkind: decision\nroute: {{by: go, to: {{next: {target}}}}}\n---\n"
+        f"---\nname: {name}\nkind: decision\nmodel: judge\nroute: {{by: go, to: {{next: {target}}}}}\n---\n"
     )
     (root / name / "questions" / "go.md").write_text(
         "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
@@ -387,7 +387,9 @@ class Failing:
 
 async def test_a_failed_decision_run_keeps_its_call(tmp_path: Path) -> None:
     (tmp_path / "judge" / "questions").mkdir(parents=True)
-    (tmp_path / "judge" / "AGENT.md").write_text("---\nkind: decision\n---\n")
+    (tmp_path / "judge" / "AGENT.md").write_text(
+        "---\nname: judge\nkind: decision\nmodel: judge\n---\n"
+    )
     (tmp_path / "judge" / "questions" / "ok.md").write_text("---\ntype: check\n---\nOk?\n")
     tree(tmp_path, lead="agents: [judge]\n")
     llm = Scripted(use(delegate("judge", "d1")), text_reply("done"))

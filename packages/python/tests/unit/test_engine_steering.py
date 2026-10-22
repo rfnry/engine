@@ -22,10 +22,10 @@ from rfnry_engine.tools.workspace import Local, Workspace
 from .fakes import Fixed, said, text_reply
 
 AGENTS = {
-    "chat": "kind: generation\ndescription: Talks",
-    "coder": "kind: generation\ndescription: Writes and runs code\nworkspace: true",
-    "lead": "kind: generation\ndescription: Leads\nagents: [chat]",
-    "desk": "kind: decision\ndescription: Sorts\nroute:\n  by: intent\n  to: {talk: chat}",
+    "chat": "name: chat\nkind: generation\nmodel: strong\ndescription: Talks",
+    "coder": "name: coder\nkind: generation\nmodel: strong\ndescription: Writes and runs code\nworkspace: true",
+    "lead": "name: lead\nkind: generation\nmodel: strong\ndescription: Leads\nagents: [chat]",
+    "desk": "name: desk\nkind: decision\nmodel: judge\ndescription: Sorts\nroute:\n  by: intent\n  to: {talk: chat}",
 }
 INTENT = (
     "---\ntype: choice\noptions:\n  talk: Just talk\n  other: Anything else\n---\nWhat is this?\n"

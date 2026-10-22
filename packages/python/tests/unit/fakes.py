@@ -217,7 +217,7 @@ def delegate_triage(call_id: str = "d1", text: str = "It is down") -> Reply:
 
 
 SORTER = {
-    "AGENT.md": "---\nkind: decision\n---\n",
+    "AGENT.md": "---\nname: sorter\nkind: decision\nmodel: judge\n---\n",
     "questions/team.md": (
         "---\ntype: choice\n"
         "instructions:\n  question: Which team handles `ticket`?\n  ticket: {id: 7}\n"
@@ -262,15 +262,15 @@ PICK: dict[str, Any] = {
 
 LEAD = {
     "lead/AGENT.md": (
-        "---\nkind: generation\ndescription: Leads the desk\n"
+        "---\nname: lead\nkind: generation\nmodel: strong\ndescription: Leads the desk\n"
         "agents: [grader, writer, blank]\n---\nLead the desk.\n"
     ),
-    "grader/AGENT.md": "---\nkind: decision\ndescription: Grades replies\n---\n",
+    "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades replies\n---\n",
     "grader/questions/urgent.md": "---\ntype: check\n---\nUrgent?\n",
     "grader/tasks/tone/polite.md": "---\ntype: check\n---\nPolite?\n",
-    "writer/AGENT.md": "---\nkind: generation\ndescription: Writes replies\n---\nWrite.\n",
+    "writer/AGENT.md": "---\nname: writer\nkind: generation\nmodel: strong\ndescription: Writes replies\n---\nWrite.\n",
     "writer/tasks/apology.md": "Apologise first.\n",
-    "blank/AGENT.md": "---\nkind: decision\ndescription: Answers what it is asked\n---\n",
+    "blank/AGENT.md": "---\nname: blank\nkind: decision\nmodel: judge\ndescription: Answers what it is asked\n---\n",
 }
 
 

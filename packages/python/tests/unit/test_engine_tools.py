@@ -68,7 +68,9 @@ def test_engine_tools_need_a_scope(fixtures: Path) -> None:
 async def test_an_agent_reads_another_agent_s_folder_in_full(tmp_path: Path) -> None:
     for name, front in [("coding", "reads: [writing]\n"), ("writing", "")]:
         (tmp_path / name).mkdir()
-        (tmp_path / name / "AGENT.md").write_text(f"---\nkind: generation\n{front}---\nHi\n")
+        (tmp_path / name / "AGENT.md").write_text(
+            f"---\nname: {name}\nkind: generation\nmodel: strong\n{front}---\nHi\n"
+        )
     (tmp_path / "writing" / "tasks").mkdir()
     (tmp_path / "writing" / "tasks" / "draft.md").write_text("Draft it.\n")
     engine = Engine(tmp_path, generation=Scripted())
@@ -117,7 +119,9 @@ def test_a_schema_from_args_is_generated_once_and_shared_with_no_run(
 
     monkeypatch.setattr(Args, "model_json_schema", counted)
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\n---\nHi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\n---\nHi\n"
+    )
     (tmp_path / "a" / "TOOLS.md").write_text("---\nlook: Look\n---\n")
     engine = Engine(tmp_path, generation=Scripted(), tools=[Tool("look", body=look, args=Args)])
 

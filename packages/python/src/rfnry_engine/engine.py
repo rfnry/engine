@@ -116,7 +116,9 @@ class _Options:
 
 class AgentInfo(BaseModel):
     name: str
+    path: str
     kind: Kind
+    model: str
     description: str
     agents: list[str]
     reads: list[str]
@@ -329,7 +331,6 @@ class Engine:
         self,
         root: Path | str,
         *,
-        name: str | None = None,
         generation: GenerationModel | None = None,
         decision: DecisionModel | None = None,
         tools: list[Tool] | None = None,
@@ -352,16 +353,6 @@ class Engine:
             raise ConfigurationError("engine: history_walk must be positive")
         if history_chars <= 0:
             raise ConfigurationError("engine: history_chars must be positive")
-        if name is not None and (
-            not name.strip()
-            or name != name.strip()
-            or name.startswith(".")
-            or "/" in name
-            or "\\" in name
-        ):
-            raise ConfigurationError(
-                f"engine: name must name one folder, not blank, hidden, padded or with slashes; got {name!r}"
-            )
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"engine: root is not a directory: {root}")
@@ -378,7 +369,7 @@ class Engine:
         self.tool_timeout = tool_timeout
         self.history_walk = history_walk
         self.history_chars = history_chars
-        self._agents = load_tree(self.root, getattr(generation, "media_types", None), name)
+        self._agents = load_tree(self.root, getattr(generation, "media_types", None))
         validate_tree(self._agents)
         self._declared = check_declarations(self._agents, self.tools, bodies=generation is not None)
 
@@ -387,7 +378,9 @@ class Engine:
         return {
             name: AgentInfo(
                 name=name,
+                path=spec.path,
                 kind=spec.kind,
+                model=spec.model,
                 description=spec.description,
                 agents=spec.agents,
                 reads=list(spec.reads),

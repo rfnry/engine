@@ -429,7 +429,7 @@ def test_step_and_depth_caps_must_be_positive(fixtures: Path) -> None:
 
 def test_a_root_that_is_not_a_directory_is_refused_by_its_path(tmp_path: Path) -> None:
     a_file = tmp_path / "AGENT.md"
-    a_file.write_text("---\nkind: generation\n---\n", encoding="utf-8")
+    a_file.write_text("---\nname: a\nkind: generation\nmodel: strong\n---\n", encoding="utf-8")
     for root in (tmp_path / "missing", a_file, str(tmp_path / "missing")):
         expected = f"^engine: root is not a directory: {re.escape(str(root))}$"
         with pytest.raises(ConfigurationError, match=expected):

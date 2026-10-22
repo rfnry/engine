@@ -296,7 +296,9 @@ async def test_a_route_forwards_the_parts_to_its_target(fixtures: Path) -> None:
 
 async def test_a_checks_yes_and_no_reach_the_decision_model(tmp_path: Path) -> None:
     (tmp_path / "triage" / "questions").mkdir(parents=True)
-    (tmp_path / "triage" / "AGENT.md").write_text("---\nkind: decision\n---\n")
+    (tmp_path / "triage" / "AGENT.md").write_text(
+        "---\nname: triage\nkind: decision\nmodel: judge\n---\n"
+    )
     (tmp_path / "triage" / "questions" / "urgent.md").write_text(
         "---\n"
         "type: check\n"

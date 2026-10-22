@@ -245,10 +245,13 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
     ("front", "message"),
     [
         (
-            "kind: decision\npreload: true\n",
+            "name: a\nkind: decision\nmodel: judge\npreload: true\n",
             "^tree: decision agent 'a' cannot declare preload:; a decision agent reads no files",
         ),
-        ("kind: generation\npreload: some\n", "^frontmatter: invalid agent .*AGENT.md"),
+        (
+            "name: a\nkind: generation\nmodel: strong\npreload: some\n",
+            "^frontmatter: invalid agent .*AGENT.md",
+        ),
     ],
 )
 def test_preload_is_true_and_a_decision_agent_cannot_declare_it(
@@ -492,7 +495,7 @@ async def test_preload_all_sends_every_file_but_agent_md_and_the_declarations(
 def test_preload_all_sends_the_read_folders_too_in_path_order(tmp_path: Path) -> None:
     (tmp_path / "coding").mkdir()
     (tmp_path / "coding" / "AGENT.md").write_text(
-        "---\nkind: generation\nreads: [books]\npreload: true\n---\nHi\n"
+        "---\nname: coding\nkind: generation\nmodel: strong\nreads: [books]\npreload: true\n---\nHi\n"
     )
     (tmp_path / "coding" / "notes.md").write_text("Own.\n")
     (tmp_path / "books").mkdir()

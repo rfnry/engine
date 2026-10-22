@@ -182,18 +182,26 @@ agents/
     tasks/triage.md       what to do: a named task, chosen per run
 ```
 
-`AGENT.md` makes a directory an agent, named after its folder. `Engine(root)` loads each direct
+`AGENT.md` makes a directory an agent, and its frontmatter names it. `Engine(root)` loads each direct
 child of `root` that has an `AGENT.md` as an agent, and every other child as a plain folder, read by
 the agents that name it and never run. A hidden folder is never an agent. When `root` itself has an
-`AGENT.md`, the root is an agent too — named after its folder, or by `Engine(root, name=)` — and the
+`AGENT.md`, the root is an agent too — named by its own `name:` — and the
 children with one are its sub-agents — all but its own `tools/`, `tasks/` and `questions/`, which
 stay its declarations — which it calls through `agents:` like any other; without one, the root is
-only a tree, as when code orchestrates the agents. The frontmatter of `AGENT.md` names the kind and
-what the agent may call — not the agent's name, which is its folder's; its body is the persona:
+only a tree, as when code orchestrates the agents. The frontmatter of `AGENT.md` names the agent
+(`name:`), its kind (`kind:`), the model it runs on (`model:`) and what the agent may call; its body
+is the persona. `name:` and `model:` are required, and a missing, blank, padded or non-text one is a
+`ConfigurationError` naming the file. A `name:` is plain text — not blank, not hidden, not padded, no
+slash — and is what `run`, `agents:` and `route:` call the agent by, so a folder can be renamed or
+moved deeper in the tree without renaming the agent; two agents with one name are a
+`ConfigurationError` naming both files. `model:` names a model, `strong` or `judge` for instance;
+what the name maps to is the engine's to say:
 
 ```markdown
 ---
+name: support
 kind: generation
+model: strong
 description: Handles technical support conversations
 agents: [triage]
 ---
@@ -250,7 +258,9 @@ my_agents/
 
 ```markdown
 ---
+name: coding
 kind: generation
+model: strong
 description: Writes and reviews code
 reads: [books]
 ---
@@ -271,31 +281,29 @@ every tenant: it holds how to do the work, never a tenant's data — that comes 
 the history or the workspace. An agent that reads `my_agents/acme/` reads it for every tenant.
 
 A root with no `AGENT.md` anywhere — a folder of skills, notes or references written for something
-else — runs as one agent, named by `Engine(root, name=)` or by the folder's name: a generation agent
+else — runs as one agent, named by the folder's name: a generation agent
 with no persona, whose whole folder is its map and its content, `TOOLS.md`, `tools/` and `tasks/`
 included. It takes what the run gives it — `context=` for its instructions, `tools=`, and the
 workspace tools whenever a `workspace=` is passed:
 
 ```python
-engine = Engine(Path("skills"), generation=llm, name="writer")
-run = await engine.run("writer", scope="acme", input="Draft the launch note.",
+engine = Engine(Path("skills"), generation=llm)
+run = await engine.run("skills", scope="acme", input="Draft the launch note.",
                        context="You write Acme's release notes in its house style.")
 ```
 
-`name=` on a root that is only a tree — agents in its folders, no `AGENT.md` of its own — is a
-`ConfigurationError`, and so is a name that is not one folder's: blank, hidden, padded with spaces
-or holding a slash.
-
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its
-`kind`, `description`, the `agents` it may call, the folders it `reads`, and its `tasks` and
-`skills`, [below](#tasks-and-skills).
+`path` — its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the
+`agents` it may call, the folders it `reads`, and its `tasks` and `skills`, [below](#tasks-and-skills).
 
 An agent that needs its whole folder on every run — a few house rules applied to thousands of
 documents — asks for it, with `preload: true`:
 
 ```markdown
 ---
+name: tagger
 kind: generation
+model: strong
 description: Tags each incoming document by the house rules
 preload: true
 ---
@@ -952,15 +960,17 @@ confidence floor:
 
 ```
 agents/
-  frontdesk/    kind: decision   route: {by: intent, to: {billing: billing, technical: support}}
-  support/      kind: generation agents: [triage]
-  billing/      kind: generation
-  triage/       kind: decision   questions: urgent (check), severity (score)
+  frontdesk/    kind: decision   model: judge   route: {by: intent, to: {billing: billing, technical: support}}
+  support/      kind: generation model: strong  agents: [triage]
+  billing/      kind: generation model: strong
+  triage/       kind: decision   model: judge   questions: urgent (check), severity (score)
 ```
 
 ```markdown
 ---
+name: frontdesk
 kind: decision
+model: judge
 description: Routes an incoming message
 route:
   by: intent
@@ -1172,7 +1182,9 @@ runs the commands and holds the files.
 ```
 agents/coder/AGENT.md
 ---
+name: coder
 kind: generation
+model: strong
 description: Writes and runs code to finish a task.
 workspace: true
 ---
@@ -1423,7 +1435,7 @@ when they matter:
 
 ```
 agents/judge/
-  AGENT.md                 kind: decision
+  AGENT.md                 name: judge   kind: decision   model: judge
   questions/grounded.md    type: check   Is every claim in the reply supported by a tool result?
   questions/rule.md        type: check   Does the reply apply the refund rule as written?
   questions/done.md        type: score   levels: [Not addressed, Partly, Fully, Fully and confirmed]
@@ -1559,8 +1571,8 @@ swap which engine new runs use. A run in flight finishes on the engine it starte
 is loading an older commit, and since a commit's folder never changes, a half-written checkout is
 never live. What an agent's prompt holds — `AGENT.md`, the map, the preload, a named task, an invoked skill —
 is what the engine loaded at `Engine()`; what the model reads with a tool is read from disk when it
-asks, so remove an old folder only once its runs have finished. A root that is itself an agent is named after its folder, so give it `Engine(name=)` when
-each commit lands in a folder of its own, and every commit keeps one name. The checkout is yours —
+asks, so remove an old folder only once its runs have finished. A root that is itself an agent is named by its own `name:`, so every commit keeps one name
+whatever folder it lands in. The checkout is yours —
 `git worktree add`, a clone, an archive:
 
 ```python
@@ -1946,9 +1958,8 @@ Everything the package exports, by role.
 ## Errors
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
-`AGENT.md`, `Engine(name=)` on a root that is only a tree, or not one folder's name, a `name:` in an
-`AGENT.md` or a tool file — the folder or the file names it — a sub-agent named like the root agent,
-an unknown key in the frontmatter of an `AGENT.md`, a tool file or a question (`frontmatter: unknown
+`AGENT.md` without a plain `name:` or a `model:`, two agents with one name, a `name:` in a tool file
+— the file names it — an unknown key in the frontmatter of an `AGENT.md`, a tool file or a question (`frontmatter: unknown
 key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a
 `description:` that is not a string in a file the map would show, a decision agent with `preload:
 true` or tools, a declaration the Tools section refuses, a `reads:` naming no folder of the root or

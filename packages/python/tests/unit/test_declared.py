@@ -85,7 +85,7 @@ def test_without_bodies_only_undeclared_code_tools_are_refused() -> None:
 
 def _lookup_tree(root: Path) -> None:
     (root / "a" / "tools").mkdir(parents=True)
-    (root / "a" / "AGENT.md").write_text("---\nkind: generation\n---\nHi\n")
+    (root / "a" / "AGENT.md").write_text("---\nname: a\nkind: generation\nmodel: strong\n---\nHi\n")
     (root / "a" / "tools" / "lookup.md").write_text(
         "---\ndescription: Look up\ninput:\n  id: {type: string, required: true}\n---\nBody\n"
     )
