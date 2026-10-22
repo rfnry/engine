@@ -379,7 +379,10 @@ loads, so editing either file afterwards changes no prompt; build a new `Engine`
 A skill is `skills/<name>.md`, or `skills/<name>/SKILL.md` for one that keeps files of its own
 beside it, in a generation agent's own folder; a skill folder written for another tool works as it
 is, its other keys left alone. Skills are files in the map, with their descriptions, and the model
-opens one when it judges it fits, as it opens any file. A person can also ask for one — `/skill
+opens one when it judges it fits, as it opens any file. A script a skill keeps is a file like any
+other, which the model reads; to run it, the agent needs a [workspace](#workspace) whose shell can
+reach the agent's folder — mount it read-only, outside the workspace, and say where in `AGENT.md`,
+as `examples/accounting_assistant/` does. A person can also ask for one — `/skill
 escalate` in a chat — and the run is given it with `skill=`:
 
 ```python
