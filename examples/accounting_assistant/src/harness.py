@@ -23,6 +23,7 @@ class Task:
 
 IMAGE = "acme-books:1"
 TIMEOUT = 120
+AGENT = ROOT / "agents" / "bookkeeper"
 
 
 def workspace(work: Path) -> Workspace:
@@ -38,7 +39,8 @@ def workspace(work: Path) -> Workspace:
             *("--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp"),
             *("--memory", "1g", "--cpus", "1", "--pids-limit", "256"),
             *("--user", f"{os.getuid()}:{os.getgid()}", "-e", f"HOME={path}"),
-            *("-v", f"{path}:{path}", "-w", path, IMAGE, "timeout", "-s", "KILL", str(TIMEOUT)),
+            *("-v", f"{path}:{path}", "-v", f"{AGENT}:/agent:ro", "-w", path),
+            *(IMAGE, "timeout", "-s", "KILL", str(TIMEOUT)),
             *("bash", "-c"),
         ],
     )
