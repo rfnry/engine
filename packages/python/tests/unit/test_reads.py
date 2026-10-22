@@ -119,20 +119,30 @@ def test_reads_of_a_link_that_leaves_the_root_is_refused(tmp_path: Path) -> None
         load_tree(root)
 
 
-def test_the_tree_folders_leave_out_hidden_declared_and_repeated_places(tmp_path: Path) -> None:
-    root = books(tmp_path)
+def test_the_tree_folders_leave_out_hidden_declared_and_inner_links(tmp_path: Path) -> None:
+    root = books(tmp_path / "root")
     write(root / ".git/x", "x")
     write(root / "coding/tools/a.md", "---\ndescription: A\n---\n")
     write(root / "coding/notes/n.md", "N\n")
+    write(tmp_path / "elsewhere/sub/n.md", "N\n")
     (root / "zagain").symlink_to(root / "shared", target_is_directory=True)
     (root / "loop").symlink_to(root, target_is_directory=True)
+    (root / "out").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
     found = _tree_folders(root)
     assert sorted(found) == [
         "coding",
         "coding/notes",
+        "out",
+        "out/sub",
         "shared",
         "shared/books",
         "shared/books/python",
-        "zagain",
     ]
-    assert found["zagain"] == found["shared"] == (root / "shared").resolve()
+    assert found["out"] == (tmp_path / "elsewhere").resolve()
+
+
+def test_a_link_that_sorts_before_its_target_does_not_take_its_folders(tmp_path: Path) -> None:
+    root = books(tmp_path)
+    (root / "alink").symlink_to(root / "shared", target_is_directory=True)
+    spec = load_tree(root)["coding"]
+    assert spec.reads == {"shared/books": (root / "shared/books").resolve()}

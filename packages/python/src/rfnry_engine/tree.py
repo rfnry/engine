@@ -325,7 +325,7 @@ def _tree_folders(root: Path) -> dict[str, Path]:
             ):
                 continue
             place = child.resolve()
-            if place == top:
+            if (child.is_symlink() or child.is_junction()) and place.is_relative_to(top):
                 continue
             key = f"{at}/{child.name}" if at else child.name
             found[key] = place
