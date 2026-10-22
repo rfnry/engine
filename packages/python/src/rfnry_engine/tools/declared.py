@@ -1,4 +1,6 @@
+import json
 from collections.abc import Collection
+from functools import cache
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
@@ -25,23 +27,31 @@ _NAMED = {"properties", "$defs", "definitions", "patternProperties"}
 
 
 def prose(schema: object, at: str = "") -> str | None:
+    return _prose(schema, at, False)
+
+
+def _prose(schema: object, at: str, names: bool) -> str | None:
     if isinstance(schema, dict):
-        named = at.rsplit(".", 1)[-1] in _NAMED
         for key, value in schema.items():
-            if not named and key in _DATA:
+            if not names and key in _DATA:
                 continue
             here = f"{at}.{key}" if at else str(key)
-            if not named and key == "description" and isinstance(value, str):
+            if not names and key == "description" and isinstance(value, str):
                 return here
-            found = prose(value, here)
+            found = _prose(value, here, not names and key in _NAMED)
             if found is not None:
                 return found
     elif isinstance(schema, list):
         for index, item in enumerate(schema):
-            found = prose(item, f"{at}.{index}" if at else str(index))
+            found = _prose(item, f"{at}.{index}" if at else str(index), False)
             if found is not None:
                 return found
     return None
+
+
+@cache
+def described(args: type[BaseModel]) -> str:
+    return json.dumps(args.model_json_schema())
 
 
 def _schema(decl: ToolDecl) -> dict[str, Any]:
@@ -111,7 +121,7 @@ def _check_code(code: dict[str, Tool]) -> None:
             )
         schema = tool.input_schema
         if schema is None and tool.args is not None:
-            schema = tool.args.model_json_schema()
+            schema = json.loads(described(tool.args))
         where = prose(schema)
         if where is not None:
             raise ConfigurationError(
@@ -128,7 +138,7 @@ def _check_input(spec: AgentSpec, name: str, decl: ToolDecl, tool: Tool) -> None
         )
     if tool.args is not None:
         written = sorted(decl.input)
-        coded = sorted(tool.args.model_json_schema().get("properties", {}))
+        coded = sorted(json.loads(described(tool.args)).get("properties", {}))
         if written != coded:
             raise ConfigurationError(
                 f"declared: agent {spec.name!r} gives tool {name!r} the arguments {written} in tools/{name}.md and {coded} in its args; make them name the same arguments"

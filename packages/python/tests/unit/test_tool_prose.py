@@ -140,6 +140,24 @@ def test_an_argument_named_description_is_an_argument(tmp_path: Path) -> None:
         ({"properties": {"a": {"const": {"description": "x"}}}}, None),
         ({"properties": {"a": {"enum": [{"description": "x"}]}}}, None),
         ({"properties": {"description": {"type": "string"}}}, None),
+        ({"properties": {"enum": {"type": "string"}}}, None),
+        ({"properties": {"default": {"type": "string"}}}, None),
+        (
+            {"properties": {"properties": {"type": "string", "description": "x"}}},
+            "properties.properties.description",
+        ),
+        (
+            {"properties": {"definitions": {"type": "string", "description": "x"}}},
+            "properties.definitions.description",
+        ),
+        (
+            {"properties": {"a.properties": {"type": "string", "description": "x"}}},
+            "properties.a.properties.description",
+        ),
+        (
+            {"$defs": {"patternProperties": {"description": "x"}}},
+            "$defs.patternProperties.description",
+        ),
     ],
 )
 def test_prose_finds_the_first_description_and_skips_data(
