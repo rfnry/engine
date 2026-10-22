@@ -1,10 +1,13 @@
 import asyncio
 import json
+import os
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+import asyncpg
 import pytest
 from unit.fakes import (
     PICK,
@@ -891,6 +894,30 @@ async def test_initialize_makes_the_indexes_and_runs_again(pool: Any) -> None:
     )
     names = {r["indexname"] for r in records}
     assert {"ix_engine_runs_scope_parent", "ix_engine_runs_tags"} <= names
+
+
+async def test_initialize_on_a_table_an_earlier_version_made_says_what_to_do(pool: Any) -> None:
+    schema = f"engine_old_{uuid4().hex}"
+    await pool.execute(f"CREATE SCHEMA {schema}")
+    old = await asyncpg.create_pool(
+        os.environ["RFNRY_TEST_POSTGRES_URL"], min_size=1, server_settings={"search_path": schema}
+    )
+    try:
+        await old.execute(
+            "CREATE TABLE engine_runs (scope TEXT NOT NULL, run_id TEXT NOT NULL, "
+            "parent_run_id TEXT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, task TEXT NULL, "
+            "at TIMESTAMPTZ NOT NULL, recorded TIMESTAMPTZ NOT NULL, duration_ms INTEGER NOT NULL, "
+            "model TEXT NULL, body JSON NOT NULL, PRIMARY KEY (scope, run_id))"
+        )
+        with pytest.raises(StorageError) as refused:
+            await PostgresStorage(old).initialize()
+        assert str(refused.value) == (
+            "postgres: engine_runs was made by an earlier version and lacks tags; "
+            "drop engine_runs and engine_labels, then run initialize() again"
+        )
+    finally:
+        await old.close()
+        await pool.execute(f"DROP SCHEMA {schema} CASCADE")
 
 
 async def test_a_recorded_call_reads_back(storage: Storage, tmp_path: Path) -> None:

@@ -1826,10 +1826,14 @@ The refinery is the only part of the library that stores anything, and it stores
 docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
 ```
 
-`initialize()` creates two tables, `engine_runs` and `engine_labels`, and their indexes — among them `(scope, parent_run_id)`, which a run's tree is found by, and a GIN index on the `tags` column of `engine_runs`, which tag selection uses — and is safe to run again. It never alters a table: on a database made by an earlier version, drop `engine_runs` and `engine_labels` yourself before `initialize()`. A
-run's row keeps `at`, when the run started, and `recorded`, when the refinery stored it — one stamp
-for a run and every child run under it — and `runs(since=)` reads `recorded`. The tables are
-prefixed `engine_` so one database can also hold rfnry-memory's and rfnry-thread's:
+`initialize()` creates two tables, `engine_runs` and `engine_labels`, and their indexes — among them
+`(scope, parent_run_id)`, which a run's tree is found by, and a GIN index on the `tags` column of
+`engine_runs`, which tag selection uses — and is safe to run again. It never alters a table. On a
+table an earlier version made, it raises a `StorageError` naming the columns the table lacks; drop
+`engine_runs` and `engine_labels` yourself and run it again. A run's row keeps `at`, when the run
+started, and `recorded`, when the refinery stored it — one stamp for a run and every child run under
+it — and `runs(since=)` reads `recorded`. The tables are prefixed `engine_` so one database can also
+hold rfnry-memory's and rfnry-thread's:
 
 ```python
 pool = await asyncpg.create_pool(dsn)

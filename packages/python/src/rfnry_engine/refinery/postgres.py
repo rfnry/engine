@@ -33,6 +33,10 @@ _RUN_COLUMNS = (
     "scope, run_id, parent_run_id, agent, kind, task, at, recorded, duration_ms, model, body"
 )
 _LABEL_COLUMNS = "scope, label_id, run_id, source, at, body"
+_TABLES = {
+    "engine_runs": [*_RUN_COLUMNS.split(", "), "tags"],
+    "engine_labels": _LABEL_COLUMNS.split(", "),
+}
 
 
 def _json(value: Any) -> dict[str, Any]:
@@ -111,6 +115,20 @@ class PostgresStorage:
 
     async def initialize(self) -> None:
         async with self._guard("initialize"), self._pool.acquire() as conn:
+            found = await conn.fetch(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = ANY($1::text[])",
+                list(_TABLES),
+            )
+            for table, columns in _TABLES.items():
+                held = {record["column_name"] for record in found if record["table_name"] == table}
+                missing = [column for column in columns if held and column not in held]
+                if missing:
+                    raise StorageError(
+                        f"postgres: {table} was made by an earlier version and lacks "
+                        f"{', '.join(missing)}; drop engine_runs and engine_labels, then run "
+                        "initialize() again"
+                    )
             for ddl in _DDL:
                 await conn.execute(ddl)
 
