@@ -104,10 +104,7 @@ def check_declarations(
         declared.update(spec.tools)
     undeclared = sorted(name for name in code if name not in declared)
     if undeclared:
-        fix = (
-            "a root with no AGENT.md declares no tools, so pass them with run(tools=)"
-            if any(spec.plain for spec in agents.values())
-            else "declare each in its agent's TOOLS.md or tools/"
+        raise ConfigurationError(
+            f"declared: tools declared by no agent: {undeclared}; declare each in its agent's TOOLS.md or tools/"
         )
-        raise ConfigurationError(f"declared: tools declared by no agent: {undeclared}; {fix}")
     return built

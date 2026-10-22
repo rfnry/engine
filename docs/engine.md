@@ -182,20 +182,40 @@ agents/
     tasks/triage.md       what to do: a named task, chosen per run
 ```
 
-`AGENT.md` makes a directory an agent, and its frontmatter names it. `Engine(root)` loads each direct
-child of `root` that has an `AGENT.md` as an agent, and every other child as a plain folder, read by
-the agents that name it and never run. A hidden folder is never an agent. When `root` itself has an
-`AGENT.md`, the root is an agent too — named by its own `name:` — and the
-children with one are its sub-agents — all but its own `tools/`, `tasks/` and `questions/`, which
-stay its declarations — which it calls through `agents:` like any other; without one, the root is
-only a tree, as when code orchestrates the agents. The frontmatter of `AGENT.md` names the agent
-(`name:`), its kind (`kind:`), the model it runs on (`model:`) and what the agent may call; its body
-is the persona. `name:` and `model:` are required, and a missing, blank, padded or non-text one is a
-`ConfigurationError` naming the file. A `name:` is plain text — not blank, not hidden, not padded, no
-slash — and is what `run`, `agents:` and `route:` call the agent by, so a folder can be renamed or
-moved deeper in the tree without renaming the agent; two agents with one name are a
-`ConfigurationError` naming both files. `model:` names a model, `strong` or `judge` for instance;
-what the name maps to is the engine's to say:
+`AGENT.md` makes a directory an agent, and its frontmatter names it. `Engine(root)` walks `root` and
+loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested
+as you choose — `root` itself when it has one, `support/`, `desks/billing/triage/`. A folder without
+an `AGENT.md` is a group of agents, or a folder of knowledge the agents read; it is never run.
+Hidden folders, and an agent's own `tools/`, `tasks/` and `questions/`, which stay its declarations,
+are never searched for agents. An agent inside another agent's folder is an agent like any other,
+which the outer one calls through `agents:`; the root, when it is an agent, is the outer agent of
+the whole tree. A tree with no `AGENT.md` anywhere is a `ConfigurationError`.
+
+```
+agents/
+  lead/
+    AGENT.md                   agents: [writer, triage]
+    playbook.md                in lead's map
+    helpers/notes.md           in lead's map
+    helpers/writer/AGENT.md    an agent: out of lead's map, readable to lead's tools
+  desks/support/triage/
+    AGENT.md                   an agent: desks/ and support/ are groups, never run
+```
+
+Folder links are followed: an agent's folder kept elsewhere is linked in and found where the link
+is. A link to a folder of the root is not followed — the folder is walked once, under its own path —
+and a link that would reach an agent twice is a `ConfigurationError` naming the link and where it
+leads: one to a folder of the root that holds an `AGENT.md`, in it or below it, or two links to one
+such folder elsewhere; so is a link to a folder that holds the link, which would lead the walk into
+itself.
+
+The frontmatter of `AGENT.md` names the agent (`name:`), its kind (`kind:`), the model it runs on
+(`model:`) and what the agent may call; its body is the persona. `name:` and `model:` are required,
+and a missing, blank, padded or non-text one is a `ConfigurationError` naming the file. A `name:` is
+plain text — not blank, not hidden, not padded, no slash — and is what `run`, `agents:` and `route:`
+call the agent by, so a folder can be renamed or moved deeper in the tree without renaming the
+agent; two agents with one name are a `ConfigurationError` naming both files. `model:` names a
+model, `strong` or `judge` for instance; what the name maps to is the engine's to say:
 
 ```markdown
 ---
@@ -233,8 +253,8 @@ A file without a description is listed by its name, which often says enough; a d
 line of what the file holds, so the model knows what to open without opening it. Other frontmatter
 keys are left alone, so a folder written for another tool — `skills/<name>/SKILL.md` with `name:`
 and `description:` — works as it is. `AGENT.md`, `TOOLS.md` and the folders `tools/`, `tasks/` and
-`questions/` stay out of the map, since the prompt already holds them, and so do a root agent's
-sub-agents, which it reaches through `agents:` — their folders stay readable to its tools, as its
+`questions/` stay out of the map, since the prompt already holds them, and so do the folders of the
+agents inside its own, which it reaches through `agents:` — they stay readable to its tools, as its
 declarations do, and count in its fingerprint. Frontmatter that is not valid YAML — a key named
 twice included, as YAML forbids, in any file of the folder — or a `description:` that is not a
 string, is a `ConfigurationError` naming the file and what to change, and for YAML the line, when
@@ -246,8 +266,8 @@ the folder as it came, the model reads it with its own understanding of images a
 is no parser in between, and nothing is loaded until the model asks — unless the agent sets
 `preload: true`, below.
 
-A root holds agents and plain folders side by side, and an agent reads other folders of its root by
-naming them in `reads:` — plain folders, or other agents' folders:
+A root holds agents and folders without an `AGENT.md` side by side, and an agent reads other folders
+of its root by naming them in `reads:` — folders without an `AGENT.md`, or other agents' folders:
 
 ```
 my_agents/
@@ -271,35 +291,28 @@ Each folder it reads follows its own in the map as `../books/`, and the tools ta
 path — `Read` of `../books/python/async.md`, `Grep` with `path="../books"`, `Glob` of
 `../books/**/*.md`; without a path, `Grep` and `Glob` search the agent's own folder. Nothing outside
 the agent's folder and the folders it reads is reachable. Another agent's folder shows in the map
-without its `AGENT.md` and declarations, which stay readable. `preload: true` sends the folders it
-reads too, under the same paths, and an edit to one changes the fingerprint of every agent that
-reads it. `reads:` names a folder by its path from the root, plain or another agent's — `books`, or
-`shared/books` for a folder deeper in the tree — written with `/` and a trailing `/` allowed; the map
-and the tools spell it from the agent's own folder, `../books/` for an agent directly under the root
-and `../shared/books/` for the deeper one. Each of these is a `ConfigurationError` when the tree
-loads: a path that starts with `./`, `/` or `..`, holds `\`, an empty segment or a hidden one; a
-folder the tree does not have; a link that leaves the root; the agent's own folder or one that
-holds it; a folder inside the agent's own, which its map holds already, so every `reads:` of a root
-agent; two folders one inside the other; `reads:` on a decision agent, which reads no files; and
-`reads:` on an agent whose folder is a link to a folder elsewhere — link the whole root instead. The tree is shared by
-every tenant: it holds how to do the work, never a tenant's data — that comes per run, in the input,
-the history or the workspace. An agent that reads `my_agents/acme/` reads it for every tenant.
+without its `AGENT.md` and declarations, which stay readable, and a folder read shows without the
+agents inside it, as an agent's own map does. `preload: true` sends the folders it reads too, under
+the same paths, and an edit to one changes the fingerprint of every agent that reads it. `reads:`
+names a folder by its path from the root, another agent's or not — `books`, or `shared/books` for a
+folder deeper in the tree — written with `/` and a trailing `/` allowed; the map and the tools spell
+it from the agent's own folder, `../books/` for an agent directly under the root and
+`../shared/books/` for the deeper one. Each of these is a `ConfigurationError` when the tree loads:
+a path that starts with `./`, `/` or `..`, holds `\`, an empty segment or a hidden one; a folder the
+tree does not have; a link that leaves the root; the agent's own folder or one that holds it; a
+folder inside the agent's own, which its map holds already, so every `reads:` of a root agent; two
+folders one inside the other; `reads:` on a decision agent, which reads no files; and `reads:` on an
+agent whose folder is a link to a folder elsewhere — link the whole root instead. The tree is shared
+by every tenant: it holds how to do the work, never a tenant's data — that comes per run, in the
+input, the history or the workspace. An agent that reads `my_agents/acme/` reads it for every
+tenant.
 
-A root with no `AGENT.md` anywhere — a folder of skills, notes or references written for something
-else — runs as one agent, named by the folder's name: a generation agent
-with no persona, whose whole folder is its map and its content, `TOOLS.md`, `tools/` and `tasks/`
-included. It takes what the run gives it — `context=` for its instructions, `tools=`, and the
-workspace tools whenever a `workspace=` is passed:
-
-```python
-engine = Engine(Path("skills"), generation=llm)
-run = await engine.run("skills", scope="acme", input="Draft the launch note.",
-                       context="You write Acme's release notes in its house style.")
-```
-
-`engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its
-`path` — its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the
-`agents` it may call, the folders it `reads`, and its `tasks` and `skills`, [below](#tasks-and-skills).
+`engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its `path`
+— its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the `agents` it
+may call, the folders it `reads`, and its `tasks` and `skills`, [below](#tasks-and-skills). When the
+tree has loaded, the engine logs the names of its agents at INFO on the `rfnry_engine.engine` logger
+— `engine: agents loaded [lead, triage, writer]` — so a folder meant to be an agent that is not
+shows at start; `logging.basicConfig(level=logging.INFO)` shows it.
 
 An agent that needs its whole folder on every run — a few house rules applied to thousands of
 documents — asks for it, with `preload: true`:
@@ -316,19 +329,19 @@ Tag the document. Every rule applies to every document.
 ```
 
 With `preload: true` the model also receives every other file of its folder — all but `AGENT.md`,
-`TOOLS.md`, `tools/`, `tasks/` and `questions/`, described or not — sorted by path character by
-character, each under its path: what `Read` would return for it, and for a file `Read` refuses —
-over 5 MB, or not text — the part `Load` would hand over. The map stays a map and the folder stays
-as it is; only when the files are read changes, so no turn goes to opening them. They travel as one
-user message ahead of the history, sent with every model call, and are read when the engine loads
-the tree, as the fingerprint is taken, so an edit shows in the next `Engine`. `run.preload` holds
-that message's parts; `run.messages` and `run.conversation` leave it out, so a conversation passed
-back does not send the folder twice and a replay preloads from the candidate's folder. The tools
-stay as they are — `Read` and `Load` hand over what the model already holds. Each agent preloads its
-own folder, a delegated or routed one included. A decision agent reads no files, so `preload:` on
-one is a `ConfigurationError` when the tree loads; so is a file neither `Read` nor `Load` would hand
-over — over 20 MB, of a type the generation model's `media_types` does not name, or not the type its
-name says — with `Load`'s own message.
+`TOOLS.md`, `tools/`, `tasks/`, `questions/` and the folders of the agents inside it, described or
+not — sorted by path character by character, each under its path: what `Read` would return for it,
+and for a file `Read` refuses — over 5 MB, or not text — the part `Load` would hand over. The map
+stays a map and the folder stays as it is; only when the files are read changes, so no turn goes to
+opening them. They travel as one user message ahead of the history, sent with every model call, and
+are read when the engine loads the tree, as the fingerprint is taken, so an edit shows in the next
+`Engine`. `run.preload` holds that message's parts; `run.messages` and `run.conversation` leave it
+out, so a conversation passed back does not send the folder twice and a replay preloads from the
+candidate's folder. The tools stay as they are — `Read` and `Load` hand over what the model already
+holds. Each agent preloads its own folder, a delegated or routed one included. A decision agent
+reads no files, so `preload:` on one is a `ConfigurationError` when the tree loads; so is a file
+neither `Read` nor `Load` would hand over — over 20 MB, of a type the generation model's
+`media_types` does not name, or not the type its name says — with `Load`'s own message.
 
 ### Tasks and skills
 
@@ -1350,15 +1363,14 @@ what the model was given and what commands printed, exactly, in the run's scope 
 export from it. `record=False` keeps a run out of the record; `delete_runs` and `delete_scope` take
 it out later.
 
-An agent without `workspace: true` never sees these tools, even when the run has a workspace — but a
-plain agent, a root with no `AGENT.md`, gets them whenever one is passed; an agent with it, run
-without one, is a `ConfigurationError`, and so is a decision agent that declares it. Delegated and
-routed agents receive the run's workspace on the same terms. `stop.now()` stops a running command
-the same way the timeout does, and a second one kills it at once; either leaves jobs running. You
-own the workspace and its lifetime: a temporary directory per run, or one kept for a project. A
-workspace belongs to one tenant, the one its `scope` names: a run, a tool or a replay of another
-scope refuses it before anything runs — `engine: workspace belongs to scope 'acme', not 'globex'` —
-so a workspace, its files and its jobs never cross tenants.
+An agent without `workspace: true` never sees these tools, even when the run has a workspace; an
+agent with it, run without one, is a `ConfigurationError`, and so is a decision agent that declares
+it. Delegated and routed agents receive the run's workspace on the same terms. `stop.now()` stops a
+running command the same way the timeout does, and a second one kills it at once; either leaves jobs
+running. You own the workspace and its lifetime: a temporary directory per run, or one kept for a
+project. A workspace belongs to one tenant, the one its `scope` names: a run, a tool or a replay of
+another scope refuses it before anything runs — `engine: workspace belongs to scope 'acme', not
+'globex'` — so a workspace, its files and its jobs never cross tenants.
 
 ### Approving tool calls
 
@@ -1962,7 +1974,8 @@ Everything the package exports, by role.
 
 ## Errors
 
-`ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a bad
+`ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a tree with
+no `AGENT.md`, a link to a folder that holds it or one that would reach an agent twice, a bad
 `AGENT.md` without a plain `name:` or a `model:`, two agents with one name, a `name:` in a tool file
 — the file names it — an unknown key in the frontmatter of an `AGENT.md`, a tool file or a question (`frontmatter: unknown
 key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a

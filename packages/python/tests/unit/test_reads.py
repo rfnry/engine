@@ -128,7 +128,7 @@ def test_the_tree_folders_leave_out_hidden_declared_and_inner_links(tmp_path: Pa
     (root / "zagain").symlink_to(root / "shared", target_is_directory=True)
     (root / "loop").symlink_to(root, target_is_directory=True)
     (root / "out").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
-    found = _tree_folders(root)
+    found, _ = _tree_folders(root)
     assert sorted(found) == [
         "coding",
         "coding/notes",

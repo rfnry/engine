@@ -167,13 +167,6 @@ def test_a_skill_named_twice_is_refused(tmp_path: Path) -> None:
         Engine(root)
 
 
-def test_a_plain_folder_has_skills_too(tmp_path: Path) -> None:
-    root = tmp_path / "notes"
-    (root / "skills").mkdir(parents=True)
-    (root / "skills" / "tone.md").write_text("---\ndescription: The house tone\n---\nBe brief.\n")
-    assert Engine(root).agents["notes"].skills == {"tone": "The house tone"}
-
-
 async def test_an_invoked_skill_rides_in_front_of_the_input(tmp_path: Path) -> None:
     llm = Scripted(text_reply("Redlined."))
     run = await Engine(skills(tmp_path), generation=llm).run(

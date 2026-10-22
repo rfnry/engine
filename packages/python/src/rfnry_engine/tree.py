@@ -18,7 +18,7 @@ from pydantic import (
 from rfnry_engine.chain import preload_digest
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
-from rfnry_engine.folders import DECLARED, content, declares, entries, joined, listing
+from rfnry_engine.folders import DECLARED, content, declares, entries, joined
 from rfnry_engine.frontmatter import (
     body_of,
     description,
@@ -165,7 +165,6 @@ class AgentSpec(BaseModel):
     preload_digest: str
     listing: str = ""
     reads: dict[str, Path] = Field(default_factory=dict)
-    plain: bool = False
     skills: dict[str, Skill] = Field(default_factory=dict)
 
 
@@ -295,7 +294,7 @@ class _Folder:
 
     @cached_property
     def files(self) -> list[tuple[str, Path]]:
-        return content(self.place, False)
+        return content(self.place, False, inner=True)
 
     @cached_property
     def preloaded(self) -> list[tuple[str, Path]]:
@@ -310,10 +309,20 @@ def from_agent(path: str, reads: Mapping[str, Path]) -> dict[str, Path]:
     return {posixpath.relpath(name, path): place for name, place in reads.items()}
 
 
-def _tree_folders(root: Path) -> dict[str, Path]:
+def _linked(path: Path) -> bool:
+    return path.is_symlink() or path.is_junction()
+
+
+def _loops(top: Path, found: Mapping[str, Path], key: str, target: Path) -> bool:
+    parts = key.split("/")
+    above = [top, *(found["/".join(parts[:n])] for n in range(1, len(parts)))]
+    return any(place.is_relative_to(target) for place in above)
+
+
+def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     top = root.resolve()
     found: dict[str, Path] = {}
-    walked = {top}
+    links: dict[str, Path] = {}
 
     def walk(folder: Path, at: str) -> None:
         holds = declares(folder)
@@ -325,16 +334,44 @@ def _tree_folders(root: Path) -> dict[str, Path]:
             ):
                 continue
             place = child.resolve()
-            if (child.is_symlink() or child.is_junction()) and place.is_relative_to(top):
-                continue
             key = f"{at}/{child.name}" if at else child.name
+            if _linked(child):
+                links[key] = place
+                if place.is_relative_to(top) or _loops(top, found, key, place):
+                    continue
             found[key] = place
-            if place not in walked:
-                walked.add(place)
-                walk(child, key)
+            walk(child, key)
 
     walk(root, "")
-    return found
+    return found, links
+
+
+def _holds_agent(folder: Path) -> bool:
+    return declares(folder) or any(
+        _holds_agent(child)
+        for child in folder.iterdir()
+        if child.is_dir() and not child.name.startswith(".") and not _linked(child)
+    )
+
+
+def _refuse_links(root: Path, found: Mapping[str, Path], links: Mapping[str, Path]) -> None:
+    top = root.resolve()
+    for key, target in sorted(links.items()):
+        inside = target.is_relative_to(top)
+        shown = root / target.relative_to(top) if inside else target
+        if _loops(top, found, key, target):
+            raise ConfigurationError(
+                f"tree: {root / key} links to {shown}, a folder that holds the link; remove the link, since the tree would lead into itself"
+            )
+        if inside and _holds_agent(target):
+            raise ConfigurationError(
+                f"tree: {root / key} links to {shown}, a folder of the root that holds an AGENT.md; remove the link, since an agent lives in one folder and is called by its name: from anywhere"
+            )
+        twice = sorted(other for other, place in found.items() if place == target and other != key)
+        if not inside and twice and _holds_agent(target):
+            raise ConfigurationError(
+                f"tree: {root / key} and {root / twice[0]} both reach {shown}, which holds an AGENT.md; remove one of the links, since an agent lives in one folder and is called by its name: from anywhere"
+            )
 
 
 def _written(agent: str, name: str) -> str:
@@ -409,7 +446,6 @@ def load_agent(
     directory: Path,
     media_types: Collection[str] | None = None,
     folders: Mapping[str, _Folder] | None = None,
-    sub: Collection[str] = (),
     path: str = ".",
     tree_root: Path | None = None,
 ) -> AgentSpec:
@@ -466,14 +502,14 @@ def load_agent(
     held = _reads(agent, front, directory, tree_root or directory, path, folders or {})
     reads = {posixpath.relpath(name, path): folder for name, folder in held.items()}
     root = directory.resolve()
-    files = sorted([*content(root, False), *_under(reads, lambda folder: folder.files)])
+    files = sorted([*content(root, False, inner=True), *_under(reads, lambda folder: folder.files)])
     try:
         preload, read = (
             preload_parts(
                 sorted(
                     rel
                     for rel, _ in [
-                        *content(root, True, sub),
+                        *content(root, True),
                         *_under(reads, lambda folder: folder.preloaded),
                     ]
                 ),
@@ -507,64 +543,34 @@ def load_agent(
         preload=preload,
         preload_digest=preload_digest(preload),
         listing=joined(
-            entries(root, True, sub), {name: folder.mapped for name, folder in reads.items()}
+            entries(root, True), {name: folder.mapped for name, folder in reads.items()}
         ),
         reads={name: folder.place for name, folder in held.items()},
-        skills={} if front.kind == "decision" else _skills(content(root, True, sub), agent),
-    )
-
-
-def plain_agent(root: Path, name: str) -> AgentSpec:
-    root = root.resolve()
-    return AgentSpec(
-        root=root,
-        name=name,
-        path=".",
-        kind="generation",
-        model="",
-        description="",
-        body="",
-        agents=[],
-        route=None,
-        questions={},
-        tools={},
-        tasks={},
-        fingerprint=folder_fingerprint(content(root, False), {}),
-        preload_digest=preload_digest([]),
-        listing=listing(root, False, {}),
-        plain=True,
-        skills=_skills(content(root, False), name),
+        skills={} if front.kind == "decision" else _skills(content(root, True), agent),
     )
 
 
 def load_tree(root: Path, media_types: Collection[str] | None = None) -> dict[str, AgentSpec]:
     root = Path(root)
-    whole = (root / "AGENT.md").is_file()
-    folders = {name: _Folder(place) for name, place in _tree_folders(root).items()}
-    specs = [
-        load_agent(child, media_types, folders, path=child.name, tree_root=root)
-        for child in sorted(root.iterdir())
-        if child.is_dir()
-        and not child.name.startswith(".")
-        and not (whole and child.name in DECLARED)
-        and (child / "AGENT.md").is_file()
-    ]
-    if whole:
-        folder_names = {spec.path for spec in specs}
-        specs.insert(0, load_agent(root, media_types, folders, sub=folder_names))
-    if specs:
-        agents: dict[str, AgentSpec] = {}
-        for spec in specs:
-            twin = agents.get(spec.name)
-            if twin is not None:
-                first, second = (root / twin.path / "AGENT.md", root / spec.path / "AGENT.md")
-                raise ConfigurationError(
-                    f"tree: {first} and {second} both name the agent {spec.name!r}; rename one"
-                )
-            agents[spec.name] = spec
-        return agents
-    spec = plain_agent(root, root.resolve().name)
-    return {spec.name: spec}
+    found, links = _tree_folders(root)
+    _refuse_links(root, found, links)
+    paths = [path for path in [".", *found] if declares(root / path)]
+    if not paths:
+        raise ConfigurationError(
+            f"tree: {root} holds no AGENT.md; give each agent a folder with an AGENT.md that names its name:, kind: and model:"
+        )
+    folders = {name: _Folder(place) for name, place in found.items()}
+    agents: dict[str, AgentSpec] = {}
+    for path in paths:
+        spec = load_agent(root / path, media_types, folders, path=path, tree_root=root)
+        twin = agents.get(spec.name)
+        if twin is not None:
+            first, second = (root / twin.path / "AGENT.md", root / spec.path / "AGENT.md")
+            raise ConfigurationError(
+                f"tree: {first} and {second} both name the agent {spec.name!r}; rename one"
+            )
+        agents[spec.name] = spec
+    return dict(sorted(agents.items()))
 
 
 def validate_tree(agents: dict[str, AgentSpec]) -> None:

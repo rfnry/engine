@@ -90,7 +90,6 @@ class Setup:
 
 
 SETUPS = {
-    'engine = Engine(Path("skills"), generation=llm)': Setup(replace={'Path("skills")': "skills"}),
     "class Budget:": Setup(
         replies=(delegating("triage"),),
         intent="technical",
@@ -206,11 +205,6 @@ def question(kind: str, extra: str = "") -> str:
     return f"---\ntype: {kind}\n{extra}---\nA question.\n"
 
 
-def skills_folder(tmp_path: Path) -> Path:
-    write(tmp_path / "skills/launch.md", "---\ndescription: The launch checklist\n---\nShip it.\n")
-    return tmp_path / "skills"
-
-
 def tree(root: Path) -> None:
     write(
         root / "support/AGENT.md", markdown("description: Handles technical support conversations")
@@ -301,7 +295,6 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
         "BaseModel": BaseModel,
         "asyncio": asyncio,
         "root": root,
-        "skills": skills_folder(tmp_path),
         "llm": llm,
         "dm": dm,
         "refinery": refinery,

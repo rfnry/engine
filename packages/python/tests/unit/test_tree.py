@@ -589,8 +589,8 @@ def test_an_agent_reads_the_folders_it_names(tmp_path: Path) -> None:
             "agent 'coding' reads 'outside', which resolves outside the root",
         ),
         (
-            "kind: generation\nmodel: strong\nreads: [loop]\n",
-            "agent 'coding' reads unknown folder 'loop'",
+            "kind: generation\nmodel: strong\nreads: [alias]\n",
+            "agent 'coding' reads unknown folder 'alias'",
         ),
         (
             "kind: decision\nmodel: judge\nreads: [books]\n",
@@ -607,7 +607,7 @@ def test_reads_names_a_readable_folder_of_the_root(
     (root / ".hidden").mkdir()
     (tmp_path / "elsewhere").mkdir()
     (root / "outside").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
-    (root / "loop").symlink_to(root, target_is_directory=True)
+    (root / "alias").symlink_to(root / "books", target_is_directory=True)
     with pytest.raises(ConfigurationError, match=f"^tree: {message}"):
         load_tree(root)
 

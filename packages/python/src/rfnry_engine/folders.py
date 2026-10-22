@@ -1,5 +1,5 @@
 import os
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 
 from rfnry_engine.errors import InputError
@@ -25,7 +25,7 @@ def _inside(jail: Jail, entry: Path) -> bool:
 
 
 def _walk(
-    folder: Path, declared: bool, skip: Collection[str] = ()
+    folder: Path, declared: bool, inner: bool = False
 ) -> tuple[list[str], list[tuple[str, Path]]]:
     folder = folder.resolve()
     jail = Jail(folder)
@@ -39,7 +39,8 @@ def _walk(
             name
             for name in names
             if not name.startswith(".")
-            and not (declared and top and (name in DECLARED or name in skip))
+            and not (declared and top and name in DECLARED)
+            and (inner or not declares(here / name))
             and _inside(jail, here / name)
         ]
         dirs += [name if top else f"{at}/{name}" for name in names]
@@ -52,12 +53,12 @@ def _walk(
     return sorted(dirs), sorted(files)
 
 
-def content(folder: Path, declared: bool, skip: Collection[str] = ()) -> list[tuple[str, Path]]:
-    return _walk(folder, declared, skip)[1]
+def content(folder: Path, declared: bool, inner: bool = False) -> list[tuple[str, Path]]:
+    return _walk(folder, declared, inner)[1]
 
 
-def entries(folder: Path, declared: bool, skip: Collection[str] = ()) -> list[str]:
-    dirs, files = _walk(folder, declared, skip)
+def entries(folder: Path, declared: bool) -> list[str]:
+    dirs, files = _walk(folder, declared)
     children: dict[str, list[tuple[str, str, bool]]] = {}
     for rel in dirs:
         parent, _, name = rel.rpartition("/")
@@ -85,10 +86,3 @@ def joined(own: list[str], reads: Mapping[str, list[str]]) -> str:
     for name, shown in reads.items():
         lines += [f"{name}/", *(f"  {line}" for line in shown)]
     return "\n".join(lines)
-
-
-def listing(folder: Path, declared: bool, reads: Mapping[str, Path]) -> str:
-    return joined(
-        entries(folder, declared),
-        {name: entries(read, declares(read)) for name, read in reads.items()},
-    )

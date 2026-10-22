@@ -372,6 +372,7 @@ class Engine:
         self._agents = load_tree(self.root, getattr(generation, "media_types", None))
         validate_tree(self._agents)
         self._declared = check_declarations(self._agents, self.tools, bodies=generation is not None)
+        logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
@@ -669,9 +670,7 @@ class Engine:
             start=options.start,
         )
         bounded_by_workspace = (
-            WORKSPACE_TOOLS
-            if (spec.workspace or spec.plain) and options.workspace is not None
-            else frozenset()
+            WORKSPACE_TOOLS if spec.workspace and options.workspace is not None else frozenset()
         )
         specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
         if expect is not None:

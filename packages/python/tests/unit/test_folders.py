@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from rfnry_engine.errors import ConfigurationError
-from rfnry_engine.folders import content, listing
+from rfnry_engine.folders import content, entries, joined
 from rfnry_engine.frontmatter import described
 
 
@@ -93,7 +93,7 @@ def test_the_map_shows_every_folder_and_file_in_name_order_with_its_description(
     tmp_path: Path,
 ) -> None:
     root = coding(tmp_path / "coding")
-    assert listing(root, True, {}) == (
+    assert "\n".join(entries(root, True)) == (
         "README.md — Start here\n"
         "docs/\n"
         "  tools/\n"
@@ -113,7 +113,7 @@ def test_a_folder_without_agent_md_shows_its_declaration_folders_as_content(
     tmp_path: Path,
 ) -> None:
     root = coding(tmp_path / "coding")
-    shown = listing(root, False, {}).splitlines()
+    shown = entries(root, False)
     assert "tasks/" in shown and "  review.md — Reviews" in shown
     assert "tools/" in shown and "  run.md — Runs" in shown and "questions/" in shown
 
@@ -133,7 +133,8 @@ def test_read_folders_follow_under_their_path_without_an_agent_s_declarations(
     )
     write(writing / "tasks/x.md", "---\ndescription: A task\n---\n")
     write(writing / "voice.md", "---\ndescription: Voice\n---\n")
-    assert listing(own, True, {"../books": books, "../writing": writing}) == (
+    shown = {"../books": entries(books, False), "../writing": entries(writing, True)}
+    assert joined(entries(own, True), shown) == (
         "a.md — A\n../books/\n  python/\n    async.md — Async\n../writing/\n  voice.md — Voice"
     )
 
@@ -166,11 +167,23 @@ def test_a_link_out_of_the_folder_is_neither_mapped_nor_content(tmp_path: Path) 
     write(root / "AGENT.md", "---\nname: root\nkind: generation\nmodel: strong\n---\n")
     (root / "linked").symlink_to(outside, target_is_directory=True)
     (root / "secret.md").symlink_to(outside / "secret.md")
-    assert listing(root, True, {}) == "" and content(root, True) == []
+    assert entries(root, True) == [] and content(root, True) == []
 
 
 def test_a_bad_description_stops_the_map_naming_the_file(tmp_path: Path) -> None:
     root = coding(tmp_path / "coding")
     write(root / "notes/broken.md", "---\ndescription: [x\n---\n")
     with pytest.raises(ConfigurationError, match=r"^frontmatter: invalid YAML in .*broken\.md"):
-        listing(root, True, {})
+        entries(root, True)
+
+
+def test_a_folder_holding_an_agent_md_below_the_top_is_left_out_unless_inner(
+    tmp_path: Path,
+) -> None:
+    root = coding(tmp_path / "coding")
+    write(root / "notes/inner/AGENT.md", "---\nname: inner\nkind: generation\nmodel: strong\n---\n")
+    write(root / "notes/inner/voice.md", "Warm.\n")
+    assert "notes/inner/voice.md" not in [rel for rel, _ in content(root, False)]
+    assert "notes/\n  draft.md\n  style.md — The house style\n" in "\n".join(entries(root, True))
+    inner = [rel for rel, _ in content(root, False, inner=True)]
+    assert "notes/inner/AGENT.md" in inner and "notes/inner/voice.md" in inner
