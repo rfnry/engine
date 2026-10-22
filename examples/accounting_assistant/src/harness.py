@@ -45,7 +45,7 @@ def workspace(work: Path) -> Workspace:
     return Workspace(local, scope="acme-books", timeout=TIMEOUT)
 
 
-engine = Engine(ROOT / "agents", generation=AnthropicProvider())
+engine = Engine(ROOT / "agents", models={"strong": AnthropicProvider()})
 tasks: dict[str, Task] = {}
 waiting: dict[str, tuple[Task, asyncio.Future[bool]]] = {}
 working: set[asyncio.Task] = set()

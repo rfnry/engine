@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Annotated, Any, Protocol, cast
+from typing import Annotated, Any, NoReturn, Protocol, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
@@ -70,7 +70,7 @@ from rfnry_engine.records import (
     ToolResultReady,
 )
 from rfnry_engine.stop import Stop, Stopped, requested, wait
-from rfnry_engine.tools.declared import check_declarations
+from rfnry_engine.tools.declared import check_declarations, prose
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
     AgentArgs,
@@ -116,7 +116,9 @@ class _Options:
 
 class AgentInfo(BaseModel):
     name: str
+    path: str
     kind: Kind
+    model: str
     description: str
     agents: list[str]
     reads: list[str]
@@ -324,14 +326,60 @@ def _declared(model: object) -> str | None:
     return named if isinstance(named, str) and named else None
 
 
+def _not_given(spec: AgentSpec) -> NoReturn:
+    raise ConfigurationError(
+        f"engine: agent {spec.name!r} runs on model {spec.model!r}, which this engine was not given"
+    )
+
+
+def _kind_clash(spec: AgentSpec, verb: str) -> NoReturn:
+    raise ConfigurationError(
+        f"engine: agent {spec.name!r} is a {spec.kind} agent, and model {spec.model!r} has no {verb}()"
+    )
+
+
+def _models(
+    models: Mapping[str, GenerationModel | DecisionModel],
+) -> dict[str, GenerationModel | DecisionModel]:
+    if not isinstance(models, Mapping):
+        raise ConfigurationError("engine: models must be a mapping of model name to adapter")
+    for name, model in models.items():
+        if not isinstance(name, str) or not name or name != name.strip():
+            raise ConfigurationError(
+                f"engine: model name {name!r} must be non-blank text without padding"
+            )
+        if not isinstance(model, GenerationModel | DecisionModel):
+            raise ConfigurationError(
+                f"engine: model {name!r} has neither generate() nor decide(); pass an adapter that has one"
+            )
+    return dict(models)
+
+
+def _check_models(
+    agents: Mapping[str, AgentSpec], models: Mapping[str, GenerationModel | DecisionModel]
+) -> None:
+    used = sorted({spec.model for spec in agents.values()})
+    for name in sorted(models):
+        if name not in used:
+            raise ConfigurationError(
+                f"engine: no agent runs on model {name!r}; the tree's agents run on {', '.join(used)}"
+            )
+    for spec in agents.values():
+        model = models.get(spec.model)
+        if model is None:
+            continue
+        if spec.kind == "generation" and not isinstance(model, GenerationModel):
+            _kind_clash(spec, "generate")
+        if spec.kind == "decision" and not isinstance(model, DecisionModel):
+            _kind_clash(spec, "decide")
+
+
 class Engine:
     def __init__(
         self,
         root: Path | str,
         *,
-        name: str | None = None,
-        generation: GenerationModel | None = None,
-        decision: DecisionModel | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel],
         tools: list[Tool] | None = None,
         refinery: Recorder | None = None,
         max_steps: int = 200,
@@ -352,21 +400,10 @@ class Engine:
             raise ConfigurationError("engine: history_walk must be positive")
         if history_chars <= 0:
             raise ConfigurationError("engine: history_chars must be positive")
-        if name is not None and (
-            not name.strip()
-            or name != name.strip()
-            or name.startswith(".")
-            or "/" in name
-            or "\\" in name
-        ):
-            raise ConfigurationError(
-                f"engine: name must name one folder, not blank, hidden, padded or with slashes; got {name!r}"
-            )
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"engine: root is not a directory: {root}")
-        self.generation = generation
-        self.decision = decision
+        self.models = _models(models)
         self.tools: dict[str, Tool] = {}
         for tool in tools or []:
             if tool.name in self.tools:
@@ -378,16 +415,23 @@ class Engine:
         self.tool_timeout = tool_timeout
         self.history_walk = history_walk
         self.history_chars = history_chars
-        self._agents = load_tree(self.root, getattr(generation, "media_types", None), name)
+        self._agents = load_tree(
+            self.root,
+            {name: getattr(model, "media_types", None) for name, model in self.models.items()},
+        )
         validate_tree(self._agents)
-        self._declared = check_declarations(self._agents, self.tools, bodies=generation is not None)
+        _check_models(self._agents, self.models)
+        self._declared = check_declarations(self._agents, self.tools, self.models)
+        logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
         return {
             name: AgentInfo(
                 name=name,
+                path=spec.path,
                 kind=spec.kind,
+                model=spec.model,
                 description=spec.description,
                 agents=spec.agents,
                 reads=list(spec.reads),
@@ -411,7 +455,48 @@ class Engine:
         *,
         task: str | None = None,
         skill: str | None = None,
+        history: Sequence[object] | HistoryLike | None = None,
+        start: int = 0,
+        context: str | None = None,
+        expect: type[BaseModel] | None = None,
+        on_event: EventHandler | None = None,
+        tools: ToolsLike | None = None,
+        workspace: Workspace | None = None,
+        record: bool = True,
+        stop: Stop | None = None,
+        inbox: asyncio.Queue[Any] | None = None,
+        tags: Mapping[str, str] | None = None,
+        approve: Approve | None = None,
+    ) -> Run:
+        return await self._start(
+            agent,
+            scope,
+            input,
+            task=task,
+            skill=skill,
+            history=history,
+            start=start,
+            context=context,
+            expect=expect,
+            on_event=on_event,
+            tools=tools,
+            workspace=workspace,
+            record=record,
+            stop=stop,
+            inbox=inbox,
+            tags=tags,
+            approve=approve,
+        )
+
+    async def _start(
+        self,
+        agent: str,
+        scope: str,
+        input: State,
+        *,
         questions: Mapping[str, QuestionLike] | None = None,
+        task: str | None = None,
+        skill: str | None = None,
         history: Sequence[object] | HistoryLike | None = None,
         start: int = 0,
         context: str | None = None,
@@ -433,6 +518,13 @@ class Engine:
             )
         spec = self._spec(agent)
         asked = _asked(spec, questions)
+        if expect is not None:
+            at = prose(expect.model_json_schema())
+            if at is not None:
+                raise InputError(
+                    f"engine: expect= model {expect.__name__} carries a description at {at}; "
+                    "say what the output means in AGENT.md or a task"
+                )
         invoked = _skilled(spec, skill)
         tagged = _tags(tags)
         held = history if history is None or isinstance(history, HistoryLike) else list(history)
@@ -481,7 +573,6 @@ class Engine:
         *,
         scope: str,
         name: str | None = None,
-        description: str | None = None,
         context: str | None = None,
         tools: ToolsLike | None = None,
         workspace: Workspace | None = None,
@@ -497,11 +588,16 @@ class Engine:
                 f"engine: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
             )
         spec = self._spec(agent)
+        if not spec.description.strip():
+            raise ConfigurationError(
+                f"engine: agent {agent!r} has no description: in its AGENT.md; "
+                "add one to use it as a tool"
+            )
         tagged = _tags(tags)
 
         async def body(args: dict[str, Any]) -> Result:
             watching, held = hooks(on_event, stop)
-            run = await self.run(
+            run = await self._start(
                 agent,
                 scope,
                 args["input"],
@@ -517,7 +613,6 @@ class Engine:
             )
             return run_result(returned(run))
 
-        described = spec.description if description is None else description
         schema = {
             "type": "object",
             "properties": {
@@ -527,7 +622,15 @@ class Engine:
             "required": ["input"],
         }
         return Tools(
-            [Tool(name or spec.name, described, body=body, args=AgentArgs, input_schema=schema)]
+            [
+                Tool(
+                    name or spec.name,
+                    spec.description,
+                    body=body,
+                    args=AgentArgs,
+                    input_schema=schema,
+                )
+            ]
         )
 
     async def _run(
@@ -557,11 +660,11 @@ class Engine:
         parent_run_id: str | None,
     ) -> Decision:
         caller = _caller(scope)
-        model_ = self.decision
+        model_ = self.models.get(spec.model)
         if model_ is None:
-            raise ConfigurationError(
-                f"engine: agent {spec.name!r} is a decision agent; no decision model was configured"
-            )
+            _not_given(spec)
+        if not isinstance(model_, DecisionModel):
+            _kind_clash(spec, "decide")
         self._check_routes(spec, set())
         folder = dict(spec.questions)
         if options.task is not None:
@@ -573,7 +676,7 @@ class Engine:
             )
         questions = {**folder, **options.questions}
         if not questions:
-            hint = "name a task or pass questions=" if spec.tasks else "pass questions="
+            hint = "give it questions/ or tasks/<name>/, or ask it through Delegate"
             raise InputError(
                 f"engine: decision agent {spec.name!r} has no questions to ask; {hint}"
             )
@@ -634,9 +737,9 @@ class Engine:
         seen.add(spec.name)
         for target in spec.route.to.values() if spec.route is not None else []:
             routed = self._agents[target.agent]
-            if routed.kind == "generation" and self.generation is None:
+            if routed.model not in self.models:
                 raise ConfigurationError(
-                    f"engine: agent {spec.name!r} routes to generation agent {target.agent!r}; no generation model was configured"
+                    f"engine: agent {spec.name!r} routes to agent {target.agent!r}, which runs on model {routed.model!r}, which this engine was not given"
                 )
             if routed.kind == "decision" and target.agent not in seen:
                 self._check_routes(routed, seen)
@@ -650,11 +753,11 @@ class Engine:
         parent_run_id: str | None,
     ) -> Generation:
         caller = _caller(scope)
-        model_ = self.generation
+        model_ = self.models.get(spec.model)
         if model_ is None:
-            raise ConfigurationError(
-                f"engine: agent {spec.name!r} is a generation agent; no generation model was configured"
-            )
+            _not_given(spec)
+        if not isinstance(model_, GenerationModel):
+            _kind_clash(spec, "generate")
         run_id = uuid4().hex
         started = time.monotonic()
         at = _now()
@@ -676,9 +779,7 @@ class Engine:
             start=options.start,
         )
         bounded_by_workspace = (
-            WORKSPACE_TOOLS
-            if (spec.workspace or spec.plain) and options.workspace is not None
-            else frozenset()
+            WORKSPACE_TOOLS if spec.workspace and options.workspace is not None else frozenset()
         )
         specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
         if expect is not None:

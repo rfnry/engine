@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from rfnry_engine.engine import Engine
 from rfnry_engine.models import (
     Answer,
     Check,
@@ -120,7 +121,7 @@ async def now(args: dict[str, Any]) -> str:
     return "2026-09-22T00:00:00Z"
 
 
-TOOLS = [Tool("lookup_order", body=lookup_order), Tool("now", "The current UTC time", body=now)]
+TOOLS = [Tool("lookup_order", body=lookup_order), Tool("now", body=now)]
 
 
 def generation_record(
@@ -217,7 +218,7 @@ def delegate_triage(call_id: str = "d1", text: str = "It is down") -> Reply:
 
 
 SORTER = {
-    "AGENT.md": "---\nkind: decision\n---\n",
+    "AGENT.md": "---\nname: sorter\nkind: decision\nmodel: judge\n---\n",
     "questions/team.md": (
         "---\ntype: choice\n"
         "instructions:\n  question: Which team handles `ticket`?\n  ticket: {id: 7}\n"
@@ -262,15 +263,15 @@ PICK: dict[str, Any] = {
 
 LEAD = {
     "lead/AGENT.md": (
-        "---\nkind: generation\ndescription: Leads the desk\n"
+        "---\nname: lead\nkind: generation\nmodel: strong\ndescription: Leads the desk\n"
         "agents: [grader, writer, blank]\n---\nLead the desk.\n"
     ),
-    "grader/AGENT.md": "---\nkind: decision\ndescription: Grades replies\n---\n",
+    "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades replies\n---\n",
     "grader/questions/urgent.md": "---\ntype: check\n---\nUrgent?\n",
     "grader/tasks/tone/polite.md": "---\ntype: check\n---\nPolite?\n",
-    "writer/AGENT.md": "---\nkind: generation\ndescription: Writes replies\n---\nWrite.\n",
+    "writer/AGENT.md": "---\nname: writer\nkind: generation\nmodel: strong\ndescription: Writes replies\n---\nWrite.\n",
     "writer/tasks/apology.md": "Apologise first.\n",
-    "blank/AGENT.md": "---\nkind: decision\ndescription: Answers what it is asked\n---\n",
+    "blank/AGENT.md": "---\nname: blank\nkind: decision\nmodel: judge\ndescription: Answers what it is asked\n---\n",
 }
 
 
@@ -284,3 +285,14 @@ def lead(root: Path) -> Path:
 def delegating(agent: str, text: str = "x", call_id: str = "d1", **extra: Any) -> Reply:
     call = ToolCall(id=call_id, name="Delegate", args={"agent": agent, "input": text, **extra})
     return Reply(tool_calls=[call], stop_reason="tool_use")
+
+
+async def ask(
+    engine: Engine,
+    agent: str,
+    scope: str,
+    input: State,
+    questions: Mapping[str, QuestionLike] | None = None,
+    **options: Any,
+) -> Run:
+    return await engine._start(agent, scope, input, questions=questions, **options)

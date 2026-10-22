@@ -7,7 +7,7 @@ from providers import decision, generation
 ROOT = Path(__file__).resolve().parent.parent
 CALLBACK = "Triage is not sure who should take this: a nurse will call the patient back."
 
-engine = Engine(ROOT / "agents", generation=generation(), decision=decision())
+engine = Engine(ROOT / "agents", models={"strong": generation(), "judge": decision()})
 
 
 async def run(clinic: str, message: str) -> dict:

@@ -22,6 +22,13 @@ from rfnry_engine.tools.workspace import Backend, Local, Process, Stream, Worksp
 from .fakes import Scripted, text_reply
 
 
+def worker(folder: Path) -> None:
+    folder.mkdir()
+    (folder / "AGENT.md").write_text(
+        "---\nname: worker\nkind: generation\nmodel: strong\nworkspace: true\n---\nWork.\n"
+    )
+
+
 def alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -418,12 +425,6 @@ def test_a_shell_that_is_not_a_list_of_words_is_refused(tmp_path: Path, shell: A
         Local(tmp_path, shell=shell)
 
 
-def test_a_description_must_be_a_string(tmp_path: Path) -> None:
-    assert Local(tmp_path, description="bash on a laptop").description == "bash on a laptop"
-    with pytest.raises(ConfigurationError, match="^workspace: description must be a string$"):
-        Local(tmp_path, description=3)  # type: ignore[arg-type]
-
-
 CHILD_TRAP = "(trap 'sleep 0.3; echo cleaned > cleaned.txt; exit 0' TERM; sleep 30 & wait) & "
 
 
@@ -737,13 +738,13 @@ async def test_a_workspace_read_or_load_past_the_tool_timeout_returns_once_its_t
     root: Path, tmp_path: Path, name: str
 ) -> None:
     (root / "notes.txt").write_text("old\n")
-    (tmp_path / "plain").mkdir()
+    worker(tmp_path / "worker")
     local = Gated(root, "read")
     call = ToolCall(id="1", name=name, args={"path": "notes.txt", "where": "workspace"})
     llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("ok"))
-    engine = Engine(tmp_path / "plain", generation=llm, tool_timeout=0.05)
+    engine = Engine(tmp_path / "worker", tool_timeout=0.05, models={"strong": llm})
     running = asyncio.create_task(
-        engine.run("plain", "acme", "x", workspace=Workspace(local, scope="acme"))
+        engine.run("worker", "acme", "x", workspace=Workspace(local, scope="acme"))
     )
     try:
         assert await asyncio.to_thread(local.entered.wait, 2)
@@ -870,19 +871,19 @@ async def group_ended(group: int) -> bool:
 async def test_a_job_cut_while_it_starts_is_stopped_by_close(
     root: Path, tmp_path: Path, how: str
 ) -> None:
-    (tmp_path / "plain").mkdir()
+    worker(tmp_path / "worker")
     local = SlowToStart(root)
     ws = Workspace(local, scope="acme")
     command = "sleep 30 & wait"
     call = ToolCall(id="1", name="Shell", args={"command": command, "background": True})
     llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("ok"))
-    engine = Engine(tmp_path / "plain", generation=llm)
+    engine = Engine(tmp_path / "worker", models={"strong": llm})
     stop = Stop()
     before = asyncio.all_tasks()
 
     async def app() -> Generation:
         async with ws:
-            run = await engine.run("plain", "acme", "x", workspace=ws, stop=stop)
+            run = await engine.run("worker", "acme", "x", workspace=ws, stop=stop)
         assert isinstance(run, Generation)
         return run
 

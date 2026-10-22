@@ -43,12 +43,10 @@ class Docker:
         *,
         workdir: str = "/work",
         shell: Sequence[str] = ("bash", "-c"),
-        description: str | None = None,
     ) -> None:
         self.container = container
         self.workdir = workdir
         self.shell = list(shell)
-        self.description = description
         self.env = {"PATH": os.environ["PATH"], "HOME": str(Path.home())}
 
     async def spawn(self, command: str) -> Process:

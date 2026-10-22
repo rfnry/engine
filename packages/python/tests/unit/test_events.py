@@ -33,8 +33,8 @@ class Verdict(BaseModel):
 def make_tree(tmp_path: Path) -> Path:
     root = tmp_path / "agents"
     for name, front in {
-        "lead": "kind: generation\ndescription: Leads\nagents: [chat]",
-        "chat": "kind: generation\ndescription: Talks",
+        "lead": "name: lead\nkind: generation\nmodel: strong\ndescription: Leads\nagents: [chat]",
+        "chat": "name: chat\nkind: generation\nmodel: strong\ndescription: Talks",
     }.items():
         (root / name).mkdir(parents=True)
         (root / name / "AGENT.md").write_text(
@@ -116,7 +116,7 @@ async def test_every_finished_call_sends_the_step_the_run_records(tmp_path: Path
         return call.name != "refund"
 
     collect = Collect()
-    engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=0.05)
+    engine = Engine(make_tree(tmp_path), tool_timeout=0.05, models={"strong": llm})
     run = await engine.run(
         "lead", "acme", "Handle A-1", tools=TOOLS, approve=approve, on_event=collect
     )
@@ -155,7 +155,8 @@ async def test_a_call_cut_off_by_stop_sends_its_stopped_step(tmp_path: Path) -> 
     stop = Stop()
     tools = Tools([Tool("slow", body=tracked), Tool("refund", body=refund)])
     engine = Engine(
-        make_tree(tmp_path), generation=Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
+        make_tree(tmp_path),
+        models={"strong": Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))},
     )
     running = asyncio.create_task(
         engine.run(
@@ -197,7 +198,7 @@ async def test_a_stop_from_a_result_handler_sends_each_result_once(
     handler = StopOn(stop, ToolResultReady, pause)
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     run = await asyncio.wait_for(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=TOOLS, stop=stop, on_event=handler
         ),
         2,
@@ -224,7 +225,7 @@ async def test_a_stop_from_a_result_handler_answers_a_pending_output_once(
     handler = StopOn(stop, ToolResultReady, 0.01)
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     run = await asyncio.wait_for(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=TOOLS, expect=Verdict, stop=stop, on_event=handler
         ),
         2,
@@ -245,7 +246,7 @@ async def test_a_stop_from_a_start_handler_sends_each_event_once(tmp_path: Path)
     handler = StopOn(stop, ToolCallStarted, 0.01)
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     run = await asyncio.wait_for(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=TOOLS, stop=stop, on_event=handler
         ),
         2,
@@ -261,7 +262,7 @@ async def test_a_stop_from_a_text_handler_sends_each_delta_once(tmp_path: Path) 
     handler = StopOn(stop, TextDelta, 0.01)
     llm = Streaming(Reply(text="Let me look.", tool_calls=[looked], stop_reason="tool_use"))
     run = await asyncio.wait_for(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=TOOLS, stop=stop, on_event=handler
         ),
         2,
@@ -298,7 +299,7 @@ async def test_a_stop_from_a_calls_start_handler_stops_the_tool_before_it_runs(
     calls = [ToolCall(id="c1", name="destroy", args={"order_id": "A-1"})]
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     run = await asyncio.wait_for(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead",
             "acme",
             "Destroy A-1",
@@ -329,7 +330,7 @@ async def test_a_stop_from_a_text_handler_stops_the_batch_before_it_runs(tmp_pat
     ]
     llm = Scripted(Reply(text="Destroying both.", tool_calls=calls, stop_reason="tool_use"))
     run = await asyncio.wait_for(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead",
             "acme",
             "Destroy A-1 and A-2",
@@ -362,7 +363,7 @@ async def test_a_stop_from_a_text_handler_answers_an_output_beside_it_as_stopped
     output = ToolCall(id="o1", name="Output", args={"ok": True})
     llm = Scripted(Reply(text="Verdict.", tool_calls=[output], stop_reason="tool_use"))
     run = await asyncio.wait_for(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Judge", expect=Verdict, stop=stop, on_event=kill
         ),
         2,
@@ -412,7 +413,7 @@ async def test_cancelling_a_run_a_stop_holds_on_a_result_handler_cancels_the_han
     tools = Tools([Tool("dying", body=slow_to_die), Tool("lookup", body=lookup)])
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     running = asyncio.create_task(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=tools, stop=stop, on_event=stuck
         )
     )
@@ -470,7 +471,7 @@ async def test_cancelling_a_run_cancels_the_handler_of_a_call_that_swallowed_the
     tools = Tools([Tool("swallows", body=swallows), Tool("lookup", body=lookup)])
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     running = asyncio.create_task(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=tools, stop=stop, on_event=holding
         )
     )
@@ -572,7 +573,9 @@ async def test_a_cancelled_run_returns_once_its_tool_calls_have_ended(
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     before = asyncio.all_tasks()
     running = asyncio.create_task(
-        Engine(make_tree(tmp_path), generation=llm).run("lead", "acme", "Check A-1", tools=tools)
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
+            "lead", "acme", "Check A-1", tools=tools
+        )
     )
     await cancel_while_dying(running, dying, cancels)
     assert asyncio.all_tasks() <= before
@@ -594,7 +597,7 @@ async def test_a_cancelled_run_returns_once_a_delegated_run_has_ended(
     )
     before = asyncio.all_tasks()
     running = asyncio.create_task(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=Tools([Tool("dying", body=dying)])
         )
     )
@@ -613,7 +616,7 @@ async def test_a_cancelled_run_returns_once_its_model_call_or_approval_has_ended
     approve = dying if where == "approve" else None
     before = asyncio.all_tasks()
     running = asyncio.create_task(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=TOOLS, approve=approve
         )
     )
@@ -649,7 +652,7 @@ async def test_each_further_stop_cancels_a_call_still_running_once_more(
     tools = Tools([Tool("dying", body=dying), Tool("lookup", body=lookup)])
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     running = asyncio.create_task(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=tools, stop=stop, on_event=holding
         )
     )
@@ -688,7 +691,7 @@ async def test_two_cancels_of_a_run_at_once_cancel_a_call_still_running_twice(
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     before = asyncio.all_tasks()
     running = asyncio.create_task(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=Tools([Tool("dying", body=dying)])
         )
     )
@@ -724,7 +727,7 @@ async def test_a_further_stop_reaches_a_delegated_runs_call_and_keeps_the_delega
     )
     before = asyncio.all_tasks()
     running = asyncio.create_task(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=Tools([Tool("dying", body=dying)]), stop=stop
         )
     )
@@ -785,7 +788,7 @@ async def test_a_call_whose_tool_returns_after_the_run_is_cancelled_never_reache
     tools = Tools([Tool("outlasting", body=outlasting), Tool("lookup", body=lookup)])
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     running = asyncio.create_task(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=tools, stop=stop, on_event=holding
         )
     )
@@ -837,7 +840,7 @@ async def test_a_further_cancel_reaches_a_result_handler_that_ignored_the_first(
     calls = [ToolCall(id="c1", name="lookup", args={"order_id": "A-1"})]
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     running = asyncio.create_task(
-        Engine(make_tree(tmp_path), generation=llm).run(
+        Engine(make_tree(tmp_path), models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=TOOLS, on_event=stubborn
         )
     )
@@ -866,7 +869,7 @@ async def test_a_run_with_a_stop_leaves_no_task_behind(tmp_path: Path, cancelled
         if cancelled
         else text_reply("Done.")
     )
-    engine = Engine(make_tree(tmp_path), generation=Scripted(reply))
+    engine = Engine(make_tree(tmp_path), models={"strong": Scripted(reply)})
     me = asyncio.current_task()
     assert me is not None
 
@@ -909,7 +912,7 @@ async def test_a_batch_whose_calls_all_fail_raises_the_first_and_retrieves_the_r
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     try:
         with pytest.raises(RuntimeError, match="^approval of c1 is down$"):
-            await Engine(make_tree(tmp_path), generation=llm).run(
+            await Engine(make_tree(tmp_path), models={"strong": llm}).run(
                 "lead", "acme", "Check A-1", tools=TOOLS, approve=approve
             )
         gc.collect()
@@ -939,7 +942,7 @@ async def test_a_stop_from_a_text_handler_stops_a_reply_that_ends_the_run(
             stop.now()
 
     run = await asyncio.wait_for(
-        Engine(make_tree(tmp_path), generation=Scripted(reply)).run(
+        Engine(make_tree(tmp_path), models={"strong": Scripted(reply)}).run(
             "lead", "acme", "Finish", tools=TOOLS, stop=stop, on_event=kill
         ),
         2,
@@ -962,7 +965,7 @@ async def test_a_stop_on_the_last_allowed_turn_returns_the_run(
     calls = [ToolCall(id="c1", name="lookup", args={"order_id": "A-1"})]
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     run = await asyncio.wait_for(
-        Engine(make_tree(tmp_path), generation=llm, max_steps=1).run(
+        Engine(make_tree(tmp_path), max_steps=1, models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=TOOLS, stop=stop, on_event=kill
         ),
         2,
@@ -981,7 +984,7 @@ async def test_a_childs_text_carries_its_own_run_and_its_own_turns(tmp_path: Pat
         text_reply("Chat says hi."),
     )
     collect = Collect()
-    run = await Engine(make_tree(tmp_path), generation=llm).run(
+    run = await Engine(make_tree(tmp_path), models={"strong": llm}).run(
         "lead", "acme", "Greet", on_event=collect
     )
     assert isinstance(run, Generation) and run.reply == "Chat says hi."
@@ -1030,7 +1033,7 @@ def started(collect: Collect) -> dict[str, RunStarted]:
 
 async def test_a_run_says_it_started_before_anything_else(tmp_path: Path) -> None:
     collect = Collect()
-    run = await Engine(make_tree(tmp_path), generation=Scripted(text_reply("Hi."))).run(
+    run = await Engine(make_tree(tmp_path), models={"strong": Scripted(text_reply("Hi."))}).run(
         "chat", "acme", "Hi", on_event=collect
     )
     assert collect.events[0] == RunStarted(run_id=run.run_id, agent="chat", call=None)
@@ -1048,7 +1051,7 @@ async def test_each_sub_agent_names_the_call_it_works_for_before_its_first_tool(
         [Reply(tool_calls=split, stop_reason="tool_use"), text_reply("Both.")], chat=looking
     )
     collect = Collect()
-    run = await Engine(make_tree(tmp_path), generation=llm).run(
+    run = await Engine(make_tree(tmp_path), models={"strong": llm}).run(
         "lead", "acme", "Split", tools=TOOLS, on_event=collect
     )
     assert isinstance(run, Generation) and run.reply == "Both."
@@ -1073,9 +1076,9 @@ async def test_a_grandchild_names_its_parents_call(tmp_path: Path) -> None:
     root = tree(
         tmp_path,
         {
-            "lead": "kind: generation\nagents: [mid]",
-            "mid": "kind: generation\ndescription: Middle\nagents: [leaf]",
-            "leaf": "kind: generation\ndescription: Leaf",
+            "lead": "name: lead\nkind: generation\nmodel: strong\nagents: [mid]",
+            "mid": "name: mid\nkind: generation\nmodel: strong\ndescription: Middle\nagents: [leaf]",
+            "leaf": "name: leaf\nkind: generation\nmodel: strong\ndescription: Leaf",
         },
     )
     llm = ByAgent(
@@ -1100,7 +1103,7 @@ async def test_a_grandchild_names_its_parents_call(tmp_path: Path) -> None:
         leaf=[text_reply("Leaf done.")],
     )
     collect = Collect()
-    run = await Engine(root, generation=llm).run("lead", "acme", "Go", on_event=collect)
+    run = await Engine(root, models={"strong": llm}).run("lead", "acme", "Go", on_event=collect)
     assert isinstance(run, Generation)
     [mid] = run.children
     assert isinstance(mid, Generation)
@@ -1117,9 +1120,9 @@ async def test_a_run_routed_under_a_delegated_decision_names_the_delegate_call(
     root = tree(
         tmp_path,
         {
-            "lead": "kind: generation\nagents: [router]",
-            "router": "kind: decision\ndescription: Routes\nroute:\n  by: team\n  to: {billing: chat}",
-            "chat": "kind: generation\ndescription: Talks",
+            "lead": "name: lead\nkind: generation\nmodel: strong\nagents: [router]",
+            "router": "name: router\nkind: decision\nmodel: judge\ndescription: Routes\nroute:\n  by: team\n  to: {billing: chat}",
+            "chat": "name: chat\nkind: generation\nmodel: strong\ndescription: Talks",
         },
     )
     (root / "router" / "questions").mkdir()
@@ -1145,7 +1148,7 @@ async def test_a_run_routed_under_a_delegated_decision_names_the_delegate_call(
         {"team": ChoiceAnswer(choice="billing", probabilities={"billing": 0.9, "other": 0.1})}
     )
     collect = Collect()
-    run = await Engine(root, generation=llm, decision=decision).run(
+    run = await Engine(root, models={"strong": llm, "judge": decision}).run(
         "lead", "acme", "Help", on_event=collect
     )
     assert isinstance(run, Generation)
@@ -1167,7 +1170,7 @@ async def test_a_consult_made_inside_a_tool_names_that_tool_call(tmp_path: Path)
         ],
         chat=[text_reply("Hello.")],
     )
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     collect = Collect()
     run = await engine.run(
         "lead",
@@ -1190,7 +1193,7 @@ async def test_a_run_stopped_before_it_starts_still_says_it_started(tmp_path: Pa
     stop = Stop()
     stop.now()
     collect = Collect()
-    run = await Engine(make_tree(tmp_path), generation=Scripted()).run(
+    run = await Engine(make_tree(tmp_path), models={"strong": Scripted()}).run(
         "chat", "acme", "Hi", on_event=collect, stop=stop
     )
     assert isinstance(run, Generation) and run.stopped == "now"
@@ -1209,8 +1212,8 @@ async def test_a_routed_run_whose_start_handler_raises_sits_in_its_router(tmp_pa
     root = tree(
         tmp_path,
         {
-            "router": "kind: decision\ndescription: Routes\nroute:\n  by: team\n  to: {billing: chat}",
-            "chat": "kind: generation\ndescription: Talks",
+            "router": "name: router\nkind: decision\nmodel: judge\ndescription: Routes\nroute:\n  by: team\n  to: {billing: chat}",
+            "chat": "name: chat\nkind: generation\nmodel: strong\ndescription: Talks",
         },
     )
     (root / "router" / "questions").mkdir()
@@ -1228,7 +1231,7 @@ async def test_a_routed_run_whose_start_handler_raises_sits_in_its_router(tmp_pa
         {"team": ChoiceAnswer(choice="billing", probabilities={"billing": 0.9, "other": 0.1})}
     )
     llm = Scripted()
-    engine = Engine(root, generation=llm, decision=decision, refinery=kept)
+    engine = Engine(root, refinery=kept, models={"strong": llm, "judge": decision})
     with pytest.raises(RuntimeError, match="the socket is gone"):
         await engine.run("router", "acme", "Charged twice", on_event=breaking)
     [router] = kept.runs

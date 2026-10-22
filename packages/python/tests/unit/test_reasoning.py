@@ -53,7 +53,7 @@ async def test_an_assistant_message_keeps_the_usage_of_the_call_that_wrote_it(
     fixtures: Path,
 ) -> None:
     llm = Scripted(reading(), text_reply("Refund in full."))
-    run = await first_run(Engine(fixtures, generation=llm, tools=TOOLS))
+    run = await first_run(Engine(fixtures, tools=TOOLS, models={"strong": llm}))
     written = [m.usage for m in run.conversation if m.role == "assistant"]
     assert written == [Usage(input=40, output=3, cache_read=30), None]
     assert all(m.usage is None for m in run.conversation if m.role != "assistant")
@@ -63,7 +63,7 @@ async def test_an_assistant_message_keeps_the_model_that_wrote_it(fixtures: Path
     strong = reading().model_copy(update={"model": "model-strong"})
     fast = text_reply("Refund in full.", model="model-fast")
     llm = Scripted(strong, fast)
-    run = await first_run(Engine(fixtures, generation=llm, tools=TOOLS))
+    run = await first_run(Engine(fixtures, tools=TOOLS, models={"strong": llm}))
     written = [m.model for m in run.conversation if m.role == "assistant"]
     assert written == ["model-strong", "model-fast"] and run.model == "model-fast"
     assert all(m.model is None for m in run.conversation if m.role != "assistant")
@@ -74,7 +74,7 @@ async def test_an_assistant_message_keeps_the_adapters_model_when_the_reply_name
     fixtures: Path,
 ) -> None:
     llm = Named("model-declared", reading(), text_reply("Refund in full."))
-    run = await first_run(Engine(fixtures, generation=llm, tools=TOOLS))
+    run = await first_run(Engine(fixtures, tools=TOOLS, models={"strong": llm}))
     written = [m.model for m in run.conversation if m.role == "assistant"]
     assert written == ["model-declared", "model-declared"]
 
@@ -90,7 +90,7 @@ async def test_the_model_on_a_message_changes_nothing_about_what_reasoning_goes_
     later = {"thought": "the later charge"}
     thinking = Reply(text="The second one.", reasoning=later)
     llm = Scripted(reading(), text_reply("Refund in full."), thinking, text_reply("ok"))
-    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
     first = await first_run(engine)
     second = await engine.run(
         "support", "acme", "Which charge?", history=first.conversation, context=CONTEXT
@@ -109,7 +109,7 @@ async def test_only_an_assistant_message_with_reasoning_carries_a_prefix(
     fixtures: Path,
 ) -> None:
     llm = Scripted(reading(), text_reply("Refund in full."))
-    run = await first_run(Engine(fixtures, generation=llm, tools=TOOLS))
+    run = await first_run(Engine(fixtures, tools=TOOLS, models={"strong": llm}))
     prefixes = [m.prefix for m in run.conversation if m.role == "assistant"]
     assert prefixes[0] is not None and re.fullmatch(r"[0-9a-f]{16}", prefixes[0])
     assert prefixes[1] is None
@@ -137,7 +137,7 @@ async def test_a_window_without_reasoning_is_never_hashed(
         for i in range(40)
     ]
     llm = Scripted(text_reply("Refund in full."))
-    run = await Engine(fixtures, generation=llm, tools=TOOLS).run(
+    run = await Engine(fixtures, tools=TOOLS, models={"strong": llm}).run(
         "support", "acme", "Charged twice.", history=history, context=CONTEXT
     )
     assert isinstance(run, Generation) and run.reply == "Refund in full."
@@ -149,7 +149,7 @@ PNG = b"\x89PNG\r\n\x1a\n"
 
 async def sent_again_after(fixtures: Path, shown: Part, swapped: Part) -> list[Any]:
     llm = Scripted(reading(), text_reply("Refund in full."), text_reply("ok"), text_reply("ok"))
-    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
     first = await engine.run(
         "support", "acme", [Text(text="Charged twice."), shown], context=CONTEXT
     )
@@ -212,7 +212,7 @@ async def test_hashing_never_base64_encodes_media(
         Message(role="assistant", content="Checking.", reasoning=THOUGHT),
     ]
     llm = Scripted(text_reply("Refund in full.", reasoning=THOUGHT))
-    run = await Engine(fixtures, generation=llm, tools=TOOLS).run(
+    run = await Engine(fixtures, tools=TOOLS, models={"strong": llm}).run(
         "support", "acme", "Which?", history=history, context=CONTEXT
     )
     assert isinstance(run, Generation) and run.conversation[-1].prefix is not None
@@ -256,7 +256,7 @@ async def test_a_long_window_with_reasoning_gives_the_loop_turns(
             seen.append(ticks)
             return await super().generate(system, messages, tools)
 
-    engine = Engine(fixtures, generation=Counting(text_reply("ok")), tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": Counting(text_reply("ok"))})
     ticking = asyncio.create_task(ticker())
     try:
         run = await engine.run("support", "acme", "Which?", history=long_window())
@@ -297,7 +297,7 @@ async def test_a_window_of_large_images_gives_the_loop_turns_while_it_is_hashed(
     for i in range(20):
         history.append(Message(role="user", content=[Text(text=f"Photo {i}."), photo]))
         history.append(Message(role="assistant", content=f"Seen {i}.", reasoning=THOUGHT))
-    engine = Engine(fixtures, generation=Counting(text_reply("ok")), tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": Counting(text_reply("ok"))})
     ticking = asyncio.create_task(ticker())
     try:
         run = await engine.run("support", "acme", "Which?", history=history)
@@ -313,7 +313,7 @@ async def test_cancelling_a_run_while_its_window_is_hashed_raises_at_once(
 ) -> None:
     slowed(monkeypatch)
     llm = Scripted(text_reply("ok"))
-    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
     task = asyncio.create_task(engine.run("support", "acme", "Which?", history=long_window()))
     for _ in range(3):
         await asyncio.sleep(0)
@@ -327,7 +327,7 @@ async def test_reasoning_goes_back_within_a_run_and_to_a_run_with_the_same_histo
     fixtures: Path,
 ) -> None:
     llm = Scripted(reading(), text_reply("Refund in full."), text_reply("The second one."))
-    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
     first = await first_run(engine)
     assert llm.calls[1][1][1].reasoning == THOUGHT
     second = await engine.run(
@@ -347,7 +347,7 @@ async def test_a_run_stamps_on_from_where_settle_stopped_and_both_reasonings_go_
         text_reply("Four."),
         text_reply("Five."),
     )
-    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
     conversation: list[Message] = []
     for said in ["u1", "u2", "u3"]:
         run = await engine.run("support", "acme", said, history=conversation)
@@ -370,7 +370,7 @@ async def test_a_run_stamps_on_from_where_settle_stopped_and_both_reasonings_go_
 
 async def test_reasoning_is_left_out_once_what_came_before_it_changed(fixtures: Path) -> None:
     llm = Scripted(reading(), text_reply("Refund in full."), *[text_reply("ok") for _ in range(4)])
-    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
     history = (await first_run(engine)).conversation
     extra = Tools([Tool("extra", "An extra tool", body=now)])
     runs = [
@@ -394,7 +394,7 @@ async def test_reasoning_is_left_out_once_what_came_before_it_changed(fixtures: 
 async def test_reasoning_is_left_out_of_a_history_cut_short(fixtures: Path) -> None:
     thinking = Reply(text="The second one.", reasoning={"thought": "the later charge"})
     llm = Scripted(reading(), text_reply("Refund in full."), thinking, text_reply("ok"))
-    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
     first = await first_run(engine)
     second = await engine.run(
         "support", "acme", "Which charge?", history=first.conversation, context=CONTEXT
@@ -410,7 +410,7 @@ async def test_reasoning_is_left_out_of_a_history_cut_short(fixtures: Path) -> N
 
 async def test_reasoning_without_a_prefix_of_its_own_is_left_out(fixtures: Path) -> None:
     llm = Scripted(text_reply("ok"), text_reply("ok"))
-    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
     for prefix in (None, "0000000000000000"):
         history = [
             Message(role="user", content="hi"),
@@ -433,7 +433,7 @@ async def test_a_message_from_another_library_goes_without_its_reasoning(fixture
         Foreign(role="user", content="hi"),
         Foreign(role="assistant", content="hello", reasoning=THOUGHT),
     ]
-    run = await Engine(fixtures, generation=llm, tools=TOOLS).run(
+    run = await Engine(fixtures, tools=TOOLS, models={"strong": llm}).run(
         "support", "acme", "Charged twice.", history=history
     )
     assert isinstance(run, Generation)
@@ -442,7 +442,7 @@ async def test_a_message_from_another_library_goes_without_its_reasoning(fixture
 
 async def test_the_model_receives_messages_without_the_engines_record(fixtures: Path) -> None:
     llm = Scripted(reading(), text_reply("Refund in full."))
-    run = await first_run(Engine(fixtures, generation=llm, tools=TOOLS))
+    run = await first_run(Engine(fixtures, tools=TOOLS, models={"strong": llm}))
     assert all(m.prefix is None and m.usage is None for call in llm.calls for m in call[1])
     assert run.conversation[1].prefix is not None and run.conversation[1].usage is not None
 
@@ -455,14 +455,14 @@ class Named(Scripted):
 
 async def test_reasoning_is_left_out_when_the_model_is_another(fixtures: Path) -> None:
     old = Named("model-a", reading(), text_reply("Refund in full."))
-    history = (await first_run(Engine(fixtures, generation=old, tools=TOOLS))).conversation
+    history = (await first_run(Engine(fixtures, tools=TOOLS, models={"strong": old}))).conversation
     new = Named("model-b", text_reply("ok"))
-    run = await Engine(fixtures, generation=new, tools=TOOLS).run(
+    run = await Engine(fixtures, tools=TOOLS, models={"strong": new}).run(
         "support", "acme", "Which?", history=history, context=CONTEXT
     )
     assert isinstance(run, Generation) and run.messages[1].reasoning is None
     same = Named("model-a", text_reply("ok"))
-    run = await Engine(fixtures, generation=same, tools=TOOLS).run(
+    run = await Engine(fixtures, tools=TOOLS, models={"strong": same}).run(
         "support", "acme", "Which?", history=history, context=CONTEXT
     )
     assert isinstance(run, Generation) and run.messages[1].reasoning == THOUGHT
@@ -478,7 +478,7 @@ async def test_reasoning_goes_back_when_a_stored_history_came_back_with_its_keys
         reasoning={"z": 1, "a": 2},
     )
     llm = Scripted(unsorted, text_reply("Refund in full."), text_reply("ok"))
-    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
     first = await first_run(engine)
     stored = [
         Message.model_validate(json.loads(json.dumps(m.model_dump(mode="json"), sort_keys=True)))
@@ -501,7 +501,7 @@ async def test_a_usage_or_prefix_from_elsewhere_reads_as_none(fixtures: Path) ->
             "reasoning": THOUGHT,
         },
     ]
-    engine = Engine(fixtures, generation=Scripted(text_reply("Still.")), tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted(text_reply("Still."))})
     run = await engine.run("support", "acme", "And now?", history=history)
     assert isinstance(run, Generation)
     answered = run.messages[1]
@@ -525,14 +525,14 @@ async def test_reasoning_is_left_out_once_a_preloaded_file_changed(
         encoding="utf-8",
     )
     llm = Scripted(reading(), text_reply("Refund in full."), text_reply("ok"), text_reply("ok"))
-    first = await first_run(Engine(root, generation=llm, tools=TOOLS))
-    same = await Engine(root, generation=llm, tools=TOOLS).run(
+    first = await first_run(Engine(root, tools=TOOLS, models={"strong": llm}))
+    same = await Engine(root, tools=TOOLS, models={"strong": llm}).run(
         "support", "acme", "Which?", history=first.conversation, context=CONTEXT
     )
     (root / "support" / "rules" / "refunds.md").write_text(
         "A duplicate charge is refunded within 30 days.\n", encoding="utf-8"
     )
-    moved = await Engine(root, generation=llm, tools=TOOLS).run(
+    moved = await Engine(root, tools=TOOLS, models={"strong": llm}).run(
         "support", "acme", "Which?", history=first.conversation, context=CONTEXT
     )
     assert isinstance(same, Generation) and isinstance(moved, Generation)
@@ -544,7 +544,7 @@ async def test_a_message_that_arrives_mid_run_is_under_the_next_prefix(fixtures:
     inbox.put_nowait("It was order A-2, not A-1.")
     noted = Reply(text="Noted.", reasoning=THOUGHT, stop_reason="end_turn")
     llm = Scripted(reading(), noted, text_reply("ok"))
-    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
     first = await engine.run("support", "acme", "Charged twice.", context=CONTEXT, inbox=inbox)
     assert isinstance(first, Generation)
     assert [m.role for m in first.conversation] == [
@@ -603,7 +603,7 @@ class Seen:
 async def test_reasoning_streams_as_its_own_events_before_the_text(fixtures: Path) -> None:
     llm = Thinking(text_reply("Refund in full."), thoughts=["The rule says ", "refund."])
     seen = Seen()
-    run = await Engine(fixtures, generation=llm, tools=TOOLS).run(
+    run = await Engine(fixtures, tools=TOOLS, models={"strong": llm}).run(
         "support", "acme", "Charged twice.", on_event=seen
     )
     assert isinstance(run, Generation) and run.reply == "Refund in full."
@@ -617,7 +617,7 @@ async def test_reasoning_streams_as_its_own_events_before_the_text(fixtures: Pat
 
 async def test_an_adapter_that_streams_no_reasoning_works_as_before(fixtures: Path) -> None:
     seen = Seen()
-    run = await Engine(fixtures, generation=Plain(text_reply("Hi.")), tools=TOOLS).run(
+    run = await Engine(fixtures, tools=TOOLS, models={"strong": Plain(text_reply("Hi."))}).run(
         "support", "acme", "Hi", on_event=seen
     )
     assert isinstance(run, Generation) and run.reply == "Hi."
@@ -635,7 +635,7 @@ async def test_a_stop_during_reasoning_keeps_no_reasoning_and_no_text(fixtures: 
 
     llm = Thinking(text_reply("never"), thoughts=["Thinking"], pressed=stop)
     run = await asyncio.wait_for(
-        Engine(fixtures, generation=llm, tools=TOOLS).run(
+        Engine(fixtures, tools=TOOLS, models={"strong": llm}).run(
             "support", "acme", "Charged twice.", on_event=Pressing(), stop=stop
         ),
         5,
@@ -647,7 +647,7 @@ async def test_a_stop_during_reasoning_keeps_no_reasoning_and_no_text(fixtures: 
 async def test_a_reply_that_is_not_streamed_sends_no_reasoning(fixtures: Path) -> None:
     seen = Seen()
     llm = Scripted(text_reply("Refund in full.", reasoning=THOUGHT))
-    await Engine(fixtures, generation=llm, tools=TOOLS).run(
+    await Engine(fixtures, tools=TOOLS, models={"strong": llm}).run(
         "support", "acme", "Charged twice.", on_event=seen
     )
     assert not any(isinstance(e, ReasoningDelta) for e in seen.events)

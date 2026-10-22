@@ -21,6 +21,7 @@ from .fakes import (
     Desk,
     MemoryBucket,
     Scripted,
+    ask,
     by_hand,
     decision_record,
     delegate_triage,
@@ -47,7 +48,7 @@ def tree(fixtures: Path, tmp_path: Path) -> Path:
 
 def engine(root: Path, *replies: Any, tools: list[Tool] = TOOLS, **kwargs: Any) -> Engine:
     llm = Scripted(*(replies or [text_reply("ok")]))
-    return Engine(root, generation=llm, decision=Desk(), tools=tools, **kwargs)
+    return Engine(root, tools=tools, **kwargs, models={"strong": llm, "judge": Desk()})
 
 
 async def generation(root: Path, *, tools: list[Tool] = TOOLS, **kwargs: Any) -> Generation:
@@ -148,20 +149,24 @@ class NowArgs(BaseModel):
     zone: str
 
 
-async def test_a_code_tool_s_schema_or_description_changes_the_tools_fingerprint(
-    fixtures: Path,
-) -> None:
+class ZoneArgs(BaseModel):
+    zone: str = "UTC"
+
+
+async def test_a_code_tool_s_schema_changes_the_tools_fingerprint(fixtures: Path) -> None:
     plain = await generation(fixtures)
     zoned = await generation(
         fixtures,
-        tools=[Tool("lookup_order", body=lookup_order), Tool("now", "UTC", body=now, args=NowArgs)],
+        tools=[Tool("lookup_order", body=lookup_order), Tool("now", body=now, args=NowArgs)],
     )
-    described = await generation(
+    zoned_again = await generation(
         fixtures,
-        tools=[Tool("lookup_order", body=lookup_order), Tool("now", "The time", body=now)],
+        tools=[Tool("lookup_order", body=lookup_order), Tool("now", body=now, args=ZoneArgs)],
     )
-    assert plain.fingerprint.agent == zoned.fingerprint.agent == described.fingerprint.agent
-    assert len({plain.fingerprint.tools, zoned.fingerprint.tools, described.fingerprint.tools}) == 3
+    assert plain.fingerprint.agent == zoned.fingerprint.agent == zoned_again.fingerprint.agent
+    assert (
+        len({plain.fingerprint.tools, zoned.fingerprint.tools, zoned_again.fingerprint.tools}) == 3
+    )
 
 
 class Verdict(BaseModel):
@@ -255,12 +260,12 @@ AREA = Choice(
 
 
 def triage(fixtures: Path, root: Path | None = None) -> Engine:
-    return Engine(root or fixtures, decision=Answering())
+    return Engine(root or fixtures, models={"judge": Answering()})
 
 
 async def test_a_decision_run_s_questions_part_is_the_questions_it_asked(fixtures: Path) -> None:
     folder = await triage(fixtures).run("triage", "acme", "It is down")
-    both = await triage(fixtures).run("triage", "acme", "It is down", questions={"area": AREA})
+    both = await ask(triage(fixtures), "triage", "acme", "It is down", questions={"area": AREA})
     assert isinstance(folder, Decision) and isinstance(both, Decision)
     assert folder.fingerprint.questions == asked(folder.questions)
     assert both.fingerprint.questions == asked(both.questions)
@@ -276,10 +281,14 @@ async def test_the_questions_part_is_stable_across_runs_loads_and_the_order_ques
     root = tree(fixtures, tmp_path)
     other = Check(instructions="Is the customer angry?")
     loaded = triage(fixtures)
-    first = await loaded.run("triage", "acme", "a", questions={"area": AREA, "angry": other})
-    again = await loaded.run("triage", "acme", "b", questions={"angry": other, "area": AREA})
-    elsewhere = await triage(fixtures, root).run(
-        "triage", "acme", "c", questions={"area": AREA.model_copy(), "angry": other}
+    first = await ask(loaded, "triage", "acme", "a", questions={"area": AREA, "angry": other})
+    again = await ask(loaded, "triage", "acme", "b", questions={"angry": other, "area": AREA})
+    elsewhere = await ask(
+        triage(fixtures, root),
+        "triage",
+        "acme",
+        "c",
+        questions={"area": AREA.model_copy(), "angry": other},
     )
     assert first.fingerprint.questions is not None
     assert first.fingerprint == again.fingerprint == elsewhere.fingerprint
@@ -295,7 +304,7 @@ async def test_the_questions_part_changes_with_a_question_its_options_or_their_o
 ) -> None:
     root = tree(fixtures, tmp_path)
     engine_ = triage(fixtures, root)
-    base = _print(await engine_.run("triage", "acme", "x", questions={"area": AREA}))
+    base = _print(await ask(engine_, "triage", "acme", "x", questions={"area": AREA}))
     variants = [
         AREA.model_copy(update={"options": dict(reversed(list(AREA.options.items())))}),
         AREA.model_copy(update={"options": {**AREA.options, "returns": "Sending it back"}}),
@@ -303,20 +312,20 @@ async def test_the_questions_part_changes_with_a_question_its_options_or_their_o
         AREA.model_copy(update={"instructions": "Which area?"}),
     ]
     prints = [
-        _print(await engine_.run("triage", "acme", "x", questions={"area": variant}))
+        _print(await ask(engine_, "triage", "acme", "x", questions={"area": variant}))
         for variant in variants
     ]
-    renamed = _print(await engine_.run("triage", "acme", "x", questions={"zone": AREA}))
+    renamed = _print(await ask(engine_, "triage", "acme", "x", questions={"zone": AREA}))
     assert len({base, *prints, renamed}) == 6
     (root / "triage/questions/urgent.md").write_text("---\ntype: check\n---\nIs it urgent?\n")
     edited = triage(fixtures, root)
-    assert _print(await edited.run("triage", "acme", "x", questions={"area": AREA})) != base
+    assert _print(await ask(edited, "triage", "acme", "x", questions={"area": AREA})) != base
     levels = Score(instructions="How bad?", levels=["Mild", "Severe"])
     reordered = Score(instructions="How bad?", levels=["Severe", "Mild"])
     assert _print(
-        await engine_.run("triage", "acme", "x", questions={"area": AREA, "bad": levels})
+        await ask(engine_, "triage", "acme", "x", questions={"area": AREA, "bad": levels})
     ) != _print(
-        await engine_.run("triage", "acme", "x", questions={"area": AREA, "bad": reordered})
+        await ask(engine_, "triage", "acme", "x", questions={"area": AREA, "bad": reordered})
     )
 
 
@@ -330,7 +339,9 @@ async def test_the_questions_part_is_recorded_exported(
     storage: Storage,
 ) -> None:
     refinery = Refinery(storage)
-    run = await Engine(fixtures, decision=Desk(), refinery=refinery).run("triage", "acme", "x")
+    run = await Engine(fixtures, refinery=refinery, models={"judge": Desk()}).run(
+        "triage", "acme", "x"
+    )
     assert isinstance(run, Decision)
     assert (await refinery.run("acme", run.run_id)).fingerprint == run.fingerprint
     bucket = MemoryBucket()
@@ -353,12 +364,14 @@ async def test_an_edit_to_a_read_folder_changes_the_fingerprint_of_every_agent_r
     for name in ("coding", "writing", "other"):
         (tmp_path / name).mkdir()
         front = "reads: [books]\n" if name != "other" else ""
-        (tmp_path / name / "AGENT.md").write_text(f"---\nkind: generation\n{front}---\nHi\n")
+        (tmp_path / name / "AGENT.md").write_text(
+            f"---\nname: {name}\nkind: generation\nmodel: strong\n{front}---\nHi\n"
+        )
     (tmp_path / "books").mkdir()
     (tmp_path / "books" / "a.md").write_text("one\n")
-    before = Engine(tmp_path, generation=Scripted())
+    before = Engine(tmp_path, models={"strong": Scripted()})
     (tmp_path / "books" / "a.md").write_text("two\n")
-    after = Engine(tmp_path, generation=Scripted())
+    after = Engine(tmp_path, models={"strong": Scripted()})
     for name in ("coding", "writing"):
         assert before._spec(name).fingerprint != after._spec(name).fingerprint
     assert before._spec("other").fingerprint == after._spec("other").fingerprint

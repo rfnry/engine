@@ -175,7 +175,7 @@ def delegate_tool(
         watching, held = hooks(on_event, stop)
         return child_result(
             returned(
-                await engine.run(
+                await engine._start(
                     parsed.agent,
                     scope,
                     parsed.input,

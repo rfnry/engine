@@ -14,7 +14,7 @@ from rfnry_engine.tree import load_agent, load_tree
 from .fakes import Scripted
 
 LISTED = """---
-lookup_order:
+lookup_order: Look up an order
 reworded: Find a customer's order
 long: >-
   Find a customer's order
@@ -47,13 +47,13 @@ async def echo(args: dict[str, Any]) -> Any:
 
 
 def code(*names: str) -> dict[str, Tool]:
-    return {name: Tool(name, "Look up an order", body=echo, args=LookupArgs) for name in names}
+    return {name: Tool(name, body=echo, args=LookupArgs) for name in names}
 
 
-def agent(root: Path, name: str = "a", front: str = "kind: generation\n") -> Path:
+def agent(root: Path, name: str = "a", front: str = "kind: generation\nmodel: strong\n") -> Path:
     folder = root / name
     folder.mkdir(parents=True)
-    (folder / "AGENT.md").write_text(f"---\n{front}---\nYou are {name}.\n")
+    (folder / "AGENT.md").write_text(f"---\nname: {name}\n{front}---\nYou are {name}.\n")
     return folder
 
 
@@ -68,7 +68,10 @@ def test_tools_md_lists_names_and_tools_files_carry_contracts(tmp_path: Path) ->
     both(agent(tmp_path))
     tools = load_agent(tmp_path / "a").tools
     assert sorted(tools) == ["contract", "long", "lookup_order", "reworded", "worded"]
-    assert (tools["lookup_order"].description, tools["lookup_order"].input) == (None, None)
+    assert (tools["lookup_order"].description, tools["lookup_order"].input) == (
+        "Look up an order",
+        None,
+    )
     assert (tools["reworded"].description, tools["reworded"].input) == (
         "Find a customer's order",
         None,
@@ -79,12 +82,15 @@ def test_tools_md_lists_names_and_tools_files_carry_contracts(tmp_path: Path) ->
     assert tools["worded"].input is None
 
 
-async def test_each_part_given_replaces_the_code_s_alone(tmp_path: Path) -> None:
+async def test_the_tree_describes_a_tool_and_the_code_types_it_unless_input_is_written(
+    tmp_path: Path,
+) -> None:
     both(agent(tmp_path))
     names = ("lookup_order", "reworded", "long", "contract", "worded")
     tools = Tools(declared_tools(load_agent(tmp_path / "a"), code(*names)))
     shown = {d["name"]: d for d in tools.definitions()}
     assert shown["lookup_order"]["description"] == "Look up an order"
+    assert shown["contract"]["description"].startswith("Fetch an order by id")
     assert shown["reworded"]["description"] == "Find a customer's order"
     assert shown["worded"]["description"].endswith("Say which order you looked up.")
     for kept in ("lookup_order", "reworded", "worded"):
@@ -98,11 +104,13 @@ async def test_each_part_given_replaces_the_code_s_alone(tmp_path: Path) -> None
         await tools.dispatch("contract", {"order_id": "A-1", "deep": True})
 
 
-def test_a_tool_with_no_description_anywhere_is_refused(tmp_path: Path) -> None:
+def test_a_listed_tool_with_no_description_is_refused_naming_its_file(tmp_path: Path) -> None:
     (agent(tmp_path) / "TOOLS.md").write_text("---\nlookup_order:\n---\n")
-    spec = load_agent(tmp_path / "a")
-    with pytest.raises(ConfigurationError, match="no description"):
-        declared_tools(spec, {"lookup_order": Tool("lookup_order", body=echo)})
+    with pytest.raises(
+        ConfigurationError, match="lists 'lookup_order' without a description"
+    ) as refused:
+        load_agent(tmp_path / "a")
+    assert "TOOLS.md" in str(refused.value)
 
 
 @pytest.mark.parametrize(
@@ -114,6 +122,7 @@ def test_a_tool_with_no_description_anywhere_is_refused(tmp_path: Path) -> None:
             "lists its tools in its frontmatter",
         ),
         ("TOOLS.md", "---\nlookup_order: {description: Find}\n---\n", "invalid tools"),
+        ("TOOLS.md", "---\nlookup_order:\n---\n", "lists 'lookup_order' without a description"),
         ("TOOLS.md", "---\nlookup_order: ''\n---\n", "blank description"),
         ("TOOLS.md", "---\nlookup_order: '  '\n---\n", "blank description"),
         (
@@ -148,7 +157,7 @@ def test_a_bad_declaration_is_refused_by_name(
 
 def test_a_tool_declared_in_both_places_is_refused(tmp_path: Path) -> None:
     folder = agent(tmp_path)
-    (folder / "TOOLS.md").write_text("---\ncontract:\n---\n")
+    (folder / "TOOLS.md").write_text("---\ncontract: Fetch\n---\n")
     (folder / "tools").mkdir()
     (folder / "tools" / "contract.md").write_text(CONTRACT)
     with pytest.raises(ConfigurationError, match="declares 'contract' in both TOOLS.md and tools/"):
@@ -158,10 +167,10 @@ def test_a_tool_declared_in_both_places_is_refused(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("text", "names"),
     [
-        ("---\nlookup_order:\n---", ["lookup_order"]),
-        ("---\nlookup_order:\n---   \n", ["lookup_order"]),
+        ("---\nlookup_order: Find\n---", ["lookup_order"]),
+        ("---\nlookup_order: Find\n---   \n", ["lookup_order"]),
         ("---\n---\n", []),
-        ("﻿---\nlookup_order:\n---\n", ["lookup_order"]),
+        ("﻿---\nlookup_order: Find\n---\n", ["lookup_order"]),
     ],
 )
 def test_a_frontmatter_only_file_reads_however_it_ends(
@@ -172,10 +181,10 @@ def test_a_frontmatter_only_file_reads_however_it_ends(
 
 
 def test_a_decision_agent_declares_no_tools(tmp_path: Path) -> None:
-    folder = agent(tmp_path, front="kind: decision\n")
+    folder = agent(tmp_path, front="kind: decision\nmodel: judge\n")
     (folder / "questions").mkdir()
     (folder / "questions" / "q.md").write_text("---\ntype: check\n---\nIs it?\n")
-    (folder / "TOOLS.md").write_text("---\nlookup_order:\n---\n")
+    (folder / "TOOLS.md").write_text("---\nlookup_order: Find\n---\n")
     with pytest.raises(ConfigurationError, match="decision agent 'a' cannot declare tools"):
         load_agent(folder)
 
@@ -183,7 +192,7 @@ def test_a_decision_agent_declares_no_tools(tmp_path: Path) -> None:
 def test_declarations_are_out_of_the_map_and_the_preload_but_in_the_fingerprint(
     tmp_path: Path,
 ) -> None:
-    folder = agent(tmp_path, front="kind: generation\npreload: true\n")
+    folder = agent(tmp_path, front="kind: generation\nmodel: strong\npreload: true\n")
     both(folder)
     (folder / "notes.md").write_text("---\ndescription: Notes\n---\nRead me.\n")
     spec = load_agent(folder)
@@ -198,7 +207,7 @@ def test_declarations_are_out_of_the_map_and_the_preload_but_in_the_fingerprint(
 
 
 def test_a_reader_does_not_see_another_agent_s_declarations(tmp_path: Path) -> None:
-    agent(tmp_path, "reader", "kind: generation\nreads: [owner]\n")
+    agent(tmp_path, "reader", "kind: generation\nmodel: strong\nreads: [owner]\n")
     owner = agent(tmp_path, "owner")
     both(owner)
     (owner / "notes.md").write_text("---\ndescription: Notes\n---\n")
@@ -210,24 +219,24 @@ def test_a_reader_does_not_see_another_agent_s_declarations(tmp_path: Path) -> N
 def test_a_tree_with_bodies_nobody_declares_is_told_where_to_declare(tmp_path: Path) -> None:
     agent(tmp_path)
     with pytest.raises(ConfigurationError, match="TOOLS.md or tools/"):
-        Engine(tmp_path, generation=Scripted(), tools=[Tool("lookup_order", "Look", body=echo)])
+        Engine(tmp_path, tools=[Tool("lookup_order", body=echo)], models={"strong": Scripted()})
 
 
 @pytest.mark.parametrize(
     ("front", "name"),
     [
-        ("kind: generation\n", "Read"),
-        ("kind: generation\n", "History"),
-        ("kind: generation\nagents: [a]\n", "Delegate"),
-        ("kind: generation\nworkspace: true\n", "Shell"),
+        ("kind: generation\nmodel: strong\n", "Read"),
+        ("kind: generation\nmodel: strong\n", "History"),
+        ("kind: generation\nmodel: strong\nagents: [a]\n", "Delegate"),
+        ("kind: generation\nmodel: strong\nworkspace: true\n", "Shell"),
     ],
 )
 def test_a_tool_named_like_a_builtin_is_refused_at_build(
     tmp_path: Path, front: str, name: str
 ) -> None:
-    (agent(tmp_path, front=front) / "TOOLS.md").write_text(f"---\n{name}:\n---\n")
+    (agent(tmp_path, front=front) / "TOOLS.md").write_text(f"---\n{name}: Mine\n---\n")
     with pytest.raises(ConfigurationError, match=f"'{name}'"):
-        Engine(tmp_path, generation=Scripted(), tools=[Tool(name, "Mine", body=echo)])
+        Engine(tmp_path, tools=[Tool(name, body=echo)], models={"strong": Scripted()})
 
 
 def test_yaml_merge_keys_pass_the_duplicate_check(tmp_path: Path) -> None:
@@ -274,7 +283,11 @@ async def test_an_input_may_use_any_property_name(tmp_path: Path) -> None:
             3,
             "quote a value that holds ': '",
         ),
-        ("kind: generation\n\tagents: []\n", 3, "indent with spaces, not tabs"),
+        (
+            "kind: generation\n\tagents: []\n",
+            3,
+            "indent with spaces, not tabs",
+        ),
         ("kind: generation\ndescription: 'open\n", 3, "close the quote"),
         ("kind: generation\nkind: decision\n", 3, "remove one of them"),
     ],
@@ -303,11 +316,23 @@ def test_a_yaml_mistake_in_a_map_file_is_said_the_same_way(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     ("front", "line", "fix"),
     [
-        ("kind: generation\ndescription: 'open\nagents: []\n", 3, "close the quote"),
+        (
+            "kind: generation\ndescription: 'open\nagents: []\n",
+            3,
+            "close the quote",
+        ),
         ("kind: generation\ndescription\nagents: []\n", 3, "key: value"),
         ("kind: generation\nagents: [a, b\n", 3, "close the ["),
-        ("kind: generation\ndescription: bad\x1bhere\n", 3, "remove the control character"),
-        ("kind: generation\nagents:\n\t- a\n", 4, "indent with spaces, not tabs"),
+        (
+            "kind: generation\ndescription: bad\x1bhere\n",
+            3,
+            "remove the control character",
+        ),
+        (
+            "kind: generation\nagents:\n\t- a\n",
+            4,
+            "indent with spaces, not tabs",
+        ),
     ],
 )
 def test_a_yaml_mistake_is_placed_where_it_starts(
@@ -335,10 +360,16 @@ def test_a_control_character_is_placed_past_wide_characters(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("text", "fix"),
     [
-        ("kind: generation\n\tagents: []\n", "indent with spaces, not tabs"),
-        ("kind: generation\nagents:\n\t- a\n", "indent with spaces, not tabs"),
+        (
+            "kind: generation\nmodel: strong\n\tagents: []\n",
+            "indent with spaces, not tabs",
+        ),
+        (
+            "kind: generation\nmodel: strong\nagents:\n\t- a\n",
+            "indent with spaces, not tabs",
+        ),
         ("x: abc\x07\n", "remove the control character"),
-        ("kind: generation\n  agents: []\nx: 1\n", "line the key up"),
+        ("kind: generation\nmodel: strong\n  agents: []\nx: 1\n", "line the key up"),
     ],
 )
 def test_pure_pyyaml_mistakes_get_the_same_fixes(text: str, fix: str) -> None:

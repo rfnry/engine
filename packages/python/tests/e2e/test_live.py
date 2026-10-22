@@ -15,7 +15,7 @@ AGAIN = (
 
 
 async def test_a_generation_agent_reads_its_rules(adapters: Any) -> None:
-    engine = Engine(FIXTURES, generation=adapters.generation(), tools=TOOLS)
+    engine = Engine(FIXTURES, tools=TOOLS, models={"strong": adapters.generation()})
     run = await engine.run(
         "support", "live", "I was charged twice for order A-1. Is a refund owed?"
     )
@@ -25,7 +25,9 @@ async def test_a_generation_agent_reads_its_rules(adapters: Any) -> None:
 
 async def test_a_decision_agent_routes(adapters: Any) -> None:
     engine = Engine(
-        FIXTURES, generation=adapters.generation(), decision=adapters.decision(), tools=TOOLS
+        FIXTURES,
+        tools=TOOLS,
+        models={"strong": adapters.generation(), "judge": adapters.decision()},
     )
     run = await engine.run("frontdesk", "live", "My invoice shows two charges for one order.")
     assert isinstance(run, Decision)
@@ -38,10 +40,9 @@ async def test_label_and_export_round_trip(adapters: Any, storage: Storage) -> N
     refinery = Refinery(storage)
     engine = Engine(
         FIXTURES,
-        generation=adapters.generation(),
-        decision=adapters.decision(),
         refinery=refinery,
         tools=TOOLS,
+        models={"strong": adapters.generation(), "judge": adapters.decision()},
     )
     await engine.run("billing", "live", "Refund my duplicate charge.")
     await engine.run("triage", "live", {"message": "Everything is down for all users."})
@@ -57,13 +58,13 @@ async def test_a_coder_writes_and_runs_code(adapters: Any, tmp_path: Path) -> No
     agents = tmp_path / "agents" / "coder"
     agents.mkdir(parents=True)
     (agents / "AGENT.md").write_text(
-        "---\nkind: generation\ndescription: Writes and runs code\nworkspace: true\n---\n"
+        "---\nname: coder\nkind: generation\nmodel: strong\ndescription: Writes and runs code\nworkspace: true\n---\n"
         "You write Python files with Write and run them with Shell. Reply with the program's output only.\n",
         encoding="utf-8",
     )
     work = tmp_path / "work"
     work.mkdir()
-    engine = Engine(tmp_path / "agents", generation=adapters.generation())
+    engine = Engine(tmp_path / "agents", models={"strong": adapters.generation()})
     run = await engine.run(
         "coder",
         "live",
@@ -76,7 +77,7 @@ async def test_a_coder_writes_and_runs_code(adapters: Any, tmp_path: Path) -> No
 
 
 async def test_reasoning_goes_back_only_where_it_was_given(adapters: Any) -> None:
-    engine = Engine(FIXTURES, generation=adapters.generation(), tools=TOOLS)
+    engine = Engine(FIXTURES, tools=TOOLS, models={"strong": adapters.generation()})
     today, tomorrow = "Today is 2026-10-11.", "Today is 2026-10-12."
     first = await engine.run(
         "support",

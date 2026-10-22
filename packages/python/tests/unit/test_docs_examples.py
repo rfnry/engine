@@ -61,6 +61,7 @@ ILLUSTRATIVE = {
     "refinery = Refinery(PostgresStorage(pool))": "needs a Postgres pool; the integration tier runs PostgresStorage",
     "pool = await asyncpg.create_pool(dsn)": "needs a Postgres pool and rfnry-memory",
     "from pathlib import Path": "needs agents that declare `workspace: true`",
+    'engine = Engine(root, models={"strong": strong_llm, "fast": fast_llm, "judge": dm})': "the test tree has no agent on fast",
     "jobs = {}": "needs a model that calls start and then check",
 }
 
@@ -90,9 +91,6 @@ class Setup:
 
 
 SETUPS = {
-    'engine = Engine(Path("skills"), generation=llm, name="writer")': Setup(
-        replace={'Path("skills")': "skills"}
-    ),
     "class Budget:": Setup(
         replies=(delegating("triage"),),
         intent="technical",
@@ -122,7 +120,7 @@ SETUPS = {
             ),
         )
     ),
-    "engine = Engine(root, generation=llm, decision=dm, tools=tools)": Setup(
+    'engine = Engine(root, models={"strong": llm, "judge": dm}, tools=tools)': Setup(
         replies=(delegating("triage"),), intent="technical"
     ),
     ASKS: Setup(
@@ -200,16 +198,12 @@ def write(path: Path, text: str) -> None:
 
 
 def agent(name: str, kind: str, body: str = "") -> str:
-    return f"---\nkind: {kind}\ndescription: The {name} agent\n---\n{body}\n"
+    model = "strong" if kind == "generation" else "judge"
+    return f"---\nname: {name}\nkind: {kind}\nmodel: {model}\ndescription: The {name} agent\n---\n{body}\n"
 
 
 def question(kind: str, extra: str = "") -> str:
     return f"---\ntype: {kind}\n{extra}---\nA question.\n"
-
-
-def skills_folder(tmp_path: Path) -> Path:
-    write(tmp_path / "skills/launch.md", "---\ndescription: The launch checklist\n---\nShip it.\n")
-    return tmp_path / "skills"
 
 
 def tree(root: Path) -> None:
@@ -272,7 +266,7 @@ class Invoices:
 
 TOOLS = [
     Tool("lookup_order", body=lookup_order),
-    Tool("fetch_invoice", "Fetch an invoice PDF by id", body=fetch_invoice, args=InvoiceArgs),
+    Tool("fetch_invoice", body=fetch_invoice, args=InvoiceArgs),
 ]
 
 
@@ -293,7 +287,10 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
     (tmp_path / "work").mkdir()
     refinery = Refinery(storage)
     recorded = Engine(
-        root, generation=Model(), decision=Answering("billing"), tools=TOOLS, refinery=refinery
+        root,
+        models={"strong": Model(), "judge": Answering("billing")},
+        tools=TOOLS,
+        refinery=refinery,
     )
     llm, dm = Model(*setup.replies), Answering(setup.intent)
     return {
@@ -302,11 +299,10 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
         "BaseModel": BaseModel,
         "asyncio": asyncio,
         "root": root,
-        "skills": skills_folder(tmp_path),
         "llm": llm,
         "dm": dm,
         "refinery": refinery,
-        "engine": Engine(root, generation=llm, decision=dm, tools=TOOLS, refinery=refinery),
+        "engine": Engine(root, models={"strong": llm, "judge": dm}, tools=TOOLS, refinery=refinery),
         "tools": list(TOOLS),
         "InvoiceArgs": InvoiceArgs,
         "fetch_invoice": fetch_invoice,

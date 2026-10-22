@@ -1,3 +1,3 @@
 ---
-now:
+now: The current UTC time
 ---

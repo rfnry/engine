@@ -147,9 +147,9 @@ async def test_a_run_still_working_at_an_export_is_in_the_next_one(
     refinery = Refinery(storage)
     engine = Engine(
         fixtures,
-        generation=Model(),
-        tools=[Tool("lookup_order", body=lookup_order), Tool("now", "The time", body=slow)],
+        tools=[Tool("lookup_order", body=lookup_order), Tool("now", body=slow)],
         refinery=refinery,
+        models={"strong": Model()},
     )
     long = asyncio.create_task(engine.run("support", "acme", "long"))
     await started.wait()
@@ -319,7 +319,7 @@ async def test_a_generation_row_carries_the_tools_offered_and_the_conversation_i
         text_reply("Refunded."),
     )
     refinery = Refinery(storage)
-    engine = Engine(fixtures, generation=llm, tools=TOOLS, refinery=refinery)
+    engine = Engine(fixtures, tools=TOOLS, refinery=refinery, models={"strong": llm})
     run = await engine.run(
         "support",
         "acme",

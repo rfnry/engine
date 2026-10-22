@@ -1,5 +1,7 @@
 ---
+name: frontdesk
 kind: decision
+model: judge
 description: Routes an incoming message
 route:
   by: intent

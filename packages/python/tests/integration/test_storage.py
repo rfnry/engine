@@ -16,6 +16,7 @@ from unit.fakes import (
     Desk,
     MemoryBucket,
     Scripted,
+    ask,
     decision_record,
     delegate_triage,
     delegating,
@@ -515,17 +516,19 @@ async def test_a_recorded_tree_reads_back_as_it_ran(storage: Storage) -> None:
     both = delegate_triage("d1", "one").tool_calls + delegate_triage("d2", "two").tool_calls
     engine = Engine(
         FIXTURES,
-        generation=Scripted(
-            Reply(tool_calls=both, stop_reason="tool_use"),
-            Reply(
-                tool_calls=[ToolCall(id="c1", name="lookup_order", args={"order_id": "😀"})],
-                stop_reason="tool_use",
-            ),
-            text_reply("Continued."),
-        ),
-        decision=Desk(),
         tools=[Tool("lookup_order", body=lookup), TOOLS[1]],
         refinery=refinery,
+        models={
+            "strong": Scripted(
+                Reply(tool_calls=both, stop_reason="tool_use"),
+                Reply(
+                    tool_calls=[ToolCall(id="c1", name="lookup_order", args={"order_id": "😀"})],
+                    stop_reason="tool_use",
+                ),
+                text_reply("Continued."),
+            ),
+            "judge": Desk(),
+        },
     )
     run = await engine.run("frontdesk", "a", "It is down", tags={"customer": "c-81"}, stop=stop)
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
@@ -548,10 +551,9 @@ async def test_a_tree_reads_back_with_its_one_record_stamp(storage: Storage) -> 
     refinery = Refinery(storage)
     engine = Engine(
         FIXTURES,
-        generation=Scripted(delegate_triage(), text_reply("Handled.")),
-        decision=Desk(),
         tools=TOOLS,
         refinery=refinery,
+        models={"strong": Scripted(delegate_triage(), text_reply("Handled.")), "judge": Desk()},
     )
     run = await engine.run("frontdesk", "a", "It is down")
     rows = await storage.run_tree("a", run_ids=[run.run_id])
@@ -571,10 +573,9 @@ async def test_fingerprints_and_context_round_trip(
     refinery = Refinery(storage)
     engine = Engine(
         FIXTURES,
-        generation=Scripted(delegate_triage(), text_reply("Handled.")),
-        decision=Desk(),
         tools=TOOLS,
         refinery=refinery,
+        models={"strong": Scripted(delegate_triage(), text_reply("Handled.")), "judge": Desk()},
     )
     run = await engine.run("frontdesk", "a", "It is down", context="Acme is enterprise.")
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
@@ -597,7 +598,7 @@ async def test_structured_questions_round_trip_through_the_record_and_the_export
 ) -> None:
     refinery = Refinery(storage)
     dm = sorter(tmp_path)
-    run = await Engine(tmp_path, decision=dm, refinery=refinery).run("sorter", "a", "Hi")
+    run = await Engine(tmp_path, refinery=refinery, models={"judge": dm}).run("sorter", "a", "Hi")
     assert isinstance(run, Decision)
     [(_, asked)] = dm.calls
     again = await refinery.run("a", run.run_id)
@@ -631,12 +632,14 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     refinery = Refinery(storage)
     recorder = Engine(
         FIXTURES,
-        generation=Scripted(
-            delegate_triage(), text_reply("Handled."), text_reply("Hi."), text_reply("Bye.")
-        ),
-        decision=Desk(),
         tools=TOOLS,
         refinery=refinery,
+        models={
+            "strong": Scripted(
+                delegate_triage(), text_reply("Handled."), text_reply("Hi."), text_reply("Bye.")
+            ),
+            "judge": Desk(),
+        },
     )
     parts: list[Part] = [
         Text(text="Charged twice?"),
@@ -658,7 +661,9 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     await refinery.outcome("a", third.run_id, Outcome(status="failed"))
     counted = await storage.count_scope("a")
     model = Seeing()
-    candidate = Engine(FIXTURES, generation=model, decision=Desk(), tools=TOOLS, refinery=refinery)
+    candidate = Engine(
+        FIXTURES, tools=TOOLS, refinery=refinery, models={"strong": model, "judge": Desk()}
+    )
 
     async def replayed(**selectors: Any) -> list[str]:
         pairs = [p async for p in refinery.replay("a", candidate, agent="support", **selectors)]
@@ -703,7 +708,7 @@ AREA = Choice(
 
 def grader(root: Path, urgent: str = "Is it urgent?") -> Path:
     for path, text in {
-        "grader/AGENT.md": "---\nkind: decision\n---\n",
+        "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\n---\n",
         "grader/questions/urgent.md": f"---\ntype: check\n---\n{urgent}\n",
         "grader/tasks/tone/polite.md": "---\ntype: check\n---\nPolite?\n",
     }.items():
@@ -716,8 +721,8 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
     storage: Storage, tmp_path: Path
 ) -> None:
     refinery = Refinery(storage)
-    engine = Engine(grader(tmp_path / "old"), decision=Answering(), refinery=refinery)
-    asked = await engine.run("grader", "a", "x", task="tone", questions={"area": AREA})
+    engine = Engine(grader(tmp_path / "old"), refinery=refinery, models={"judge": Answering()})
+    asked = await ask(engine, "grader", "a", "x", task="tone", questions={"area": AREA})
     plain = await engine.run("grader", "a", "y")
     assert isinstance(asked, Decision)
     again = await refinery.run("a", asked.run_id)
@@ -740,7 +745,7 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
     assert all(r["task"] == "tone" for r in mine)
     assert all(r["fingerprint"] == asked.fingerprint.model_dump() for r in mine)
     dm = Answering()
-    candidate = Engine(grader(tmp_path / "new", "Due today?"), decision=dm)
+    candidate = Engine(grader(tmp_path / "new", "Due today?"), models={"judge": dm})
     pairs = [
         p
         async for p in refinery.replay(
@@ -765,9 +770,8 @@ async def test_a_delegated_child_keeps_its_task_and_runtime_questions(
     asked = delegating("grader", "Sorry!", task="tone", questions={"area": PICK})
     engine = Engine(
         lead(tmp_path),
-        generation=Scripted(asked, text_reply("Graded.")),
-        decision=Answering(),
         refinery=refinery,
+        models={"strong": Scripted(asked, text_reply("Graded.")), "judge": Answering()},
     )
     run = await engine.run("lead", "a", "Grade this")
     assert isinstance(run, Generation)
@@ -794,11 +798,16 @@ async def test_a_state_of_parts_round_trips_as_parts_and_replays(
         Text(text="Urgent?"),
         Image(media_type="image/png", data=bytes(range(256))),
     ]
-    run = await Engine(root, decision=Looking(), refinery=refinery).run("grader", "a", parts)
+    run = await Engine(root, refinery=refinery, models={"judge": Looking()}).run(
+        "grader", "a", parts
+    )
     again = await refinery.run("a", run.run_id)
     assert again == run and isinstance(again, Decision) and again.state == parts
     looking = Looking()
-    [pair] = [p async for p in refinery.replay("a", Engine(root, decision=looking), agent="grader")]
+    [pair] = [
+        p
+        async for p in refinery.replay("a", Engine(root, models={"judge": looking}), agent="grader")
+    ]
     assert pair.error is None and looking.calls[0][0] == parts
 
 
@@ -922,8 +931,8 @@ async def test_initialize_on_a_table_an_earlier_version_made_says_what_to_do(poo
 
 async def test_a_recorded_call_reads_back(storage: Storage, tmp_path: Path) -> None:
     for name, front in (
-        ("lead", "kind: generation\nagents: [child, triage]"),
-        ("child", "kind: generation"),
+        ("lead", "name: lead\nkind: generation\nmodel: strong\nagents: [child, triage]"),
+        ("child", "name: child\nkind: generation\nmodel: strong"),
     ):
         (tmp_path / name).mkdir()
         (tmp_path / name / "AGENT.md").write_text(f"---\n{front}\n---\nYou are {name}.\n")
@@ -931,19 +940,21 @@ async def test_a_recorded_call_reads_back(storage: Storage, tmp_path: Path) -> N
     refinery = Refinery(storage)
     engine = Engine(
         tmp_path,
-        generation=Scripted(
-            Reply(
-                tool_calls=[
-                    ToolCall(id="g1", name="Delegate", args={"agent": "child", "input": "x"}),
-                    ToolCall(id="d1", name="Delegate", args={"agent": "triage", "input": "y"}),
-                ],
-                stop_reason="tool_use",
-            ),
-            text_reply("Billed."),
-            text_reply("Done."),
-        ),
-        decision=Desk(),
         refinery=refinery,
+        models={
+            "strong": Scripted(
+                Reply(
+                    tool_calls=[
+                        ToolCall(id="g1", name="Delegate", args={"agent": "child", "input": "x"}),
+                        ToolCall(id="d1", name="Delegate", args={"agent": "triage", "input": "y"}),
+                    ],
+                    stop_reason="tool_use",
+                ),
+                text_reply("Billed."),
+                text_reply("Done."),
+            ),
+            "judge": Desk(),
+        },
     )
     run = await engine.run("lead", "a", "go")
     assert isinstance(run, Generation)

@@ -22,7 +22,7 @@ def tree(root: Path, **agents: str) -> Path:
     for name, front in agents.items():
         (root / name).mkdir(parents=True)
         (root / name / "AGENT.md").write_text(
-            f"---\nkind: generation\ndescription: {name.title()}\n{front}---\nYou are {name}.\n",
+            f"---\nname: {name}\nkind: generation\nmodel: strong\ndescription: {name.title()}\n{front}---\nYou are {name}.\n",
             encoding="utf-8",
         )
     return root
@@ -89,8 +89,8 @@ PING = Tools([Tool("ping", "Ping", body=ping)])
 
 
 def engines(tmp_path: Path, outer: Any, inner: Any, kept: Kept) -> tuple[Engine, Engine]:
-    front = Engine(tree(tmp_path / "front", support=""), generation=outer, refinery=kept)
-    back = Engine(tree(tmp_path / "back", billing=""), generation=inner, refinery=kept)
+    front = Engine(tree(tmp_path / "front", support=""), refinery=kept, models={"strong": outer})
+    back = Engine(tree(tmp_path / "back", billing=""), refinery=kept, models={"strong": inner})
     return front, back
 
 
@@ -171,7 +171,7 @@ async def test_concurrent_runs_keep_their_own_stops(tmp_path: Path) -> None:
 async def test_outside_a_run_the_getter_gives_each_call_its_turn_s_stop(tmp_path: Path) -> None:
     kept = Kept()
     billing = Gated()
-    back = Engine(tree(tmp_path / "back", billing=""), generation=billing, refinery=kept)
+    back = Engine(tree(tmp_path / "back", billing=""), refinery=kept, models={"strong": billing})
     seen: list[str] = []
 
     async def show(event: Event) -> None:
@@ -223,7 +223,7 @@ async def test_engine_tools_delegate_takes_the_hooks_outside_a_run(tmp_path: Pat
     root = tree(tmp_path / "tree", lead="agents: [chat]\n", chat="")
     kept = Kept()
     chat = Gated()
-    engine = Engine(root, generation=chat, refinery=kept)
+    engine = Engine(root, refinery=kept, models={"strong": chat})
     seen: list[str] = []
 
     async def show(event: Event) -> None:
@@ -259,7 +259,7 @@ class Deciding:
 def decision(root: Path, name: str, front: str = "") -> None:
     (root / name / "questions").mkdir(parents=True)
     (root / name / "AGENT.md").write_text(
-        f"---\nkind: decision\ndescription: Sorts\n{front}---\nSort it.\n",
+        f"---\nname: {name}\nkind: decision\nmodel: judge\ndescription: Sorts\n{front}---\nSort it.\n",
         encoding="utf-8",
     )
     (root / name / "questions" / "intent.md").write_text(
@@ -274,7 +274,7 @@ async def test_a_stop_cuts_a_decision_run_at_once(tmp_path: Path, through: str) 
     deciding = Deciding(5.0)
     if through == "engine.tool":
         decision(tmp_path / "back", "triage")
-        back = Engine(tmp_path / "back", decision=deciding, refinery=kept)
+        back = Engine(tmp_path / "back", refinery=kept, models={"judge": deciding})
         asking = use(ToolCall(id="c1", name="triage", args={"input": "x"}))
         extra: dict[str, Any] = {"tools": back.tool("triage", scope="acme")}
         root = tree(tmp_path / "front", support="")
@@ -284,7 +284,12 @@ async def test_a_stop_cuts_a_decision_run_at_once(tmp_path: Path, through: str) 
         asking = use(ToolCall(id="d1", name="Delegate", args={"agent": "triage", "input": "x"}))
         extra = {}
     front = Engine(
-        root, generation=Script(asking, text_reply("never")), decision=deciding, refinery=kept
+        root,
+        refinery=kept,
+        models={
+            "strong": Script(asking, text_reply("never")),
+            **({"judge": deciding} if through == "Delegate" else {}),
+        },
     )
     stop = Stop()
     task = asyncio.create_task(front.run("support", "acme", "x", stop=stop, **extra))
@@ -303,7 +308,7 @@ async def test_consults_a_tool_starts_in_tasks_of_their_own_keep_their_records(
 ) -> None:
     kept = Kept()
     billing = Gated()
-    back = Engine(tree(tmp_path / "back", billing=""), generation=billing, refinery=kept)
+    back = Engine(tree(tmp_path / "back", billing=""), refinery=kept, models={"strong": billing})
     consult = back.tool("billing", scope="acme")
 
     async def both(args: dict[str, Any]) -> str:
@@ -313,7 +318,7 @@ async def test_consults_a_tool_starts_in_tasks_of_their_own_keep_their_records(
         return f"{first.result()} {second.result()}"
 
     outer = Script(use(ToolCall(id="b1", name="both", args={})), text_reply("never"))
-    front = Engine(tree(tmp_path / "front", support=""), generation=outer, refinery=kept)
+    front = Engine(tree(tmp_path / "front", support=""), refinery=kept, models={"strong": outer})
     stop = Stop()
     fan = Tools([Tool("both", "Ask billing twice", body=both)])
     task = asyncio.create_task(front.run("support", "acme", "x", tools=fan, stop=stop))
@@ -345,10 +350,10 @@ async def test_a_consult_s_record_is_written_through_every_stop(
     billing = Gated()
     front = Engine(
         tree(tmp_path / "front", support=""),
-        generation=Script(consulting(), text_reply("never")),
         refinery=kept,
+        models={"strong": Script(consulting(), text_reply("never"))},
     )
-    back = Engine(tree(tmp_path / "back", billing=""), generation=billing, refinery=kept)
+    back = Engine(tree(tmp_path / "back", billing=""), refinery=kept, models={"strong": billing})
     stop = Stop()
     consult = back.tool("billing", scope="acme")
     task = asyncio.create_task(front.run("support", "acme", "x", tools=consult, stop=stop))
@@ -367,9 +372,9 @@ async def test_a_consult_whose_routed_run_was_stopped_reads_stopped(tmp_path: Pa
     billing = Gated()
     back_root = tree(tmp_path / "back", billing="")
     decision(back_root, "desk", "route:\n  by: intent\n  to: {billing: billing}\n")
-    back = Engine(back_root, generation=billing, decision=Deciding(), refinery=kept)
+    back = Engine(back_root, refinery=kept, models={"strong": billing, "judge": Deciding()})
     outer = Script(use(ToolCall(id="c1", name="desk", args={"input": "x"})), text_reply("never"))
-    front = Engine(tree(tmp_path / "front", support=""), generation=outer, refinery=kept)
+    front = Engine(tree(tmp_path / "front", support=""), refinery=kept, models={"strong": outer})
     stop = Stop()
     consult = back.tool("desk", scope="acme")
     task = asyncio.create_task(front.run("support", "acme", "x", tools=consult, stop=stop))
@@ -387,7 +392,7 @@ async def test_a_task_that_outlives_its_call_does_not_take_the_call_s_hooks(
 ) -> None:
     kept = Kept()
     billing = Gated()
-    back = Engine(tree(tmp_path / "back", billing=""), generation=billing, refinery=kept)
+    back = Engine(tree(tmp_path / "back", billing=""), refinery=kept, models={"strong": billing})
     consult = back.tool("billing", scope="acme")
     go = asyncio.Event()
     later: list[asyncio.Task[Any]] = []
@@ -406,7 +411,7 @@ async def test_a_task_that_outlives_its_call_does_not_take_the_call_s_hooks(
         seen.append(event.agent)
 
     outer = Script(use(ToolCall(id="s1", name="spawn", args={})), text_reply("Done."))
-    front = Engine(tree(tmp_path / "front", support=""), generation=outer, refinery=kept)
+    front = Engine(tree(tmp_path / "front", support=""), refinery=kept, models={"strong": outer})
     stop = Stop()
     spawning = Tools([Tool("spawn", "Spawn", body=spawn)])
     run = await front.run("support", "acme", "x", tools=spawning, on_event=show, stop=stop)
@@ -443,7 +448,7 @@ async def test_the_rest_of_a_call_is_cut_once_its_consult_took_the_stop(
 ) -> None:
     kept = Kept()
     billing = Gated()
-    back = Engine(tree(tmp_path / "back", billing=""), generation=billing, refinery=kept)
+    back = Engine(tree(tmp_path / "back", billing=""), refinery=kept, models={"strong": billing})
     consult = back.tool("billing", scope="acme")
 
     async def mixed(args: dict[str, Any]) -> str:
@@ -456,7 +461,7 @@ async def test_the_rest_of_a_call_is_cut_once_its_consult_took_the_stop(
         return "never"
 
     outer = Script(use(ToolCall(id="m1", name="mixed", args={})), text_reply("never"))
-    front = Engine(tree(tmp_path / "front", support=""), generation=outer, refinery=kept)
+    front = Engine(tree(tmp_path / "front", support=""), refinery=kept, models={"strong": outer})
     stop = Stop()
     tools = Tools([Tool("mixed", "Consult, then work", body=mixed)])
     task = asyncio.create_task(front.run("support", "acme", "x", tools=tools, stop=stop))
@@ -473,7 +478,7 @@ async def test_the_rest_of_a_call_is_cut_once_its_consult_took_the_stop(
 
 async def test_one_press_cuts_the_rest_of_a_call_once(tmp_path: Path) -> None:
     billing = Gated()
-    back = Engine(tree(tmp_path / "back", billing=""), generation=billing)
+    back = Engine(tree(tmp_path / "back", billing=""), models={"strong": billing})
     consult = back.tool("billing", scope="acme")
     seen: list[int] = []
 
@@ -490,7 +495,7 @@ async def test_one_press_cuts_the_rest_of_a_call_once(tmp_path: Path) -> None:
         return "never"
 
     outer = Script(use(ToolCall(id="m1", name="mixed", args={})), text_reply("never"))
-    front = Engine(tree(tmp_path / "front", support=""), generation=outer)
+    front = Engine(tree(tmp_path / "front", support=""), models={"strong": outer})
     stop = Stop()
     tools = Tools([Tool("mixed", "Consult beside work", body=mixed)])
     task = asyncio.create_task(front.run("support", "acme", "x", tools=tools, stop=stop))
@@ -507,7 +512,7 @@ async def test_a_stop_before_a_call_returns_cuts_it_and_its_consult_keeps_its_re
 ) -> None:
     kept = Writing()
     billing = Script(text_reply("Refunded."))
-    back = Engine(tree(tmp_path / "back", billing=""), generation=billing, refinery=kept)
+    back = Engine(tree(tmp_path / "back", billing=""), refinery=kept, models={"strong": billing})
     consult = back.tool("billing", scope="acme")
 
     async def asking(args: dict[str, Any]) -> Any:
@@ -515,7 +520,7 @@ async def test_a_stop_before_a_call_returns_cuts_it_and_its_consult_keeps_its_re
         return await (work if own else asyncio.create_task(work))
 
     outer = Script(use(ToolCall(id="a1", name="ask", args={})), text_reply("never"))
-    front = Engine(tree(tmp_path / "front", support=""), generation=outer, refinery=kept)
+    front = Engine(tree(tmp_path / "front", support=""), refinery=kept, models={"strong": outer})
     stop = Stop()
     tools = Tools([Tool("ask", "Ask billing", body=asking)])
     task = asyncio.create_task(front.run("support", "acme", "x", tools=tools, stop=stop))
@@ -540,10 +545,12 @@ class Hung(Kept):
 
 async def test_a_tool_deadline_bounds_a_consult_whose_record_write_hangs(tmp_path: Path) -> None:
     back = Engine(
-        tree(tmp_path / "back", billing=""), generation=Script(text_reply("ok")), refinery=Hung()
+        tree(tmp_path / "back", billing=""),
+        refinery=Hung(),
+        models={"strong": Script(text_reply("ok"))},
     )
     outer = Script(consulting(), text_reply("Carried on."))
-    front = Engine(tree(tmp_path / "front", support=""), generation=outer, tool_timeout=0.2)
+    front = Engine(tree(tmp_path / "front", support=""), tool_timeout=0.2, models={"strong": outer})
     began = time.monotonic()
     run = await asyncio.wait_for(
         front.run("support", "acme", "x", tools=back.tool("billing", scope="acme")), 2

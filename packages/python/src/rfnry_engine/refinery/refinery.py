@@ -436,7 +436,7 @@ class Refinery:
             while isinstance(run, Decision) and run.routed_to is not None:
                 run = run.routed_to
             if isinstance(run, Decision):
-                return await candidate.run(
+                return await candidate._start(
                     agent,
                     scope,
                     run.state,
@@ -467,7 +467,7 @@ class Refinery:
                         )
                     history = held[:cut]
                 start = run.start
-            return await candidate.run(
+            return await candidate._start(
                 agent,
                 scope,
                 sent if isinstance(sent, list) else run.input,

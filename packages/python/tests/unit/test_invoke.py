@@ -22,7 +22,7 @@ from rfnry_engine.records import Generation
 
 from .fakes import Fixed, MemoryBucket, Scripted, text_reply
 
-REVIEWER = "---\nkind: generation\ndescription: Reviews contracts\n---\nYou review contracts.\n"
+REVIEWER = "---\nname: reviewer\nkind: generation\nmodel: strong\ndescription: Reviews contracts\n---\nYou review contracts.\n"
 
 
 def tree(tmp_path: Path, files: dict[str, str]) -> Path:
@@ -49,22 +49,22 @@ def tasks(tmp_path: Path) -> Path:
                 "---\ndescription: Review  a whole\n  contract\n---\nReview every clause.\n"
             ),
             "reviewer/tasks/triage.md": "Sort the request.\n",
-            "chat/AGENT.md": "---\nkind: generation\ndescription: Talks\n---\nYou talk.\n",
-            "grader/AGENT.md": "---\nkind: decision\ndescription: Grades\n---\n",
+            "chat/AGENT.md": "---\nname: chat\nkind: generation\nmodel: strong\ndescription: Talks\n---\nYou talk.\n",
+            "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades\n---\n",
             "grader/tasks/tone/polite.md": "---\ntype: check\n---\nPolite?\n",
         },
     )
 
 
 def test_a_task_is_listed_with_its_description(tmp_path: Path) -> None:
-    agents = Engine(tasks(tmp_path)).agents
+    agents = Engine(tasks(tmp_path), models={}).agents
     assert agents["reviewer"].tasks == {"review": "Review a whole contract", "triage": ""}
     assert agents["chat"].tasks == {} and agents["grader"].tasks == {"tone": ""}
 
 
 async def test_only_a_task_s_body_reaches_the_model(tmp_path: Path) -> None:
     llm = Scripted(text_reply("Done."), text_reply("Sorted."))
-    engine = Engine(tasks(tmp_path), generation=llm)
+    engine = Engine(tasks(tmp_path), models={"strong": llm})
     await engine.run("reviewer", "acme", "Clause 7", task="review")
     await engine.run("reviewer", "acme", "Clause 7", task="triage")
     first, second = (system for system, _, _ in llm.calls)
@@ -84,7 +84,7 @@ async def test_only_a_task_s_body_reaches_the_model(tmp_path: Path) -> None:
 def test_a_task_takes_only_a_description(tmp_path: Path, front: str, said: str) -> None:
     root = reviewer(tmp_path, **{"tasks/review.md": f"---\n{front}\n---\nReview.\n"})
     with pytest.raises(ConfigurationError, match=said):
-        Engine(root)
+        Engine(root, models={})
 
 
 @pytest.mark.parametrize(
@@ -95,7 +95,7 @@ async def test_a_task_the_agent_lacks_is_refused_with_the_ones_it_has(
     tmp_path: Path, agent: str, fix: str
 ) -> None:
     llm = Scripted()
-    engine = Engine(tasks(tmp_path), generation=llm)
+    engine = Engine(tasks(tmp_path), models={"strong": llm})
     with pytest.raises(NotFoundError) as refused:
         await engine.run(agent, "acme", "x", task="ghost")
     assert str(refused.value) == f"engine: agent '{agent}' has no task 'ghost'; {fix}"
@@ -103,7 +103,7 @@ async def test_a_task_the_agent_lacks_is_refused_with_the_ones_it_has(
 
 
 async def test_a_run_with_a_task_records_it(tmp_path: Path) -> None:
-    run = await Engine(tasks(tmp_path), generation=Scripted(text_reply("Done."))).run(
+    run = await Engine(tasks(tmp_path), models={"strong": Scripted(text_reply("Done."))}).run(
         "reviewer", "acme", "x", task="review"
     )
     assert isinstance(run, Generation) and run.task == "review"
@@ -120,7 +120,7 @@ def skills(tmp_path: Path, **more: str) -> Path:
         tmp_path,
         {
             "reviewer/AGENT.md": (
-                "---\nkind: generation\ndescription: Reviews\nagents: [chat]\nreads: [books]\n"
+                "---\nname: reviewer\nkind: generation\nmodel: strong\ndescription: Reviews\nagents: [chat]\nreads: [books]\n"
                 "---\nYou review contracts.\n"
             ),
             "reviewer/skills/redline/SKILL.md": REDLINE,
@@ -133,8 +133,8 @@ def skills(tmp_path: Path, **more: str) -> Path:
             "reviewer/skills/deep/inner/SKILL.md": "Too deep.\n",
             "reviewer/rules/playbook.md": "The rules.\n",
             "books/skills/borrowed.md": "Not the reviewer's.\n",
-            "chat/AGENT.md": "---\nkind: generation\ndescription: Talks\n---\nYou talk.\n",
-            "grader/AGENT.md": "---\nkind: decision\ndescription: Grades\n---\n",
+            "chat/AGENT.md": "---\nname: chat\nkind: generation\nmodel: strong\ndescription: Talks\n---\nYou talk.\n",
+            "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades\n---\n",
             "grader/questions/ok.md": "---\ntype: check\n---\nOk?\n",
             "grader/skills/x.md": "A file.\n",
             **more,
@@ -148,7 +148,7 @@ SKILL = Text(text="<<<SKILL skills/redline/SKILL.md>>>\nWrite the redline.\nSee 
 def test_a_skill_is_a_file_or_a_folder_in_skills_listed_with_its_description(
     tmp_path: Path,
 ) -> None:
-    agents = Engine(skills(tmp_path)).agents
+    agents = Engine(skills(tmp_path), models={}).agents
     assert agents["reviewer"].skills == {
         "plain": "",
         "redline": "How to write a redline",
@@ -164,19 +164,12 @@ def test_a_skill_named_twice_is_refused(tmp_path: Path) -> None:
         "skills/risk/SKILL.md; keep one$"
     )
     with pytest.raises(ConfigurationError, match=message):
-        Engine(root)
-
-
-def test_a_plain_folder_has_skills_too(tmp_path: Path) -> None:
-    root = tmp_path / "notes"
-    (root / "skills").mkdir(parents=True)
-    (root / "skills" / "tone.md").write_text("---\ndescription: The house tone\n---\nBe brief.\n")
-    assert Engine(root).agents["notes"].skills == {"tone": "The house tone"}
+        Engine(root, models={})
 
 
 async def test_an_invoked_skill_rides_in_front_of_the_input(tmp_path: Path) -> None:
     llm = Scripted(text_reply("Redlined."))
-    run = await Engine(skills(tmp_path), generation=llm).run(
+    run = await Engine(skills(tmp_path), models={"strong": llm}).run(
         "reviewer", "acme", "clause 7", skill="redline"
     )
     sent = Message(role="user", content=[SKILL, Text(text="clause 7")])
@@ -198,13 +191,15 @@ async def test_an_invoked_skill_keeps_the_input_as_it_came(
     tmp_path: Path, given: Any, rest: list[Part] | None
 ) -> None:
     llm = Scripted(text_reply("Done."))
-    await Engine(skills(tmp_path), generation=llm).run("reviewer", "acme", given, skill="redline")
+    await Engine(skills(tmp_path), models={"strong": llm}).run(
+        "reviewer", "acme", given, skill="redline"
+    )
     assert llm.calls[0][1][-1].content == [SKILL, *(given if rest is None else rest)]
 
 
 async def test_a_run_that_continues_still_has_the_skill(tmp_path: Path) -> None:
     llm = Scripted(text_reply("Redlined."), text_reply("Shorter."))
-    engine = Engine(skills(tmp_path), generation=llm)
+    engine = Engine(skills(tmp_path), models={"strong": llm})
     first = await engine.run("reviewer", "acme", "clause 7", skill="redline")
     assert isinstance(first, Generation)
     second = await engine.run("reviewer", "acme", "shorter", history=first.conversation)
@@ -240,7 +235,7 @@ async def test_a_skill_the_agent_cannot_take_is_refused_before_any_model_call(
     tmp_path: Path, root: Any, agent: str, error: type[Exception], message: str
 ) -> None:
     llm = Scripted()
-    engine = Engine(root(tmp_path), generation=llm, decision=Fixed({}))
+    engine = Engine(root(tmp_path), models={"strong": llm, "judge": Fixed({})})
     with pytest.raises(error) as refused:
         await engine.run(agent, "acme", "x", skill="ghost")
     assert str(refused.value) == message and llm.calls == []
@@ -251,7 +246,7 @@ async def test_a_sub_agent_never_takes_the_callers_skill(tmp_path: Path) -> None
     llm = Scripted(
         Reply(tool_calls=[ask], stop_reason="tool_use"), text_reply("Hi."), text_reply("Done.")
     )
-    run = await Engine(skills(tmp_path), generation=llm).run(
+    run = await Engine(skills(tmp_path), models={"strong": llm}).run(
         "reviewer", "acme", "clause 7", skill="redline"
     )
     assert isinstance(run, Generation)
@@ -265,7 +260,9 @@ async def test_the_skill_is_recorded_replayed_and_exported(
 ) -> None:
     refinery = Refinery(storage)
     recorder = Engine(
-        skills(tmp_path / "a"), generation=Scripted(text_reply("Redlined.")), refinery=refinery
+        skills(tmp_path / "a"),
+        refinery=refinery,
+        models={"strong": Scripted(text_reply("Redlined."))},
     )
     run = await recorder.run("reviewer", "acme", "clause 7", skill="redline")
     back = await refinery.run("acme", run.run_id)
@@ -275,7 +272,9 @@ async def test_the_skill_is_recorded_replayed_and_exported(
     llm = Scripted(text_reply("Again."))
     [pair] = [
         pair
-        async for pair in refinery.replay("acme", Engine(newer, generation=llm), agent="reviewer")
+        async for pair in refinery.replay(
+            "acme", Engine(newer, models={"strong": llm}), agent="reviewer"
+        )
     ]
     assert isinstance(pair.candidate, Generation) and pair.candidate.skill == "redline"
     assert llm.calls[0][1] == [
@@ -299,7 +298,7 @@ def test_a_task_that_is_not_utf8_is_refused_with_its_path(tmp_path: Path) -> Non
     (root / "reviewer" / "tasks").mkdir()
     (root / "reviewer" / "tasks" / "review.md").write_bytes("Revisão\n".encode("latin-1"))
     with pytest.raises(ConfigurationError, match=r"^tree: .*review\.md is not UTF-8 text; "):
-        Engine(root)
+        Engine(root, models={})
 
 
 def test_a_skill_that_is_not_utf8_is_refused_when_the_tree_loads(tmp_path: Path) -> None:
@@ -307,7 +306,7 @@ def test_a_skill_that_is_not_utf8_is_refused_when_the_tree_loads(tmp_path: Path)
     (root / "reviewer" / "skills").mkdir()
     (root / "reviewer" / "skills" / "risk.md").write_bytes("Risco: médio\n".encode("latin-1"))
     with pytest.raises(ConfigurationError, match=r"^tree: .*risk\.md is not UTF-8 text; "):
-        Engine(root)
+        Engine(root, models={})
 
 
 @pytest.mark.parametrize("name", ["tasks/review.md", "skills/review.md"])
@@ -315,7 +314,7 @@ async def test_a_byte_order_mark_never_reaches_the_model(tmp_path: Path, name: s
     root = reviewer(tmp_path, **{name: "\ufeffReview it.\n"})
     llm = Scripted(text_reply("Done."))
     tasked = name.startswith("tasks")
-    await Engine(root, generation=llm).run(
+    await Engine(root, models={"strong": llm}).run(
         "reviewer",
         "acme",
         "x",
@@ -330,7 +329,7 @@ async def test_a_byte_order_mark_never_reaches_the_model(tmp_path: Path, name: s
 def test_a_block_between_dashes_that_holds_no_keys_says_so(tmp_path: Path) -> None:
     root = reviewer(tmp_path, **{"tasks/review.md": "---\nJust a rule above.\n---\nReview.\n"})
     with pytest.raises(ConfigurationError) as refused:
-        Engine(root)
+        Engine(root, models={})
     said = str(refused.value)
     assert said.startswith("frontmatter: ") and "TaskFront" not in said
     assert said.endswith(
@@ -342,7 +341,7 @@ def test_a_block_after_a_blank_line_is_body_in_the_map_and_in_the_prompt(tmp_pat
     from rfnry_engine.frontmatter import body_of
 
     root = reviewer(tmp_path, **{"skills/risk.md": "\n---\ndescription: Rate it\n---\nRate.\n"})
-    assert Engine(root).agents["reviewer"].skills == {"risk": ""}
+    assert Engine(root, models={}).agents["reviewer"].skills == {"risk": ""}
     assert body_of((root / "reviewer/skills/risk.md").read_text(encoding="utf-8")).startswith(
         "---\ndescription"
     )
@@ -353,7 +352,7 @@ async def test_a_task_edited_after_the_tree_loads_reaches_no_prompt(tmp_path: Pa
         tmp_path, **{"tasks/review.md": "---\ndescription: Review it\n---\nReview the clause.\n"}
     )
     llm = Scripted(text_reply("Done."))
-    engine = Engine(root, generation=llm)
+    engine = Engine(root, models={"strong": llm})
     (root / "reviewer/tasks/review.md").write_text("Changed.\n", encoding="utf-8")
     await engine.run("reviewer", "acme", "Look.", task="review")
     assert "Review the clause." in llm.calls[0][0] and "Changed." not in llm.calls[0][0]
@@ -366,7 +365,7 @@ async def test_an_invoked_skill_edited_after_the_tree_loads_is_the_loaded_one(
         tmp_path, **{"skills/risk.md": "---\ndescription: Rate it\n---\nRate the risk.\n"}
     )
     llm = Scripted(text_reply("Done."))
-    engine = Engine(root, generation=llm)
+    engine = Engine(root, models={"strong": llm})
     (root / "reviewer/skills/risk.md").write_text("Changed.\n", encoding="utf-8")
     await engine.run("reviewer", "acme", "Look.", skill="risk")
     sent = llm.calls[0][1][-1].content[0]
@@ -384,7 +383,7 @@ async def test_a_skill_the_model_reads_with_read_is_the_file_on_disk(tmp_path: P
         ),
         text_reply("Done."),
     )
-    engine = Engine(root, generation=llm)
+    engine = Engine(root, models={"strong": llm})
     (root / "reviewer/skills/risk.md").write_text("Changed.\n", encoding="utf-8")
     run = await engine.run("reviewer", "acme", "Look.")
     assert isinstance(run, Generation) and run.steps[0].result == "Changed.\n"

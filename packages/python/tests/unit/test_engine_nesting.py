@@ -53,7 +53,7 @@ def _delegate(agent: str, text: str, call_id: str = "d1") -> Reply:
 
 async def test_delegate_tool_exists_only_when_agents_are_named(fixtures: Path) -> None:
     llm = Scripted(text_reply("a"), text_reply("b"))
-    engine = Engine(fixtures, generation=llm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
     await engine.run("support", "acme", "x")
     await engine.run("billing", "acme", "x")
     assert "Delegate" in [t.name for t in llm.calls[0][2]]
@@ -68,7 +68,7 @@ async def test_delegate_tool_exists_only_when_agents_are_named(fixtures: Path) -
 
 async def test_generation_agent_consults_a_decision_agent(fixtures: Path) -> None:
     llm = Scripted(_delegate("triage", "It is down"), text_reply("Escalating."))
-    engine = Engine(fixtures, generation=llm, decision=Fixed(TRIAGE), tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": Fixed(TRIAGE)})
     run = await engine.run("support", "acme", "It is down")
     assert isinstance(run, Generation) and len(run.children) == 1
     child = run.children[0]
@@ -90,7 +90,7 @@ async def test_the_whole_chain_frontdesk_support_triage(fixtures: Path) -> None:
     answers: list[Any] = [intent, TRIAGE]
     dm = Fixed(lambda state: answers.pop(0))
     llm = Scripted(_delegate("triage", "It is down"), text_reply("Handled."))
-    engine = Engine(fixtures, generation=llm, decision=dm, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": dm})
     run = await engine.run("frontdesk", "acme", "It is down")
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     assert run.routed_to.agent == "support" and run.routed_to.children[0].agent == "triage"
@@ -98,9 +98,11 @@ async def test_the_whole_chain_frontdesk_support_triage(fixtures: Path) -> None:
 
 async def test_an_agent_delegates_to_a_fresh_run_of_itself(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\nagents: [a]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\nagents: [a]\n---\nhi\n"
+    )
     llm = Scripted(_delegate("a", "the sub-problem"), text_reply("sub done"), text_reply("done"))
-    run = await Engine(tmp_path, generation=llm).run("a", "acme", "start")
+    run = await Engine(tmp_path, models={"strong": llm}).run("a", "acme", "start")
     assert isinstance(run, Generation) and run.reply == "done"
     child = run.children[0]
     assert isinstance(child, Generation) and child.agent == "a" and child.reply == "sub done"
@@ -113,12 +115,12 @@ async def test_a_delegation_cycle_runs_until_max_depth(tmp_path: Path) -> None:
         (tmp_path / name).mkdir()
         other = "b" if name == "a" else "a"
         (tmp_path / name / "AGENT.md").write_text(
-            f"---\nkind: generation\nagents: [{other}]\n---\nhi\n"
+            f"---\nname: {name}\nkind: generation\nmodel: strong\nagents: [{other}]\n---\nhi\n"
         )
     llm = Scripted(
         _delegate("b", "go"), _delegate("a", "back"), text_reply("b done"), text_reply("a done")
     )
-    run = await Engine(tmp_path, generation=llm, max_depth=2).run("a", "acme", "start")
+    run = await Engine(tmp_path, max_depth=2, models={"strong": llm}).run("a", "acme", "start")
     assert isinstance(run, Generation)
     child = run.children[0]
     assert isinstance(child, Generation) and child.steps[0].is_error
@@ -131,12 +133,12 @@ async def test_a_route_back_into_the_chain_raises(tmp_path: Path) -> None:
     for name, other in (("r1", "r2"), ("r2", "r1")):
         (tmp_path / name / "questions").mkdir(parents=True)
         (tmp_path / name / "AGENT.md").write_text(
-            f"---\nkind: decision\nroute: {{by: go, to: {{next: {other}}}}}\n---\n"
+            f"---\nname: {name}\nkind: decision\nmodel: judge\nroute: {{by: go, to: {{next: {other}}}}}\n---\n"
         )
         (tmp_path / name / "questions" / "go.md").write_text(
             "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
         )
-    engine = Engine(tmp_path, decision=Answering())
+    engine = Engine(tmp_path, models={"judge": Answering()})
     with pytest.raises(DelegationLoopError, match=r"^delegate: loop at r1 -> r2 -> r1$"):
         await engine.run("r1", "acme", "x")
 
@@ -144,7 +146,7 @@ async def test_a_route_back_into_the_chain_raises(tmp_path: Path) -> None:
 def _router(tmp_path: Path, name: str, target: str) -> None:
     (tmp_path / name / "questions").mkdir(parents=True)
     (tmp_path / name / "AGENT.md").write_text(
-        f"---\nkind: decision\nroute: {{by: go, to: {{next: {target}}}}}\n---\n"
+        f"---\nname: {name}\nkind: decision\nmodel: judge\nroute: {{by: go, to: {{next: {target}}}}}\n---\n"
     )
     (tmp_path / name / "questions" / "go.md").write_text(
         "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
@@ -155,10 +157,14 @@ async def test_a_router_reached_through_delegate_may_route_back_to_the_agent_tha
     tmp_path: Path,
 ) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\nagents: [r]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\nagents: [r]\n---\nhi\n"
+    )
     _router(tmp_path, "r", "a")
     llm = Scripted(_delegate("r", "the sub-problem"), text_reply("sub done"), text_reply("done"))
-    run = await Engine(tmp_path, generation=llm, decision=Answering()).run("a", "acme", "start")
+    run = await Engine(tmp_path, models={"strong": llm, "judge": Answering()}).run(
+        "a", "acme", "start"
+    )
     assert isinstance(run, Generation) and run.reply == "done"
     assert not any(step.is_error for step in run.steps)
     [router] = run.children
@@ -169,11 +175,15 @@ async def test_a_router_reached_through_delegate_may_route_back_to_the_agent_tha
 
 async def test_a_route_loop_below_a_delegate_is_still_refused(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\nagents: [r1]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\nagents: [r1]\n---\nhi\n"
+    )
     _router(tmp_path, "r1", "r2")
     _router(tmp_path, "r2", "r1")
     llm = Scripted(_delegate("r1", "go"), text_reply("a done"))
-    run = await Engine(tmp_path, generation=llm, decision=Answering()).run("a", "acme", "start")
+    run = await Engine(tmp_path, models={"strong": llm, "judge": Answering()}).run(
+        "a", "acme", "start"
+    )
     assert isinstance(run, Generation) and run.reply == "a done"
     assert run.steps[0].is_error
     assert run.steps[0].result == "DelegationLoopError: delegate: loop at a -> r1 -> r2 -> r1"
@@ -183,22 +193,30 @@ async def test_a_route_loop_below_a_delegate_is_still_refused(tmp_path: Path) ->
 
 async def test_depth_is_capped(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\nagents: [b]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\nagents: [b]\n---\nhi\n"
+    )
     (tmp_path / "b").mkdir()
-    (tmp_path / "b" / "AGENT.md").write_text("---\nkind: generation\n---\nhi\n")
+    (tmp_path / "b" / "AGENT.md").write_text(
+        "---\nname: b\nkind: generation\nmodel: strong\n---\nhi\n"
+    )
     llm = Scripted(_delegate("b", "go"), text_reply("a done"))
-    run = await Engine(tmp_path, generation=llm, max_depth=1).run("a", "acme", "start")
+    run = await Engine(tmp_path, max_depth=1, models={"strong": llm}).run("a", "acme", "start")
     assert isinstance(run, Generation) and run.steps[0].is_error
     assert "DelegationDepthError" in run.steps[0].result and run.children == []
 
 
 async def test_the_child_serves_the_same_tenant_with_its_context(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\nagents: [b]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\nagents: [b]\n---\nhi\n"
+    )
     (tmp_path / "b").mkdir()
-    (tmp_path / "b" / "AGENT.md").write_text("---\nkind: generation\n---\nhi\n")
+    (tmp_path / "b" / "AGENT.md").write_text(
+        "---\nname: b\nkind: generation\nmodel: strong\n---\nhi\n"
+    )
     llm = Scripted(_delegate("b", "go"), text_reply("b done"), text_reply("a done"))
-    run = await Engine(tmp_path, generation=llm).run(
+    run = await Engine(tmp_path, models={"strong": llm}).run(
         "a", "acme", "start", context="Acme is enterprise."
     )
     assert isinstance(run, Generation)
@@ -209,24 +227,53 @@ async def test_the_child_serves_the_same_tenant_with_its_context(tmp_path: Path)
 
 
 async def test_dispatch_delegate_outside_a_run(fixtures: Path) -> None:
-    engine = Engine(fixtures, generation=Scripted(), decision=Fixed(TRIAGE), tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted(), "judge": Fixed(TRIAGE)})
     tools = EngineTools(engine, agent="support", scope="acme")
     result = await tools.dispatch("Delegate", {"agent": "triage", "input": "It is down"})
     assert isinstance(result, str) and json.loads(result)["answers"]["urgent"]["probability"] == 0.9
 
 
+async def test_dispatch_delegate_asks_a_decision_agent_the_questions_it_is_given(
+    tmp_path: Path,
+) -> None:
+    class Recorded:
+        def __init__(self) -> None:
+            self.runs: list[Any] = []
+
+        async def record(self, run: Any) -> None:
+            self.runs.append(run)
+
+    recorder = Recorded()
+    dm = Answering()
+    engine = Engine(lead(tmp_path), refinery=recorder, models={"strong": Scripted(), "judge": dm})
+    tools = EngineTools(engine, agent="lead", scope="acme")
+    result = await tools.dispatch(
+        "Delegate", {"agent": "blank", "input": "x", "questions": {"area": PICK}}
+    )
+    assert json.loads(str(result))["answers"]["area"]["choice"] == "orders"
+    assert dm.calls == [("x", {"area": Choice.model_validate(PICK)})]
+    [run] = recorder.runs
+    assert isinstance(run, Decision) and run.agent == "blank" and run.runtime == ["area"]
+
+
 async def test_dispatch_delegate_gives_the_child_the_tenant_tools(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\nagents: [b]\n---\nhi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\nagents: [b]\n---\nhi\n"
+    )
     (tmp_path / "b").mkdir()
-    (tmp_path / "b" / "AGENT.md").write_text("---\nkind: generation\n---\nhi\n")
+    (tmp_path / "b" / "AGENT.md").write_text(
+        "---\nname: b\nkind: generation\nmodel: strong\n---\nhi\n"
+    )
 
     async def ping(args: dict[str, Any]) -> str:
         return "pong"
 
     pinned = Tools([Tool("ping", "Ping", body=ping)])
     llm = Scripted(text_reply("b done"))
-    tools = EngineTools(Engine(tmp_path, generation=llm), agent="a", scope="acme", tools=pinned)
+    tools = EngineTools(
+        Engine(tmp_path, models={"strong": llm}), agent="a", scope="acme", tools=pinned
+    )
     assert await tools.dispatch("Delegate", {"agent": "b", "input": "go"}) == "b done"
     assert "ping" in [t.name for t in llm.calls[0][2]]
 
@@ -238,7 +285,9 @@ async def test_delegate_is_not_bound_by_the_tool_deadline(fixtures: Path) -> Non
             return TRIAGE
 
     llm = Scripted(_delegate("triage", "It is down"), text_reply("Escalating."))
-    engine = Engine(fixtures, generation=llm, decision=Slow(TRIAGE), tools=TOOLS, tool_timeout=0.05)
+    engine = Engine(
+        fixtures, tools=TOOLS, tool_timeout=0.05, models={"strong": llm, "judge": Slow(TRIAGE)}
+    )
     run = await engine.run("support", "acme", "It is down")
     assert isinstance(run, Generation) and not run.steps[0].is_error
     assert run.children[0].agent == "triage"
@@ -278,7 +327,7 @@ BAD_DELEGATIONS: list[tuple[dict[str, Any], type[Exception], str]] = [
     (
         {"agent": "blank", "input": "x"},
         InputError,
-        "engine: decision agent 'blank' has no questions to ask; pass questions=",
+        "engine: decision agent 'blank' has no questions to ask; give it questions/ or tasks/<name>/, or ask it through Delegate",
     ),
     (
         {"agent": "blank", "input": "x", "questions": "Which area?"},
@@ -301,7 +350,7 @@ async def test_a_refused_delegation_is_a_tool_error_the_same_in_a_run_and_from_c
     root = lead(tmp_path)
     llm = Scripted(delegating(**args) if "input" in args else _bare(args), text_reply("done"))
     dm = Answering()
-    engine = Engine(root, generation=llm, decision=dm)
+    engine = Engine(root, models={"strong": llm, "judge": dm})
     run = await engine.run("lead", "acme", "x")
     assert isinstance(run, Generation) and run.reply == "done" and run.children == []
     assert run.steps[0].is_error and run.steps[0].child_run_id is None
@@ -322,9 +371,9 @@ async def test_delegate_offers_a_task_and_questions_only_when_a_target_takes_the
     root = lead(tmp_path)
     (root / "plain/AGENT.md").parent.mkdir()
     (root / "plain/AGENT.md").write_text(
-        "---\nkind: generation\ndescription: Plain\nagents: [writer]\n---\nHi\n"
+        "---\nname: plain\nkind: generation\nmodel: strong\ndescription: Plain\nagents: [writer]\n---\nHi\n"
     )
-    engine = Engine(root, generation=Scripted(), decision=Answering())
+    engine = Engine(root, models={"strong": Scripted(), "judge": Answering()})
     [offered] = EngineTools(engine, agent="lead", scope="acme").only("Delegate").definitions()
     schema = offered["input_schema"]
     assert schema["required"] == ["agent", "input"]
@@ -347,7 +396,7 @@ async def test_delegate_offers_a_task_and_questions_only_when_a_target_takes_the
 async def test_an_adapter_that_edits_the_offered_schema_changes_no_later_run(
     tmp_path: Path,
 ) -> None:
-    engine = Engine(lead(tmp_path), generation=Scripted(), decision=Answering())
+    engine = Engine(lead(tmp_path), models={"strong": Scripted(), "judge": Answering()})
     [first] = EngineTools(engine, agent="lead", scope="acme").only("Delegate").definitions()
     asked = first["input_schema"]["properties"]["questions"]["additionalProperties"]
     asked["additionalProperties"] = False
@@ -363,7 +412,7 @@ async def test_a_generation_agent_asks_a_decision_agent_a_question_it_composed(
 ) -> None:
     llm = Scripted(delegating("blank", "Charged twice", questions={"area": PICK}), text_reply("ok"))
     dm = Answering()
-    run = await Engine(lead(tmp_path), generation=llm, decision=dm).run("lead", "acme", "x")
+    run = await Engine(lead(tmp_path), models={"strong": llm, "judge": dm}).run("lead", "acme", "x")
     assert isinstance(run, Generation) and not run.steps[0].is_error
     [child] = run.children
     assert isinstance(child, Decision) and child.agent == "blank" and child.runtime == ["area"]
@@ -390,7 +439,7 @@ async def test_delegate_names_a_task_for_either_kind_and_adds_questions_to_it(
         text_reply("Apologised."),
         text_reply("done"),
     )
-    run = await Engine(lead(tmp_path), generation=llm, decision=Answering()).run(
+    run = await Engine(lead(tmp_path), models={"strong": llm, "judge": Answering()}).run(
         "lead", "acme", "x"
     )
     assert isinstance(run, Generation) and [s.is_error for s in run.steps] == [False, False]
@@ -416,7 +465,7 @@ async def test_children_follow_their_steps_whatever_order_they_finish_in(fixture
 
     both = delegate_triage("d1", "slow").tool_calls + delegate_triage("d2", "fast").tool_calls
     llm = Scripted(Reply(tool_calls=both, stop_reason="tool_use"), text_reply("Both triaged."))
-    engine = Engine(fixtures, generation=llm, decision=SlowFirst(), tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": SlowFirst()})
     run = await engine.run("support", "acme", "Two tickets")
     assert isinstance(run, Generation) and finished == ["fast", "slow"]
     assert [child.run_id for child in run.children] == [step.child_run_id for step in run.steps]

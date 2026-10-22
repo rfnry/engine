@@ -2,34 +2,27 @@ import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import replace
-from functools import cache
 from typing import TYPE_CHECKING
-
-from pydantic import BaseModel
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.models import HistoryLike, ToolCall
 from rfnry_engine.records import EventHandler
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.builtins import builtins, load_tool
-from rfnry_engine.tools.declared import declared_tools
+from rfnry_engine.tools.declared import declared_tools, described
 from rfnry_engine.tools.delegate import delegate_tool
 from rfnry_engine.tools.history import HISTORY_TOOL, history_tool
 from rfnry_engine.tools.tools import Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import Workspace
+from rfnry_engine.tree import from_agent
 
 if TYPE_CHECKING:
     from rfnry_engine.engine import Engine
 
 
-@cache
-def _described(args: type[BaseModel]) -> str:
-    return json.dumps(args.model_json_schema())
-
-
 def _own(item: Tool | ToolsLike) -> Tool | ToolsLike:
     if isinstance(item, Tool) and item.args is not None and item.input_schema is None:
-        return replace(item, input_schema=json.loads(_described(item.args)))
+        return replace(item, input_schema=json.loads(described(item.args)))
     return item
 
 
@@ -79,11 +72,11 @@ class EngineTools(Tools):
             raise ConfigurationError(
                 f"engine_tools: a tool named {HISTORY_TOOL!r} collides with the builtin"
             )
-        room = workspace if spec.workspace or spec.plain else None
-        media_types = getattr(engine.generation, "media_types", None)
+        room = workspace if spec.workspace else None
+        media_types = getattr(engine.models.get(spec.model), "media_types", None)
         backend = room.backend if room else None
         items: list[Tool | ToolsLike] = [
-            *builtins(spec.root, spec.reads, backend),
+            *builtins(spec.root, from_agent(spec.path, spec.reads), backend),
             load_tool(spec.root, backend, media_types, spec.reads.values()),
         ]
         if history is not None and start > 0:

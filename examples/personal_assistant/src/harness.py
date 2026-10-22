@@ -7,7 +7,7 @@ from providers import AnthropicProvider
 
 ROOT = Path(__file__).resolve().parent.parent
 
-engine = Engine(ROOT / "agents", generation=AnthropicProvider())
+engine = Engine(ROOT / "agents", models={"strong": AnthropicProvider()})
 sessions: dict[str, tuple[list[Message], int]] = {}
 
 

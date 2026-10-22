@@ -18,9 +18,9 @@ from rfnry_engine.tools.tools import Tool, Tools
 from .fakes import Fixed, MemoryBucket, Scripted, text_reply
 
 AGENTS = {
-    "desk": "kind: generation\ndescription: Helps customers",
-    "lead": "kind: generation\ndescription: Leads\nagents: [desk]",
-    "router": "kind: decision\ndescription: Sorts\nroute:\n  by: intent\n  to: {help: desk}",
+    "desk": "name: desk\nkind: generation\nmodel: strong\ndescription: Helps customers",
+    "lead": "name: lead\nkind: generation\nmodel: strong\ndescription: Leads\nagents: [desk]",
+    "router": "name: router\nkind: decision\nmodel: judge\ndescription: Sorts\nroute:\n  by: intent\n  to: {help: desk}",
 }
 INTENT = (
     "---\ntype: choice\noptions:\n  help: Needs help\n  other: Anything else\n---\nWhat is this?\n"
@@ -74,7 +74,8 @@ async def test_without_approve_every_call_runs_and_nothing_is_recorded_as_asked(
 ) -> None:
     refunds = Refunds()
     engine = Engine(
-        make_tree(tmp_path), generation=Scripted(use("refund", order="A-1"), text_reply("done"))
+        make_tree(tmp_path),
+        models={"strong": Scripted(use("refund", order="A-1"), text_reply("done"))},
     )
     run = await engine.run("desk", "acme", "refund A-1", tools=refunds.tools())
     assert isinstance(run, Generation) and refunds.done == [{"order": "A-1"}]
@@ -84,7 +85,8 @@ async def test_without_approve_every_call_runs_and_nothing_is_recorded_as_asked(
 async def test_an_approved_call_runs_and_the_step_says_so(tmp_path: Path) -> None:
     refunds, approver = Refunds(), Approver()
     engine = Engine(
-        make_tree(tmp_path), generation=Scripted(use("refund", order="A-1"), text_reply("done"))
+        make_tree(tmp_path),
+        models={"strong": Scripted(use("refund", order="A-1"), text_reply("done"))},
     )
     run = await engine.run("desk", "acme", "refund A-1", tools=refunds.tools(), approve=approver)
     assert isinstance(run, Generation) and approver.asked == [("desk", "refund", {"order": "A-1"})]
@@ -98,7 +100,7 @@ async def test_an_approved_call_runs_and_the_step_says_so(tmp_path: Path) -> Non
 async def test_a_refused_call_never_runs_and_the_model_reads_why(tmp_path: Path) -> None:
     refunds = Refunds()
     llm = Scripted(use("refund", order="A-1"), text_reply("I cannot refund that."))
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     run = await engine.run(
         "desk", "acme", "refund A-1", tools=refunds.tools(), approve=Approver(allow=False)
     )
@@ -118,8 +120,8 @@ async def test_waiting_for_approval_does_not_count_against_the_tool_timeout(tmp_
     refunds = Refunds()
     engine = Engine(
         make_tree(tmp_path),
-        generation=Scripted(use("refund", order="A-1"), text_reply("done")),
         tool_timeout=0.05,
+        models={"strong": Scripted(use("refund", order="A-1"), text_reply("done"))},
     )
     run = await engine.run("desk", "acme", "x", tools=refunds.tools(), approve=Approver(delay=0.3))
     assert isinstance(run, Generation)
@@ -129,7 +131,8 @@ async def test_waiting_for_approval_does_not_count_against_the_tool_timeout(tmp_
 async def test_stopping_now_ends_a_wait_for_approval(tmp_path: Path) -> None:
     refunds, stop = Refunds(), Stop()
     engine = Engine(
-        make_tree(tmp_path), generation=Scripted(use("refund", order="A-1"), text_reply("never"))
+        make_tree(tmp_path),
+        models={"strong": Scripted(use("refund", order="A-1"), text_reply("never"))},
     )
     running = asyncio.create_task(
         engine.run(
@@ -152,7 +155,7 @@ async def test_stopping_now_ends_a_wait_for_approval_of_a_delegate(tmp_path: Pat
         return True
 
     llm = Scripted(use("Delegate", agent="desk", input="x"), text_reply("never"))
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     running = asyncio.create_task(engine.run("lead", "acme", "x", approve=approve, stop=stop))
     await asyncio.wait_for(asked.wait(), 5)
     stop.now()
@@ -187,7 +190,7 @@ async def test_each_press_cancels_a_wait_for_approval_once(tmp_path: Path, tool:
     call = (
         use("refund", order="A-1") if tool == "refund" else use("Delegate", agent="desk", input="x")
     )
-    engine = Engine(make_tree(tmp_path), generation=Scripted(call, text_reply("never")))
+    engine = Engine(make_tree(tmp_path), models={"strong": Scripted(call, text_reply("never"))})
     agent = "desk" if tool == "refund" else "lead"
     running = asyncio.create_task(
         engine.run(agent, "acme", "x", tools=refunds.tools(), approve=approve, stop=stop)
@@ -216,7 +219,7 @@ async def test_delegated_children_are_asked_too(tmp_path: Path) -> None:
         text_reply("child done"),
         text_reply("lead done"),
     )
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     run = await engine.run("lead", "acme", "x", tools=refunds.tools(), approve=approver)
     assert isinstance(run, Generation) and run.reply == "lead done"
     assert [(agent, name) for agent, name, _ in approver.asked] == [
@@ -234,8 +237,10 @@ async def test_a_routed_run_is_asked_too(tmp_path: Path) -> None:
     }
     engine = Engine(
         make_tree(tmp_path),
-        generation=Scripted(use("refund", order="A-1"), text_reply("done")),
-        decision=Fixed(help_),
+        models={
+            "strong": Scripted(use("refund", order="A-1"), text_reply("done")),
+            "judge": Fixed(help_),
+        },
     )
     run = await engine.run("router", "acme", "refund A-1", tools=refunds.tools(), approve=approver)
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
@@ -250,7 +255,7 @@ async def test_an_agent_as_a_tool_and_engine_tools_carry_approve(tmp_path: Path)
         use("refund", order="A-2"),
         text_reply("refused"),
     )
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     consult = engine.tool("desk", scope="acme", tools=refunds.tools(), approve=approver)
     assert await consult.dispatch("desk", {"input": "refund A-1"}) == "refused"
     surface = EngineTools(
@@ -268,7 +273,8 @@ async def test_an_approve_that_answers_something_else_is_the_consumers_bug(tmp_p
         return "yes"
 
     engine = Engine(
-        make_tree(tmp_path), generation=Scripted(use("refund", order="A-1"), text_reply("x"))
+        make_tree(tmp_path),
+        models={"strong": Scripted(use("refund", order="A-1"), text_reply("x"))},
     )
     with pytest.raises(
         ConfigurationError, match=r"^engine: approve must return True or False; got 'yes'$"
@@ -281,7 +287,7 @@ async def test_the_exported_generation_row_keeps_each_approval(
 ) -> None:
     refinery = Refinery(storage)
     llm = Scripted(use("refund", order="A-1"), text_reply("cannot"))
-    engine = Engine(make_tree(tmp_path), generation=llm, refinery=refinery)
+    engine = Engine(make_tree(tmp_path), refinery=refinery, models={"strong": llm})
     await engine.run("desk", "acme", "x", tools=Refunds().tools(), approve=Approver(allow=False))
     bucket = MemoryBucket()
     await refinery.export("acme", bucket)

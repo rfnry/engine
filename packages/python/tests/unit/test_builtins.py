@@ -450,7 +450,7 @@ def shelf(tmp_path: Path) -> Path:
 def reading(shelf: Path) -> Tools:
     books = (shelf / "books").resolve()
     coding = shelf / "coding"
-    return Tools([*builtins(coding, {"books": books}), load_tool(coding, None, None, [books])])
+    return Tools([*builtins(coding, {"../books": books}), load_tool(coding, None, None, [books])])
 
 
 def test_the_jail_takes_more_places(shelf: Path) -> None:

@@ -18,10 +18,10 @@ from rfnry_engine.tools.workspace import Local, Workspace
 from .fakes import Fixed, Scripted, text_reply
 
 AGENTS = {
-    "coder": "kind: generation\ndescription: Writes and runs code\nworkspace: true",
-    "chat": "kind: generation\ndescription: Talks",
-    "lead": "kind: generation\ndescription: Leads\nagents: [coder, chat]",
-    "desk": "kind: decision\ndescription: Sorts\nroute:\n  by: intent\n  to: {code: coder, talk: chat}",
+    "coder": "name: coder\nkind: generation\nmodel: strong\ndescription: Writes and runs code\nworkspace: true",
+    "chat": "name: chat\nkind: generation\nmodel: strong\ndescription: Talks",
+    "lead": "name: lead\nkind: generation\nmodel: strong\ndescription: Leads\nagents: [coder, chat]",
+    "desk": "name: desk\nkind: decision\nmodel: judge\ndescription: Sorts\nroute:\n  by: intent\n  to: {code: coder, talk: chat}",
 }
 INTENT = "---\ntype: choice\noptions:\n  code: Write code\n  talk: Just talk\n---\nWhat is this?\n"
 
@@ -63,7 +63,7 @@ async def test_an_agent_without_the_flag_never_sees_the_workspace(
     tmp_path: Path, work: Workspace
 ) -> None:
     llm = Scripted(text_reply("hi"), text_reply("hi"))
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     await engine.run("chat", "acme", "x", workspace=work)
     await engine.run("chat", "acme", "x")
     for index in (0, 1):
@@ -72,7 +72,7 @@ async def test_an_agent_without_the_flag_never_sees_the_workspace(
 
 async def test_an_agent_with_the_flag_sees_the_five_tools(tmp_path: Path, work: Workspace) -> None:
     llm = Scripted(text_reply("ok"))
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     await engine.run("coder", "acme", "x", workspace=work)
     assert {"Shell", "Job", "Jobs", "Write", "Edit"} <= set(names(llm, 0))
 
@@ -81,16 +81,18 @@ async def test_a_flagged_agent_without_a_workspace_is_refused_before_the_model(
     tmp_path: Path,
 ) -> None:
     llm = Scripted(text_reply("never"))
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     with pytest.raises(ConfigurationError, match="workspace"):
         await engine.run("coder", "acme", "x")
     assert llm.calls == []
 
 
 def test_a_decision_agent_cannot_declare_a_workspace(tmp_path: Path) -> None:
-    extra = {"judge2": "kind: decision\ndescription: Judges\nworkspace: true"}
+    extra = {
+        "judge2": "name: judge2\nkind: decision\nmodel: judge\ndescription: Judges\nworkspace: true"
+    }
     with pytest.raises(ConfigurationError, match="workspace"):
-        Engine(make_tree(tmp_path, extra))
+        Engine(make_tree(tmp_path, extra), models={})
 
 
 async def test_end_to_end_write_run_edit_run(tmp_path: Path, work: Workspace) -> None:
@@ -102,7 +104,7 @@ async def test_end_to_end_write_run_edit_run(tmp_path: Path, work: Workspace) ->
         use(ToolCall(id="4", name="Shell", args={"command": f"{python} main.py"})),
         text_reply("done"),
     )
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     run = await engine.run("coder", "acme", "print two", workspace=work)
     assert isinstance(run, Generation) and run.reply == "done"
     assert [s.tool for s in run.steps] == ["Write", "Shell", "Edit", "Shell"]
@@ -125,7 +127,7 @@ async def test_the_workspace_timeout_stops_a_shell_and_the_run_goes_on(tmp_path:
         ),
         text_reply("gave up"),
     )
-    engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=None)
+    engine = Engine(make_tree(tmp_path), tool_timeout=None, models={"strong": llm})
     run = await engine.run(
         "coder", "acme", "x", workspace=Workspace(Local(root), scope="acme", timeout=0.5)
     )
@@ -160,7 +162,7 @@ async def test_the_engine_tool_timeout_leaves_workspace_tools_to_their_own(
         use(ToolCall(id="1", name="Shell", args={"command": "sleep 0.5; echo done"})),
         text_reply("ok"),
     )
-    engine = Engine(make_tree(tmp_path), generation=llm, tool_timeout=0.1)
+    engine = Engine(make_tree(tmp_path), tool_timeout=0.1, models={"strong": llm})
     run = await engine.run("coder", "acme", "x", workspace=work)
     assert isinstance(run, Generation) and not run.steps[0].is_error
     assert json.loads(str(run.steps[0].result))["stdout"] == "done\n"
@@ -175,7 +177,7 @@ async def test_delegation_passes_the_workspace_to_a_child_that_declares_it(
         text_reply("made"),
         text_reply("ok"),
     )
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     run = await engine.run("lead", "acme", "x", workspace=work)
     assert isinstance(run, Generation) and run.reply == "ok"
     assert (root / "made.txt").read_text() == "hi\n"
@@ -189,7 +191,7 @@ async def test_delegating_to_a_flagged_child_without_a_workspace_is_a_tool_error
         use(ToolCall(id="d", name="Delegate", args={"agent": "coder", "input": "make it"})),
         text_reply("could not"),
     )
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     run = await engine.run("lead", "acme", "x")
     assert isinstance(run, Generation)
     assert run.steps[0].is_error and "ConfigurationError" in run.steps[0].result
@@ -205,7 +207,7 @@ async def test_a_routed_target_receives_the_workspace(
     decision = Fixed(
         {"intent": ChoiceAnswer(choice="code", probabilities={"code": 0.9, "talk": 0.1})}
     )
-    engine = Engine(make_tree(tmp_path), generation=llm, decision=decision)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm, "judge": decision})
     run = await engine.run("desk", "acme", "build it", workspace=work)
     assert (
         isinstance(run, Decision) and run.routed_to is not None and run.routed_to.agent == "coder"
@@ -217,7 +219,7 @@ async def test_a_duplicate_shell_is_refused(tmp_path: Path, work: Workspace) -> 
     async def body(args: dict[str, Any]) -> str:
         return "mine"
 
-    engine = Engine(make_tree(tmp_path), generation=Scripted(text_reply("never")))
+    engine = Engine(make_tree(tmp_path), models={"strong": Scripted(text_reply("never"))})
     with pytest.raises(ConfigurationError, match="Shell"):
         await engine.run(
             "coder", "acme", "x", tools=Tools([Tool("Shell", body=body)]), workspace=work
@@ -225,7 +227,7 @@ async def test_a_duplicate_shell_is_refused(tmp_path: Path, work: Workspace) -> 
 
 
 async def test_engine_tools_carry_the_workspace(tmp_path: Path, work: Workspace) -> None:
-    engine = Engine(make_tree(tmp_path), generation=Scripted())
+    engine = Engine(make_tree(tmp_path), models={"strong": Scripted()})
     assert "Shell" in EngineTools(engine, agent="coder", scope="acme", workspace=work)
     assert "Shell" not in EngineTools(engine, agent="chat", scope="acme", workspace=work)
     with pytest.raises(ConfigurationError, match="workspace"):
@@ -244,7 +246,7 @@ async def test_an_agent_loads_the_chart_it_made_in_its_workspace(
         use(ToolCall(id="1", name="Load", args={"path": "chart.png", "where": "workspace"})),
         text_reply("the line goes up"),
     )
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     run = await engine.run("coder", "acme", "x", workspace=work)
     assert isinstance(run, Generation) and run.steps[0].result == [
         Image(media_type="image/png", data=png)
@@ -271,7 +273,7 @@ async def test_a_job_started_in_one_run_is_read_and_stopped_in_the_next(
         use(ToolCall(id="2", name="Job", args={"id": "j1", "stop": True})),
         text_reply("stopped it"),
     )
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     try:
         first = await engine.run("coder", "acme", "start it", workspace=work)
         assert isinstance(first, Generation)
@@ -299,7 +301,7 @@ async def test_approve_sees_a_background_command(tmp_path: Path, work: Workspace
         use(ToolCall(id="1", name="Shell", args={"command": "serve", "background": True})),
         text_reply("refused"),
     )
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     run = await engine.run("coder", "acme", "x", workspace=work, approve=approve)
     assert seen[0].args == {"command": "serve", "background": True}
     assert isinstance(run, Generation) and run.steps[0].approved is False
@@ -311,7 +313,7 @@ async def test_a_workspace_of_another_scope_is_refused_before_anything_runs(
     tmp_path: Path, work: Workspace
 ) -> None:
     llm = Scripted(text_reply("never"))
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     refused = "workspace belongs to scope 'acme', not 'globex'$"
     for agent in ("coder", "chat"):
         with pytest.raises(InputError, match=f"^engine: {refused}"):
@@ -332,7 +334,7 @@ async def test_an_agent_reads_a_file_it_wrote_in_its_workspace(
         use(ToolCall(id="2", name="Read", args=read)),
         text_reply("two"),
     )
-    engine = Engine(make_tree(tmp_path), generation=llm)
+    engine = Engine(make_tree(tmp_path), models={"strong": llm})
     run = await engine.run("coder", "acme", "x", workspace=work)
     assert isinstance(run, Generation) and run.steps[1].result == "two"
     [schema] = [t for t in llm.calls[0][2] if t.name == "Read"]

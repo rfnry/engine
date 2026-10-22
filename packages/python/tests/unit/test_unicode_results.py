@@ -20,7 +20,7 @@ async def test_a_dict_result_reaches_the_model_unescaped(fixtures: Path) -> None
         ),
         text_reply("ok"),
     )
-    run = await Engine(fixtures, generation=llm, tools=TOOLS).run(
+    run = await Engine(fixtures, tools=TOOLS, models={"strong": llm}).run(
         "billing", "acme", "x", tools=Tools([Tool("venue", body=venue)])
     )
     assert isinstance(run, Generation)

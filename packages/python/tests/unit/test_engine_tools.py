@@ -14,7 +14,7 @@ from .fakes import TOOLS, Scripted, text_reply
 
 
 async def test_engine_tools_is_the_agents_surface(fixtures: Path) -> None:
-    engine = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted()})
     tools = EngineTools(engine, agent="support", scope="acme")
     assert tools.names[:5] == ["Read", "Grep", "Glob", "LS", "Load"] and set(tools.names[5:]) >= {
         "lookup_order",
@@ -32,7 +32,7 @@ async def test_engine_tools_is_the_agents_surface(fixtures: Path) -> None:
 
 
 async def test_call_tools_ride_along_and_collisions_are_refused(fixtures: Path) -> None:
-    engine = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted()})
 
     async def ping(args: dict[str, Any]) -> str:
         return "pong"
@@ -48,19 +48,19 @@ async def test_call_tools_ride_along_and_collisions_are_refused(fixtures: Path) 
 
 def test_the_engine_refuses_undeclared_and_bodiless_tools(fixtures: Path) -> None:
     with pytest.raises(ConfigurationError, match="lookup_order"):
-        Engine(fixtures, generation=Scripted())
+        Engine(fixtures, models={"strong": Scripted()})
     with pytest.raises(ConfigurationError, match="weather"):
         Engine(
             fixtures,
-            generation=Scripted(),
             tools=[*TOOLS, Tool("weather", "Forecast", body=TOOLS[1].body)],
+            models={"strong": Scripted()},
         )
     with pytest.raises(ConfigurationError, match="lookup_order"):
-        Engine(fixtures, generation=Scripted(), tools=[Tool("lookup_order"), TOOLS[1]])
+        Engine(fixtures, tools=[Tool("lookup_order"), TOOLS[1]], models={"strong": Scripted()})
 
 
 def test_engine_tools_need_a_scope(fixtures: Path) -> None:
-    engine = Engine(fixtures, generation=Scripted(), tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted()})
     with pytest.raises(InputError, match="^engine_tools: scope is required$"):
         EngineTools(engine, agent="support", scope="")
 
@@ -68,10 +68,12 @@ def test_engine_tools_need_a_scope(fixtures: Path) -> None:
 async def test_an_agent_reads_another_agent_s_folder_in_full(tmp_path: Path) -> None:
     for name, front in [("coding", "reads: [writing]\n"), ("writing", "")]:
         (tmp_path / name).mkdir()
-        (tmp_path / name / "AGENT.md").write_text(f"---\nkind: generation\n{front}---\nHi\n")
+        (tmp_path / name / "AGENT.md").write_text(
+            f"---\nname: {name}\nkind: generation\nmodel: strong\n{front}---\nHi\n"
+        )
     (tmp_path / "writing" / "tasks").mkdir()
     (tmp_path / "writing" / "tasks" / "draft.md").write_text("Draft it.\n")
-    engine = Engine(tmp_path, generation=Scripted())
+    engine = Engine(tmp_path, models={"strong": Scripted()})
     assert engine.agents["coding"].reads == ["writing"] and engine.agents["writing"].reads == []
     tools = EngineTools(engine, agent="coding", scope="acme")
     assert "Hi" in await tools.dispatch("Read", {"path": "../writing/AGENT.md"})
@@ -93,7 +95,7 @@ async def test_an_adapter_editing_a_builtin_schema_changes_no_later_run(fixtures
             return await super().generate(system, messages, tools)
 
     model = Editing(text_reply("one"), text_reply("two"))
-    engine = Engine(fixtures, generation=model, tools=TOOLS)
+    engine = Engine(fixtures, tools=TOOLS, models={"strong": model})
     await engine.run("billing", "acme", "hi")
     await engine.run("billing", "acme", "hi")
     assert seen_types == ["string", "string"]
@@ -117,9 +119,13 @@ def test_a_schema_from_args_is_generated_once_and_shared_with_no_run(
 
     monkeypatch.setattr(Args, "model_json_schema", counted)
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "AGENT.md").write_text("---\nkind: generation\n---\nHi\n")
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: generation\nmodel: strong\n---\nHi\n"
+    )
     (tmp_path / "a" / "TOOLS.md").write_text("---\nlook: Look\n---\n")
-    engine = Engine(tmp_path, generation=Scripted(), tools=[Tool("look", body=look, args=Args)])
+    engine = Engine(
+        tmp_path, tools=[Tool("look", body=look, args=Args)], models={"strong": Scripted()}
+    )
 
     def schema(scope: str) -> dict[str, Any]:
         surface = EngineTools(engine, agent="a", scope=scope)

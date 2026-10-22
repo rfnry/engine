@@ -19,9 +19,9 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
     refinery = Refinery(storage)
     engine = Engine(
         FIXTURES,
-        generation=Scripted(text_reply("MARKER-A"), text_reply("plain-b")),
         refinery=refinery,
         tools=TOOLS,
+        models={"strong": Scripted(text_reply("MARKER-A"), text_reply("plain-b"))},
     )
     a = await engine.run("billing", "tenant-a", "hello")
     b = await engine.run("billing", "tenant-b", "hello")
@@ -45,7 +45,9 @@ async def test_nothing_of_a_is_reachable_from_b(storage: Storage) -> None:
 
 async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
     refinery = Refinery(storage)
-    engine = Engine(FIXTURES, generation=Scripted(text_reply("x")), refinery=refinery, tools=TOOLS)
+    engine = Engine(
+        FIXTURES, refinery=refinery, tools=TOOLS, models={"strong": Scripted(text_reply("x"))}
+    )
     run = await engine.run("billing", "tenant-a", "hello")
     await refinery.review("tenant-a", run.run_id, Review(stance="approval"))
     assert not await refinery.verify_absent("tenant-a")
@@ -76,15 +78,17 @@ async def test_nothing_of_one_customer_survives_its_erasure(storage: Storage) ->
     refinery = Refinery(storage)
     engine = Engine(
         FIXTURES,
-        generation=Scripted(
-            delegate_triage(text="MARKER-81"),
-            text_reply("MARKER-81 handled."),
-            delegate_triage(),
-            text_reply("plain-82"),
-        ),
-        decision=Desk(),
         refinery=refinery,
         tools=TOOLS,
+        models={
+            "strong": Scripted(
+                delegate_triage(text="MARKER-81"),
+                text_reply("MARKER-81 handled."),
+                delegate_triage(),
+                text_reply("plain-82"),
+            ),
+            "judge": Desk(),
+        },
     )
     gone = await engine.run("frontdesk", "desk", "MARKER-81 is down", tags={"customer": "c-81"})
     kept = await engine.run("frontdesk", "desk", "it is down", tags={"customer": "c-82"})
@@ -129,7 +133,7 @@ async def test_a_consult_given_the_customers_tags_is_erased_with_its_caller(
 ) -> None:
     refinery = Refinery(storage)
     tags = {"customer": "c-81"}
-    desk = Engine(FIXTURES, generation=consulting(), refinery=refinery, tools=TOOLS)
+    desk = Engine(FIXTURES, refinery=refinery, tools=TOOLS, models={"strong": consulting()})
     consult = desk.tool("billing", scope="acme", tags=tags)
     await desk.run("support", "acme", "Charged twice", tools=consult, tags=tags)
     assert len(await storage.runs("acme")) == 2
@@ -139,7 +143,7 @@ async def test_a_consult_given_the_customers_tags_is_erased_with_its_caller(
 
 async def test_erasing_a_run_by_id_leaves_the_consults_it_made(storage: Storage) -> None:
     refinery = Refinery(storage)
-    desk = Engine(FIXTURES, generation=consulting(), refinery=refinery, tools=TOOLS)
+    desk = Engine(FIXTURES, refinery=refinery, tools=TOOLS, models={"strong": consulting()})
     consult = desk.tool("billing", scope="acme")
     outer = await desk.run("support", "acme", "Charged twice", tools=consult)
     [made] = [r for r in await storage.runs("acme") if r.run_id != outer.run_id]
