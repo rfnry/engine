@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from rfnry_engine.engine import Engine
 from rfnry_engine.models import (
     Answer,
     Check,
@@ -284,3 +285,14 @@ def lead(root: Path) -> Path:
 def delegating(agent: str, text: str = "x", call_id: str = "d1", **extra: Any) -> Reply:
     call = ToolCall(id=call_id, name="Delegate", args={"agent": agent, "input": text, **extra})
     return Reply(tool_calls=[call], stop_reason="tool_use")
+
+
+async def ask(
+    engine: Engine,
+    agent: str,
+    scope: str,
+    input: State,
+    questions: Mapping[str, QuestionLike] | None = None,
+    **options: Any,
+) -> Run:
+    return await engine._start(agent, scope, input, questions=questions, **options)

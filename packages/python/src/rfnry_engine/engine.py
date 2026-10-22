@@ -70,7 +70,7 @@ from rfnry_engine.records import (
     ToolResultReady,
 )
 from rfnry_engine.stop import Stop, Stopped, requested, wait
-from rfnry_engine.tools.declared import check_declarations
+from rfnry_engine.tools.declared import check_declarations, described, prose
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
     AgentArgs,
@@ -455,7 +455,48 @@ class Engine:
         *,
         task: str | None = None,
         skill: str | None = None,
+        history: Sequence[object] | HistoryLike | None = None,
+        start: int = 0,
+        context: str | None = None,
+        expect: type[BaseModel] | None = None,
+        on_event: EventHandler | None = None,
+        tools: ToolsLike | None = None,
+        workspace: Workspace | None = None,
+        record: bool = True,
+        stop: Stop | None = None,
+        inbox: asyncio.Queue[Any] | None = None,
+        tags: Mapping[str, str] | None = None,
+        approve: Approve | None = None,
+    ) -> Run:
+        return await self._start(
+            agent,
+            scope,
+            input,
+            task=task,
+            skill=skill,
+            history=history,
+            start=start,
+            context=context,
+            expect=expect,
+            on_event=on_event,
+            tools=tools,
+            workspace=workspace,
+            record=record,
+            stop=stop,
+            inbox=inbox,
+            tags=tags,
+            approve=approve,
+        )
+
+    async def _start(
+        self,
+        agent: str,
+        scope: str,
+        input: State,
+        *,
         questions: Mapping[str, QuestionLike] | None = None,
+        task: str | None = None,
+        skill: str | None = None,
         history: Sequence[object] | HistoryLike | None = None,
         start: int = 0,
         context: str | None = None,
@@ -477,6 +518,13 @@ class Engine:
             )
         spec = self._spec(agent)
         asked = _asked(spec, questions)
+        if expect is not None:
+            at = prose(json.loads(described(expect)))
+            if at is not None:
+                raise InputError(
+                    f"engine: expect= model {expect.__name__} carries a description at {at}; "
+                    "say what the output means in AGENT.md or a task"
+                )
         invoked = _skilled(spec, skill)
         tagged = _tags(tags)
         held = history if history is None or isinstance(history, HistoryLike) else list(history)
@@ -525,7 +573,6 @@ class Engine:
         *,
         scope: str,
         name: str | None = None,
-        description: str | None = None,
         context: str | None = None,
         tools: ToolsLike | None = None,
         workspace: Workspace | None = None,
@@ -541,11 +588,16 @@ class Engine:
                 f"engine: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
             )
         spec = self._spec(agent)
+        if not spec.description.strip():
+            raise ConfigurationError(
+                f"engine: agent {agent!r} has no description: in its AGENT.md; "
+                "add one to use it as a tool"
+            )
         tagged = _tags(tags)
 
         async def body(args: dict[str, Any]) -> Result:
             watching, held = hooks(on_event, stop)
-            run = await self.run(
+            run = await self._start(
                 agent,
                 scope,
                 args["input"],
@@ -561,7 +613,6 @@ class Engine:
             )
             return run_result(returned(run))
 
-        described = spec.description if description is None else description
         schema = {
             "type": "object",
             "properties": {
@@ -571,7 +622,15 @@ class Engine:
             "required": ["input"],
         }
         return Tools(
-            [Tool(name or spec.name, described, body=body, args=AgentArgs, input_schema=schema)]
+            [
+                Tool(
+                    name or spec.name,
+                    spec.description,
+                    body=body,
+                    args=AgentArgs,
+                    input_schema=schema,
+                )
+            ]
         )
 
     async def _run(
@@ -617,7 +676,7 @@ class Engine:
             )
         questions = {**folder, **options.questions}
         if not questions:
-            hint = "name a task or pass questions=" if spec.tasks else "pass questions="
+            hint = "give it questions/ or tasks/<name>/, or ask it through Delegate"
             raise InputError(
                 f"engine: decision agent {spec.name!r} has no questions to ask; {hint}"
             )

@@ -60,8 +60,8 @@ async def test_a_generation_agent_as_a_tool_replies_and_records(fixtures: Path) 
 
 async def test_a_decision_agent_as_a_tool_returns_its_answers(fixtures: Path) -> None:
     engine = Engine(fixtures, models={"judge": Fixed(TRIAGE)})
-    judge = engine.tool("triage", scope="acme", name="judge", description="Judge urgency.")
-    assert judge.names == ["judge"] and judge.definitions()[0]["description"] == "Judge urgency."
+    judge = engine.tool("triage", scope="acme", name="judge")
+    assert judge.names == ["judge"]
     result = await judge.dispatch("judge", {"input": "It is down"})
     assert isinstance(result, dict) and list(result) == ["answers"]
     answers = result["answers"]
@@ -117,7 +117,7 @@ async def test_the_depth_guard_holds_across_the_tool(fixtures: Path) -> None:
 async def test_a_call_through_the_tool_resets_the_route_chain(tmp_path: Path) -> None:
     (tmp_path / "r" / "questions").mkdir(parents=True)
     (tmp_path / "r" / "AGENT.md").write_text(
-        "---\nname: r\nkind: decision\nmodel: judge\nroute: {by: go, to: {next: g}}\n---\n"
+        "---\nname: r\nkind: decision\nmodel: judge\ndescription: Passes it on\nroute: {by: go, to: {next: g}}\n---\n"
     )
     (tmp_path / "r" / "questions" / "go.md").write_text(
         "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
@@ -165,7 +165,7 @@ async def test_a_decision_agent_as_a_tool_takes_a_task_and_questions_of_the_call
         await blank.dispatch("blank", {"input": "x", "questions": {"area": {"type": "score"}}})
     with pytest.raises(
         InputError,
-        match="^engine: decision agent 'blank' has no questions to ask; pass questions=$",
+        match="^engine: decision agent 'blank' has no questions to ask; give it questions/ or tasks/<name>/, or ask it through Delegate$",
     ):
         await blank.dispatch("blank", {"input": "x"})
 

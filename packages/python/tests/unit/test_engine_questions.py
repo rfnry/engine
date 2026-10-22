@@ -11,7 +11,7 @@ from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 
-from .fakes import TOOLS, Answering, Scripted, delegate_triage, text_reply
+from .fakes import TOOLS, Answering, Scripted, ask, delegate_triage, text_reply
 
 AREA = Choice(
     instructions={"question": "Which area does `message` belong to?", "within": "orders"},
@@ -57,8 +57,8 @@ def grader(root: Path) -> Path:
 
 async def test_runtime_questions_are_asked_with_the_folder_s_in_one_call(fixtures: Path) -> None:
     dm = Answering()
-    run = await Engine(fixtures, models={"judge": dm}).run(
-        "triage", "acme", "It is down", questions=RUNTIME
+    run = await ask(
+        Engine(fixtures, models={"judge": dm}), "triage", "acme", "It is down", questions=RUNTIME
     )
     [(state, asked)] = dm.calls
     assert state == "It is down" and isinstance(run, Decision)
@@ -88,8 +88,12 @@ async def test_a_runtime_id_that_is_already_in_the_folder_is_refused(fixtures: P
     dm = Answering()
     message = "^engine: decision agent 'triage' already asks 'urgent', 'severity' from its folder$"
     with pytest.raises(InputError, match=message):
-        await Engine(fixtures, models={"judge": dm}).run(
-            "triage", "acme", "x", questions={"urgent": ANGRY, "area": AREA, "severity": HOW_BAD}
+        await ask(
+            Engine(fixtures, models={"judge": dm}),
+            "triage",
+            "acme",
+            "x",
+            questions={"urgent": ANGRY, "area": AREA, "severity": HOW_BAD},
         )
     assert dm.calls == []
 
@@ -100,16 +104,16 @@ async def test_a_decision_agent_with_no_questions_of_its_own_runs_on_runtime_one
     root = grader(tmp_path)
     dm = Answering()
     engine = Engine(root, models={"judge": dm})
-    run = await engine.run("blank", "acme", {"message": "Where is it?"}, questions={"area": AREA})
+    run = await ask(engine, "blank", "acme", {"message": "Where is it?"}, questions={"area": AREA})
     assert isinstance(run, Decision) and run.questions == {"area": AREA}
     assert run.runtime == ["area"] and run.answers["area"].type == "choice"
     nothing: list[dict[str, Question] | None] = [None, {}]
     for given in nothing:
         with pytest.raises(
             InputError,
-            match="^engine: decision agent 'blank' has no questions to ask; pass questions=$",
+            match="^engine: decision agent 'blank' has no questions to ask; give it questions/ or tasks/<name>/, or ask it through Delegate$",
         ):
-            await engine.run("blank", "acme", "x", questions=given)
+            await ask(engine, "blank", "acme", "x", questions=given)
     assert len(dm.calls) == 1
 
 
@@ -120,7 +124,7 @@ async def test_a_generation_agent_takes_no_questions(fixtures: Path) -> None:
         with pytest.raises(
             InputError, match="^engine: generation agent 'support' takes no questions$"
         ):
-            await engine.run("support", "acme", "x", questions=given)
+            await ask(engine, "support", "acme", "x", questions=given)
     assert llm.calls == []
 
 
@@ -149,7 +153,7 @@ async def test_a_runtime_question_that_does_not_fit_is_refused_before_the_model_
 ) -> None:
     dm = Answering()
     with pytest.raises(InputError, match=message):
-        await Engine(fixtures, models={"judge": dm}).run("triage", "acme", "x", questions=given)
+        await ask(Engine(fixtures, models={"judge": dm}), "triage", "acme", "x", questions=given)
     assert dm.calls == []
 
 
@@ -162,8 +166,12 @@ class ForeignChoice(BaseModel):
 async def test_a_runtime_question_is_read_by_its_shape(fixtures: Path) -> None:
     foreign = ForeignChoice(instructions={"question": "Which?"}, options={"a": None, "b": ["B"]})
     plain: Any = {"type": "check", "instructions": "Is it?"}
-    run = await Engine(fixtures, models={"judge": Answering()}).run(
-        "triage", "acme", "x", questions={"pick": foreign, "sure": plain}
+    run = await ask(
+        Engine(fixtures, models={"judge": Answering()}),
+        "triage",
+        "acme",
+        "x",
+        questions={"pick": foreign, "sure": plain},
     )
     assert isinstance(run, Decision)
     assert run.questions["pick"] == Choice(
@@ -182,8 +190,8 @@ async def test_a_route_is_by_a_folder_question_and_runtime_ones_stay_with_the_ro
         InputError,
         match="^engine: decision agent 'frontdesk' already asks 'intent' from its folder$",
     ):
-        await engine.run("frontdesk", "acme", "x", questions={"intent": AREA})
-    run = await engine.run("frontdesk", "acme", "The app crashes", questions={"angry": ANGRY})
+        await ask(engine, "frontdesk", "acme", "x", questions={"intent": AREA})
+    run = await ask(engine, "frontdesk", "acme", "The app crashes", questions={"angry": ANGRY})
     assert isinstance(run, Decision) and run.runtime == ["angry"]
     intent = run.answers["intent"]
     assert isinstance(intent, ChoiceAnswer) and intent.choice == "other" and run.routed_to is None
@@ -199,8 +207,8 @@ async def test_a_routed_decision_run_asks_its_own_folder_only(tmp_path: Path) ->
     write(tmp_path / "triage/AGENT.md", "---\nname: triage\nkind: decision\nmodel: judge\n---\n")
     write(tmp_path / "triage/questions/urgent.md", "---\ntype: check\n---\nUrgent?\n")
     dm = Answering()
-    run = await Engine(tmp_path, models={"judge": dm}).run(
-        "desk", "acme", "x", questions={"angry": ANGRY}
+    run = await ask(
+        Engine(tmp_path, models={"judge": dm}), "desk", "acme", "x", questions={"angry": ANGRY}
     )
     assert isinstance(run, Decision) and isinstance(run.routed_to, Decision)
     assert run.routed_to.questions == {"urgent": Check(instructions="Urgent?")}
@@ -234,7 +242,7 @@ async def test_a_task_adds_its_questions_to_those_of_questions(tmp_path: Path) -
     )
     plain = await engine.run("grader", "acme", "x")
     assert isinstance(plain, Decision) and set(plain.questions) == {"urgent"} and plain.task is None
-    facts = await engine.run("grader", "acme", "x", task="facts", questions={"angry": ANGRY})
+    facts = await ask(engine, "grader", "acme", "x", task="facts", questions={"angry": ANGRY})
     assert isinstance(facts, Decision) and list(facts.questions) == ["urgent", "grounded", "angry"]
     assert facts.runtime == ["angry"] and facts.questions["angry"] == ANGRY
     assert [set(q) for _, q in dm.calls] == [
@@ -258,8 +266,13 @@ async def test_a_runtime_id_may_not_repeat_one_the_run_asks_from_questions_or_it
     dm = Answering()
     message = f"^engine: decision agent 'grader' already asks {clash} from its folder$"
     with pytest.raises(InputError, match=message):
-        await Engine(grader(tmp_path), models={"judge": dm}).run(
-            "grader", "acme", "x", task=task, questions=given
+        await ask(
+            Engine(grader(tmp_path), models={"judge": dm}),
+            "grader",
+            "acme",
+            "x",
+            task=task,
+            questions=given,
         )
     assert dm.calls == []
 
@@ -267,8 +280,13 @@ async def test_a_runtime_id_may_not_repeat_one_the_run_asks_from_questions_or_it
 async def test_a_runtime_id_may_repeat_one_of_a_task_the_run_does_not_name(
     tmp_path: Path,
 ) -> None:
-    run = await Engine(grader(tmp_path), models={"judge": Answering()}).run(
-        "grader", "acme", "x", task="facts", questions={"polite": ANGRY}
+    run = await ask(
+        Engine(grader(tmp_path), models={"judge": Answering()}),
+        "grader",
+        "acme",
+        "x",
+        task="facts",
+        questions={"polite": ANGRY},
     )
     assert isinstance(run, Decision) and run.questions["polite"] == ANGRY
 
@@ -282,11 +300,11 @@ async def test_an_agent_whose_questions_all_live_in_tasks_asks_them_by_task(
     engine = Engine(tmp_path, models={"judge": dm})
     run = await engine.run("tasked", "acme", "x", task="tone")
     assert isinstance(run, Decision) and list(run.questions) == ["polite"]
-    alone = await engine.run("tasked", "acme", "x", questions={"angry": ANGRY})
+    alone = await ask(engine, "tasked", "acme", "x", questions={"angry": ANGRY})
     assert isinstance(alone, Decision) and list(alone.questions) == ["angry"]
     with pytest.raises(
         InputError,
-        match="^engine: decision agent 'tasked' has no questions to ask; name a task or pass questions=$",
+        match="^engine: decision agent 'tasked' has no questions to ask; give it questions/ or tasks/<name>/, or ask it through Delegate$",
     ):
         await engine.run("tasked", "acme", "x")
     assert len(dm.calls) == 2
@@ -322,8 +340,8 @@ async def test_an_unknown_task_is_not_found_as_an_unknown_agent_is(tmp_path: Pat
     with pytest.raises(
         NotFoundError, match="^engine: agent 'blank' has no task 'tone'; it has no tasks$"
     ):
-        await Engine(root, models={"judge": dm}).run(
-            "blank", "acme", "x", task="tone", questions=RUNTIME
+        await ask(
+            Engine(root, models={"judge": dm}), "blank", "acme", "x", task="tone", questions=RUNTIME
         )
     assert dm.calls == []
 
@@ -352,7 +370,7 @@ async def test_runtime_questions_and_a_task_are_recorded_and_read_back(
     root = grader(tmp_path)
     refinery = Refinery(storage)
     engine = Engine(root, refinery=refinery, models={"judge": Answering()})
-    run = await engine.run("grader", "acme", "x", task="tone", questions=RUNTIME)
+    run = await ask(engine, "grader", "acme", "x", task="tone", questions=RUNTIME)
     read = await refinery.run("acme", run.run_id)
     assert read == run and isinstance(read, Decision)
     assert read.task == "tone" and read.runtime == ["area", "how_bad", "angry"]
@@ -383,7 +401,7 @@ async def test_a_route_entry_runs_its_decision_target_with_the_task_it_names(
 ) -> None:
     dm = Answering()
     engine = Engine(desk(tmp_path, "{b: {agent: tasked, task: tone}}"), models={"judge": dm})
-    run = await engine.run("desk", "acme", "x", task="audit", questions={"sure": ANGRY})
+    run = await ask(engine, "desk", "acme", "x", task="audit", questions={"sure": ANGRY})
     assert isinstance(run, Decision) and run.task == "audit" and run.runtime == ["sure"]
     routed = run.routed_to
     assert isinstance(routed, Decision) and routed.agent == "tasked" and routed.task == "tone"

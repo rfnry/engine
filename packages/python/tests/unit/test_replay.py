@@ -47,6 +47,7 @@ from .fakes import (
     Desk,
     Fixed,
     Scripted,
+    ask,
     delegate_triage,
     delegating,
     generation_record,
@@ -889,8 +890,8 @@ async def test_a_decision_replay_re_asks_runtime_questions_as_recorded_and_the_f
 ) -> None:
     refinery = Refinery(storage)
     recorder = Engine(graded(tmp_path / "old"), refinery=refinery, models={"judge": Answering()})
-    asked = await recorder.run("grader", "acme", "x", questions={"area": AREA})
-    tasked = await recorder.run("grader", "acme", "y", task="tone", questions={"area": AREA})
+    asked = await ask(recorder, "grader", "acme", "x", questions={"area": AREA})
+    tasked = await ask(recorder, "grader", "acme", "y", task="tone", questions={"area": AREA})
     plain = await recorder.run("grader", "acme", "z")
     dm = Answering()
     candidate_ = Engine(graded(tmp_path / "new", "Must it be done today?"), models={"judge": dm})
@@ -950,7 +951,7 @@ async def test_a_runtime_question_the_candidate_s_folder_now_holds_fails_its_pai
 ) -> None:
     refinery = Refinery(storage)
     recorder = Engine(graded(tmp_path / "old"), refinery=refinery, models={"judge": Answering()})
-    await recorder.run("grader", "acme", "x", questions={"area": AREA})
+    await ask(recorder, "grader", "acme", "x", questions={"area": AREA})
     root = graded(tmp_path / "new")
     (root / "grader/questions/area.md").write_text("---\ntype: check\n---\nOrders?\n")
     [pair] = await collect(
@@ -968,8 +969,8 @@ async def test_a_fingerprint_selects_decision_runs_by_all_three_parts(
     refinery = Refinery(storage)
     recorder = Engine(graded(tmp_path), refinery=refinery, models={"judge": Answering()})
     folder = await recorder.run("grader", "acme", "x")
-    runtime = await recorder.run("grader", "acme", "x", questions={"area": AREA})
-    again = await recorder.run("grader", "acme", "y", questions={"area": AREA})
+    runtime = await ask(recorder, "grader", "acme", "x", questions={"area": AREA})
+    again = await ask(recorder, "grader", "acme", "y", questions={"area": AREA})
     tasked = await recorder.run("grader", "acme", "x", task="tone")
     prints = [run.fingerprint for run in (folder, runtime, tasked)]
     assert len({p.agent for p in prints}) == 1

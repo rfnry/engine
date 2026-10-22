@@ -16,6 +16,7 @@ from unit.fakes import (
     Desk,
     MemoryBucket,
     Scripted,
+    ask,
     decision_record,
     delegate_triage,
     delegating,
@@ -721,7 +722,7 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
 ) -> None:
     refinery = Refinery(storage)
     engine = Engine(grader(tmp_path / "old"), refinery=refinery, models={"judge": Answering()})
-    asked = await engine.run("grader", "a", "x", task="tone", questions={"area": AREA})
+    asked = await ask(engine, "grader", "a", "x", task="tone", questions={"area": AREA})
     plain = await engine.run("grader", "a", "y")
     assert isinstance(asked, Decision)
     again = await refinery.run("a", asked.run_id)

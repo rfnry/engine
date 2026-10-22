@@ -496,7 +496,10 @@ run = await engine.run("support", scope="acme", input=message, tags={"commit": "
 run.tags                                             # {"commit": "4f2c9e1", "arm": "b"}
 ```
 
-Ask for a typed reply and the model is offered an `Output` tool shaped like it. When the model
+Ask for a typed reply and the model is offered an `Output` tool shaped like it. The model carries no
+descriptions, in a field or as a docstring: a description is prose from code, and is refused with
+`engine: expect= model Verdict carries a description at properties.reason.description; say what the
+output means in AGENT.md or a task`. What the output means is said in `AGENT.md` or a task. When the model
 calls it with input that fits, the run ends and `run.reply` is that input as JSON; input that does
 not fit goes back to the model with what is wrong. A model that answers in text instead ends the
 run with that text as `run.reply`, which does not parse:
@@ -514,8 +517,8 @@ An accepted `Output` ends the run. A call the model made after it in the same tu
 answered with an error saying so, so every call in `run.conversation` has its result.
 
 Name a task to put `tasks/<task>.md` in front of the model — a decision agent's task adds a set of
-questions, [below](#decision-agents) — pass `context=` to add facts about this
-tenant that do not belong in the tree — the record keeps it as `run.context` — and pass `on_event=`
+questions, [below](#decision-agents) — pass `context=` to add data about this
+run that does not belong in the tree — the contract under review, today's date, never instructions — the record keeps it as `run.context` — and pass `on_event=`
 to see the run as it happens: where it starts, its reasoning and its text, the messages it takes from
 the inbox, its tool calls and their results:
 
@@ -882,26 +885,36 @@ changes neither the others' answers nor, noticeably, the latency. An engine with
 model needs no tool bodies; the tree's generation agents are the ones it cannot run.
 
 Some answer spaces are known only when the run starts: the children of the node a walk chose last,
-the candidates a search returned, the skills an agent has today. Pass those questions as
-`questions=`, ids to `Choice`, `Score` or `Check` — or anything with their fields — and they are
-asked with the folder's, in the same call. The record keeps every question asked, and
-`run.runtime` names the ids that came at run time:
+the candidates a search returned, the skills an agent has today. Those questions come from a model,
+never from your code: a generation agent composes them in a `Delegate` call ([Nesting](#nesting)),
+and a runtime of yours composes them in a call to `engine.tool`. They are ids to `Choice`, `Score`
+or `Check` — or anything with their fields — written as JSON, and they are asked with the folder's,
+in the same call. A question known in advance lives in `questions/` or a task. The record keeps
+every question asked, and `run.runtime` names the ids that came at run time:
 
 ```python
-products = Choice(
-    instructions="Which product is the message about?",
-    options={"desk-120": {"what": "Standing desk, 120 cm"}, "desk-160": {"what": "Standing desk, 160 cm"}},
-)
-run = await engine.run("triage", scope="acme", input=text, questions={"product": products})
-run.answers["product"].choice, run.answers["urgent"].probability
-run.runtime                           # ["product"]
+asking = engine.tool("triage", scope="acme")
+sent = {
+    "input": text,
+    "questions": {
+        "product": {
+            "type": "choice",
+            "instructions": "Which product is the message about?",
+            "options": {
+                "desk-120": {"what": "Standing desk, 120 cm"},
+                "desk-160": {"what": "Standing desk, 160 cm"},
+            },
+        }
+    },
+}
+result = await asking.dispatch("triage", sent)
+result["answers"]["product"]["choice"], result["answers"]["urgent"]["probability"]
 ```
 
 A runtime question holds what a question file holds — a choice needs two options, a score two
-levels, and structure is JSON — and one that does not, an id the run already asks, or
-`questions=` given to a generation agent is an `InputError`. A decision agent may have no
-`questions/` at all and ask only what each run brings; a run with nothing to ask is an
-`InputError`.
+levels, and structure is JSON — and one that does not, an id the run already asks, or questions
+sent to a generation agent is an `InputError`. A decision agent may have no `questions/` at all and
+ask only what each run brings; a run with nothing to ask is an `InputError`.
 
 A decision agent's task adds questions, as a generation agent's task adds instructions:
 `tasks/<task>/` holds question files as `questions/` does, and `task=` asks them beside
@@ -1303,14 +1316,13 @@ and one loop.
 | `timeout` | `120` seconds | the limit on each `Shell`, `Job`, `Write` and `Edit` call; a `Shell` command still running is stopped — on `Local`, sent SIGTERM, then killed a second later with everything it started — and `Shell` returns what it printed with `timed_out: true` |
 | `output_bytes` | `30_000` | the cap on `stdout` and on `stderr`, each keeping its first and last half |
 
-`Local(root, shell=, env=, description=)`:
+`Local(root, shell=, env=)`:
 
 | argument | default | what it does |
 | --- | --- | --- |
 | `root` | | the directory commands start in and files live in |
 | `shell` | `["bash", "-c"]` | the words each command is given to, last: a sandbox goes in front of the shell, and the first word must be on `PATH` |
 | `env` | `PATH`, `HOME` (the directory), `LANG` | the only environment commands see, so the service's own keys never reach them |
-| `description` | none | added to `Shell`'s description, to tell the model what machine it has: `"bash on Debian 13, Python 3.14, no network"` |
 
 The workspace's `timeout` replaces `Engine(tool_timeout=)` for `Shell`, `Job`, `Write` and `Edit`,
 so a ten-minute build and a thirty-second API call live in the same engine. A `shell` whose first
@@ -1379,7 +1391,8 @@ logged as an error instead, `workspace: could not stop the command: …`, and th
 job's end puts its error in the job's output. `read` refuses a file larger than `limit`; `write`
 creates parent directories. A path is the model's, relative to the workspace, and what it can reach
 is the backend's to decide; an error a backend raises reaches the model as the tool's error. A
-backend may have a `description`, which ends `Shell`'s description, as `Local` takes one.
+backend's `description`, if it has one, is ignored: the machine the model has is told in the
+agent's markdown, not by the workspace.
 
 The library has no notion of a secret. A key a user types is the run's input; a key you put in
 `Local(env=)` is the commands' environment, which a command can print. Either way the record keeps
@@ -1806,13 +1819,13 @@ what a `Delegate` inside a run would give it. A refusal raises here, where insid
 reads it.
 
 An agent is itself a tool. `engine.tool(agent, scope=...)` gives any runtime — a live voice model,
-a loop of your own — one tool that runs the agent: named for the agent and described by its
-`AGENT.md` unless you say otherwise, taking `{"input": str}` — and, as `Delegate` does, a `task`
+a loop of your own — one tool that runs the agent: named for the agent and described by the
+`description:` of its `AGENT.md`, which it needs, taking `{"input": str}` — and, as `Delegate` does, a `task`
 when the agent has tasks and `questions` when it is a decision agent — returning a generation
 agent's reply or a decision agent's answers as a dict:
 
 ```python
-consult = engine.tool("billing", scope="acme", name="consult", description="Ask the billing desk.",
+consult = engine.tool("billing", scope="acme", name="consult",
                       context="Acme is on the enterprise plan.")
 reply = await consult.dispatch("consult", {"input": "Was I charged twice?"})
 triaged = await engine.tool("triage", scope="acme").dispatch("triage", {"input": "It is down"})
@@ -2017,8 +2030,7 @@ agent with a file straight in `tasks/` or a task that repeats an id of its `ques
 entry that names a task its agent does not have or gives a decision agent nothing to ask, a tool
 declared without a body or given without a declaration, a run of an agent whose kind of model is
 absent, a missing workspace, a `Local` root that is not a directory, a `shell` that is not a list of
-strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and `write` or whose
-`description` is not a string, a `Workspace` without a scope, a `max_steps`, `max_depth`,
+strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and `write`, a `Workspace` without a scope, a `max_steps`, `max_depth`,
 `tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is not positive,
 an `approve` that returns anything but `True` or `False`, a judge that is not a decision agent or a
 teacher that is not a generation agent. `NotFoundError` for an agent the tree does not have — a
@@ -2027,7 +2039,7 @@ judge, a teacher or a replay's agent in the candidate included — a task the ag
 does not. `InputError` for a call the library refuses: an empty scope, a workspace of another scope,
 a history that breaks a tool call from its result, a `start` outside the history or without one,
 tags outside their limits, runtime questions that do not fit, a runtime id the run already asks,
-`questions=` for a generation agent, a decision run with no question to ask, media the decision
+questions for a generation agent, an `expect=` model that carries a description, a decision run with no question to ask, media the decision
 model does not declare, a media part with both or neither of `data` and `url`, a correction of the
 wrong shape or for a question the run was not asked, a `delete_runs` or `verify_absent` given both
 `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an `export` or a `replay` given

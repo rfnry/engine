@@ -336,14 +336,6 @@ def test_shell_tells_the_model_its_terms() -> None:
     assert "send a long output to a file" in description
 
 
-def test_a_backends_description_ends_the_shells() -> None:
-    class Described(Machine):
-        description = "bash in Debian 13, no network"
-
-    description = tool(Workspace(Described(), scope="acme"), "Shell").description
-    assert description.endswith("\n\nbash in Debian 13, no network")
-
-
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
@@ -357,18 +349,11 @@ def test_a_workspace_that_cannot_work_is_refused(kwargs: dict[str, Any], message
         Workspace(Machine(), **{"scope": "acme", **kwargs})
 
 
-def test_a_backend_needs_its_three_methods_and_a_string_description() -> None:
-    class Numbered(Machine):
-        description = 3
-
+def test_a_backend_needs_its_three_methods() -> None:
     with pytest.raises(
         ConfigurationError, match="^workspace: backend must have spawn, read and write$"
     ):
         Workspace(object(), scope="acme")  # type: ignore[arg-type]
-    with pytest.raises(
-        ConfigurationError, match="^workspace: a backend's description must be a string$"
-    ):
-        Workspace(Numbered(), scope="acme")
 
 
 async def background(ws: Workspace, command: str) -> Any:

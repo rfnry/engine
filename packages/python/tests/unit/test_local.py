@@ -425,12 +425,6 @@ def test_a_shell_that_is_not_a_list_of_words_is_refused(tmp_path: Path, shell: A
         Local(tmp_path, shell=shell)
 
 
-def test_a_description_must_be_a_string(tmp_path: Path) -> None:
-    assert Local(tmp_path, description="bash on a laptop").description == "bash on a laptop"
-    with pytest.raises(ConfigurationError, match="^workspace: description must be a string$"):
-        Local(tmp_path, description=3)  # type: ignore[arg-type]
-
-
 CHILD_TRAP = "(trap 'sleep 0.3; echo cleaned > cleaned.txt; exit 0' TERM; sleep 30 & wait) & "
 
 

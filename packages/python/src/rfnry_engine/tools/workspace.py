@@ -172,7 +172,6 @@ class Local:
         *,
         shell: Sequence[str] = ("bash", "-c"),
         env: dict[str, str] | None = None,
-        description: str | None = None,
     ) -> None:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
@@ -191,9 +190,6 @@ class Local:
             raise ConfigurationError(
                 f"workspace: {self.shell[0]} was not found; pass shell=, such as ['sh', '-c']"
             )
-        if description is not None and not isinstance(description, str):
-            raise ConfigurationError("workspace: description must be a string")
-        self.description = description
         self._jail = Jail(self.root)
 
     async def spawn(self, command: str) -> Process:
@@ -451,9 +447,6 @@ class Workspace:
     ) -> None:
         if not isinstance(backend, Backend):
             raise ConfigurationError("workspace: backend must have spawn, read and write")
-        description = getattr(backend, "description", None)
-        if description is not None and not isinstance(description, str):
-            raise ConfigurationError("workspace: a backend's description must be a string")
         if not scope:
             raise ConfigurationError("workspace: scope is required")
         if timeout <= 0:
@@ -464,7 +457,6 @@ class Workspace:
         self.scope = scope
         self.timeout = timeout
         self.output_bytes = output_bytes
-        self._description = description
         self._jobs: dict[str, _Job] = {}
         self._count = 0
 
@@ -488,8 +480,6 @@ class Workspace:
             f"their first and last {half} bytes, so send a long output to a file and read it from "
             "there."
         )
-        if self._description:
-            shell = f"{shell}\n\n{self._description}"
         return [
             Tool("Shell", shell, body=self._shell, args=ShellArgs),
             Tool(

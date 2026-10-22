@@ -21,6 +21,7 @@ from .fakes import (
     Desk,
     MemoryBucket,
     Scripted,
+    ask,
     by_hand,
     decision_record,
     delegate_triage,
@@ -264,7 +265,7 @@ def triage(fixtures: Path, root: Path | None = None) -> Engine:
 
 async def test_a_decision_run_s_questions_part_is_the_questions_it_asked(fixtures: Path) -> None:
     folder = await triage(fixtures).run("triage", "acme", "It is down")
-    both = await triage(fixtures).run("triage", "acme", "It is down", questions={"area": AREA})
+    both = await ask(triage(fixtures), "triage", "acme", "It is down", questions={"area": AREA})
     assert isinstance(folder, Decision) and isinstance(both, Decision)
     assert folder.fingerprint.questions == asked(folder.questions)
     assert both.fingerprint.questions == asked(both.questions)
@@ -280,10 +281,14 @@ async def test_the_questions_part_is_stable_across_runs_loads_and_the_order_ques
     root = tree(fixtures, tmp_path)
     other = Check(instructions="Is the customer angry?")
     loaded = triage(fixtures)
-    first = await loaded.run("triage", "acme", "a", questions={"area": AREA, "angry": other})
-    again = await loaded.run("triage", "acme", "b", questions={"angry": other, "area": AREA})
-    elsewhere = await triage(fixtures, root).run(
-        "triage", "acme", "c", questions={"area": AREA.model_copy(), "angry": other}
+    first = await ask(loaded, "triage", "acme", "a", questions={"area": AREA, "angry": other})
+    again = await ask(loaded, "triage", "acme", "b", questions={"angry": other, "area": AREA})
+    elsewhere = await ask(
+        triage(fixtures, root),
+        "triage",
+        "acme",
+        "c",
+        questions={"area": AREA.model_copy(), "angry": other},
     )
     assert first.fingerprint.questions is not None
     assert first.fingerprint == again.fingerprint == elsewhere.fingerprint
@@ -299,7 +304,7 @@ async def test_the_questions_part_changes_with_a_question_its_options_or_their_o
 ) -> None:
     root = tree(fixtures, tmp_path)
     engine_ = triage(fixtures, root)
-    base = _print(await engine_.run("triage", "acme", "x", questions={"area": AREA}))
+    base = _print(await ask(engine_, "triage", "acme", "x", questions={"area": AREA}))
     variants = [
         AREA.model_copy(update={"options": dict(reversed(list(AREA.options.items())))}),
         AREA.model_copy(update={"options": {**AREA.options, "returns": "Sending it back"}}),
@@ -307,20 +312,20 @@ async def test_the_questions_part_changes_with_a_question_its_options_or_their_o
         AREA.model_copy(update={"instructions": "Which area?"}),
     ]
     prints = [
-        _print(await engine_.run("triage", "acme", "x", questions={"area": variant}))
+        _print(await ask(engine_, "triage", "acme", "x", questions={"area": variant}))
         for variant in variants
     ]
-    renamed = _print(await engine_.run("triage", "acme", "x", questions={"zone": AREA}))
+    renamed = _print(await ask(engine_, "triage", "acme", "x", questions={"zone": AREA}))
     assert len({base, *prints, renamed}) == 6
     (root / "triage/questions/urgent.md").write_text("---\ntype: check\n---\nIs it urgent?\n")
     edited = triage(fixtures, root)
-    assert _print(await edited.run("triage", "acme", "x", questions={"area": AREA})) != base
+    assert _print(await ask(edited, "triage", "acme", "x", questions={"area": AREA})) != base
     levels = Score(instructions="How bad?", levels=["Mild", "Severe"])
     reordered = Score(instructions="How bad?", levels=["Severe", "Mild"])
     assert _print(
-        await engine_.run("triage", "acme", "x", questions={"area": AREA, "bad": levels})
+        await ask(engine_, "triage", "acme", "x", questions={"area": AREA, "bad": levels})
     ) != _print(
-        await engine_.run("triage", "acme", "x", questions={"area": AREA, "bad": reordered})
+        await ask(engine_, "triage", "acme", "x", questions={"area": AREA, "bad": reordered})
     )
 
 
