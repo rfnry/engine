@@ -364,7 +364,7 @@ out, so a conversation passed back does not send the folder twice and a replay p
 candidate's folder. The tools stay as they are — `Read` and `Load` hand over what the model already
 holds. Each agent preloads its own folder, a delegated or routed one included. A decision agent
 reads no files, so `preload:` on one is a `ConfigurationError` when the tree loads; so is a file
-neither `Read` nor `Load` would hand over — over 20 MB, of a type the generation model's
+neither `Read` nor `Load` would hand over — over 20 MB, of a type the agent's own model's
 `media_types` does not name, or not the type its name says — with `Load`'s own message.
 
 ### Tasks and skills
@@ -431,7 +431,8 @@ run.fingerprint.tools                                # "a02c77e1f4b9d305": the t
 ```
 
 `fingerprint.agent` is a short sha256 over every file the agent reads, by relative path and content:
-its own directory, and each folder it names in `reads:` with that folder's files under its path from the agent's folder, `../<name>/`,
+its own directory, and each folder it names in `reads:` with that folder's files under its path from the agent's folder, `../<name>/`
+(`../../shared/books/` for an agent two folders deep),
 as the map shows them — leaving out hidden files and folders, as `LS`, `Glob` and `Grep` do, and
 links that lead out of them. The engine takes it once, when it loads the tree, so an edit to the
 agent or to a folder it reads shows in the next `Engine` built from the folder. `fingerprint.tools`
@@ -1748,7 +1749,7 @@ them in the body, or pass `args`. The `Tools` of `run(tools=)` are declared only
 named in the tree, so they keep their own descriptions, in the `Tool` and in a schema.
 
 A tool the engine was given that no agent declares is a `ConfigurationError`; so is a declaration
-with no body, when the engine has a generation model to run it. So an agent's whole tool surface
+with no body, when the engine was given the model of the agent that declares it. So an agent's whole tool surface
 is readable from its directory, and the engine cannot hand a model something the tree does not
 show — except what a caller passes on the call: the `Tools` of `run(tools=)`, which ride that one
 run, and `History`, which comes with `start=`.
@@ -2028,8 +2029,7 @@ over — over 20 MB, of a type the model's `media_types` does not name, or not t
 — a question with instructions both in its frontmatter and in its body or in neither, a decision
 agent with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a route
 entry that names a task its agent does not have or gives a decision agent nothing to ask, a tool
-declared without a body or given without a declaration, a run of an agent whose kind of model is
-absent, a missing workspace, a `Local` root that is not a directory, a `shell` that is not a list of
+declared without a body or given without a declaration, a run of an agent whose model was not given, or of a router whose target's model was not given, a missing workspace, a `Local` root that is not a directory, a `shell` that is not a list of
 strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and `write`, a `Workspace` without a scope, a `max_steps`, `max_depth`,
 `tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is not positive,
 an `approve` that returns anything but `True` or `False`, a judge that is not a decision agent or a

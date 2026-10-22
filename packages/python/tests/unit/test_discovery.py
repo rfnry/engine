@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -232,3 +233,50 @@ def test_the_engine_logs_the_names_of_the_agents_it_loaded(
     assert [r.getMessage() for r in caplog.records] == [
         "engine: agents loaded [lead, triage, writer]"
     ]
+
+
+def test_a_link_out_of_the_tree_to_a_folder_holding_a_link_to_itself_is_refused(
+    tmp_path: Path,
+) -> None:
+    root = team(tmp_path / "root")
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside/self").symlink_to(tmp_path / "outside", target_is_directory=True)
+    (root / "out").symlink_to(tmp_path / "outside", target_is_directory=True)
+    with pytest.raises(ConfigurationError, match="holds the link") as caught:
+        load_tree(root)
+    said = str(caught.value)
+    assert str(root / "out/self") in said and str(tmp_path / "outside") in said
+
+
+def test_two_outside_folders_linking_each_other_are_refused_with_both_paths(
+    tmp_path: Path,
+) -> None:
+    root = team(tmp_path / "root")
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    (tmp_path / "one/next").symlink_to(tmp_path / "two", target_is_directory=True)
+    (tmp_path / "two/next").symlink_to(tmp_path / "one", target_is_directory=True)
+    (root / "out").symlink_to(tmp_path / "one", target_is_directory=True)
+    with pytest.raises(ConfigurationError, match="holds the link") as caught:
+        load_tree(root)
+    said = str(caught.value)
+    assert str(root / "out/next/next") in said and str(tmp_path / "one") in said
+
+
+def test_an_unreadable_folder_beside_an_agent_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    team(tmp_path)
+    (tmp_path / "lost+found").mkdir()
+    blocked = tmp_path / "lost+found"
+    real = os.scandir
+
+    def scandir(path: object = ".") -> object:
+        if Path(str(path)) == blocked:
+            raise PermissionError(13, "denied", str(path))
+        return real(path)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    with pytest.raises(PermissionError):
+        os.scandir(blocked)
+    assert list(load_tree(tmp_path)) == ["lead", "triage", "writer"]

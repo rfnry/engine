@@ -22,7 +22,7 @@ _PYTHON: dict[str, Any] = {
     "array": list[Any],
 }
 
-_DATA = {"default", "examples", "const", "enum"}
+_DATA = {"default", "examples", "const", "enum", "discriminator"}
 _NAMED = {"properties", "$defs", "definitions", "patternProperties"}
 
 

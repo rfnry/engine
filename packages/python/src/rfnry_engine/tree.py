@@ -1,3 +1,4 @@
+import os
 import posixpath
 from collections.abc import Callable, Collection, Mapping
 from functools import cached_property
@@ -313,12 +314,20 @@ class _Folder:
         return entries(self.place, declares(self.place))
 
 
-def from_agent(path: str, reads: Mapping[str, Path]) -> dict[str, Path]:
+def from_agent[T](path: str, reads: Mapping[str, T]) -> dict[str, T]:
     return {posixpath.relpath(name, path): place for name, place in reads.items()}
 
 
 def _linked(path: Path) -> bool:
     return path.is_symlink() or path.is_junction()
+
+
+def _subfolders(folder: Path) -> list[Path]:
+    try:
+        with os.scandir(folder) as entries:
+            return sorted(Path(entry.path) for entry in entries if entry.is_dir())
+    except OSError:
+        return []
 
 
 def _loops(top: Path, found: Mapping[str, Path], key: str, target: Path) -> bool:
@@ -334,12 +343,8 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
 
     def walk(folder: Path, at: str) -> None:
         holds = declares(folder)
-        for child in sorted(folder.iterdir()):
-            if (
-                child.name.startswith(".")
-                or not child.is_dir()
-                or (holds and child.name in DECLARED)
-            ):
+        for child in _subfolders(folder):
+            if child.name.startswith(".") or (holds and child.name in DECLARED):
                 continue
             place = child.resolve()
             key = f"{at}/{child.name}" if at else child.name
@@ -357,8 +362,8 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
 def _holds_agent(folder: Path) -> bool:
     return declares(folder) or any(
         _holds_agent(child)
-        for child in folder.iterdir()
-        if child.is_dir() and not child.name.startswith(".") and not _linked(child)
+        for child in _subfolders(folder)
+        if not child.name.startswith(".") and not _linked(child)
     )
 
 
@@ -508,7 +513,7 @@ def load_agent(
             f"tree: generation agent {agent!r} cannot declare route:; routes are for decision agents"
         )
     held = _reads(agent, front, directory, tree_root or directory, path, folders or {})
-    reads = {posixpath.relpath(name, path): folder for name, folder in held.items()}
+    reads = from_agent(path, held)
     root = directory.resolve()
     files = sorted([*content(root, False, inner=True), *_under(reads, lambda folder: folder.files)])
     try:

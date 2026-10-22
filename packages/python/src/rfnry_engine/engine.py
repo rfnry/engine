@@ -70,7 +70,7 @@ from rfnry_engine.records import (
     ToolResultReady,
 )
 from rfnry_engine.stop import Stop, Stopped, requested, wait
-from rfnry_engine.tools.declared import check_declarations, described, prose
+from rfnry_engine.tools.declared import check_declarations, prose
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
     AgentArgs,
@@ -519,7 +519,7 @@ class Engine:
         spec = self._spec(agent)
         asked = _asked(spec, questions)
         if expect is not None:
-            at = prose(json.loads(described(expect)))
+            at = prose(expect.model_json_schema())
             if at is not None:
                 raise InputError(
                     f"engine: expect= model {expect.__name__} carries a description at {at}; "

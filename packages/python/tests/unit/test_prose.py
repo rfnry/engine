@@ -7,9 +7,10 @@ from pydantic import BaseModel, Field
 
 from rfnry_engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.tools.declared import described
 from rfnry_engine.tools.workspace import Local, Workspace
 
-from .fakes import Scripted
+from .fakes import Scripted, text_reply
 
 
 class Verdict(BaseModel):
@@ -43,6 +44,24 @@ async def test_an_expect_model_with_a_description_is_refused_before_any_model_ca
     with pytest.raises(InputError, match=re.escape(message)):
         await Engine(tmp_path, models={"strong": llm}).run("a", "acme", "x", expect=model)
     assert llm.calls == []
+
+
+async def test_a_run_with_a_fresh_expect_model_does_not_grow_the_described_cache(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+
+    def fresh() -> type[BaseModel]:
+        return type("Fresh", (BaseModel,), {"__annotations__": {"reason": str}})
+
+    async def ask(model: type[BaseModel]) -> None:
+        engine = Engine(tmp_path, models={"strong": Scripted(text_reply("done"))})
+        await engine.run("a", "acme", "x", expect=model)
+
+    await ask(fresh())
+    before = described.cache_info().currsize
+    await ask(fresh())
+    assert described.cache_info().currsize == before
 
 
 def test_run_takes_no_questions() -> None:

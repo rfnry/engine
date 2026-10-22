@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import pytest
 from pydantic import BaseModel, Field
@@ -225,3 +225,22 @@ async def test_tools_a_run_passes_keep_their_descriptions(tmp_path: Path) -> Non
     sent = {t.name: t for t in listed}
     assert sent["ping"].description == "Ping the desk"
     assert sent["fetch"].description == "Fetch an order"
+
+
+class Described_(BaseModel):
+    kind: Literal["description"]
+
+
+class Other(BaseModel):
+    kind: Literal["other"]
+
+
+class Tagged(BaseModel):
+    change: Annotated[Described_ | Other, Field(discriminator="kind")]
+
+
+def test_a_discriminated_union_tagged_description_is_an_argument(tmp_path: Path) -> None:
+    engine = Engine(
+        shop(tmp_path), models={}, tools=[Tool("fetch", body=lookup_order, args=Tagged)]
+    )
+    assert "change" in definition(engine)["input_schema"]["properties"]

@@ -132,7 +132,7 @@ def description(raw: str, path: Path) -> str | None:
 
 
 def _said(message: str) -> str:
-    message = message.removeprefix("Value error, ")
+    message = message.removeprefix("Value error, ").removeprefix("tree: ")
     return message[:1].lower() + message[1:]
 
 
