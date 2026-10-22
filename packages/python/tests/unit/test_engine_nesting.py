@@ -233,6 +233,29 @@ async def test_dispatch_delegate_outside_a_run(fixtures: Path) -> None:
     assert isinstance(result, str) and json.loads(result)["answers"]["urgent"]["probability"] == 0.9
 
 
+async def test_dispatch_delegate_asks_a_decision_agent_the_questions_it_is_given(
+    tmp_path: Path,
+) -> None:
+    class Recorded:
+        def __init__(self) -> None:
+            self.runs: list[Any] = []
+
+        async def record(self, run: Any) -> None:
+            self.runs.append(run)
+
+    recorder = Recorded()
+    dm = Answering()
+    engine = Engine(lead(tmp_path), refinery=recorder, models={"strong": Scripted(), "judge": dm})
+    tools = EngineTools(engine, agent="lead", scope="acme")
+    result = await tools.dispatch(
+        "Delegate", {"agent": "blank", "input": "x", "questions": {"area": PICK}}
+    )
+    assert json.loads(str(result))["answers"]["area"]["choice"] == "orders"
+    assert dm.calls == [("x", {"area": Choice.model_validate(PICK)})]
+    [run] = recorder.runs
+    assert isinstance(run, Decision) and run.agent == "blank" and run.runtime == ["area"]
+
+
 async def test_dispatch_delegate_gives_the_child_the_tenant_tools(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "AGENT.md").write_text(
