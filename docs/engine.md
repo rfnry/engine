@@ -22,6 +22,11 @@ Every public name, with its signature, is in [the API reference](api.md).
 **The tree is the agent.** Everything a person needs to author, review or diff about an agent is a
 markdown file under version control. The library reads the tree; it never writes it.
 
+**The model chooses.** A run gives the model who the agent is, a map of its folder and the tools it
+has; the model opens what a question needs, follows the skill that fits, and calls the tool or the
+agent that can help. One agent with a well-kept folder covers many jobs, and whether a second one is
+worth it is [measured](#orchestrating), not assumed.
+
 **Two kinds of model, one or both.** Open-ended work — conversation, tool use, writing — is
 generation. Closed-set judgement — which of these, how much, is this true — is decision. A
 generation model does the first well and the second expensively; a decision model does the second
@@ -39,6 +44,55 @@ any purpose, without assuming one.
 
 **Tenancy by construction.** Every run names its scope. Every stored row carries it. There is no
 default scope and nothing reads across scopes. Multi-tenancy is the default.
+
+## Getting started
+
+```
+agents/
+  support/
+    AGENT.md            who the agent is, and the model it runs on
+    rules/refunds.md    read when a question needs it
+    TOOLS.md            the code it may call, a line each
+```
+
+```markdown
+---
+name: support
+kind: generation
+model: strong
+---
+You are the support desk for Acme. Be brief, be exact, cite the rule you are applying.
+```
+
+```python
+engine = Engine(root=Path("agents"), models={"strong": llm}, tools=tools)
+
+run = await engine.run("support", scope="acme", input="My invoice was charged twice.")
+print(run.reply)
+```
+
+`llm` is your adapter to a generation model, under the name the agent's `model:` gives it
+([Models](#models)); `tools` holds the functions behind the tools the tree declares
+([Tools](#tools)). The model receives `AGENT.md`, its tools and a map of its folder, opens
+`rules/refunds.md` when the question needs it, and answers. One call runs an agent for a tenant and
+returns its record.
+
+An agent grows by its tree:
+
+| to give an agent | add to the tree | in your code |
+| --- | --- | --- |
+| a rule, a reference, a document | any file in its folder | |
+| a way of doing something | a [skill](#tasks-and-skills) | |
+| a system of yours | a line in [`TOOLS.md`](#tools) | the function behind it |
+| a shell to write and run code | [`workspace: true`](#workspace) | a `Workspace` |
+| a fast, calibrated judgement | a [decision agent](#decision-agents), named in `agents:` | a decision model |
+| another agent to hand work to | its name in [`agents:`](#nesting) | |
+| a memory, or a corpus too large for a folder | | rfnry-memory's `MemoryTools` |
+
+A new agent is a new folder: the code you write grows with the models and systems you connect, not
+with the number of agents.
+
+rfnry-engine needs Python 3.14 or later.
 
 ## Models
 
@@ -174,22 +228,6 @@ class Fixed:
                 "urgent": CheckAnswer(probability=0.91)}
 ```
 
-## Getting started
-
-```python
-engine = Engine(root=Path("agents"), models={"strong": llm}, tools=tools)
-
-run = await engine.run("support", scope="acme", input="My invoice was charged twice.")
-print(run.reply)
-```
-
-A root of agent directories, `models` — the adapters, by the names the agents' `model:` give them —
-and `tools`, the bodies behind the tools the agents declare, one list for the whole tree
-([Tools](#tools) builds it). One call runs an agent for
-a tenant and returns its record.
-
-rfnry-engine needs Python 3.14 or later.
-
 ## Core features
 
 ### An agent is a directory
@@ -205,33 +243,6 @@ agents/
     tools/refund.md       a tool whose contract is written out
     tasks/triage.md       what to do: a named task, chosen per run
 ```
-
-`AGENT.md` makes a directory an agent, and its frontmatter names it. `Engine(root)` walks `root` and
-loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested
-as you choose — `root` itself when it has one, `support/`, `desks/billing/triage/`. A folder without
-an `AGENT.md` is a group of agents, or a folder of knowledge the agents read; it is never run.
-Hidden folders, and an agent's own `tools/`, `tasks/` and `questions/`, which stay its declarations,
-are never searched for agents. An agent inside another agent's folder is an agent like any other,
-which the outer one calls through `agents:`; the root, when it is an agent, is the outer agent of
-the whole tree. A tree with no `AGENT.md` anywhere is a `ConfigurationError`.
-
-```
-agents/
-  lead/
-    AGENT.md                   agents: [writer, triage]
-    playbook.md                in lead's map
-    helpers/notes.md           in lead's map
-    helpers/writer/AGENT.md    an agent: out of lead's map, readable to lead's tools
-  desks/support/triage/
-    AGENT.md                   an agent: desks/ and support/ are groups, never run
-```
-
-Folder links are followed: an agent's folder kept elsewhere is linked in and found where the link
-is. A link to a folder of the root is not followed — the folder is walked once, under its own path —
-and a link that would reach an agent twice is a `ConfigurationError` naming the link and where it
-leads: one to a folder of the root that holds an `AGENT.md`, in it or below it, or two links to one
-such folder elsewhere; so is a link to a folder that holds the link, which would lead the walk into
-itself.
 
 The frontmatter of `AGENT.md` names the agent (`name:`), its kind (`kind:`), the model it runs on
 (`model:`) and what the agent may call; its body is the persona. `name:` and `model:` are required,
@@ -289,6 +300,33 @@ folders it reads. `Read` returns a text file as text. `Load` hands the model any
 the folder as it came, the model reads it with its own understanding of images and documents, there
 is no parser in between, and nothing is loaded until the model asks — unless the agent sets
 `preload: true`, below.
+
+`AGENT.md` makes a directory an agent, and its frontmatter names it. `Engine(root)` walks `root` and
+loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested
+as you choose — `root` itself when it has one, `support/`, `desks/billing/triage/`. A folder without
+an `AGENT.md` is a group of agents, or a folder of knowledge the agents read; it is never run.
+Hidden folders, and an agent's own `tools/`, `tasks/` and `questions/`, which stay its declarations,
+are never searched for agents. An agent inside another agent's folder is an agent like any other,
+which the outer one calls through `agents:`; the root, when it is an agent, is the outer agent of
+the whole tree. A tree with no `AGENT.md` anywhere is a `ConfigurationError`.
+
+```
+agents/
+  lead/
+    AGENT.md                   agents: [writer, triage]
+    playbook.md                in lead's map
+    helpers/notes.md           in lead's map
+    helpers/writer/AGENT.md    an agent: out of lead's map, readable to lead's tools
+  desks/support/triage/
+    AGENT.md                   an agent: desks/ and support/ are groups, never run
+```
+
+Folder links are followed: an agent's folder kept elsewhere is linked in and found where the link
+is. A link to a folder of the root is not followed — the folder is walked once, under its own path —
+and a link that would reach an agent twice is a `ConfigurationError` naming the link and where it
+leads: one to a folder of the root that holds an `AGENT.md`, in it or below it, or two links to one
+such folder elsewhere; so is a link to a folder that holds the link, which would lead the walk into
+itself.
 
 A root holds agents and folders without an `AGENT.md` side by side, and an agent reads other folders
 of its root by naming them in `reads:` — folders without an `AGENT.md`, or other agents' folders:
