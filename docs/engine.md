@@ -376,10 +376,10 @@ tenant.
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its `path`
 — its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the `agents` it
 may call, the folders it `reads`, the `tools` it lists, and its `tasks` and `skills`,
-[below](#tasks-and-skills). When the
-tree has loaded, the engine logs the names of its agents at INFO on the `rfnry_engine.engine` logger
-— `engine: agents loaded [lead, triage, writer]` — so a folder meant to be an agent that is not
-shows at start; `logging.basicConfig(level=logging.INFO)` shows it.
+[below](#tasks-and-skills). When the tree has loaded, the engine logs the names of its agents at
+INFO on the `rfnry_engine.engine` logger — `engine: agents loaded [lead, triage, writer]` — so a
+folder meant to be an agent that is not shows at start; `logging.basicConfig(level=logging.INFO)`
+shows it.
 
 An agent that needs its whole folder on every run — a few house rules applied to thousands of
 documents — asks for it, with `preload: true`:
@@ -931,10 +931,11 @@ changes neither the others' answers nor, noticeably, the latency. An engine with
 model needs no `Tool`s; the tree's generation agents are the ones it cannot run.
 
 Some answer spaces are known only when the run starts: the children of the node a walk chose last,
-the candidates a search returned, the skills an agent has today. Those questions come from a model,
-never from your code: a generation agent composes them in a `Delegate` call ([Nesting](#nesting)),
-and a runtime of yours composes them in a call to `engine.tool`. They are ids to `Choice`, `Score`
-or `Check` — or anything with their fields — written as JSON, and they are asked with the folder's,
+the candidates a search returned, the skills an agent has today. Those questions are composed when
+the run starts, by a model or by a runtime of yours: a generation agent composes them
+in a `Delegate` call ([Nesting](#nesting)), and a runtime of yours composes them in a
+call to `engine.tool`. They are ids to `Choice`, `Score` or `Check` — or anything
+with their fields — written as JSON, and they are asked with the folder's,
 in the same call. A question known in advance lives in `questions/` or a task. The record keeps
 every question asked, and `run.runtime` names the ids that came at run time:
 
