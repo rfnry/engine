@@ -70,7 +70,7 @@ from rfnry_engine.records import (
     ToolResultReady,
 )
 from rfnry_engine.stop import Stop, Stopped, requested, wait
-from rfnry_engine.tools.declared import check_declarations, prose
+from rfnry_engine.tools.declared import check_declarations
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
     AgentArgs,
@@ -122,6 +122,7 @@ class AgentInfo(BaseModel):
     description: str
     agents: list[str]
     reads: list[str]
+    tools: list[str]
     tasks: dict[str, str]
     skills: dict[str, str]
 
@@ -435,6 +436,7 @@ class Engine:
                 description=spec.description,
                 agents=spec.agents,
                 reads=list(spec.reads),
+                tools=list(spec.tools),
                 tasks=dict(spec.tasks),
                 skills={called: skill.description for called, skill in spec.skills.items()},
             )
@@ -518,13 +520,6 @@ class Engine:
             )
         spec = self._spec(agent)
         asked = _asked(spec, questions)
-        if expect is not None:
-            at = prose(expect.model_json_schema())
-            if at is not None:
-                raise InputError(
-                    f"engine: expect= model {expect.__name__} carries a description at {at}; "
-                    "say what the output means in AGENT.md or a task"
-                )
         invoked = _skilled(spec, skill)
         tagged = _tags(tags)
         held = history if history is None or isinstance(history, HistoryLike) else list(history)

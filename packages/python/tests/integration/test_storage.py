@@ -516,7 +516,7 @@ async def test_a_recorded_tree_reads_back_as_it_ran(storage: Storage) -> None:
     both = delegate_triage("d1", "one").tool_calls + delegate_triage("d2", "two").tool_calls
     engine = Engine(
         FIXTURES,
-        tools=[Tool("lookup_order", body=lookup), TOOLS[1]],
+        tools=[Tool("lookup_order", "Fetch an order", body=lookup), TOOLS[1]],
         refinery=refinery,
         models={
             "strong": Scripted(

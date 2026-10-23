@@ -1,12 +1,14 @@
 import inspect
-import re
+import json
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, Field
 
 from rfnry_engine import Engine
-from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.models import Reply, ToolCall
+from rfnry_engine.records import Generation
 from rfnry_engine.tools.declared import described
 from rfnry_engine.tools.workspace import Local, Workspace
 
@@ -14,13 +16,9 @@ from .fakes import Scripted, text_reply
 
 
 class Verdict(BaseModel):
+    """The verdict on the refund."""
+
     reason: str = Field(description="Why")
-
-
-class Plain(BaseModel):
-    """What the output is."""
-
-    reason: str
 
 
 def write(path: Path, text: str) -> None:
@@ -32,18 +30,20 @@ def agent_md(name: str, kind: str = "generation", model: str = "strong", extra: 
     return f"---\nname: {name}\nkind: {kind}\nmodel: {model}\n{extra}---\nWork.\n"
 
 
-@pytest.mark.parametrize(
-    ("model", "where"), [(Verdict, "properties.reason.description"), (Plain, "description")]
-)
-async def test_an_expect_model_with_a_description_is_refused_before_any_model_call(
-    tmp_path: Path, model: type[BaseModel], where: str
-) -> None:
+async def test_an_expect_model_s_descriptions_reach_the_output_tool(tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a"))
-    llm = Scripted()
-    message = f"carries a description at {where}; say what the output means in AGENT.md or a task"
-    with pytest.raises(InputError, match=re.escape(message)):
-        await Engine(tmp_path, models={"strong": llm}).run("a", "acme", "x", expect=model)
-    assert llm.calls == []
+    llm = Scripted(
+        Reply(
+            tool_calls=[ToolCall(id="o", name="Output", args={"reason": "double charge"})],
+            stop_reason="tool_use",
+        )
+    )
+    run = await Engine(tmp_path, models={"strong": llm}).run("a", "acme", "x", expect=Verdict)
+    schema = next(t for t in llm.calls[0][2] if t.name == "Output").input_schema
+    assert schema["description"] == "The verdict on the refund."
+    assert schema["properties"]["reason"]["description"] == "Why"
+    assert isinstance(run, Generation)
+    assert json.loads(run.reply) == {"reason": "double charge"}
 
 
 async def test_a_run_with_a_fresh_expect_model_does_not_grow_the_described_cache(

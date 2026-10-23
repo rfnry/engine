@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from pydantic import BaseModel, RootModel, ValidationError
+from pydantic import BaseModel, ValidationError
 
 from rfnry_engine.errors import ConfigurationError
 
@@ -184,7 +184,7 @@ def parse_frontmatter_doc[T: BaseModel](
                         []
                         if not others
                         else ["check its spelling"]
-                        if any("." in key for key in others) or issubclass(model, RootModel)
+                        if any("." in key for key in others)
                         else [f"it takes {', '.join(model.model_fields)}"]
                     ),
                 ]

@@ -173,7 +173,7 @@ def test_a_hidden_folder_is_never_an_agent_of_a_tree(tmp_path: Path) -> None:
 def test_an_unknown_key_beside_name_is_named_in_the_fix_too(tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", "---\nname: a\nkind: generation\nmodel: strong\n---\nHi.\n")
     write(
-        tmp_path / "a/tools/fetch.md",
+        tmp_path / "a/tasks/fetch.md",
         "---\nname: fetch\ndescription: Fetch\nwrokspace: true\n---\n",
     )
     with pytest.raises(ConfigurationError) as refused:

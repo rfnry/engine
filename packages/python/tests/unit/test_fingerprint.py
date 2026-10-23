@@ -19,6 +19,7 @@ from .fakes import (
     TOOLS,
     Answering,
     Desk,
+    LookupArgs,
     MemoryBucket,
     Scripted,
     ask,
@@ -157,16 +158,58 @@ async def test_a_code_tool_s_schema_changes_the_tools_fingerprint(fixtures: Path
     plain = await generation(fixtures)
     zoned = await generation(
         fixtures,
-        tools=[Tool("lookup_order", body=lookup_order), Tool("now", body=now, args=NowArgs)],
+        tools=[
+            Tool("lookup_order", "Fetch an order", body=lookup_order),
+            Tool("now", "The current time", body=now, args=NowArgs),
+        ],
     )
     zoned_again = await generation(
         fixtures,
-        tools=[Tool("lookup_order", body=lookup_order), Tool("now", body=now, args=ZoneArgs)],
+        tools=[
+            Tool("lookup_order", "Fetch an order", body=lookup_order),
+            Tool("now", "The current time", body=now, args=ZoneArgs),
+        ],
     )
     assert plain.fingerprint.agent == zoned.fingerprint.agent == zoned_again.fingerprint.agent
     assert (
         len({plain.fingerprint.tools, zoned.fingerprint.tools, zoned_again.fingerprint.tools}) == 3
     )
+
+
+async def test_the_order_an_agent_lists_tools_in_changes_its_fingerprint_and_not_the_tools(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    listed = tree(fixtures, tmp_path / "listed")
+    flipped = tree(fixtures, tmp_path / "flipped")
+    path = flipped / "support/AGENT.md"
+    path.write_text(path.read_text().replace("[lookup_order, now]", "[now, lookup_order]"))
+    llm = Scripted(text_reply("ok"))
+    run = await Engine(flipped, tools=TOOLS, models={"strong": llm, "judge": Desk()}).run(
+        "support", "acme", "hi"
+    )
+    assert isinstance(run, Generation)
+    assert [t.name for t in llm.calls[0][2] if t.name in {"lookup_order", "now"}] == [
+        "lookup_order",
+        "now",
+    ]
+    original = await generation(listed)
+    assert run.fingerprint.tools == original.fingerprint.tools
+    assert run.fingerprint.agent != original.fingerprint.agent
+
+
+async def test_a_catalog_tool_s_description_changes_the_tools_fingerprint_not_the_agent(
+    fixtures: Path,
+) -> None:
+    plain = await generation(fixtures)
+    reworded = await generation(
+        fixtures,
+        tools=[
+            Tool("lookup_order", "Fetch an order, reworded", body=lookup_order, args=LookupArgs),
+            *TOOLS[1:],
+        ],
+    )
+    assert plain.fingerprint.tools != reworded.fingerprint.tools
+    assert plain.fingerprint.agent == reworded.fingerprint.agent
 
 
 class Verdict(BaseModel):

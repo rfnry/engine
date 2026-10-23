@@ -67,7 +67,7 @@ def test_an_outer_agent_s_fingerprint_counts_its_inner_agents(tmp_path: Path) ->
 
 def test_hidden_and_declaration_folders_are_never_searched_for_agents(tmp_path: Path) -> None:
     team(tmp_path)
-    for place in (".draft/x", "lead/tasks/x", "lead/tools/x", "desks/support/triage/questions/x"):
+    for place in (".draft/x", "lead/tasks/x", "desks/support/triage/questions/x"):
         write(tmp_path / place / "AGENT.md", agent_md("ghost"))
     assert list(load_tree(tmp_path)) == ["lead", "triage", "writer"]
 

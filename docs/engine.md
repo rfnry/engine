@@ -34,8 +34,8 @@ in milliseconds with calibrated probabilities and cannot do the first at all. Th
 them as two contracts and lets you build an agent from either or both.
 
 **The library runs; it does not take over.** You bring the models, the conversation history, the
-bodies behind tools, the storage connection, the bucket. There is no background loop, no plugin
-registry, no configuration language. Every verb is a function you call.
+tools, the storage connection, the bucket. There is no background loop, no plugin registry, no
+configuration language. Every verb is a function you call.
 
 **Nothing is hidden.** A run returns a record: what was sent, what came back, every tool call with
 its timing, every model call with its usage, every child run. That record is what you feed your own
@@ -50,9 +50,8 @@ default scope and nothing reads across scopes. Multi-tenancy is the default.
 ```
 agents/
   support/
-    AGENT.md            who the agent is, and the model it runs on
+    AGENT.md            who the agent is, the model it runs on and the tools it picks
     rules/refunds.md    read when a question needs it
-    TOOLS.md            the code it may call, a line each
 ```
 
 ```markdown
@@ -60,8 +59,10 @@ agents/
 name: support
 kind: generation
 model: strong
+tools: [lookup_order]
 ---
-You are the support desk for Acme. Be brief, be exact, cite the rule you are applying.
+You are the support desk for Acme. Be brief, be exact, cite the rule you are applying. Look an
+order up with lookup_order before you answer about it.
 ```
 
 ```python
@@ -72,10 +73,12 @@ print(run.reply)
 ```
 
 `llm` is your adapter to a generation model, under the name the agent's `model:` gives it
-([Models](#models)); `tools` holds the functions behind the tools the tree declares
-([Tools](#tools)). The model receives `AGENT.md`, its tools and a map of its folder, opens
-`rules/refunds.md` when the question needs it, and answers. One call runs an agent for a tenant and
-returns its record.
+([Models](#models)); `tools` holds the tools the agents list in their `tools:`, each a `Tool`
+defined once in code — its name, its description, its arguments and the function that runs it
+([Tools](#tools)). Code defines what an agent can use; `AGENT.md` picks it by name and holds the
+agent's instructions — who it is, what it does, when to use which tool. The model receives
+`AGENT.md`, its tools and a map of its folder, opens `rules/refunds.md` when the question needs it,
+and answers. One call runs an agent for a tenant and returns its record.
 
 An agent grows by its tree:
 
@@ -83,7 +86,7 @@ An agent grows by its tree:
 | --- | --- | --- |
 | a rule, a reference, a document | any file in its folder | |
 | a way of doing something | a [skill](#tasks-and-skills) | |
-| a system of yours | a line in [`TOOLS.md`](#tools) | the function behind it |
+| a system of yours | its name in [`tools:`](#tools) | a `Tool`: name, description, arguments, the function behind it |
 | a shell to write and run code | [`workspace: true`](#workspace) | a `Workspace` |
 | a fast, calibrated judgement | a [decision agent](#decision-agents), named in `agents:` | a decision model |
 | another agent to hand work to | its name in [`agents:`](#nesting) | |
@@ -239,18 +242,18 @@ agents/
     rules/refunds.md      any folders and files, all in the map; a description adds a line
     skills/escalate.md    how to do a thing: the model's to choose, or a person's to ask for
     knowledge/rates.pdf   text, images, PDFs, anything — read when needed
-    TOOLS.md              the code tools it may call, each with a line saying what it does
-    tools/refund.md       a tool whose contract is written out
     tasks/triage.md       what to do: a named task, chosen per run
 ```
 
 The frontmatter of `AGENT.md` names the agent (`name:`), its kind (`kind:`), the model it runs on
-(`model:`) and what the agent may call; its body is the persona. `name:` and `model:` are required,
-and a missing, blank, padded or non-text one is a `ConfigurationError` naming the file. A `name:` is
-plain text — not blank, not hidden, not padded, no slash — and is what `run`, `agents:` and `route:`
-call the agent by, so a folder can be renamed or moved deeper in the tree without renaming the
-agent; two agents with one name are a `ConfigurationError` naming both files. `model:` names a
-model, `strong` or `judge` for instance; what the name maps to is the engine's to say:
+(`model:`), the tools it picks (`tools:`) and what the agent may call; its body is the persona.
+`name:`, `kind:` and `model:` are required: a missing one, a `kind:` other than `generation` or
+`decision`, or a blank, padded or non-text `name:` or `model:` is a `ConfigurationError` naming the
+file. A `name:` is plain text — not blank, not hidden, not padded, no slash — and is what `run`,
+`agents:` and `route:` call the agent by, so a folder can be renamed or moved deeper in the tree
+without renaming the agent; two agents with one name are a `ConfigurationError` naming both files.
+`model:` names a model, `strong` or `judge` for instance; what the name maps to is the engine's to
+say. `tools:` names the tools the agent uses, each defined in code ([Tools](#tools)):
 
 ```markdown
 ---
@@ -259,6 +262,7 @@ kind: generation
 model: strong
 description: Handles technical support conversations
 agents: [triage]
+tools: [lookup_order, fetch_invoice]
 ---
 You are the support desk for Acme. Be brief, be exact, cite the rule you are applying.
 ```
@@ -287,13 +291,13 @@ skills/
 A file without a description is listed by its name, which often says enough; a description is one
 line of what the file holds, so the model knows what to open without opening it. Other frontmatter
 keys are left alone, so a folder written for another tool — `skills/<name>/SKILL.md` with `name:`
-and `description:` — works as it is. `AGENT.md`, `TOOLS.md` and the folders `tools/`, `tasks/` and
-`questions/` stay out of the map, since the prompt already holds them, and so do the folders of the
-agents inside its own, which it reaches through `agents:` — they stay readable to its tools, as its
-declarations do, and count in its fingerprint. Frontmatter that is not valid YAML — a key named
-twice included, as YAML forbids, in any file of the folder — or a `description:` that is not a
-string, is a `ConfigurationError` naming the file and what to change, and for YAML the line, when
-the tree loads, so a typo is caught before any run. Everything else the model reads when it needs it, with the
+and `description:` — works as it is. `AGENT.md` and the folders `tasks/` and `questions/` stay out
+of the map, since the prompt already holds them, and so do the folders of the agents inside its own,
+which it reaches through `agents:` — they stay readable to its tools, as its declarations do, and
+count in its fingerprint. Frontmatter that is not valid YAML — a key named twice included, as YAML
+forbids, in any file of the folder — or a `description:` that is not a string, is a
+`ConfigurationError` naming the file and what to change, and for YAML the line, when the tree loads,
+so a typo is caught before any run. Everything else the model reads when it needs it, with the
 `Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can read only inside its own directory and the
 folders it reads. `Read` returns a text file as text. `Load` hands the model any other file as it is
 — an image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in
@@ -305,10 +309,10 @@ is no parser in between, and nothing is loaded until the model asks — unless t
 loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested
 as you choose — `root` itself when it has one, `support/`, `desks/billing/triage/`. A folder without
 an `AGENT.md` is a group of agents, or a folder of knowledge the agents read; it is never run.
-Hidden folders, and an agent's own `tools/`, `tasks/` and `questions/`, which stay its declarations,
-are never searched for agents. An agent inside another agent's folder is an agent like any other,
-which the outer one calls through `agents:`; the root, when it is an agent, is the outer agent of
-the whole tree. A tree with no `AGENT.md` anywhere is a `ConfigurationError`.
+Hidden folders, and an agent's own `tasks/` and `questions/`, which stay its declarations, are
+never searched for agents. An agent inside another agent's folder is an agent like any other, which
+the outer one calls through `agents:`; the root, when it is an agent, is the outer agent of the
+whole tree. A tree with no `AGENT.md` anywhere is a `ConfigurationError`.
 
 ```
 agents/
@@ -371,10 +375,11 @@ tenant.
 
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its `path`
 — its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the `agents` it
-may call, the folders it `reads`, and its `tasks` and `skills`, [below](#tasks-and-skills). When the
-tree has loaded, the engine logs the names of its agents at INFO on the `rfnry_engine.engine` logger
-— `engine: agents loaded [lead, triage, writer]` — so a folder meant to be an agent that is not
-shows at start; `logging.basicConfig(level=logging.INFO)` shows it.
+may call, the folders it `reads`, the `tools` it lists, and its `tasks` and `skills`,
+[below](#tasks-and-skills). When the tree has loaded, the engine logs the names of its agents at
+INFO on the `rfnry_engine.engine` logger — `engine: agents loaded [lead, triage, writer]` — so a
+folder meant to be an agent that is not shows at start; `logging.basicConfig(level=logging.INFO)`
+shows it.
 
 An agent that needs its whole folder on every run — a few house rules applied to thousands of
 documents — asks for it, with `preload: true`:
@@ -391,19 +396,19 @@ Tag the document. Every rule applies to every document.
 ```
 
 With `preload: true` the model also receives every other file of its folder — all but `AGENT.md`,
-`TOOLS.md`, `tools/`, `tasks/`, `questions/` and the folders of the agents inside it, described or
-not — sorted by path character by character, each under its path: what `Read` would return for it,
-and for a file `Read` refuses — over 5 MB, or not text — the part `Load` would hand over. The map
-stays a map and the folder stays as it is; only when the files are read changes, so no turn goes to
-opening them. They travel as one user message ahead of the history, sent with every model call, and
-are read when the engine loads the tree, as the fingerprint is taken, so an edit shows in the next
-`Engine`. `run.preload` holds that message's parts; `run.messages` and `run.conversation` leave it
-out, so a conversation passed back does not send the folder twice and a replay preloads from the
-candidate's folder. The tools stay as they are — `Read` and `Load` hand over what the model already
-holds. Each agent preloads its own folder, a delegated or routed one included. A decision agent
-reads no files, so `preload:` on one is a `ConfigurationError` when the tree loads; so is a file
-neither `Read` nor `Load` would hand over — over 20 MB, of a type the agent's own model's
-`media_types` does not name, or not the type its name says — with `Load`'s own message.
+`tasks/`, `questions/` and the folders of the agents inside it, described or not — sorted by path
+character by character, each under its path: what `Read` would return for it, and for a file `Read`
+refuses — over 5 MB, or not text — the part `Load` would hand over. The map stays a map and the
+folder stays as it is; only when the files are read changes, so no turn goes to opening them. They
+travel as one user message ahead of the history, sent with every model call, and are read when the
+engine loads the tree, as the fingerprint is taken, so an edit shows in the next `Engine`.
+`run.preload` holds that message's parts; `run.messages` and `run.conversation` leave it out, so a
+conversation passed back does not send the folder twice and a replay preloads from the candidate's
+folder. The tools stay as they are — `Read` and `Load` hand over what the model already holds. Each
+agent preloads its own folder, a delegated or routed one included. A decision agent reads no files,
+so `preload:` on one is a `ConfigurationError` when the tree loads; so is a file neither `Read` nor
+`Load` would hand over — over 20 MB, of a type the agent's own model's `media_types` does not name,
+or not the type its name says — with `Load`'s own message.
 
 ### Tasks and skills
 
@@ -472,14 +477,14 @@ run.fingerprint.tools                                # "a02c77e1f4b9d305": the t
 ```
 
 `fingerprint.agent` is a short sha256 over every file the agent reads, by relative path and content:
-its own directory, and each folder it names in `reads:` with that folder's files under its path from the agent's folder, `../<name>/`
-(`../../shared/books/` for an agent two folders deep),
-as the map shows them — leaving out hidden files and folders, as `LS`, `Glob` and `Grep` do, and
-links that lead out of them. The engine takes it once, when it loads the tree, so an edit to the
-agent or to a folder it reads shows in the next `Engine` built from the folder. `fingerprint.tools`
-is one over `run.tools` — each tool's name, description and schema — so it covers the tools the
-folder declares, the code tools it adopts, the `tools=` a run passes, `Output` when `expect=` asks
-for one, and in `Delegate` the agents it may call — their names, descriptions, kinds and tasks.
+its own directory, and each folder it names in `reads:` with that folder's files under its path
+from the agent's folder, `../<name>/` (`../../shared/books/` for an agent two folders deep), as the
+map shows them — leaving out hidden files and folders, as `LS`, `Glob` and `Grep` do, and links
+that lead out of them. The engine takes it once, when it loads the tree, so an edit to the agent or
+to a folder it reads shows in the next `Engine` built from the folder. `fingerprint.tools` is one
+over `run.tools` — each tool's name, description and schema — so it covers the tools the agent
+lists, the `tools=` a run passes, `Output` when `expect=` asks for one, and in `Delegate` the agents
+it may call — their names, descriptions, kinds and tasks.
 Neither sees what varies per run and is not the agent — the input, the history, `context=`, `tags=`
 — so two runs of an unchanged folder share it and any edit changes it. The model is `run.model`; the
 code behind a tool is yours to version. A decision run carries one too, its `tools` the fingerprint
@@ -538,13 +543,12 @@ run = await engine.run("support", scope="acme", input=message, tags={"commit": "
 run.tags                                             # {"commit": "4f2c9e1", "arm": "b"}
 ```
 
-Ask for a typed reply and the model is offered an `Output` tool shaped like it. The model carries no
-descriptions, in a field or as a docstring: a description is prose from code, and is refused with
-`engine: expect= model Verdict carries a description at properties.reason.description; say what the
-output means in AGENT.md or a task`. What the output means is said in `AGENT.md` or a task. When the model
-calls it with input that fits, the run ends and `run.reply` is that input as JSON; input that does
-not fit goes back to the model with what is wrong. A model that answers in text instead ends the
-run with that text as `run.reply`, which does not parse:
+Ask for a typed reply and the model is offered an `Output` tool shaped like it. The `expect=` model
+is the output's contract, defined in code: its field descriptions and its docstring reach the model
+in the tool's schema, and what the output means beyond that is said in `AGENT.md` or a task. When
+the model calls it with input that fits, the run ends and `run.reply` is that input as JSON; input
+that does not fit goes back to the model with what is wrong. A model that answers in text instead
+ends the run with that text as `run.reply`, which does not parse:
 
 ```python
 class Verdict(BaseModel):
@@ -924,13 +928,14 @@ run.answers["severity"].confidence    # 0.87
 
 Every question is answered in the same call, in parallel and in isolation: adding a question
 changes neither the others' answers nor, noticeably, the latency. An engine with only a decision
-model needs no tool bodies; the tree's generation agents are the ones it cannot run.
+model needs no `Tool`s; the tree's generation agents are the ones it cannot run.
 
 Some answer spaces are known only when the run starts: the children of the node a walk chose last,
-the candidates a search returned, the skills an agent has today. Those questions come from a model,
-never from your code: a generation agent composes them in a `Delegate` call ([Nesting](#nesting)),
-and a runtime of yours composes them in a call to `engine.tool`. They are ids to `Choice`, `Score`
-or `Check` — or anything with their fields — written as JSON, and they are asked with the folder's,
+the candidates a search returned, the skills an agent has today. Those questions are composed when
+the run starts, by a model or by a runtime of yours: a generation agent composes them
+in a `Delegate` call ([Nesting](#nesting)), and a runtime of yours composes them in a
+call to `engine.tool`. They are ids to `Choice`, `Score` or `Check` — or anything
+with their fields — written as JSON, and they are asked with the folder's,
 in the same call. A question known in advance lives in `questions/` or a task. The record keeps
 every question asked, and `run.runtime` names the ids that came at run time:
 
@@ -1727,73 +1732,69 @@ class Tools:
     names: list[str]                                     # every tool's name, in order
 ```
 
-An agent's tools are declared in its directory. `Read Grep Glob LS Load` come with every generation
-agent, `Delegate` comes with `agents:`, `History` with a run whose `start=` is past the beginning of
-its history, and its name is taken on every run, so a tool of yours named `History` is refused from
-the first; everything else the agent declares. A tool that needs only a line saying what it does
-is listed in `TOOLS.md`, name and line, never the name alone:
+A tool is defined once, in code: its name, its description, its arguments and the function that
+runs it. An agent picks the tools it uses by name, in the `tools:` of its `AGENT.md`, and its
+markdown says when to use them. `Read Grep Glob LS Load` come with every generation agent,
+`Delegate` comes with `agents:`, a workspace's tools with `workspace: true`, `History` with a run
+whose `start=` is past the beginning of its history, and its name is taken on every run, so a tool
+of yours named `History` is refused from the first; everything else the agent lists. A tool is a
+`Tool`, the engine is given them all in one list for the whole tree, and an agent lists the ones it
+uses:
 
 ```markdown
 ---
-fetch_invoice: Fetch one of the customer's invoices, as its PDF
+name: support
+kind: generation
+model: strong
+tools: [lookup_order, fetch_invoice]
 ---
+Look an order up with lookup_order before you answer about it. Send the customer's invoice with
+fetch_invoice when they ask for a copy.
 ```
 
-A tool whose contract deserves a file of its own has one under `tools/`, named after it: its
-description, its input, and below them whatever the model should know — when to use it, what comes
-back:
+The `description` is what the model reads about the tool and its first line is what the prompt's
+list of tools shows. `args` is a pydantic model: its `Field(description=...)`s and its docstring
+reach the model in the tool's schema, and it checks a call's arguments before the body runs. An
+`input_schema` states the schema as a dict instead. A `Tool` needs a body and a description. An agent lists a
+name once, and any number of agents may list the same tool. Listing a name the engine gives the
+agent anyway is a `ConfigurationError`: the builtins, `History`, `Delegate` with `agents:`, a
+workspace's with `workspace: true`.
 
-```markdown
----
-description: Fetch an order by id
-input:
-  order_id: {type: string, description: The order id, required: true}
----
-Returns the order as JSON, with its charges.
-```
-
-A tool is described only in the markdown: the line in `TOOLS.md`, or the `description:` and `input:`
-of its file, are the whole of what the model reads about it, and its first line is what the prompt's
-list of tools shows. Code gives the body, and optionally the types: `args`, a model that checks a
-call, or an `input_schema`, in neither of which any `description` may appear, nor in the `Tool`
-itself, nor in a nested model's docstring. A description in code is a `ConfigurationError` naming
-where it is and where to write it instead, whether or not the engine was given the model that would
-use the tool. An `input:` states the arguments and what each means; beside it `args` still checks
-the call, after `input:` has, and the two must name the same arguments; beside it an `input_schema`
-is refused, being a second schema. A tool listed without a line, a blank line, a tool declared
-twice — in `TOOLS.md` and under `tools/`, or twice in `TOOLS.md` — a file under `tools/` with no
-description, which belongs in `TOOLS.md`, a body under `TOOLS.md`'s frontmatter, and a tool named
-like one the engine gives the agent are `ConfigurationError` too: the builtins, `History`,
-`Delegate` with `agents:`, a workspace's with `workspace: true`. Bodies and code tools go on the engine, one list for the whole tree. A body returns a string, a dict (the model
-reads it as JSON) or a list of parts, which reach the model as the tool result — a PDF the model
-reads itself, an image it looks at. `Load` already does that for files in the agent's directory and
-the folders it reads; a tool does it for what lives elsewhere, such as your own store:
+A body returns a string, a dict (the model reads it as JSON) or a list of parts, which reach the
+model as the tool result — a PDF the model reads itself, an image it looks at. `Load` already does
+that for files in the agent's directory and the folders it reads; a tool does it for what lives
+elsewhere, such as your own store:
 
 ```python
 class InvoiceArgs(BaseModel):
-    invoice_id: str
+    """Which invoice to fetch."""
+
+    invoice_id: str = Field(description="The invoice id, such as INV-204")
 
 async def fetch_invoice(args):
     data = await invoices.get(args["invoice_id"])
     return [Document(media_type="application/pdf", name=f"{args['invoice_id']}.pdf", data=data)]
 
 tools = [
-    Tool("lookup_order", body=lookup_order),
-    Tool("fetch_invoice", body=fetch_invoice, args=InvoiceArgs),
+    Tool("lookup_order", "Fetch an order by its id", body=lookup_order, input_schema={
+        "type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]}),
+    Tool("fetch_invoice", "Fetch one of the customer's invoices, as its PDF",
+         body=fetch_invoice, args=InvoiceArgs),
 ]
 engine = Engine(root, models={"strong": llm}, tools=tools)
 ```
 
-`args` checks a call's arguments before the body runs, and so does a declared `input:`. A tool given
-only `input_schema`, and a `Tools` of your own, receive the arguments as the model sent them: check
-them in the body, or pass `args`. The `Tools` of `run(tools=)` are declared only in code, never
-named in the tree, so they keep their own descriptions, in the `Tool` and in a schema.
+A tool given only `input_schema`, and a `Tools` of your own, receive the arguments as the model
+sent them: check them in the body, or pass `args`. The tools riding a run — `run(tools=)` and
+`MemoryTools` — are listed nowhere, and nothing checks them for a body or a description.
 
-A tool the engine was given that no agent declares is a `ConfigurationError`; so is a declaration
-with no body, when the engine was given the model of the agent that declares it. So an agent's whole tool surface
-is readable from its directory, and the engine cannot hand a model something the tree does not
-show — except what a caller passes on the call: the `Tools` of `run(tools=)`, which ride that one
-run, and `History`, which comes with `start=`.
+A tool the engine was given that no agent lists is a `ConfigurationError`; so is a listed name with
+no `Tool`, when the engine was given the model of the agent that lists it, and a `Tool` without a
+body or without a description. An agent whose model was not given cannot run, so a name only it
+lists needs no `Tool` until an engine is given that model or `EngineTools` is built for the agent.
+So an agent's whole tool surface is readable from its `AGENT.md`, and the engine cannot hand a
+model something the tree does not show — except what a caller passes on the call: the `Tools` of
+`run(tools=)`, which ride that one run, and `History`, which comes with `start=`.
 
 Every tool call inside a run has a deadline, `Engine(tool_timeout=30.0)` by default and `None` to
 turn it off. When it passes, the model gets the error `timed out after 30s` and the run continues.
@@ -2057,30 +2058,39 @@ Everything the package exports, by role.
 ## Errors
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a tree with
-no `AGENT.md`, a link to a folder that holds it or one that would reach an agent twice, a bad
-`AGENT.md` without a plain `name:` or a `model:`, a `models` that is not a mapping of names to adapters, a model no agent runs on, an agent whose model has not its kind's method, two agents with one name, a `name:` in a tool file
-— the file names it — an unknown key in the frontmatter of an `AGENT.md`, a tool file or a question (`frontmatter: unknown
-key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a
-`description:` that is not a string in a file the map would show, a decision agent with `preload:
-true` or tools, a declaration the Tools section refuses, a `reads:` that is not a path from the
-root, names no folder of the tree, leaves the root, names the agent's own folder, one that holds it
-or one inside it, or names two folders one inside the other, `reads:` on a decision agent or on an
-agent whose folder is a link to a folder elsewhere, a file `preload: true` would send that neither `Read` nor `Load` would hand
-over — over 20 MB, of a type the model's `media_types` does not name, or not the type its name says
-— a question with instructions both in its frontmatter and in its body or in neither, a decision
-agent with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a route
+no `AGENT.md`, a link to a folder that holds it or one that would reach an agent twice, an
+`AGENT.md` without a plain `name:`, a `kind:` of `generation` or `decision`, or a plain `model:`, a
+`models` that is not a mapping of names to adapters, a model no agent runs on, an agent whose model
+has not its kind's method, two agents with one name, an agent in `agents:` or `route:` the tree
+does not have, an unknown key in the frontmatter of an `AGENT.md`, a task or a question
+(`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that
+is not valid YAML or a `description:` that is not a string in a file the map would show, a
+decision agent with `preload: true`, `workspace: true` or `tools:`, a generation agent with
+`questions/` or `route:`, a `tools:` entry that is blank, padded or listed twice or that names a
+tool the engine gives the agent, a `reads:` that is not a path from the root, names no folder of
+the tree, leaves the root, names the agent's own folder, one that holds it or one inside it, or
+names two folders one inside the other, `reads:` on a decision agent or on an agent whose folder is
+a link to a folder elsewhere, a file `preload: true` would send that neither `Read` nor `Load`
+would hand over — over 20 MB, of a type the model's `media_types` does not name, or not the type
+its name says — one skill as both `skills/x.md` and `skills/x/SKILL.md`, a question with
+instructions both in its frontmatter and in its body or in neither, a decision agent with a file
+straight in `tasks/` or a task that repeats an id of its `questions/`, a route not by a choice
+question of the router's `questions/` or that maps an option the question does not have, a route
 entry that names a task its agent does not have or gives a decision agent nothing to ask, a tool
-declared without a body or given without a declaration, a run of an agent whose model was not given, or of a router whose target's model was not given, a missing workspace, a `Local` root that is not a directory, a `shell` that is not a list of
-strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and `write`, a `Workspace` without a scope, a `max_steps`, `max_depth`,
-`tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is not positive,
-an `approve` that returns anything but `True` or `False`, a judge that is not a decision agent or a
-teacher that is not a generation agent. `NotFoundError` for an agent the tree does not have — a
+listed with no `Tool`, a `Tool` without a body or a description or that no agent lists, two `Tool`s
+with one name, a run of an agent whose model was not given, or of a router whose target's model was
+not given, a missing workspace, a `Local` root that is not a directory, a `shell` that is not a
+list of strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and
+`write`, a `Workspace` without a scope, a `max_steps`, `max_depth`, `tool_timeout`,
+`history_walk`, `history_chars`, `timeout` or `output_bytes` that is not positive, an `approve`
+that returns anything but `True` or `False`, a judge that is not a decision agent or a teacher that
+is not a generation agent. `NotFoundError` for an agent the tree does not have — a
 judge, a teacher or a replay's agent in the candidate included — a task the agent does not have
 (`engine: agent 'support' has no task 'ghost'`), found when the run starts, or a run the refinery
 does not. `InputError` for a call the library refuses: an empty scope, a workspace of another scope,
 a history that breaks a tool call from its result, a `start` outside the history or without one,
 tags outside their limits, runtime questions that do not fit, a runtime id the run already asks,
-questions for a generation agent, an `expect=` model that carries a description, a decision run with no question to ask, media the decision
+questions for a generation agent, a decision run with no question to ask, media the decision
 model does not declare, a media part with both or neither of `data` and `url`, a correction of the
 wrong shape or for a question the run was not asked, a `delete_runs` or `verify_absent` given both
 `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an `export` or a `replay` given

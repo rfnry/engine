@@ -299,7 +299,7 @@ async def test_a_stopped_run_read_back_continues_the_next_run(
         text_reply("The second charge is refunded."),
     )
     refinery = Refinery(storage)
-    tools = [Tool("lookup_order", body=lookup), TOOLS[1]]
+    tools = [Tool("lookup_order", "Fetch an order", body=lookup), TOOLS[1]]
     engine = Engine(fixtures, tools=tools, refinery=refinery, models={"strong": llm})
     run = await engine.run("support", "acme", "Charged twice.", stop=stop)
     assert isinstance(run, Generation) and run.stopped == "after_step"
@@ -409,7 +409,8 @@ async def test_messages_are_the_start_of_the_conversation_however_a_run_ends(
 
     await engine(Scripted(text_reply("Done."))).run("support", "acme", "Hi")
     stopped = engine(
-        Scripted(tool_turn, text_reply("x")), [Tool("lookup_order", body=halt), TOOLS[1]]
+        Scripted(tool_turn, text_reply("x")),
+        [Tool("lookup_order", "Fetch an order", body=halt), TOOLS[1]],
     )
     await stopped.run("support", "acme", "Hi", stop=stop)
     with pytest.raises(AssertionError):

@@ -6,8 +6,8 @@ from rfnry_engine.errors import InputError
 from rfnry_engine.frontmatter import described
 from rfnry_engine.jail import Jail
 
-DECLARED = frozenset({"tools", "tasks", "questions"})
-DECLARATIONS = frozenset({"AGENT.md", "TOOLS.md"})
+DECLARED = frozenset({"tasks", "questions"})
+DECLARATIONS = frozenset({"AGENT.md"})
 
 
 def declares(folder: Path) -> bool:
