@@ -120,11 +120,10 @@ def test_a_schema_from_args_is_generated_once_and_shared_with_no_run(
     monkeypatch.setattr(Args, "model_json_schema", counted)
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "AGENT.md").write_text(
-        "---\nname: a\nkind: generation\nmodel: strong\n---\nHi\n"
+        "---\nname: a\nkind: generation\nmodel: strong\ntools: [look]\n---\nHi\n"
     )
-    (tmp_path / "a" / "TOOLS.md").write_text("---\nlook: Look\n---\n")
     engine = Engine(
-        tmp_path, tools=[Tool("look", body=look, args=Args)], models={"strong": Scripted()}
+        tmp_path, tools=[Tool("look", "Look", body=look, args=Args)], models={"strong": Scripted()}
     )
 
     def schema(scope: str) -> dict[str, Any]:

@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from pydantic import BaseModel, Field
+
 from rfnry_engine.engine import Engine
 from rfnry_engine.models import (
     Answer,
@@ -121,7 +123,20 @@ async def now(args: dict[str, Any]) -> str:
     return "2026-09-22T00:00:00Z"
 
 
-TOOLS = [Tool("lookup_order", body=lookup_order), Tool("now", body=now)]
+class LookupArgs(BaseModel):
+    order_id: str = Field(description="The order id")
+    include_items: bool | None = Field(default=None, description="Include line items")
+
+
+TOOLS = [
+    Tool(
+        "lookup_order",
+        "Fetch an order by id. Returns the order as JSON.",
+        body=lookup_order,
+        args=LookupArgs,
+    ),
+    Tool("now", "The current UTC time", body=now),
+]
 
 
 def generation_record(

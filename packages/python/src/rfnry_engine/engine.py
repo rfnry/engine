@@ -122,6 +122,7 @@ class AgentInfo(BaseModel):
     description: str
     agents: list[str]
     reads: list[str]
+    tools: list[str]
     tasks: dict[str, str]
     skills: dict[str, str]
 
@@ -435,6 +436,7 @@ class Engine:
                 description=spec.description,
                 agents=spec.agents,
                 reads=list(spec.reads),
+                tools=list(spec.tools),
                 tasks=dict(spec.tasks),
                 skills={called: skill.description for called, skill in spec.skills.items()},
             )

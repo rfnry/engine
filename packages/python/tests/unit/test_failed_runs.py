@@ -310,7 +310,10 @@ async def test_a_failed_batch_keeps_every_step_that_ran_in_the_order_asked(
         ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"}),
         ToolCall(id="c2", name="lookup_order", args={"order_id": "A-2"}),
     ]
-    tools = [Tool("lookup_order", body=slow_first), *(t for t in TOOLS if t.name != "lookup_order")]
+    tools = [
+        Tool("lookup_order", "Fetch an order", body=slow_first),
+        *(t for t in TOOLS if t.name != "lookup_order"),
+    ]
     kept = Kept()
     engine = Engine(
         fixtures,
@@ -348,7 +351,7 @@ async def test_a_call_cut_by_a_stop_is_recorded_once_when_its_handler_raises(
         ToolCall(id="c2", name="lookup_order", args={"order_id": "A-2"}),
     ]
     tools = [
-        Tool("lookup_order", body=slow_second),
+        Tool("lookup_order", "Fetch an order", body=slow_second),
         *(t for t in TOOLS if t.name != "lookup_order"),
     ]
     kept = Kept()

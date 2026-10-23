@@ -190,7 +190,7 @@ async def test_load_follows_the_media_types_of_the_agent_s_model(tmp_path: Path)
 
 def declaring(root: Path) -> Path:
     pair(root)
-    write(root / "writer/TOOLS.md", "---\nfetch: Fetch a page\n---\n")
+    write(root / "writer/AGENT.md", agent_md("writer", model="fast", extra="tools: [fetch]\n"))
     return root
 
 
@@ -202,7 +202,7 @@ def test_declared_tools_need_bodies_only_for_agents_whose_model_was_given(tmp_pa
     Engine(
         root,
         models={"strong": Scripted(), "fast": Scripted()},
-        tools=[Tool("fetch", body=noop)],
+        tools=[Tool("fetch", "Fetch a page", body=noop)],
     )
 
 

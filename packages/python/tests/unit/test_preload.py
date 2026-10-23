@@ -221,14 +221,14 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
         "- Glob: Find files by glob pattern, e.g. '**/*.md'. Paths are those of the FILES map.\n"
         "- LS: List a folder by its path in the FILES map; without a path, your own folder.\n"
         "- Load: Load a file of the FILES map as it is, such as an image, a PDF or audio, so you see or hear it yourself.\n"
-        "- lookup_order: Fetch an order by id\n"
+        "- lookup_order: Fetch an order by id. Returns the order as JSON.\n"
         "- now: The current UTC time\n"
         "- Delegate: Hand an input to another agent and get its reply.\n\n"
         "<<<AGENTS>>>\n- triage: Judges urgency and severity of a message\n\n"
         "<<<CONTEXT>>>\nAcme is on the enterprise plan."
     )
     assert messages == [*history, Message(role="user", content="Charged twice.")]
-    assert tools_fingerprint(tools) == "de11e35d10b209bc"
+    assert tools_fingerprint(tools) == "eaff21b12c6a840e"
     assert [t.name for t in tools] == [
         "Read",
         "Grep",

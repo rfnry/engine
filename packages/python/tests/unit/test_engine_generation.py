@@ -187,7 +187,9 @@ async def test_calls_after_an_accepted_output_are_answered_but_never_run(
         )
     )
     engine = Engine(
-        fixtures, tools=[Tool("lookup_order", body=lookup), TOOLS[1]], models={"strong": llm}
+        fixtures,
+        tools=[Tool("lookup_order", "Fetch an order", body=lookup), TOOLS[1]],
+        models={"strong": llm},
     )
     run = await engine.run("support", "acme", "x", expect=Verdict)
     assert isinstance(run, Generation) and looked == []
@@ -214,7 +216,9 @@ async def test_calls_in_a_reply_that_ran_out_of_room_are_answered_but_never_run(
     )
     llm = Scripted(cut, text_reply("It is on its way."))
     engine = Engine(
-        fixtures, tools=[Tool("lookup_order", body=lookup), TOOLS[1]], models={"strong": llm}
+        fixtures,
+        tools=[Tool("lookup_order", "Fetch an order", body=lookup), TOOLS[1]],
+        models={"strong": llm},
     )
     first = await engine.run("support", "acme", "Where is A-1?")
     assert isinstance(first, Generation) and first.reply == "Let me look" and looked == []
@@ -392,7 +396,7 @@ async def test_a_slow_declared_tool_times_out(fixtures: Path) -> None:
     )
     engine = Engine(
         fixtures,
-        tools=[Tool("lookup_order", body=_slow), TOOLS[1]],
+        tools=[Tool("lookup_order", "Fetch an order", body=_slow), TOOLS[1]],
         tool_timeout=0.05,
         models={"strong": llm},
     )

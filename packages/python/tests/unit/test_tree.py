@@ -27,19 +27,7 @@ def test_generation_agent_carries_body_agents_tools_tasks() -> None:
     assert support.body.startswith("You are the support desk")
     assert support.agents == ["triage"]
     assert support.tasks == {"triage": ""}
-    contract = support.tools["lookup_order"]
-    assert contract.input is not None and contract.input["order_id"].required is True
-    assert "Returns the order as JSON." in contract.description
-    adoption = support.tools["now"]
-    assert adoption.description == "The current UTC time" and adoption.input is None
-
-
-def test_a_tool_file_is_a_contract_or_a_name(tmp_path: Path) -> None:
-    (tmp_path / "a" / "tools").mkdir(parents=True)
-    (tmp_path / "a" / "AGENT.md").write_text("---\nname: a\nkind: generation\nmodel: strong\n---\n")
-    (tmp_path / "a" / "tools" / "x.md").write_text("---\ninput: {q: {type: string}}\n---\n")
-    with pytest.raises(ConfigurationError, match="description"):
-        load_agent(tmp_path / "a")
+    assert support.tools == ["lookup_order", "now"]
 
 
 def test_decision_agent_carries_typed_questions_and_route() -> None:
@@ -111,14 +99,11 @@ def _agent(
     tools: tuple[str, ...] = (),
 ) -> None:
     (root / name).mkdir(parents=True)
-    (root / name / "AGENT.md").write_text(f"---\nname: {name}\n{front}---\n")
+    listed = f"tools: [{', '.join(tools)}]\n" if tools else ""
+    (root / name / "AGENT.md").write_text(f"---\nname: {name}\n{front}{listed}---\n")
     for qid, text in (questions or {}).items():
         (root / name / "questions").mkdir(exist_ok=True)
         (root / name / "questions" / f"{qid}.md").write_text(text)
-    if tools:
-        (root / name / "TOOLS.md").write_text(
-            "---\n" + "".join(f"{t}: Does {t}\n" for t in tools) + "---\n"
-        )
 
 
 CHOICE = "---\ntype: choice\noptions: {x: X, y: Y}\n---\nWhich?\n"
@@ -132,7 +117,7 @@ CHECK = "---\ntype: check\n---\nIs it?\n"
             "kind: decision\nmodel: judge\n",
             {"q": CHECK},
             ("t",),
-            "decision agent 'a' cannot declare tools",
+            "decision agent 'a' cannot list tools:",
         ),
         (
             "kind: decision\nmodel: judge\nworkspace: true\n",
@@ -187,68 +172,33 @@ def test_routes_and_agents_must_resolve(tmp_path: Path, front: str, message: str
 
 
 @pytest.mark.parametrize(
-    ("front", "tool", "key", "where"),
+    ("front", "key"),
     [
-        ("kind: generation\nmodel: strong\nagent: [b]\n", None, "agent", "AGENT.md"),
-        (
-            "kind: generation\nmodel: strong\nworkpsace: true\n",
-            None,
-            "workpsace",
-            "AGENT.md",
-        ),
+        ("kind: generation\nmodel: strong\nagent: [b]\n", "agent"),
+        ("kind: generation\nmodel: strong\nworkpsace: true\n", "workpsace"),
         (
             "kind: decision\nmodel: judge\nroute: {by: q, to: {x: b}, min_confidance: 0.9}\n",
-            None,
             "route.min_confidance",
-            "AGENT.md",
         ),
-        (
-            "kind: generation\nmodel: strong\n",
-            "---\ndescription: T\nsummary: S\n---\n",
-            "summary",
-            "t.md",
-        ),
-        (
-            "kind: generation\nmodel: strong\n",
-            "---\ndescription: T\ninput:\n  q: {type: string, requried: true}\n---\n",
-            "input.q.requried",
-            "t.md",
-        ),
+        ("kind: generation\nmodel: strong\ntools: [a]\ntool: [b]\n", "tool"),
     ],
 )
 def test_an_unknown_frontmatter_key_is_refused_by_name(
-    tmp_path: Path, front: str, tool: str | None, key: str, where: str
+    tmp_path: Path, front: str, key: str
 ) -> None:
     _agent(tmp_path, "a", front, {"q": CHOICE} if "decision" in front else {})
-    if tool is not None:
-        (tmp_path / "a" / "tools").mkdir()
-        (tmp_path / "a" / "tools" / "t.md").write_text(tool)
-    path = tmp_path / "a" / ("tools/t.md" if tool is not None else "AGENT.md")
+    path = tmp_path / "a" / "AGENT.md"
     with pytest.raises(ConfigurationError) as refused:
         load_agent(tmp_path / "a")
     said = str(refused.value)
     assert said.startswith(f"frontmatter: unknown key {key!r} in {path}")
-    assert said.split(";")[0].endswith(where)
+    assert said.split(";")[0].endswith("AGENT.md")
     assert ("; check its spelling" if "." in key else "; it takes ") in said
 
 
 def test_only_true_and_false_are_booleans_in_frontmatter(tmp_path: Path) -> None:
     _agent(tmp_path, "a", "kind: generation\nmodel: strong\nworkspace: true\n")
-    (tmp_path / "a" / "tools").mkdir()
-    (tmp_path / "a" / "tools" / "t.md").write_text(
-        "---\ndescription: T\ninput:\n"
-        "  q: {type: string, required: true}\n"
-        "  r: {type: string, required: yes}\n"
-        "  s: {type: string, required: False}\n"
-        "---\n"
-    )
-    spec = load_agent(tmp_path / "a")
-    assert spec.workspace is True and spec.tools["t"].input is not None
-    assert {k: f.required for k, f in spec.tools["t"].input.items()} == {
-        "q": True,
-        "r": True,
-        "s": False,
-    }
+    assert load_agent(tmp_path / "a").workspace is True
     choice = "---\ntype: choice\noptions: {yes: Agrees, no: Disagrees, off: Unrelated}\n---\n?\n"
     _agent(tmp_path, "d", "kind: decision\nmodel: judge\n", {"q": choice})
     question = load_agent(tmp_path / "d").questions["q"]
@@ -550,7 +500,6 @@ def _shelf(root: Path, coding: str = "reads: [books, writing]\n") -> Path:
         root,
         "writing",
         "kind: generation\nmodel: strong\ndescription: Writes\n",
-        tools=("draft",),
     )
     (root / "writing" / "voice.md").write_text("---\ndescription: The voice\n---\nWarm.\n")
     (root / "books" / "python").mkdir(parents=True)

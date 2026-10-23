@@ -76,13 +76,6 @@ def test_the_engine_takes_no_name(tmp_path: Path) -> None:
         Engine(tmp_path, name="a", models={})  # type: ignore[call-arg]
 
 
-def test_a_tool_file_with_a_name_line_is_told_its_file_names_it(tmp_path: Path) -> None:
-    write(tmp_path / "a/AGENT.md", agent_md("a"))
-    write(tmp_path / "a/tools/fetch.md", "---\nname: fetch\ndescription: Fetch\n---\n")
-    with pytest.raises(ConfigurationError, match="its file names it, so remove the name: line"):
-        load_tree(tmp_path)
-
-
 def test_the_model_line_is_part_of_the_agent_s_fingerprint(tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a", model="strong"))
     before = load_tree(tmp_path)["a"].fingerprint

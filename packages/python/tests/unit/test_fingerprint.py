@@ -157,11 +157,17 @@ async def test_a_code_tool_s_schema_changes_the_tools_fingerprint(fixtures: Path
     plain = await generation(fixtures)
     zoned = await generation(
         fixtures,
-        tools=[Tool("lookup_order", body=lookup_order), Tool("now", body=now, args=NowArgs)],
+        tools=[
+            Tool("lookup_order", "Fetch an order", body=lookup_order),
+            Tool("now", "The current time", body=now, args=NowArgs),
+        ],
     )
     zoned_again = await generation(
         fixtures,
-        tools=[Tool("lookup_order", body=lookup_order), Tool("now", body=now, args=ZoneArgs)],
+        tools=[
+            Tool("lookup_order", "Fetch an order", body=lookup_order),
+            Tool("now", "The current time", body=now, args=ZoneArgs),
+        ],
     )
     assert plain.fingerprint.agent == zoned.fingerprint.agent == zoned_again.fingerprint.agent
     assert (

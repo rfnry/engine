@@ -17,8 +17,6 @@ def coding(root: Path) -> Path:
         root / "AGENT.md",
         "---\nname: coding\nkind: generation\nmodel: strong\ndescription: Codes\n---\nHi\n",
     )
-    write(root / "tools/run.md", "---\nname: run\ndescription: Runs\n---\n")
-    write(root / "TOOLS.md", "---\nwalk: Walks\n---\n")
     write(root / "tasks/review.md", "---\ndescription: Reviews\n---\nReview it.\n")
     write(root / "questions/q.md", "---\ntype: check\n---\nIs it?\n")
     write(root / "notes/style.md", "---\ndescription: The house style\n---\nTabs never.\n")
@@ -115,7 +113,7 @@ def test_a_folder_without_agent_md_shows_its_declaration_folders_as_content(
     root = coding(tmp_path / "coding")
     shown = entries(root, False)
     assert "tasks/" in shown and "  review.md — Reviews" in shown
-    assert "tools/" in shown and "  run.md — Runs" in shown and "questions/" in shown
+    assert "questions/" in shown
 
 
 def test_read_folders_follow_under_their_path_without_an_agent_s_declarations(
@@ -150,7 +148,7 @@ def test_content_leaves_out_what_the_prompt_already_holds(tmp_path: Path) -> Non
         "skills/pdf/reference.md",
     ]
     plain = [rel for rel, _ in content(root, False)]
-    assert "AGENT.md" in plain and "TOOLS.md" in plain and "tools/run.md" in plain
+    assert "AGENT.md" in plain
     assert "tasks/review.md" in plain
 
 

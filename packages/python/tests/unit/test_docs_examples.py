@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import rfnry_engine
 from rfnry_engine import (
@@ -219,11 +219,6 @@ def tree(root: Path) -> None:
         root / "support/skills/escalate.md",
         "---\ndescription: Hand a conversation to a person\n---\nSay so, then stop.\n",
     )
-    write(root / "support/TOOLS.md", markdown("fetch_invoice: Fetch"))
-    write(
-        root / "support/tools/lookup_order.md",
-        markdown("description: Fetch an order by id\ninput:"),
-    )
     write(root / "frontdesk/AGENT.md", markdown("description: Routes an incoming message"))
     write(
         root / "frontdesk/questions/intent.md",
@@ -252,7 +247,7 @@ def tree(root: Path) -> None:
 
 
 class InvoiceArgs(BaseModel):
-    invoice_id: str
+    invoice_id: str = Field(description="The invoice id")
 
 
 async def fetch_invoice(args: dict[str, Any]) -> list[Part]:
@@ -265,8 +260,8 @@ class Invoices:
 
 
 TOOLS = [
-    Tool("lookup_order", body=lookup_order),
-    Tool("fetch_invoice", body=fetch_invoice, args=InvoiceArgs),
+    Tool("lookup_order", "Fetch an order by its id", body=lookup_order),
+    Tool("fetch_invoice", "Fetch an invoice as its PDF", body=fetch_invoice, args=InvoiceArgs),
 ]
 
 
@@ -297,6 +292,7 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
         **{name: getattr(rfnry_engine, name) for name in rfnry_engine.__all__},
         "Path": Path,
         "BaseModel": BaseModel,
+        "Field": Field,
         "asyncio": asyncio,
         "root": root,
         "llm": llm,

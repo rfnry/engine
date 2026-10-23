@@ -11,7 +11,6 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
-    RootModel,
     ValidationError,
     field_validator,
 )
@@ -71,6 +70,7 @@ class AgentFront(BaseModel):
     workspace: bool = False
     preload: bool = False
     reads: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -96,6 +96,19 @@ class AgentFront(BaseModel):
             )
         return value
 
+    @field_validator("tools")
+    @classmethod
+    def _tools_are_plain_and_listed_once(cls, value: list[str]) -> list[str]:
+        for name in value:
+            if not name.strip() or name != name.strip():
+                raise ValueError(
+                    f"tree: an entry must not be blank or padded, got {name!r}; write the name of a Tool the engine is given, such as tools: [fetch_orders]"
+                )
+        twice = sorted({name for name in value if value.count(name) > 1})
+        if twice:
+            raise ValueError(f"tree: {twice[0]!r} is listed twice; list each tool once")
+        return value
+
 
 class QuestionFront(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -108,35 +121,10 @@ class QuestionFront(BaseModel):
     no: str | dict[str, JsonValue] | list[JsonValue] | None = None
 
 
-class ToolField(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    type: Literal["string", "number", "integer", "boolean", "object", "array"]
-    description: str = ""
-    required: bool = False
-
-
-class ToolFront(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    description: str | None = None
-    input: dict[str, ToolField] | None = None
-
-
-class ToolsFront(RootModel[dict[str, str | None]]):
-    pass
-
-
 class TaskFront(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     description: str | None = None
-
-
-class ToolDecl(BaseModel):
-    name: str
-    description: str
-    input: dict[str, ToolField] | None
 
 
 class Skill(BaseModel):
@@ -156,7 +144,7 @@ class AgentSpec(BaseModel):
     agents: list[str]
     route: RouteSpec | None
     questions: dict[str, Question]
-    tools: dict[str, ToolDecl]
+    tools: list[str]
     tasks: dict[str, str]
     task_bodies: dict[str, str] = Field(default_factory=dict)
     fingerprint: str
@@ -198,54 +186,6 @@ def _question(path: Path) -> Question:
         return Check(instructions=instructions, yes=front.yes, no=front.no)
     except ValidationError as exc:
         raise ConfigurationError(f"tree: invalid question {path}; {plainly(exc)}") from exc
-
-
-def _listed(path: Path) -> dict[str, ToolDecl]:
-    if not path.is_file():
-        return {}
-    front, body = parse_frontmatter_doc(_read(path), model=ToolsFront, source=path, label="tools")
-    if body.strip():
-        raise ConfigurationError(
-            f"tree: {path} lists its tools in its frontmatter; a tool that needs more has a file in tools/"
-        )
-    bare = [name for name, said in front.root.items() if said is None]
-    if bare:
-        name = bare[0]
-        raise ConfigurationError(
-            f"tree: {path} lists {name!r} without a description; write it as {name}: what it does, or give it a file in tools/"
-        )
-    blank = [name for name, said in front.root.items() if said is not None and not said.strip()]
-    if blank:
-        raise ConfigurationError(
-            f"tree: {path} gives {', '.join(map(repr, blank))} a blank description; write what it does"
-        )
-    return {
-        name: ToolDecl(name=name, description=said, input=None)
-        for name, said in front.root.items()
-        if said is not None
-    }
-
-
-def _tool_file(path: Path) -> ToolDecl:
-    front, body = parse_frontmatter_doc(_read(path), model=ToolFront, source=path, label="tool")
-    if front.description is None or not front.description.strip():
-        raise ConfigurationError(
-            f"tree: tool file {path} gives no description; a tool that only needs its name is listed in TOOLS.md"
-        )
-    written = body.strip()
-    description = f"{front.description}\n\n{written}" if written else front.description
-    return ToolDecl(name=path.stem, description=description, input=front.input)
-
-
-def _tools(directory: Path, agent: str) -> dict[str, ToolDecl]:
-    listed = _listed(directory / "TOOLS.md")
-    filed = {p.stem: _tool_file(p) for p in _markdown_files(directory / "tools")}
-    twice = sorted(name for name in filed if name in listed)
-    if twice:
-        raise ConfigurationError(
-            f"tree: agent {agent!r} declares {', '.join(map(repr, twice))} in both TOOLS.md and tools/; keep one"
-        )
-    return dict(sorted({**listed, **filed}.items()))
 
 
 def _task(path: Path) -> tuple[str, str]:
@@ -477,7 +417,6 @@ def load_agent(
     )
     agent = front.name
     questions = _questions(directory / "questions")
-    tools = _tools(directory, agent)
     task_files = _markdown_files(directory / "tasks")
     task_questions: dict[str, dict[str, Question]] = {}
     task_bodies: dict[str, str] = {}
@@ -499,9 +438,9 @@ def load_agent(
             raise ConfigurationError(
                 f"tree: decision agent {agent!r} asks {', '.join(map(repr, clash))} in both questions/ and tasks/{task}/; rename one"
             )
-    if front.kind == "decision" and tools:
+    if front.kind == "decision" and front.tools:
         raise ConfigurationError(
-            f"tree: decision agent {agent!r} cannot declare tools; tools are for generation agents, so give them to one it routes to"
+            f"tree: decision agent {agent!r} cannot list tools:; tools are for generation agents, so give them to one it routes to"
         )
     if front.kind == "decision" and front.workspace:
         raise ConfigurationError(
@@ -554,7 +493,7 @@ def load_agent(
         agents=front.agents,
         route=front.route,
         questions=questions,
-        tools=tools,
+        tools=front.tools,
         tasks=tasks,
         task_bodies=task_bodies,
         fingerprint=folder_fingerprint(files, read),

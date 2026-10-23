@@ -147,7 +147,10 @@ async def test_a_run_still_working_at_an_export_is_in_the_next_one(
     refinery = Refinery(storage)
     engine = Engine(
         fixtures,
-        tools=[Tool("lookup_order", body=lookup_order), Tool("now", body=slow)],
+        tools=[
+            Tool("lookup_order", "Fetch an order", body=lookup_order),
+            Tool("now", "The current time", body=slow),
+        ],
         refinery=refinery,
         models={"strong": Model()},
     )

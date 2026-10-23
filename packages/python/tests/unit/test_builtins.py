@@ -45,7 +45,7 @@ async def test_grep_files_and_content() -> None:
 
 async def test_glob_and_ls() -> None:
     found = await _tools().dispatch("Glob", {"pattern": "**/*.md"})
-    assert "tools/lookup_order.md" in str(found).splitlines()
+    assert "tasks/triage.md" in str(found).splitlines()
     listing = await _tools().dispatch("LS", {})
     assert "rules/" in str(listing).splitlines() and "AGENT.md" in str(listing).splitlines()
 
