@@ -2049,11 +2049,10 @@ Everything the package exports, by role.
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a tree with
 no `AGENT.md`, a link to a folder that holds it or one that would reach an agent twice, a bad
-`AGENT.md` without a plain `name:` or a `model:`, a `models` that is not a mapping of names to adapters, a model no agent runs on, an agent whose model has not its kind's method, two agents with one name, a `name:` in a tool file
-— the file names it — an unknown key in the frontmatter of an `AGENT.md`, a tool file or a question (`frontmatter: unknown
-key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a
+`AGENT.md` without a plain `name:` or a `model:`, a `models` that is not a mapping of names to adapters, a model no agent runs on, an agent whose model has not its kind's method, two agents with one name, an unknown key in the frontmatter of an `AGENT.md` or a question
+(`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a
 `description:` that is not a string in a file the map would show, a decision agent with `preload:
-true` or tools, a declaration the Tools section refuses, a `reads:` that is not a path from the
+true` or `tools:`, a `reads:` that is not a path from the
 root, names no folder of the tree, leaves the root, names the agent's own folder, one that holds it
 or one inside it, or names two folders one inside the other, `reads:` on a decision agent or on an
 agent whose folder is a link to a folder elsewhere, a file `preload: true` would send that neither `Read` nor `Load` would hand
@@ -2061,7 +2060,9 @@ over — over 20 MB, of a type the model's `media_types` does not name, or not t
 — a question with instructions both in its frontmatter and in its body or in neither, a decision
 agent with a file straight in `tasks/` or a task that repeats an id of its `questions/`, a route
 entry that names a task its agent does not have or gives a decision agent nothing to ask, a tool
-listed with no `Tool`, a `Tool` without a body or a description or that no agent lists, a run of an agent whose model was not given, or of a router whose target's model was not given, a missing workspace, a `Local` root that is not a directory, a `shell` that is not a list of
+listed with no `Tool`, a `Tool` without a body or a description or that no agent lists, a run of
+an agent whose model was not given, or of a router whose target's model was not given, a missing
+workspace, a `Local` root that is not a directory, a `shell` that is not a list of
 strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and `write`, a `Workspace` without a scope, a `max_steps`, `max_depth`,
 `tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is not positive,
 an `approve` that returns anything but `True` or `False`, a judge that is not a decision agent or a

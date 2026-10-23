@@ -187,3 +187,12 @@ def test_the_tools_an_agent_lists_are_part_of_its_fingerprint(tmp_path: Path) ->
     before = load_tree(shop(tmp_path, "[fetch_orders]"))["shop"].fingerprint
     after = load_tree(shop(tmp_path, "[fetch_orders, refund]"))["shop"].fingerprint
     assert before != after
+
+
+def test_every_tool_without_a_body_is_refused_before_any_without_a_description(
+    tmp_path: Path,
+) -> None:
+    blank = Tool("fetch_orders", "", body=fetch)
+    bodiless = Tool("refund", "Refund a charge")
+    with pytest.raises(ConfigurationError, match="tool 'refund' has no body"):
+        Engine(shop(tmp_path), models={}, tools=[blank, bodiless])
