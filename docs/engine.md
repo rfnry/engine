@@ -1755,8 +1755,7 @@ fetch_invoice when they ask for a copy.
 The `description` is what the model reads about the tool and its first line is what the prompt's
 list of tools shows. `args` is a pydantic model: its `Field(description=...)`s and its docstring
 reach the model in the tool's schema, and it checks a call's arguments before the body runs. An
-`input_schema` states the schema as a dict instead; the body then receives the arguments as the
-model sent them and checks them itself. A `Tool` needs a body and a description. An agent lists a
+`input_schema` states the schema as a dict instead. A `Tool` needs a body and a description. An agent lists a
 name once, and any number of agents may list the same tool. Listing a name the engine gives the
 agent anyway is a `ConfigurationError`: the builtins, `History`, `Delegate` with `agents:`, a
 workspace's with `workspace: true`.

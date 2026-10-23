@@ -139,6 +139,7 @@ def test_a_listed_tool_without_a_tool_is_refused_when_the_agent_s_model_is_given
         (Tool("fetch_orders", "Fetch"), "tool 'fetch_orders' has no body"),
         (Tool("fetch_orders", "", body=fetch), "tool 'fetch_orders' has no description"),
         (Tool("fetch_orders", "   ", body=fetch), "tool 'fetch_orders' has no description"),
+        (Tool("fetch_orders", None, body=fetch), "tool 'fetch_orders' has no description"),  # type: ignore[arg-type]
     ],
 )
 def test_a_catalog_tool_needs_a_body_and_a_description(

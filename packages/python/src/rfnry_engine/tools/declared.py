@@ -39,7 +39,7 @@ def check_declarations(
                 f"declared: tool {name!r} has no body; give its Tool the function that runs it"
             )
     for name, tool in code.items():
-        if not tool.description.strip():
+        if not isinstance(tool.description, str) or not tool.description.strip():
             raise ConfigurationError(
                 f"declared: tool {name!r} has no description; give its Tool one, since nothing else describes it to the model"
             )

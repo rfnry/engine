@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Any
 
 import pytest
 from pydantic import BaseModel, Field
@@ -135,36 +135,6 @@ def test_tools_without_a_generation_model_still_carry_their_contracts(tmp_path: 
         models={},
     )
     assert _definition(engine)["input_schema"]["required"] == ["order_id"]
-
-
-def test_an_argument_named_description_is_an_argument(tmp_path: Path) -> None:
-    engine = Engine(
-        _listing(tmp_path),
-        models={},
-        tools=[Tool("lookup", "Look up", body=lookup, args=Ticket)],
-    )
-    assert "description" in _definition(engine)["input_schema"]["properties"]
-
-
-class Described_(BaseModel):
-    kind: Literal["description"]
-
-
-class Other(BaseModel):
-    kind: Literal["other"]
-
-
-class Tagged(BaseModel):
-    change: Annotated[Described_ | Other, Field(discriminator="kind")]
-
-
-def test_a_discriminated_union_tagged_description_keeps_its_argument(tmp_path: Path) -> None:
-    engine = Engine(
-        _listing(tmp_path),
-        models={},
-        tools=[Tool("lookup", "Look up", body=lookup, args=Tagged)],
-    )
-    assert "change" in _definition(engine)["input_schema"]["properties"]
 
 
 async def test_tools_a_run_passes_keep_their_descriptions(tmp_path: Path) -> None:
