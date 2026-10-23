@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
-from rfnry_engine.tools.declared import check_declarations, declared_tools, prose
+from rfnry_engine.tools.declared import check_declarations, declared_tools
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tree import load_tree
@@ -209,40 +209,3 @@ async def test_an_adapter_editing_a_listed_schema_changes_no_later_run_in_any_sc
     second = await engine.run("a", "other", "hi")
     assert seen == ["string", "string"]
     assert first.fingerprint.tools == second.fingerprint.tools
-
-
-@pytest.mark.parametrize(
-    ("schema", "where"),
-    [
-        ({"description": "Top"}, "description"),
-        ({"properties": {"a": {"description": "A"}}}, "properties.a.description"),
-        ({"anyOf": [{"type": "null"}, {"description": "B"}]}, "anyOf.1.description"),
-        ({"properties": {"a": {"default": {"description": "x"}}}}, None),
-        ({"properties": {"a": {"examples": [{"description": "x"}]}}}, None),
-        ({"properties": {"a": {"const": {"description": "x"}}}}, None),
-        ({"properties": {"a": {"enum": [{"description": "x"}]}}}, None),
-        ({"properties": {"description": {"type": "string"}}}, None),
-        ({"properties": {"enum": {"type": "string"}}}, None),
-        ({"properties": {"default": {"type": "string"}}}, None),
-        (
-            {"properties": {"properties": {"type": "string", "description": "x"}}},
-            "properties.properties.description",
-        ),
-        (
-            {"properties": {"definitions": {"type": "string", "description": "x"}}},
-            "properties.definitions.description",
-        ),
-        (
-            {"properties": {"a.properties": {"type": "string", "description": "x"}}},
-            "properties.a.properties.description",
-        ),
-        (
-            {"$defs": {"patternProperties": {"description": "x"}}},
-            "$defs.patternProperties.description",
-        ),
-    ],
-)
-def test_prose_finds_the_first_description_and_skips_data(
-    schema: dict[str, Any], where: str | None
-) -> None:
-    assert prose(schema) == where

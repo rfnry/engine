@@ -12,32 +12,6 @@ from rfnry_engine.tools.tools import Tool
 from rfnry_engine.tools.workspace import WORKSPACE_NAMES
 from rfnry_engine.tree import AgentSpec
 
-_DATA = {"default", "examples", "const", "enum", "discriminator"}
-_NAMED = {"properties", "$defs", "definitions", "patternProperties"}
-
-
-def prose(schema: object, at: str = "") -> str | None:
-    return _prose(schema, at, False)
-
-
-def _prose(schema: object, at: str, names: bool) -> str | None:
-    if isinstance(schema, dict):
-        for key, value in schema.items():
-            if not names and key in _DATA:
-                continue
-            here = f"{at}.{key}" if at else str(key)
-            if not names and key == "description" and isinstance(value, str):
-                return here
-            found = _prose(value, here, not names and key in _NAMED)
-            if found is not None:
-                return found
-    elif isinstance(schema, list):
-        for index, item in enumerate(schema):
-            found = _prose(item, f"{at}.{index}" if at else str(index), False)
-            if found is not None:
-                return found
-    return None
-
 
 @cache
 def described(args: type[BaseModel]) -> str:

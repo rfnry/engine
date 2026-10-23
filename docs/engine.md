@@ -538,10 +538,9 @@ run = await engine.run("support", scope="acme", input=message, tags={"commit": "
 run.tags                                             # {"commit": "4f2c9e1", "arm": "b"}
 ```
 
-Ask for a typed reply and the model is offered an `Output` tool shaped like it. The model carries no
-descriptions, in a field or as a docstring: a description is prose from code, and is refused with
-`engine: expect= model Verdict carries a description at properties.reason.description; say what the
-output means in AGENT.md or a task`. What the output means is said in `AGENT.md` or a task. When the model
+Ask for a typed reply and the model is offered an `Output` tool shaped like it. The `expect=` model
+is the output's contract, defined in code: its field descriptions and its docstring reach the model
+in the tool's schema, and what the output means beyond that is said in `AGENT.md` or a task. When the model
 calls it with input that fits, the run ends and `run.reply` is that input as JSON; input that does
 not fit goes back to the model with what is wrong. A model that answers in text instead ends the
 run with that text as `run.reply`, which does not parse:
@@ -2072,7 +2071,7 @@ judge, a teacher or a replay's agent in the candidate included — a task the ag
 does not. `InputError` for a call the library refuses: an empty scope, a workspace of another scope,
 a history that breaks a tool call from its result, a `start` outside the history or without one,
 tags outside their limits, runtime questions that do not fit, a runtime id the run already asks,
-questions for a generation agent, an `expect=` model that carries a description, a decision run with no question to ask, media the decision
+questions for a generation agent, a decision run with no question to ask, media the decision
 model does not declare, a media part with both or neither of `data` and `url`, a correction of the
 wrong shape or for a question the run was not asked, a `delete_runs` or `verify_absent` given both
 `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an `export` or a `replay` given
