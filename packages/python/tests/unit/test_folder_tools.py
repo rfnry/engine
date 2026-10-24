@@ -1,0 +1,491 @@
+import json
+import re
+from pathlib import Path
+
+import pytest
+from pydantic import JsonValue
+
+from rfnry_engine import Engine
+from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.models import Text
+from rfnry_engine.tools.engine_tools import EngineTools
+from rfnry_engine.tools.folder import project_of
+from rfnry_engine.tree import load_tree
+
+DEF = '{"description": "Do it", "input_schema": {"type": "object"}}'
+RUN = "def run(args, call):\n    return {}\n"
+
+
+def write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def agent_md(name: str, kind: str = "generation", model: str = "strong", extra: str = "") -> str:
+    return f"---\nname: {name}\nkind: {kind}\nmodel: {model}\n{extra}---\nWork.\n"
+
+
+def tool(
+    folder: Path,
+    name: str,
+    description: str = "Do it",
+    body: str = RUN,
+    input_schema: dict[str, JsonValue] | None = None,
+) -> None:
+    schema = {"type": "object"} if input_schema is None else input_schema
+    write(folder / f"{name}.json", json.dumps({"description": description, "input_schema": schema}))
+    write(folder / f"{name}.py", body)
+
+
+def test_an_agent_sees_the_tools_of_its_folder_and_every_folder_above(tmp_path: Path) -> None:
+    tool(tmp_path / "tools", "notify")
+    tool(tmp_path / "support/tools", "lookup_order")
+    write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
+    tool(tmp_path / "support/billing/tools", "refund")
+    write(tmp_path / "support/triage/AGENT.md", agent_md("triage"))
+    tree = load_tree(tmp_path)
+    assert list(tree["billing"].folder_tools) == ["lookup_order", "notify", "refund"]
+    assert list(tree["triage"].folder_tools) == ["lookup_order", "notify"]
+
+
+def test_the_nearest_folder_wins_a_name_clash(tmp_path: Path) -> None:
+    tool(tmp_path / "tools", "lookup_order", description="The team's")
+    write(tmp_path / "billing/AGENT.md", agent_md("billing"))
+    tool(tmp_path / "billing/tools", "lookup_order", description="Billing's own")
+    assert (
+        load_tree(tmp_path)["billing"].folder_tools["lookup_order"].description == "Billing's own"
+    )
+
+
+def test_a_tool_holds_its_definition_its_script_and_the_folder_that_holds_them(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    schema: dict[str, JsonValue] = {"type": "object", "required": ["order_id"]}
+    write(
+        tmp_path / "a/tools/fetch.json",
+        json.dumps(
+            {"description": "Fetch", "input_schema": schema, "output_schema": {"type": "object"}}
+        ),
+    )
+    write(tmp_path / "a/tools/fetch.py", RUN)
+    fetch = load_tree(tmp_path)["a"].folder_tools["fetch"]
+    assert (fetch.name, fetch.description) == ("fetch", "Fetch")
+    assert (fetch.input_schema, fetch.output_schema) == (schema, {"type": "object"})
+    assert (fetch.script, fetch.folder) == (tmp_path / "a/tools/fetch.py", tmp_path / "a/tools")
+
+
+@pytest.mark.parametrize(
+    ("files", "said"),
+    [
+        ({"x.json": DEF}, "has no x.py beside it"),
+        ({"x.py": RUN}, "has no x.json beside it"),
+        (
+            {"x.json": '{"description": "D", "inputSchema": {}}', "x.py": RUN},
+            "unknown key 'inputSchema'",
+        ),
+        (
+            {"x.json": '{"description": "D", "input_schema": {"type": "strng"}}', "x.py": RUN},
+            "input_schema that is not a valid JSON Schema",
+        ),
+        ({"x.json": DEF, "x.py": "import rfnry_engine\n" + RUN}, "imports 'rfnry_engine'"),
+        ({"x.json": DEF, "x.py": "def run(args, call:\n"}, "x.py"),
+    ],
+)
+def test_a_tool_folder_mistake_is_refused_naming_the_file(
+    tmp_path: Path, files: dict[str, str], said: str
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    for name, text in files.items():
+        write(tmp_path / "a/tools" / name, text)
+    with pytest.raises(ConfigurationError, match=re.escape(said)):
+        load_tree(tmp_path)
+
+
+def test_each_pinned_tool_folder_message_names_its_file_and_its_fix(tmp_path: Path) -> None:
+    folder = tmp_path / "a/tools"
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(folder / "x.json", DEF)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {folder / 'x.json'} has no x.py beside it; a tool is x.json and x.py in a tools/ folder"
+    )
+    (folder / "x.json").unlink()
+    write(folder / "x.py", RUN)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {folder / 'x.py'} has no x.json beside it; describe the tool in x.json, or name a helper _x.py"
+    )
+    write(folder / "x.json", '{"description": "D", "input_schema": {}, "inputSchema": {}}')
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {folder / 'x.json'} has the unknown key 'inputSchema'; a tool's JSON takes description, input_schema and output_schema"
+    )
+    write(folder / "x.json", DEF)
+    write(folder / "x.py", "from rfnry_engine.models import Text\n" + RUN)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {folder / 'x.py'} imports 'rfnry_engine'; a tool never imports the engine, so keep what it needs in the tool or a helper beside it"
+    )
+
+
+@pytest.mark.parametrize("key", ["input_schema", "output_schema"])
+def test_a_schema_that_does_not_compile_is_refused_with_its_reason(
+    tmp_path: Path, key: str
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    bad = {"type": "object", "properties": {"n": {"minLength": -1}}}
+    schemas = {"input_schema": {"type": "object"}, key: bad}
+    write(tmp_path / "a/tools/x.json", json.dumps({"description": "D", **schemas}))
+    write(tmp_path / "a/tools/x.py", RUN)
+    said = f"tree: {tmp_path / 'a/tools/x.json'} has an {key} that is not a valid JSON Schema: "
+    with pytest.raises(
+        ConfigurationError, match=rf"^{re.escape(said)}.*minimum.*; fix it in that file$"
+    ):
+        load_tree(tmp_path)
+
+
+def test_a_schema_is_compiled_offline(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(
+        tmp_path / "a/tools",
+        "x",
+        input_schema={"type": "object", "$ref": "https://example.invalid/order.json"},
+    )
+    with pytest.raises(ConfigurationError, match="Retrieval is disabled"):
+        load_tree(tmp_path)
+
+
+@pytest.mark.parametrize("description", ["", "   ", None, 5])
+def test_a_tool_without_a_description_in_text_is_refused_naming_the_file(
+    tmp_path: Path, description: object
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    definition: dict[str, object] = {"input_schema": {"type": "object"}}
+    if description is not None:
+        definition["description"] = description
+    write(tmp_path / "a/tools/x.json", json.dumps(definition))
+    write(tmp_path / "a/tools/x.py", RUN)
+    with pytest.raises(
+        ConfigurationError, match=re.escape(f"{tmp_path / 'a/tools/x.json'} gives no description")
+    ):
+        load_tree(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [{"type": "array"}, {"properties": {}}, {"type": ["object"]}],
+)
+def test_an_input_schema_whose_top_level_is_not_an_object_is_refused_naming_the_file(
+    tmp_path: Path, schema: dict[str, JsonValue]
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "x", input_schema=schema)
+    with pytest.raises(
+        ConfigurationError,
+        match=re.escape(
+            f"{tmp_path / 'a/tools/x.json'} has an input_schema whose top level is not"
+        ),
+    ):
+        load_tree(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        ("[1, 2]", "is not a JSON object"),
+        ("{nope", "is not valid JSON"),
+        ('{"description": "D"}', "has no input_schema"),
+        ('{"description": "D", "input_schema": "object"}', "has no input_schema"),
+        (
+            '{"description": "D", "input_schema": {"type": "object"}, "output_schema": "x"}',
+            "has an output_schema that is not an object",
+        ),
+    ],
+)
+def test_a_malformed_definition_is_refused_naming_the_file(
+    tmp_path: Path, text: str, said: str
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/tools/x.json", text)
+    write(tmp_path / "a/tools/x.py", RUN)
+    with pytest.raises(
+        ConfigurationError, match=re.escape(f"tree: {tmp_path / 'a/tools/x.json'} {said}")
+    ):
+        load_tree(tmp_path)
+
+
+def test_a_definition_or_a_script_that_is_not_utf8_is_refused_naming_it(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "x")
+    (tmp_path / "a/tools/x.py").write_bytes(b"def run(args, call):\n    return '\xff'\n")
+    with pytest.raises(
+        ConfigurationError, match=re.escape(f"{tmp_path / 'a/tools/x.py'} is not UTF-8")
+    ):
+        load_tree(tmp_path)
+
+
+def test_a_helper_is_not_a_tool_and_a_script_may_import_it(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/tools/_client.py", "import json\n\nBASE = 'https://acme.test'\n")
+    tool(tmp_path / "a/tools", "fetch", body="import _client\nfrom _client import BASE\n" + RUN)
+    assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch"]
+
+
+def test_a_helper_s_imports_are_checked_too(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/tools/_client.py", "from rfnry_engine import Engine\n")
+    tool(tmp_path / "a/tools", "fetch", body="import _client\n" + RUN)
+    with pytest.raises(
+        ConfigurationError,
+        match=re.escape(f"{tmp_path / 'a/tools/_client.py'} imports 'rfnry_engine'"),
+    ):
+        load_tree(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "def run(args, call):\n    import _client\n    return {}\n",
+        "async def run(args, call):\n    from _client import BASE\n    return BASE\n",
+        "class Client:\n    import _client\n\n" + RUN,
+    ],
+)
+def test_a_helper_imported_inside_a_function_or_class_is_refused(tmp_path: Path, body: str) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/tools/_client.py", "BASE = 'https://acme.test'\n")
+    tool(tmp_path / "a/tools", "fetch", body=body)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {tmp_path / 'a/tools/fetch.py'} imports the helper '_client' inside a function or class; import it at the top of the script, since a helper is reachable only while its folder's scripts load"
+    )
+
+
+def test_a_module_imported_inside_a_function_is_checked_too(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    body = "def run(args, call):\n    import json\n    import rfnry_engine\n    return {}\n"
+    tool(tmp_path / "a/tools", "fetch", body=body)
+    with pytest.raises(ConfigurationError, match="imports 'rfnry_engine'"):
+        load_tree(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("line", "shown"),
+    [("from . import _client", "."), ("from ._client import BASE", "._client")],
+)
+def test_a_relative_import_is_refused_naming_the_file(
+    tmp_path: Path, line: str, shown: str
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/tools/_client.py", "BASE = 'https://acme.test'\n")
+    tool(tmp_path / "a/tools", "fetch", body=f"{line}\n" + RUN)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {tmp_path / 'a/tools/fetch.py'} imports {shown!r} relatively; import a helper of its tools/ folder by its name, such as import _client"
+    )
+
+
+def test_a_script_importing_the_server_s_own_code_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(tmp_path)
+    write(tmp_path / "pyproject.toml", "[project]\nname = 'myapp'\n")
+    write(tmp_path / "myapp/__init__.py", "SECRET = 1\n")
+    write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "agents/a/tools", "fetch", body="import json\nfrom myapp import SECRET\n" + RUN)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path / "agents")
+    assert str(caught.value) == (
+        f"tree: {tmp_path / 'agents/a/tools/fetch.py'} imports 'myapp' from {tmp_path / 'myapp/__init__.py'}, the server's own code; a tool imports the standard library, installed packages and helpers of its tools/ folder"
+    )
+    body = "import json\nimport urllib.request\nimport yaml\nimport not_installed_anywhere\n" + RUN
+    tool(tmp_path / "agents/a/tools", "fetch", body=body)
+    assert list(load_tree(tmp_path / "agents")["a"].folder_tools) == ["fetch"]
+
+
+def test_a_folder_of_the_server_without_an_init_is_refused_naming_the_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(tmp_path)
+    write(tmp_path / "pyproject.toml", "")
+    write(tmp_path / "pages/home.py", "TITLE = 'Home'\n")
+    write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "agents/a/tools", "fetch", body="from pages.home import TITLE\n" + RUN)
+    with pytest.raises(
+        ConfigurationError,
+        match=re.escape(f"imports 'pages' from {tmp_path / 'pages'}, the server's own code"),
+    ):
+        load_tree(tmp_path / "agents")
+
+
+def test_a_module_in_a_tools_folder_of_the_tree_is_not_the_server_s_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(tmp_path / "agents")
+    write(tmp_path / "pyproject.toml", "")
+    tool(tmp_path / "agents/tools", "notify")
+    write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "agents/a/tools", "fetch", body="import tools\n" + RUN)
+    assert list(load_tree(tmp_path / "agents")["a"].folder_tools) == ["fetch", "notify"]
+
+
+def test_a_package_installed_in_an_environment_inside_the_project_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(tmp_path / ".venv/site")
+    write(tmp_path / "pyproject.toml", "")
+    write(tmp_path / ".venv/site/vendored/__init__.py", "")
+    write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "agents/a/tools", "fetch", body="import vendored\n" + RUN)
+    with pytest.raises(ConfigurationError, match="imports 'vendored'"):
+        load_tree(tmp_path / "agents")
+    installed = (tmp_path / ".venv").resolve()
+    monkeypatch.setattr("rfnry_engine.tools.folder._installed", lambda: (installed,))
+    assert list(load_tree(tmp_path / "agents")["a"].folder_tools) == ["fetch"]
+
+
+def test_the_project_is_the_nearest_folder_with_a_pyproject_toml_else_the_root(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "agents/support").mkdir(parents=True)
+    assert project_of(tmp_path / "agents/support") == (tmp_path / "agents/support").resolve()
+    write(tmp_path / "pyproject.toml", "")
+    assert project_of(tmp_path / "agents/support") == tmp_path.resolve()
+    assert project_of(tmp_path) == tmp_path.resolve()
+
+
+def test_a_2020_12_keyword_compiles(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    schema: dict[str, JsonValue] = {
+        "type": "object",
+        "properties": {"pair": {"type": "array", "prefixItems": [{"type": "string"}]}},
+    }
+    tool(tmp_path / "a/tools", "pair", input_schema=schema)
+    assert load_tree(tmp_path)["a"].folder_tools["pair"].input_schema == schema
+
+
+@pytest.mark.parametrize(
+    ("name", "extra"),
+    [
+        ("Read", ""),
+        ("Load", ""),
+        ("History", ""),
+        ("Output", ""),
+        ("Delegate", "agents: [helper]\n"),
+        ("Shell", "workspace: true\n"),
+        ("Jobs", "workspace: true\n"),
+    ],
+)
+def test_a_tool_named_like_an_engine_tool_is_refused_naming_its_file(
+    tmp_path: Path, name: str, extra: str
+) -> None:
+    write(tmp_path / "support/AGENT.md", agent_md("support", extra=extra))
+    write(tmp_path / "helper/AGENT.md", agent_md("helper"))
+    tool(tmp_path / "support/tools", name)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {tmp_path / 'support/tools' / name}.json is named like {name!r}, a tool the engine gives agent 'support'; rename the tool"
+    )
+
+
+@pytest.mark.parametrize("name", ["Delegate", "Shell", "Write"])
+def test_a_tool_may_take_the_name_of_an_engine_tool_the_agent_is_not_given(
+    tmp_path: Path, name: str
+) -> None:
+    write(tmp_path / "support/AGENT.md", agent_md("support"))
+    tool(tmp_path / "support/tools", name)
+    assert list(load_tree(tmp_path)["support"].folder_tools) == [name]
+
+
+async def test_a_tools_folder_leaves_the_map_and_the_preload_and_stays_readable(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", extra="preload: true\n"))
+    write(tmp_path / "a/rules.md", "Be kind.\n")
+    tool(tmp_path / "a/tools", "fetch", body="BODY = 'fetches'\n" + RUN)
+    write(tmp_path / "a/tools/README.md", "How the tools work.\n")
+    spec = load_tree(tmp_path)["a"]
+    assert spec.listing == "rules.md"
+    sent = "".join(part.text for part in spec.preload if isinstance(part, Text))
+    assert "Be kind." in sent and "tools/" not in sent and "fetches" not in sent
+    surface = EngineTools(Engine(tmp_path, models={}), agent="a", scope="acme")
+    assert "fetches" in str(await surface.dispatch("Read", {"path": "tools/fetch.py"}))
+    assert "How the tools work." in str(await surface.dispatch("Read", {"path": "tools/README.md"}))
+
+
+def test_files_beside_the_tools_and_folders_inside_are_not_tools(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch")
+    write(tmp_path / "a/tools/README.md", "How the tools work.\n")
+    write(tmp_path / "a/tools/rates.csv", "a,b\n")
+    write(tmp_path / "a/tools/.draft.py", "import rfnry_engine\n")
+    write(tmp_path / "a/tools/data/codes.json", "[1, 2]\n")
+    write(tmp_path / "a/tools/data/convert.py", "import rfnry_engine\n")
+    assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch"]
+
+
+def test_editing_a_script_above_an_agent_changes_its_fingerprint(tmp_path: Path) -> None:
+    tool(tmp_path / "tools", "notify")
+    write(tmp_path / "support/tools/_client.py", "BASE = 1\n")
+    tool(tmp_path / "support/tools", "lookup_order", body="import _client\n" + RUN)
+    write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
+    write(tmp_path / "other/AGENT.md", agent_md("other"))
+    first = load_tree(tmp_path)
+    write(tmp_path / "tools/notify.py", RUN + "\n# louder\n")
+    second = load_tree(tmp_path)
+    assert second["billing"].fingerprint != first["billing"].fingerprint
+    assert second["other"].fingerprint != first["other"].fingerprint
+    write(tmp_path / "support/tools/_client.py", "BASE = 2\n")
+    third = load_tree(tmp_path)
+    assert third["billing"].fingerprint != second["billing"].fingerprint
+    assert third["other"].fingerprint == second["other"].fingerprint
+
+
+def test_a_tree_moved_with_its_tools_keeps_its_fingerprints(tmp_path: Path) -> None:
+    for root in (tmp_path / "here", tmp_path / "there"):
+        tool(root / "tools", "notify")
+        write(root / "support/AGENT.md", agent_md("support"))
+    here, there = load_tree(tmp_path / "here"), load_tree(tmp_path / "there")
+    assert here["support"].fingerprint == there["support"].fingerprint
+
+
+def test_a_decision_agent_sees_no_folder_tools(tmp_path: Path) -> None:
+    tool(tmp_path / "tools", "notify")
+    write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
+    write(tmp_path / "triage/questions/urgent.md", "---\ntype: check\n---\nUrgent?\n")
+    assert load_tree(tmp_path)["triage"].folder_tools == {}
+
+
+def test_a_decision_agent_s_folder_may_hold_tools_for_the_agents_inside_it(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "support/AGENT.md", agent_md("support", kind="decision", model="judge"))
+    write(tmp_path / "support/questions/urgent.md", "---\ntype: check\n---\nUrgent?\n")
+    tool(tmp_path / "support/tools", "lookup_order")
+    write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
+    tree = load_tree(tmp_path)
+    assert tree["support"].folder_tools == {}
+    assert list(tree["billing"].folder_tools) == ["lookup_order"]
+
+
+def test_a_tools_folder_above_only_decision_agents_is_still_checked(tmp_path: Path) -> None:
+    write(tmp_path / "tools/x.json", DEF)
+    write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
+    write(tmp_path / "triage/questions/urgent.md", "---\ntype: check\n---\nUrgent?\n")
+    with pytest.raises(ConfigurationError, match="has no x.py beside it"):
+        load_tree(tmp_path)
+
+
+def test_a_tools_folder_off_every_agent_s_path_is_content(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/docs/tools/x.json", DEF)
+    spec = load_tree(tmp_path)["a"]
+    assert spec.folder_tools == {}
+    assert "x.json" in spec.listing

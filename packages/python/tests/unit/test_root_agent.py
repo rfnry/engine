@@ -91,7 +91,13 @@ def test_an_agent_named_like_the_root_agent_is_refused(tmp_path: Path) -> None:
         load_tree(root)
 
 
-TREE_MODULES = ("tree.py", "frontmatter.py", "folders.py", "tools/declared.py")
+TREE_MODULES = (
+    "tree.py",
+    "frontmatter.py",
+    "folders.py",
+    "tools/declared.py",
+    "tools/folder.py",
+)
 
 
 def test_every_tree_error_says_its_fix() -> None:

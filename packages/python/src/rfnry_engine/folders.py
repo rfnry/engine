@@ -6,7 +6,7 @@ from rfnry_engine.errors import InputError
 from rfnry_engine.frontmatter import described
 from rfnry_engine.jail import Jail
 
-DECLARED = frozenset({"tasks", "questions"})
+DECLARED = frozenset({"tools", "tasks", "questions"})
 DECLARATIONS = frozenset({"AGENT.md"})
 
 

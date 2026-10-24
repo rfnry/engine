@@ -173,15 +173,17 @@ def test_a_tool_only_an_agent_without_its_model_lists_loads_and_fails_when_it_ru
         EngineTools(bare, agent="writer", scope="acme")
 
 
-def test_a_leftover_tools_md_and_tools_folder_are_ordinary_content(tmp_path: Path) -> None:
+def test_a_leftover_tools_md_is_content_and_a_markdown_file_in_tools_is_no_tool(
+    tmp_path: Path,
+) -> None:
     write(tmp_path / "shop/AGENT.md", agent_md("shop", extra="preload: true\n"))
     write(tmp_path / "shop/TOOLS.md", "---\nfetch: Fetch\n---\n")
     write(tmp_path / "shop/tools/fetch.md", "---\ndescription: Fetch\n---\nHow to fetch.\n")
     spec = load_tree(tmp_path)["shop"]
-    assert spec.tools == []
-    assert "TOOLS.md" in spec.listing and "tools/" in spec.listing and "fetch.md" in spec.listing
+    assert spec.tools == [] and spec.folder_tools == {}
+    assert spec.listing == "TOOLS.md"
     sent = "".join(str(part) for part in spec.preload)
-    assert "How to fetch." in sent and "fetch: Fetch" in sent
+    assert "fetch: Fetch" in sent and "How to fetch." not in sent
 
 
 def test_the_tools_an_agent_lists_are_part_of_its_fingerprint(tmp_path: Path) -> None:

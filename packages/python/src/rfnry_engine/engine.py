@@ -83,9 +83,8 @@ from rfnry_engine.tools.delegate import (
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import WORKSPACE_TOOLS, Workspace
-from rfnry_engine.tree import AgentSpec, Kind, load_tree, validate_tree
+from rfnry_engine.tree import OUTPUT_TOOL, AgentSpec, Kind, load_tree, validate_tree
 
-OUTPUT_TOOL = "Output"
 STOPPED = "stopped by the user"
 NO_TOOLS = tools_fingerprint([])
 

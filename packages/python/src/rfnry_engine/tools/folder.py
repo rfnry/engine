@@ -1,0 +1,199 @@
+import ast
+import importlib.util
+import json
+import sys
+import sysconfig
+from collections.abc import Collection, Iterator
+from functools import cache
+from pathlib import Path
+
+import jsonschema_rs
+from pydantic import BaseModel, JsonValue
+
+from rfnry_engine.errors import ConfigurationError
+
+ENGINE = "rfnry_engine"
+KEYS = ("description", "input_schema", "output_schema")
+NESTED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+class ToolDef(BaseModel):
+    name: str
+    description: str
+    input_schema: dict[str, JsonValue]
+    output_schema: dict[str, JsonValue] | None
+    script: Path
+    folder: Path
+
+
+def project_of(root: Path) -> Path:
+    place = Path(root).resolve()
+    return next((p for p in [place, *place.parents] if (p / "pyproject.toml").is_file()), place)
+
+
+@cache
+def _installed() -> tuple[Path, ...]:
+    paths = sysconfig.get_paths()
+    places = {sys.prefix, sys.base_prefix, sys.exec_prefix}
+    places |= {paths[key] for key in ("stdlib", "platstdlib", "purelib", "platlib")}
+    return tuple(Path(place).resolve() for place in places)
+
+
+def _text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigurationError(f"tree: {path} is not UTF-8 text; save it as UTF-8") from exc
+
+
+def _reason(exc: jsonschema_rs.ValidationError) -> str:
+    at = "/".join(str(step) for step in exc.instance_path)
+    return f"{exc.message} at {at}" if at else exc.message
+
+
+def _compiled(path: Path, key: str, schema: dict[str, JsonValue]) -> None:
+    try:
+        jsonschema_rs.validator_for(schema, offline=True)
+    except jsonschema_rs.ValidationError as exc:
+        raise ConfigurationError(
+            f"tree: {path} has an {key} that is not a valid JSON Schema: {_reason(exc)}; fix it in that file"
+        ) from exc
+
+
+def _definition(path: Path, script: Path) -> ToolDef:
+    try:
+        data = json.loads(_text(path))
+    except json.JSONDecodeError as exc:
+        raise ConfigurationError(
+            f"tree: {path} is not valid JSON: {exc}; fix it in that file"
+        ) from exc
+    if not isinstance(data, dict):
+        raise ConfigurationError(
+            f"tree: {path} is not a JSON object; a tool's JSON is an object that takes description, input_schema and output_schema"
+        )
+    unknown = sorted(key for key in data if key not in KEYS)
+    if unknown:
+        raise ConfigurationError(
+            f"tree: {path} has the unknown key {unknown[0]!r}; a tool's JSON takes description, input_schema and output_schema"
+        )
+    description = data.get("description")
+    if not isinstance(description, str) or not description.strip():
+        raise ConfigurationError(
+            f"tree: {path} gives no description in text; write what the tool does and what it returns, since nothing else describes it to the model"
+        )
+    arguments = data.get("input_schema")
+    if not isinstance(arguments, dict):
+        raise ConfigurationError(
+            f'tree: {path} has no input_schema object; give the tool\'s arguments as a JSON Schema with "type": "object"'
+        )
+    _compiled(path, "input_schema", arguments)
+    if arguments.get("type") != "object":
+        raise ConfigurationError(
+            f'tree: {path} has an input_schema whose top level is not "type": "object"; a tool takes its arguments as an object, so give its input_schema "type": "object"'
+        )
+    result = data.get("output_schema")
+    if result is not None and not isinstance(result, dict):
+        raise ConfigurationError(
+            f"tree: {path} has an output_schema that is not an object; write it as a JSON Schema object, or leave it out"
+        )
+    if result is not None:
+        _compiled(path, "output_schema", result)
+    return ToolDef(
+        name=path.stem,
+        description=description,
+        input_schema=arguments,
+        output_schema=result,
+        script=script,
+        folder=path.parent,
+    )
+
+
+def _imports(
+    node: ast.AST, nested: bool = False
+) -> Iterator[tuple[ast.Import | ast.ImportFrom, bool]]:
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.Import | ast.ImportFrom):
+            yield child, nested
+        yield from _imports(child, nested or isinstance(child, NESTED))
+
+
+def _origins(name: str) -> list[Path]:
+    try:
+        spec = importlib.util.find_spec(name)
+    except ImportError, ValueError:
+        return []
+    if spec is None or spec.origin in {"built-in", "frozen"}:
+        return []
+    if spec.has_location and spec.origin is not None:
+        return [Path(spec.origin)]
+    return [Path(place) for place in spec.submodule_search_locations or []]
+
+
+def _owned(origin: Path, project: Path) -> bool:
+    place = origin.resolve()
+    if any(place.is_relative_to(installed) for installed in _installed()):
+        return False
+    if not place.is_relative_to(project):
+        return False
+    return "tools" not in place.relative_to(project).parts
+
+
+def _check_imports(path: Path, project: Path, helpers: Collection[str]) -> None:
+    source = _text(path)
+    try:
+        module = ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        raise ConfigurationError(
+            f"tree: {path} is not valid Python: {exc.msg} on line {exc.lineno}; fix it in that file"
+        ) from exc
+    for node, nested in _imports(module):
+        if isinstance(node, ast.ImportFrom) and node.level:
+            shown = "." * node.level + (node.module or "")
+            raise ConfigurationError(
+                f"tree: {path} imports {shown!r} relatively; import a helper of its tools/ folder by its name, such as import _client"
+            )
+        names = (
+            [node.module or ""]
+            if isinstance(node, ast.ImportFrom)
+            else [a.name for a in node.names]
+        )
+        for name in names:
+            top = name.partition(".")[0]
+            if top == ENGINE:
+                raise ConfigurationError(
+                    f"tree: {path} imports {ENGINE!r}; a tool never imports the engine, so keep what it needs in the tool or a helper beside it"
+                )
+            if top in helpers:
+                if nested:
+                    raise ConfigurationError(
+                        f"tree: {path} imports the helper {top!r} inside a function or class; import it at the top of the script, since a helper is reachable only while its folder's scripts load"
+                    )
+                continue
+            for origin in _origins(top):
+                if _owned(origin, project):
+                    raise ConfigurationError(
+                        f"tree: {path} imports {top!r} from {origin}, the server's own code; a tool imports the standard library, installed packages and helpers of its tools/ folder"
+                    )
+
+
+def load_tools(folder: Path, project: Path) -> dict[str, ToolDef]:
+    project = project.resolve()
+    files = sorted(p for p in folder.iterdir() if p.is_file() and not p.name.startswith("."))
+    named = [p for p in files if not p.name.startswith("_")]
+    helpers = [p for p in files if p.name.startswith("_") and p.suffix == ".py"]
+    definitions = {p.stem: p for p in named if p.suffix == ".json"}
+    scripts = {p.stem: p for p in named if p.suffix == ".py"}
+    for name in sorted({*definitions, *scripts}):
+        if name not in scripts:
+            raise ConfigurationError(
+                f"tree: {definitions[name]} has no {name}.py beside it; a tool is {name}.json and {name}.py in a tools/ folder"
+            )
+        if name not in definitions:
+            raise ConfigurationError(
+                f"tree: {scripts[name]} has no {name}.json beside it; describe the tool in {name}.json, or name a helper _{name}.py"
+            )
+    tools = {name: _definition(definitions[name], scripts[name]) for name in sorted(scripts)}
+    names = {p.stem for p in helpers}
+    for path in [*scripts.values(), *helpers]:
+        _check_imports(path, project, names)
+    return tools

@@ -28,9 +28,14 @@ from rfnry_engine.frontmatter import (
 )
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Check, Choice, Part, Question, Score
-from rfnry_engine.tools.builtins import preload_parts
+from rfnry_engine.tools.builtins import BUILTINS, preload_parts
+from rfnry_engine.tools.delegate import DELEGATE_TOOL
+from rfnry_engine.tools.folder import ToolDef, load_tools, project_of
+from rfnry_engine.tools.history import HISTORY_TOOL
+from rfnry_engine.tools.workspace import WORKSPACE_NAMES
 
 Kind = Literal["generation", "decision"]
+OUTPUT_TOOL = "Output"
 
 
 class RouteTarget(BaseModel):
@@ -155,6 +160,7 @@ class AgentSpec(BaseModel):
     listing: str = ""
     reads: dict[str, Path] = Field(default_factory=dict)
     skills: dict[str, Skill] = Field(default_factory=dict)
+    folder_tools: dict[str, ToolDef] = Field(default_factory=dict)
 
 
 def _read(path: Path) -> str:
@@ -402,12 +408,37 @@ def _under(
     ]
 
 
+def _on_path(path: str) -> list[str]:
+    parts = [] if path == "." else path.split("/")
+    return [".", *("/".join(parts[:n]) for n in range(1, len(parts) + 1))]
+
+
+def _folder_tools(
+    agent: str, front: AgentFront, seen: list[dict[str, ToolDef]]
+) -> dict[str, ToolDef]:
+    tools = dict(sorted({name: tool for held in seen for name, tool in held.items()}.items()))
+    given = {
+        *BUILTINS,
+        HISTORY_TOOL,
+        OUTPUT_TOOL,
+        *([DELEGATE_TOOL] if front.agents else []),
+        *(WORKSPACE_NAMES if front.workspace else []),
+    }
+    for name, tool in tools.items():
+        if name in given:
+            raise ConfigurationError(
+                f"tree: {tool.folder / name}.json is named like {name!r}, a tool the engine gives agent {agent!r}; rename the tool"
+            )
+    return tools
+
+
 def load_agent(
     directory: Path,
     media: Mapping[str, Collection[str] | None] | None = None,
     folders: Mapping[str, _Folder] | None = None,
     path: str = ".",
     tree_root: Path | None = None,
+    tool_folders: Mapping[str, dict[str, ToolDef]] | None = None,
 ) -> AgentSpec:
     front, body = parse_frontmatter_doc(
         _read(directory / "AGENT.md"),
@@ -461,7 +492,17 @@ def load_agent(
     held = _reads(agent, front, directory, tree_root or directory, path, folders or {})
     reads = from_agent(path, held)
     root = directory.resolve()
-    files = sorted([*content(root, False, inner=True), *_under(reads, lambda folder: folder.files)])
+    tool_folders = tool_folders or {}
+    sees = [] if front.kind == "decision" else [p for p in _on_path(path) if p in tool_folders]
+    above = [
+        (posixpath.relpath(f"{prefix}/tools/{rel}", path), file)
+        for prefix in sees
+        if prefix != path
+        for rel, file in content((tree_root or directory) / prefix / "tools", False)
+    ]
+    files = sorted(
+        [*content(root, False, inner=True), *_under(reads, lambda folder: folder.files), *above]
+    )
     try:
         preload, read = (
             preload_parts(
@@ -506,6 +547,7 @@ def load_agent(
         ),
         reads={name: folder.place for name, folder in held.items()},
         skills={} if front.kind == "decision" else _skills(content(root, True), agent),
+        folder_tools=_folder_tools(agent, front, [tool_folders[prefix] for prefix in sees]),
     )
 
 
@@ -520,10 +562,18 @@ def load_tree(
         raise ConfigurationError(
             f"tree: {root} holds no AGENT.md; give each agent a folder with an AGENT.md that names its name:, kind: and model:"
         )
+    project = project_of(root)
+    tool_folders = {
+        prefix: load_tools(root / prefix / "tools", project)
+        for prefix in dict.fromkeys(p for path in paths for p in _on_path(path))
+        if (root / prefix / "tools").is_dir()
+    }
     folders = {name: _Folder(place) for name, place in found.items()}
     agents: dict[str, AgentSpec] = {}
     for path in paths:
-        spec = load_agent(root / path, media, folders, path=path, tree_root=root)
+        spec = load_agent(
+            root / path, media, folders, path=path, tree_root=root, tool_folders=tool_folders
+        )
         twin = agents.get(spec.name)
         if twin is not None:
             first, second = (root / twin.path / "AGENT.md", root / spec.path / "AGENT.md")
