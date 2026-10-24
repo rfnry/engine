@@ -91,6 +91,40 @@ async def test_a_script_that_raises_reads_as_its_error(tmp_path: Path) -> None:
         await pool.close()
 
 
+async def test_a_call_for_a_tool_the_worker_does_not_have_reads_as_an_error_and_holds_nothing(
+    tmp_path: Path,
+) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)], threads=1)
+    try:
+        first = await pool.call("nap", {}, CALL, 5)
+        with pytest.raises(WorkerError, match="workers: the worker has no tool ghost"):
+            await pool.call("support/tools/ghost", {}, CALL, 1)
+        assert await pool.call("nap", {}, CALL, 5) == first
+    finally:
+        await pool.close()
+
+
+async def test_an_error_whose_message_cannot_be_read_still_reads_as_its_type(
+    tmp_path: Path,
+) -> None:
+    body = (
+        "class Broken(Exception):\n"
+        "    def __str__(self):\n"
+        "        raise RuntimeError('no message')\n"
+        "def run(args, call):\n"
+        "    if args.get('break'):\n"
+        "        raise Broken()\n"
+        "    return 'fine'\n"
+    )
+    pool = WorkerPool([script(tmp_path, "odd", body)], threads=1)
+    try:
+        with pytest.raises(WorkerError, match=r"^Broken: <exception str\(\) failed>$"):
+            await pool.call("odd", {"break": True}, CALL, 1)
+        assert await pool.call("odd", {}, CALL, 5) == "fine"
+    finally:
+        await pool.close()
+
+
 async def test_a_script_that_exits_reads_as_its_error_and_its_worker_goes_on(
     tmp_path: Path,
 ) -> None:

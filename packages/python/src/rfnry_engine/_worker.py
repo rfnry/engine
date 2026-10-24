@@ -15,7 +15,10 @@ PREFIX = "tool:"
 
 
 def _error(exc: BaseException) -> str:
-    return f"{type(exc).__name__}: {exc}"
+    try:
+        return f"{type(exc).__name__}: {exc}"
+    except BaseException:
+        return f"{type(exc).__name__}: <exception str() failed>"
 
 
 def _import(key: str, path: Path) -> ModuleType | str:
@@ -84,8 +87,8 @@ async def _serve(
         return await asyncio.wrap_future(work)
 
     async def handle(id: int, key: str, args: Any, call: Any) -> None:
-        loaded = modules[key]
         try:
+            loaded = modules.get(key, f"workers: the worker has no tool {key.rsplit('/', 1)[-1]}")
             if isinstance(loaded, str):
                 text = json.dumps({"id": id, "error": loaded})
             else:
