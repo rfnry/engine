@@ -1394,3 +1394,11 @@ class StorageError(EngineException): ...
 ```
 
 The storage refused: the database failed, or a row's scope is not the scope of the call.
+
+### `WorkerError`
+
+```python
+class WorkerError(EngineException): ...
+```
+
+A tool that runs in a worker process failed there. Its message is what the script raised, `ValueError: no order A-1`, or what its import raised; a result JSON cannot hold, `TypeError: Object of type datetime is not JSON serializable`; or a worker that stopped while the call was in flight, `workers: the worker for lookup_order stopped: exited with code 3`. Inside a run, the model reads it as a tool error.

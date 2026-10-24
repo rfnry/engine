@@ -2053,7 +2053,8 @@ Everything the package exports, by role.
   `Bucket`, `is_holdout`.
 - **Store:** `Storage`, `PostgresStorage`, `RunRow`, `LabelRow`.
 - **Fail loudly:** `EngineException`, `ConfigurationError`, `NotFoundError`, `InputError`,
-  `ModelError`, `RunawayError`, `DelegationLoopError`, `DelegationDepthError`, `StorageError`.
+  `ModelError`, `RunawayError`, `DelegationLoopError`, `DelegationDepthError`, `StorageError`,
+  `WorkerError`.
 
 ## Errors
 
@@ -2101,7 +2102,10 @@ probabilities that do not cover the options, lie outside 0 and 1 or do not sum t
 its levels. `RunawayError` when a loop exceeds `max_steps` (default 200). `DelegationLoopError` for
 a route into an agent already in the same chain of routes; `DelegationDepthError` for nesting past
 `max_depth`, which reaches the model as a tool error through `Delegate` and raises through a route.
-`StorageError` for the database. Inside a run, a tool's error is the model's to read, never raised.
+`StorageError` for the database. `WorkerError` for a tool that fails in its worker process: what
+its script raised, a result JSON cannot hold, or a worker that stopped while the call was in flight
+(`workers: the worker for lookup_order stopped: exited with code 3`). Inside a run, a tool's error
+is the model's to read, never raised.
 All under `EngineException` — the root takes the `Exception` suffix, every child ends in `Error`,
 the same shape as rfnry-memory's. Every message names the module that raised it, then says what went
 wrong in lowercase: `engine: agent 'ghost' was not found`, `workspace: path outside the workspace:

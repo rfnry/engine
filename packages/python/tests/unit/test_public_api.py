@@ -80,6 +80,7 @@ EXPECTED = {
     "DelegationLoopError",
     "DelegationDepthError",
     "StorageError",
+    "WorkerError",
 }
 
 

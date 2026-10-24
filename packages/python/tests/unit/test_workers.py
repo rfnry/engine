@@ -1,0 +1,391 @@
+import asyncio
+import logging
+import os
+import time
+from collections import Counter
+from pathlib import Path
+
+import pytest
+from pydantic import JsonValue
+
+from rfnry_engine.errors import WorkerError
+from rfnry_engine.workers import Script, WorkerPool
+
+CALL = {"scope": "acme"}
+PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
+WAIT = "import asyncio, os\nasync def run(args, call):\n    await asyncio.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
+
+
+def script(tmp_path: Path, name: str, body: str) -> Script:
+    path = tmp_path / f"{name}.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return Script(name, path)
+
+
+def pid(value: JsonValue) -> int:
+    assert isinstance(value, int)
+    return value
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except OSError:
+        return True
+    return state != "Z"
+
+
+async def gone(pid: int) -> bool:
+    for _ in range(40):
+        if not alive(pid):
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
+async def test_a_call_runs_the_script_and_returns_its_result(tmp_path: Path) -> None:
+    pool = WorkerPool(
+        [
+            script(
+                tmp_path,
+                "echo",
+                "def run(args, call):\n    return {'got': args, 'scope': call['scope']}\n",
+            )
+        ]
+    )
+    try:
+        assert await pool.call("echo", {"x": 1}, {"scope": "acme"}, 5) == {
+            "got": {"x": 1},
+            "scope": "acme",
+        }
+    finally:
+        await pool.close()
+
+
+async def test_async_scripts_run_together_on_one_process(tmp_path: Path) -> None:
+    body = "import asyncio\nasync def run(args, call):\n    await asyncio.sleep(0.5)\n    return args['i']\n"
+    pool = WorkerPool([script(tmp_path, "slow", body)])
+    try:
+        started = time.monotonic()
+        results = await asyncio.gather(
+            *(pool.call("slow", {"i": i}, {"scope": "a"}, 5) for i in range(20))
+        )
+        assert results == list(range(20)) and time.monotonic() - started < 2
+    finally:
+        await pool.close()
+
+
+async def test_a_script_that_raises_reads_as_its_error(tmp_path: Path) -> None:
+    pool = WorkerPool(
+        [script(tmp_path, "boom", "def run(args, call):\n    raise ValueError('no order A-1')\n")]
+    )
+    try:
+        with pytest.raises(WorkerError, match="ValueError: no order A-1"):
+            await pool.call("boom", {}, {"scope": "a"}, 5)
+    finally:
+        await pool.close()
+
+
+async def test_a_script_that_exits_reads_as_its_error_and_its_worker_goes_on(
+    tmp_path: Path,
+) -> None:
+    pool = WorkerPool(
+        [
+            script(tmp_path, "quit", "import sys\ndef run(args, call):\n    sys.exit(3)\n"),
+            script(tmp_path, "nap", PID),
+        ]
+    )
+    try:
+        first = await pool.call("nap", {}, CALL, 5)
+        with pytest.raises(WorkerError, match="SystemExit: 3"):
+            await pool.call("quit", {}, CALL, 5)
+        assert await pool.call("nap", {}, CALL, 5) == first
+    finally:
+        await pool.close()
+
+
+async def test_a_script_that_reads_stdin_reads_nothing_and_the_calls_go_on(
+    tmp_path: Path,
+) -> None:
+    body = "import sys\ndef run(args, call):\n    return [sys.stdin.read(), args]\n"
+    pool = WorkerPool([script(tmp_path, "reader", body)])
+    try:
+        calls = [pool.call("reader", {"i": i}, CALL, 5) for i in range(3)]
+        assert await asyncio.gather(*calls) == [["", {"i": i}] for i in range(3)]
+    finally:
+        await pool.close()
+
+
+async def test_what_a_script_prints_goes_to_the_log_and_leaves_its_result_intact(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="rfnry_engine.workers")
+    body = (
+        "import os, sys\n"
+        "print('while loading')\n"
+        "def run(args, call):\n"
+        "    print('to stdout')\n"
+        "    print('x' * 200_000)\n"
+        "    print('to stderr', file=sys.stderr)\n"
+        "    os.write(1, b'to fd 1\\n')\n"
+        "    return {'ok': True}\n"
+    )
+    pool = WorkerPool([script(tmp_path, "noisy", body)])
+    try:
+        assert await pool.call("noisy", {}, CALL, 5) == {"ok": True}
+        assert await pool.call("noisy", {}, CALL, 5) == {"ok": True}
+        printed = ("while loading", "to stdout", "to stderr", "to fd 1")
+        for _ in range(100):
+            if all(text in caplog.text for text in printed):
+                break
+            await asyncio.sleep(0.02)
+        assert all(text in caplog.text for text in printed)
+    finally:
+        await pool.close()
+
+
+async def test_a_result_that_is_not_json_is_an_error_naming_its_type(tmp_path: Path) -> None:
+    body = (
+        "import datetime\n"
+        "class Order:\n"
+        "    pass\n"
+        "def run(args, call):\n"
+        "    kind = args['kind']\n"
+        "    if kind == 'datetime':\n"
+        "        return datetime.datetime(2026, 10, 24)\n"
+        "    if kind == 'set':\n"
+        "        return {1, 2}\n"
+        "    if kind == 'object':\n"
+        "        return Order()\n"
+        "    if kind == 'nan':\n"
+        "        return float('nan')\n"
+        "    return 'fine'\n"
+    )
+    pool = WorkerPool([script(tmp_path, "odd", body)])
+    try:
+        for kind, error in (
+            ("datetime", "TypeError: Object of type datetime is not JSON serializable"),
+            ("set", "TypeError: Object of type set is not JSON serializable"),
+            ("object", "TypeError: Object of type Order is not JSON serializable"),
+            ("nan", "ValueError: Out of range float values are not JSON compliant"),
+        ):
+            with pytest.raises(WorkerError, match=error):
+                await pool.call("odd", {"kind": kind}, CALL, 5)
+        assert await pool.call("odd", {"kind": "text"}, CALL, 5) == "fine"
+    finally:
+        await pool.close()
+
+
+async def test_two_folders_with_a_helper_of_one_name_each_import_their_own(
+    tmp_path: Path,
+) -> None:
+    scripts = []
+    for folder in ("customer_support", "ops"):
+        tools = tmp_path / folder / "tools"
+        tools.mkdir(parents=True)
+        (tools / "_client.py").write_text(f"NAME = {folder!r}\n", encoding="utf-8")
+        body = "import _client\ndef run(args, call):\n    return _client.NAME\n"
+        scripts.append(script(tmp_path, f"{folder}/tools/lookup", body))
+    pool = WorkerPool(scripts)
+    try:
+        assert await pool.call("customer_support/tools/lookup", {}, CALL, 5) == "customer_support"
+        assert await pool.call("ops/tools/lookup", {}, CALL, 5) == "ops"
+        assert list(tmp_path.rglob("__pycache__")) == []
+    finally:
+        await pool.close()
+
+
+async def test_a_large_result_round_trips_intact(tmp_path: Path) -> None:
+    body = "def run(args, call):\n    return '0123456789' * 500_000 + 'fim é'\n"
+    pool = WorkerPool([script(tmp_path, "big", body)])
+    try:
+        assert await pool.call("big", {}, CALL, 10) == "0123456789" * 500_000 + "fim é"
+    finally:
+        await pool.close()
+
+
+async def test_a_sync_call_past_its_timeout_raises_while_other_calls_proceed(
+    tmp_path: Path,
+) -> None:
+    body = "import time\ndef run(args, call):\n    time.sleep(args['sleep'])\n    return args['sleep']\n"
+    pool = WorkerPool([script(tmp_path, "nap", body)])
+    try:
+        stuck, quick = await asyncio.gather(
+            pool.call("nap", {"sleep": 30}, CALL, 0.2),
+            pool.call("nap", {"sleep": 0.3}, CALL, 5),
+            return_exceptions=True,
+        )
+        assert isinstance(stuck, TimeoutError) and quick == 0.3
+    finally:
+        await pool.close()
+
+
+async def test_once_every_thread_is_held_past_its_deadline_the_next_call_gets_a_new_process(
+    tmp_path: Path,
+) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)], threads=2)
+    try:
+        first = pid(await pool.call("nap", {}, CALL, 5))
+        stuck = await asyncio.gather(
+            *(pool.call("nap", {"sleep": 30}, CALL, 0.2) for _ in range(2)),
+            return_exceptions=True,
+        )
+        assert all(isinstance(result, TimeoutError) for result in stuck)
+        await asyncio.sleep(0.2)
+        assert pid(await pool.call("nap", {}, CALL, 5)) != first
+        assert await gone(first)
+    finally:
+        await pool.close()
+
+
+async def test_a_late_reply_frees_the_thread_its_call_held(tmp_path: Path) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)], threads=2)
+    try:
+        first = await pool.call("nap", {}, CALL, 5)
+        with pytest.raises(TimeoutError):
+            await pool.call("nap", {"sleep": 0.4}, CALL, 0.1)
+        assert await pool.call("nap", {}, CALL, 5) == first
+        await asyncio.sleep(0.5)
+        with pytest.raises(TimeoutError):
+            await pool.call("nap", {"sleep": 30}, CALL, 0.1)
+        assert await pool.call("nap", {}, CALL, 5) == first
+    finally:
+        await pool.close()
+
+
+async def test_a_call_cancelled_from_outside_holds_its_thread_like_a_timeout(
+    tmp_path: Path,
+) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)], threads=1)
+    try:
+        first = await pool.call("nap", {}, CALL, 5)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(pool.call("nap", {"sleep": 30}, CALL, None), 0.2)
+        await asyncio.sleep(0.2)
+        assert await pool.call("nap", {}, CALL, 5) != first
+    finally:
+        await pool.close()
+
+
+async def test_an_async_call_past_its_timeout_is_cancelled_in_the_worker(tmp_path: Path) -> None:
+    body = (
+        "import asyncio, os\n"
+        "from pathlib import Path\n"
+        "async def run(args, call):\n"
+        "    if 'file' in args:\n"
+        "        await asyncio.sleep(0.3)\n"
+        "        Path(args['file']).write_text('late')\n"
+        "    return os.getpid()\n"
+    )
+    pool = WorkerPool([script(tmp_path, "wait", body)], threads=1)
+    late = tmp_path / "late.txt"
+    try:
+        first = await pool.call("wait", {}, CALL, 5)
+        with pytest.raises(TimeoutError):
+            await pool.call("wait", {"file": str(late)}, CALL, 0.1)
+        await asyncio.sleep(0.5)
+        assert not late.exists()
+        assert await pool.call("wait", {}, CALL, 5) == first
+    finally:
+        await pool.close()
+
+
+@pytest.mark.parametrize(
+    ("ending", "reason"),
+    [("os._exit(3)", "exited with code 3"), ("os.kill(os.getpid(), 9)", "killed by signal 9")],
+)
+async def test_a_worker_that_exits_fails_every_call_in_flight_and_the_next_call_starts_anew(
+    tmp_path: Path, ending: str, reason: str
+) -> None:
+    crash = f"import os, time\ndef run(args, call):\n    time.sleep(0.2)\n    {ending}\n"
+    pool = WorkerPool(
+        [
+            script(tmp_path, "support/tools/crash", crash),
+            script(tmp_path, "support/tools/wait", WAIT),
+        ]
+    )
+    try:
+        first = await pool.call("support/tools/wait", {}, CALL, 5)
+        results = await asyncio.gather(
+            pool.call("support/tools/wait", {"sleep": 5}, CALL, 10),
+            pool.call("support/tools/wait", {"sleep": 5}, CALL, 10),
+            pool.call("support/tools/crash", {}, CALL, 10),
+            return_exceptions=True,
+        )
+        assert all(isinstance(result, WorkerError) for result in results)
+        assert [str(result) for result in results] == [
+            f"workers: the worker for wait stopped: {reason}",
+            f"workers: the worker for wait stopped: {reason}",
+            f"workers: the worker for crash stopped: {reason}",
+        ]
+        assert await pool.call("support/tools/wait", {}, CALL, 5) != first
+    finally:
+        await pool.close()
+
+
+async def test_many_processes_share_the_calls(tmp_path: Path) -> None:
+    body = "import asyncio, os\nasync def run(args, call):\n    await asyncio.sleep(0.3)\n    return os.getpid()\n"
+    pool = WorkerPool([script(tmp_path, "wait", body)], processes=2)
+    try:
+        pids = await asyncio.gather(*(pool.call("wait", {}, CALL, 5) for _ in range(10)))
+        assert sorted(Counter(pids).values()) == [5, 5]
+    finally:
+        await pool.close()
+
+
+async def test_a_script_that_cannot_import_fails_only_its_own_calls(tmp_path: Path) -> None:
+    pool = WorkerPool(
+        [
+            script(
+                tmp_path, "broken", "import not_installed\ndef run(args, call):\n    return 1\n"
+            ),
+            script(tmp_path, "echo", "def run(args, call):\n    return args\n"),
+        ]
+    )
+    try:
+        with pytest.raises(
+            WorkerError, match="ModuleNotFoundError: No module named 'not_installed'"
+        ):
+            await pool.call("broken", {}, CALL, 5)
+        assert await pool.call("echo", {"x": 1}, CALL, 5) == {"x": 1}
+    finally:
+        await pool.close()
+
+
+async def test_close_stops_the_process_group_and_leaves_no_process_behind(
+    tmp_path: Path,
+) -> None:
+    body = (
+        "import os, subprocess\n"
+        "def run(args, call):\n"
+        "    child = subprocess.Popen(['sleep', '60'])\n"
+        "    return [os.getpid(), child.pid]\n"
+    )
+    pool = WorkerPool([script(tmp_path, "spawn", body)])
+    try:
+        started = await pool.call("spawn", {}, CALL, 5)
+    finally:
+        await pool.close()
+    assert isinstance(started, list)
+    worker, child = (pid(value) for value in started)
+    assert await gone(worker) and await gone(child)
+
+
+async def test_close_fails_the_calls_in_flight_and_refuses_new_ones(tmp_path: Path) -> None:
+    pool = WorkerPool([script(tmp_path, "wait", WAIT)])
+    try:
+        await pool.call("wait", {}, CALL, 5)
+        flight = asyncio.create_task(pool.call("wait", {"sleep": 30}, CALL, None))
+        await asyncio.sleep(0.1)
+    finally:
+        await pool.close()
+    closed = "workers: the worker for wait stopped: it was closed"
+    with pytest.raises(WorkerError, match=closed):
+        await flight
+    with pytest.raises(WorkerError, match=closed):
+        await pool.call("wait", {}, CALL, 5)
