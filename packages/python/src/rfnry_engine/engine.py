@@ -734,7 +734,6 @@ class Engine:
                 agent=spec.name,
                 scope=scope,
                 tags=dict(options.tags),
-                task=options.task,
                 at=at,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 model=(decided.model if decided is not None else None) or _declared(model_),

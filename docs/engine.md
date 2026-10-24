@@ -1116,8 +1116,8 @@ child.answers["refund"].probability       # 0.91
 child.answers["cause"].choice             # "duplicate"
 ```
 
-The child records its task and its runtime questions as any run does, and the step keeps what the
-model sent. `Delegate` offers `task` only when a target has tasks and `questions` only when one is
+A generation child records its task, and a decision child its runtime questions, as any run does,
+and the step keeps what the model sent. `Delegate` offers `task` only when a target has tasks and `questions` only when one is
 a decision agent, and its schema describes the question object once, for all three types. A task
 the target does not have, a task for a decision agent, questions for a generation agent, a question
 that does not fit, an id the target already asks, a decision run with nothing to ask, or a question
@@ -1673,7 +1673,7 @@ datasets:
 | --- | --- | --- |
 | `generation` | generation run | task, skill, context, tags, model, fingerprint, system, preload, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
 | `preference` | human correction | tags, fingerprint, prompt (system, preload, messages), chosen (the correction), rejected (the reply) |
-| `decision` | question of a decision run | task, tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
+| `decision` | question of a decision run | tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
 
 Every row carries its run's `tags`, `{}` for a run that had none, and its `fingerprint`,
 `{"agent": …, "tools": …, "questions": …}` — `questions` is `null` for a generation run; group or

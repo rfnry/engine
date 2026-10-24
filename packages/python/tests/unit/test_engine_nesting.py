@@ -413,7 +413,7 @@ async def test_a_generation_agent_asks_a_decision_agent_a_question_it_composed(
     assert isinstance(run, Generation) and not run.steps[0].is_error
     [child] = run.children
     assert isinstance(child, Decision) and child.agent == "blank" and child.runtime == ["area"]
-    assert child.questions == {"area": Choice.model_validate(PICK)} and child.task is None
+    assert child.questions == {"area": Choice.model_validate(PICK)}
     assert json.loads(str(run.steps[0].result))["answers"]["area"]["choice"] == "orders"
     assert run.steps[0].args["questions"] == {"area": PICK}
     assert dm.calls == [("Charged twice", {"area": Choice.model_validate(PICK)})]
@@ -439,7 +439,7 @@ async def test_delegate_names_a_generation_agent_s_task_and_a_decision_agent_s_o
     )
     assert isinstance(run, Generation) and [s.is_error for s in run.steps] == [False, False]
     graded, written = run.children
-    assert isinstance(graded, Decision) and graded.task is None and graded.runtime == ["angry"]
+    assert isinstance(graded, Decision) and graded.runtime == ["angry"]
     assert list(graded.questions) == ["urgent", "angry"]
     assert graded.questions["angry"] == Check.model_validate(angry)
     assert isinstance(written, Generation) and written.task == "apology"

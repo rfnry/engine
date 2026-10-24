@@ -72,6 +72,7 @@ async def test_export_writes_three_datasets_with_labels_and_holdout(storage: Sto
     [decision_row] = _lines(bucket.objects[keys[0]])
     assert decision_row["holdout"] is is_holdout(decision.run_id)
     assert decision_row["question_id"] == "urgent" and decision_row["answer"] == 0.8
+    assert "task" not in decision_row
     assert (
         decision_row["truth"] is False
         and decision_row["truth_source"] == "human"

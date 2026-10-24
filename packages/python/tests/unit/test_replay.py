@@ -889,7 +889,7 @@ async def test_a_decision_replay_re_asks_runtime_questions_as_recorded_and_the_f
         "urgent": Check(instructions="Must it be done today?"),
         "area": AREA,
     }
-    assert first.runtime == ["area"] and first.state == "x" and first.task is None
+    assert first.runtime == ["area"] and first.state == "x"
     assert second.runtime == [] and set(second.questions) == {"urgent"}
     assert [call[1] for call in dm.calls] == [first.questions, second.questions]
     for recorded, pair in zip((asked, plain), pairs, strict=True):
@@ -1007,7 +1007,7 @@ async def test_a_parent_whose_child_was_given_questions_replays_as_one_run(
     read = await refinery.run("acme", recorded.run_id)
     assert read == recorded and isinstance(read, Generation)
     [child] = read.children
-    assert isinstance(child, Decision) and child.task is None and child.runtime == ["area"]
+    assert isinstance(child, Decision) and child.runtime == ["area"]
     assert read.steps[0].args == {"agent": "grader", "input": "Sorry!", "questions": {"area": PICK}}
     llm = Scripted(delegating("grader", "Sorry!", questions={"area": PICK}), text_reply("Again."))
     dm = Answering()
@@ -1017,7 +1017,7 @@ async def test_a_parent_whose_child_was_given_questions_replays_as_one_run(
     assert pair.error is None and isinstance(pair.candidate, Generation)
     assert pair.candidate.reply == "Again." and pair.candidate.task is None
     [again] = pair.candidate.children
-    assert isinstance(again, Decision) and again.task is None and again.runtime == ["area"]
+    assert isinstance(again, Decision) and again.runtime == ["area"]
     assert [list(q) for _, q in dm.calls] == [["urgent", "area"]]
     assert pair.candidate.fingerprint == recorded.fingerprint
 

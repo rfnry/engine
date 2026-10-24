@@ -538,7 +538,6 @@ class Decision(BaseModel):
     agent: str
     scope: str
     tags: dict[str, str] = {}
-    task: str | None = None
     at: datetime
     duration_ms: int
     model: str | None
@@ -553,7 +552,7 @@ class Decision(BaseModel):
     added: list[Message]
 ```
 
-The record of a decision run: its `task`, `None` since a decision agent takes none, the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder — a scripted one as its script filled it — and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported — its `model` attribute, a non-empty string, when the call reports no model — and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. `added` is the `added` of the run its route started, `[]` when it routed nowhere. `error` is set, and `answers` empty, when the decision model's call or a question's script raised, `questions` then holding those asked without a script; a routed run that failed sits in `routed_to` with its own `error`, or `routed_to` is `None` when the routed run was refused before its first model call, and the router carries the same `error`; a routed run whose `RunStarted` handler raised had started, and sits in `routed_to`. Its `call` is the same as a generation's.
+The record of a decision run: the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder — a scripted one as its script filled it — and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported — its `model` attribute, a non-empty string, when the call reports no model — and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. `added` is the `added` of the run its route started, `[]` when it routed nowhere. `error` is set, and `answers` empty, when the decision model's call or a question's script raised, `questions` then holding those asked without a script; a routed run that failed sits in `routed_to` with its own `error`, or `routed_to` is `None` when the routed run was refused before its first model call, and the router carries the same `error`; a routed run whose `RunStarted` handler raised had started, and sits in `routed_to`. Its `call` is the same as a generation's.
 
 ### `Run`
 
@@ -1104,7 +1103,7 @@ class RunRow(BaseModel):
     body: dict[str, Any]
 ```
 
-A stored run. `body` is the run's record as JSON with its children and routed run left out, each a row of its own joined by `parent_run_id`, and a generation's `messages` replaced by `sent`, their count, since they are the start of its `conversation`; read a run back with `Refinery.run`; `at` is when the run started and `recorded` when the refinery stored it.
+A stored run. `body` is the run's record as JSON with its children and routed run left out, each a row of its own joined by `parent_run_id`, and a generation's `messages` replaced by `sent`, their count, since they are the start of its `conversation`; read a run back with `Refinery.run`; `task` is a generation's task, `None` for a decision, which takes none; `at` is when the run started and `recorded` when the refinery stored it.
 
 ### `LabelRow`
 

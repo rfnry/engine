@@ -140,7 +140,6 @@ class Decision(BaseModel):
     agent: str
     scope: str
     tags: dict[str, str] = Field(default_factory=dict)
-    task: str | None = None
     at: datetime
     duration_ms: int
     model: str | None

@@ -153,7 +153,7 @@ async def test_a_decision_agent_as_a_tool_takes_questions_of_the_caller(
     assert list(answers) == ["urgent", "area"]
     assert answers["area"]["choice"] == "orders"
     [run] = recorder.runs
-    assert isinstance(run, Decision) and run.task is None and run.runtime == ["area"]
+    assert isinstance(run, Decision) and run.runtime == ["area"]
     assert run.questions["area"] == Choice.model_validate(PICK)
     with pytest.raises(InputError, match="^engine: decision agent 'grader' takes no task; "):
         await grader.dispatch("grader", {"input": "Thanks!", "task": "tone"})

@@ -458,4 +458,4 @@ async def test_the_recorded_questions_hold_the_script_filled_options(
             instructions="Which order?", options={"acme-1": "First", "acme-2": "Second"}
         )
     }
-    assert read.runtime == [] and read.task is None
+    assert read.runtime == []

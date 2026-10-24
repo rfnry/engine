@@ -722,11 +722,11 @@ async def test_runtime_questions_and_the_questions_part_round_trip_and_replay(
     assert isinstance(asked, Decision)
     again = await refinery.run("a", asked.run_id)
     assert again == asked and isinstance(again, Decision)
-    assert again.task is None and again.runtime == ["area"]
+    assert again.runtime == ["area"]
     assert list(again.questions) == ["urgent", "area"]
     assert list(again.questions["area"].model_dump()["options"]) == ["returns", "delivery"]
     [row] = await storage.runs("a", run_ids=[asked.run_id])
-    assert row.task is None
+    assert row.task is None and "task" not in row.body
     bucket = MemoryBucket()
     await refinery.export("a", bucket)
     rows = [
@@ -737,7 +737,7 @@ async def test_runtime_questions_and_the_questions_part_round_trip_and_replay(
     ]
     mine = [r for r in rows if r["run_id"] == asked.run_id]
     assert {r["question_id"] for r in mine} == {"urgent", "area"}
-    assert all(r["task"] is None for r in mine)
+    assert all("task" not in r for r in mine)
     assert all(r["fingerprint"] == asked.fingerprint.model_dump() for r in mine)
     dm = Answering()
     candidate = Engine(grader(tmp_path / "new", "Due today?"), models={"judge": dm})
@@ -773,10 +773,10 @@ async def test_a_delegated_child_keeps_its_runtime_questions(
     assert await refinery.run("a", run.run_id) == run
     again = await refinery.run("a", child.run_id)
     assert again == child and isinstance(again, Decision)
-    assert again.task is None and again.runtime == ["area"]
+    assert again.runtime == ["area"]
     assert list(again.questions) == ["urgent", "area"]
     [row] = await storage.runs("a", run_ids=[child.run_id])
-    assert row.task is None and row.parent_run_id == run.run_id
+    assert row.parent_run_id == run.run_id
 
 
 class Looking(Answering):

@@ -59,7 +59,7 @@ async def test_runtime_questions_are_asked_with_the_folder_s_in_one_call(fixture
     }
     assert run.questions == asked
     assert set(run.answers) == {"urgent", "severity", "area", "how_bad", "angry"}
-    assert run.runtime == ["area", "how_bad", "angry"] and run.task is None
+    assert run.runtime == ["area", "how_bad", "angry"]
     assert run.answers["area"].confidence == pytest.approx(0.7)
 
 
@@ -220,7 +220,7 @@ async def test_a_delegated_decision_run_asks_its_folder(fixtures: Path) -> None:
     )
     assert isinstance(run, Generation)
     [child] = run.children
-    assert isinstance(child, Decision) and child.runtime == [] and child.task is None
+    assert isinstance(child, Decision) and child.runtime == []
     assert set(child.questions) == {"urgent", "severity"}
 
 
@@ -244,8 +244,8 @@ async def test_runtime_questions_are_recorded_and_read_back(
     run = await ask(engine, "grader", "acme", "x", questions=RUNTIME)
     read = await refinery.run("acme", run.run_id)
     assert read == run and isinstance(read, Decision)
-    assert read.task is None and read.runtime == ["area", "how_bad", "angry"]
+    assert read.runtime == ["area", "how_bad", "angry"]
     assert list(read.questions) == ["urgent", "area", "how_bad", "angry"]
     assert read.questions["how_bad"] == HOW_BAD and read.questions["area"] == AREA
     [row] = await refinery.storage.runs("acme")
-    assert row.task is None
+    assert "task" not in row.body
