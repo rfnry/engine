@@ -1031,8 +1031,8 @@ script. Otherwise the record keeps each question as it was asked, the filled opt
 with different options, under two question fingerprints and one agent fingerprint. A
 question's script imports what a tool's does — the standard library, installed packages and the
 helpers of its folder, `questions/_name.py`, at the top of the script — and is read when the tree
-loads, as a tool's is, so `fingerprint.agent` covers it; a `.py` without its `.json` is a
-`ConfigurationError`. A route goes by a question whose options its JSON fixes, never by one a script
+loads, as a tool's is, so `fingerprint.agent` covers it; a `.py` without its `.json`, or one with
+no `run` at its top level, is a `ConfigurationError`. A route goes by a question whose options its JSON fixes, never by one a script
 fills ([Both kinds together](#both-kinds-together)).
 
 Some answer spaces are known only when the run starts: the children of the node a walk chose last,
@@ -1914,13 +1914,17 @@ a PDF the model reads itself, an image it looks at. A result JSON cannot hold, a
 `set`, is a tool error naming its type. A script imports the standard library, installed packages
 and the helpers of its own `tools/` folder — its `_name.py` files, by name, at the top of the
 script; a tool's script or a package beside it is no helper, and importing one fails in the worker.
-It never imports the engine, nor your server's code. When the tree loads, each script's imports are
-read without running it, and `rfnry_engine`, a module whose file lies in the project that holds the
-tree — the nearest folder at or above the root with a `pyproject.toml` — outside the standard
-library, the installed packages and the tree's `tools/` and `questions/` folders, a relative import,
-or a helper imported inside a function or class, which only the scripts' loading can reach, is a
-`ConfigurationError` naming the file and the module. That catches a mistake; it is not a sandbox,
-and a script is trusted as your server's code is.
+It never imports the engine, nor your server's code. When the tree loads, each script is read
+without running it: a script with no `def run` or `async def run` at its top level is a
+`ConfigurationError` (`folder: <path> has no run at its top level; a tool defines def run(args,
+call) or async def run(args, call)`), and so is an import of `rfnry_engine`, of a module whose file
+lies in the project that holds the tree — the nearest folder at or above the root with a
+`pyproject.toml` — outside the standard library, the installed packages and the tree's `tools/` and
+`questions/` folders, of a module relatively, or of a helper inside a function or class (`import it
+at the top of the script, since a helper is reachable only while its folder's scripts load`), each
+naming the file and the module. A server package named `tools` is your server's code like any other:
+what counts is the folder the module's file lies in, not its name. That catches a mistake; it is not
+a sandbox, and a script is trusted as your server's code is.
 
 A tool runs in a worker: a process the engine starts with your server's interpreter, so it has the
 packages your server has, which runs the scripts of its group's agents — their tools' and their

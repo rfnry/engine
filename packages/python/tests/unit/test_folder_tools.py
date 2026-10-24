@@ -337,13 +337,69 @@ def test_a_module_in_a_tools_folder_of_the_tree_is_not_the_server_s_code(
     assert list(load_tree(tmp_path / "agents")["a"].folder_tools) == ["fetch", "notify"]
 
 
+@pytest.mark.parametrize("name", ["tools", "questions"])
+def test_a_server_package_named_like_a_declaration_folder_is_the_server_s_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    monkeypatch.syspath_prepend(tmp_path / "src")
+    write(tmp_path / "pyproject.toml", "[project]\nname = 'app'\n")
+    write(tmp_path / f"src/{name}/__init__.py", "SECRET = 1\n")
+    write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "agents/a/tools", "fetch", body=f"import {name}\n" + RUN)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path / "agents")
+    assert str(caught.value) == (
+        f"folder: {tmp_path / 'agents/a/tools/fetch.py'} imports {name!r} from {tmp_path / 'src' / name / '__init__.py'}, the server's own code; a tool imports the standard library, installed packages and helpers of its tools/ folder"
+    )
+
+
+def test_a_tools_folder_off_every_agent_s_path_is_the_server_s_code_to_a_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(tmp_path / "agents/docs")
+    write(tmp_path / "pyproject.toml", "")
+    write(tmp_path / "agents/docs/tools/__init__.py", "")
+    write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "agents/a/tools", "fetch", body="import tools\n" + RUN)
+    with pytest.raises(ConfigurationError, match="imports 'tools' from .*, the server's own code"):
+        load_tree(tmp_path / "agents")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "def main(args, call):\n    return {}\n",
+        "class Tool:\n    def run(self, args, call):\n        return {}\n",
+        "if True:\n    def run(args, call):\n        return {}\n",
+        "run = print\n",
+    ],
+)
+def test_a_tool_script_without_a_run_at_its_top_level_is_refused(tmp_path: Path, body: str) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch", body=body)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"folder: {tmp_path / 'a/tools/fetch.py'} has no run at its top level; a tool defines def run(args, call) or async def run(args, call)"
+    )
+
+
+def test_a_helper_needs_no_run_and_an_async_run_is_a_run(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/tools/_client.py", "BASE = 'https://acme.test'\n")
+    body = "import _client\nasync def run(args, call):\n    return _client.BASE\n"
+    tool(tmp_path / "a/tools", "fetch", body=body)
+    assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch"]
+
+
 def test_a_package_of_the_interpreter_s_site_packages_inside_the_project_passes(
     tmp_path: Path,
 ) -> None:
     project = project_of(Path(sys.prefix))
     assert Path(yaml.__file__).resolve().is_relative_to(project)
     tool(tmp_path / "tools", "fetch", body="import yaml\n" + RUN)
-    assert list(load_tools(tmp_path / "tools", project, tmp_path)) == ["fetch"]
+    folders = {(tmp_path / "tools").resolve()}
+    assert list(load_tools(tmp_path / "tools", project, tmp_path, folders)) == ["fetch"]
 
 
 def test_a_site_packages_folder_of_the_project_that_is_not_the_interpreter_s_is_refused(

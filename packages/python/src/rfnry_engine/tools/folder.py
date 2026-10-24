@@ -16,7 +16,6 @@ from rfnry_engine.workers import Script
 ENGINE = "rfnry_engine"
 KEYS = ("description", "input_schema", "output_schema")
 NESTED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-SCRIPT_FOLDERS = frozenset({"tools", "questions"})
 
 
 class ToolDef(BaseModel):
@@ -140,25 +139,43 @@ def _origins(name: str) -> list[Path]:
     return [Path(place) for place in spec.submodule_search_locations or []]
 
 
-def _owned(origin: Path, project: Path) -> bool:
+def _owned(origin: Path, project: Path, folders: Collection[Path]) -> bool:
     place = origin.resolve()
     if any(place.is_relative_to(installed) for installed in _installed()):
         return False
     if not place.is_relative_to(project):
         return False
-    return not SCRIPT_FOLDERS.intersection(place.relative_to(project).parts)
+    return not any(place.is_relative_to(folder) for folder in folders)
 
 
-def _check_imports(
-    path: Path, source: str, project: Path, helpers: Collection[str], what: str
-) -> None:
-    held = f"{path.parent.name}/"
+def _parsed(path: Path, source: str) -> ast.Module:
     try:
-        module = ast.parse(source, filename=str(path))
+        return ast.parse(source, filename=str(path))
     except SyntaxError as exc:
         raise ConfigurationError(
             f"folder: {path} is not valid Python: {exc.msg} on line {exc.lineno}; fix it in that file"
         ) from exc
+
+
+def _check_run(path: Path, module: ast.Module, what: str, given: str) -> None:
+    if not any(
+        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "run"
+        for node in module.body
+    ):
+        raise ConfigurationError(
+            f"folder: {path} has no run at its top level; a {what} defines def run({given}, call) or async def run({given}, call)"
+        )
+
+
+def _check_imports(
+    path: Path,
+    module: ast.Module,
+    project: Path,
+    folders: Collection[Path],
+    helpers: Collection[str],
+    what: str,
+) -> None:
+    held = f"{path.parent.name}/"
     for node, nested in _imports(module):
         if isinstance(node, ast.ImportFrom) and node.level:
             shown = "." * node.level + (node.module or "")
@@ -183,13 +200,15 @@ def _check_imports(
                     )
                 continue
             for origin in _origins(top):
-                if _owned(origin, project):
+                if _owned(origin, project, folders):
                     raise ConfigurationError(
                         f"folder: {path} imports {top!r} from {origin}, the server's own code; a {what} imports the standard library, installed packages and helpers of its {held} folder"
                     )
 
 
-def load_tools(folder: Path, project: Path, root: Path) -> dict[str, ToolDef]:
+def load_tools(
+    folder: Path, project: Path, root: Path, folders: Collection[Path]
+) -> dict[str, ToolDef]:
     folder, root, project = folder.absolute(), root.absolute(), project.resolve()
     files = sorted(p for p in folder.iterdir() if p.is_file() and not p.name.startswith("."))
     named = [p for p in files if not p.name.startswith("_")]
@@ -212,12 +231,15 @@ def load_tools(folder: Path, project: Path, root: Path) -> dict[str, ToolDef]:
     }
     names = {p.stem for p in helpers}
     for path, source in sources.items():
-        _check_imports(path, source, project, names, "tool")
+        module = _parsed(path, source)
+        _check_imports(path, module, project, folders, names, "tool")
+        if path in scripts.values():
+            _check_run(path, module, "tool", "args")
     return tools
 
 
 def load_scripts(
-    folder: Path, names: Collection[str], project: Path, root: Path
+    folder: Path, names: Collection[str], project: Path, root: Path, folders: Collection[Path]
 ) -> dict[str, Script]:
     folder, root, project = folder.absolute(), root.absolute(), project.resolve()
     helpers = sorted(
@@ -226,8 +248,12 @@ def load_scripts(
     scripts = {name: folder / f"{name}.py" for name in names}
     sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
     shared = {p.stem: sources[p] for p in helpers}
+    what = "question's script"
     for path, source in sources.items():
-        _check_imports(path, source, project, shared, "question's script")
+        module = _parsed(path, source)
+        _check_imports(path, module, project, folders, shared, what)
+        if path in scripts.values():
+            _check_run(path, module, what, "input")
     return {
         name: Script(script_key(root, path), path, sources[path], shared)
         for name, path in scripts.items()

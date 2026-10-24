@@ -301,7 +301,7 @@ def _question_files(directory: Path) -> list[Path]:
 
 
 def _questions(
-    directory: Path, root: Path
+    directory: Path, root: Path, script_folders: Collection[Path]
 ) -> tuple[dict[str, Question], dict[str, tuple[dict[str, JsonValue], Script]]]:
     files = _question_files(directory)
     if not files:
@@ -320,7 +320,8 @@ def _questions(
             )
     fixed = {name: _question(path) for name, path in definitions.items() if name not in scripts}
     fronts = {name: _front(definitions[name]) for name in scripts}
-    loaded = load_scripts(directory, scripts, project_of(root), root) if scripts else {}
+    folders = {*script_folders, directory.resolve()}
+    loaded = load_scripts(directory, scripts, project_of(root), root, folders) if scripts else {}
     return fixed, {name: (fronts[name], loaded[name]) for name in scripts}
 
 
@@ -552,6 +553,7 @@ def load_agent(
     path: str = ".",
     tree_root: Path | None = None,
     tool_folders: Mapping[str, dict[str, ToolDef]] | None = None,
+    script_folders: Collection[Path] = (),
 ) -> AgentSpec:
     front, body = parse_frontmatter_doc(
         _read(directory / "AGENT.md"),
@@ -568,7 +570,9 @@ def load_agent(
         raise ConfigurationError(
             f"tree: generation agent {agent!r} cannot declare questions/; questions are for decision agents, so make it kind: decision or move them to one"
         )
-    questions, scripted = _questions(directory / "questions", tree_root or directory)
+    questions, scripted = _questions(
+        directory / "questions", tree_root or directory, script_folders
+    )
     loaded = {p.stem: _task(p) for p in _markdown_files(directory / "tasks")}
     tasks = {name: said for name, (said, _) in loaded.items()}
     task_bodies = {name: body for name, (_, body) in loaded.items()}
@@ -668,17 +672,33 @@ def load_tree(
             f"tree: {root} holds no AGENT.md; give each agent a folder with an AGENT.md that names its name:, kind: and model:"
         )
     project = project_of(root)
-    tool_folders = {
-        prefix: load_tools(root / prefix / "tools", project, root)
+    prefixes = [
+        prefix
         for prefix in dict.fromkeys(p for path in paths for p in _on_path(path))
         if (root / prefix / "tools").is_dir()
+    ]
+    asking = [root / path / "questions" for path in paths]
+    script_folders = frozenset(
+        place.resolve()
+        for place in [*(root / prefix / "tools" for prefix in prefixes), *asking]
+        if place.is_dir()
+    )
+    tool_folders = {
+        prefix: load_tools(root / prefix / "tools", project, root, script_folders)
+        for prefix in prefixes
     }
     tools = _tool_places(root, tool_folders)
     folders = {name: _Folder(place, tools) for name, place in found.items()}
     agents: dict[str, AgentSpec] = {}
     for path in paths:
         spec = load_agent(
-            root / path, media, folders, path=path, tree_root=root, tool_folders=tool_folders
+            root / path,
+            media,
+            folders,
+            path=path,
+            tree_root=root,
+            tool_folders=tool_folders,
+            script_folders=script_folders,
         )
         twin = agents.get(spec.name)
         if twin is not None:
