@@ -440,7 +440,6 @@ class Refinery:
                     agent,
                     scope,
                     run.state,
-                    task=recorded.task,
                     questions=asked,
                     expect=expect,
                     approve=approve,

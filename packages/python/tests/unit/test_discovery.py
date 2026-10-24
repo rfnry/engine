@@ -29,7 +29,10 @@ def team(root: Path) -> Path:
     write(
         root / "desks/support/triage/AGENT.md", agent_md("triage", kind="decision", model="judge")
     )
-    write(root / "desks/support/triage/questions/urgent.md", "---\ntype: check\n---\nUrgent?\n")
+    write(
+        root / "desks/support/triage/questions/urgent.json",
+        '{"type": "check", "instructions": "Urgent?"}',
+    )
     return root
 
 

@@ -139,8 +139,8 @@ async def test_a_router_is_refused_before_its_questions_when_a_target_s_model_wa
         ),
     )
     write(
-        tmp_path / "triage/questions/team.md",
-        "---\ntype: choice\noptions: {writing: Writing, other: Other}\n---\nWhich?\n",
+        tmp_path / "triage/questions/team.json",
+        '{"type": "choice", "instructions": "Which?", "options": {"writing": "Writing", "other": "Other"}}',
     )
     write(tmp_path / "writer/AGENT.md", agent_md("writer", model="fast"))
     judge = Answering()

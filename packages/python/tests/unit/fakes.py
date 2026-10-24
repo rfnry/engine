@@ -1,4 +1,5 @@
 import hashlib
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -215,23 +216,37 @@ def delegate_triage(call_id: str = "d1", text: str = "It is down") -> Reply:
 
 SORTER = {
     "AGENT.md": "---\nname: sorter\nkind: decision\nmodel: judge\n---\n",
-    "questions/team.md": (
-        "---\ntype: choice\n"
-        "instructions:\n  question: Which team handles `ticket`?\n  ticket: {id: 7}\n"
-        "options:\n"
-        "  billing:\n    what: Charges\n    not_for: Delivery\n    examples: [charged twice]\n"
-        "  orders: [Delivery, Returns]\n"
-        "  other:\n"
-        "---\n"
+    "questions/team.json": json.dumps(
+        {
+            "type": "choice",
+            "instructions": {"question": "Which team handles `ticket`?", "ticket": {"id": 7}},
+            "options": {
+                "billing": {
+                    "what": "Charges",
+                    "not_for": "Delivery",
+                    "examples": ["charged twice"],
+                },
+                "orders": ["Delivery", "Returns"],
+                "other": None,
+            },
+        }
     ),
-    "questions/scope.md": (
-        "---\ntype: score\nlevels:\n  - {summary: One change, signals: [a single fix]}\n"
-        "  - [Several]\n  - Many\n---\nHow focused is the change?\n"
+    "questions/scope.json": json.dumps(
+        {
+            "type": "score",
+            "instructions": "How focused is the change?",
+            "levels": [{"summary": "One change", "signals": ["a single fix"]}, ["Several"], "Many"],
+        }
     ),
-    "questions/creds.md": (
-        "---\ntype: check\ninstructions:\n  question: Does `message` ask for a credential?\n"
-        "  inspect: message\nyes: {what: Asks for a password, examples: [Reply with your PIN]}\n"
-        "---\n"
+    "questions/creds.json": json.dumps(
+        {
+            "type": "check",
+            "instructions": {
+                "question": "Does `message` ask for a credential?",
+                "inspect": "message",
+            },
+            "yes": {"what": "Asks for a password", "examples": ["Reply with your PIN"]},
+        }
     ),
 }
 
@@ -263,8 +278,7 @@ LEAD = {
         "agents: [grader, writer, blank]\n---\nLead the desk.\n"
     ),
     "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades replies\n---\n",
-    "grader/questions/urgent.md": "---\ntype: check\n---\nUrgent?\n",
-    "grader/tasks/tone/polite.md": "---\ntype: check\n---\nPolite?\n",
+    "grader/questions/urgent.json": '{"type": "check", "instructions": "Urgent?"}',
     "writer/AGENT.md": "---\nname: writer\nkind: generation\nmodel: strong\ndescription: Writes replies\n---\nWrite.\n",
     "writer/tasks/apology.md": "Apologise first.\n",
     "blank/AGENT.md": "---\nname: blank\nkind: decision\nmodel: judge\ndescription: Answers what it is asked\n---\n",

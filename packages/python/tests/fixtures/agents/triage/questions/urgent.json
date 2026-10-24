@@ -1,0 +1,4 @@
+{
+  "type": "check",
+  "instructions": "Does the message ask for help right now?"
+}

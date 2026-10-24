@@ -259,7 +259,9 @@ def test_preload_is_true_and_a_decision_agent_cannot_declare_it(
 ) -> None:
     (tmp_path / "a" / "questions").mkdir(parents=True)
     (tmp_path / "a" / "AGENT.md").write_text(f"---\n{front}---\n", encoding="utf-8")
-    (tmp_path / "a" / "questions" / "q.md").write_text("---\ntype: check\n---\nIs it?\n")
+    (tmp_path / "a" / "questions" / "q.json").write_text(
+        '{"type": "check", "instructions": "Is it?"}'
+    )
     with pytest.raises(ConfigurationError, match=message):
         Engine(tmp_path, models={"strong": Scripted(), "judge": Answering()})
 

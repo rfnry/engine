@@ -858,8 +858,7 @@ async def test_a_bad_call_is_refused_before_anything_is_read(
 def graded(root: Path, urgent: str = "Is it urgent?") -> Path:
     for path, text in {
         "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\n---\n",
-        "grader/questions/urgent.md": f"---\ntype: check\n---\n{urgent}\n",
-        "grader/tasks/tone/polite.md": f"---\ntype: check\n---\n{urgent} Polite?\n",
+        "grader/questions/urgent.json": json.dumps({"type": "check", "instructions": urgent}),
     }.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_text(text, encoding="utf-8")
@@ -879,58 +878,52 @@ async def test_a_decision_replay_re_asks_runtime_questions_as_recorded_and_the_f
     refinery = Refinery(storage)
     recorder = Engine(graded(tmp_path / "old"), refinery=refinery, models={"judge": Answering()})
     asked = await ask(recorder, "grader", "acme", "x", questions={"area": AREA})
-    tasked = await ask(recorder, "grader", "acme", "y", task="tone", questions={"area": AREA})
     plain = await recorder.run("grader", "acme", "z")
     dm = Answering()
     candidate_ = Engine(graded(tmp_path / "new", "Must it be done today?"), models={"judge": dm})
     pairs = await collect(refinery.replay("acme", candidate_, agent="grader"))
-    assert [pair.error for pair in pairs] == [None, None, None]
-    first, second, third = (pair.candidate for pair in pairs)
+    assert [pair.error for pair in pairs] == [None, None]
+    first, second = (pair.candidate for pair in pairs)
     assert isinstance(first, Decision) and isinstance(second, Decision)
-    assert isinstance(third, Decision)
     assert first.questions == {
         "urgent": Check(instructions="Must it be done today?"),
         "area": AREA,
     }
-    assert first.runtime == ["area"] and first.state == "x"
-    assert second.task == "tone" and second.runtime == ["area"]
-    assert second.questions == {
-        "urgent": Check(instructions="Must it be done today?"),
-        "polite": Check(instructions="Must it be done today? Polite?"),
-        "area": AREA,
-    }
-    assert third.runtime == [] and set(third.questions) == {"urgent"}
-    assert [call[1] for call in dm.calls] == [first.questions, second.questions, third.questions]
-    for recorded, pair in zip((asked, tasked, plain), pairs, strict=True):
+    assert first.runtime == ["area"] and first.state == "x" and first.task is None
+    assert second.runtime == [] and set(second.questions) == {"urgent"}
+    assert [call[1] for call in dm.calls] == [first.questions, second.questions]
+    for recorded, pair in zip((asked, plain), pairs, strict=True):
         assert isinstance(recorded, Decision) and isinstance(pair.candidate, Decision)
         assert recorded.fingerprint.agent != pair.candidate.fingerprint.agent
         assert recorded.fingerprint.questions != pair.candidate.fingerprint.questions
 
 
-async def test_a_routed_decision_replays_with_the_router_s_task_not_the_routed_run_s(
+async def test_a_routed_decision_replays_from_its_router(
     tmp_path: Path,
     storage: Storage,
 ) -> None:
     for path, text in {
         "desk/AGENT.md": "---\nname: desk\nkind: decision\nmodel: judge\nroute: {by: team, to: {b: grader}}\n---\n",
-        "desk/questions/team.md": "---\ntype: choice\noptions: {a: A, b: B}\n---\nWhich?\n",
-        "desk/tasks/audit/angry.md": "---\ntype: check\n---\nAngry?\n",
+        "desk/questions/team.json": json.dumps(
+            {"type": "choice", "instructions": "Which?", "options": {"a": "A", "b": "B"}}
+        ),
     }.items():
         (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / path).write_text(text, encoding="utf-8")
     graded(tmp_path)
     refinery = Refinery(storage)
     recorded = await Engine(tmp_path, refinery=refinery, models={"judge": Answering()}).run(
-        "desk", "acme", "x", task="audit"
+        "desk", "acme", "x"
     )
     assert isinstance(recorded, Decision) and isinstance(recorded.routed_to, Decision)
-    assert recorded.routed_to.task is None
     dm = Answering()
     [pair] = await collect(
         refinery.replay("acme", Engine(tmp_path, models={"judge": dm}), agent="desk")
     )
-    assert isinstance(pair.candidate, Decision) and pair.candidate.task == "audit"
-    assert [list(asked) for _, asked in dm.calls] == [["team", "angry"], ["urgent"]]
+    assert isinstance(pair.candidate, Decision) and pair.candidate.agent == "desk"
+    assert isinstance(pair.candidate.routed_to, Decision)
+    assert pair.candidate.routed_to.agent == "grader" and pair.candidate.routed_to.state == "x"
+    assert [list(asked) for _, asked in dm.calls] == [["team"], ["urgent"]]
 
 
 async def test_a_runtime_question_the_candidate_s_folder_now_holds_fails_its_pair(
@@ -941,7 +934,7 @@ async def test_a_runtime_question_the_candidate_s_folder_now_holds_fails_its_pai
     recorder = Engine(graded(tmp_path / "old"), refinery=refinery, models={"judge": Answering()})
     await ask(recorder, "grader", "acme", "x", questions={"area": AREA})
     root = graded(tmp_path / "new")
-    (root / "grader/questions/area.md").write_text("---\ntype: check\n---\nOrders?\n")
+    (root / "grader/questions/area.json").write_text('{"type": "check", "instructions": "Orders?"}')
     [pair] = await collect(
         refinery.replay("acme", Engine(root, models={"judge": Answering()}), agent="grader")
     )
@@ -959,12 +952,12 @@ async def test_a_fingerprint_selects_decision_runs_by_all_three_parts(
     folder = await recorder.run("grader", "acme", "x")
     runtime = await ask(recorder, "grader", "acme", "x", questions={"area": AREA})
     again = await ask(recorder, "grader", "acme", "y", questions={"area": AREA})
-    tasked = await recorder.run("grader", "acme", "x", task="tone")
-    prints = [run.fingerprint for run in (folder, runtime, tasked)]
+    other = await ask(recorder, "grader", "acme", "x", questions={"zone": AREA})
+    prints = [run.fingerprint for run in (folder, runtime, other)]
     assert len({p.agent for p in prints}) == 1
     assert len({p.questions for p in prints}) == 3
     engine = Engine(graded(tmp_path), models={"judge": Answering()})
-    for run, expected in ((folder, [folder]), (runtime, [runtime, again]), (tasked, [tasked])):
+    for run, expected in ((folder, [folder]), (runtime, [runtime, again]), (other, [other])):
         pairs = await collect(
             refinery.replay("acme", engine, agent="grader", fingerprint=run.fingerprint)
         )
@@ -999,12 +992,12 @@ async def test_a_decision_run_with_media_replays_its_parts(
     )
 
 
-async def test_a_parent_whose_child_was_given_a_task_and_questions_replays_as_one_run(
+async def test_a_parent_whose_child_was_given_questions_replays_as_one_run(
     tmp_path: Path,
     storage: Storage,
 ) -> None:
     refinery = Refinery(storage)
-    asked = delegating("grader", "Sorry!", task="tone", questions={"area": PICK})
+    asked = delegating("grader", "Sorry!", questions={"area": PICK})
     recorder = Engine(
         lead(tmp_path),
         refinery=refinery,
@@ -1014,13 +1007,8 @@ async def test_a_parent_whose_child_was_given_a_task_and_questions_replays_as_on
     read = await refinery.run("acme", recorded.run_id)
     assert read == recorded and isinstance(read, Generation)
     [child] = read.children
-    assert isinstance(child, Decision) and child.task == "tone" and child.runtime == ["area"]
-    assert read.steps[0].args == {
-        "agent": "grader",
-        "input": "Sorry!",
-        "task": "tone",
-        "questions": {"area": PICK},
-    }
+    assert isinstance(child, Decision) and child.task is None and child.runtime == ["area"]
+    assert read.steps[0].args == {"agent": "grader", "input": "Sorry!", "questions": {"area": PICK}}
     llm = Scripted(delegating("grader", "Sorry!", questions={"area": PICK}), text_reply("Again."))
     dm = Answering()
     [pair] = await collect(

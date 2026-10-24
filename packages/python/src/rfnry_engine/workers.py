@@ -8,12 +8,14 @@ import signal
 import sys
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
-from typing import Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from pydantic import JsonValue
 
 from rfnry_engine.errors import WorkerError
-from rfnry_engine.tree import AgentSpec
+
+if TYPE_CHECKING:
+    from rfnry_engine.tree import AgentSpec
 
 logger = logging.getLogger(__name__)
 
@@ -224,10 +226,11 @@ class Workers:
         scripts: dict[str | None, dict[str, Script]] = {None: {}, **{name: {} for name in named}}
         self._groups = {name: _group(spec.path, named) for name, spec in agents.items()}
         for name, spec in agents.items():
+            own = scripts[self._groups[name]]
             for tool in spec.folder_tools.values():
-                scripts[self._groups[name]][tool.key] = Script(
-                    tool.key, tool.script, tool.source, tool.helpers
-                )
+                own[tool.key] = Script(tool.key, tool.script, tool.source, tool.helpers)
+            for _, script in spec.scripted.values():
+                own[script.key] = script
         self._pools = {
             group: WorkerPool(
                 [held[key] for key in sorted(held)],

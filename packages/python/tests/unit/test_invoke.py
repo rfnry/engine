@@ -51,7 +51,7 @@ def tasks(tmp_path: Path) -> Path:
             "reviewer/tasks/triage.md": "Sort the request.\n",
             "chat/AGENT.md": "---\nname: chat\nkind: generation\nmodel: strong\ndescription: Talks\n---\nYou talk.\n",
             "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades\n---\n",
-            "grader/tasks/tone/polite.md": "---\ntype: check\n---\nPolite?\n",
+            "grader/questions/polite.json": '{"type": "check", "instructions": "Polite?"}',
         },
     )
 
@@ -59,7 +59,7 @@ def tasks(tmp_path: Path) -> Path:
 def test_a_task_is_listed_with_its_description(tmp_path: Path) -> None:
     agents = Engine(tasks(tmp_path), models={}).agents
     assert agents["reviewer"].tasks == {"review": "Review a whole contract", "triage": ""}
-    assert agents["chat"].tasks == {} and agents["grader"].tasks == {"tone": ""}
+    assert agents["chat"].tasks == {} and agents["grader"].tasks == {}
 
 
 async def test_only_a_task_s_body_reaches_the_model(tmp_path: Path) -> None:
@@ -135,7 +135,7 @@ def skills(tmp_path: Path, **more: str) -> Path:
             "books/skills/borrowed.md": "Not the reviewer's.\n",
             "chat/AGENT.md": "---\nname: chat\nkind: generation\nmodel: strong\ndescription: Talks\n---\nYou talk.\n",
             "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades\n---\n",
-            "grader/questions/ok.md": "---\ntype: check\n---\nOk?\n",
+            "grader/questions/ok.json": '{"type": "check", "instructions": "Ok?"}',
             "grader/skills/x.md": "A file.\n",
             **more,
         },

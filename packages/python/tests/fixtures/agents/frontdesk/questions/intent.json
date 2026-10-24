@@ -1,0 +1,9 @@
+{
+  "type": "choice",
+  "instructions": "Which department should handle this message?",
+  "options": {
+    "billing": "Payments, refunds, invoices",
+    "technical": "The product misbehaves",
+    "other": "Anything else"
+  }
+}

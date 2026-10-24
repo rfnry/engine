@@ -38,7 +38,7 @@ def orchestra(root: Path, front: str = "agents: [billing, triage]\n") -> Path:
         root / "triage/AGENT.md",
         "---\nname: triage\nkind: decision\nmodel: judge\ndescription: Sorts\n---\nSort.\n",
     )
-    write(root / "triage/questions/urgent.md", "---\ntype: check\n---\nUrgent?\n")
+    write(root / "triage/questions/urgent.json", '{"type": "check", "instructions": "Urgent?"}')
     return root
 
 
@@ -186,14 +186,6 @@ def test_an_unknown_key_beside_name_is_named_in_the_fix_too(tmp_path: Path) -> N
         load_tree(tmp_path)
     said = str(refused.value)
     assert "remove the name: line" in said and "it takes description" in said
-
-
-def test_a_decision_task_file_is_told_where_it_goes(tmp_path: Path) -> None:
-    write(tmp_path / "a/AGENT.md", "---\nname: a\nkind: decision\nmodel: judge\n---\nSort.\n")
-    write(tmp_path / "a/questions/q.md", "---\ntype: check\n---\nIs it?\n")
-    write(tmp_path / "a/tasks/grade.md", "Grade it.\n")
-    with pytest.raises(ConfigurationError, match=r"; move it to tasks/grade/"):
-        load_tree(tmp_path)
 
 
 @pytest.mark.parametrize(

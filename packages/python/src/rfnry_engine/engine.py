@@ -11,13 +11,14 @@ from pathlib import Path
 from typing import Annotated, Any, NoReturn, Protocol, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
 from rfnry_engine.bundle import build_bundle
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
+    ModelError,
     NotFoundError,
     RunawayError,
 )
@@ -88,11 +89,12 @@ from rfnry_engine.tree import (
     OUTPUT_TOOL,
     AgentSpec,
     Kind,
+    as_question,
     load_tree,
     tree_folders,
     validate_tree,
 )
-from rfnry_engine.workers import Workers
+from rfnry_engine.workers import Script, Workers
 
 STOPPED = "stopped by the user"
 NO_TOOLS = tools_fingerprint([])
@@ -140,6 +142,7 @@ class Recorder(Protocol):
 
 
 PART = TypeAdapter[Part](Part)
+STATE = TypeAdapter[State](State)
 HISTORY = TypeAdapter(list[Message])
 QUESTIONS = TypeAdapter(dict[str, Annotated[Question, Field(discriminator="type")]])
 PART_TYPES = ("text", "image", "audio", "document")
@@ -674,6 +677,10 @@ class Engine:
         parent_run_id: str | None,
         routed: bool = False,
     ) -> Run:
+        if options.task is not None and spec.kind == "decision":
+            raise InputError(
+                f"engine: decision agent {spec.name!r} takes no task; it asks its questions/, so run another decision agent for another set of questions"
+            )
         if options.task is not None and options.task not in spec.tasks:
             have = f"its tasks are {', '.join(spec.tasks)}" if spec.tasks else "it has no tasks"
             raise NotFoundError(f"engine: agent {spec.name!r} has no task {options.task!r}; {have}")
@@ -698,20 +705,18 @@ class Engine:
         if not isinstance(model_, DecisionModel):
             _kind_clash(spec, "decide")
         self._check_routes(spec, set())
-        folder = dict(spec.questions)
-        if options.task is not None:
-            folder.update(spec.task_questions[options.task])
+        folder = {*spec.questions, *spec.scripted}
         clash = [qid for qid in options.questions if qid in folder]
         if clash:
             raise InputError(
                 f"engine: decision agent {spec.name!r} already asks {', '.join(map(repr, clash))} from its folder"
             )
-        questions = {**folder, **options.questions}
-        if not questions:
-            hint = "give it questions/ or tasks/<name>/, or ask it through Delegate"
+        if not folder and not options.questions:
+            hint = "give it questions/, or ask it through Delegate"
             raise InputError(
                 f"engine: decision agent {spec.name!r} has no questions to ask; {hint}"
             )
+        questions = {**spec.questions, **options.questions}
         state = _state(spec, input, getattr(model_, "media_types", None))
         run_id = uuid4().hex
         started = time.monotonic()
@@ -748,6 +753,10 @@ class Engine:
             )
 
         try:
+            if spec.scripted:
+                filled = await self._filled(spec, scope, run_id, state)
+                asked = dict(sorted({**spec.questions, **filled}.items()))
+                questions = {**asked, **options.questions}
             decided = as_decided(await model_.decide(state, questions))
             answers = settle(questions, decided.answers)
             route = spec.route
@@ -764,6 +773,38 @@ class Engine:
             options.failed.append(decision(exc))
             raise
         return decision()
+
+    async def _filled(
+        self, spec: AgentSpec, scope: str, run_id: str, state: State
+    ) -> dict[str, Question]:
+        pool = self._workers.pool(spec.name)
+        given = STATE.dump_python(state, mode="json")
+
+        async def fill(qid: str, front: dict[str, JsonValue], script: Script) -> Question:
+            call = {"scope": scope, "run_id": run_id, "agent": spec.name, "question": qid}
+            held = await pool.call(script.key, given, call, self.tool_timeout)
+            named = f"{script.path.name} of decision agent {spec.name!r}"
+            if not isinstance(held, dict):
+                shown = "None" if held is None else f"a {type(held).__name__}"
+                raise ModelError(
+                    f'engine: {named} returned {shown}, not a dict; it returns the fields it fills in {qid}.json, such as {{"options": {{...}}}}'
+                )
+            try:
+                return as_question({**front, **held})
+            except ValidationError as exc:
+                raise ModelError(
+                    f"engine: question {qid!r} of decision agent {spec.name!r} does not fit once {script.path.name} fills it: {exc.errors(include_url=False, include_input=False)}"
+                ) from exc
+
+        try:
+            async with asyncio.TaskGroup() as group:
+                filling = {
+                    qid: group.create_task(fill(qid, front, script))
+                    for qid, (front, script) in spec.scripted.items()
+                }
+        except ExceptionGroup as failed:
+            raise failed.exceptions[0] from None
+        return {qid: task.result() for qid, task in filling.items()}
 
     def _check_routes(self, spec: AgentSpec, seen: set[str]) -> None:
         seen.add(spec.name)

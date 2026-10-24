@@ -351,7 +351,9 @@ async def test_the_questions_part_changes_with_a_question_its_options_or_their_o
     ]
     renamed = _print(await ask(engine_, "triage", "acme", "x", questions={"zone": AREA}))
     assert len({base, *prints, renamed}) == 6
-    (root / "triage/questions/urgent.md").write_text("---\ntype: check\n---\nIs it urgent?\n")
+    (root / "triage/questions/urgent.json").write_text(
+        '{"type": "check", "instructions": "Is it urgent?"}'
+    )
     edited = triage(fixtures, root)
     assert _print(await ask(edited, "triage", "acme", "x", questions={"area": AREA})) != base
     levels = Score(instructions="How bad?", levels=["Mild", "Severe"])

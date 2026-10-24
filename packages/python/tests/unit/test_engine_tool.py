@@ -119,8 +119,8 @@ async def test_a_call_through_the_tool_resets_the_route_chain(tmp_path: Path) ->
     (tmp_path / "r" / "AGENT.md").write_text(
         "---\nname: r\nkind: decision\nmodel: judge\ndescription: Passes it on\nroute: {by: go, to: {next: g}}\n---\n"
     )
-    (tmp_path / "r" / "questions" / "go.md").write_text(
-        "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
+    (tmp_path / "r" / "questions" / "go.json").write_text(
+        '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep it", "next": "Pass it on"}}'
     )
     (tmp_path / "g").mkdir()
     (tmp_path / "g" / "AGENT.md").write_text(
@@ -136,7 +136,7 @@ async def test_a_call_through_the_tool_resets_the_route_chain(tmp_path: Path) ->
     assert json.loads(step.result)["routed_to"] == {"agent": "g", "reply": "inner done"}
 
 
-async def test_a_decision_agent_as_a_tool_takes_a_task_and_questions_of_the_caller(
+async def test_a_decision_agent_as_a_tool_takes_questions_of_the_caller(
     tmp_path: Path,
 ) -> None:
     recorder = Recorded()
@@ -144,19 +144,19 @@ async def test_a_decision_agent_as_a_tool_takes_a_task_and_questions_of_the_call
     grader = engine.tool("grader", scope="acme")
     [definition] = grader.definitions()
     schema = definition["input_schema"]
-    assert list(schema["properties"]) == ["input", "task", "questions"]
-    assert schema["required"] == ["input"] and schema["properties"]["task"]["enum"] == ["tone"]
+    assert list(schema["properties"]) == ["input", "questions"]
+    assert schema["required"] == ["input"]
     assert schema["properties"]["questions"]["additionalProperties"] == QUESTION
-    result = await grader.dispatch(
-        "grader", {"input": "Thanks!", "task": "tone", "questions": {"area": PICK}}
-    )
+    result = await grader.dispatch("grader", {"input": "Thanks!", "questions": {"area": PICK}})
     assert isinstance(result, dict)
     answers = result["answers"]
-    assert list(answers) == ["urgent", "polite", "area"]
+    assert list(answers) == ["urgent", "area"]
     assert answers["area"]["choice"] == "orders"
     [run] = recorder.runs
-    assert isinstance(run, Decision) and run.task == "tone" and run.runtime == ["area"]
+    assert isinstance(run, Decision) and run.task is None and run.runtime == ["area"]
     assert run.questions["area"] == Choice.model_validate(PICK)
+    with pytest.raises(InputError, match="^engine: decision agent 'grader' takes no task; "):
+        await grader.dispatch("grader", {"input": "Thanks!", "task": "tone"})
     blank = engine.tool("blank", scope="acme")
     assert list(blank.definitions()[0]["input_schema"]["properties"]) == ["input", "questions"]
     asked = await blank.dispatch("blank", {"input": "x", "questions": {"area": PICK}})
@@ -165,7 +165,7 @@ async def test_a_decision_agent_as_a_tool_takes_a_task_and_questions_of_the_call
         await blank.dispatch("blank", {"input": "x", "questions": {"area": {"type": "score"}}})
     with pytest.raises(
         InputError,
-        match="^engine: decision agent 'blank' has no questions to ask; give it questions/ or tasks/<name>/, or ask it through Delegate$",
+        match="^engine: decision agent 'blank' has no questions to ask; give it questions/, or ask it through Delegate$",
     ):
         await blank.dispatch("blank", {"input": "x"})
 

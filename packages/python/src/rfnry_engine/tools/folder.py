@@ -11,10 +11,12 @@ import jsonschema_rs
 from pydantic import BaseModel, JsonValue
 
 from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.workers import Script
 
 ENGINE = "rfnry_engine"
 KEYS = ("description", "input_schema", "output_schema")
 NESTED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+SCRIPT_FOLDERS = frozenset({"tools", "questions"})
 
 
 class ToolDef(BaseModel):
@@ -144,10 +146,13 @@ def _owned(origin: Path, project: Path) -> bool:
         return False
     if not place.is_relative_to(project):
         return False
-    return "tools" not in place.relative_to(project).parts
+    return not SCRIPT_FOLDERS.intersection(place.relative_to(project).parts)
 
 
-def _check_imports(path: Path, source: str, project: Path, helpers: Collection[str]) -> None:
+def _check_imports(
+    path: Path, source: str, project: Path, helpers: Collection[str], what: str
+) -> None:
+    held = f"{path.parent.name}/"
     try:
         module = ast.parse(source, filename=str(path))
     except SyntaxError as exc:
@@ -158,7 +163,7 @@ def _check_imports(path: Path, source: str, project: Path, helpers: Collection[s
         if isinstance(node, ast.ImportFrom) and node.level:
             shown = "." * node.level + (node.module or "")
             raise ConfigurationError(
-                f"folder: {path} imports {shown!r} relatively; import a helper of its tools/ folder by its name, such as import _client"
+                f"folder: {path} imports {shown!r} relatively; import a helper of its {held} folder by its name, such as import _client"
             )
         names = (
             [node.module or ""]
@@ -169,7 +174,7 @@ def _check_imports(path: Path, source: str, project: Path, helpers: Collection[s
             top = name.partition(".")[0]
             if top == ENGINE:
                 raise ConfigurationError(
-                    f"folder: {path} imports {ENGINE!r}; a tool never imports the engine, so keep what it needs in the tool or a helper beside it"
+                    f"folder: {path} imports {ENGINE!r}; a {what} never imports the engine, so keep what it needs in the {what} or a helper beside it"
                 )
             if top in helpers:
                 if nested:
@@ -180,7 +185,7 @@ def _check_imports(path: Path, source: str, project: Path, helpers: Collection[s
             for origin in _origins(top):
                 if _owned(origin, project):
                     raise ConfigurationError(
-                        f"folder: {path} imports {top!r} from {origin}, the server's own code; a tool imports the standard library, installed packages and helpers of its tools/ folder"
+                        f"folder: {path} imports {top!r} from {origin}, the server's own code; a {what} imports the standard library, installed packages and helpers of its {held} folder"
                     )
 
 
@@ -207,5 +212,23 @@ def load_tools(folder: Path, project: Path, root: Path) -> dict[str, ToolDef]:
     }
     names = {p.stem for p in helpers}
     for path, source in sources.items():
-        _check_imports(path, source, project, names)
+        _check_imports(path, source, project, names, "tool")
     return tools
+
+
+def load_scripts(
+    folder: Path, names: Collection[str], project: Path, root: Path
+) -> dict[str, Script]:
+    folder, root, project = folder.absolute(), root.absolute(), project.resolve()
+    helpers = sorted(
+        p for p in folder.iterdir() if p.is_file() and p.name.startswith("_") and p.suffix == ".py"
+    )
+    scripts = {name: folder / f"{name}.py" for name in names}
+    sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
+    shared = {p.stem: sources[p] for p in helpers}
+    for path, source in sources.items():
+        _check_imports(path, source, project, shared, "question's script")
+    return {
+        name: Script(script_key(root, path), path, sources[path], shared)
+        for name, path in scripts.items()
+    }

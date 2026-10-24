@@ -1,0 +1,10 @@
+{
+  "type": "score",
+  "instructions": "How urgent is the request?",
+  "levels": [
+    "Can wait days",
+    "Should be handled today",
+    "Needs attention within the hour",
+    "Active outage"
+  ]
+}

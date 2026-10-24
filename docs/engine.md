@@ -448,8 +448,8 @@ A task is what the agent is to do on a run; a skill is how to do something. A ta
 generation agent, `tasks/<name>.md`, may open with a `description:`, the only key it takes; its body
 is what the model receives, in its system prompt, on a run that names it with `task=`, and the
 frontmatter never reaches the prompt. A task's body and a skill's body are read when the tree
-loads, so editing either file afterwards changes no prompt; build a new `Engine`. A decision agent's tasks are folders of questions,
-[below](#decision-agents).
+loads, so editing either file afterwards changes no prompt; build a new `Engine`. A decision agent
+has no tasks: another set of questions is another decision agent, [below](#decision-agents).
 
 A skill is `skills/<name>.md`, or `skills/<name>/SKILL.md` for one that keeps files of its own
 beside it, in a generation agent's own folder; a skill folder written for another tool works as it
@@ -476,8 +476,8 @@ asks the candidate for it again, so the candidate's own skill file is the one re
 menu a frontend can offer. Which of them a person may invoke is yours to decide — the same tree may
 serve people with different menus — and nothing is invoked unless you pass `task=` or `skill=`. A
 name the agent does not have is a `NotFoundError` before any model call, naming the ones it has —
-`engine: agent 'support' has no skill 'refund'; its skills are escalate` — and `skill=` on a
-decision agent is an `InputError`. When the tree loads, one skill as both `skills/x.md` and
+`engine: agent 'support' has no skill 'refund'; its skills are escalate` — and `task=` or `skill=` on
+a decision agent is an `InputError`. When the tree loads, one skill as both `skills/x.md` and
 `skills/x/SKILL.md` is a `ConfigurationError`, and so is a task file with any key but
 `description:`. Names that start with `_` or `.` are neither tasks nor skills.
 
@@ -595,8 +595,7 @@ verdict = Verdict.model_validate_json(run.reply)
 An accepted `Output` ends the run. A call the model made after it in the same turn is not run; it is
 answered with an error saying so, so every call in `run.conversation` has its result.
 
-Name a task to put `tasks/<task>.md` in front of the model — a decision agent's task adds a set of
-questions, [below](#decision-agents) — pass `context=` to add data about this
+Name a task to put `tasks/<task>.md` in front of the model, pass `context=` to add data about this
 run that does not belong in the tree — the contract under review, today's date, never instructions — the record keeps it as `run.context` — and pass `on_event=`
 to see the run as it happens: where it starts, its reasoning and its text, the messages it takes from
 the inbox, its tool calls and their results:
@@ -900,53 +899,60 @@ grade, route. A decision agent is a directory of questions, asked together in on
 agents/
   triage/
     AGENT.md
-    questions/urgent.md
-    questions/severity.md
+    questions/urgent.json
+    questions/severity.json
 ```
 
-```markdown
----
-type: check
-yes: The service is down or data is at risk
-no: A question, a request, or a problem with a workaround
----
-Does the message need a person right now?
+A question is `questions/<id>.json`, its id the file's stem: an object with its `type` — `check`,
+`score` or `choice` — its `instructions`, and what its answers mean. A `check` may say with `yes`
+and `no` what each answer means; a `score` lists its `levels` in order, two or more; a `choice` maps
+its `options`, two or more, each key to what it means:
+
+```json
+{
+  "type": "check",
+  "instructions": "Does the message need a person right now?",
+  "yes": "The service is down or data is at risk",
+  "no": "A question, a request, or a problem with a workaround"
+}
 ```
 
-```markdown
----
-type: score
-levels: [Can wait days, Today, Within the hour, Outage]
----
-How severe is the problem?
+```json
+{
+  "type": "score",
+  "instructions": "How severe is the problem?",
+  "levels": ["Can wait days", "Today", "Within the hour", "Outage"]
+}
 ```
 
-A `check` may say with `yes:` and `no:` what each answer means; a `score` lists `levels:` in order;
-a `choice` lists `options:`, each key with what it means. In frontmatter only `true` and `false` are
-booleans; `yes`, `no`, `on` and `off` are words, as a key or as a value.
+The instructions, what an option means, a level, `yes` and `no` may each be an object or a list
+instead of a string, and an option given `null` means no more than its key:
 
-What an option means, a level, `yes` and `no` may each be a YAML object or list instead of a string,
-and an option left empty means `None`. Instructions with structure go in the frontmatter as
-`instructions:`, an object or a list, and replace the body; a question with instructions in both, or
-in neither, is a `ConfigurationError`:
-
-```markdown
----
-type: choice
-instructions:
-  question: Which team should handle this message?
-  focus: The main request, not every topic the message mentions
-options:
-  billing:
-    what: Charges, invoices, refunds
-    not_for: Delivery or account access
-    examples: [I was charged twice, My refund never came]
-  orders:
-    what: Delivery, cancellation, returns
-    examples: [My package never arrived]
-  other:
----
+```json
+{
+  "type": "choice",
+  "instructions": {
+    "question": "Which team should handle this message?",
+    "focus": "The main request, not every topic the message mentions"
+  },
+  "options": {
+    "billing": {
+      "what": "Charges, invoices, refunds",
+      "not_for": "Delivery or account access",
+      "examples": ["I was charged twice", "My refund never came"]
+    },
+    "orders": {"what": "Delivery, cancellation, returns", "examples": ["My package never arrived"]},
+    "other": null
+  }
+}
 ```
+
+Each file is checked when the tree loads, so a mistake is caught before any run: a file that is not
+a JSON object, a key a question does not take (`tree: agents/triage/questions/urgent.json has the
+unknown key 'option'; a question takes type, instructions, options, levels, yes and no`),
+instructions missing or empty, a choice with fewer than two options or a score with fewer than two
+levels is a `ConfigurationError` naming the file. A question in markdown, `questions/<id>.md`, is
+one too, which says to write it as `<id>.json`.
 
 Run it with a state: a string, an object or a list.
 
@@ -963,14 +969,69 @@ Every question is answered in the same call, in parallel and in isolation: addin
 changes neither the others' answers nor, noticeably, the latency. An engine with only a decision
 model needs no `Tool`s; the tree's generation agents are the ones it cannot run.
 
+Some answer spaces live in your data: the orders of the customer who wrote, the plans of this
+tenant. A script beside the question fills it: `questions/<id>.py`, a function `run(input, call)`
+that returns the fields it fills — `{"options": {...}}` for a choice, `{"levels": [...]}` for a
+score — merged over `<id>.json`, which leaves them out:
+
+```
+agents/
+  matcher/
+    AGENT.md
+    questions/order.json
+    questions/order.py
+```
+
+```json
+{"type": "choice", "instructions": "Which of the customer's orders is the message about?"}
+```
+
+```python
+from json import load
+from os import environ
+from urllib.request import urlopen
+
+ORDERS = environ["ORDERS_URL"]
+
+
+def run(input, call):
+    url = f"{ORDERS}/{call['scope']}/customers/{input['customer']}/orders"
+    with urlopen(url, timeout=10) as reply:
+        return {"options": {order["id"]: order["summary"] for order in load(reply)}}
+```
+
+```python
+async with Engine(root=Path("agents"), models={"judge": dm}) as engine:
+    run = await engine.run("matcher", scope="acme", input={"message": text, "customer": "c-17"})
+    run.questions["order"].options      # {"A-1001": "Standing desk, shipped", ...}
+    run.answers["order"].choice         # "A-1001"
+```
+
+The script runs in the decision agent's worker, as a tool's does ([Tools](#tools)), before the
+decision model is called. `input` is the run's state as JSON — the text, the object or list as
+given, or the parts as their JSON, media `data` in base64 — and `call` holds the run's `scope`,
+`run_id` and `agent` and the `question` it fills, so what it reads is the tenant's. The scripts of
+a run's questions run at once, each under `tool_timeout`, and the question each fills is checked as
+a file is. A script that raises (`WorkerError: KeyError: 'customer'`), runs past its deadline
+(`TimeoutError: workers: order timed out after 30s`), returns anything but an object, or fills a
+question that does not fit (`ModelError: engine: question 'order' of decision agent 'matcher' does
+not fit once order.py fills it: …`) ends the run before the decision model is called, recorded with
+its `error` as a failed decision call is. The record keeps each question as it was asked, the
+filled options included. A question's script imports what a tool's does — the standard library,
+installed packages and the helpers of its folder, `questions/_name.py` — and is read when the tree
+loads, as a tool's is, so `fingerprint.agent` covers it; a `.py` without its `.json` is a
+`ConfigurationError`. A route goes by a question whose options its JSON fixes, never by one a script
+fills ([Both kinds together](#both-kinds-together)).
+
 Some answer spaces are known only when the run starts: the children of the node a walk chose last,
 the candidates a search returned, the skills an agent has today. Those questions are composed when
 the run starts, by a model or by a runtime of yours: a generation agent composes them
 in a `Delegate` call ([Nesting](#nesting)), and a runtime of yours composes them in a
 call to `engine.tool`. They are ids to `Choice`, `Score` or `Check` — or anything
 with their fields — written as JSON, and they are asked with the folder's,
-in the same call. A question known in advance lives in `questions/` or a task. The record keeps
-every question asked, and `run.runtime` names the ids that came at run time:
+in the same call. A question known in advance lives in `questions/`, and one whose answers your
+data holds keeps its script there. The record keeps every question asked, and `run.runtime` names
+the ids that came at run time:
 
 ```python
 asking = engine.tool("triage", scope="acme")
@@ -992,37 +1053,22 @@ result["answers"]["product"]["choice"], result["answers"]["urgent"]["probability
 ```
 
 A runtime question holds what a question file holds — a choice needs two options, a score two
-levels, and structure is JSON — and one that does not, an id the run already asks, or questions
-sent to a generation agent is an `InputError`. A decision agent may have no `questions/` at all and
-ask only what each run brings; a run with nothing to ask is an `InputError`.
+levels — and one that does not, an id the run already asks, or questions sent to a generation
+agent is an `InputError`. A decision agent may have no `questions/` at all and ask only what each
+run brings; a run with nothing to ask is an `InputError`.
 
-A decision agent's task adds questions, as a generation agent's task adds instructions:
-`tasks/<task>/` holds question files as `questions/` does, and `task=` asks them beside
-`questions/`, which every run asks, and beside the runtime ones. One call asks an id once, so a
-task repeats no id of `questions/` — a `ConfigurationError` when the tree loads — while two tasks,
-never asked together, may share one. An agent may keep all its questions in tasks, and a run of it
-that names none and brings none has nothing to ask. A task the agent does not have is a
-`NotFoundError`, as an agent the tree does not have is, for either kind of agent:
+A decision agent has no tasks. Every run of it asks its `questions/`, and beside them the questions
+the run brings; another set of questions, asked on other runs, is another decision agent, with its
+own folder and its own name, under which its records and its datasets stand apart. `tasks/` in a
+decision agent is a `ConfigurationError` when the tree loads, and `task=` on one an `InputError`
+(`engine: decision agent 'grader' takes no task; it asks its questions/, so run another decision
+agent for another set of questions`).
 
-```
-agents/
-  grader/
-    AGENT.md
-    questions/grounded.md
-    tasks/tone/polite.md
-    tasks/tone/register.md
-```
-
-```python
-run = await engine.run("grader", scope="acme", input={"reply": "Thanks, all sorted!"}, task="tone")
-run.task, sorted(run.questions)       # "tone", ["grounded", "polite", "register"]
-```
-
-`run.fingerprint.questions` is a short sha256 over the questions the run asked — the folder's, the
-task's and the runtime ones alike — as JSON ordered by question id, each question's fields as they
-were asked and its options and levels in their order, since the order can change which answer a
-model favours. Two runs that asked the same questions share it; a changed word, option or order
-changes it. A generation run's is `None`. With `fingerprint.agent` for the folder, it tells two
+`run.fingerprint.questions` is a short sha256 over the questions the run asked — the folder's, those
+its scripts filled and the runtime ones alike — as JSON ordered by question id, each question's
+fields as they were asked and its options and levels in their order, since the order can change
+which answer a model favours. Two runs that asked the same questions share it; a changed word,
+option or order changes it. A generation run's is `None`. With `fingerprint.agent` for the folder, it tells two
 versions of a decision apart even when the questions came at run time.
 
 The state is text unless the decision model reads more. An adapter that carries `media_types` —
@@ -1048,7 +1094,7 @@ step that called it carries the child's `run_id`. A decision agent used this way
 generation agent asks a fast, calibrated question mid-task: is this destructive, which skill
 applies, is the user done.
 
-The model can also name one of the target's `task`s, of either kind, and give a decision agent
+The model can also name one of a generation agent's `task`s, and give a decision agent
 `questions` it composes itself — ids to questions of the three types, written as JSON, structure
 included — asked beside the agent's own in the same call. A question that occurs to the model
 mid-task is answered with probabilities instead of guessed at, and a decision agent with no
@@ -1073,9 +1119,9 @@ child.answers["cause"].choice             # "duplicate"
 The child records its task and its runtime questions as any run does, and the step keeps what the
 model sent. `Delegate` offers `task` only when a target has tasks and `questions` only when one is
 a decision agent, and its schema describes the question object once, for all three types. A task
-the target does not have, questions for a generation agent, a question that does not fit, an id the
-target already asks, or a decision run with nothing to ask reaches the model as a tool error it can
-read and act on, and the run goes on.
+the target does not have, a task for a decision agent, questions for a generation agent, a question
+that does not fit, an id the target already asks, a decision run with nothing to ask, or a question
+script that fails reaches the model as a tool error it can read and act on, and the run goes on.
 
 A run records the call it worked for in `call`, the same `CallInfo` its `RunStarted` carries, so a run a tool of yours started links back to the run that called it.
 
@@ -1114,15 +1160,16 @@ route:
 ---
 ```
 
-```markdown
----
-type: choice
-options:
-  billing: Payments, refunds, invoices
-  technical: The product misbehaves
-  other: Anything else
----
-Which department should handle this message?
+```json
+{
+  "type": "choice",
+  "instructions": "Which department should handle this message?",
+  "options": {
+    "billing": "Payments, refunds, invoices",
+    "technical": "The product misbehaves",
+    "other": "Anything else"
+  }
+}
 ```
 
 When the chosen option maps to an agent and confidence clears the floor, that agent runs with
@@ -1138,10 +1185,12 @@ run.routed_to.agent                     # "support" — the generation agent tha
 run.routed_to.children[0].agent         # "triage" — the decision agent support consulted mid-task
 ```
 
-A route is by a question of the router's `questions/`, which every run asks, so neither a task
-nor a runtime question can drive it; a router's task and runtime questions are its own, asked
-beside `intent` and not passed on. A route entry names an agent, or an agent and one of its tasks,
-which the routed run is given — a generation agent's instructions or a decision agent's questions:
+A route is by a question of the router's `questions/` whose options its `.json` fixes, since the
+route maps them to agents: neither a runtime question nor one a script fills can drive it, and
+`by:` naming a scripted question is a `ConfigurationError` (`tree: route of 'triage' is by 'order',
+whose options come from order.py; route by a question whose options are fixed`). A router's runtime
+questions are its own, asked beside `intent` and not passed on. A route entry names an agent, or a
+generation agent and one of its tasks, whose instructions the routed run is given:
 
 ```yaml
 route:
@@ -1151,10 +1200,10 @@ route:
     technical: {agent: support, task: triage}
 ```
 
-The task must be one its agent has, and a decision agent a route reaches must have something to
-ask — `questions/`, or questions in the task the entry names; either is a `ConfigurationError` when
-the tree loads, since that tree cannot work. A decision agent reached through `Delegate` needs
-neither, since the model can name a task or bring the questions.
+The task must be one its agent has, a decision agent takes none, and a decision agent a route
+reaches must have `questions/` of its own; each is a `ConfigurationError` when the tree loads, since
+that tree cannot work. A decision agent reached through `Delegate` needs no questions of its own,
+since the model can bring them.
 
 One message, four model calls, one record. Given only `strong` the same tree runs its generation
 agents and refuses the decision ones; given only `judge` the reverse, and a decision agent whose
@@ -1569,10 +1618,10 @@ when they matter:
 
 ```
 agents/judge/
-  AGENT.md                 name: judge   kind: decision   model: judge
-  questions/grounded.md    type: check   Is every claim in the reply supported by a tool result?
-  questions/rule.md        type: check   Does the reply apply the refund rule as written?
-  questions/done.md        type: score   levels: [Not addressed, Partly, Fully, Fully and confirmed]
+  AGENT.md                   name: judge   kind: decision   model: judge
+  questions/grounded.json    check   Is every claim in the reply supported by a tool result?
+  questions/rule.json        check   Does the reply apply the refund rule as written?
+  questions/done.json        score   levels: Not addressed, Partly, Fully, Fully and confirmed
 ```
 
 A **teacher** is a generation agent that answers a decision agent's questions with a rationale, so
@@ -1677,9 +1726,9 @@ reviewed or the world reported on; `tags=` those whose tags contain these, as `d
 `tools` and `questions` all equal; `limit=` the first so many. Each is `candidate.run(agent, scope,
 …, record=False)` with the recorded input — parts as parts — the history sent before it, the task,
 the skill and the `context`, so the candidate sees what the recorded run saw, its own skill file
-read for a recorded skill. A decision run replays its state and its task, and asks its runtime
-questions again as they were recorded while the questions of its folder come from the candidate's
-folder — a runtime id the candidate's folder now asks fails that pair; when its route reached a
+read for a recorded skill. A decision run replays its state, and asks its runtime questions again
+as they were recorded while the questions of its folder come from the candidate's folder, its
+scripts filling theirs anew — a runtime id the candidate's folder now asks fails that pair; when its route reached a
 generation run, that run's input, history and context go too. What a record does not keep is yours
 to pass again — `expect=`, `approve=`, and the `tools=` and `workspace=` the runs were given.
 Replays given one workspace share its files and its jobs, and a job outlives the replay that started
@@ -1853,11 +1902,12 @@ and the helpers of its own `tools/` folder, each at the top of the script, by it
 imports the engine, nor your server's code. When the tree loads, each script's imports are read
 without running it, and `rfnry_engine`, or a module whose file lies in the project that holds the
 tree — the nearest folder at or above the root with a `pyproject.toml` — outside the tree's `tools/`
-folders, is a `ConfigurationError` naming the file and the module. That catches a mistake; it is
+and `questions/` folders, is a `ConfigurationError` naming the file and the module. That catches a mistake; it is
 not a sandbox, and a script is trusted as your server's code is.
 
 A tool runs in a worker: a process the engine starts with your server's interpreter, so it has the
-packages your server has, which runs the scripts of its group's agents and serves their calls. The
+packages your server has, which runs the scripts of its group's agents — their tools' and their
+questions' ([Decision agents](#decision-agents)) — and serves their calls. The
 scripts and their helpers are read when the tree loads, as tasks and skills are — the text the
 import check read and the fingerprint covers — and a worker runs that text, under each file's own
 path, so `__file__` still finds the data beside it: an edit to a tool reaches the next `Engine`,
@@ -2212,8 +2262,8 @@ no `AGENT.md`, a link to a folder that holds it or one that would reach an agent
 `AGENT.md` without a plain `name:`, a `kind:` of `generation` or `decision`, or a plain `model:`, a
 `models` that is not a mapping of names to adapters, a model no agent runs on, an agent whose model
 has not its kind's method, two agents with one name, an agent in `agents:` or `route:` the tree does
-not have, an unknown key in the frontmatter of an `AGENT.md`, a task or a question (`frontmatter:
-unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid
+not have, an unknown key in the frontmatter of an `AGENT.md` or a task (`frontmatter: unknown key
+'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid
 YAML or a `description:` that is not a string in a file the map would show, a decision agent with
 `preload: true`, `workspace: true` or `tools:`, a generation agent with `questions/` or `route:`, a
 `tools:` entry that is blank, padded or listed twice, a `tools:` that mixes names and `!names`,
@@ -2227,11 +2277,12 @@ agent's own folder, one that holds it or one inside it, or names two folders one
 `reads:` on a decision agent or on an agent whose folder is a link to a folder elsewhere, a file
 `preload: true` would send that neither `Read` nor `Load` would hand over — over 20 MB, of a type
 the model's `media_types` does not name, or not the type its name says — one skill as both
-`skills/x.md` and `skills/x/SKILL.md`, a question with instructions both in its frontmatter and in
-its body or in neither, a decision agent with a file straight in `tasks/` or a task that repeats an
-id of its `questions/`, a route not by a choice question of the router's `questions/` or that maps
-an option the question does not have, a route entry that names a task its agent does not have or
-gives a decision agent nothing to ask, two tools of a run with one name or one named like a tool the
+`skills/x.md` and `skills/x/SKILL.md`, a question in markdown, a question's JSON that is not an
+object, holds an unknown key, has no instructions or does not fit its type, a question's script
+without its `.json`, a decision agent with `tasks/`, a route not by a choice question of the
+router's `questions/`, by one a script fills, or that maps an option the question does not have, a
+route entry that names a task its agent does not have, a task for a decision agent, or gives a
+decision agent nothing to ask, two tools of a run with one name or one named like a tool the
 engine gives the agent, a run of an agent whose model was not given, or of a router whose target's
 model was not given, a missing workspace, a `Local` root that is not a directory, a `shell` that is
 not a list of strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and
@@ -2244,7 +2295,7 @@ has no task 'ghost'`), found when the run starts, or a run the refinery does not
 call the library refuses: an empty scope, a workspace of another scope, a history that breaks a tool
 call from its result, a `start` outside the history or without one, tags outside their limits,
 runtime questions that do not fit, a runtime id the run already asks, questions for a generation
-agent, a decision run with no question to ask, media the decision model does not declare, a media
+agent, a task or a skill for a decision agent, a decision run with no question to ask, media the decision model does not declare, a media
 part with both or neither of `data` and `url`, a correction of the wrong shape or for a question the
 run was not asked, a `delete_runs` or `verify_absent` given both `run_ids` and `tags` or an empty
 one, a `delete_runs` given neither, an `export` or a `replay` given a `holdout_percent` outside 0 to
@@ -2252,11 +2303,12 @@ one, a `delete_runs` given neither, an `export` or a `replay` given a `holdout_p
 with bad arguments or a path outside its directory. `ModelError` when an adapter breaks the contract
 — a result whose fields do not fit, a missing answer, probabilities that do not cover the options,
 lie outside 0 and 1 or do not sum to 1, a score outside its levels — or a folder tool's result does
-not match its `output_schema`. `RunawayError` when a loop exceeds `max_steps` (default 200).
+not match its `output_schema`, or a question's script returns anything but an object or a question
+that does not fit. `RunawayError` when a loop exceeds `max_steps` (default 200).
 `DelegationLoopError` for a route into an agent already in the same chain of routes;
 `DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
 `Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool
-that fails in its worker process: what its script raised, a result JSON cannot hold, a worker that
+or a question's script that fails in its worker process: what its script raised, a result JSON cannot hold, a worker that
 stopped while the call was in flight (`workers: the worker for lookup_order stopped: exited with
 code 3`) or a call after `close()`. Inside a run, a tool's error is the model's to read, never
 raised. All under `EngineException` — the root takes the `Exception` suffix, every child ends in

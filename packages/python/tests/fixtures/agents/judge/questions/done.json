@@ -1,0 +1,9 @@
+{
+  "type": "score",
+  "instructions": "Was the request handled?",
+  "levels": [
+    "Not addressed",
+    "Partly",
+    "Fully"
+  ]
+}

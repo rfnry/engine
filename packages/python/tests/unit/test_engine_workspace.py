@@ -23,7 +23,7 @@ AGENTS = {
     "lead": "name: lead\nkind: generation\nmodel: strong\ndescription: Leads\nagents: [coder, chat]",
     "desk": "name: desk\nkind: decision\nmodel: judge\ndescription: Sorts\nroute:\n  by: intent\n  to: {code: coder, talk: chat}",
 }
-INTENT = "---\ntype: choice\noptions:\n  code: Write code\n  talk: Just talk\n---\nWhat is this?\n"
+INTENT = '{"type": "choice", "instructions": "What is this?", "options": {"code": "Write code", "talk": "Just talk"}}'
 
 
 def make_tree(tmp_path: Path, extra: dict[str, str] | None = None) -> Path:
@@ -35,7 +35,7 @@ def make_tree(tmp_path: Path, extra: dict[str, str] | None = None) -> Path:
         )
         if "kind: decision" in front:
             (root / name / "questions").mkdir()
-            (root / name / "questions" / "intent.md").write_text(INTENT, encoding="utf-8")
+            (root / name / "questions" / "intent.json").write_text(INTENT, encoding="utf-8")
     return root
 
 

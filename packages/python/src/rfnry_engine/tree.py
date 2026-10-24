@@ -1,3 +1,4 @@
+import json
 import os
 import posixpath
 from collections.abc import Callable, Collection, Mapping
@@ -30,9 +31,10 @@ from rfnry_engine.jail import Jail
 from rfnry_engine.models import Check, Choice, Part, Question, Score
 from rfnry_engine.tools.builtins import BUILTINS, preload_parts
 from rfnry_engine.tools.delegate import DELEGATE_TOOL
-from rfnry_engine.tools.folder import ToolDef, load_tools, project_of
+from rfnry_engine.tools.folder import ToolDef, load_scripts, load_tools, project_of
 from rfnry_engine.tools.history import HISTORY_TOOL
 from rfnry_engine.tools.workspace import WORKSPACE_NAMES
+from rfnry_engine.workers import Script
 
 Kind = Literal["generation", "decision"]
 OUTPUT_TOOL = "Output"
@@ -128,11 +130,33 @@ class QuestionFront(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["choice", "score", "check"]
-    instructions: dict[str, JsonValue] | list[JsonValue] | None = None
+    instructions: str | dict[str, JsonValue] | list[JsonValue] | None = None
     options: dict[str, str | dict[str, JsonValue] | list[JsonValue] | None] | None = None
     levels: list[str | dict[str, JsonValue] | list[JsonValue]] | None = None
     yes: str | dict[str, JsonValue] | list[JsonValue] | None = None
     no: str | dict[str, JsonValue] | list[JsonValue] | None = None
+
+    @field_validator("instructions")
+    @classmethod
+    def _instructions_say_something(
+        cls, value: str | dict[str, JsonValue] | list[JsonValue] | None
+    ) -> str | dict[str, JsonValue] | list[JsonValue] | None:
+        if value is not None and not (value.strip() if isinstance(value, str) else value):
+            raise ValueError("tree: instructions must say something; write the question")
+        return value
+
+
+QUESTION_TYPES: dict[str, type[Choice] | type[Score] | type[Check]] = {
+    "choice": Choice,
+    "score": Score,
+    "check": Check,
+}
+SHAPE = "type, instructions and its options, levels or yes and no"
+
+
+def as_question(data: Mapping[str, JsonValue]) -> Question:
+    front = QuestionFront.model_validate(data)
+    return QUESTION_TYPES[front.type].model_validate(front.model_dump(exclude_unset=True))
 
 
 class TaskFront(BaseModel):
@@ -164,7 +188,7 @@ class AgentSpec(BaseModel):
     task_bodies: dict[str, str] = Field(default_factory=dict)
     fingerprint: str
     workspace: bool = False
-    task_questions: dict[str, dict[str, Question]] = Field(default_factory=dict)
+    scripted: dict[str, tuple[dict[str, JsonValue], Script]] = Field(default_factory=dict)
     preload: list[Part] = Field(default_factory=list)
     preload_digest: str
     listing: str = ""
@@ -180,26 +204,35 @@ def _read(path: Path) -> str:
         raise ConfigurationError(f"tree: {path} is not UTF-8 text; save it as UTF-8") from exc
 
 
-def _question(path: Path) -> Question:
-    front, body = parse_frontmatter_doc(
-        _read(path), model=QuestionFront, source=path, label="question"
-    )
-    written = body.strip()
-    if front.instructions is not None and written:
-        raise ConfigurationError(
-            f"tree: question {path} gives instructions both in its frontmatter and in its body; keep one"
-        )
-    instructions = front.instructions or written
-    if not instructions:
-        raise ConfigurationError(
-            f"tree: question {path} gives no instructions, in its body or its frontmatter; write the question under its frontmatter"
-        )
+def _object(path: Path) -> dict[str, JsonValue]:
     try:
-        if front.type == "choice":
-            return Choice(instructions=instructions, options=front.options or {})
-        if front.type == "score":
-            return Score(instructions=instructions, levels=front.levels or [])
-        return Check(instructions=instructions, yes=front.yes, no=front.no)
+        data = json.loads(_read(path))
+    except json.JSONDecodeError as exc:
+        raise ConfigurationError(
+            f"tree: {path} is not valid JSON: {exc}; fix it in that file"
+        ) from exc
+    if not isinstance(data, dict):
+        raise ConfigurationError(
+            f"tree: {path} is not a JSON object; a question is an object with {SHAPE}"
+        )
+    unknown = sorted(key for key in data if key not in QuestionFront.model_fields)
+    if unknown:
+        raise ConfigurationError(
+            f"tree: {path} has the unknown key {unknown[0]!r}; a question takes type, instructions, options, levels, yes and no"
+        )
+    return data
+
+
+def _question(path: Path) -> Question:
+    try:
+        return as_question(_object(path))
+    except ValidationError as exc:
+        raise ConfigurationError(f"tree: invalid question {path}; {plainly(exc)}") from exc
+
+
+def _front(path: Path) -> dict[str, JsonValue]:
+    try:
+        return QuestionFront.model_validate(_object(path)).model_dump(exclude_unset=True)
     except ValidationError as exc:
         raise ConfigurationError(f"tree: invalid question {path}; {plainly(exc)}") from exc
 
@@ -241,16 +274,30 @@ def _markdown_files(directory: Path) -> list[Path]:
     )
 
 
-def _folders(directory: Path) -> list[Path]:
+def _questions(
+    directory: Path, root: Path
+) -> tuple[dict[str, Question], dict[str, tuple[dict[str, JsonValue], Script]]]:
     if not directory.is_dir():
-        return []
-    return sorted(
-        p for p in directory.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))
+        return {}, {}
+    files = sorted(
+        p for p in directory.iterdir() if p.is_file() and not p.name.startswith(("_", "."))
     )
-
-
-def _questions(directory: Path) -> dict[str, Question]:
-    return {p.stem: _question(p) for p in _markdown_files(directory)}
+    for path in files:
+        if path.suffix == ".md":
+            raise ConfigurationError(
+                f"tree: question {path} is markdown; write it as {path.stem}.json with {SHAPE}"
+            )
+    definitions = {p.stem: p for p in files if p.suffix == ".json"}
+    scripts = [p.stem for p in files if p.suffix == ".py"]
+    for name in scripts:
+        if name not in definitions:
+            raise ConfigurationError(
+                f"tree: {directory / name}.py has no {name}.json beside it; a question is {name}.json, and {name}.py fills it from data"
+            )
+    fixed = {name: _question(path) for name, path in definitions.items() if name not in scripts}
+    fronts = {name: _front(definitions[name]) for name in scripts}
+    loaded = load_scripts(directory, scripts, project_of(root), root) if scripts else {}
+    return fixed, {name: (fronts[name], loaded[name]) for name in scripts}
 
 
 class _Folder:
@@ -489,28 +536,14 @@ def load_agent(
         label="agent",
     )
     agent = front.name
-    questions = _questions(directory / "questions")
-    task_files = _markdown_files(directory / "tasks")
-    task_questions: dict[str, dict[str, Question]] = {}
-    task_bodies: dict[str, str] = {}
-    if front.kind == "decision":
-        if task_files:
-            first = task_files[0].stem
-            raise ConfigurationError(
-                f"tree: decision agent {agent!r} has tasks/{first}.md, but keeps each task's questions in a folder; move it to tasks/{first}/"
-            )
-        task_questions = {p.name: _questions(p) for p in _folders(directory / "tasks")}
-        tasks = dict.fromkeys(task_questions, "")
-    else:
-        loaded = {p.stem: _task(p) for p in task_files}
-        tasks = {name: said for name, (said, _) in loaded.items()}
-        task_bodies = {name: body for name, (_, body) in loaded.items()}
-    for task, asked in task_questions.items():
-        clash = [qid for qid in asked if qid in questions]
-        if clash:
-            raise ConfigurationError(
-                f"tree: decision agent {agent!r} asks {', '.join(map(repr, clash))} in both questions/ and tasks/{task}/; rename one"
-            )
+    if front.kind == "decision" and (directory / "tasks").is_dir():
+        raise ConfigurationError(
+            f"tree: decision agent {agent!r} has tasks/; a decision agent asks only questions/, so make another decision agent for another set of questions"
+        )
+    questions, scripted = _questions(directory / "questions", tree_root or directory)
+    loaded = {p.stem: _task(p) for p in _markdown_files(directory / "tasks")}
+    tasks = {name: said for name, (said, _) in loaded.items()}
+    task_bodies = {name: body for name, (_, body) in loaded.items()}
     if front.kind == "decision" and front.tools:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot list tools:; tools are for generation agents, so give them to one it routes to"
@@ -523,7 +556,7 @@ def load_agent(
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot declare preload:; a decision agent reads no files, so give it what it needs in its input or its questions"
         )
-    if front.kind == "generation" and questions:
+    if front.kind == "generation" and (questions or scripted):
         raise ConfigurationError(
             f"tree: generation agent {agent!r} cannot declare questions/; questions are for decision agents, so make it kind: decision or move them to one"
         )
@@ -585,7 +618,7 @@ def load_agent(
         task_bodies=task_bodies,
         fingerprint=folder_fingerprint(files, read),
         workspace=front.workspace,
-        task_questions=task_questions,
+        scripted=scripted,
         preload=preload,
         preload_digest=preload_digest(preload),
         listing=joined(
@@ -642,7 +675,12 @@ def validate_tree(agents: dict[str, AgentSpec]) -> None:
                 )
         if spec.route is None:
             continue
-        question = spec.questions.get(spec.route.by)
+        by = spec.route.by
+        if by in spec.scripted:
+            raise ConfigurationError(
+                f"tree: route of {spec.name!r} is by {by!r}, whose options come from {by}.py; route by a question whose options are fixed"
+            )
+        question = spec.questions.get(by)
         if not isinstance(question, Choice):
             raise ConfigurationError(
                 f"tree: route of {spec.name!r} must name a choice question; by: names a choice question in its questions/"
@@ -657,12 +695,15 @@ def validate_tree(agents: dict[str, AgentSpec]) -> None:
                 raise ConfigurationError(
                     f"tree: route of {spec.name!r} points at unknown agent {target.agent!r}; the tree has {', '.join(sorted(agents))}"
                 )
+            if routed.kind == "decision" and target.task is not None:
+                raise ConfigurationError(
+                    f"tree: route of {spec.name!r} names task {target.task!r} for decision agent {target.agent!r}, which takes no task; drop task: from that entry"
+                )
             if target.task is not None and target.task not in routed.tasks:
                 raise ConfigurationError(
                     f"tree: route of {spec.name!r} points at agent {target.agent!r}, which has no task {target.task!r}; its tasks are {', '.join(routed.tasks) or 'none'}"
                 )
-            tasked = None if target.task is None else routed.task_questions.get(target.task)
-            if routed.kind == "decision" and not routed.questions and not tasked:
+            if routed.kind == "decision" and not routed.questions and not routed.scripted:
                 raise ConfigurationError(
-                    f"tree: route of {spec.name!r} gives decision agent {target.agent!r} nothing to ask: it has no questions/ and the route names no task with questions; give it questions/, or name one of its tasks in the route"
+                    f"tree: route of {spec.name!r} gives decision agent {target.agent!r} nothing to ask: it has no questions/; give it questions/, since a route hands it only the input"
                 )

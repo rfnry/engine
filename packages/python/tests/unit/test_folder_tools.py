@@ -473,7 +473,7 @@ def test_a_tree_moved_with_its_tools_keeps_its_fingerprints(tmp_path: Path) -> N
 def test_a_decision_agent_sees_no_folder_tools(tmp_path: Path) -> None:
     tool(tmp_path / "tools", "notify")
     write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
-    write(tmp_path / "triage/questions/urgent.md", "---\ntype: check\n---\nUrgent?\n")
+    write(tmp_path / "triage/questions/urgent.json", '{"type": "check", "instructions": "Urgent?"}')
     assert load_tree(tmp_path)["triage"].folder_tools == {}
 
 
@@ -481,7 +481,9 @@ def test_a_decision_agent_s_folder_may_hold_tools_for_the_agents_inside_it(
     tmp_path: Path,
 ) -> None:
     write(tmp_path / "support/AGENT.md", agent_md("support", kind="decision", model="judge"))
-    write(tmp_path / "support/questions/urgent.md", "---\ntype: check\n---\nUrgent?\n")
+    write(
+        tmp_path / "support/questions/urgent.json", '{"type": "check", "instructions": "Urgent?"}'
+    )
     tool(tmp_path / "support/tools", "lookup_order")
     write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
     tree = load_tree(tmp_path)
@@ -492,7 +494,7 @@ def test_a_decision_agent_s_folder_may_hold_tools_for_the_agents_inside_it(
 def test_a_tools_folder_above_only_decision_agents_is_still_checked(tmp_path: Path) -> None:
     write(tmp_path / "tools/x.json", DEF)
     write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
-    write(tmp_path / "triage/questions/urgent.md", "---\ntype: check\n---\nUrgent?\n")
+    write(tmp_path / "triage/questions/urgent.json", '{"type": "check", "instructions": "Urgent?"}')
     with pytest.raises(ConfigurationError, match="has no x.py beside it"):
         load_tree(tmp_path)
 

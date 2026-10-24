@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import ConfigurationError, InputError, ModelError, NotFoundError
+from rfnry_engine.errors import ConfigurationError, InputError, ModelError
 from rfnry_engine.models import (
     Answer,
     Audio,
@@ -192,12 +192,12 @@ async def test_foreign_answers_alone_are_accepted_and_still_validated(fixtures: 
         await Engine(fixtures, models={"judge": Fixed(_foreign(1.5))}).run("triage", "acme", "x")
 
 
-async def test_a_routing_agent_s_unknown_task_is_not_found_before_it_is_asked(
+async def test_a_routing_agent_given_a_task_is_refused_before_it_is_asked(
     fixtures: Path,
 ) -> None:
     dm = Fixed(_intent("other", 0.9))
     engine = Engine(fixtures, models={"strong": Scripted(), "judge": dm})
-    with pytest.raises(NotFoundError, match="^engine: agent 'frontdesk' has no task 'triage'; "):
+    with pytest.raises(InputError, match="^engine: decision agent 'frontdesk' takes no task; "):
         await engine.run("frontdesk", "acme", "x", task="triage")
     assert dm.calls == []
 
@@ -287,13 +287,15 @@ async def test_a_checks_yes_and_no_reach_the_decision_model(tmp_path: Path) -> N
     (tmp_path / "triage" / "AGENT.md").write_text(
         "---\nname: triage\nkind: decision\nmodel: judge\n---\n"
     )
-    (tmp_path / "triage" / "questions" / "urgent.md").write_text(
-        "---\n"
-        "type: check\n"
-        "yes: The service is down or data is at risk\n"
-        "no: A question, a request, or a problem with a workaround\n"
-        "---\n"
-        "Does the message need a person right now?\n"
+    (tmp_path / "triage" / "questions" / "urgent.json").write_text(
+        json.dumps(
+            {
+                "type": "check",
+                "instructions": "Does the message need a person right now?",
+                "yes": "The service is down or data is at risk",
+                "no": "A question, a request, or a problem with a workaround",
+            }
+        )
     )
     dm = Fixed({"urgent": CheckAnswer(probability=0.9)})
     await Engine(tmp_path, models={"judge": dm}).run("triage", "acme", "It is down")

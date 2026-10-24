@@ -122,7 +122,7 @@ def test_reads_of_a_link_that_leaves_the_root_is_refused(tmp_path: Path) -> None
 def test_the_tree_folders_leave_out_hidden_declared_and_inner_links(tmp_path: Path) -> None:
     root = books(tmp_path / "root")
     write(root / ".git/x", "x")
-    write(root / "coding/questions/a.md", "---\ndescription: A\n---\n")
+    write(root / "coding/questions/a.json", '{"type": "check", "instructions": "A?"}')
     write(root / "coding/notes/n.md", "N\n")
     write(tmp_path / "elsewhere/sub/n.md", "N\n")
     (root / "zagain").symlink_to(root / "shared", target_is_directory=True)

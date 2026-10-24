@@ -18,7 +18,7 @@ def coding(root: Path) -> Path:
         "---\nname: coding\nkind: generation\nmodel: strong\ndescription: Codes\n---\nHi\n",
     )
     write(root / "tasks/review.md", "---\ndescription: Reviews\n---\nReview it.\n")
-    write(root / "questions/q.md", "---\ntype: check\n---\nIs it?\n")
+    write(root / "questions/q.json", '{"type": "check", "instructions": "Is it?"}')
     write(root / "notes/style.md", "---\ndescription: The house style\n---\nTabs never.\n")
     write(root / "notes/draft.md", "No frontmatter, so no description.\n")
     write(root / "notes/.secret.md", "---\ndescription: Hidden\n---\n")

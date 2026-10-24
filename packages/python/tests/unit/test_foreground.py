@@ -262,8 +262,8 @@ def decision(root: Path, name: str, front: str = "") -> None:
         f"---\nname: {name}\nkind: decision\nmodel: judge\ndescription: Sorts\n{front}---\nSort it.\n",
         encoding="utf-8",
     )
-    (root / name / "questions" / "intent.md").write_text(
-        "---\ntype: choice\noptions:\n  other: Anything else\n  billing: Payments\n---\nWhich?\n",
+    (root / name / "questions" / "intent.json").write_text(
+        '{"type": "choice", "instructions": "Which?", "options": {"other": "Anything else", "billing": "Payments"}}',
         encoding="utf-8",
     )
 
