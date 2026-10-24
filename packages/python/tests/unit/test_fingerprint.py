@@ -16,10 +16,8 @@ from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import (
-    TOOLS,
     Answering,
     Desk,
-    LookupArgs,
     MemoryBucket,
     Scripted,
     ask,
@@ -27,7 +25,6 @@ from .fakes import (
     decision_record,
     delegate_triage,
     generation_record,
-    lookup_order,
     now,
     text_reply,
 )
@@ -47,15 +44,21 @@ def tree(fixtures: Path, tmp_path: Path) -> Path:
     return root
 
 
-def engine(root: Path, *replies: Any, tools: list[Tool] = TOOLS, **kwargs: Any) -> Engine:
+def engine(root: Path, *replies: Any, **kwargs: Any) -> Engine:
     llm = Scripted(*(replies or [text_reply("ok")]))
-    return Engine(root, tools=tools, **kwargs, models={"strong": llm, "judge": Desk()})
+    return Engine(root, **kwargs, models={"strong": llm, "judge": Desk()})
 
 
-async def generation(root: Path, *, tools: list[Tool] = TOOLS, **kwargs: Any) -> Generation:
-    run = await engine(root, tools=tools).run("support", "acme", "hi", **kwargs)
+async def generation(root: Path, **kwargs: Any) -> Generation:
+    run = await engine(root).run("support", "acme", "hi", **kwargs)
     assert isinstance(run, Generation)
     return run
+
+
+def edit(path: Path, old: str, new: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    assert old in text
+    path.write_text(text.replace(old, new), encoding="utf-8")
 
 
 async def test_the_agent_fingerprint_is_every_file_of_its_folder_by_path_and_content(
@@ -146,70 +149,58 @@ async def test_a_link_out_of_the_folder_is_not_part_of_it(fixtures: Path, tmp_pa
     assert (await generation(root)).fingerprint == before.fingerprint
 
 
-class NowArgs(BaseModel):
-    zone: str
-
-
-class ZoneArgs(BaseModel):
-    zone: str = "UTC"
-
-
-async def test_a_code_tool_s_schema_changes_the_tools_fingerprint(fixtures: Path) -> None:
+async def test_a_folder_tool_s_schema_changes_the_tools_fingerprint(
+    fixtures: Path, tmp_path: Path
+) -> None:
     plain = await generation(fixtures)
-    zoned = await generation(
-        fixtures,
-        tools=[
-            Tool("lookup_order", "Fetch an order", body=lookup_order),
-            Tool("now", "The current time", body=now, args=NowArgs),
-        ],
+    zoned = tree(fixtures, tmp_path / "zoned")
+    edit(
+        zoned / "support/tools/now.json",
+        '"properties": {}',
+        '"properties": {"zone": {"type": "string"}}',
     )
-    zoned_again = await generation(
-        fixtures,
-        tools=[
-            Tool("lookup_order", "Fetch an order", body=lookup_order),
-            Tool("now", "The current time", body=now, args=ZoneArgs),
-        ],
+    defaulted = tree(fixtures, tmp_path / "defaulted")
+    edit(
+        defaulted / "support/tools/now.json",
+        '"properties": {}',
+        '"properties": {"zone": {"type": "string", "default": "UTC"}}',
     )
-    assert plain.fingerprint.agent == zoned.fingerprint.agent == zoned_again.fingerprint.agent
-    assert (
-        len({plain.fingerprint.tools, zoned.fingerprint.tools, zoned_again.fingerprint.tools}) == 3
-    )
+    prints = [plain.fingerprint, (await generation(zoned)).fingerprint]
+    prints.append((await generation(defaulted)).fingerprint)
+    assert len({p.tools for p in prints}) == 3 and len({p.agent for p in prints}) == 3
 
 
-async def test_the_order_an_agent_lists_tools_in_changes_its_fingerprint_and_not_the_tools(
+async def test_the_order_an_agent_keeps_tools_in_changes_its_fingerprint_and_not_the_tools(
     fixtures: Path, tmp_path: Path
 ) -> None:
     listed = tree(fixtures, tmp_path / "listed")
     flipped = tree(fixtures, tmp_path / "flipped")
-    path = flipped / "support/AGENT.md"
-    path.write_text(path.read_text().replace("[lookup_order, now]", "[now, lookup_order]"))
+    for root, kept in ((listed, "[lookup_order, now]"), (flipped, "[now, lookup_order]")):
+        edit(root / "support/AGENT.md", "agents: [triage]\n", f"agents: [triage]\ntools: {kept}\n")
     llm = Scripted(text_reply("ok"))
-    run = await Engine(flipped, tools=TOOLS, models={"strong": llm, "judge": Desk()}).run(
+    run = await Engine(flipped, models={"strong": llm, "judge": Desk()}).run(
         "support", "acme", "hi"
     )
     assert isinstance(run, Generation)
-    assert [t.name for t in llm.calls[0][2] if t.name in {"lookup_order", "now"}] == [
-        "lookup_order",
-        "now",
-    ]
+    assert [t.name for t in llm.calls[0][2]] == ["lookup_order", "now", "Delegate"]
     original = await generation(listed)
     assert run.fingerprint.tools == original.fingerprint.tools
     assert run.fingerprint.agent != original.fingerprint.agent
 
 
-async def test_a_catalog_tool_s_description_changes_the_tools_fingerprint_not_the_agent(
-    fixtures: Path,
+async def test_a_folder_tool_s_description_changes_both_fingerprints_its_script_the_agent_s(
+    fixtures: Path, tmp_path: Path
 ) -> None:
     plain = await generation(fixtures)
-    reworded = await generation(
-        fixtures,
-        tools=[
-            Tool("lookup_order", "Fetch an order, reworded", body=lookup_order, args=LookupArgs),
-            *TOOLS[1:],
-        ],
-    )
-    assert plain.fingerprint.tools != reworded.fingerprint.tools
-    assert plain.fingerprint.agent == reworded.fingerprint.agent
+    reworded = tree(fixtures, tmp_path / "reworded")
+    edit(reworded / "support/tools/lookup_order.json", "Fetch an order by id.", "Fetch an order.")
+    rewritten = tree(fixtures, tmp_path / "rewritten")
+    edit(rewritten / "support/tools/lookup_order.py", "return {", "return {'by': 'id', ")
+    described, scripted = await generation(reworded), await generation(rewritten)
+    assert plain.fingerprint.tools != described.fingerprint.tools
+    assert plain.fingerprint.agent != described.fingerprint.agent
+    assert plain.fingerprint.tools == scripted.fingerprint.tools
+    assert plain.fingerprint.agent != scripted.fingerprint.agent
 
 
 class Verdict(BaseModel):
@@ -289,10 +280,10 @@ async def test_the_record_and_every_exported_row_carry_the_fingerprint(
 
 async def test_a_tool_call_does_not_move_the_fingerprint(fixtures: Path) -> None:
     call = ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"})
-    engine_ = engine(
+    async with engine(
         fixtures, Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("Found it.")
-    )
-    called = await engine_.run("support", "acme", "Where is A-1?")
+    ) as engine_:
+        called = await engine_.run("support", "acme", "Where is A-1?")
     assert called.fingerprint == (await generation(fixtures)).fingerprint
 
 

@@ -11,7 +11,7 @@ from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 
-from .fakes import TOOLS, Answering, Scripted, ask, delegate_triage, text_reply
+from .fakes import Answering, Scripted, ask, delegate_triage, text_reply
 
 AREA = Choice(
     instructions={"question": "Which area does `message` belong to?", "within": "orders"},
@@ -119,7 +119,7 @@ async def test_a_decision_agent_with_no_questions_of_its_own_runs_on_runtime_one
 
 async def test_a_generation_agent_takes_no_questions(fixtures: Path) -> None:
     llm = Scripted()
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": Answering()})
+    engine = Engine(fixtures, models={"strong": llm, "judge": Answering()})
     for given in (RUNTIME, {}):
         with pytest.raises(
             InputError, match="^engine: generation agent 'support' takes no questions$"
@@ -185,7 +185,7 @@ async def test_a_route_is_by_a_folder_question_and_runtime_ones_stay_with_the_ro
 ) -> None:
     llm = Scripted(text_reply("Support here."))
     dm = Answering()
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": dm})
+    engine = Engine(fixtures, models={"strong": llm, "judge": dm})
     with pytest.raises(
         InputError,
         match="^engine: decision agent 'frontdesk' already asks 'intent' from its folder$",
@@ -220,7 +220,7 @@ async def test_a_routed_decision_run_asks_its_own_folder_only(tmp_path: Path) ->
 
 async def test_a_delegated_decision_run_asks_its_folder(fixtures: Path) -> None:
     llm = Scripted(delegate_triage(), text_reply("Handled."))
-    run = await Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": Answering()}).run(
+    run = await Engine(fixtures, models={"strong": llm, "judge": Answering()}).run(
         "support", "acme", "It is down"
     )
     assert isinstance(run, Generation)

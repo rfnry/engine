@@ -17,11 +17,9 @@ import rfnry_engine
 from rfnry_engine import (
     CheckAnswer,
     ChoiceAnswer,
-    Document,
     Engine,
     Local,
     Message,
-    Part,
     QuestionLike,
     Refinery,
     Reply,
@@ -36,9 +34,8 @@ from rfnry_engine import (
     Workspace,
 )
 from rfnry_engine.records import Decision
+from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tree import load_agent, load_tree, validate_tree
-
-from .fakes import lookup_order
 
 DOCS = Path(__file__).parents[4] / "docs" / "engine.md"
 BLOCKS: list[tuple[str, str]] = re.findall(
@@ -46,6 +43,8 @@ BLOCKS: list[tuple[str, str]] = re.findall(
 )
 PYTHON = [body for lang, body in BLOCKS if lang == "python"]
 MARKDOWN = [body for lang, body in BLOCKS if lang in ("markdown", "")]
+LOOKUP = next(body for lang, body in BLOCKS if lang == "json" and "Fetch an order" in body)
+SCRIPT = next(body for body in PYTHON if body.startswith("import json\n"))
 
 
 def first_line(block: str) -> str:
@@ -63,6 +62,8 @@ ILLUSTRATIVE = {
     "from pathlib import Path": "needs agents that declare `workspace: true`",
     'engine = Engine(root, models={"strong": strong_llm, "fast": fast_llm, "judge": dm})': "the test tree has no agent on fast",
     "jobs = {}": "needs a model that calls start and then check",
+    "import json": "a tool script, which the test tree holds as support/tools/lookup_order.py",
+    "import _client": "a tool script, which runs in a worker beside its helper _client.py",
 }
 
 SIGNATURES = {
@@ -120,7 +121,7 @@ SETUPS = {
             ),
         )
     ),
-    'engine = Engine(root, models={"strong": llm, "judge": dm}, tools=tools)': Setup(
+    'engine = Engine(root, models={"strong": llm, "judge": dm})': Setup(
         replies=(delegating("triage"),), intent="technical"
     ),
     ASKS: Setup(
@@ -215,6 +216,8 @@ def tree(root: Path) -> None:
         "---\ndescription: When a refund is owed\n---\nA double charge is refunded in full.\n",
     )
     write(root / "support/tasks/triage.md", "Triage the message.\n")
+    write(root / "support/tools/lookup_order.json", LOOKUP)
+    write(root / "support/tools/lookup_order.py", SCRIPT)
     write(
         root / "support/skills/escalate.md",
         "---\ndescription: Hand a conversation to a person\n---\nSay so, then stop.\n",
@@ -246,23 +249,9 @@ def tree(root: Path) -> None:
     )
 
 
-class InvoiceArgs(BaseModel):
-    invoice_id: str = Field(description="The invoice id")
-
-
-async def fetch_invoice(args: dict[str, Any]) -> list[Part]:
-    return [Document(media_type="application/pdf", name="a.pdf", data=b"%PDF-1.4")]
-
-
 class Invoices:
     async def get(self, invoice_id: str) -> bytes:
         return b"%PDF-1.4"
-
-
-TOOLS = [
-    Tool("lookup_order", "Fetch an order by its id", body=lookup_order),
-    Tool("fetch_invoice", "Fetch an invoice as its PDF", body=fetch_invoice, args=InvoiceArgs),
-]
 
 
 def memory_tools(memory: object, corpus_id: str) -> Tools:
@@ -284,7 +273,6 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
     recorded = Engine(
         root,
         models={"strong": Model(), "judge": Answering("billing")},
-        tools=TOOLS,
         refinery=refinery,
     )
     llm, dm = Model(*setup.replies), Answering(setup.intent)
@@ -298,12 +286,8 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
         "llm": llm,
         "dm": dm,
         "refinery": refinery,
-        "engine": Engine(root, models={"strong": llm, "judge": dm}, tools=TOOLS, refinery=refinery),
-        "tools": list(TOOLS),
-        "InvoiceArgs": InvoiceArgs,
-        "fetch_invoice": fetch_invoice,
+        "engine": Engine(root, models={"strong": llm, "judge": dm}, refinery=refinery),
         "invoices": Invoices(),
-        "lookup_order": lookup_order,
         "png": b"\x89PNG\r\n\x1a\n",
         "wav": b"RIFF",
         "MemoryTools": memory_tools,
@@ -419,3 +403,16 @@ def test_the_agent_that_preloads_its_folder_loads(tmp_path: Path) -> None:
     spec = load_agent(tmp_path / "tagger")
     assert spec.kind == "generation" and spec.body.startswith("Tag the document.")
     assert spec.preload == [Text(text="<<<rules/house.md>>>\nTag by department.\n")]
+
+
+async def test_the_tool_of_getting_started_runs_in_its_worker_as_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "agents"
+    tree(root)
+    write(tmp_path / "orders/acme/orders/A-1001", json.dumps({"status": "shipped"}))
+    monkeypatch.setenv("ORDERS_URL", (tmp_path / "orders").as_uri())
+    async with Engine(root, models={}) as engine:
+        surface = EngineTools(engine, agent="support", scope="acme")
+        found = await surface.dispatch("lookup_order", {"order_id": "A-1001"})
+    assert found == {"status": "shipped"}

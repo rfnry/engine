@@ -24,6 +24,11 @@ class ToolDef(BaseModel):
     output_schema: dict[str, JsonValue] | None
     script: Path
     folder: Path
+    key: str
+
+
+def script_key(root: Path, script: Path) -> str:
+    return script.relative_to(root).with_suffix("").as_posix()
 
 
 def project_of(root: Path) -> Path:
@@ -45,7 +50,7 @@ def _text(path: Path) -> str:
         raise ConfigurationError(f"folder: {path} is not UTF-8 text; save it as UTF-8") from exc
 
 
-def _reason(exc: jsonschema_rs.ValidationError) -> str:
+def reason(exc: jsonschema_rs.ValidationError) -> str:
     at = "/".join(str(step) for step in exc.instance_path)
     return f"{exc.message} at {at}" if at else exc.message
 
@@ -55,11 +60,11 @@ def _compiled(path: Path, key: str, schema: dict[str, JsonValue]) -> None:
         jsonschema_rs.validator_for(schema, offline=True)
     except jsonschema_rs.ValidationError as exc:
         raise ConfigurationError(
-            f"folder: {path} has an {key} that is not a valid JSON Schema: {_reason(exc)}; fix it in that file"
+            f"folder: {path} has an {key} that is not a valid JSON Schema: {reason(exc)}; fix it in that file"
         ) from exc
 
 
-def _definition(path: Path, script: Path) -> ToolDef:
+def _definition(path: Path, script: Path, root: Path) -> ToolDef:
     try:
         data = json.loads(_text(path))
     except json.JSONDecodeError as exc:
@@ -104,6 +109,7 @@ def _definition(path: Path, script: Path) -> ToolDef:
         output_schema=result,
         script=script,
         folder=path.parent,
+        key=script_key(root, script),
     )
 
 
@@ -175,8 +181,8 @@ def _check_imports(path: Path, project: Path, helpers: Collection[str]) -> None:
                     )
 
 
-def load_tools(folder: Path, project: Path) -> dict[str, ToolDef]:
-    project = project.resolve()
+def load_tools(folder: Path, project: Path, root: Path) -> dict[str, ToolDef]:
+    folder, root, project = folder.absolute(), root.absolute(), project.resolve()
     files = sorted(p for p in folder.iterdir() if p.is_file() and not p.name.startswith("."))
     named = [p for p in files if not p.name.startswith("_")]
     helpers = [p for p in files if p.name.startswith("_") and p.suffix == ".py"]
@@ -191,7 +197,7 @@ def load_tools(folder: Path, project: Path) -> dict[str, ToolDef]:
             raise ConfigurationError(
                 f"folder: {scripts[name]} has no {name}.json beside it; describe the tool in {name}.json, or name a helper _{name}.py"
             )
-    tools = {name: _definition(definitions[name], scripts[name]) for name in sorted(scripts)}
+    tools = {name: _definition(definitions[name], scripts[name], root) for name in sorted(scripts)}
     names = {p.stem for p in helpers}
     for path in [*scripts.values(), *helpers]:
         _check_imports(path, project, names)

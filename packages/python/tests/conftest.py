@@ -1,7 +1,9 @@
 import asyncio
 import os
+import signal
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -58,3 +60,26 @@ async def pool() -> AsyncIterator[Any]:
 async def storage(pool: Any) -> PostgresStorage:
     await pool.execute("DELETE FROM engine_labels; DELETE FROM engine_runs")
     return PostgresStorage(pool)
+
+
+def _workers_left() -> list[int]:
+    found = []
+    for task in Path("/proc/self/task").glob("*/children"):
+        for child in task.read_text().split():
+            try:
+                command = Path(f"/proc/{child}/cmdline").read_bytes()
+                state = Path(f"/proc/{child}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            except OSError:
+                continue
+            if b"_worker.py" in command and state != "Z":
+                found.append(int(child))
+    return found
+
+
+@pytest.fixture(autouse=True)
+def _no_worker_left_behind() -> Iterator[None]:
+    yield
+    left = _workers_left()
+    for pid in left:
+        os.killpg(pid, signal.SIGKILL)
+    assert left == [], "tests: a test left a worker process running; close its engine"

@@ -11,7 +11,6 @@ import asyncpg
 import pytest
 from unit.fakes import (
     PICK,
-    TOOLS,
     Answering,
     Desk,
     MemoryBucket,
@@ -48,7 +47,7 @@ from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery, label_of
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 from rfnry_engine.stop import Stop
-from rfnry_engine.tools.tools import Tool
+from rfnry_engine.tools.tools import Tool, Tools
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "agents"
 
@@ -514,9 +513,9 @@ async def test_a_recorded_tree_reads_back_as_it_ran(storage: Storage) -> None:
         return [Text(text="a\x00b"), Image(media_type="image/png", data=bytes(range(256)))]
 
     both = delegate_triage("d1", "one").tool_calls + delegate_triage("d2", "two").tool_calls
+    looking = Tools([Tool("lookup_order", "Fetch an order", body=lookup)])
     engine = Engine(
         FIXTURES,
-        tools=[Tool("lookup_order", "Fetch an order", body=lookup), TOOLS[1]],
         refinery=refinery,
         models={
             "strong": Scripted(
@@ -530,7 +529,9 @@ async def test_a_recorded_tree_reads_back_as_it_ran(storage: Storage) -> None:
             "judge": Desk(),
         },
     )
-    run = await engine.run("frontdesk", "a", "It is down", tags={"customer": "c-81"}, stop=stop)
+    run = await engine.run(
+        "frontdesk", "a", "It is down", tags={"customer": "c-81"}, stop=stop, tools=looking
+    )
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     support = run.routed_to
     assert support.stopped == "after_step" and len(support.children) == 2
@@ -551,7 +552,6 @@ async def test_a_tree_reads_back_with_its_one_record_stamp(storage: Storage) -> 
     refinery = Refinery(storage)
     engine = Engine(
         FIXTURES,
-        tools=TOOLS,
         refinery=refinery,
         models={"strong": Scripted(delegate_triage(), text_reply("Handled.")), "judge": Desk()},
     )
@@ -573,7 +573,6 @@ async def test_fingerprints_and_context_round_trip(
     refinery = Refinery(storage)
     engine = Engine(
         FIXTURES,
-        tools=TOOLS,
         refinery=refinery,
         models={"strong": Scripted(delegate_triage(), text_reply("Handled.")), "judge": Desk()},
     )
@@ -632,7 +631,6 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     refinery = Refinery(storage)
     recorder = Engine(
         FIXTURES,
-        tools=TOOLS,
         refinery=refinery,
         models={
             "strong": Scripted(
@@ -661,9 +659,7 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     await refinery.outcome("a", third.run_id, Outcome(status="failed"))
     counted = await storage.count_scope("a")
     model = Seeing()
-    candidate = Engine(
-        FIXTURES, tools=TOOLS, refinery=refinery, models={"strong": model, "judge": Desk()}
-    )
+    candidate = Engine(FIXTURES, refinery=refinery, models={"strong": model, "judge": Desk()})
 
     async def replayed(**selectors: Any) -> list[str]:
         pairs = [p async for p in refinery.replay("a", candidate, agent="support", **selectors)]

@@ -28,7 +28,6 @@ from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
 
 from .fakes import (
-    TOOLS,
     Answering,
     MemoryBucket,
     Scripted,
@@ -67,7 +66,7 @@ def furnish(support: Path) -> None:
 
 
 def engine(root: Path, llm: GenerationModel) -> Engine:
-    return Engine(root, tools=TOOLS, models={"strong": llm, "judge": Answering()})
+    return Engine(root, models={"strong": llm, "judge": Answering()})
 
 
 def preloaded(support: Path) -> list[Part]:
@@ -99,7 +98,8 @@ async def test_preload_all_puts_every_rule_skill_and_knowledge_file_before_the_m
         Reply(tool_calls=[ToolCall(id="c", name="now", args={})], stop_reason="tool_use"),
         text_reply("Refunded."),
     )
-    run = await engine(root, llm).run("support", "acme", "Charged twice.")
+    async with engine(root, llm) as running:
+        run = await running.run("support", "acme", "Charged twice.")
     assert isinstance(run, Generation) and isinstance(before, Generation)
     parts = preloaded(support)
     assert run.preload == parts and before.preload == []
@@ -181,7 +181,7 @@ async def test_a_run_applies_a_rule_held_only_in_its_file_without_reading_it(
     assert (support / "rules" / "refunds.md").read_text(encoding="utf-8").endswith(RULE)
     assert (
         "without approval"
-        not in Engine(root, tools=TOOLS, models={"strong": Scripted()})._spec("support").listing
+        not in Engine(root, models={"strong": Scripted()})._spec("support").listing
     )
     reading = RuleFollower()
     on_demand = await engine(root, reading).run("support", "acme", "Charged twice.")
@@ -200,7 +200,7 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
 ) -> None:
     llm = Scripted(text_reply("ok"))
     history = [Message(role="user", content="hi"), Message(role="assistant", content="hello")]
-    await Engine(fixtures, tools=TOOLS, models={"strong": llm}).run(
+    await Engine(fixtures, models={"strong": llm}).run(
         "support",
         "acme",
         "Charged twice.",
@@ -345,9 +345,7 @@ async def test_the_preload_is_recorded_read_back_exported_and_left_to_the_candid
     preload_all(support)
     refinery = Refinery(storage)
     history = [Message(role="user", content="hi"), Message(role="assistant", content="hello")]
-    built = Engine(
-        root, tools=TOOLS, refinery=refinery, models={"strong": Scripted(text_reply("Sorry."))}
-    )
+    built = Engine(root, refinery=refinery, models={"strong": Scripted(text_reply("Sorry."))})
     run = await built.run("support", "acme", "Charged twice.", history=history)
     assert isinstance(run, Generation)
     assert await refinery.run("acme", run.run_id) == run
@@ -362,7 +360,7 @@ async def test_the_preload_is_recorded_read_back_exported_and_left_to_the_candid
     assert rows["generation"]["preload"] == sent
     assert rows["preference"]["prompt"]["preload"] == sent
     candidate_model = Scripted(text_reply("Refunded."))
-    candidate = Engine(root, tools=TOOLS, models={"strong": candidate_model})
+    candidate = Engine(root, models={"strong": candidate_model})
     async for pair in refinery.replay("acme", candidate, agent="support"):
         assert pair.candidate is not None
     [(_, messages, _)] = candidate_model.calls

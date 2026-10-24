@@ -27,7 +27,6 @@ from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import (
     PICK,
-    TOOLS,
     Answering,
     Desk,
     Fixed,
@@ -53,7 +52,7 @@ def _delegate(agent: str, text: str, call_id: str = "d1") -> Reply:
 
 async def test_delegate_tool_exists_only_when_agents_are_named(fixtures: Path) -> None:
     llm = Scripted(text_reply("a"), text_reply("b"))
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
+    engine = Engine(fixtures, models={"strong": llm})
     await engine.run("support", "acme", "x")
     await engine.run("billing", "acme", "x")
     assert "Delegate" in [t.name for t in llm.calls[0][2]]
@@ -68,7 +67,7 @@ async def test_delegate_tool_exists_only_when_agents_are_named(fixtures: Path) -
 
 async def test_generation_agent_consults_a_decision_agent(fixtures: Path) -> None:
     llm = Scripted(_delegate("triage", "It is down"), text_reply("Escalating."))
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": Fixed(TRIAGE)})
+    engine = Engine(fixtures, models={"strong": llm, "judge": Fixed(TRIAGE)})
     run = await engine.run("support", "acme", "It is down")
     assert isinstance(run, Generation) and len(run.children) == 1
     child = run.children[0]
@@ -90,7 +89,7 @@ async def test_the_whole_chain_frontdesk_support_triage(fixtures: Path) -> None:
     answers: list[Any] = [intent, TRIAGE]
     dm = Fixed(lambda state: answers.pop(0))
     llm = Scripted(_delegate("triage", "It is down"), text_reply("Handled."))
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": dm})
+    engine = Engine(fixtures, models={"strong": llm, "judge": dm})
     run = await engine.run("frontdesk", "acme", "It is down")
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     assert run.routed_to.agent == "support" and run.routed_to.children[0].agent == "triage"
@@ -227,7 +226,7 @@ async def test_the_child_serves_the_same_tenant_with_its_context(tmp_path: Path)
 
 
 async def test_dispatch_delegate_outside_a_run(fixtures: Path) -> None:
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted(), "judge": Fixed(TRIAGE)})
+    engine = Engine(fixtures, models={"strong": Scripted(), "judge": Fixed(TRIAGE)})
     tools = EngineTools(engine, agent="support", scope="acme")
     result = await tools.dispatch("Delegate", {"agent": "triage", "input": "It is down"})
     assert isinstance(result, str) and json.loads(result)["answers"]["urgent"]["probability"] == 0.9
@@ -285,9 +284,7 @@ async def test_delegate_is_not_bound_by_the_tool_deadline(fixtures: Path) -> Non
             return TRIAGE
 
     llm = Scripted(_delegate("triage", "It is down"), text_reply("Escalating."))
-    engine = Engine(
-        fixtures, tools=TOOLS, tool_timeout=0.05, models={"strong": llm, "judge": Slow(TRIAGE)}
-    )
+    engine = Engine(fixtures, tool_timeout=0.05, models={"strong": llm, "judge": Slow(TRIAGE)})
     run = await engine.run("support", "acme", "It is down")
     assert isinstance(run, Generation) and not run.steps[0].is_error
     assert run.children[0].agent == "triage"
@@ -465,7 +462,7 @@ async def test_children_follow_their_steps_whatever_order_they_finish_in(fixture
 
     both = delegate_triage("d1", "slow").tool_calls + delegate_triage("d2", "fast").tool_calls
     llm = Scripted(Reply(tool_calls=both, stop_reason="tool_use"), text_reply("Both triaged."))
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": SlowFirst()})
+    engine = Engine(fixtures, models={"strong": llm, "judge": SlowFirst()})
     run = await engine.run("support", "acme", "Two tickets")
     assert isinstance(run, Generation) and finished == ["fast", "slow"]
     assert [child.run_id for child in run.children] == [step.child_run_id for step in run.steps]

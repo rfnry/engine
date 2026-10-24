@@ -6,13 +6,14 @@ import logging
 import os
 import signal
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
 from pydantic import JsonValue
 
 from rfnry_engine.errors import WorkerError
+from rfnry_engine.tree import AgentSpec
 
 logger = logging.getLogger(__name__)
 
@@ -205,3 +206,30 @@ class WorkerPool:
         )
         worker.write(self._scripts)
         return worker
+
+
+def _group(path: str, groups: Collection[str]) -> str | None:
+    return next((name for name in groups if path == name or path.startswith(f"{name}/")), None)
+
+
+class Workers:
+    def __init__(self, agents: Mapping[str, AgentSpec], groups: Mapping[str, int] | None) -> None:
+        named = dict(groups or {})
+        scripts: dict[str | None, dict[str, Path]] = {None: {}, **{name: {} for name in named}}
+        self._groups = {name: _group(spec.path, named) for name, spec in agents.items()}
+        for name, spec in agents.items():
+            for definition in spec.folder_tools.values():
+                scripts[self._groups[name]][definition.key] = definition.script
+        self._pools = {
+            group: WorkerPool(
+                [Script(key, path) for key, path in sorted(held.items())],
+                processes=1 if group is None else named[group],
+            )
+            for group, held in scripts.items()
+        }
+
+    def pool(self, agent: str) -> WorkerPool:
+        return self._pools[self._groups[agent]]
+
+    async def close(self) -> None:
+        await asyncio.gather(*(pool.close() for pool in self._pools.values()))

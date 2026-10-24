@@ -27,7 +27,7 @@ def test_generation_agent_carries_body_agents_tools_tasks() -> None:
     assert support.body.startswith("You are the support desk")
     assert support.agents == ["triage"]
     assert support.tasks == {"triage": ""}
-    assert support.tools == ["lookup_order", "now"]
+    assert list(support.folder_tools) == ["lookup_order", "now"] and support.keep is None
 
 
 def test_decision_agent_carries_typed_questions_and_route() -> None:

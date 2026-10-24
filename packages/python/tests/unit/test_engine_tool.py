@@ -19,7 +19,7 @@ from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.tools.delegate import QUESTION, child_result
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import PICK, TOOLS, Answering, Fixed, Scripted, lead, text_reply
+from .fakes import PICK, Answering, Fixed, Scripted, lead, text_reply
 
 TRIAGE: dict[str, Answer] = {
     "urgent": CheckAnswer(probability=0.9),
@@ -44,7 +44,7 @@ def calling(name: str, text: str) -> Reply:
 async def test_a_generation_agent_as_a_tool_replies_and_records(fixtures: Path) -> None:
     llm = Scripted(text_reply("Refunded."))
     recorder = Recorded()
-    engine = Engine(fixtures, tools=TOOLS, refinery=recorder, models={"strong": llm})
+    engine = Engine(fixtures, refinery=recorder, models={"strong": llm})
     billing = engine.tool("billing", scope="acme", context="Acme is on the enterprise plan.")
     [definition] = billing.definitions()
     assert (
@@ -70,7 +70,7 @@ async def test_a_decision_agent_as_a_tool_returns_its_answers(fixtures: Path) ->
 
 
 async def test_the_tool_composes_and_refuses_bad_calls(fixtures: Path) -> None:
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted()})
+    engine = Engine(fixtures, models={"strong": Scripted()})
 
     async def ping(args: dict[str, Any]) -> str:
         return "pong"
@@ -94,7 +94,7 @@ async def test_inside_a_run_it_is_its_own_top_level_run(fixtures: Path) -> None:
         calling("consult", "Charged twice"), text_reply("Refunded."), text_reply("Done.")
     )
     recorder = Recorded()
-    engine = Engine(fixtures, tools=TOOLS, refinery=recorder, models={"strong": llm})
+    engine = Engine(fixtures, refinery=recorder, models={"strong": llm})
     run = await engine.run(
         "support", "acme", "Help", tools=engine.tool("billing", scope="acme", name="consult")
     )
@@ -106,7 +106,7 @@ async def test_inside_a_run_it_is_its_own_top_level_run(fixtures: Path) -> None:
 
 async def test_the_depth_guard_holds_across_the_tool(fixtures: Path) -> None:
     llm = Scripted(calling("billing", "again"), text_reply("done"))
-    engine = Engine(fixtures, tools=TOOLS, max_depth=1, models={"strong": llm})
+    engine = Engine(fixtures, max_depth=1, models={"strong": llm})
     run = await engine.run("billing", "acme", "hi", tools=engine.tool("billing", scope="acme"))
     assert isinstance(run, Generation) and run.steps[0].is_error
     assert run.steps[0].result == (
@@ -202,9 +202,7 @@ def _intent(choice: str, p: float) -> dict[str, Answer]:
 
 async def test_a_routing_agent_as_a_tool_returns_the_reply_it_routed_to(fixtures: Path) -> None:
     llm = Scripted(text_reply("Support here."))
-    engine = Engine(
-        fixtures, tools=TOOLS, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))}
-    )
+    engine = Engine(fixtures, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))})
     result = await engine.tool("frontdesk", scope="acme").dispatch(
         "frontdesk", {"input": "The app crashes"}
     )
@@ -215,7 +213,6 @@ async def test_a_routing_agent_as_a_tool_returns_the_reply_it_routed_to(fixtures
 async def test_a_routing_agent_that_did_not_route_returns_its_answers_only(fixtures: Path) -> None:
     engine = Engine(
         fixtures,
-        tools=TOOLS,
         models={"strong": Scripted(), "judge": Fixed(_intent("technical", 0.5))},
     )
     result = await engine.tool("frontdesk", scope="acme").dispatch("frontdesk", {"input": "x"})
@@ -224,9 +221,7 @@ async def test_a_routing_agent_that_did_not_route_returns_its_answers_only(fixtu
 
 async def test_a_delegated_routing_agent_hands_back_the_reply_it_routed_to(fixtures: Path) -> None:
     llm = Scripted(text_reply("Support here."))
-    engine = Engine(
-        fixtures, tools=TOOLS, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))}
-    )
+    engine = Engine(fixtures, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))})
     run = await engine.run("frontdesk", "acme", "The app crashes")
     handed = json.loads(child_result(run))
     assert handed["answers"]["intent"]["choice"] == "technical"

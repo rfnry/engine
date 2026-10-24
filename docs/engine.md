@@ -3,9 +3,9 @@
 rfnry-engine is an agent harness with built-in dataset generation.
 
 It is the scaffolding that turns a model into an agent — the loop, the tools, delegation between
-agents — as a small library: an agent is a folder of markdown, running on a generation model, a
-decision model, or both. Opt-in, it records every run, gathers labels from people, the world and
-models, and exports datasets to evaluate, improve or train what comes next.
+agents — as a small library: an agent is a folder — its markdown and the tools it calls — running on
+a generation model, a decision model, or both. Opt-in, it records every run, gathers labels from
+people, the world and models, and exports datasets to evaluate, improve or train what comes next.
 
 An agent is one of two kinds. A **generation agent** puts a language model in a loop with tools
 until it has an answer. A **decision agent** asks a decision model a set of typed questions about a
@@ -20,7 +20,8 @@ Every public name, with its signature, is in [the API reference](api.md).
 ## Philosophy
 
 **The tree is the agent.** Everything a person needs to author, review or diff about an agent is a
-markdown file under version control. The library reads the tree; it never writes it.
+file under version control: its markdown, and the definition and the script of each tool it calls.
+The library reads the tree; it never writes it.
 
 **The model chooses.** A run gives the model who the agent is, a map of its folder and the tools it
 has; the model opens what a question needs, follows the skill that fits, and calls the tool or the
@@ -34,8 +35,10 @@ in milliseconds with calibrated probabilities and cannot do the first at all. Th
 them as two contracts and lets you build an agent from either or both.
 
 **The library runs; it does not take over.** You bring the models, the conversation history, the
-tools, the storage connection, the bucket. There is no background loop, no plugin registry, no
-configuration language. Every verb is a function you call.
+storage connection, the bucket, and the tools that must live in your process. The tools of the tree
+run in worker processes the engine starts beside yours, never inside it, until you close the
+engine. There is no background loop, no plugin registry, no configuration language. Every verb is a
+function you call.
 
 **Nothing is hidden.** A run returns a record: what was sent, what came back, every tool call with
 its timing, every model call with its usage, every child run. That record is what you feed your own
@@ -50,8 +53,10 @@ default scope and nothing reads across scopes. Multi-tenancy is the default.
 ```
 agents/
   support/
-    AGENT.md            who the agent is, the model it runs on and the tools it picks
-    rules/refunds.md    read when a question needs it
+    AGENT.md                  who the agent is and the model it runs on
+    rules/refunds.md          read when a question needs it
+    tools/lookup_order.json   a tool: what the model reads about it
+    tools/lookup_order.py     what runs when the model calls it
 ```
 
 ```markdown
@@ -59,26 +64,50 @@ agents/
 name: support
 kind: generation
 model: strong
-tools: [lookup_order]
 ---
 You are the support desk for Acme. Be brief, be exact, cite the rule you are applying. Look an
 order up with lookup_order before you answer about it.
 ```
 
-```python
-engine = Engine(root=Path("agents"), models={"strong": llm}, tools=tools)
+```json
+{
+  "description": "Fetch an order by its id. Returns its items, status and charges.",
+  "input_schema": {
+    "type": "object",
+    "properties": {"order_id": {"type": "string", "description": "The order id, such as A-1001"}},
+    "required": ["order_id"]
+  }
+}
+```
 
-run = await engine.run("support", scope="acme", input="My invoice was charged twice.")
-print(run.reply)
+```python
+import json
+import os
+from urllib.request import urlopen
+
+ORDERS = os.environ["ORDERS_URL"]
+
+
+def run(args, call):
+    with urlopen(f"{ORDERS}/{call['scope']}/orders/{args['order_id']}", timeout=10) as reply:
+        return json.load(reply)
+```
+
+```python
+async with Engine(root=Path("agents"), models={"strong": llm}) as engine:
+    run = await engine.run("support", scope="acme", input="My invoice was charged twice.")
+    print(run.reply)
 ```
 
 `llm` is your adapter to a generation model, under the name the agent's `model:` gives it
-([Models](#models)); `tools` holds the tools the agents list in their `tools:`, each a `Tool`
-defined once in code — its name, its description, its arguments and the function that runs it
-([Tools](#tools)). Code defines what an agent can use; `AGENT.md` picks it by name and holds the
-agent's instructions — who it is, what it does, when to use which tool. The model receives
-`AGENT.md`, its tools and a map of its folder, opens `rules/refunds.md` when the question needs it,
-and answers. One call runs an agent for a tenant and returns its record.
+([Models](#models)). `lookup_order` is the agent's own tool, two files in its `tools/` folder: the
+JSON is what the model reads about it — what it does, what it returns and the arguments it takes —
+and the script is what runs, `run(args, call)`, in a worker process the engine starts beside your
+server, so a tool that crashes takes down its worker, never your server; `call["scope"]` is the
+tenant of the run ([Tools](#tools)). `AGENT.md` holds the agent's instructions — who it is, what it
+does, when to use which tool. The model receives `AGENT.md`, its tools and a map of its folder,
+opens `rules/refunds.md` when the question needs it, and answers. One call runs an agent for a
+tenant and returns its record; leaving `async with` closes the engine, which stops its workers.
 
 An agent grows by its tree:
 
@@ -86,7 +115,7 @@ An agent grows by its tree:
 | --- | --- | --- |
 | a rule, a reference, a document | any file in its folder | |
 | a way of doing something | a [skill](#tasks-and-skills) | |
-| a system of yours | its name in [`tools:`](#tools) | a `Tool`: name, description, arguments, the function behind it |
+| a system of yours | a [tool](#tools): `tools/<name>.json` and `<name>.py` | |
 | a shell to write and run code | [`workspace: true`](#workspace) | a `Workspace` |
 | a fast, calibrated judgement | a [decision agent](#decision-agents), named in `agents:` | a decision model |
 | another agent to hand work to | its name in [`agents:`](#nesting) | |
@@ -243,17 +272,20 @@ agents/
     skills/escalate.md    how to do a thing: the model's to choose, or a person's to ask for
     knowledge/rates.pdf   text, images, PDFs, anything — read when needed
     tasks/triage.md       what to do: a named task, chosen per run
+    tools/refund.json     a tool, with refund.py beside it, that the model calls
 ```
 
 The frontmatter of `AGENT.md` names the agent (`name:`), its kind (`kind:`), the model it runs on
-(`model:`), the tools it picks (`tools:`) and what the agent may call; its body is the persona.
+(`model:`) and what the agent may call, and, when it needs fewer tools than it has, the ones it
+keeps (`tools:`); its body is the persona.
 `name:`, `kind:` and `model:` are required: a missing one, a `kind:` other than `generation` or
 `decision`, or a blank, padded or non-text `name:` or `model:` is a `ConfigurationError` naming the
 file. A `name:` is plain text — not blank, not hidden, not padded, no slash — and is what `run`,
 `agents:` and `route:` call the agent by, so a folder can be renamed or moved deeper in the tree
 without renaming the agent; two agents with one name are a `ConfigurationError` naming both files.
 `model:` names a model, `strong` or `judge` for instance; what the name maps to is the engine's to
-say. `tools:` names the tools the agent uses, each defined in code ([Tools](#tools)):
+say. An agent has the tools of its own `tools/` folder and of the `tools/` folder of every folder
+above it ([Tools](#tools)):
 
 ```markdown
 ---
@@ -262,7 +294,6 @@ kind: generation
 model: strong
 description: Handles technical support conversations
 agents: [triage]
-tools: [lookup_order, fetch_invoice]
 ---
 You are the support desk for Acme. Be brief, be exact, cite the rule you are applying.
 ```
@@ -291,11 +322,11 @@ skills/
 A file without a description is listed by its name, which often says enough; a description is one
 line of what the file holds, so the model knows what to open without opening it. Other frontmatter
 keys are left alone, so a folder written for another tool — `skills/<name>/SKILL.md` with `name:`
-and `description:` — works as it is. `AGENT.md` and the folders `tasks/` and `questions/` stay out
-of the map, since the prompt already holds them, and so do the folders of the agents inside its own,
-which it reaches through `agents:` — they stay readable to its tools, as its declarations do, and
-count in its fingerprint. Frontmatter that is not valid YAML — a key named twice included, as YAML
-forbids, in any file of the folder — or a `description:` that is not a string, is a
+and `description:` — works as it is. `AGENT.md` and the folders `tasks/`, `questions/` and `tools/`
+stay out of the map, since the prompt already holds them, and so do the folders of the agents inside
+its own, which it reaches through `agents:` — they stay readable to its tools, as its declarations
+do, and count in its fingerprint. Frontmatter that is not valid YAML — a key named twice included,
+as YAML forbids, in any file of the folder — or a `description:` that is not a string, is a
 `ConfigurationError` naming the file and what to change, and for YAML the line, when the tree loads,
 so a typo is caught before any run. Everything else the model reads when it needs it, with the
 `Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can read only inside its own directory and the
@@ -309,10 +340,10 @@ is no parser in between, and nothing is loaded until the model asks — unless t
 loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested
 as you choose — `root` itself when it has one, `support/`, `desks/billing/triage/`. A folder without
 an `AGENT.md` is a group of agents, or a folder of knowledge the agents read; it is never run.
-Hidden folders, and an agent's own `tasks/` and `questions/`, which stay its declarations, are
-never searched for agents. An agent inside another agent's folder is an agent like any other, which
-the outer one calls through `agents:`; the root, when it is an agent, is the outer agent of the
-whole tree. A tree with no `AGENT.md` anywhere is a `ConfigurationError`.
+Hidden folders, an agent's own `tasks/` and `questions/`, which stay its declarations, and every
+`tools/` folder are never searched for agents. An agent inside another agent's folder is an agent
+like any other, which the outer one calls through `agents:`; the root, when it is an agent, is the
+outer agent of the whole tree. A tree with no `AGENT.md` anywhere is a `ConfigurationError`.
 
 ```
 agents/
@@ -375,7 +406,8 @@ tenant.
 
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its `path`
 — its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the `agents` it
-may call, the folders it `reads`, the `tools` it lists, and its `tasks` and `skills`,
+may call, the folders it `reads`, the `tools` it gets from its folders, as its `tools:` narrows
+them, and its `tasks` and `skills`,
 [below](#tasks-and-skills). When the tree has loaded, the engine logs the names of its agents at
 INFO on the `rfnry_engine.engine` logger — `engine: agents loaded [lead, triage, writer]` — so a
 folder meant to be an agent that is not shows at start; `logging.basicConfig(level=logging.INFO)`
@@ -396,12 +428,12 @@ Tag the document. Every rule applies to every document.
 ```
 
 With `preload: true` the model also receives every other file of its folder — all but `AGENT.md`,
-`tasks/`, `questions/` and the folders of the agents inside it, described or not — sorted by path
-character by character, each under its path: what `Read` would return for it, and for a file `Read`
-refuses — over 5 MB, or not text — the part `Load` would hand over. The map stays a map and the
-folder stays as it is; only when the files are read changes, so no turn goes to opening them. They
-travel as one user message ahead of the history, sent with every model call, and are read when the
-engine loads the tree, as the fingerprint is taken, so an edit shows in the next `Engine`.
+`tasks/`, `questions/`, `tools/` and the folders of the agents inside it, described or not — sorted
+by path character by character, each under its path: what `Read` would return for it, and for a file
+`Read` refuses — over 5 MB, or not text — the part `Load` would hand over. The map stays a map and
+the folder stays as it is; only when the files are read changes, so no turn goes to opening them.
+They travel as one user message ahead of the history, sent with every model call, and are read when
+the engine loads the tree, as the fingerprint is taken, so an edit shows in the next `Engine`.
 `run.preload` holds that message's parts; `run.messages` and `run.conversation` leave it out, so a
 conversation passed back does not send the folder twice and a replay preloads from the candidate's
 folder. The tools stay as they are — `Read` and `Load` hand over what the model already holds. Each
@@ -477,19 +509,20 @@ run.fingerprint.tools                                # "a02c77e1f4b9d305": the t
 ```
 
 `fingerprint.agent` is a short sha256 over every file the agent reads, by relative path and content:
-its own directory, and each folder it names in `reads:` with that folder's files under its path
-from the agent's folder, `../<name>/` (`../../shared/books/` for an agent two folders deep), as the
-map shows them — leaving out hidden files and folders, as `LS`, `Glob` and `Grep` do, and links
-that lead out of them. The engine takes it once, when it loads the tree, so an edit to the agent or
-to a folder it reads shows in the next `Engine` built from the folder. `fingerprint.tools` is one
-over `run.tools` — each tool's name, description and schema — so it covers the tools the agent
-lists, the `tools=` a run passes, `Output` when `expect=` asks for one, and in `Delegate` the agents
-it may call — their names, descriptions, kinds and tasks.
-Neither sees what varies per run and is not the agent — the input, the history, `context=`, `tags=`
-— so two runs of an unchanged folder share it and any edit changes it. The model is `run.model`; the
-code behind a tool is yours to version. A decision run carries one too, its `tools` the fingerprint
-of no tools and its `questions` the questions it asked ([Decision agents](#decision-agents)), and
-each delegated or routed run carries its own.
+its own directory, the `tools/` folder of each folder above it, whose tools it gets, under its path
+from the agent's folder, `../tools/`, and each folder it names in `reads:` with that folder's files
+under its path from the agent's folder, `../<name>/` (`../../shared/books/` for an agent two folders
+deep), as the map shows them — leaving out hidden files and folders, as `LS`, `Glob` and `Grep` do,
+and links that lead out of them. The engine takes it once, when it loads the tree, so an edit to the
+agent or to a folder it reads shows in the next `Engine` built from the folder. `fingerprint.tools`
+is one over `run.tools` — each tool's name, description and schema — so it covers the tools the
+agent gets from its folders, the `tools=` a run passes, `Output` when `expect=` asks for one, and in
+`Delegate` the agents it may call — their names, descriptions, kinds and tasks. Neither sees what
+varies per run and is not the agent — the input, the history, `context=`, `tags=` — so two runs of
+an unchanged folder share it and any edit changes it, a tool's script included. The model is
+`run.model`; the code behind a tool a run passes is yours to version. A decision run carries one
+too, its `tools` the fingerprint of no tools and its `questions` the questions it asked ([Decision
+agents](#decision-agents)), and each delegated or routed run carries its own.
 
 Keep the conversation yourself and pass it back. `run.conversation` is the history the run was
 sent, the input, every assistant turn — its text in `content`, its calls in `tool_calls`, its
@@ -1097,7 +1130,7 @@ everything the run was given — the same input, parts included, `history`, `con
 `tools`, `workspace`, `on_event`, `stop`, `inbox` and `tags` — and the routed run is attached:
 
 ```python
-engine = Engine(root, models={"strong": llm, "judge": dm}, tools=tools)
+engine = Engine(root, models={"strong": llm, "judge": dm})
 
 run = await engine.run("frontdesk", scope="acme", input=message, history=history)
 run.answers["intent"].choice            # "technical"
@@ -1502,7 +1535,7 @@ routed runs in place, to continue it anywhere — see [Running an agent](#runnin
 ```python
 refinery = Refinery(PostgresStorage(pool))
 await refinery.initialize()
-engine = Engine(root, models={"strong": llm, "judge": dm}, tools=tools, refinery=refinery)
+engine = Engine(root, models={"strong": llm, "judge": dm}, refinery=refinery)
 ```
 
 Labels come from three places. A person reviews a run — the button under a reply, the correction a
@@ -1620,7 +1653,7 @@ Replay measures a candidate — a new folder, a new model, any `Engine` you buil
 recorded runs were given. Each pair holds the recorded run, its labels and the candidate's run:
 
 ```python
-candidate = Engine(root, models={"strong": llm, "judge": dm}, tools=tools)
+candidate = Engine(root, models={"strong": llm, "judge": dm})
 
 async def read_only(agent, call):
     return call.name in {"Read", "Grep", "Glob", "LS", "Load", "Delegate", "lookup_order"}
@@ -1633,24 +1666,25 @@ async for pair in refinery.replay("acme", candidate, agent="support", holdout=Tr
 > **Replay runs the candidate's tools for real.** A tool that refunds refunds again, a tool that
 > sends a message sends it, a `Shell` runs. Pass an `approve` that refuses every tool that changes
 > anything — `read_only` above lets through the builtins that read the agent's folder, `Delegate`,
-> whose runs it is asked about too, and a lookup — or build the candidate with bodies that only
-> read. A refused call reaches the model as `NotApproved`, as in any run.
+> whose runs it is asked about too, and a lookup — or replay with `tools=` stubs that only read: a
+> run's tool wins over the folder's tool of the same name. A refused call reaches the model as
+> `NotApproved`, as in any run.
 
 It replays the top-level runs of `agent` in the scope, oldest first. `holdout=True` keeps the
 held-out ones, by the same hash and `holdout_percent` as `export`; `labeled=True` those a person
-reviewed or the world reported on; `tags=` those whose tags contain these, as `delete_runs`
-matches; `fingerprint=` the runs one version produced — the `run.fingerprint` of any of them, its
-`agent`, `tools` and `questions` all equal; `limit=` the first so many. Each is
-`candidate.run(agent, scope, …, record=False)` with the recorded input — parts as parts — the
-history sent before it, the task, the skill and the `context`, so the candidate sees what the
-recorded run saw, its own skill file read for a recorded skill. A decision run replays its state and its task, and asks its runtime questions again as they
-were recorded while the questions of its folder come from the candidate's folder — a runtime id the
-candidate's folder now asks fails that pair; when its route reached a generation run, that run's
-input, history and context go too. What a record does not keep is yours to pass
-again — `expect=`, `approve=`, and the `tools=` and `workspace=` the runs were given. Replays given
-one workspace share its files and its jobs, and a job outlives the replay that started it: close the
-workspace when the replays are done. The candidate delegates and routes as it does, so a run with
-children replays as one run.
+reviewed or the world reported on; `tags=` those whose tags contain these, as `delete_runs` matches;
+`fingerprint=` the runs one version produced — the `run.fingerprint` of any of them, its `agent`,
+`tools` and `questions` all equal; `limit=` the first so many. Each is `candidate.run(agent, scope,
+…, record=False)` with the recorded input — parts as parts — the history sent before it, the task,
+the skill and the `context`, so the candidate sees what the recorded run saw, its own skill file
+read for a recorded skill. A decision run replays its state and its task, and asks its runtime
+questions again as they were recorded while the questions of its folder come from the candidate's
+folder — a runtime id the candidate's folder now asks fails that pair; when its route reached a
+generation run, that run's input, history and context go too. What a record does not keep is yours
+to pass again — `expect=`, `approve=`, and the `tools=` and `workspace=` the runs were given.
+Replays given one workspace share its files and its jobs, and a job outlives the replay that started
+it: close the workspace when the replays are done, and the candidate, which stops its workers. The
+candidate delegates and routes as it does, so a run with children replays as one run.
 
 `repeat=3` replays each run three times: each attempt is a run of its own and a pair of its own,
 `pair.attempt` counts them from 0, and the three come one after another; `limit=` still counts
@@ -1670,15 +1704,17 @@ repository — people who do not write code edit it in the host's web UI, and ev
 reviewed pull request — check each commit out into a folder of its own, build an engine from it, and
 swap which engine new runs use. A run in flight finishes on the engine it started with. Rolling back
 is loading an older commit, and since a commit's folder never changes, a half-written checkout is
-never live. What an agent's prompt holds — `AGENT.md`, the map, the preload, a named task, an invoked skill —
-is what the engine loaded at `Engine()`; what the model reads with a tool is read from disk when it
-asks, so remove an old folder only once its runs have finished. A root that is itself an agent is named by its own `name:`, so every commit keeps one name
-whatever folder it lands in. The checkout is yours —
-`git worktree add`, a clone, an archive:
+never live. What an agent's prompt holds — `AGENT.md`, the map, the preload, a named task, an
+invoked skill — is what the engine loaded at `Engine()`; what the model reads with a tool is read
+from disk when it asks, so remove an old folder only once its runs have finished. Each engine starts
+the workers of its own tree's tools, which load their scripts from the folder it loaded, so close
+the engine you swap out — `await engine.close()` — once its runs have finished too. A root that is
+itself an agent is named by its own `name:`, so every commit keeps one name whatever folder it lands
+in. The checkout is yours — `git worktree add`, a clone, an archive:
 
 ```python
 def load(commit):
-    return commit, Engine(checkout(commit), models={"strong": llm, "judge": dm}, tools=tools, refinery=refinery)
+    return commit, Engine(checkout(commit), models={"strong": llm, "judge": dm}, refinery=refinery)
 
 live = load("4f2c9e1")
 commit, engine = live
@@ -1703,8 +1739,11 @@ tree.
 
 ### Running many at once
 
-One `Engine` per process serves every run at once; scale out with processes. A run in flight is tied to the
-process that started it, so route a chat's later messages, its stop and its inbox to that process.
+One `Engine` per process serves every run at once; scale out with processes. A run in flight is tied
+to the process that started it, so route a chat's later messages, its stop and its inbox to that
+process. The engine's folder tools run in its own workers beside that process — one per group of
+agents, by [`workers=`](#tools) — each taking 32 plain `def run` calls at once on its threads, and
+`async def run` calls without a limit on its event loop.
 
 The tools' file work (`Read`, `Grep`, `Glob`, `LS`, `Load`, the history search, and `Local`'s file reads and
 writes; its commands are processes of their own) runs on the event loop's default executor, `min(32, cpus + 4)`
@@ -1719,8 +1758,9 @@ With reasoning on, a run's CPU grows with the history it is sent. The window is 
 
 ## Tools
 
-One concept, one word. A **tool** is a name, a description, an input schema and a body. A
-**`Tools`** is a set of them: what a model receives, and what your code can call the same way.
+One concept, one word. A **tool** is a name, a description, an input schema and what runs when the
+model calls it. A **`Tools`** is a set of them: what a model receives, and what your code can call
+the same way.
 
 ```python
 class Tools:
@@ -1732,38 +1772,145 @@ class Tools:
     names: list[str]                                     # every tool's name, in order
 ```
 
-A tool is defined once, in code: its name, its description, its arguments and the function that
-runs it. An agent picks the tools it uses by name, in the `tools:` of its `AGENT.md`, and its
-markdown says when to use them. `Read Grep Glob LS Load` come with every generation agent,
-`Delegate` comes with `agents:`, a workspace's tools with `workspace: true`, `History` with a run
-whose `start=` is past the beginning of its history, and its name is taken on every run, so a tool
-of yours named `History` is refused from the first; everything else the agent lists. A tool is a
-`Tool`, the engine is given them all in one list for the whole tree, and an agent lists the ones it
-uses:
+An agent's tools live in its tree, beside its instructions. A tool is two files in a folder named
+`tools/`: `<name>.json`, what the model reads about it, and `<name>.py`, what runs. The tool's name
+is the file's stem. An agent sees the tools of its own `tools/` and of the `tools/` of every folder
+above it, up to the root, and the nearest wins a name clash:
+
+```
+agents/
+  tools/notify.json, notify.py                 every agent under agents/ sees notify
+  customer_support/
+    tools/lookup_order.json, lookup_order.py   every agent under customer_support/ sees lookup_order
+    tools/_client.py                           a helper of the scripts beside it, not a tool
+    triage/AGENT.md
+    billing/
+      AGENT.md                                 tools: ["!notify"]
+      tools/refund.json, refund.py             only billing, and the agents inside it, see refund
+```
+
+A `tools/` folder is a declaration, as `tasks/` and `questions/` are: it stays out of the map and
+the preload of the agent whose folder holds it, since the model sees its tools as tools, stays
+readable to that agent's own tools, and counts in the fingerprint of every agent that sees it. A
+decision agent has no tools, and a `tools/` folder on its path is not offered to it. A `.json`
+without its `.py`, or a `.py` without its `.json`, is a `ConfigurationError` naming the file; a file
+whose name starts with `_` or `.` is not a tool, and `_name.py` is a helper the scripts of its
+folder import.
+
+`<name>.json` takes three keys:
+
+```json
+{
+  "description": "Refund one charge of the customer's. Returns the refund's id and status.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "charge_id": {"type": "string", "description": "The charge to refund, such as ch_81"}
+    },
+    "required": ["charge_id"],
+    "additionalProperties": false
+  },
+  "output_schema": {"type": "object", "required": ["refund_id", "status"]}
+}
+```
+
+`description` is what the model reads about the tool — what it does and what it returns — and its
+first line is what the prompt's list of tools shows. `input_schema` is a JSON Schema of the
+arguments, its descriptions included, whose top level is `"type": "object"`; `output_schema`,
+optional, is one of the result. When the tree loads, each file is checked and both schemas are
+compiled — any draft, 2020-12 included, and never a reference fetched from the network — and an
+unknown key, a missing or blank description, an `input_schema` that is not an object or a schema
+that does not compile is a `ConfigurationError` naming the file: `folder: <path> has the unknown key
+'inputSchema'; a tool's JSON takes description, input_schema and output_schema`. The model is
+offered the name, the description and the `input_schema`; `output_schema` never reaches it. A call's
+arguments are checked against `input_schema` before they reach the script, and its result against
+`output_schema` after; either that does not fit is a tool error the model reads, `InputError:
+declared: invalid arguments for refund: 5 is not of type "string" at charge_id`, so the script never
+sees arguments its schema refuses and the model never reasons over a malformed result.
+
+`<name>.py` holds the logic: a function `run(args, call)`, plain or `async`.
+
+```python
+import _client
+
+
+async def run(args, call):
+    refund = await _client.refund(call["scope"], args["charge_id"], reference=call.get("run_id"))
+    return {"refund_id": refund.id, "status": refund.status}
+```
+
+`args` is what the model wrote, already checked. `call` is the call it serves, set by the engine,
+never by the model: its `scope` — the tenant, always — and inside a run its `run_id`, `agent`,
+`tool` and `call_id`, the fields of `CallInfo`. What is a tenant's travels in `call`; what every
+tenant shares, a URL or a token, comes from the environment, which a worker inherits from your
+server as it is — the engine never reads it. `run` returns a string; JSON — an object, a list, a
+number — the model reads as JSON; or a list of parts, each an object with the `type` and the fields
+of a `Text`, `Image`, `Audio` or `Document`, media `data` in base64, which reach the model as parts:
+a PDF the model reads itself, an image it looks at. A result JSON cannot hold, a `datetime` or a
+`set`, is a tool error naming its type. A script imports the standard library, installed packages
+and the helpers of its own `tools/` folder, each at the top of the script, by its name; it never
+imports the engine, nor your server's code. When the tree loads, each script's imports are read
+without running it, and `rfnry_engine`, or a module whose file lies in the project that holds the
+tree — the nearest folder at or above the root with a `pyproject.toml` — outside the tree's `tools/`
+folders, is a `ConfigurationError` naming the file and the module. That catches a mistake; it is
+not a sandbox, and a script is trusted as your server's code is.
+
+A tool runs in a worker: a process the engine starts with your server's interpreter, so it has the
+packages your server has, which loads the scripts of its group's agents and serves their calls. A
+worker starts at the first call that needs it, never when the engine is built — it loads the scripts
+from the folders the engine loaded then, so an edit to a tool reaches the next `Engine`, as one to a
+task or a skill does — and lives until you close the engine — `await engine.close()`, or leaving
+`async with Engine(...) as engine:` — which stops every worker and whatever it started; a call to a
+closed engine's tool is a `WorkerError`. A plain `def run` runs on one of the worker's 32 threads,
+and calls past those wait; an `async def run` runs on its event loop, as many at once as come. What
+a script prints goes to the log, at DEBUG on the `rfnry_engine.workers` logger, never into its
+result. A script that raises is a tool error the model reads, `WorkerError: ValueError: no order
+A-1`, and the worker goes on. A worker that exits — a crash in a C extension, out of memory — fails
+every call it had in flight, `WorkerError: workers: the worker for refund stopped: exited with code
+3`, the run goes on, and the next call starts a new worker. Past `tool_timeout` the model reads
+`TimeoutError: workers: refund timed out after 30s`: an `async def run` is cancelled in the worker;
+a `def run` cannot be stopped, so its thread runs on and its result is discarded, and once every
+thread of a worker is held so, the next call stops that worker and starts a new one.
+
+By default every agent of the tree shares one worker. `Engine(root, models=...,
+workers={"customer_support": 1, "reports": 4})` makes each folder named — by its path from the root,
+as `reads:` spells it — a group of its own, for every agent inside it at any depth, with that many
+processes, and a call goes to the group's process with the fewest calls in flight; the agents
+outside the named folders share the default group, one process. A name that is not a folder of the
+tree, or a folder inside another one named, is a `ConfigurationError`: `engine: workers names
+'support/billing' inside 'support', which it names too; keep one`.
+
+Every tool an agent sees is on. `tools:` in its `AGENT.md` narrows them — `tools: [lookup_order,
+Read]` keeps only these, `tools: ["!notify", "!Grep"]` all but these, quoted, since YAML reads a
+bare `!` as a tag — and a list keeps or drops, never both:
 
 ```markdown
 ---
-name: support
+name: billing
 kind: generation
 model: strong
-tools: [lookup_order, fetch_invoice]
+tools: ["!notify"]
 ---
-Look an order up with lookup_order before you answer about it. Send the customer's invoice with
-fetch_invoice when they ask for a copy.
+Refund a duplicate charge with refund. Never promise a refund the rules do not allow.
 ```
 
-The `description` is what the model reads about the tool and its first line is what the prompt's
-list of tools shows. `args` is a pydantic model: its `Field(description=...)`s and its docstring
-reach the model in the tool's schema, and it checks a call's arguments before the body runs. An
-`input_schema` states the schema as a dict instead. A `Tool` needs a body and a description. An agent lists a
-name once, and any number of agents may list the same tool. Listing a name the engine gives the
-agent anyway is a `ConfigurationError`: the builtins, `History`, `Delegate` with `agents:`, a
-workspace's with `workspace: true`.
+`Read Grep Glob LS Load` come with every generation agent, `Delegate` with `agents:`, a workspace's
+tools with `workspace: true`, `History` with a run whose `start=` is past the beginning of its
+history, and `Output` with `expect=`. A list that keeps narrows the folders' tools and those five
+file tools only: what comes with a declaration or with the run follows it and stays, and `!` drops
+any of them but `Output`, which cannot be named in `tools:`. When the tree loads, a kept name that
+is neither a tool the agent sees nor a file tool is a `ConfigurationError` that names the ones it
+has — `tree: agent 'support' keeps 'refnd' in tools:, which it does not see; its tools are Glob,
+Grep, LS, Load, Read, refund` — while a dropped name the tree does not have is taken for a tool a
+run may pass, and is dropped from any run that passes it. A tool in a folder named like one the
+engine gives the agent is a `ConfigurationError` naming its file, and `History`'s name is taken on
+every run, so a tool named `History` is refused from the first.
 
-A body returns a string, a dict (the model reads it as JSON) or a list of parts, which reach the
-model as the tool result — a PDF the model reads itself, an image it looks at. `Load` already does
-that for files in the agent's directory and the folders it reads; a tool does it for what lives
-elsewhere, such as your own store:
+Tools that must live in your process ride a run: `run(tools=)` takes a `Tools`, or anything with its
+two verbs, for that one run — a tool bound to a tenant's connection, one that streams to a UI,
+rfnry-memory's `MemoryTools`; a tool every run needs is the same `Tools` passed on every run. Each
+is a `Tool`: its name, its description, its arguments and the async function that runs it, in your
+process:
 
 ```python
 class InvoiceArgs(BaseModel):
@@ -1775,32 +1922,27 @@ async def fetch_invoice(args):
     data = await invoices.get(args["invoice_id"])
     return [Document(media_type="application/pdf", name=f"{args['invoice_id']}.pdf", data=data)]
 
-tools = [
-    Tool("lookup_order", "Fetch an order by its id", body=lookup_order, input_schema={
-        "type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]}),
-    Tool("fetch_invoice", "Fetch one of the customer's invoices, as its PDF",
-         body=fetch_invoice, args=InvoiceArgs),
-]
-engine = Engine(root, models={"strong": llm}, tools=tools)
+invoicing = Tools([Tool("fetch_invoice", "Fetch one of the customer's invoices, as its PDF",
+                        body=fetch_invoice, args=InvoiceArgs)])
+run = await engine.run("support", scope="acme", input=message, tools=invoicing)
 ```
 
-A tool given only `input_schema`, and a `Tools` of your own, receive the arguments as the model
-sent them: check them in the body, or pass `args`. The tools riding a run — `run(tools=)` and
-`MemoryTools` — are listed nowhere, and nothing checks them for a body or a description.
-
-A tool the engine was given that no agent lists is a `ConfigurationError`; so is a listed name with
-no `Tool`, when the engine was given the model of the agent that lists it, and a `Tool` without a
-body or without a description. An agent whose model was not given cannot run, so a name only it
-lists needs no `Tool` until an engine is given that model or `EngineTools` is built for the agent.
-So an agent's whole tool surface is readable from its `AGENT.md`, and the engine cannot hand a
-model something the tree does not show — except what a caller passes on the call: the `Tools` of
-`run(tools=)`, which ride that one run, and `History`, which comes with `start=`.
+The `description` is what the model reads about the tool and its first line is what the prompt's
+list of tools shows. `args` is a pydantic model: its `Field(description=...)`s and its docstring
+reach the model in the tool's schema, and it checks a call's arguments before the body runs. An
+`input_schema` states the schema as a dict instead; a tool given only `input_schema`, and a `Tools`
+of your own, receive the arguments as the model sent them. A body returns what a script does: a
+string, a dict the model reads as JSON, or a list of parts. A run's tool wins over a folder tool of
+the same name, since the run is nearer than the agent's own folder: that is how a test stubs a
+folder tool that calls a real system, and how you swap in a version bound to a tenant's connection.
+Two tools of one run with one name are refused, and so is a run's tool named like one the engine
+gives the agent.
 
 Every tool call inside a run has a deadline, `Engine(tool_timeout=30.0)` by default and `None` to
-turn it off. When it passes, the model gets the error `timed out after 30s` and the run continues.
-`History` reads your storage under the same deadline.
-Bodies are async and the deadline cancels them, so a body that runs blocking work in a thread must
-put its own limit on that work: cancelling the await does not stop the thread. A workspace's
+turn it off. When it passes, the model gets the error `timed out after 30s` and the run continues. A
+folder tool's deadline is its worker's, above. `History` reads your storage under the same deadline.
+A run's tools are async and the deadline cancels them, so a body that runs blocking work in a thread
+must put its own limit on that work: cancelling the await does not stop the thread. A workspace's
 `Shell`, `Job`, `Write` and `Edit` keep the workspace's own `timeout` instead. `Delegate` has no
 deadline. The child run it starts is bounded by its own tool calls and `max_steps`.
 
@@ -1820,9 +1962,9 @@ directory, as the builtins do. `Jail.open` opens a file the way the builtins and
 place it checks is still the folder it was given, one folder at a time without following a link, so
 a link swapped in after the check is refused.
 
-A body learns the call it serves with `current_call()`, a `CallInfo`: the run's id, its agent and
-scope, the tool and the call's id — so a side effect can carry the run that caused it, as an audit
-row or a header does:
+A run's tool learns the call it serves with `current_call()`, a `CallInfo` — the run's id, its
+agent and scope, the tool and the call's id, what a script reads in `call` — so a side effect can
+carry the run that caused it, as an audit row or a header does:
 
 ```python
 async def refund(args):
@@ -1845,7 +1987,10 @@ run = await engine.run("support", scope="acme", input=text,
 
 That is how rfnry-memory mounts: its `MemoryTools` is a `Tools`, and neither library imports the
 other. The set an agent runs with is itself a first-class object, so you can drive it without a
-model — from a test, or from a loop of your own:
+model — from a test, or from a loop of your own. `EngineTools` holds exactly what the model of such
+a run is offered: the file tools, `History`, the folder tools, whose calls go to their worker under
+`tool_timeout` with `call` holding the scope, the workspace's, `Delegate` and the run's `tools`, as
+`tools:` narrows them:
 
 ```python
 surface = EngineTools(engine, agent="support", scope="acme")
@@ -2062,52 +2207,56 @@ Everything the package exports, by role.
 no `AGENT.md`, a link to a folder that holds it or one that would reach an agent twice, an
 `AGENT.md` without a plain `name:`, a `kind:` of `generation` or `decision`, or a plain `model:`, a
 `models` that is not a mapping of names to adapters, a model no agent runs on, an agent whose model
-has not its kind's method, two agents with one name, an agent in `agents:` or `route:` the tree
-does not have, an unknown key in the frontmatter of an `AGENT.md`, a task or a question
-(`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that
-is not valid YAML or a `description:` that is not a string in a file the map would show, a
-decision agent with `preload: true`, `workspace: true` or `tools:`, a generation agent with
-`questions/` or `route:`, a `tools:` entry that is blank, padded or listed twice or that names a
-tool the engine gives the agent, a `reads:` that is not a path from the root, names no folder of
-the tree, leaves the root, names the agent's own folder, one that holds it or one inside it, or
-names two folders one inside the other, `reads:` on a decision agent or on an agent whose folder is
-a link to a folder elsewhere, a file `preload: true` would send that neither `Read` nor `Load`
-would hand over — over 20 MB, of a type the model's `media_types` does not name, or not the type
-its name says — one skill as both `skills/x.md` and `skills/x/SKILL.md`, a question with
-instructions both in its frontmatter and in its body or in neither, a decision agent with a file
-straight in `tasks/` or a task that repeats an id of its `questions/`, a route not by a choice
-question of the router's `questions/` or that maps an option the question does not have, a route
-entry that names a task its agent does not have or gives a decision agent nothing to ask, a tool
-listed with no `Tool`, a `Tool` without a body or a description or that no agent lists, two `Tool`s
-with one name, a run of an agent whose model was not given, or of a router whose target's model was
-not given, a missing workspace, a `Local` root that is not a directory, a `shell` that is not a
-list of strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and
-`write`, a `Workspace` without a scope, a `max_steps`, `max_depth`, `tool_timeout`,
-`history_walk`, `history_chars`, `timeout` or `output_bytes` that is not positive, an `approve`
-that returns anything but `True` or `False`, a judge that is not a decision agent or a teacher that
-is not a generation agent. `NotFoundError` for an agent the tree does not have — a
-judge, a teacher or a replay's agent in the candidate included — a task the agent does not have
-(`engine: agent 'support' has no task 'ghost'`), found when the run starts, or a run the refinery
-does not. `InputError` for a call the library refuses: an empty scope, a workspace of another scope,
-a history that breaks a tool call from its result, a `start` outside the history or without one,
-tags outside their limits, runtime questions that do not fit, a runtime id the run already asks,
-questions for a generation agent, a decision run with no question to ask, media the decision
-model does not declare, a media part with both or neither of `data` and `url`, a correction of the
-wrong shape or for a question the run was not asked, a `delete_runs` or `verify_absent` given both
-`run_ids` and `tags` or an empty one, a `delete_runs` given neither, an `export` or a `replay` given
-a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or a `limit`, `concurrency` or
-`repeat` below 1, a tool called with bad arguments or a path outside its directory. `ModelError`
-when an adapter breaks the contract — a result whose fields do not fit, a missing answer,
-probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside
-its levels. `RunawayError` when a loop exceeds `max_steps` (default 200). `DelegationLoopError` for
-a route into an agent already in the same chain of routes; `DelegationDepthError` for nesting past
-`max_depth`, which reaches the model as a tool error through `Delegate` and raises through a route.
-`StorageError` for the database. `WorkerError` for a tool that fails in its worker process: what
-its script raised, a result JSON cannot hold, or a worker that stopped while the call was in flight
-(`workers: the worker for lookup_order stopped: exited with code 3`). Inside a run, a tool's error
-is the model's to read, never raised.
-All under `EngineException` — the root takes the `Exception` suffix, every child ends in `Error`,
-the same shape as rfnry-memory's. Every message names the module that raised it, then says what went
-wrong in lowercase: `engine: agent 'ghost' was not found`, `workspace: path outside the workspace:
-../x`. A tool's error reaches the model with its type in front: `InputError: tools: unknown tool
-'Ghost'`.
+has not its kind's method, two agents with one name, an agent in `agents:` or `route:` the tree does
+not have, an unknown key in the frontmatter of an `AGENT.md`, a task or a question (`frontmatter:
+unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid
+YAML or a `description:` that is not a string in a file the map would show, a decision agent with
+`preload: true`, `workspace: true` or `tools:`, a generation agent with `questions/` or `route:`, a
+`tools:` entry that is blank, padded or listed twice, a `tools:` that mixes names and `!names`,
+names `Output` or keeps a tool the agent does not see, a tool's `.json` without its `.py` or a
+script without its `.json`, a tool's JSON with an unknown key, no description, an `input_schema`
+that is not an object or a schema that does not compile, a script that imports the engine or the
+server's own code, or imports a helper inside a function, a tool named like one the engine gives the
+agent, a `workers=` naming a folder the tree does not have or one inside another it names, a
+`reads:` that is not a path from the root, names no folder of the tree, leaves the root, names the
+agent's own folder, one that holds it or one inside it, or names two folders one inside the other,
+`reads:` on a decision agent or on an agent whose folder is a link to a folder elsewhere, a file
+`preload: true` would send that neither `Read` nor `Load` would hand over — over 20 MB, of a type
+the model's `media_types` does not name, or not the type its name says — one skill as both
+`skills/x.md` and `skills/x/SKILL.md`, a question with instructions both in its frontmatter and in
+its body or in neither, a decision agent with a file straight in `tasks/` or a task that repeats an
+id of its `questions/`, a route not by a choice question of the router's `questions/` or that maps
+an option the question does not have, a route entry that names a task its agent does not have or
+gives a decision agent nothing to ask, two tools of a run with one name or one named like a tool the
+engine gives the agent, a run of an agent whose model was not given, or of a router whose target's
+model was not given, a missing workspace, a `Local` root that is not a directory, a `shell` that is
+not a list of strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and
+`write`, a `Workspace` without a scope, a `max_steps`, `max_depth`, `tool_timeout`, `history_walk`,
+`history_chars`, `timeout` or `output_bytes` that is not positive, an `approve` that returns
+anything but `True` or `False`, a judge that is not a decision agent or a teacher that is not a
+generation agent. `NotFoundError` for an agent the tree does not have — a judge, a teacher or a
+replay's agent in the candidate included — a task the agent does not have (`engine: agent 'support'
+has no task 'ghost'`), found when the run starts, or a run the refinery does not. `InputError` for a
+call the library refuses: an empty scope, a workspace of another scope, a history that breaks a tool
+call from its result, a `start` outside the history or without one, tags outside their limits,
+runtime questions that do not fit, a runtime id the run already asks, questions for a generation
+agent, a decision run with no question to ask, media the decision model does not declare, a media
+part with both or neither of `data` and `url`, a correction of the wrong shape or for a question the
+run was not asked, a `delete_runs` or `verify_absent` given both `run_ids` and `tags` or an empty
+one, a `delete_runs` given neither, an `export` or a `replay` given a `holdout_percent` outside 0 to
+100, a `replay` given empty `tags` or a `limit`, `concurrency` or `repeat` below 1, a tool called
+with bad arguments or a path outside its directory. `ModelError` when an adapter breaks the contract
+— a result whose fields do not fit, a missing answer, probabilities that do not cover the options,
+lie outside 0 and 1 or do not sum to 1, a score outside its levels — or a folder tool's result does
+not match its `output_schema`. `RunawayError` when a loop exceeds `max_steps` (default 200).
+`DelegationLoopError` for a route into an agent already in the same chain of routes;
+`DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
+`Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool
+that fails in its worker process: what its script raised, a result JSON cannot hold, a worker that
+stopped while the call was in flight (`workers: the worker for lookup_order stopped: exited with
+code 3`) or a call after `close()`. Inside a run, a tool's error is the model's to read, never
+raised. All under `EngineException` — the root takes the `Exception` suffix, every child ends in
+`Error`, the same shape as rfnry-memory's. Every message names the module that raised it, then says
+what went wrong in lowercase: `engine: agent 'ghost' was not found`, `workspace: path outside the
+workspace: ../x`. A tool's error reaches the model with its type in front: `InputError: tools:
+unknown tool 'Ghost'`.

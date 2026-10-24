@@ -12,10 +12,9 @@ from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery, label_of
 from rfnry_engine.refinery.storage import RunRow, Storage
 from rfnry_engine.stop import Stop
-from rfnry_engine.tools.tools import Tool
+from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import (
-    TOOLS,
     Desk,
     MemoryBucket,
     Scripted,
@@ -157,7 +156,6 @@ def desk(fixtures: Path, refinery: Refinery, customers: int) -> Engine:
     replies = [delegate_triage(), text_reply("Handled.")] * customers
     return Engine(
         fixtures,
-        tools=TOOLS,
         refinery=refinery,
         models={"strong": Scripted(*replies), "judge": Desk()},
     )
@@ -275,9 +273,7 @@ async def test_delegated_children_read_back_in_the_order_of_their_steps(
         Reply(tool_calls=calls[2:], stop_reason="tool_use"),
         text_reply("All triaged."),
     )
-    engine = Engine(
-        fixtures, tools=TOOLS, refinery=refinery, models={"strong": llm, "judge": Desk()}
-    )
+    engine = Engine(fixtures, refinery=refinery, models={"strong": llm, "judge": Desk()})
     run = await engine.run("support", "acme", "Three tickets")
     assert isinstance(run, Generation) and len(run.children) == 3
     got = await refinery.run("acme", run.run_id)
@@ -299,9 +295,9 @@ async def test_a_stopped_run_read_back_continues_the_next_run(
         text_reply("The second charge is refunded."),
     )
     refinery = Refinery(storage)
-    tools = [Tool("lookup_order", "Fetch an order", body=lookup), TOOLS[1]]
-    engine = Engine(fixtures, tools=tools, refinery=refinery, models={"strong": llm})
-    run = await engine.run("support", "acme", "Charged twice.", stop=stop)
+    tools = Tools([Tool("lookup_order", "Fetch an order", body=lookup)])
+    engine = Engine(fixtures, refinery=refinery, models={"strong": llm})
+    run = await engine.run("support", "acme", "Charged twice.", stop=stop, tools=tools)
     assert isinstance(run, Generation) and run.stopped == "after_step"
     last = await refinery.run("acme", run.run_id)
     assert isinstance(last, Generation) and last.model_dump() == run.model_dump()
@@ -326,7 +322,7 @@ async def test_every_refinery_verb_needs_a_scope(fixtures: Path, storage: Storag
     refinery = Refinery(storage)
     run = generation_record()
     await refinery.record(run)
-    engine = Engine(fixtures, tools=TOOLS, refinery=refinery, models={"strong": Scripted()})
+    engine = Engine(fixtures, refinery=refinery, models={"strong": Scripted()})
     verbs = [
         refinery.record(generation_record(scope="")),
         refinery.review("", run.run_id, Review(stance="approval")),
@@ -351,7 +347,7 @@ async def test_a_stored_generation_holds_each_message_once(
 ) -> None:
     refinery = Refinery(storage)
     llm = Scripted(text_reply("Hello."), text_reply("Again."))
-    engine = Engine(fixtures, tools=TOOLS, refinery=refinery, models={"strong": llm})
+    engine = Engine(fixtures, refinery=refinery, models={"strong": llm})
     first = await engine.run("support", "acme", "Hi")
     assert isinstance(first, Generation)
     run = await engine.run("support", "acme", "And?", history=first.conversation)
@@ -402,19 +398,16 @@ async def test_messages_are_the_start_of_the_conversation_however_a_run_ends(
     lookup = ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"})
     tool_turn = Reply(tool_calls=[lookup], stop_reason="tool_use")
 
-    def engine(llm: Scripted, tools: list[Tool] = TOOLS) -> Engine:
-        return Engine(
-            fixtures, tools=tools, refinery=recorder, models={"strong": llm, "judge": Desk()}
-        )
+    def engine(llm: Scripted) -> Engine:
+        return Engine(fixtures, refinery=recorder, models={"strong": llm, "judge": Desk()})
 
     await engine(Scripted(text_reply("Done."))).run("support", "acme", "Hi")
-    stopped = engine(
-        Scripted(tool_turn, text_reply("x")),
-        [Tool("lookup_order", "Fetch an order", body=halt), TOOLS[1]],
-    )
-    await stopped.run("support", "acme", "Hi", stop=stop)
-    with pytest.raises(AssertionError):
-        await engine(Scripted(tool_turn)).run("support", "acme", "Hi")
+    halting = Tools([Tool("lookup_order", "Fetch an order", body=halt)])
+    stopped = engine(Scripted(tool_turn, text_reply("x")))
+    await stopped.run("support", "acme", "Hi", stop=stop, tools=halting)
+    async with engine(Scripted(tool_turn)) as failing:
+        with pytest.raises(AssertionError):
+            await failing.run("support", "acme", "Hi")
     routed = engine(Scripted(delegate_triage(), text_reply("Handled.")))
     await routed.run("frontdesk", "acme", "Down")
     delegated = engine(Scripted(delegate_triage(), text_reply("Handled.")))

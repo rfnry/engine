@@ -103,15 +103,24 @@ class AgentFront(BaseModel):
 
     @field_validator("tools")
     @classmethod
-    def _tools_are_plain_and_listed_once(cls, value: list[str]) -> list[str]:
-        for name in value:
+    def _tools_keep_or_drop_each_once(cls, value: list[str]) -> list[str]:
+        for entry in value:
+            name = entry.removeprefix("!")
             if not name.strip() or name != name.strip():
                 raise ValueError(
-                    f"tree: an entry must not be blank or padded, got {name!r}; write the name of a Tool the engine is given, such as tools: [fetch_orders]"
+                    f'tree: an entry must not be blank or padded, got {entry!r}; write a tool to keep, such as tools: [lookup_order], or one to drop, such as tools: ["!Grep"]'
                 )
-        twice = sorted({name for name in value if value.count(name) > 1})
+        twice = sorted({entry for entry in value if value.count(entry) > 1})
         if twice:
             raise ValueError(f"tree: {twice[0]!r} is listed twice; list each tool once")
+        if OUTPUT_TOOL in (entry.removeprefix("!") for entry in value):
+            raise ValueError(
+                f"tree: {OUTPUT_TOOL!r} cannot be dropped or kept by name; it comes with expect= on a run"
+            )
+        if len({entry.startswith("!") for entry in value}) > 1:
+            raise ValueError(
+                "tree: an entry list mixes names and !names; list the tools to keep, or the tools to drop with !"
+            )
         return value
 
 
@@ -149,7 +158,8 @@ class AgentSpec(BaseModel):
     agents: list[str]
     route: RouteSpec | None
     questions: dict[str, Question]
-    tools: list[str]
+    keep: list[str] | None
+    drop: list[str]
     tasks: dict[str, str]
     task_bodies: dict[str, str] = Field(default_factory=dict)
     fingerprint: str
@@ -313,6 +323,10 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     return found, links
 
 
+def tree_folders(root: Path) -> list[str]:
+    return list(_tree_folders(root)[0])
+
+
 def _holds_agent(folder: Path) -> bool:
     return declares(folder) or any(
         _holds_agent(child)
@@ -448,6 +462,18 @@ def _folder_tools(
     return tools
 
 
+def _kept(agent: str, front: AgentFront, tools: Collection[str]) -> list[str] | None:
+    if not front.tools or front.tools[0].startswith("!"):
+        return None
+    seen = sorted({*tools, *BUILTINS})
+    for name in front.tools:
+        if name not in seen:
+            raise ConfigurationError(
+                f"tree: agent {agent!r} keeps {name!r} in tools:, which it does not see; its tools are {', '.join(seen)}"
+            )
+    return list(front.tools)
+
+
 def load_agent(
     directory: Path,
     media: Mapping[str, Collection[str] | None] | None = None,
@@ -541,6 +567,7 @@ def load_agent(
         raise ConfigurationError(
             f"tree: agent {agent!r} cannot preload its folder: {exc}; move that file out of its folders, or drop preload: true"
         ) from exc
+    folder_tools = _folder_tools(agent, front, [tool_folders[prefix] for prefix in sees])
     return AgentSpec(
         root=root,
         name=agent,
@@ -552,7 +579,8 @@ def load_agent(
         agents=front.agents,
         route=front.route,
         questions=questions,
-        tools=front.tools,
+        keep=_kept(agent, front, folder_tools),
+        drop=[entry.removeprefix("!") for entry in front.tools if entry.startswith("!")],
         tasks=tasks,
         task_bodies=task_bodies,
         fingerprint=folder_fingerprint(files, read),
@@ -565,7 +593,7 @@ def load_agent(
         ),
         reads={name: folder.place for name, folder in held.items()},
         skills={} if front.kind == "decision" else _skills(content(root, True), agent),
-        folder_tools=_folder_tools(agent, front, [tool_folders[prefix] for prefix in sees]),
+        folder_tools=folder_tools,
     )
 
 
@@ -584,7 +612,7 @@ def load_tree(
         )
     project = project_of(root)
     tool_folders = {
-        prefix: load_tools(root / prefix / "tools", project)
+        prefix: load_tools(root / prefix / "tools", project, root)
         for prefix in dict.fromkeys(p for path in paths for p in _on_path(path))
         if (root / prefix / "tools").is_dir()
     }

@@ -343,7 +343,7 @@ def test_a_package_of_the_interpreter_s_site_packages_inside_the_project_passes(
     project = project_of(Path(sys.prefix))
     assert Path(yaml.__file__).resolve().is_relative_to(project)
     tool(tmp_path / "tools", "fetch", body="import yaml\n" + RUN)
-    assert list(load_tools(tmp_path / "tools", project)) == ["fetch"]
+    assert list(load_tools(tmp_path / "tools", project, tmp_path)) == ["fetch"]
 
 
 def test_a_site_packages_folder_of_the_project_that_is_not_the_interpreter_s_is_refused(

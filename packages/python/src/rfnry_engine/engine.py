@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from fnmatch import fnmatch
+from itertools import permutations
 from pathlib import Path
 from typing import Annotated, Any, NoReturn, Protocol, cast
 from uuid import uuid4
@@ -70,7 +71,7 @@ from rfnry_engine.records import (
     ToolResultReady,
 )
 from rfnry_engine.stop import Stop, Stopped, requested, wait
-from rfnry_engine.tools.declared import check_declarations
+from rfnry_engine.tools.declared import chosen
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
     AgentArgs,
@@ -83,7 +84,15 @@ from rfnry_engine.tools.delegate import (
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import WORKSPACE_TOOLS, Workspace
-from rfnry_engine.tree import OUTPUT_TOOL, AgentSpec, Kind, load_tree, validate_tree
+from rfnry_engine.tree import (
+    OUTPUT_TOOL,
+    AgentSpec,
+    Kind,
+    load_tree,
+    tree_folders,
+    validate_tree,
+)
+from rfnry_engine.workers import Workers
 
 STOPPED = "stopped by the user"
 NO_TOOLS = tools_fingerprint([])
@@ -374,13 +383,38 @@ def _check_models(
             _kind_clash(spec, "decide")
 
 
+def _groups(root: Path, workers: Mapping[str, int] | None) -> dict[str, int]:
+    if workers is None:
+        return {}
+    if not isinstance(workers, Mapping):
+        raise ConfigurationError(
+            "engine: workers must map folders of the tree to their number of processes"
+        )
+    folders = set(tree_folders(root))
+    for name, count in workers.items():
+        if name not in folders:
+            raise ConfigurationError(
+                f"engine: workers names {name!r}, which is not a folder of the tree; name folders by their path from the root"
+            )
+        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+            raise ConfigurationError(
+                f"engine: workers gives {name!r} {count!r} processes; give each folder 1 or more"
+            )
+    for one, other in permutations(workers, 2):
+        if one.startswith(f"{other}/"):
+            raise ConfigurationError(
+                f"engine: workers names {one!r} inside {other!r}, which it names too; keep one"
+            )
+    return dict(workers)
+
+
 class Engine:
     def __init__(
         self,
         root: Path | str,
         *,
         models: Mapping[str, GenerationModel | DecisionModel],
-        tools: list[Tool] | None = None,
+        workers: Mapping[str, int] | None = None,
         refinery: Recorder | None = None,
         max_steps: int = 200,
         max_depth: int = 5,
@@ -404,11 +438,6 @@ class Engine:
         if not self.root.is_dir():
             raise ConfigurationError(f"engine: root is not a directory: {root}")
         self.models = _models(models)
-        self.tools: dict[str, Tool] = {}
-        for tool in tools or []:
-            if tool.name in self.tools:
-                raise ConfigurationError(f"engine: duplicate tool {tool.name!r}")
-            self.tools[tool.name] = tool
         self.refinery = refinery
         self.max_steps = max_steps
         self.max_depth = max_depth
@@ -421,8 +450,17 @@ class Engine:
         )
         validate_tree(self._agents)
         _check_models(self._agents, self.models)
-        self._declared = check_declarations(self._agents, self.tools, self.models)
+        self._workers = Workers(self._agents, _groups(self.root, workers))
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
+
+    async def close(self) -> None:
+        await self._workers.close()
+
+    async def __aenter__(self) -> Engine:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
@@ -435,7 +473,7 @@ class Engine:
                 description=spec.description,
                 agents=spec.agents,
                 reads=list(spec.reads),
-                tools=list(spec.tools),
+                tools=list(chosen(spec)),
                 tasks=dict(spec.tasks),
                 skills={called: skill.description for called, skill in spec.skills.items()},
             )
@@ -772,7 +810,7 @@ class Engine:
             history=options.source,
             start=options.start,
         )
-        bounded_by_workspace = (
+        own_deadline = surface._in_workers | (
             WORKSPACE_TOOLS if spec.workspace and options.workspace is not None else frozenset()
         )
         specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
@@ -791,7 +829,7 @@ class Engine:
         fingerprint = Fingerprint(
             agent=spec.fingerprint, tools=tools_fingerprint(specs), questions=None
         )
-        targets = [self._agents[name] for name in spec.agents]
+        targets = [self._agents[name] for name in spec.agents] if DELEGATE_TOOL in surface else []
         system = build_bundle(
             spec,
             task=options.task,
@@ -924,10 +962,10 @@ class Engine:
             try:
                 if approved is False:
                     content, is_error = f"NotApproved: {call.name} was not approved", True
-                elif spec.agents and call.name == DELEGATE_TOOL:
+                elif call.name == DELEGATE_TOOL and spec.agents and DELEGATE_TOOL in surface:
                     content, is_error, child_run_id, stopped = await delegate(call)
                 else:
-                    limit = None if call.name in bounded_by_workspace else self.tool_timeout
+                    limit = None if call.name in own_deadline else self.tool_timeout
                     deadline = asyncio.timeout(limit)
                     try:
                         async with deadline:

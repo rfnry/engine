@@ -1,0 +1,17 @@
+{
+  "description": "Fetch an order by id. Returns the order as JSON.",
+  "input_schema": {
+    "properties": {
+      "order_id": {"description": "The order id", "title": "Order Id", "type": "string"},
+      "include_items": {
+        "anyOf": [{"type": "boolean"}, {"type": "null"}],
+        "default": null,
+        "description": "Include line items",
+        "title": "Include Items"
+      }
+    },
+    "required": ["order_id"],
+    "title": "LookupArgs",
+    "type": "object"
+  }
+}
