@@ -1937,8 +1937,10 @@ still finds the data beside it: an edit to a tool reaches the next `Engine`, nev
 whose records keep naming what ran, while a data file a script opens when it is called is read
 from disk then. A worker starts at the first call that needs it, never when the engine is built,
 and again after a crash, and lives until you close the engine — `await engine.close()`, or leaving
-`async with Engine(...) as engine:` — which stops every worker and whatever it started; a call to a
-closed engine's tool is a `WorkerError`. A plain `def run` runs on one of the worker's 32 threads,
+`async with Engine(...) as engine:` — which stops every worker and whatever it started. A closed
+engine stays closed: a run, a tool call or an `EngineTools` after `close()` is an `InputError`,
+`engine: this engine was closed; build a new Engine`, before any model is called, so nothing is
+recorded of it. A plain `def run` runs on one of the worker's 32 threads,
 and calls past those wait; an `async def run` runs on its event loop, as many at once as come. What
 a script prints goes to the log, at DEBUG on the `rfnry_engine.workers` logger, never into its
 result. A script that raises, `sys.exit()` included, is a tool error the model reads, `WorkerError:
@@ -2334,17 +2336,20 @@ part with both or neither of `data` and `url`, a correction of the wrong shape o
 run was not asked, a `delete_runs` or `verify_absent` given both `run_ids` and `tags` or an empty
 one, a `delete_runs` given neither, an `export` or a `replay` given a `holdout_percent` outside 0 to
 100, a `replay` given empty `tags` or a `limit`, `concurrency` or `repeat` below 1, a tool called
-with bad arguments or a path outside its directory. `ModelError` when an adapter breaks the contract
+with bad arguments, arguments JSON cannot hold or a path outside its directory, and any use of an
+engine after `close()` (`engine: this engine was closed; build a new Engine`). `ModelError` when an adapter breaks the contract
 — a result whose fields do not fit, a missing answer, probabilities that do not cover the options,
 lie outside 0 and 1 or do not sum to 1, a score outside its levels — or a folder tool's result does
-not match its `output_schema`, or a question's script returns anything but an object or a question
-that does not fit. `RunawayError` when a loop exceeds `max_steps` (default 200).
+not match its `output_schema`, or a question's script returns anything but an object, a key its JSON
+sets or one its type does not take, or a question that does not fit. `RunawayError` when a loop
+exceeds `max_steps` (default 200).
 `DelegationLoopError` for a route into an agent already in the same chain of routes;
 `DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
 `Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool
 or a question's script that fails in its worker process: what its script raised, `sys.exit()`
 included, a result JSON cannot hold, a worker that stopped while the call was in flight (`workers:
-the worker for lookup_order stopped: exited with code 3`) or a call after `close()`. Inside a run,
+the worker for lookup_order stopped: exited with code 3`) or a call in flight when `close()` stopped
+its worker. Inside a run,
 a tool's error is the model's to read, never raised. All under `EngineException` — the root takes
 the `Exception` suffix, every child ends in `Error`, the same shape as rfnry-memory's. Every message
 names the module that raised it, then says what went wrong in lowercase: `engine: agent 'ghost' was

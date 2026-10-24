@@ -458,10 +458,16 @@ class Engine:
         validate_tree(self._agents)
         _check_models(self._agents, self.models)
         self._workers = Workers(self._agents, _groups(self.root, workers))
+        self._closed = False
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
 
     async def close(self) -> None:
+        self._closed = True
         await self._workers.close()
+
+    def _open(self) -> None:
+        if self._closed:
+            raise InputError("engine: this engine was closed; build a new Engine")
 
     async def __aenter__(self) -> Engine:
         return self
@@ -556,6 +562,7 @@ class Engine:
         tags: Mapping[str, str] | None = None,
         approve: Approve | None = None,
     ) -> Run:
+        self._open()
         if not scope:
             raise InputError("engine: scope is required")
         if workspace is not None and workspace.scope != scope:

@@ -13,12 +13,14 @@ from rfnry_engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError, WorkerError
 from rfnry_engine.models import Image, Message, Reply, Text, ToolCall
 from rfnry_engine.records import Generation
+from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Local, Workspace
 from rfnry_engine.tree import load_tree
 
-from .fakes import Scripted, text_reply
+from .fakes import Answering, Scripted, text_reply
 
 RUN = "def run(args, call):\n    return {}\n"
 PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
@@ -594,11 +596,44 @@ async def test_an_engine_starts_its_workers_at_the_first_call_and_close_stops_th
     assert marker.exists() and alive(first)
     await engine.close()
     assert await gone(first)
-    with pytest.raises(WorkerError, match="the worker for pid stopped: it was closed"):
-        await EngineTools(engine, agent="shop", scope="acme").dispatch("pid", {})
+    with pytest.raises(InputError, match="^engine: this engine was closed; build a new Engine$"):
+        EngineTools(engine, agent="shop", scope="acme")
     async with Engine(tmp_path, models={}) as again:
         second = pid(await EngineTools(again, agent="shop", scope="acme").dispatch("pid", {}))
     assert await gone(second)
+
+
+async def test_a_closed_engine_refuses_every_use_and_records_nothing(
+    tmp_path: Path, storage: Storage
+) -> None:
+    tool(shop(tmp_path, extra="description: A shop\n") / "shop/tools", "pid", body=PID)
+    write(tmp_path / "judge/AGENT.md", agent_md("judge", kind="decision", model="judge"))
+    write(tmp_path / "judge/questions/fine.json", '{"type": "check", "instructions": "Fine?"}')
+    refinery = Refinery(storage)
+    llm = Scripted(calling(("pid", {})), text_reply("done"))
+    engine = Engine(tmp_path, models={"strong": llm, "judge": Answering()}, refinery=refinery)
+    asking = engine.tool("shop", scope="acme")
+    recorded = await generated(engine, "shop", "acme", "x")
+    first = pid(json.loads(str(recorded.steps[0].result)))
+    await engine.close()
+    await engine.close()
+    assert await gone(first)
+    said = "engine: this engine was closed; build a new Engine"
+    with pytest.raises(InputError) as raised:
+        await engine.run("shop", "acme", "x")
+    assert str(raised.value) == said
+    with pytest.raises(InputError, match=f"^{said}$"):
+        await engine.run("judge", "acme", "x")
+    with pytest.raises(InputError, match=f"^{said}$"):
+        await asking.dispatch("shop", {"input": "x"})
+    with pytest.raises(InputError, match=f"^{said}$"):
+        EngineTools(engine, agent="shop", scope="acme")
+    pairs = [pair async for pair in refinery.replay("acme", engine, agent="shop")]
+    assert [(pair.candidate, pair.error) for pair in pairs] == [(None, f"InputError: {said}")]
+    labeled = await refinery.label("acme", engine, judge="judge")
+    assert labeled.judged == 0 and labeled.errors == {recorded.run_id: f"InputError: {said}"}
+    assert [row.run_id for row in await storage.runs("acme")] == [recorded.run_id]
+    assert len(llm.calls) == 2
 
 
 async def test_an_edit_to_a_script_after_the_engine_loads_runs_in_the_next_engine_only(

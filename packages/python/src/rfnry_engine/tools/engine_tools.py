@@ -41,6 +41,7 @@ class EngineTools(Tools):
         on_event: EventHandler | None = None,
         stop: Callable[[], Stop | None] | None = None,
     ) -> None:
+        engine._open()
         if not scope:
             raise InputError("engine_tools: scope is required")
         if workspace is not None and workspace.scope != scope:
