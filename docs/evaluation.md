@@ -140,7 +140,7 @@ This works with any model, frontier or local, because nothing is trained.
 
 About one run in five is held out, by a hash of its run id, so it never moves between exports.
 Held-out runs with golden labels are your test set. `refinery.replay` runs a candidate — an
-`Engine` on a new folder or a new model, with the same tools — on what each of them was given,
+`Engine` on a new folder, its tools in it, or on a new model — on what each of them was given,
 records nothing, and yields the recorded run, its labels and the candidate's run side by side.
 Grade the candidate's replies against the right answers with a decision agent of your own:
 
