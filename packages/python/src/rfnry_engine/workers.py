@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from pydantic import JsonValue
 
-from rfnry_engine.errors import WorkerError
+from rfnry_engine.errors import InputError, WorkerError
 
 if TYPE_CHECKING:
     from rfnry_engine.tree import AgentSpec
@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 PROGRAM = Path(__file__).with_name("_worker.py")
 CLOSED = "it was closed"
 RETIRED = "every thread was held by a call past its deadline"
+MOVED = "a call came from another event loop"
 
 
 class Script(NamedTuple):
@@ -88,20 +89,20 @@ class _Worker(asyncio.SubprocessProtocol):
         self._exited = True
         self._finish()
 
-    def write(self, message: dict[str, Any]) -> None:
+    def write(self, text: str) -> None:
         pipe = cast(asyncio.WriteTransport, self.transport.get_pipe_transport(0))
-        pipe.write(f"{json.dumps(message)}\n".encode())
+        pipe.write(f"{text}\n".encode())
 
-    def send(self, id: int, name: str, message: dict[str, Any]) -> asyncio.Future[JsonValue]:
+    def send(self, id: int, name: str, text: str) -> asyncio.Future[JsonValue]:
         reply: asyncio.Future[JsonValue] = asyncio.get_running_loop().create_future()
         self.calls[id] = (name, reply)
-        self.write(message)
+        self.write(text)
         return reply
 
     def abandon(self, id: int) -> None:
         if self.calls.pop(id, None) is not None and not self.ended.is_set():
             self.held.add(id)
-            self.write({"id": id, "cancel": True})
+            self.write(json.dumps({"id": id, "cancel": True}))
 
     def kill(self, reason: str) -> None:
         if not self.ended.is_set():
@@ -157,6 +158,7 @@ class WorkerPool:
         self._threads = threads
         self._workers: list[_Worker | None] = [None] * processes
         self._ids = itertools.count()
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = asyncio.Lock()
         self._closed = False
 
@@ -164,26 +166,49 @@ class WorkerPool:
         self, key: str, args: JsonValue, call: Mapping[str, str], timeout: float | None
     ) -> JsonValue:
         name = key.rsplit("/", 1)[-1]
-        worker = await self._pick(name)
         id = next(self._ids)
-        reply = worker.send(id, name, {"id": id, "key": key, "args": args, "call": dict(call)})
         try:
-            async with asyncio.timeout(timeout):
-                return await reply
+            text = json.dumps({"id": id, "key": key, "args": args, "call": dict(call)})
+        except (TypeError, ValueError) as exc:
+            raise InputError(f"workers: the arguments for {name} are not JSON: {exc}") from None
+        self._follow()
+        deadline = asyncio.timeout(timeout)
+        worker: _Worker | None = None
+        try:
+            async with deadline:
+                worker = await self._pick(name)
+                return await worker.send(id, name, text)
         except TimeoutError:
+            if not deadline.expired():
+                raise
             raise TimeoutError(f"workers: {name} timed out after {timeout:g}s") from None
         finally:
-            worker.abandon(id)
+            if worker is not None:
+                worker.abandon(id)
 
     async def close(self) -> None:
         self._closed = True
+        if self._loop is not asyncio.get_running_loop():
+            self._drop(CLOSED)
+            return
         async with self._lock:
-            workers = [worker for worker in self._workers if worker is not None]
-            self._workers = [None] * len(self._workers)
-        for worker in workers:
-            worker.kill(CLOSED)
+            workers = self._drop(CLOSED)
         for worker in workers:
             await worker.ended.wait()
+
+    def _drop(self, reason: str) -> list[_Worker]:
+        workers = [worker for worker in self._workers if worker is not None]
+        self._workers = [None] * len(self._workers)
+        for worker in workers:
+            worker.kill(reason)
+        return workers
+
+    def _follow(self) -> None:
+        loop = asyncio.get_running_loop()
+        if self._loop is not loop:
+            self._drop(MOVED)
+            self._lock = asyncio.Lock()
+            self._loop = loop
 
     async def _pick(self, name: str) -> _Worker:
         async with self._lock:
@@ -212,7 +237,7 @@ class WorkerPool:
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
-        worker.write(self._scripts)
+        worker.write(json.dumps(self._scripts))
         return worker
 
 

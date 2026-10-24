@@ -1911,7 +1911,9 @@ server as it is — the engine never reads it. `run` returns a string; JSON — 
 number — the model reads as JSON; or a list of parts, each an object with the `type` and the fields
 of a `Text`, `Image`, `Audio` or `Document`, media `data` in base64, which reach the model as parts:
 a PDF the model reads itself, an image it looks at. A result JSON cannot hold, a `datetime` or a
-`set`, is a tool error naming its type. A script imports the standard library, installed packages
+`set`, is a tool error naming its type; arguments it cannot hold, passed from code, are an
+`InputError` before any worker sees them (`workers: the arguments for refund are not JSON: Object of
+type datetime is not JSON serializable`). A script imports the standard library, installed packages
 and the helpers of its own `tools/` folder — its `_name.py` files, by name, at the top of the
 script; a tool's script or a package beside it is no helper, and importing one fails in the worker.
 It never imports the engine, nor your server's code. When the tree loads, each script is read
@@ -1942,11 +1944,20 @@ a script prints goes to the log, at DEBUG on the `rfnry_engine.workers` logger, 
 result. A script that raises, `sys.exit()` included, is a tool error the model reads, `WorkerError:
 ValueError: no order A-1`, and the worker goes on. A worker that exits — `os._exit()`, a signal,
 out of memory, a crash in a C extension — fails every call it had in flight, `WorkerError: workers:
-the worker for refund stopped: exited with code 3`, the run goes on, and the next call starts a new
-worker. Past `tool_timeout` the model reads `TimeoutError: workers: refund timed out after 30s`: an
-`async def run` is cancelled in the worker; a `def run` cannot be stopped, so its thread runs on and
-its result is discarded, and once every thread of a worker is held so, the next call stops that
-worker and starts a new one.
+the worker for refund stopped: exited with code 3`, or `killed by signal 9` when a signal ended it,
+the run goes on, and the next call starts a new worker. Past `tool_timeout` the model reads
+`TimeoutError: workers: refund timed out after 30s`, a deadline that counts the wait for a worker
+too: an `async def run` is cancelled in the worker; a `def run` cannot be stopped, so its thread
+runs on and its result is discarded, and once every thread of a worker is held so, the next call
+stops that worker and starts a new one, and the calls the old one still had in flight fail with
+`WorkerError: workers: the worker for refund stopped: every thread was held by a call past its
+deadline`.
+
+An engine's workers follow the event loop that calls them, one loop at a time, as a workspace's
+jobs live in one loop: a call from a loop other than the one that started them — `asyncio.run` per
+request or per task, a test's own loop — stops those workers and starts fresh ones on its own, and
+`close()` from another loop stops them at once. Two loops that call one engine at the same time keep
+stopping each other's workers, so give each live loop its own engine.
 
 By default every agent of the tree shares one worker. `Engine(root, models=...,
 workers={"customer_support": 1, "reports": 4})` makes each folder named — by its path from the root,

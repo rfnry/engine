@@ -1,14 +1,16 @@
 import asyncio
+import datetime
 import logging
 import os
 import time
 from collections import Counter
+from collections.abc import Awaitable
 from pathlib import Path
 
 import pytest
 from pydantic import JsonValue
 
-from rfnry_engine.errors import WorkerError
+from rfnry_engine.errors import InputError, WorkerError
 from rfnry_engine.workers import Script, WorkerPool
 
 CALL = {"scope": "acme"}
@@ -47,6 +49,22 @@ async def gone(pid: int) -> bool:
             return True
         await asyncio.sleep(0.05)
     return False
+
+
+def ended(pid: int) -> bool:
+    for _ in range(40):
+        if not alive(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def on_a_loop_of_its_own(work: Awaitable[JsonValue]) -> JsonValue:
+    async def bounded() -> JsonValue:
+        async with asyncio.timeout(10):
+            return await work
+
+    return asyncio.run(bounded())
 
 
 async def test_a_call_runs_the_script_and_returns_its_result(tmp_path: Path) -> None:
@@ -449,3 +467,86 @@ async def test_close_fails_the_calls_in_flight_and_refuses_new_ones(tmp_path: Pa
         await flight
     with pytest.raises(WorkerError, match=closed):
         await pool.call("wait", {}, CALL, 5)
+
+
+async def test_retiring_a_worker_fails_its_other_calls_in_flight_saying_why(
+    tmp_path: Path,
+) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID), script(tmp_path, "wait", WAIT)], threads=1)
+    try:
+        first = pid(await pool.call("nap", {}, CALL, 5))
+        flight = asyncio.create_task(pool.call("wait", {"sleep": 30}, CALL, None))
+        await asyncio.sleep(0.1)
+        with pytest.raises(TimeoutError):
+            await pool.call("nap", {"sleep": 30}, CALL, 0.2)
+        assert pid(await pool.call("nap", {}, CALL, 5)) != first
+        with pytest.raises(WorkerError) as raised:
+            await flight
+        assert str(raised.value) == (
+            "workers: the worker for wait stopped: every thread was held by a call past its deadline"
+        )
+        assert await gone(first)
+    finally:
+        await pool.close()
+
+
+async def test_a_call_that_waits_past_its_deadline_for_a_worker_raises_the_pool_s_timeout(
+    tmp_path: Path,
+) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    try:
+        first = pid(await pool.call("nap", {}, CALL, 5))
+        async with pool._lock:
+            with pytest.raises(TimeoutError) as raised:
+                await pool.call("nap", {}, CALL, 0.2)
+        assert str(raised.value) == "workers: nap timed out after 0.2s"
+        assert pid(await pool.call("nap", {}, CALL, 5)) == first
+    finally:
+        await pool.close()
+
+
+@pytest.mark.parametrize(
+    ("args", "kind"),
+    [({"when": datetime.datetime(2026, 1, 1)}, "datetime"), ({"ids": {1, 2}}, "set")],
+)
+async def test_arguments_json_cannot_hold_are_refused_before_any_worker_sees_them(
+    tmp_path: Path, args: dict[str, object], kind: str
+) -> None:
+    pool = WorkerPool([script(tmp_path, "echo", "def run(args, call):\n    return args\n")])
+    try:
+        with pytest.raises(InputError) as raised:
+            await pool.call("echo", args, CALL, 5)  # type: ignore[arg-type]
+        assert str(raised.value) == (
+            f"workers: the arguments for echo are not JSON: Object of type {kind} is not JSON serializable"
+        )
+        assert await pool.call("echo", {"x": 1}, CALL, 5) == {"x": 1}
+        assert [(len(w.calls), len(w.held)) for w in pool._workers if w is not None] == [(0, 0)]
+    finally:
+        await pool.close()
+
+
+def test_a_pool_called_from_another_event_loop_moves_its_worker_there(tmp_path: Path) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)], threads=2)
+    first = pid(on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5)))
+    assert alive(first)
+    second = pid(on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5)))
+    assert second != first and ended(first)
+    third = [pid(on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5))) for _ in range(3)]
+    assert len({second, *third}) == 4 and all(ended(old) for old in [second, *third[:-1]])
+    on_a_loop_of_its_own(pool.close())
+    assert ended(third[-1])
+
+
+def test_close_from_another_event_loop_leaves_no_worker_behind(tmp_path: Path) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)], processes=2)
+
+    async def both() -> JsonValue:
+        return await asyncio.gather(*(pool.call("nap", {"sleep": 0.2}, CALL, 5) for _ in range(2)))
+
+    first = on_a_loop_of_its_own(both())
+    assert isinstance(first, list) and len({pid(value) for value in first}) == 2
+    on_a_loop_of_its_own(pool.close())
+    assert all(ended(pid(value)) for value in first)
+    with pytest.raises(WorkerError, match="the worker for nap stopped: it was closed"):
+        on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5))
+    on_a_loop_of_its_own(pool.close())

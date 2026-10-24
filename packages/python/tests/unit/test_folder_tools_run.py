@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import datetime
 import json
 import os
 from pathlib import Path
@@ -157,6 +158,25 @@ async def test_invalid_arguments_never_reach_the_worker(tmp_path: Path) -> None:
         'InputError: declared: invalid arguments for lookup_order: 5 is not of type "string" at order_id'
     )
     assert not marker.exists()
+
+
+async def test_arguments_from_code_that_json_cannot_hold_never_reach_the_worker(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "ran"
+    body = f"from pathlib import Path\ndef run(args, call):\n    Path({str(marker)!r}).write_text('ran')\n    return 'ok'\n"
+    tool(shop(tmp_path) / "shop/tools", "note", body=body)
+    async with Engine(tmp_path, models={}) as engine:
+        surface = EngineTools(engine, agent="shop", scope="acme")
+        with pytest.raises(InputError) as raised:
+            await surface.dispatch("note", {"when": datetime.datetime(2026, 1, 1)})
+        assert str(raised.value) == (
+            "workers: the arguments for note are not JSON: Object of type datetime is not JSON serializable"
+        )
+        assert not marker.exists()
+        assert await surface.dispatch("note", {}) == "ok"
+        pool = engine._workers.pool("shop")
+        assert [len(worker.calls) for worker in pool._workers if worker is not None] == [0]
 
 
 async def test_a_result_off_its_output_schema_is_a_tool_error(tmp_path: Path) -> None:
