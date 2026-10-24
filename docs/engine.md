@@ -1782,7 +1782,9 @@ live = load("4f2c9e1")
 commit, engine = live
 run = await engine.run("support", scope="acme", input=message, tags={"commit": commit})
 
+_, retired = live
 live = load("a81d07b")
+await retired.close()
 
 arms = {"a": load("4f2c9e1"), "b": load("a81d07b")}
 arm = "ab"[hashlib.sha256(b"user-42").digest()[0] % 2]
@@ -1930,7 +1932,9 @@ a sandbox, and a script is trusted as your server's code is.
 
 A tool runs in a worker: a process the engine starts with your server's interpreter, so it has the
 packages your server has, which runs the scripts of its group's agents — their tools' and their
-questions' ([Decision agents](#decision-agents)) — and serves their calls. The scripts and their
+questions' ([Decision agents](#decision-agents)) — and serves their calls. Workers run on POSIX
+systems only, Linux and macOS, as `Local` does: each is a session of its own, stopped with every
+process it started by signalling its process group. The scripts and their
 helpers are read when the tree loads, as tasks and skills are — the text the import check read and
 the fingerprint covers — and a worker runs that text, under each file's own path, so `__file__`
 still finds the data beside it: an edit to a tool reaches the next `Engine`, never the one running,
@@ -2243,7 +2247,12 @@ as `(label_id, at, text)`, oldest first.
 `scope` is the tenant. It is required on every run and every refinery verb, it is the first column
 of every table, and no read accepts its absence. Tools pinned to a tenant are passed on the call.
 `refinery.delete_scope(scope)` removes everything; `refinery.verify_absent(scope)` proves it.
-The tree of agents is shared by every tenant and holds no tenant's data.
+The tree of agents is shared by every tenant and holds no tenant's data. So are the workers: a
+script's module state — a client it builds when it loads, a cache it fills, a global it sets — is
+shared by every tenant whose runs call it, and only `call` is the tenant's: its `scope` always, and
+the rest of what it carries — a tool call's `run_id`, `agent`, `tool` and `call_id` inside a run, a
+question's `run_id`, `agent` and `question`. A script that keeps anything between calls keys it by
+`call["scope"]`, as the engine keys every row.
 
 Inside a tenant, erase by tag or by run id. A support desk serves every customer in one scope; tag
 each run with its customer, and when one asks to be forgotten:
