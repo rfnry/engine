@@ -3,6 +3,7 @@ import base64
 import datetime
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -581,6 +582,34 @@ def test_workers_names_folders_of_the_tree_none_inside_another(
     with pytest.raises(ConfigurationError) as caught:
         Engine(tmp_path, models={}, workers=workers)
     assert str(caught.value) == said
+
+
+def ended(pid: int) -> bool:
+    for _ in range(40):
+        if not alive(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_an_engine_called_from_one_event_loop_after_another_follows_each(tmp_path: Path) -> None:
+    tool(shop(tmp_path) / "shop/tools", "pid", body=PID)
+    engine = Engine(tmp_path, models={})
+    surface = EngineTools(engine, agent="shop", scope="acme")
+
+    async def call() -> int:
+        async with asyncio.timeout(10):
+            return pid(await surface.dispatch("pid", {}))
+
+    async def close() -> None:
+        async with asyncio.timeout(10):
+            await engine.close()
+
+    first = asyncio.run(call())
+    second = asyncio.run(call())
+    assert second != first and ended(first)
+    asyncio.run(close())
+    assert ended(second)
 
 
 async def test_an_engine_starts_its_workers_at_the_first_call_and_close_stops_them(
