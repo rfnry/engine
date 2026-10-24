@@ -152,6 +152,17 @@ QUESTION_TYPES: dict[str, type[Choice] | type[Score] | type[Check]] = {
     "check": Check,
 }
 SHAPE = "type, instructions and its options, levels or yes and no"
+TAKES = {"choice": ("options",), "score": ("levels",), "check": ("yes", "no")}
+TAKEN = "a choice takes options, a score levels and a check yes and no"
+QUESTION_FILES = frozenset({".json", ".py", ".md"})
+
+
+def foreign(kind: JsonValue, data: Mapping[str, JsonValue]) -> str | None:
+    own = TAKES.get(kind) if isinstance(kind, str) else None
+    if own is None:
+        return None
+    others = {field for fields in TAKES.values() for field in fields} - set(own)
+    return next((key for key in sorted(data) if key in others), None)
 
 
 def as_question(data: Mapping[str, JsonValue]) -> Question:
@@ -220,6 +231,11 @@ def _object(path: Path) -> dict[str, JsonValue]:
         raise ConfigurationError(
             f"tree: {path} has the unknown key {unknown[0]!r}; a question takes type, instructions, options, levels, yes and no"
         )
+    held = foreign(data.get("type"), data)
+    if held is not None:
+        raise ConfigurationError(
+            f"tree: {path} is a {data['type']} question holding {held!r}; {TAKEN}, so drop {held!r} or change its type"
+        )
     return data
 
 
@@ -274,14 +290,22 @@ def _markdown_files(directory: Path) -> list[Path]:
     )
 
 
+def _question_files(directory: Path) -> list[Path]:
+    if not directory.is_dir():
+        return []
+    return sorted(
+        p
+        for p in directory.iterdir()
+        if p.is_file() and not p.name.startswith(("_", ".")) and p.suffix in QUESTION_FILES
+    )
+
+
 def _questions(
     directory: Path, root: Path
 ) -> tuple[dict[str, Question], dict[str, tuple[dict[str, JsonValue], Script]]]:
-    if not directory.is_dir():
+    files = _question_files(directory)
+    if not files:
         return {}, {}
-    files = sorted(
-        p for p in directory.iterdir() if p.is_file() and not p.name.startswith(("_", "."))
-    )
     for path in files:
         if path.suffix == ".md":
             raise ConfigurationError(
@@ -540,6 +564,10 @@ def load_agent(
         raise ConfigurationError(
             f"tree: decision agent {agent!r} has tasks/; a decision agent asks only questions/, so make another decision agent for another set of questions"
         )
+    if front.kind == "generation" and _question_files(directory / "questions"):
+        raise ConfigurationError(
+            f"tree: generation agent {agent!r} cannot declare questions/; questions are for decision agents, so make it kind: decision or move them to one"
+        )
     questions, scripted = _questions(directory / "questions", tree_root or directory)
     loaded = {p.stem: _task(p) for p in _markdown_files(directory / "tasks")}
     tasks = {name: said for name, (said, _) in loaded.items()}
@@ -555,10 +583,6 @@ def load_agent(
     if front.kind == "decision" and front.preload:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot declare preload:; a decision agent reads no files, so give it what it needs in its input or its questions"
-        )
-    if front.kind == "generation" and (questions or scripted):
-        raise ConfigurationError(
-            f"tree: generation agent {agent!r} cannot declare questions/; questions are for decision agents, so make it kind: decision or move them to one"
         )
     if front.kind == "generation" and front.route is not None:
         raise ConfigurationError(

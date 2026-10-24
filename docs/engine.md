@@ -950,10 +950,12 @@ instead of a string, and an option given `null` means no more than its key:
 
 Each file is checked when the tree loads, so a mistake is caught before any run: a file that is not
 a JSON object, a key a question does not take (`tree: agents/triage/questions/urgent.json has the
-unknown key 'option'; a question takes type, instructions, options, levels, yes and no`),
-instructions missing or empty, a choice with fewer than two options or a score with fewer than two
-levels is a `ConfigurationError` naming the file. A question in markdown, `questions/<id>.md`, is
-one too, which says to write it as `<id>.json`.
+unknown key 'option'; a question takes type, instructions, options, levels, yes and no`), a key
+of another type, such as `levels` on a choice (`tree: agents/triage/questions/team.json is a choice
+question holding 'levels'; a choice takes options, a score levels and a check yes and no, so drop
+'levels' or change its type`), instructions missing or empty, a choice with fewer than two options
+or a score with fewer than two levels is a `ConfigurationError` naming the file. A question in
+markdown, `questions/<id>.md`, is one too, which says to write it as `<id>.json`.
 
 Run it with a state: a string, an object or a list.
 
@@ -973,7 +975,9 @@ model needs no `Tool`s; the tree's generation agents are the ones it cannot run.
 Some answer spaces live in your data: the orders of the customer who wrote, the plans of this
 tenant. A script beside the question fills it: `questions/<id>.py`, a function `run(input, call)`
 that returns the fields it fills — `{"options": {...}}` for a choice, `{"levels": [...]}` for a
-score — merged over `<id>.json`, which leaves them out:
+score — merged over `<id>.json`, which leaves them out. The JSON fixes the rest, its `type` always:
+a script never changes what kind of question it fills, nor anything its JSON sets, so every run
+asks the same question under one id and only what the script fills differs between tenants:
 
 ```
 agents/
@@ -1013,12 +1017,18 @@ decision model is called. `input` is the run's state as JSON — the text, the o
 given, or the parts as their JSON, media `data` in base64 — and `call` holds the run's `scope`,
 `run_id` and `agent` and the `question` it fills, so what it reads is the tenant's. The scripts of
 a run's questions run at once, each under `tool_timeout`, and the question each fills is checked as
-a file is. A script that raises (`WorkerError: KeyError: 'customer'`), runs past its deadline
-(`TimeoutError: workers: order timed out after 30s`), returns anything but an object, or fills a
-question that does not fit (`ModelError: engine: question 'order' of decision agent 'matcher' does
-not fit once order.py fills it: …`) ends the run before the decision model is called, recorded with
-its `error` as a failed decision call is, and with only the questions that need no script.
-Otherwise the record keeps each question as it was asked, the filled options included. A
+a file is. A script that raises (`WorkerError: engine: order.py of decision agent 'matcher' could
+not fill question 'order': KeyError: 'customer'`), runs past its deadline (`TimeoutError: workers:
+order timed out after 30s`), returns anything but an object, returns a key its JSON sets
+(`ModelError: engine: order.py of decision agent 'matcher' returned 'type', which question 'order'
+sets in order.json; a script returns only what its question's JSON leaves out, such as {"options":
+{...}}`) or one its type does not take, or fills a question that does not fit (`ModelError: engine:
+question 'order' of decision agent 'matcher' does not fit once order.py fills it: the question:
+models: a choice needs at least two options`) ends the run before the decision model is called,
+recorded with its `error` as a failed decision call is, and with only the questions that need no
+script. Otherwise the record keeps each question as it was asked, the filled options included, and
+`fingerprint.questions` follows them: two tenants' runs of the matcher above ask the same question
+with different options, under two question fingerprints and one agent fingerprint. A
 question's script imports what a tool's does — the standard library, installed packages and the
 helpers of its folder, `questions/_name.py`, at the top of the script — and is read when the tree
 loads, as a tool's is, so `fingerprint.agent` covers it; a `.py` without its `.json` is a

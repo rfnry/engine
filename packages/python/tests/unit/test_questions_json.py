@@ -197,13 +197,27 @@ async def test_a_script_that_raises_fails_the_run_before_the_decision_model_is_c
     )
     judge = Answering()
     recorded = Recorded()
+    said = "engine: order.py of decision agent 'matcher' could not fill question 'order': ValueError: no orders for acme"
     async with Engine(tmp_path, models={"judge": judge}, refinery=recorded) as engine:
-        with pytest.raises(WorkerError, match="^ValueError: no orders for acme$"):
+        with pytest.raises(WorkerError) as raised:
             await engine.run("matcher", "acme", "my desk")
+    assert str(raised.value) == said
     assert judge.calls == []
     [failed] = recorded.runs
     assert isinstance(failed, Decision) and failed.answers == {}
-    assert failed.error == "WorkerError: ValueError: no orders for acme"
+    assert failed.error == f"WorkerError: {said}"
+
+
+async def test_a_script_whose_worker_stops_names_the_question_it_was_filling(
+    tmp_path: Path,
+) -> None:
+    matcher(tmp_path, "import os\ndef run(input, call):\n    os._exit(3)\n")
+    async with Engine(tmp_path, models={"judge": Answering()}) as engine:
+        with pytest.raises(WorkerError) as raised:
+            await engine.run("matcher", "acme", "my desk")
+    assert str(raised.value) == (
+        "engine: order.py of decision agent 'matcher' could not fill question 'order': workers: the worker for order stopped: exited with code 3"
+    )
 
 
 @pytest.mark.parametrize(
@@ -211,19 +225,47 @@ async def test_a_script_that_raises_fails_the_run_before_the_decision_model_is_c
     [
         (
             "def run(input, call):\n    return {'options': {'only': 'One'}}\n",
-            "^engine: question 'order' of decision agent 'matcher' does not fit once order.py fills it: .*a choice needs at least two options",
+            "^engine: question 'order' of decision agent 'matcher' does not fit once order.py fills it: the question: models: a choice needs at least two options$",
         ),
         (
             "def run(input, call):\n    return {'options': {'a': 'A', 'b': 'B'}, 'hint': 'x'}\n",
-            "^engine: question 'order' of decision agent 'matcher' does not fit once order.py fills it: .*hint",
+            "^engine: question 'order' of decision agent 'matcher' does not fit once order.py fills it: hint: extra inputs are not permitted$",
+        ),
+        (
+            "def run(input, call):\n    return {'options': {'a': 3, 'b': 'B'}}\n",
+            "^engine: question 'order' of decision agent 'matcher' does not fit once order.py fills it: options.a.str: input should be a valid string; ",
         ),
         (
             "def run(input, call):\n    return [1, 2]\n",
             "^engine: order.py of decision agent 'matcher' returned a list, not a dict; it returns the fields it fills in order.json, such as",
         ),
         (
+            "def run(input, call):\n    return 3\n",
+            "^engine: order.py of decision agent 'matcher' returned an int, not a dict; ",
+        ),
+        (
+            "def run(input, call):\n    return 'A-1'\n",
+            "^engine: order.py of decision agent 'matcher' returned a str, not a dict; ",
+        ),
+        (
             "def run(input, call):\n    pass\n",
             "^engine: order.py of decision agent 'matcher' returned None, not a dict; ",
+        ),
+        (
+            "def run(input, call):\n    return {'type': 'check'}\n",
+            "^engine: order.py of decision agent 'matcher' returned 'type', which question 'order' sets in order.json; a script returns only what its question's JSON leaves out, such as",
+        ),
+        (
+            "def run(input, call):\n    return {'instructions': 'Which one?', 'options': {'a': 'A', 'b': 'B'}}\n",
+            "^engine: order.py of decision agent 'matcher' returned 'instructions', which question 'order' sets in order.json; ",
+        ),
+        (
+            "def run(input, call):\n    return {'options': {'a': 'A', 'b': 'B'}, 'levels': ['low', 'high']}\n",
+            "^engine: order.py of decision agent 'matcher' returned 'levels', which question 'order', a choice, does not take; a choice takes options, a score levels and a check yes and no$",
+        ),
+        (
+            "def run(input, call):\n    return {'yes': 'Yes'}\n",
+            "^engine: order.py of decision agent 'matcher' returned 'yes', which question 'order', a choice, does not take; ",
         ),
     ],
 )
@@ -459,3 +501,94 @@ async def test_the_recorded_questions_hold_the_script_filled_options(
         )
     }
     assert read.runtime == []
+
+
+async def test_a_script_fills_its_question_per_tenant_and_never_changes_its_shape(
+    tmp_path: Path,
+) -> None:
+    matcher(
+        tmp_path,
+        "def run(input, call):\n"
+        "    if call['scope'] == 'other':\n"
+        "        return {'type': 'check', 'yes': 'Something else entirely'}\n"
+        "    return {'options': {call['scope'] + '-1': 'First', call['scope'] + '-2': 'Second'}}\n",
+    )
+    judge = Answering()
+    async with Engine(tmp_path, models={"judge": judge}) as engine:
+        acme = await engine.run("matcher", "acme", "my desk")
+        again = await engine.run("matcher", "acme", "my desk")
+        globex = await engine.run("matcher", "globex", "my desk")
+        with pytest.raises(ModelError, match="returned 'type', which question 'order' sets"):
+            await engine.run("matcher", "other", "my desk")
+    for run, scope in ((acme, "acme"), (again, "acme"), (globex, "globex")):
+        assert isinstance(run, Decision)
+        assert run.questions["order"] == Choice(
+            instructions="Which order?", options={f"{scope}-1": "First", f"{scope}-2": "Second"}
+        )
+    assert acme.fingerprint.questions == again.fingerprint.questions
+    assert acme.fingerprint.questions != globex.fingerprint.questions
+    assert acme.fingerprint.agent == globex.fingerprint.agent
+    assert len(judge.calls) == 3
+
+
+@pytest.mark.parametrize(
+    ("text", "kind", "key", "script"),
+    [
+        (
+            '{"type": "choice", "instructions": "Pick", "options": {"a": "A", "b": "B"}, "levels": ["low", "high"]}',
+            "choice",
+            "levels",
+            False,
+        ),
+        (
+            '{"type": "check", "instructions": "Is it?", "options": {"a": "A", "b": "B"}}',
+            "check",
+            "options",
+            False,
+        ),
+        (
+            '{"type": "score", "instructions": "How bad?", "levels": ["a", "b"], "no": "Fine"}',
+            "score",
+            "no",
+            False,
+        ),
+        ('{"type": "choice", "instructions": "Which?", "yes": "Y"}', "choice", "yes", True),
+    ],
+)
+def test_a_question_holding_a_field_of_another_type_is_refused_naming_its_file(
+    tmp_path: Path, text: str, kind: str, key: str, script: bool
+) -> None:
+    write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
+    path = tmp_path / "triage/questions/q.json"
+    write(path, text)
+    if script:
+        write(tmp_path / "triage/questions/q.py", ORDER)
+    with pytest.raises(ConfigurationError) as raised:
+        load_tree(tmp_path)
+    assert str(raised.value) == (
+        f"tree: {path} is a {kind} question holding {key!r}; a choice takes options, a score levels and a check yes and no, so drop {key!r} or change its type"
+    )
+
+
+@pytest.mark.parametrize(
+    "files",
+    [{"x.md": "---\ntype: check\n---\nUrgent?\n"}, {"x.py": ORDER}, {"x.json": "{"}],
+)
+def test_a_generation_agent_with_questions_is_told_its_kind_before_anything_in_them(
+    tmp_path: Path, files: dict[str, str]
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    for name, text in files.items():
+        write(tmp_path / "a/questions" / name, text)
+    with pytest.raises(ConfigurationError) as raised:
+        load_tree(tmp_path)
+    assert str(raised.value) == (
+        "tree: generation agent 'a' cannot declare questions/; questions are for decision agents, so make it kind: decision or move them to one"
+    )
+
+
+def test_a_generation_agent_s_questions_folder_without_questions_loads(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/questions/notes.txt", "Ideas for later.\n")
+    write(tmp_path / "a/questions/_draft.json", "{")
+    assert load_tree(tmp_path)["a"].questions == {}

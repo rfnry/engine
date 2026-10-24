@@ -138,9 +138,9 @@ def _said(message: str) -> str:
     return message[:1].lower() + message[1:]
 
 
-def plainly(exc: ValidationError) -> str:
+def plainly(exc: ValidationError, whole: str = "the file") -> str:
     return "; ".join(
-        f"{'.'.join(map(str, error['loc'])) or 'the file'}: {_said(error['msg'])}"
+        f"{'.'.join(map(str, error['loc'])) or whole}: {_said(error['msg'])}"
         for error in exc.errors(include_url=False)
     )
 

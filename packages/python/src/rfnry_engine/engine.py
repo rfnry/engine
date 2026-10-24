@@ -21,6 +21,7 @@ from rfnry_engine.errors import (
     ModelError,
     NotFoundError,
     RunawayError,
+    WorkerError,
 )
 from rfnry_engine.fingerprint import questions_fingerprint, tools_fingerprint
 from rfnry_engine.foreground import (
@@ -32,6 +33,7 @@ from rfnry_engine.foreground import (
     returned,
     taking,
 )
+from rfnry_engine.frontmatter import plainly
 from rfnry_engine.models import (
     Answer,
     ChoiceAnswer,
@@ -87,9 +89,11 @@ from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import WORKSPACE_TOOLS, Workspace
 from rfnry_engine.tree import (
     OUTPUT_TOOL,
+    TAKEN,
     AgentSpec,
     Kind,
     as_question,
+    foreign,
     load_tree,
     tree_folders,
     validate_tree,
@@ -781,18 +785,35 @@ class Engine:
 
         async def fill(qid: str, front: dict[str, JsonValue], script: Script) -> Question:
             call = {"scope": scope, "run_id": run_id, "agent": spec.name, "question": qid}
-            held = await pool.call(script.key, given, call, self.tool_timeout)
             named = f"{script.path.name} of decision agent {spec.name!r}"
+            try:
+                held = await pool.call(script.key, given, call, self.tool_timeout)
+            except WorkerError as exc:
+                raise WorkerError(
+                    f"engine: {named} could not fill question {qid!r}: {exc}"
+                ) from exc
+            such = 'such as {"options": {...}}'
             if not isinstance(held, dict):
-                shown = "None" if held is None else f"a {type(held).__name__}"
+                kind = type(held).__name__
+                shown = "None" if held is None else f"{'an' if kind[0] in 'aeiou' else 'a'} {kind}"
                 raise ModelError(
-                    f'engine: {named} returned {shown}, not a dict; it returns the fields it fills in {qid}.json, such as {{"options": {{...}}}}'
+                    f"engine: {named} returned {shown}, not a dict; it returns the fields it fills in {qid}.json, {such}"
+                )
+            taken = sorted(key for key in held if key in front)
+            if taken:
+                raise ModelError(
+                    f"engine: {named} returned {taken[0]!r}, which question {qid!r} sets in {qid}.json; a script returns only what its question's JSON leaves out, {such}"
+                )
+            other = foreign(front["type"], held)
+            if other is not None:
+                raise ModelError(
+                    f"engine: {named} returned {other!r}, which question {qid!r}, a {front['type']}, does not take; {TAKEN}"
                 )
             try:
                 return as_question({**front, **held})
             except ValidationError as exc:
                 raise ModelError(
-                    f"engine: question {qid!r} of decision agent {spec.name!r} does not fit once {script.path.name} fills it: {exc.errors(include_url=False, include_input=False)}"
+                    f"engine: question {qid!r} of decision agent {spec.name!r} does not fit once {script.path.name} fills it: {plainly(exc, 'the question')}"
                 ) from exc
 
         try:
