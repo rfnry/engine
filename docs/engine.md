@@ -1705,12 +1705,13 @@ reviewed pull request — check each commit out into a folder of its own, build 
 swap which engine new runs use. A run in flight finishes on the engine it started with. Rolling back
 is loading an older commit, and since a commit's folder never changes, a half-written checkout is
 never live. What an agent's prompt holds — `AGENT.md`, the map, the preload, a named task, an
-invoked skill — is what the engine loaded at `Engine()`; what the model reads with a tool is read
-from disk when it asks, so remove an old folder only once its runs have finished. Each engine starts
-the workers of its own tree's tools, which load their scripts from the folder it loaded, so close
-the engine you swap out — `await engine.close()` — once its runs have finished too. A root that is
-itself an agent is named by its own `name:`, so every commit keeps one name whatever folder it lands
-in. The checkout is yours — `git worktree add`, a clone, an archive:
+invoked skill, its tools' definitions and scripts — is what the engine loaded at `Engine()`; what
+the model reads with a tool, and the data a script opens, is read from disk when it asks, so remove
+an old folder only once its runs have finished. Each engine starts the workers of its own tree's
+tools, which run the scripts as it read them, so close the engine you swap out — `await
+engine.close()` — once its runs have finished too. A root that is itself an agent is named by its
+own `name:`, so every commit keeps one name whatever folder it lands in. The checkout is yours —
+`git worktree add`, a clone, an archive:
 
 ```python
 def load(commit):
@@ -1856,21 +1857,24 @@ folders, is a `ConfigurationError` naming the file and the module. That catches 
 not a sandbox, and a script is trusted as your server's code is.
 
 A tool runs in a worker: a process the engine starts with your server's interpreter, so it has the
-packages your server has, which loads the scripts of its group's agents and serves their calls. A
-worker starts at the first call that needs it, never when the engine is built — it loads the scripts
-from the folders the engine loaded then, so an edit to a tool reaches the next `Engine`, as one to a
-task or a skill does — and lives until you close the engine — `await engine.close()`, or leaving
-`async with Engine(...) as engine:` — which stops every worker and whatever it started; a call to a
-closed engine's tool is a `WorkerError`. A plain `def run` runs on one of the worker's 32 threads,
-and calls past those wait; an `async def run` runs on its event loop, as many at once as come. What
-a script prints goes to the log, at DEBUG on the `rfnry_engine.workers` logger, never into its
-result. A script that raises is a tool error the model reads, `WorkerError: ValueError: no order
-A-1`, and the worker goes on. A worker that exits — a crash in a C extension, out of memory — fails
-every call it had in flight, `WorkerError: workers: the worker for refund stopped: exited with code
-3`, the run goes on, and the next call starts a new worker. Past `tool_timeout` the model reads
-`TimeoutError: workers: refund timed out after 30s`: an `async def run` is cancelled in the worker;
-a `def run` cannot be stopped, so its thread runs on and its result is discarded, and once every
-thread of a worker is held so, the next call stops that worker and starts a new one.
+packages your server has, which runs the scripts of its group's agents and serves their calls. The
+scripts and their helpers are read when the tree loads, as tasks and skills are — the text the
+import check read and the fingerprint covers — and a worker runs that text, under each file's own
+path, so `__file__` still finds the data beside it: an edit to a tool reaches the next `Engine`,
+never the one running, whose records keep naming what ran. A worker starts at the first call that
+needs it, never when the engine is built, and again after a crash, and lives until you close the
+engine — `await engine.close()`, or leaving `async with Engine(...) as engine:` — which stops every
+worker and whatever it started; a call to a closed engine's tool is a `WorkerError`. A plain `def
+run` runs on one of the worker's 32 threads, and calls past those wait; an `async def run` runs on
+its event loop, as many at once as come. What a script prints goes to the log, at DEBUG on the
+`rfnry_engine.workers` logger, never into its result. A script that raises is a tool error the model
+reads, `WorkerError: ValueError: no order A-1`, and the worker goes on. A worker that exits — a
+crash in a C extension, out of memory — fails every call it had in flight, `WorkerError: workers:
+the worker for refund stopped: exited with code 3`, the run goes on, and the next call starts a new
+worker. Past `tool_timeout` the model reads `TimeoutError: workers: refund timed out after 30s`: an
+`async def run` is cancelled in the worker; a `def run` cannot be stopped, so its thread runs on and
+its result is discarded, and once every thread of a worker is held so, the next call stops that
+worker and starts a new one.
 
 By default every agent of the tree shares one worker. `Engine(root, models=...,
 workers={"customer_support": 1, "reports": 4})` makes each folder named — by its path from the root,

@@ -25,6 +25,8 @@ class ToolDef(BaseModel):
     script: Path
     folder: Path
     key: str
+    source: str
+    helpers: dict[str, str]
 
 
 def script_key(root: Path, script: Path) -> str:
@@ -64,7 +66,7 @@ def _compiled(path: Path, key: str, schema: dict[str, JsonValue]) -> None:
         ) from exc
 
 
-def _definition(path: Path, script: Path, root: Path) -> ToolDef:
+def _definition(path: Path, script: Path, root: Path, sources: dict[Path, str]) -> ToolDef:
     try:
         data = json.loads(_text(path))
     except json.JSONDecodeError as exc:
@@ -110,6 +112,8 @@ def _definition(path: Path, script: Path, root: Path) -> ToolDef:
         script=script,
         folder=path.parent,
         key=script_key(root, script),
+        source=sources[script],
+        helpers={p.stem: text for p, text in sources.items() if p.name.startswith("_")},
     )
 
 
@@ -143,8 +147,7 @@ def _owned(origin: Path, project: Path) -> bool:
     return "tools" not in place.relative_to(project).parts
 
 
-def _check_imports(path: Path, project: Path, helpers: Collection[str]) -> None:
-    source = _text(path)
+def _check_imports(path: Path, source: str, project: Path, helpers: Collection[str]) -> None:
     try:
         module = ast.parse(source, filename=str(path))
     except SyntaxError as exc:
@@ -197,8 +200,12 @@ def load_tools(folder: Path, project: Path, root: Path) -> dict[str, ToolDef]:
             raise ConfigurationError(
                 f"folder: {scripts[name]} has no {name}.json beside it; describe the tool in {name}.json, or name a helper _{name}.py"
             )
-    tools = {name: _definition(definitions[name], scripts[name], root) for name in sorted(scripts)}
+    sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
+    tools = {
+        name: _definition(definitions[name], scripts[name], root, sources)
+        for name in sorted(scripts)
+    }
     names = {p.stem for p in helpers}
-    for path in [*scripts.values(), *helpers]:
-        _check_imports(path, project, names)
+    for path, source in sources.items():
+        _check_imports(path, source, project, names)
     return tools

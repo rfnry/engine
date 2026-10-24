@@ -20,7 +20,8 @@ def script(tmp_path: Path, name: str, body: str) -> Script:
     path = tmp_path / f"{name}.py"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
-    return Script(name, path)
+    helpers = {p.stem: p.read_text(encoding="utf-8") for p in path.parent.glob("_*.py")}
+    return Script(name, path, body, helpers)
 
 
 def pid(value: JsonValue) -> int:
@@ -229,6 +230,31 @@ async def test_two_folders_with_a_helper_of_one_name_each_import_their_own(
     try:
         assert await pool.call("customer_support/tools/lookup", {}, CALL, 5) == "customer_support"
         assert await pool.call("ops/tools/lookup", {}, CALL, 5) == "ops"
+        assert list(tmp_path.rglob("__pycache__")) == []
+    finally:
+        await pool.close()
+
+
+async def test_a_worker_runs_the_source_it_was_given_under_the_script_s_path(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tools/given.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("def run(args, call):\n    return 'on disk'\n", encoding="utf-8")
+    (tmp_path / "tools/_client.py").write_text("NAME = 'on disk'\n", encoding="utf-8")
+    body = (
+        "import _client\n"
+        "def run(args, call):\n"
+        "    return [_client.NAME, __file__, run.__code__.co_filename, _client.__file__]\n"
+    )
+    pool = WorkerPool([Script("tools/given", path, body, {"_client": "NAME = 'given'\n"})])
+    try:
+        assert await pool.call("tools/given", {}, CALL, 5) == [
+            "given",
+            str(path),
+            str(path),
+            str(tmp_path / "tools/_client.py"),
+        ]
         assert list(tmp_path.rglob("__pycache__")) == []
     finally:
         await pool.close()

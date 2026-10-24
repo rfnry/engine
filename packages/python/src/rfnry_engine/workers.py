@@ -25,6 +25,8 @@ RETIRED = "every thread was held by a call past its deadline"
 class Script(NamedTuple):
     key: str
     path: Path
+    source: str
+    helpers: Mapping[str, str]
 
 
 def _lines(pending: bytearray, data: bytes) -> list[bytes]:
@@ -143,7 +145,11 @@ def _load(worker: _Worker | None) -> int:
 class WorkerPool:
     def __init__(self, scripts: Sequence[Script], *, processes: int = 1, threads: int = 32) -> None:
         self._scripts = {
-            "scripts": [{"key": key, "path": str(path)} for key, path in scripts],
+            "scripts": [
+                {"key": key, "path": str(path), "source": source}
+                for key, path, source, _ in scripts
+            ],
+            "helpers": {str(path.parent): dict(helpers) for _, path, _, helpers in scripts},
             "threads": threads,
         }
         self._threads = threads
@@ -215,14 +221,16 @@ def _group(path: str, groups: Collection[str]) -> str | None:
 class Workers:
     def __init__(self, agents: Mapping[str, AgentSpec], groups: Mapping[str, int] | None) -> None:
         named = dict(groups or {})
-        scripts: dict[str | None, dict[str, Path]] = {None: {}, **{name: {} for name in named}}
+        scripts: dict[str | None, dict[str, Script]] = {None: {}, **{name: {} for name in named}}
         self._groups = {name: _group(spec.path, named) for name, spec in agents.items()}
         for name, spec in agents.items():
-            for definition in spec.folder_tools.values():
-                scripts[self._groups[name]][definition.key] = definition.script
+            for tool in spec.folder_tools.values():
+                scripts[self._groups[name]][tool.key] = Script(
+                    tool.key, tool.script, tool.source, tool.helpers
+                )
         self._pools = {
             group: WorkerPool(
-                [Script(key, path) for key, path in sorted(held.items())],
+                [held[key] for key in sorted(held)],
                 processes=1 if group is None else named[group],
             )
             for group, held in scripts.items()

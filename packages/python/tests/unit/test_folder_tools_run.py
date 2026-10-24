@@ -527,7 +527,7 @@ async def test_workers_holds_a_script_once_per_pool_however_many_agents_see_it(
         pool = engine._workers.pool("billing")
         assert pool is engine._workers.pool("help")
     assert pool._scripts["scripts"] == [
-        {"key": "tools/pid", "path": str((tmp_path / "tools/pid.py").resolve())}
+        {"key": "tools/pid", "path": str((tmp_path / "tools/pid.py").resolve()), "source": PID}
     ]
 
 
@@ -579,6 +579,47 @@ async def test_an_engine_starts_its_workers_at_the_first_call_and_close_stops_th
     async with Engine(tmp_path, models={}) as again:
         second = pid(await EngineTools(again, agent="shop", scope="acme").dispatch("pid", {}))
     assert await gone(second)
+
+
+async def test_an_edit_to_a_script_after_the_engine_loads_runs_in_the_next_engine_only(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "shop/tools/v.py"
+    tool(shop(tmp_path) / "shop/tools", "v", body="def run(args, call):\n    return 'loaded'\n")
+    async with Engine(tmp_path, models={}) as engine:
+        fingerprint = engine._spec("shop").fingerprint
+        script.write_text("def run(args, call):\n    return 'edited'\n", encoding="utf-8")
+        assert await EngineTools(engine, agent="shop", scope="acme").dispatch("v", {}) == "loaded"
+    async with Engine(tmp_path, models={}) as again:
+        assert await EngineTools(again, agent="shop", scope="acme").dispatch("v", {}) == "edited"
+        assert again._spec("shop").fingerprint != fingerprint
+
+
+async def test_an_edit_to_a_helper_after_the_engine_loads_does_not_change_what_runs(
+    tmp_path: Path,
+) -> None:
+    helper = tmp_path / "shop/tools/_client.py"
+    write(helper, "NAME = 'loaded'\n")
+    body = "import _client\ndef run(args, call):\n    return _client.NAME\n"
+    tool(shop(tmp_path) / "shop/tools", "v", body=body)
+    async with Engine(tmp_path, models={}) as engine:
+        write(helper, "NAME = 'edited'\n")
+        assert await EngineTools(engine, agent="shop", scope="acme").dispatch("v", {}) == "loaded"
+
+
+async def test_a_worker_started_again_after_a_crash_runs_the_source_the_tree_read(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "shop/tools/v.py"
+    body = "import os\ndef run(args, call):\n    if args.get('die'):\n        os._exit(3)\n    return 'loaded'\n"
+    tool(shop(tmp_path) / "shop/tools", "v", body=body)
+    async with Engine(tmp_path, models={}) as engine:
+        surface = EngineTools(engine, agent="shop", scope="acme")
+        assert await surface.dispatch("v", {}) == "loaded"
+        script.write_text("def run(args, call):\n    return 'edited'\n", encoding="utf-8")
+        with pytest.raises(WorkerError, match="exited with code 3"):
+            await surface.dispatch("v", {"die": True})
+        assert await surface.dispatch("v", {}) == "loaded"
 
 
 def test_engine_takes_no_tools(tmp_path: Path) -> None:
