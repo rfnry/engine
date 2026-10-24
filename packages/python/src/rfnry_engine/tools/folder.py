@@ -1,7 +1,7 @@
 import ast
 import importlib.util
 import json
-import sys
+import site
 import sysconfig
 from collections.abc import Collection, Iterator
 from functools import cache
@@ -34,16 +34,15 @@ def project_of(root: Path) -> Path:
 @cache
 def _installed() -> tuple[Path, ...]:
     paths = sysconfig.get_paths()
-    places = {sys.prefix, sys.base_prefix, sys.exec_prefix}
-    places |= {paths[key] for key in ("stdlib", "platstdlib", "purelib", "platlib")}
-    return tuple(Path(place).resolve() for place in places)
+    places = {paths[key] for key in ("stdlib", "platstdlib", "purelib", "platlib")}
+    return tuple(Path(place).resolve() for place in {*places, *site.getsitepackages()})
 
 
 def _text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
-        raise ConfigurationError(f"tree: {path} is not UTF-8 text; save it as UTF-8") from exc
+        raise ConfigurationError(f"folder: {path} is not UTF-8 text; save it as UTF-8") from exc
 
 
 def _reason(exc: jsonschema_rs.ValidationError) -> str:
@@ -56,7 +55,7 @@ def _compiled(path: Path, key: str, schema: dict[str, JsonValue]) -> None:
         jsonschema_rs.validator_for(schema, offline=True)
     except jsonschema_rs.ValidationError as exc:
         raise ConfigurationError(
-            f"tree: {path} has an {key} that is not a valid JSON Schema: {_reason(exc)}; fix it in that file"
+            f"folder: {path} has an {key} that is not a valid JSON Schema: {_reason(exc)}; fix it in that file"
         ) from exc
 
 
@@ -65,36 +64,36 @@ def _definition(path: Path, script: Path) -> ToolDef:
         data = json.loads(_text(path))
     except json.JSONDecodeError as exc:
         raise ConfigurationError(
-            f"tree: {path} is not valid JSON: {exc}; fix it in that file"
+            f"folder: {path} is not valid JSON: {exc}; fix it in that file"
         ) from exc
     if not isinstance(data, dict):
         raise ConfigurationError(
-            f"tree: {path} is not a JSON object; a tool's JSON is an object that takes description, input_schema and output_schema"
+            f"folder: {path} is not a JSON object; a tool's JSON is an object that takes description, input_schema and output_schema"
         )
     unknown = sorted(key for key in data if key not in KEYS)
     if unknown:
         raise ConfigurationError(
-            f"tree: {path} has the unknown key {unknown[0]!r}; a tool's JSON takes description, input_schema and output_schema"
+            f"folder: {path} has the unknown key {unknown[0]!r}; a tool's JSON takes description, input_schema and output_schema"
         )
     description = data.get("description")
     if not isinstance(description, str) or not description.strip():
         raise ConfigurationError(
-            f"tree: {path} gives no description in text; write what the tool does and what it returns, since nothing else describes it to the model"
+            f"folder: {path} gives no description in text; write what the tool does and what it returns, since nothing else describes it to the model"
         )
     arguments = data.get("input_schema")
     if not isinstance(arguments, dict):
         raise ConfigurationError(
-            f'tree: {path} has no input_schema object; give the tool\'s arguments as a JSON Schema with "type": "object"'
+            f'folder: {path} has no input_schema object; give the tool\'s arguments as a JSON Schema with "type": "object"'
         )
     _compiled(path, "input_schema", arguments)
     if arguments.get("type") != "object":
         raise ConfigurationError(
-            f'tree: {path} has an input_schema whose top level is not "type": "object"; a tool takes its arguments as an object, so give its input_schema "type": "object"'
+            f'folder: {path} has an input_schema whose top level is not "type": "object"; a tool takes its arguments as an object, so give its input_schema "type": "object"'
         )
     result = data.get("output_schema")
     if result is not None and not isinstance(result, dict):
         raise ConfigurationError(
-            f"tree: {path} has an output_schema that is not an object; write it as a JSON Schema object, or leave it out"
+            f"folder: {path} has an output_schema that is not an object; write it as a JSON Schema object, or leave it out"
         )
     if result is not None:
         _compiled(path, "output_schema", result)
@@ -144,13 +143,13 @@ def _check_imports(path: Path, project: Path, helpers: Collection[str]) -> None:
         module = ast.parse(source, filename=str(path))
     except SyntaxError as exc:
         raise ConfigurationError(
-            f"tree: {path} is not valid Python: {exc.msg} on line {exc.lineno}; fix it in that file"
+            f"folder: {path} is not valid Python: {exc.msg} on line {exc.lineno}; fix it in that file"
         ) from exc
     for node, nested in _imports(module):
         if isinstance(node, ast.ImportFrom) and node.level:
             shown = "." * node.level + (node.module or "")
             raise ConfigurationError(
-                f"tree: {path} imports {shown!r} relatively; import a helper of its tools/ folder by its name, such as import _client"
+                f"folder: {path} imports {shown!r} relatively; import a helper of its tools/ folder by its name, such as import _client"
             )
         names = (
             [node.module or ""]
@@ -161,18 +160,18 @@ def _check_imports(path: Path, project: Path, helpers: Collection[str]) -> None:
             top = name.partition(".")[0]
             if top == ENGINE:
                 raise ConfigurationError(
-                    f"tree: {path} imports {ENGINE!r}; a tool never imports the engine, so keep what it needs in the tool or a helper beside it"
+                    f"folder: {path} imports {ENGINE!r}; a tool never imports the engine, so keep what it needs in the tool or a helper beside it"
                 )
             if top in helpers:
                 if nested:
                     raise ConfigurationError(
-                        f"tree: {path} imports the helper {top!r} inside a function or class; import it at the top of the script, since a helper is reachable only while its folder's scripts load"
+                        f"folder: {path} imports the helper {top!r} inside a function or class; import it at the top of the script, since a helper is reachable only while its folder's scripts load"
                     )
                 continue
             for origin in _origins(top):
                 if _owned(origin, project):
                     raise ConfigurationError(
-                        f"tree: {path} imports {top!r} from {origin}, the server's own code; a tool imports the standard library, installed packages and helpers of its tools/ folder"
+                        f"folder: {path} imports {top!r} from {origin}, the server's own code; a tool imports the standard library, installed packages and helpers of its tools/ folder"
                     )
 
 
@@ -186,11 +185,11 @@ def load_tools(folder: Path, project: Path) -> dict[str, ToolDef]:
     for name in sorted({*definitions, *scripts}):
         if name not in scripts:
             raise ConfigurationError(
-                f"tree: {definitions[name]} has no {name}.py beside it; a tool is {name}.json and {name}.py in a tools/ folder"
+                f"folder: {definitions[name]} has no {name}.py beside it; a tool is {name}.json and {name}.py in a tools/ folder"
             )
         if name not in definitions:
             raise ConfigurationError(
-                f"tree: {scripts[name]} has no {name}.json beside it; describe the tool in {name}.json, or name a helper _{name}.py"
+                f"folder: {scripts[name]} has no {name}.json beside it; describe the tool in {name}.json, or name a helper _{name}.py"
             )
     tools = {name: _definition(definitions[name], scripts[name]) for name in sorted(scripts)}
     names = {p.stem for p in helpers}

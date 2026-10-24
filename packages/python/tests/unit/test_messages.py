@@ -18,10 +18,6 @@ ALLOWED: dict[tuple[str, str], str] = {
     ): "a YAML error, which parse_frontmatter_doc reports as frontmatter: invalid YAML in its file",
 }
 
-SPOKEN_AS: dict[str, tuple[str, str]] = {
-    "tools/folder.py": ("tree", "a tools/ folder's mistakes are found as the tree loads"),
-}
-
 
 def _sources() -> list[Path]:
     return sorted(SRC.rglob("*.py"))
@@ -76,8 +72,7 @@ def _key(path: Path, source: str) -> tuple[str, str]:
 def test_every_error_message_starts_with_its_module_name() -> None:
     wrong = []
     for path in _sources():
-        spoken, _ = SPOKEN_AS.get(str(path.relative_to(SRC)), (path.stem, ""))
-        prefix = f"{spoken}: "
+        prefix = f"{path.stem}: "
         for line, source, text in _raises(path):
             if text is None:
                 if _key(path, source) not in ALLOWED:

@@ -1,5 +1,5 @@
 import os
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 from rfnry_engine.errors import InputError
@@ -25,7 +25,7 @@ def _inside(jail: Jail, entry: Path) -> bool:
 
 
 def _walk(
-    folder: Path, declared: bool, inner: bool = False
+    folder: Path, declared: bool, inner: bool = False, tools: Collection[Path] = ()
 ) -> tuple[list[str], list[tuple[str, Path]]]:
     folder = folder.resolve()
     jail = Jail(folder)
@@ -40,6 +40,7 @@ def _walk(
             for name in names
             if not name.startswith(".")
             and not (declared and top and name in DECLARED)
+            and here / name not in tools
             and (inner or not declares(here / name))
             and _inside(jail, here / name)
         ]
@@ -53,12 +54,14 @@ def _walk(
     return sorted(dirs), sorted(files)
 
 
-def content(folder: Path, declared: bool, inner: bool = False) -> list[tuple[str, Path]]:
-    return _walk(folder, declared, inner)[1]
+def content(
+    folder: Path, declared: bool, inner: bool = False, tools: Collection[Path] = ()
+) -> list[tuple[str, Path]]:
+    return _walk(folder, declared, inner, tools)[1]
 
 
-def entries(folder: Path, declared: bool) -> list[str]:
-    dirs, files = _walk(folder, declared)
+def entries(folder: Path, declared: bool, tools: Collection[Path] = ()) -> list[str]:
+    dirs, files = _walk(folder, declared, tools=tools)
     children: dict[str, list[tuple[str, str, bool]]] = {}
     for rel in dirs:
         parent, _, name = rel.rpartition("/")

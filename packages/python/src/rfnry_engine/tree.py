@@ -244,8 +244,9 @@ def _questions(directory: Path) -> dict[str, Question]:
 
 
 class _Folder:
-    def __init__(self, place: Path) -> None:
+    def __init__(self, place: Path, tools: Collection[Path] = ()) -> None:
         self.place = place
+        self.tools = tools
 
     @cached_property
     def files(self) -> list[tuple[str, Path]]:
@@ -253,11 +254,11 @@ class _Folder:
 
     @cached_property
     def preloaded(self) -> list[tuple[str, Path]]:
-        return content(self.place, declares(self.place))
+        return content(self.place, declares(self.place), tools=self.tools)
 
     @cached_property
     def mapped(self) -> list[str]:
-        return entries(self.place, declares(self.place))
+        return entries(self.place, declares(self.place), self.tools)
 
 
 def from_agent[T](path: str, reads: Mapping[str, T]) -> dict[str, T]:
@@ -297,7 +298,11 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     def walk(folder: Path, at: str) -> None:
         holds = declares(folder)
         for child in _subfolders(folder):
-            if child.name.startswith(".") or (holds and child.name in DECLARED):
+            if (
+                child.name.startswith(".")
+                or child.name == "tools"
+                or (holds and child.name in DECLARED)
+            ):
                 continue
             place = child.resolve()
             key = f"{at}/{child.name}" if at else child.name
@@ -316,7 +321,7 @@ def _holds_agent(folder: Path) -> bool:
     return declares(folder) or any(
         _holds_agent(child)
         for child in _subfolders(folder)
-        if not child.name.startswith(".") and not _linked(child)
+        if not child.name.startswith(".") and child.name != "tools" and not _linked(child)
     )
 
 
@@ -369,6 +374,11 @@ def _reads(
         )
     names = [_written(agent, name) for name in front.reads]
     for name in names:
+        if "tools" in name.split("/"):
+            raise ConfigurationError(
+                f"tree: agent {agent!r} reads {name!r}, a tools/ folder or a folder inside one; a tools/ folder gives its tools to the agents below it and is not read as content, so drop it from reads:"
+            )
+    for name in names:
         if name not in folders:
             choices = ", ".join(sorted(folders)) or "none"
             raise ConfigurationError(
@@ -406,6 +416,10 @@ def _under(
     return [
         (f"{name}/{rel}", path) for name, folder in reads.items() for rel, path in files(folder)
     ]
+
+
+def _tool_places(root: Path, prefixes: Collection[str]) -> frozenset[Path]:
+    return frozenset((root / prefix / "tools").resolve() for prefix in prefixes)
 
 
 def _on_path(path: str) -> list[str]:
@@ -494,6 +508,7 @@ def load_agent(
     root = directory.resolve()
     tool_folders = tool_folders or {}
     sees = [] if front.kind == "decision" else [p for p in _on_path(path) if p in tool_folders]
+    tools = _tool_places(tree_root or directory, tool_folders)
     above = [
         (posixpath.relpath(f"{prefix}/tools/{rel}", path), file)
         for prefix in sees
@@ -509,7 +524,7 @@ def load_agent(
                 sorted(
                     rel
                     for rel, _ in [
-                        *content(root, True),
+                        *content(root, True, tools=tools),
                         *_under(reads, lambda folder: folder.preloaded),
                     ]
                 ),
@@ -543,7 +558,7 @@ def load_agent(
         preload=preload,
         preload_digest=preload_digest(preload),
         listing=joined(
-            entries(root, True), {name: folder.mapped for name, folder in reads.items()}
+            entries(root, True, tools), {name: folder.mapped for name, folder in reads.items()}
         ),
         reads={name: folder.place for name, folder in held.items()},
         skills={} if front.kind == "decision" else _skills(content(root, True), agent),
@@ -568,7 +583,8 @@ def load_tree(
         for prefix in dict.fromkeys(p for path in paths for p in _on_path(path))
         if (root / prefix / "tools").is_dir()
     }
-    folders = {name: _Folder(place) for name, place in found.items()}
+    tools = _tool_places(root, tool_folders)
+    folders = {name: _Folder(place, tools) for name, place in found.items()}
     agents: dict[str, AgentSpec] = {}
     for path in paths:
         spec = load_agent(
