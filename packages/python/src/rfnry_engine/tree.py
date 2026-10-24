@@ -298,11 +298,7 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     def walk(folder: Path, at: str) -> None:
         holds = declares(folder)
         for child in _subfolders(folder):
-            if (
-                child.name.startswith(".")
-                or child.name == "tools"
-                or (holds and child.name in DECLARED)
-            ):
+            if child.name.startswith(".") or (holds and child.name in DECLARED):
                 continue
             place = child.resolve()
             key = f"{at}/{child.name}" if at else child.name
@@ -360,6 +356,10 @@ def _written(agent: str, name: str) -> str:
     return plain
 
 
+def _within(name: str, folders: Collection[str]) -> bool:
+    return any(name == folder or name.startswith(f"{folder}/") for folder in folders)
+
+
 def _reads(
     agent: str,
     front: AgentFront,
@@ -367,6 +367,7 @@ def _reads(
     root: Path,
     path: str,
     folders: Mapping[str, _Folder],
+    tools: Collection[str],
 ) -> dict[str, _Folder]:
     if front.kind == "decision" and front.reads:
         raise ConfigurationError(
@@ -374,13 +375,14 @@ def _reads(
         )
     names = [_written(agent, name) for name in front.reads]
     for name in names:
-        if "tools" in name.split("/"):
+        if _within(name, tools):
             raise ConfigurationError(
                 f"tree: agent {agent!r} reads {name!r}, a tools/ folder or a folder inside one; a tools/ folder gives its tools to the agents below it and is not read as content, so drop it from reads:"
             )
     for name in names:
         if name not in folders:
-            choices = ", ".join(sorted(folders)) or "none"
+            offered = (folder for folder in folders if not _within(folder, tools))
+            choices = ", ".join(sorted(offered)) or "none"
             raise ConfigurationError(
                 f"tree: agent {agent!r} reads unknown folder {name!r}; reads: names a folder by its path from the root, one of: {choices}"
             )
@@ -503,10 +505,11 @@ def load_agent(
         raise ConfigurationError(
             f"tree: generation agent {agent!r} cannot declare route:; routes are for decision agents"
         )
-    held = _reads(agent, front, directory, tree_root or directory, path, folders or {})
+    tool_folders = tool_folders or {}
+    declared = [posixpath.normpath(f"{prefix}/tools") for prefix in tool_folders]
+    held = _reads(agent, front, directory, tree_root or directory, path, folders or {}, declared)
     reads = from_agent(path, held)
     root = directory.resolve()
-    tool_folders = tool_folders or {}
     sees = [] if front.kind == "decision" else [p for p in _on_path(path) if p in tool_folders]
     tools = _tool_places(tree_root or directory, tool_folders)
     above = [
@@ -572,7 +575,9 @@ def load_tree(
     root = Path(root)
     found, links = _tree_folders(root)
     _refuse_links(root, found, links)
-    paths = [path for path in [".", *found] if declares(root / path)]
+    paths = [
+        path for path in [".", *found] if "tools" not in path.split("/") and declares(root / path)
+    ]
     if not paths:
         raise ConfigurationError(
             f"tree: {root} holds no AGENT.md; give each agent a folder with an AGENT.md that names its name:, kind: and model:"

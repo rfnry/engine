@@ -545,15 +545,46 @@ def test_a_read_folder_s_tools_leave_the_reader_s_map_and_preload(tmp_path: Path
     assert "Answer fast." in sent and "lookup_order" not in sent and "looks up" not in sent
 
 
-@pytest.mark.parametrize("name", ["tools", "support/tools", "support/tools/data"])
-def test_a_tools_folder_cannot_be_named_in_reads(tmp_path: Path, name: str) -> None:
+@pytest.mark.parametrize(
+    "name", ["tools", "support/tools", "support/tools/data", "support/billing/tools"]
+)
+def test_a_tools_folder_on_an_agent_s_path_cannot_be_named_in_reads(
+    tmp_path: Path, name: str
+) -> None:
     tool(tmp_path / "tools", "notify")
     tool(tmp_path / "support/tools", "lookup_order")
     write(tmp_path / "support/tools/data/codes.json", "[]\n")
     write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
+    tool(tmp_path / "support/billing/tools", "refund")
     write(tmp_path / "desk/AGENT.md", agent_md("desk", extra=f"reads: [{name}]\n"))
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
         f"tree: agent 'desk' reads {name!r}, a tools/ folder or a folder inside one; a tools/ folder gives its tools to the agents below it and is not read as content, so drop it from reads:"
     )
+
+
+def test_a_tools_folder_off_every_agent_s_path_can_be_read_as_content(tmp_path: Path) -> None:
+    write(tmp_path / "kb/tools/codes.md", "---\ndescription: Codes\n---\nA-1 is open.\n")
+    write(tmp_path / "kb/tools/lookup.json", DEF)
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/docs/tools/notes.md", "---\ndescription: Notes\n---\nBe brief.\n")
+    write(tmp_path / "b/AGENT.md", agent_md("b", extra="reads: [kb/tools, a/docs/tools]\n"))
+    b = load_tree(tmp_path)["b"]
+    assert b.listing == (
+        "../kb/tools/\n  codes.md — Codes\n  lookup.json\n../a/docs/tools/\n  notes.md — Notes"
+    )
+    assert b.folder_tools == {}
+
+
+def test_an_unknown_read_folder_is_offered_every_folder_but_the_tools_folders_on_a_path(
+    tmp_path: Path,
+) -> None:
+    tool(tmp_path / "tools", "notify")
+    tool(tmp_path / "support/tools", "lookup_order")
+    write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
+    write(tmp_path / "kb/tools/codes.md", "A-1 is open.\n")
+    write(tmp_path / "desk/AGENT.md", agent_md("desk", extra="reads: [nowhere]\n"))
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value).endswith("one of: desk, kb, kb/tools, support, support/billing")
