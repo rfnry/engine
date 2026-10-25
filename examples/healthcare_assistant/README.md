@@ -4,6 +4,8 @@
 
 A triage assistant for a clinic's staff, reading each patient message before a person does. It shows decision models: a decision agent answers typed questions with probabilities and routes the message to a generation agent that drafts for the staff, unless its confidence is under the floor. Look at `Engine(..., models={"strong": ..., "judge": ...})`, whose names the `model:` of each `AGENT.md` picks, `engine_run.answers` and `engine_run.routed_to` in `src/harness.py`, and the `route:` block with its `min_confidence` in `agents/triage/AGENT.md`.
 
+It also shows what a folder holds besides prompts. `agents/triage/questions/doctor.json` asks which of the clinic's doctors a message is about, and `doctor.py` beside it fills the options from `data/clinics.json` for the run's scope, so each clinic is asked about its own doctors under one question id; the answer comes back with the others, `none` when no doctor is named. `agents/tools/clinic_hours.py`, in the `tools/` folder at the top of the tree, gives the clinic's opening hours to every generation agent under it, the clinic taken from `call["scope"]`, never from what the model writes; triage, a decision agent, is offered no tools. `tools: [clinic_hours]` in `agents/scheduling/AGENT.md` keeps that one tool and leaves out the file tools, since scheduling has no files to read, while `nurse_line`, without `tools:`, keeps every tool it sees. An `X-Tenant` that is not a clinic of `data/clinics.json` is a 404.
+
 ## Running
 
 ```bash
