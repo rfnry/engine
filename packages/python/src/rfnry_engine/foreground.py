@@ -74,6 +74,7 @@ def returned(run: Run) -> Run:
 
 
 CALL: contextvars.ContextVar[CallInfo | None] = contextvars.ContextVar("call", default=None)
+RECORDING: contextvars.ContextVar[bool] = contextvars.ContextVar("recording", default=True)
 
 
 def current_call() -> CallInfo | None:

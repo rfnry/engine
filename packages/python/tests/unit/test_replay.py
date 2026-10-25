@@ -86,6 +86,36 @@ def candidate(fixtures: Path, llm: Any = None, **kwargs: Any) -> Engine:
     return Engine(fixtures, **kwargs, models={"strong": llm or Echo(), "judge": Desk()})
 
 
+async def test_a_consult_the_candidate_makes_leaves_the_scope_as_it_was(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    production = Engine(
+        fixtures,
+        refinery=refinery,
+        models={"strong": Scripted(text_reply("Handled."), text_reply("Paid.")), "judge": Desk()},
+    )
+    recorded = await production.run("support", "acme", "Was I charged?")
+    consults = Scripted(
+        Reply(
+            tool_calls=[ToolCall(id="b1", name="billing", args={"input": "paid?"})],
+            stop_reason="tool_use",
+        ),
+        text_reply("Done."),
+    )
+    pairs = await collect(
+        refinery.replay(
+            "acme",
+            candidate(fixtures, consults),
+            agent="support",
+            tools=production.tool("billing", scope="acme"),
+        )
+    )
+    assert isinstance(pairs[0].candidate, Generation)
+    assert pairs[0].candidate.steps[0].result == "Paid."
+    assert [row.run_id for row in await storage.runs("acme", limit=None)] == [recorded.run_id]
+
+
 async def test_it_replays_the_top_level_runs_of_the_agent_oldest_first(
     fixtures: Path, storage: Storage
 ) -> None:

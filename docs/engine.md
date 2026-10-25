@@ -552,6 +552,9 @@ unchanged, and a later run continues from them. History, like input, is read by 
 part from another library is read by its fields.
 
 Pass `record=False` to run without the refinery recording it — a replay, an evaluation, a dry run.
+A consult it makes through an `engine.tool` is not recorded either, so a replay whose candidate
+consults a production engine leaves the scope as it found it; a run your own tool starts with
+`record=True` is recorded as asked.
 
 A run that raises instead of returning — the vendor refused the call, the adapter broke the
 contract (`ModelError`), the loop passed `max_steps` (`RunawayError`) — returns no record; the
