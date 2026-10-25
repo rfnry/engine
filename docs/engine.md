@@ -277,7 +277,7 @@ agents/
 
 The frontmatter of `AGENT.md` names the agent (`name:`), its kind (`kind:`), the model it runs on
 (`model:`) and what the agent may call, and, when it needs fewer tools than it has, the ones it
-keeps or drops (`tools:`); its body is the persona.
+keeps (`tools:`); its body is the persona.
 `name:`, `kind:` and `model:` are required: a missing one, a `kind:` other than `generation` or
 `decision`, or a blank, padded or non-text `name:` or `model:` is a `ConfigurationError` naming the
 file. A `name:` is plain text — not blank, not hidden, not padded, no slash — and is what `run`,
@@ -1850,7 +1850,7 @@ agents/
     tools/_client.py                           a helper of the scripts beside it, not a tool
     triage/AGENT.md
     billing/
-      AGENT.md                                 tools: ["!notify"]
+      AGENT.md                                 tools: [lookup_order, refund, Read]
       tools/refund.json, refund.py             only billing, and the agents inside it, see refund
 ```
 
@@ -1944,14 +1944,15 @@ and again after a crash, and lives until you close the engine — `await engine.
 `async with Engine(...) as engine:` — which stops every worker and whatever it started. A closed
 engine stays closed: a run, a tool call or an `EngineTools` after `close()` is an `InputError`,
 `engine: this engine was closed; build a new Engine`, before any model is called, so nothing is
-recorded of it. A plain `def run` runs on one of the worker's 32 threads,
+recorded of it, and a run still in flight when it closed starts no other run — its `Delegate` call
+reads that error, its route fails with it. A plain `def run` runs on one of the worker's 32 threads,
 and calls past those wait; an `async def run` runs on its event loop, as many at once as come. What
 a script prints goes to the log, at DEBUG on the `rfnry_engine.workers` logger, never into its
 result. A script that raises, `sys.exit()` included, is a tool error the model reads, `WorkerError:
-ValueError: no order A-1`, and the worker goes on. A worker that exits — `os._exit()`, a signal,
-out of memory, a crash in a C extension — fails every call it had in flight, `WorkerError: workers:
-the worker for refund stopped: exited with code 3`, or `killed by signal 9` when a signal ended it,
-the run goes on, and the next call starts a new worker. Past `tool_timeout` the model reads
+ValueError: no order A-1`, and the worker goes on. A worker that exits — `os._exit()`, a signal, out
+of memory, a crash in a C extension — fails every call it had in flight, `WorkerError: workers: the
+worker for refund stopped: exited with code 3`, or `killed by signal 9` when a signal ended it, the
+run goes on, and the next call starts a new worker. Past `tool_timeout` the model reads
 `TimeoutError: workers: refund timed out after 30s`, a deadline that counts the wait for a worker
 too: an `async def run` is cancelled in the worker; a `def run` cannot be stopped, so its thread
 runs on and its result is discarded, and once every thread of a worker is held so, the next call
@@ -1962,8 +1963,11 @@ deadline`.
 An engine's workers follow the event loop that calls them, one loop at a time, as a workspace's
 jobs live in one loop: a call from a loop other than the one that started them — `asyncio.run` per
 request or per task, a test's own loop — stops those workers and starts fresh ones on its own, and
-`close()` from another loop stops them at once. Two loops that call one engine at the same time keep
-stopping each other's workers, so give each live loop its own engine.
+`close()` from another loop stops them at once. A worker that stops — for another loop, a
+retirement, a crash or `close()` — is reaped and its pipes closed then and there, so a thousand
+`asyncio.run` calls leave the engine holding no more files or processes than one does. Two loops
+that call one engine at the same time keep stopping each other's workers, so give each live loop
+its own engine.
 
 By default every agent of the tree shares one worker. `Engine(root, models=...,
 workers={"customer_support": 1, "reports": 4})` makes each folder named — by its path from the root,
@@ -1973,31 +1977,33 @@ outside the named folders share the default group, one process. A name that is n
 tree, or a folder inside another one named, is a `ConfigurationError`: `engine: workers names
 'support/billing' inside 'support', which it names too; keep one`.
 
-Every tool an agent sees is on. `tools:` in its `AGENT.md` narrows them — `tools: [lookup_order,
-Read]` keeps only these, `tools: ["!notify", "!Grep"]` all but these, quoted, since YAML reads a
-bare `!` as a tag — and a list keeps or drops, never both:
+Every tool an agent sees is on. `tools:` in its `AGENT.md` narrows them to the ones it lists —
+`tools: [lookup_order, Read]` keeps only these, `tools: []` none of them, leaving the agent only the
+tools that come with their own declarations, and an agent without `tools:` keeps every one — so an
+agent leaves out a tool it inherits by listing the ones it keeps. In the tree above, billing keeps
+`lookup_order` from `customer_support/`, its own `refund` and `Read`, leaving out `notify` and the
+other file tools:
 
 ```markdown
 ---
 name: billing
 kind: generation
 model: strong
-tools: ["!notify"]
+tools: [lookup_order, refund, Read]
 ---
 Refund a duplicate charge with refund. Never promise a refund the rules do not allow.
 ```
 
 `Read Grep Glob LS Load` come with every generation agent, `Delegate` with `agents:`, a workspace's
 tools with `workspace: true`, `History` with a run whose `start=` is past the beginning of its
-history, and `Output` with `expect=`. A list that keeps narrows the folders' tools and those five
-file tools only: what comes with a declaration or with the run follows it and stays, and `!` drops
-any of them but `Output`, which cannot be named in `tools:`. When the tree loads, a kept name that
-is neither a tool the agent sees nor a file tool is a `ConfigurationError` that names the ones it
-has — `tree: agent 'support' keeps 'refnd' in tools:, which it does not see; its tools are Glob,
-Grep, LS, Load, Read, refund` — while a dropped name the tree does not have is taken for a tool a
-run may pass, and is dropped from any run that passes it. A tool in a folder named like one the
-engine gives the agent is a `ConfigurationError` naming its file, and `History`'s name is taken on
-every run, so a tool named `History` is refused from the first.
+history, and `Output` with `expect=`. A list narrows the folders' tools and those five file tools
+only: each of the others comes with its own declaration, or with the run, and stays as long as
+that does, so there is nothing else to leave out, and `Output` cannot be named in `tools:`. When
+the tree loads, a kept name that is neither a tool the agent sees nor a file tool is a
+`ConfigurationError` that names the ones it has — `tree: agent 'support' keeps 'refnd' in tools:,
+which it does not see; its tools are Glob, Grep, LS, Load, Read, refund`. A tool in a folder named
+like one the engine gives the agent is a `ConfigurationError` naming its file, and `History`'s name
+is taken on every run, so a tool named `History` is refused from the first.
 
 Tools that must live in your process ride a run: `run(tools=)` takes a `Tools`, or anything with its
 two verbs, for that one run — a tool bound to a tenant's connection, one that streams to a UI,
@@ -2310,7 +2316,7 @@ not have, an unknown key in the frontmatter of an `AGENT.md` or a task (`frontma
 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid
 YAML or a `description:` that is not a string in a file the map would show, a decision agent with
 `preload: true`, `workspace: true` or `tools:`, a generation agent with `questions/` or `route:`, a
-`tools:` entry that is blank, padded or listed twice, a `tools:` that mixes names and `!names`,
+`tools:` with no list, a `tools:` entry that is blank, padded or listed twice, a `tools:` that
 names `Output` or keeps a tool the agent does not see, a tool's `.json` without its `.py` or a
 script without its `.json`, a tool's JSON with an unknown key, no description, an `input_schema`
 that is not an object or a schema that does not compile, a script or helper that is not valid

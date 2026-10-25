@@ -342,42 +342,6 @@ async def test_an_allow_list_leaves_output_to_expect(tmp_path: Path) -> None:
     assert run.reply == '{"ok":true}'
 
 
-async def test_a_deny_list_drops_what_it_names(tmp_path: Path) -> None:
-    tool(shop(tmp_path, 'tools: ["!notify", "!Grep"]\n') / "shop/tools", "lookup_order")
-    tool(tmp_path / "shop/tools", "notify")
-    async with Engine(tmp_path, models={}) as engine:
-        names = EngineTools(engine, agent="shop", scope="acme").names
-    assert names == ["Read", "Glob", "LS", "Load", "lookup_order"]
-    assert engine.agents["shop"].tools == ["lookup_order"]
-
-
-async def test_a_dropped_delegate_is_neither_offered_nor_run(tmp_path: Path) -> None:
-    write(
-        tmp_path / "shop/AGENT.md",
-        agent_md("shop", extra='agents: [aide]\ntools: ["!Delegate"]\n'),
-    )
-    write(tmp_path / "aide/AGENT.md", agent_md("aide", extra="description: Helps\n"))
-    llm = Scripted(calling(("Delegate", {"agent": "aide", "input": "x"})), text_reply("done"))
-    async with Engine(tmp_path, models={"strong": llm}) as engine:
-        run = await generated(engine, "shop", "acme", "x")
-    system, _, sent = llm.calls[0]
-    assert "Delegate" not in [t.name for t in sent] and "<<<AGENTS>>>" not in system
-    assert run.steps[0].is_error and run.children == []
-    assert run.steps[0].result == "InputError: tools: unknown tool 'Delegate'"
-
-
-async def test_a_drop_naming_no_tool_of_the_tree_drops_that_run_tool(tmp_path: Path) -> None:
-    shop(tmp_path, 'tools: ["!ping"]\n')
-    ping = Tools([Tool("ping", "Ping", body=pong), Tool("pang", "Pang", body=pong)])
-    llm = Scripted(text_reply("done"))
-    async with Engine(tmp_path, models={"strong": llm}) as engine:
-        await engine.run("shop", "acme", "x", tools=ping)
-        names = EngineTools(engine, agent="shop", scope="acme", tools=ping).names
-    [(_, _, sent)] = llm.calls
-    assert "ping" not in [t.name for t in sent] and "pang" in [t.name for t in sent]
-    assert "ping" not in names and "pang" in names
-
-
 async def test_a_run_tool_named_like_a_folder_tool_wins(tmp_path: Path) -> None:
     marker = tmp_path / "ran"
     body = f"from pathlib import Path\ndef run(args, call):\n    Path({str(marker)!r}).write_text('ran')\n    return 'script'\n"
@@ -404,6 +368,22 @@ async def test_a_run_tool_named_like_a_folder_tool_wins(tmp_path: Path) -> None:
     assert surface.names.count("lookup_order") == 1
 
 
+async def test_two_run_tools_with_one_name_are_refused_whatever_tools_keeps(
+    tmp_path: Path,
+) -> None:
+    class Doubled:
+        def definitions(self) -> list[dict[str, Any]]:
+            return [Tool("ping", "Ping", body=pong).definition()] * 2
+
+        async def dispatch(self, name: str, args: dict[str, Any]) -> str:
+            return "pong"
+
+    tool(shop(tmp_path, "tools: [lookup_order]\n") / "shop/tools", "lookup_order")
+    async with Engine(tmp_path, models={}) as engine:
+        with pytest.raises(ConfigurationError, match="^tools: duplicate tool name 'ping'$"):
+            EngineTools(engine, agent="shop", scope="acme", tools=Doubled())
+
+
 async def test_a_run_tool_named_like_a_folder_tool_keeps_the_run_s_deadline(
     tmp_path: Path,
 ) -> None:
@@ -425,24 +405,20 @@ async def test_a_run_tool_named_like_a_folder_tool_keeps_the_run_s_deadline(
     ("tools", "said"),
     [
         (
-            '[lookup_order, "!notify"]',
-            "tools: an entry list mixes names and !names; list the tools to keep, or the tools to drop with !",
-        ),
-        (
             "[Output]",
-            "tools: 'Output' cannot be dropped or kept by name; it comes with expect= on a run",
+            "tools: 'Output' cannot be kept by name; it comes with expect= on a run, so leave it out of tools:",
         ),
         (
-            '["!Output"]',
-            "tools: 'Output' cannot be dropped or kept by name; it comes with expect= on a run",
+            "[' x']",
+            "tools: an entry must not be blank or padded, got ' x'; write the name of a tool to keep, such as tools: [lookup_order]",
         ),
-        ('["!notify", "!notify"]', "tools: '!notify' is listed twice; list each tool once"),
-        ('["! notify"]', "tools: an entry must not be blank or padded"),
-        ('["!"]', "tools: an entry must not be blank or padded"),
-        ("[' x']", "tools: an entry must not be blank or padded"),
         ("['']", "tools: an entry must not be blank or padded"),
         ("[Read, Read]", "tools: 'Read' is listed twice; list each tool once"),
         ("[3]", "tools"),
+        (
+            "",
+            "tools: it is empty; write tools: [] to keep none of the folder and file tools, or leave tools: out to keep them all",
+        ),
     ],
 )
 def test_a_tools_list_that_breaks_the_grammar_is_refused_naming_the_file(
@@ -454,39 +430,60 @@ def test_a_tools_list_that_breaks_the_grammar_is_refused_naming_the_file(
     assert str(tmp_path / "shop/AGENT.md") in str(caught.value) and said in str(caught.value)
 
 
-@pytest.mark.parametrize("tools", ["[!notify, !Grep]", "\n  - !notify\n  - !Grep"])
-def test_a_drop_written_without_quotes_is_refused_with_the_quoted_spelling(
-    tmp_path: Path, tools: str
-) -> None:
-    shop(tmp_path, f"tools: {tools}\n")
-    with pytest.raises(
-        ConfigurationError, match=r'quote a value that starts with !, such as "!Grep"'
-    ):
-        load_tree(tmp_path)
-
-
-def test_a_decision_agent_cannot_list_tools(tmp_path: Path) -> None:
+@pytest.mark.parametrize("tools", ["[x]", "[]"])
+def test_a_decision_agent_cannot_list_tools(tmp_path: Path, tools: str) -> None:
     write(
         tmp_path / "triage/AGENT.md",
-        agent_md("triage", kind="decision", model="judge", extra='tools: ["!x"]\n'),
+        agent_md("triage", kind="decision", model="judge", extra=f"tools: {tools}\n"),
     )
     with pytest.raises(ConfigurationError, match="decision agent 'triage' cannot list tools:"):
         load_tree(tmp_path)
 
 
 @pytest.mark.parametrize(
-    ("kept", "extra"),
+    ("listed", "kept"),
     [
-        ("refnd", ""),
-        ("Delegate", "agents: [aide]\n"),
-        ("History", ""),
-        ("Shell", "workspace: true\n"),
+        ("", ["Read", "Grep", "Glob", "LS", "Load", "lookup_order"]),
+        ("tools: []\n", []),
+    ],
+)
+async def test_an_empty_tools_keeps_no_folder_or_file_tool_and_none_keeps_them_all(
+    tmp_path: Path, listed: str, kept: list[str]
+) -> None:
+    write(tmp_path / "shop/AGENT.md", agent_md("shop", extra=f"agents: [aide]\n{listed}"))
+    write(tmp_path / "aide/AGENT.md", agent_md("aide", extra="description: Helps\n"))
+    tool(tmp_path / "shop/tools", "lookup_order")
+    ping = Tools([Tool("ping", "Ping", body=pong)])
+    async with Engine(tmp_path, models={}) as engine:
+        names = EngineTools(
+            engine,
+            agent="shop",
+            scope="acme",
+            tools=ping,
+            history=[Message(role="user", content="hi")],
+            start=1,
+        ).names
+    assert sorted(names) == sorted([*kept, "History", "Delegate", "ping"])
+    assert engine.agents["shop"].tools == [name for name in kept if name == "lookup_order"]
+
+
+@pytest.mark.parametrize(
+    ("written", "kept", "extra"),
+    [
+        ("refnd", "refnd", ""),
+        ("Delegate", "Delegate", "agents: [aide]\n"),
+        ("History", "History", ""),
+        ("Shell", "Shell", "workspace: true\n"),
+        ('"!refund"', "!refund", ""),
+        ('refund, "!Grep"', "!Grep", ""),
+        ('"!Delegate"', "!Delegate", "agents: [aide]\n"),
+        ('"!Output"', "!Output", ""),
     ],
 )
 def test_a_kept_name_the_agent_does_not_see_is_refused(
-    tmp_path: Path, kept: str, extra: str
+    tmp_path: Path, written: str, kept: str, extra: str
 ) -> None:
-    write(tmp_path / "support/AGENT.md", agent_md("support", extra=f"{extra}tools: [{kept}]\n"))
+    write(tmp_path / "support/AGENT.md", agent_md("support", extra=f"{extra}tools: [{written}]\n"))
     write(tmp_path / "aide/AGENT.md", agent_md("aide"))
     tool(tmp_path / "support/tools", "refund")
     with pytest.raises(ConfigurationError) as caught:
@@ -504,7 +501,7 @@ def test_a_leftover_tools_md_is_content_and_a_markdown_file_in_tools_is_no_tool(
     write(tmp_path / "shop/TOOLS.md", "---\nfetch: Fetch\n---\n")
     write(tmp_path / "shop/tools/fetch.md", "---\ndescription: Fetch\n---\nHow to fetch.\n")
     spec = load_tree(tmp_path)["shop"]
-    assert (spec.keep, spec.drop, spec.folder_tools) == (None, [], {})
+    assert (spec.keep, spec.folder_tools) == (None, {})
     assert spec.listing == "TOOLS.md"
     sent = "".join(str(part) for part in spec.preload)
     assert "fetch: Fetch" in sent and "How to fetch." not in sent
@@ -665,6 +662,80 @@ async def test_a_closed_engine_refuses_every_use_and_records_nothing(
     assert len(llm.calls) == 2
 
 
+async def test_a_run_in_flight_when_its_engine_closes_is_refused_the_runs_it_would_start(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "lead/AGENT.md", agent_md("lead", extra="agents: [aide, judge]\n"))
+    write(tmp_path / "aide/AGENT.md", agent_md("aide", extra="description: Helps\n"))
+    write(
+        tmp_path / "judge/AGENT.md",
+        agent_md("judge", kind="decision", model="judge", extra="description: Judges\n"),
+    )
+    write(tmp_path / "judge/questions/fine.json", '{"type": "check", "instructions": "Fine?"}')
+    llm = Scripted(
+        calling(("close", {})),
+        calling(
+            ("Delegate", {"agent": "aide", "input": "x"}),
+            ("Delegate", {"agent": "judge", "input": "x"}),
+        ),
+        text_reply("done"),
+    )
+    judging = Answering()
+    engine = Engine(tmp_path, models={"strong": llm, "judge": judging})
+
+    async def close(args: dict[str, Any]) -> str:
+        await engine.close()
+        return "closed"
+
+    run = await generated(
+        engine, "lead", "acme", "x", tools=Tools([Tool("close", "Close", body=close)])
+    )
+    said = "InputError: engine: this engine was closed; build a new Engine"
+    assert run.reply == "done" and run.children == []
+    assert [(step.result, step.is_error) for step in run.steps] == [
+        ("closed", False),
+        (said, True),
+        (said, True),
+    ]
+    assert len(llm.calls) == 3 and judging.calls == []
+
+
+@pytest.mark.parametrize("target", ["aide", "checker"])
+async def test_a_route_after_its_engine_closes_fails_the_decision_run(
+    tmp_path: Path, target: str
+) -> None:
+    write(
+        tmp_path / "triage/AGENT.md",
+        agent_md(
+            "triage",
+            kind="decision",
+            model="judge",
+            extra=f"route: {{by: go, to: {{next: {target}}}}}\n",
+        ),
+    )
+    write(
+        tmp_path / "triage/questions/go.json",
+        '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep", "next": "Pass"}}',
+    )
+    write(tmp_path / "aide/AGENT.md", agent_md("aide"))
+    write(tmp_path / "checker/AGENT.md", agent_md("checker", kind="decision", model="judge"))
+    write(tmp_path / "checker/questions/fine.json", '{"type": "check", "instructions": "Fine?"}')
+    engine: Engine
+
+    class Closing(Answering):
+        async def decide(self, state: Any, questions: Any) -> Any:
+            await engine.close()
+            return await super().decide(state, questions)
+
+    llm = Scripted()
+    closing = Closing()
+    engine = Engine(tmp_path, models={"strong": llm, "judge": closing})
+    with pytest.raises(InputError) as raised:
+        await engine.run("triage", "acme", "x")
+    assert str(raised.value) == "engine: this engine was closed; build a new Engine"
+    assert llm.calls == [] and [list(questions) for _, questions in closing.calls] == [["go"]]
+
+
 async def test_an_edit_to_a_script_after_the_engine_loads_runs_in_the_next_engine_only(
     tmp_path: Path,
 ) -> None:
@@ -753,7 +824,10 @@ async def test_engine_tools_holds_exactly_the_assembled_set(tmp_path: Path) -> N
 
 async def test_agent_info_lists_the_folder_tools_an_agent_gets(tmp_path: Path) -> None:
     tool(tmp_path / "tools", "notify")
-    write(tmp_path / "support/billing/AGENT.md", agent_md("billing", extra='tools: ["!notify"]\n'))
+    write(
+        tmp_path / "support/billing/AGENT.md",
+        agent_md("billing", extra="tools: [lookup_order, refund]\n"),
+    )
     tool(tmp_path / "support/billing/tools", "refund")
     tool(tmp_path / "support/tools", "lookup_order")
     write(tmp_path / "support/AGENT.md", agent_md("support", extra="tools: [notify, Read]\n"))

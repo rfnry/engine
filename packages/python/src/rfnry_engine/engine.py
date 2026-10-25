@@ -688,6 +688,7 @@ class Engine:
         parent_run_id: str | None,
         routed: bool = False,
     ) -> Run:
+        self._open()
         if options.task is not None and spec.kind == "decision":
             raise InputError(
                 f"engine: decision agent {spec.name!r} takes no task; it asks its questions/, so run another decision agent for another set of questions"
@@ -897,7 +898,7 @@ class Engine:
         fingerprint = Fingerprint(
             agent=spec.fingerprint, tools=tools_fingerprint(specs), questions=None
         )
-        targets = [self._agents[name] for name in spec.agents] if DELEGATE_TOOL in surface else []
+        targets = [self._agents[name] for name in spec.agents]
         system = build_bundle(
             spec,
             task=options.task,
@@ -1030,7 +1031,7 @@ class Engine:
             try:
                 if approved is False:
                     content, is_error = f"NotApproved: {call.name} was not approved", True
-                elif call.name == DELEGATE_TOOL and spec.agents and DELEGATE_TOOL in surface:
+                elif call.name == DELEGATE_TOOL and spec.agents:
                     content, is_error, child_run_id, stopped = await delegate(call)
                 else:
                     limit = None if call.name in own_deadline else self.tool_timeout
