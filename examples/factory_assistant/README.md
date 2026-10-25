@@ -4,6 +4,8 @@
 
 A maintenance assistant for technicians across two plants of one manufacturer. It shows tenants: the `X-Tenant` header becomes the run's `scope`, and each plant's own lines, contacts, parts on hand and recent work go in as `context`. Look at `engine.run("maintenance", scope=plant, context=facts)` in `src/harness.py`.
 
+It also shows a tool that computes, in worker processes of its own. `agents/maintenance/tools/vibration_trend.py` reads one machine's daily vibration from `data/readings.json`, for the plant in `call["scope"]`, and returns the mean, the RMS, the slope of a least-squares line and whether the last three readings are over the machine's alert level; `vibration_trend.json` describes it to the model, and its `output_schema` checks every result before the model reads it. Every folder tool runs in a worker process beside the server, never in it, and without `workers=` the whole tree shares one; `workers={"maintenance": 2}` in `src/harness.py` gives the folder a group of two. A tool that computes is better given its own: two technicians' calls compute in two processes at once, where in one they would share its interpreter, and an agent added outside the folder runs its tools in the default worker, never behind these.
+
 ## Running
 
 ```bash
