@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-PROGRAM = Path(__file__).with_name("_worker.py")
+PROGRAM = Path(__file__).with_name("process.py")
 CLOSED = "it was closed"
 RETIRED = "every thread was held by a call past its deadline"
 MOVED = "a call came from another event loop"
@@ -132,7 +132,7 @@ class _Worker:
         stopped = f"stopped: {reason or _reason(code)}"
         for name, future in self.calls.values():
             if not future.done() and not future.get_loop().is_closed():
-                future.set_exception(WorkerError(f"workers: the worker for {name} {stopped}"))
+                future.set_exception(WorkerError(f"workers/pool: the worker for {name} {stopped}"))
         self.calls.clear()
         self.held.clear()
 
@@ -148,7 +148,7 @@ class _Worker:
             future.set_result(reply["result"])
 
     def _log(self, line: bytes) -> None:
-        logger.debug("workers: worker %d: %s", self.pid, line.decode(errors="replace"))
+        logger.debug("workers/pool: worker %d: %s", self.pid, line.decode(errors="replace"))
 
 
 def _load(worker: _Worker | None) -> int:
@@ -180,7 +180,9 @@ class WorkerPool:
         try:
             text = json.dumps({"id": id, "key": key, "args": args, "call": dict(call)})
         except (TypeError, ValueError) as exc:
-            raise InputError(f"workers: the arguments for {name} are not JSON: {exc}") from None
+            raise InputError(
+                f"workers/pool: the arguments for {name} are not JSON: {exc}"
+            ) from None
         self._follow()
         deadline = asyncio.timeout(timeout)
         worker: _Worker | None = None
@@ -191,7 +193,7 @@ class WorkerPool:
         except TimeoutError:
             if not deadline.expired():
                 raise
-            raise TimeoutError(f"workers: {name} timed out after {timeout:g}s") from None
+            raise TimeoutError(f"workers/pool: {name} timed out after {timeout:g}s") from None
         finally:
             if worker is not None:
                 worker.abandon(id)
@@ -220,7 +222,7 @@ class WorkerPool:
     async def _pick(self, name: str) -> _Worker:
         async with self._lock:
             if self._closed:
-                raise WorkerError(f"workers: the worker for {name} stopped: {CLOSED}")
+                raise WorkerError(f"workers/pool: the worker for {name} stopped: {CLOSED}")
             for index, worker in enumerate(self._workers):
                 if worker is not None and len(worker.held) >= self._threads:
                     worker.stop(RETIRED)

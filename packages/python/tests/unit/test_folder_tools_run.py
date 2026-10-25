@@ -174,7 +174,7 @@ async def test_arguments_from_code_that_json_cannot_hold_never_reach_the_worker(
         with pytest.raises(InputError) as raised:
             await surface.dispatch("note", {"when": datetime.datetime(2026, 1, 1)})
         assert str(raised.value) == (
-            "workers: the arguments for note are not JSON: Object of type datetime is not JSON serializable"
+            "workers/pool: the arguments for note are not JSON: Object of type datetime is not JSON serializable"
         )
         assert not marker.exists()
         assert await surface.dispatch("note", {}) == "ok"
@@ -281,7 +281,7 @@ async def test_a_crashing_script_is_a_tool_error_and_the_run_goes_on(tmp_path: P
     assert run.steps[0].is_error
     assert (
         run.steps[0].result
-        == "WorkerError: workers: the worker for crash stopped: exited with code 3"
+        == "WorkerError: workers/pool: the worker for crash stopped: exited with code 3"
     )
     assert (run.steps[1].result, run.steps[1].is_error) == ("fine", False)
     assert run.reply == "carried on"
@@ -293,10 +293,10 @@ async def test_a_folder_tool_owns_its_deadline_inside_a_run_and_from_code(tmp_pa
     llm = Scripted(calling(("slow", {})), text_reply("done"))
     async with Engine(tmp_path, models={"strong": llm}, tool_timeout=0.5) as engine:
         run = await generated(engine, "shop", "acme", "x")
-        with pytest.raises(TimeoutError, match=r"^workers: slow timed out after 0\.5s$"):
+        with pytest.raises(TimeoutError, match=r"^workers/pool: slow timed out after 0\.5s$"):
             await EngineTools(engine, agent="shop", scope="acme").dispatch("slow", {})
     assert run.steps[0].is_error
-    assert run.steps[0].result == "TimeoutError: workers: slow timed out after 0.5s"
+    assert run.steps[0].result == "TimeoutError: workers/pool: slow timed out after 0.5s"
 
 
 async def test_an_allow_list_keeps_only_the_named_folder_and_file_tools(tmp_path: Path) -> None:

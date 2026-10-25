@@ -216,7 +216,7 @@ async def test_a_script_whose_worker_stops_names_the_question_it_was_filling(
         with pytest.raises(WorkerError) as raised:
             await engine.run("matcher", "acme", "my desk")
     assert str(raised.value) == (
-        "engine: order.py of decision agent 'matcher' could not fill question 'order': workers: the worker for order stopped: exited with code 3"
+        "engine: order.py of decision agent 'matcher' could not fill question 'order': workers/pool: the worker for order stopped: exited with code 3"
     )
 
 
@@ -288,7 +288,7 @@ async def test_a_script_past_the_tool_timeout_fails_the_run(tmp_path: Path) -> N
     matcher(tmp_path, "import time\ndef run(input, call):\n    time.sleep(5)\n")
     judge = Answering()
     async with Engine(tmp_path, models={"judge": judge}, tool_timeout=0.3) as engine:
-        with pytest.raises(TimeoutError, match="^workers: order timed out after 0.3s$"):
+        with pytest.raises(TimeoutError, match="^workers/pool: order timed out after 0.3s$"):
             await engine.run("matcher", "acme", "my desk")
     assert judge.calls == []
 

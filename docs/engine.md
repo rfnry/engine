@@ -1020,7 +1020,7 @@ given, or the parts as their JSON, media `data` in base64 — and `call` holds t
 `run_id` and `agent` and the `question` it fills, so what it reads is the tenant's. The scripts of
 a run's questions run at once, each under `tool_timeout`, and the question each fills is checked as
 a file is. A script that raises (`WorkerError: engine: order.py of decision agent 'matcher' could
-not fill question 'order': KeyError: 'customer'`), runs past its deadline (`TimeoutError: workers:
+not fill question 'order': KeyError: 'customer'`), runs past its deadline (`TimeoutError: workers/pool:
 order timed out after 30s`), returns anything but an object, returns a key its JSON sets
 (`ModelError: engine: order.py of decision agent 'matcher' returned 'type', which question 'order'
 sets in order.json; a script returns only what its question's JSON leaves out, such as {"options":
@@ -1925,7 +1925,7 @@ number — the model reads as JSON; or a list of parts, each an object with the 
 of a `Text`, `Image`, `Audio` or `Document`, media `data` in base64, which reach the model as parts:
 a PDF the model reads itself, an image it looks at. A result JSON cannot hold, a `datetime` or a
 `set`, is a tool error naming its type; arguments it cannot hold, passed from code, are an
-`InputError` before any worker sees them (`workers: the arguments for refund are not JSON: Object of
+`InputError` before any worker sees them (`workers/pool: the arguments for refund are not JSON: Object of
 type datetime is not JSON serializable`). A script imports the standard library, installed packages
 and the helpers of its own `tools/` folder — its `_name.py` files, by name, at the top of the
 script; a tool's script or a package beside it is no helper, and importing one fails in the worker.
@@ -1958,17 +1958,17 @@ engine stays closed: a run, a tool call or an `EngineTools` after `close()` is a
 recorded of it, and a run still in flight when it closed starts no other run — its `Delegate` call
 reads that error, its route fails with it. A plain `def run` runs on one of the worker's 32 threads,
 and calls past those wait; an `async def run` runs on its event loop, as many at once as come. What
-a script prints goes to the log, at DEBUG on the `rfnry_engine.workers` logger, never into its
+a script prints goes to the log, at DEBUG on the `rfnry_engine.workers.pool` logger, never into its
 result. A script that raises, `sys.exit()` included, is a tool error the model reads, `WorkerError:
 ValueError: no order A-1`, and the worker goes on. A worker that exits — `os._exit()`, a signal, out
-of memory, a crash in a C extension — fails every call it had in flight, `WorkerError: workers: the
+of memory, a crash in a C extension — fails every call it had in flight, `WorkerError: workers/pool: the
 worker for refund stopped: exited with code 3`, or `killed by signal 9` when a signal ended it, the
 run goes on, and the next call starts a new worker. Past `tool_timeout` the model reads
-`TimeoutError: workers: refund timed out after 30s`, a deadline that counts the wait for a worker
+`TimeoutError: workers/pool: refund timed out after 30s`, a deadline that counts the wait for a worker
 too: an `async def run` is cancelled in the worker; a `def run` cannot be stopped, so its thread
 runs on and its result is discarded, and once every thread of a worker is held so, the next call
 stops that worker and starts a new one, and the calls the old one still had in flight fail with
-`WorkerError: workers: the worker for refund stopped: every thread was held by a call past its
+`WorkerError: workers/pool: the worker for refund stopped: every thread was held by a call past its
 deadline`.
 
 An engine's workers follow the event loop that calls them, one loop at a time, as a workspace's
@@ -2373,7 +2373,7 @@ exceeds `max_steps` (default 200).
 `DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
 `Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool
 or a question's script that fails in its worker process: what its script raised, `sys.exit()`
-included, a result JSON cannot hold, a worker that stopped while the call was in flight (`workers:
+included, a result JSON cannot hold, a worker that stopped while the call was in flight (`workers/pool:
 the worker for lookup_order stopped: exited with code 3`) or a call in flight when `close()` stopped
 its worker. Inside a run,
 a tool's error is the model's to read, never raised. All under `EngineException` — the root takes

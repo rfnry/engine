@@ -11,7 +11,7 @@ import jsonschema_rs
 from pydantic import BaseModel, JsonValue
 
 from rfnry_engine.errors import ConfigurationError
-from rfnry_engine.workers import Script
+from rfnry_engine.workers.pool import Script
 
 ENGINE = "rfnry_engine"
 KEYS = ("description", "input_schema", "output_schema")

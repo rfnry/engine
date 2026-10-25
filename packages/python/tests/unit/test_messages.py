@@ -23,8 +23,17 @@ ALLOWED: dict[tuple[str, str], str] = {
 }
 
 
+PATHED = {"workers"}
+
+
 def _sources() -> list[Path]:
     return sorted(SRC.rglob("*.py"))
+
+
+def _prefix(path: Path) -> str:
+    if path.parent.name in PATHED:
+        return f"{path.relative_to(SRC).with_suffix('').as_posix()}: "
+    return f"{path.stem}: "
 
 
 def _leading(node: ast.expr) -> str | None:
@@ -76,7 +85,7 @@ def _key(path: Path, source: str) -> tuple[str, str]:
 def test_every_error_message_starts_with_its_module_name() -> None:
     wrong = []
     for path in _sources():
-        prefix = f"{path.stem}: "
+        prefix = _prefix(path)
         for line, source, text in _raises(path):
             if text is None:
                 if _key(path, source) not in ALLOWED:

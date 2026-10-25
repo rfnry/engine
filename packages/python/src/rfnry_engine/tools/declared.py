@@ -12,7 +12,7 @@ from rfnry_engine.models import Part
 from rfnry_engine.tools.folder import ToolDef, reason
 from rfnry_engine.tools.tools import Result, Tool
 from rfnry_engine.tree import AgentSpec
-from rfnry_engine.workers import WorkerPool
+from rfnry_engine.workers.pool import WorkerPool
 
 PARTS = TypeAdapter(list[Part])
 PART_TYPES = ("text", "image", "audio", "document")

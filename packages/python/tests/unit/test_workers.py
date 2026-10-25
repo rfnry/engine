@@ -14,7 +14,7 @@ import pytest
 from pydantic import JsonValue
 
 from rfnry_engine.errors import InputError, WorkerError
-from rfnry_engine.workers import Script, WorkerPool
+from rfnry_engine.workers.pool import Script, WorkerPool
 
 CALL = {"scope": "acme"}
 PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
@@ -149,7 +149,7 @@ async def test_a_call_for_a_tool_the_worker_does_not_have_reads_as_an_error_and_
     pool = WorkerPool([script(tmp_path, "nap", PID)], threads=1)
     try:
         first = await pool.call("nap", {}, CALL, 5)
-        with pytest.raises(WorkerError, match="workers: the worker has no tool ghost"):
+        with pytest.raises(WorkerError, match="workers/process: the worker has no tool ghost"):
             await pool.call("support/tools/ghost", {}, CALL, 1)
         assert await pool.call("nap", {}, CALL, 5) == first
     finally:
@@ -210,7 +210,7 @@ async def test_a_script_that_reads_stdin_reads_nothing_and_the_calls_go_on(
 async def test_what_a_script_prints_goes_to_the_log_and_leaves_its_result_intact(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    caplog.set_level(logging.DEBUG, logger="rfnry_engine.workers")
+    caplog.set_level(logging.DEBUG, logger="rfnry_engine.workers.pool")
     body = (
         "import os, sys\n"
         "print('while loading')\n"
@@ -430,9 +430,9 @@ async def test_a_worker_that_exits_fails_every_call_in_flight_and_the_next_call_
         )
         assert all(isinstance(result, WorkerError) for result in results)
         assert [str(result) for result in results] == [
-            f"workers: the worker for wait stopped: {reason}",
-            f"workers: the worker for wait stopped: {reason}",
-            f"workers: the worker for crash stopped: {reason}",
+            f"workers/pool: the worker for wait stopped: {reason}",
+            f"workers/pool: the worker for wait stopped: {reason}",
+            f"workers/pool: the worker for crash stopped: {reason}",
         ]
         assert await pool.call("support/tools/wait", {}, CALL, 5) != first
     finally:
@@ -495,7 +495,7 @@ async def test_close_fails_the_calls_in_flight_and_refuses_new_ones(tmp_path: Pa
         await asyncio.sleep(0.1)
     finally:
         await pool.close()
-    closed = "workers: the worker for wait stopped: it was closed"
+    closed = "workers/pool: the worker for wait stopped: it was closed"
     with pytest.raises(WorkerError, match=closed):
         await flight
     with pytest.raises(WorkerError, match=closed):
@@ -516,7 +516,7 @@ async def test_retiring_a_worker_fails_its_other_calls_in_flight_saying_why(
         with pytest.raises(WorkerError) as raised:
             await flight
         assert str(raised.value) == (
-            "workers: the worker for wait stopped: every thread was held by a call past its deadline"
+            "workers/pool: the worker for wait stopped: every thread was held by a call past its deadline"
         )
         assert await gone(first)
     finally:
@@ -532,7 +532,7 @@ async def test_a_call_that_waits_past_its_deadline_for_a_worker_raises_the_pool_
         async with pool._lock:
             with pytest.raises(TimeoutError) as raised:
                 await pool.call("nap", {}, CALL, 0.2)
-        assert str(raised.value) == "workers: nap timed out after 0.2s"
+        assert str(raised.value) == "workers/pool: nap timed out after 0.2s"
         assert pid(await pool.call("nap", {}, CALL, 5)) == first
     finally:
         await pool.close()
@@ -550,7 +550,7 @@ async def test_arguments_json_cannot_hold_are_refused_before_any_worker_sees_the
         with pytest.raises(InputError) as raised:
             await pool.call("echo", args, CALL, 5)  # type: ignore[arg-type]
         assert str(raised.value) == (
-            f"workers: the arguments for echo are not JSON: Object of type {kind} is not JSON serializable"
+            f"workers/pool: the arguments for echo are not JSON: Object of type {kind} is not JSON serializable"
         )
         assert await pool.call("echo", {"x": 1}, CALL, 5) == {"x": 1}
         assert [(len(w.calls), len(w.held)) for w in pool._workers if w is not None] == [(0, 0)]
@@ -638,7 +638,7 @@ def test_a_call_left_on_an_event_loop_closed_under_it_does_not_hold_the_next_loo
 async def test_a_worker_that_dies_is_reaped_before_its_calls_fail_and_its_last_words_are_logged(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, ending: str
 ) -> None:
-    caplog.set_level(logging.DEBUG, logger="rfnry_engine.workers")
+    caplog.set_level(logging.DEBUG, logger="rfnry_engine.workers.pool")
     body = (
         "import os, sys\n"
         "def run(args, call):\n"
@@ -668,7 +668,7 @@ async def test_a_call_to_a_worker_killed_from_outside_fails_with_its_signal_and_
         time.sleep(0.1)
         with pytest.raises(WorkerError) as raised:
             await pool.call("nap", {}, CALL, 2)
-        assert str(raised.value) == "workers: the worker for nap stopped: killed by signal 9"
+        assert str(raised.value) == "workers/pool: the worker for nap stopped: killed by signal 9"
         assert reaped(first) and loop_errors(caplog) == []
         assert pid(await pool.call("nap", {}, CALL, 5)) != first
     finally:

@@ -98,7 +98,7 @@ from rfnry_engine.tree import (
     tree_folders,
     validate_tree,
 )
-from rfnry_engine.workers import Script, Workers
+from rfnry_engine.workers.pool import Script, Workers
 
 STOPPED = "stopped by the user"
 NO_TOOLS = tools_fingerprint([])
