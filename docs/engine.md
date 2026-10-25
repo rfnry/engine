@@ -552,9 +552,10 @@ unchanged, and a later run continues from them. History, like input, is read by 
 part from another library is read by its fields.
 
 Pass `record=False` to run without the refinery recording it — a replay, an evaluation, a dry run.
-A consult it makes through an `engine.tool` is not recorded either, so a replay whose candidate
-consults a production engine leaves the scope as it found it; a run your own tool starts with
-`record=True` is recorded as asked.
+A consult it makes through an `engine.tool`, or a `Delegate` dispatched through an `EngineTools`,
+is not recorded either, so a replay whose candidate consults a production engine leaves the scope
+as it found it. A run your own tool starts with `engine.run` is recorded unless it passes
+`record=False`.
 
 A run that raises instead of returning — the vendor refused the call, the adapter broke the
 contract (`ModelError`), the loop passed `max_steps` (`RunawayError`) — returns no record; the
@@ -1698,9 +1699,8 @@ Every row carries its run's `tags`, `{}` for a run that had none, and its `finge
 `{"agent": …, "tools": …, "questions": …}` — `questions` is `null` for a generation run; group or
 filter the rows by them in your own code. Every row also carries, right after `run_id`, the run's
 `parent_run_id` — the run that delegated or routed to it, `null` for a top-level run — and its
-`call`, the tool call that started it (`{run_id, agent, scope, tool, call_id}`, a `Delegate` or a
-consult through `engine.tool`), `null` when no call did; a dataset regroups its rows by tree with
-them.
+`call` as `Run.call` holds it (`{run_id, agent, scope, tool, call_id}`); a dataset regroups its rows
+by tree with them.
 
 `model` and `settings` are the model that wrote the run's reply, or made its decision, and the
 settings it reported or its adapter declared, `null` when neither said; a preference row's name the
@@ -2144,7 +2144,8 @@ way when the target is itself a decision agent — so a caller that consults a r
 answer it routed to, not only the answers.
 
 It is a `Tools` of one, so it adds to any other. Each call is a top-level run under the scope it was
-made with, recorded like any run; `context=`, `tools=`, `workspace=` and `tags=` ride every call.
+made with, recorded like any run — but not when the run that makes the call was started with
+`record=False`, as a replay's is; `context=`, `tools=`, `workspace=` and `tags=` ride every call.
 Mounted inside another run with `run(tools=)` it is a tool like any other, under `tool_timeout`, and
 its run is not the caller's child — to nest with lineage, name the agent in `agents:`. As across
 `Delegate`, `max_depth` counts the whole stack across it; a call through it starts a new input, so
