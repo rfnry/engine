@@ -515,7 +515,7 @@ run.fingerprint.tools                                # "a02c77e1f4b9d305": the t
 its own directory, the `tools/` folder of each folder above it, whose tools it gets, under its path
 from the agent's folder, `../tools/`, and each folder it names in `reads:` with that folder's files
 under its path from the agent's folder, `../<name>/` (`../../shared/books/` for an agent two folders
-deep), as the map shows them — leaving out hidden files and folders, as `LS`, `Glob` and `Grep` do,
+deep), as the map shows them — leaving out hidden files and folders and `__pycache__`, as `LS`, `Glob` and `Grep` do,
 and links that lead out of them. The engine takes it once, when it loads the tree, so an edit to the
 agent or to a folder it reads shows in the next `Engine` built from the folder. `fingerprint.tools`
 is one over `run.tools` — each tool's name, description and schema — so it covers the tools the

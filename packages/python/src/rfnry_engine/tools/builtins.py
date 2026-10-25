@@ -69,7 +69,9 @@ class LSArgs(BaseModel):
 
 
 def _hidden(rel: Path) -> bool:
-    return any(part.startswith(".") and part != ".." for part in rel.parts)
+    return any(
+        (part.startswith(".") and part != "..") or part == "__pycache__" for part in rel.parts
+    )
 
 
 _SIGNATURES = {
@@ -339,7 +341,7 @@ class _Directory:
             try:
                 with os.scandir(fd) as found:
                     entries = sorted(
-                        (e for e in found if not e.name.startswith(".")), key=lambda e: e.name
+                        (e for e in found if not _hidden(Path(e.name))), key=lambda e: e.name
                     )
                 shown = [f"{e.name}/" if e.is_dir() else e.name for e in entries[: a.limit]]
             finally:

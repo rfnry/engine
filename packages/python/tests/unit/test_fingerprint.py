@@ -139,6 +139,17 @@ async def test_a_new_file_or_a_renamed_one_changes_it_and_a_hidden_one_does_not(
     assert (await generation(root)).fingerprint != renamed.fingerprint
 
 
+async def test_a_bytecode_cache_is_not_part_of_the_folder(fixtures: Path, tmp_path: Path) -> None:
+    root = tree(fixtures, tmp_path)
+    before = await generation(root)
+    for cache in ("support/tools/__pycache__", "support/knowledge/__pycache__"):
+        (root / cache).mkdir()
+        (root / cache / "lookup_order.cpython-314.pyc").write_bytes(b"\x00\x01")
+    after = await generation(root)
+    assert after.fingerprint == before.fingerprint
+    assert "__pycache__" not in after.system
+
+
 async def test_a_link_out_of_the_folder_is_not_part_of_it(fixtures: Path, tmp_path: Path) -> None:
     root = tree(fixtures, tmp_path)
     outside = tmp_path / "secret.md"
