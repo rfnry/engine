@@ -1651,7 +1651,9 @@ A judge or teacher the tree does not have is a `NotFoundError`, and one of the w
 failed, or the teacher answered a choice with no option, a score with no level index, a check with
 anything but true or false — is named in `labeled.errors` with why, and stays unlabeled for the
 next call. Every label carries its source. A
-judge's score is exported as a judge's score, never as a person's.
+judge's score is exported as a judge's score, never as a person's. A judge's or a teacher's label also
+names the `model` and `settings` of the run that made it, so a score can be traced to what produced
+it; a person's and the world's carry `null` for both.
 
 Export writes datasets to any object with a `put(key, bytes)`:
 
@@ -1684,13 +1686,19 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | task, skill, context, tags, model, fingerprint, system, preload, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
-| `preference` | human correction | tags, fingerprint, prompt (system, preload, messages), chosen (the correction), rejected (the reply) |
-| `decision` | question of a decision run | tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
+| `generation` | generation run | task, skill, context, tags, model, settings, fingerprint, system, preload, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
+| `preference` | human correction | tags, fingerprint, model, settings, prompt (system, preload, messages), chosen (the correction), rejected (the reply) |
+| `decision` | question of a decision run | tags, model, settings, fingerprint, state, question, answer, probabilities, confidence, truth, truth_source, truth_model, truth_settings, outcome |
 
 Every row carries its run's `tags`, `{}` for a run that had none, and its `fingerprint`,
 `{"agent": …, "tools": …, "questions": …}` — `questions` is `null` for a generation run; group or
 filter the rows by them in your own code.
+
+`model` and `settings` are the model that wrote the run's reply, or made its decision, and the
+settings it reported or its adapter declared, `null` when neither said; a preference row's name the
+ones that wrote `rejected`. Each exported label carries the `model` and `settings` of the judge or
+teacher behind it, and a decision row's `truth_model` and `truth_settings` are the teacher's when
+`truth_source` is `"teacher"`, `null` when it is `"human"`.
 
 The first two are a generation agent's episodes and the corrections people made to them. A
 generation row's `tools` is what the model was offered — `{name, description, input_schema}` each —
@@ -1705,7 +1713,8 @@ is one whose 0.8 was right 80% of the time, and this is the table that says whet
 ```json
 {"run_id": "…", "holdout": false, "agent": "frontdesk", "tags": {"arm": "b"}, "question_id": "intent", "answer": "billing",
  "probabilities": {"billing": 0.8, "technical": 0.15, "other": 0.05}, "confidence": 0.7,
- "truth": "technical", "truth_source": "human", "outcome": "failed"}
+ "truth": "technical", "truth_source": "human", "truth_model": null, "truth_settings": null,
+ "outcome": "failed"}
 ```
 
 `refinery.conflicts(scope)` lists runs that carry two different human corrections — a dataset can

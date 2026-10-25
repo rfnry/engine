@@ -34,6 +34,8 @@ def _label(label: Label) -> dict[str, Any]:
         "outcome": label.outcome.status if label.outcome else None,
         "detail": label.outcome.detail if label.outcome else None,
         "answers": {k: v.model_dump() for k, v in label.answers.items()} if label.answers else None,
+        "model": label.model,
+        "settings": label.settings,
         "at": label.at.isoformat(),
     }
 
@@ -50,6 +52,7 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
         "tags": body["tags"],
         "at": row.at.isoformat(),
         "model": row.model,
+        "settings": body["settings"],
         "fingerprint": _fingerprint(body),
         "system": body["system"],
         "preload": body["preload"],
@@ -73,6 +76,8 @@ def preference_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[
             "holdout": holdout,
             "tags": row.body["tags"],
             "fingerprint": _fingerprint(row.body),
+            "model": row.model,
+            "settings": row.body["settings"],
             "prompt": {
                 "system": row.body["system"],
                 "preload": row.body["preload"],
@@ -110,7 +115,7 @@ def _probabilities(answer: dict[str, Any]) -> Any:
     return answer["probabilities"]
 
 
-def _truth(question_id: str, labels: list[Label]) -> tuple[Any, str | None]:
+def _truth(question_id: str, labels: list[Label]) -> tuple[Any, str | None, Label | None]:
     for label in labels:
         if (
             label.source == "human"
@@ -118,11 +123,11 @@ def _truth(question_id: str, labels: list[Label]) -> tuple[Any, str | None]:
             and isinstance(label.review.correction, dict)
             and question_id in label.review.correction
         ):
-            return label.review.correction[question_id], "human"
+            return label.review.correction[question_id], "human", None
     for label in labels:
         if label.source == "teacher" and label.answers is not None and question_id in label.answers:
-            return _truth_value(label.answers[question_id].model_dump()), "teacher"
-    return None, None
+            return _truth_value(label.answers[question_id].model_dump()), "teacher", label
+    return None, None, None
 
 
 def decision_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[dict[str, Any]]:
@@ -133,7 +138,7 @@ def decision_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[di
     rows = []
     for question_id, question in body["questions"].items():
         answer = body["answers"][question_id]
-        truth, truth_source = _truth(question_id, labels)
+        truth, truth_source, teacher = _truth(question_id, labels)
         rows.append(
             {
                 "run_id": row.run_id,
@@ -142,6 +147,7 @@ def decision_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[di
                 "tags": body["tags"],
                 "at": row.at.isoformat(),
                 "model": row.model,
+                "settings": body["settings"],
                 "fingerprint": _fingerprint(body),
                 "state": body["state"],
                 "question_id": question_id,
@@ -151,6 +157,8 @@ def decision_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[di
                 "confidence": answer["confidence"],
                 "truth": truth,
                 "truth_source": truth_source,
+                "truth_model": teacher.model if teacher else None,
+                "truth_settings": teacher.settings if teacher else None,
                 "outcome": outcome,
             }
         )

@@ -4,15 +4,16 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError
-from rfnry_engine.models import Document, Image, Message, Part, Reply, Text, ToolCall
+from rfnry_engine.models import CheckAnswer, Document, Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Generation, Step
 from rfnry_engine.refinery.holdout import is_holdout
-from rfnry_engine.refinery.labels import Outcome, Review
+from rfnry_engine.refinery.labels import Label, Outcome, Review
 from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import RunRow, Storage
@@ -99,6 +100,8 @@ async def test_export_writes_three_datasets_with_labels_and_holdout(storage: Sto
         "holdout": is_holdout(generation.run_id),
         "tags": {},
         "fingerprint": generation.fingerprint.model_dump(),
+        "model": "m",
+        "settings": None,
         "prompt": {
             "system": generation.system,
             "preload": [],
@@ -473,3 +476,73 @@ async def test_a_router_whose_routed_run_failed_exports_its_answers(storage: Sto
     assert key.startswith("acme/frontdesk/decision/")
     [row] = _lines(bucket.objects[key])
     assert row["run_id"] == router.run_id and row["question_id"] == "urgent"
+
+
+def _made(source: Any, run_id: str, model: str, settings: dict[str, Any]) -> Label:
+    return Label(
+        label_id=uuid4().hex,
+        run_id=run_id,
+        scope="acme",
+        at=datetime.now(UTC),
+        source=source,
+        answers={"urgent": CheckAnswer(probability=0.9)},
+        model=model,
+        settings=settings,
+    )
+
+
+async def test_a_generation_row_carries_its_settings_and_its_labels_their_model(
+    storage: Storage,
+) -> None:
+    refinery = Refinery(storage)
+    run = generation_record().model_copy(update={"settings": {"effort": "high"}})
+    await refinery.record(run)
+    await refinery._put(_made("judge", run.run_id, "j", {"effort": "low"}))
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [key] = [k for k in bucket.objects if "/generation/" in k]
+    [row] = _lines(bucket.objects[key])
+    assert row["model"] == "m" and row["settings"] == {"effort": "high"}
+    assert list(row).index("settings") == list(row).index("model") + 1
+    assert row["labels"][0]["model"] == "j" and row["labels"][0]["settings"] == {"effort": "low"}
+
+
+async def test_a_decision_row_carries_its_settings_and_its_teacher_s(storage: Storage) -> None:
+    refinery = Refinery(storage)
+    run = decision_record().model_copy(update={"settings": {"effort": "low"}})
+    await refinery.record(run)
+    await refinery._put(_made("teacher", run.run_id, "t", {"effort": "high"}))
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [key] = [k for k in bucket.objects if "/decision/" in k]
+    [row] = _lines(bucket.objects[key])
+    assert row["model"] == "d" and row["settings"] == {"effort": "low"}
+    assert row["truth_source"] == "teacher"
+    assert row["truth_model"] == "t" and row["truth_settings"] == {"effort": "high"}
+    assert list(row).index("truth_model") == list(row).index("truth_source") + 1
+    await refinery.review("acme", run.run_id, Review(correction={"urgent": False}))
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [key] = [k for k in bucket.objects if "/decision/" in k]
+    [row] = _lines(bucket.objects[key])
+    assert row["truth_source"] == "human"
+    assert row["truth_model"] is None and row["truth_settings"] is None
+
+
+async def test_a_preference_row_names_the_model_and_settings_that_wrote_rejected(
+    storage: Storage,
+) -> None:
+    refinery = Refinery(storage)
+    run = generation_record().model_copy(update={"settings": {"effort": "high"}})
+    await refinery.record(run)
+    await refinery.review("acme", run.run_id, Review(correction="Refund in full."))
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [key] = [k for k in bucket.objects if "/preference/" in k]
+    [row] = _lines(bucket.objects[key])
+    assert row["model"] == "m" and row["settings"] == {"effort": "high"}
+    keys = list(row)
+    assert keys[keys.index("fingerprint") + 1 : keys.index("fingerprint") + 3] == [
+        "model",
+        "settings",
+    ]

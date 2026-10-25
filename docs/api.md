@@ -710,9 +710,11 @@ class Label(BaseModel):
     review: Review | None = None
     outcome: Outcome | None = None
     answers: dict[str, Answer] | None = None
+    model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 ```
 
-A stored label: its `source` and what it says — a person's `review`, the world's `outcome`, or a judge's or a teacher's `answers`.
+A stored label: its `source` and what it says — a person's `review`, the world's `outcome`, or a judge's or a teacher's `answers`. A judge's or a teacher's label also names the `model` and `settings` of the run that made it; a person's and the world's leave them `None`.
 
 ### `Labeled`
 
