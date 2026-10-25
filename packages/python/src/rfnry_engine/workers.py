@@ -117,8 +117,9 @@ class _Worker:
         _kill(self.pid)
         if not self._loop.is_closed():
             for reader in self._readers:
-                reader.close()
-            if self._stdin is not None:
+                if not reader.is_closing():
+                    reader.close()
+            if self._stdin is not None and not self._stdin.is_closing():
                 self._stdin.abort()
         code = self.process.wait()
         stderr = cast(IO[bytes], self.process.stderr)

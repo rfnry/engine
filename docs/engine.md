@@ -1944,14 +1944,15 @@ and again after a crash, and lives until you close the engine — `await engine.
 `async with Engine(...) as engine:` — which stops every worker and whatever it started. A closed
 engine stays closed: a run, a tool call or an `EngineTools` after `close()` is an `InputError`,
 `engine: this engine was closed; build a new Engine`, before any model is called, so nothing is
-recorded of it. A plain `def run` runs on one of the worker's 32 threads,
+recorded of it, and a run still in flight when it closed starts no other run — its `Delegate` call
+reads that error, its route fails with it. A plain `def run` runs on one of the worker's 32 threads,
 and calls past those wait; an `async def run` runs on its event loop, as many at once as come. What
 a script prints goes to the log, at DEBUG on the `rfnry_engine.workers` logger, never into its
 result. A script that raises, `sys.exit()` included, is a tool error the model reads, `WorkerError:
-ValueError: no order A-1`, and the worker goes on. A worker that exits — `os._exit()`, a signal,
-out of memory, a crash in a C extension — fails every call it had in flight, `WorkerError: workers:
-the worker for refund stopped: exited with code 3`, or `killed by signal 9` when a signal ended it,
-the run goes on, and the next call starts a new worker. Past `tool_timeout` the model reads
+ValueError: no order A-1`, and the worker goes on. A worker that exits — `os._exit()`, a signal, out
+of memory, a crash in a C extension — fails every call it had in flight, `WorkerError: workers: the
+worker for refund stopped: exited with code 3`, or `killed by signal 9` when a signal ended it, the
+run goes on, and the next call starts a new worker. Past `tool_timeout` the model reads
 `TimeoutError: workers: refund timed out after 30s`, a deadline that counts the wait for a worker
 too: an `async def run` is cancelled in the worker; a `def run` cannot be stopped, so its thread
 runs on and its result is discarded, and once every thread of a worker is held so, the next call
@@ -1977,9 +1978,11 @@ tree, or a folder inside another one named, is a `ConfigurationError`: `engine: 
 'support/billing' inside 'support', which it names too; keep one`.
 
 Every tool an agent sees is on. `tools:` in its `AGENT.md` narrows them to the ones it lists —
-`tools: [lookup_order, Read]` keeps only these — so an agent leaves out a tool it inherits by
-listing the ones it keeps. In the tree above, billing keeps `lookup_order` from
-`customer_support/`, its own `refund` and `Read`, leaving out `notify` and the other file tools:
+`tools: [lookup_order, Read]` keeps only these, `tools: []` none of them, leaving the agent only the
+tools that come with their own declarations, and an agent without `tools:` keeps every one — so an
+agent leaves out a tool it inherits by listing the ones it keeps. In the tree above, billing keeps
+`lookup_order` from `customer_support/`, its own `refund` and `Read`, leaving out `notify` and the
+other file tools:
 
 ```markdown
 ---
@@ -2313,9 +2316,9 @@ not have, an unknown key in the frontmatter of an `AGENT.md` or a task (`frontma
 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid
 YAML or a `description:` that is not a string in a file the map would show, a decision agent with
 `preload: true`, `workspace: true` or `tools:`, a generation agent with `questions/` or `route:`, a
-`tools:` entry that is blank, padded or listed twice, a `tools:` that names `Output` or keeps a
-tool the agent does not see, a tool's `.json` without its `.py` or a script without its `.json`, a
-tool's JSON with an unknown key, no description, an `input_schema`
+`tools:` with no list, a `tools:` entry that is blank, padded or listed twice, a `tools:` that
+names `Output` or keeps a tool the agent does not see, a tool's `.json` without its `.py` or a
+script without its `.json`, a tool's JSON with an unknown key, no description, an `input_schema`
 that is not an object or a schema that does not compile, a script or helper that is not valid
 Python, imports the engine, the server's own code or a module relatively, or imports a helper inside
 a function, a tool named like one the engine gives the agent, a `workers=` naming a folder the tree

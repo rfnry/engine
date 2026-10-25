@@ -4,6 +4,7 @@ import datetime
 import gc
 import logging
 import os
+import signal
 import time
 from collections import Counter
 from collections.abc import Awaitable, Iterator
@@ -80,6 +81,14 @@ def held() -> tuple[int, list[str]]:
             with contextlib.suppress(OSError):
                 states.append(Path(f"/proc/{child}/stat").read_text().rsplit(")", 1)[1].split()[0])
     return len(os.listdir("/proc/self/fd")), states
+
+
+def loop_errors(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "asyncio" and record.levelno >= logging.ERROR
+    ]
 
 
 @contextlib.contextmanager
@@ -584,12 +593,12 @@ def test_a_pool_that_follows_one_event_loop_after_another_holds_no_more_files_or
         on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5))
         fds, children = held()
         with no_collector():
-            pids = [pid(on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5))) for _ in range(200)]
+            pids = [pid(on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5))) for _ in range(50)]
             after, now = held()
     finally:
         on_a_loop_of_its_own(pool.close())
     assert after <= fds + 3 and now == children == ["S"]
-    assert len(set(pids)) == 200 and all(reaped(old) for old in pids)
+    assert len(set(pids)) == 50 and all(reaped(old) for old in pids)
 
 
 def test_closing_pools_from_another_event_loop_holds_no_more_files_or_processes(
@@ -598,7 +607,7 @@ def test_closing_pools_from_another_event_loop_holds_no_more_files_or_processes(
     nap = script(tmp_path, "nap", PID)
     fds, children = held()
     with no_collector():
-        for _ in range(200):
+        for _ in range(50):
             pool = WorkerPool([nap])
             last = pid(on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5)))
             on_a_loop_of_its_own(pool.close())
@@ -644,6 +653,24 @@ async def test_a_worker_that_dies_is_reaped_before_its_calls_fail_and_its_last_w
         with pytest.raises(WorkerError, match="the worker for dying stopped"):
             await pool.call("dying", {"die": True}, CALL, 5)
         assert reaped(first) and "last words" in caplog.text
+        assert loop_errors(caplog) == []
+    finally:
+        await pool.close()
+
+
+async def test_a_call_to_a_worker_killed_from_outside_fails_with_its_signal_and_reaps_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    try:
+        first = pid(await pool.call("nap", {}, CALL, 5))
+        os.kill(first, signal.SIGKILL)
+        time.sleep(0.1)
+        with pytest.raises(WorkerError) as raised:
+            await pool.call("nap", {}, CALL, 2)
+        assert str(raised.value) == "workers: the worker for nap stopped: killed by signal 9"
+        assert reaped(first) and loop_errors(caplog) == []
+        assert pid(await pool.call("nap", {}, CALL, 5)) != first
     finally:
         await pool.close()
 

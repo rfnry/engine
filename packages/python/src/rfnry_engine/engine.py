@@ -688,6 +688,7 @@ class Engine:
         parent_run_id: str | None,
         routed: bool = False,
     ) -> Run:
+        self._open()
         if options.task is not None and spec.kind == "decision":
             raise InputError(
                 f"engine: decision agent {spec.name!r} takes no task; it asks its questions/, so run another decision agent for another set of questions"

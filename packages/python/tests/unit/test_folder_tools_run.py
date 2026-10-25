@@ -415,6 +415,10 @@ async def test_a_run_tool_named_like_a_folder_tool_keeps_the_run_s_deadline(
         ("['']", "tools: an entry must not be blank or padded"),
         ("[Read, Read]", "tools: 'Read' is listed twice; list each tool once"),
         ("[3]", "tools"),
+        (
+            "",
+            "tools: it is empty; write tools: [] to keep none of the folder and file tools, or leave tools: out to keep them all",
+        ),
     ],
 )
 def test_a_tools_list_that_breaks_the_grammar_is_refused_naming_the_file(
@@ -426,13 +430,41 @@ def test_a_tools_list_that_breaks_the_grammar_is_refused_naming_the_file(
     assert str(tmp_path / "shop/AGENT.md") in str(caught.value) and said in str(caught.value)
 
 
-def test_a_decision_agent_cannot_list_tools(tmp_path: Path) -> None:
+@pytest.mark.parametrize("tools", ["[x]", "[]"])
+def test_a_decision_agent_cannot_list_tools(tmp_path: Path, tools: str) -> None:
     write(
         tmp_path / "triage/AGENT.md",
-        agent_md("triage", kind="decision", model="judge", extra="tools: [x]\n"),
+        agent_md("triage", kind="decision", model="judge", extra=f"tools: {tools}\n"),
     )
     with pytest.raises(ConfigurationError, match="decision agent 'triage' cannot list tools:"):
         load_tree(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("listed", "kept"),
+    [
+        ("", ["Read", "Grep", "Glob", "LS", "Load", "lookup_order"]),
+        ("tools: []\n", []),
+    ],
+)
+async def test_an_empty_tools_keeps_no_folder_or_file_tool_and_none_keeps_them_all(
+    tmp_path: Path, listed: str, kept: list[str]
+) -> None:
+    write(tmp_path / "shop/AGENT.md", agent_md("shop", extra=f"agents: [aide]\n{listed}"))
+    write(tmp_path / "aide/AGENT.md", agent_md("aide", extra="description: Helps\n"))
+    tool(tmp_path / "shop/tools", "lookup_order")
+    ping = Tools([Tool("ping", "Ping", body=pong)])
+    async with Engine(tmp_path, models={}) as engine:
+        names = EngineTools(
+            engine,
+            agent="shop",
+            scope="acme",
+            tools=ping,
+            history=[Message(role="user", content="hi")],
+            start=1,
+        ).names
+    assert sorted(names) == sorted([*kept, "History", "Delegate", "ping"])
+    assert engine.agents["shop"].tools == [name for name in kept if name == "lookup_order"]
 
 
 @pytest.mark.parametrize(
@@ -630,7 +662,7 @@ async def test_a_closed_engine_refuses_every_use_and_records_nothing(
     assert len(llm.calls) == 2
 
 
-async def test_a_run_in_flight_when_its_engine_closes_is_refused_the_generation_runs_it_would_start(
+async def test_a_run_in_flight_when_its_engine_closes_is_refused_the_runs_it_would_start(
     tmp_path: Path,
 ) -> None:
     write(tmp_path / "lead/AGENT.md", agent_md("lead", extra="agents: [aide, judge]\n"))
@@ -648,7 +680,8 @@ async def test_a_run_in_flight_when_its_engine_closes_is_refused_the_generation_
         ),
         text_reply("done"),
     )
-    engine = Engine(tmp_path, models={"strong": llm, "judge": Answering()})
+    judging = Answering()
+    engine = Engine(tmp_path, models={"strong": llm, "judge": judging})
 
     async def close(args: dict[str, Any]) -> str:
         await engine.close()
@@ -658,25 +691,26 @@ async def test_a_run_in_flight_when_its_engine_closes_is_refused_the_generation_
         engine, "lead", "acme", "x", tools=Tools([Tool("close", "Close", body=close)])
     )
     said = "InputError: engine: this engine was closed; build a new Engine"
-    closed, aide, judge = run.steps
-    assert run.reply == "done"
-    assert (closed.result, closed.is_error, aide.result, aide.is_error) == (
-        "closed",
-        False,
-        said,
-        True,
-    )
-    assert not judge.is_error and isinstance(judge.result, str)
-    assert list(json.loads(judge.result)["answers"]) == ["fine"]
+    assert run.reply == "done" and run.children == []
+    assert [(step.result, step.is_error) for step in run.steps] == [
+        ("closed", False),
+        (said, True),
+        (said, True),
+    ]
+    assert len(llm.calls) == 3 and judging.calls == []
 
 
-async def test_a_route_to_a_generation_agent_after_its_engine_closes_fails_the_decision_run(
-    tmp_path: Path,
+@pytest.mark.parametrize("target", ["aide", "checker"])
+async def test_a_route_after_its_engine_closes_fails_the_decision_run(
+    tmp_path: Path, target: str
 ) -> None:
     write(
         tmp_path / "triage/AGENT.md",
         agent_md(
-            "triage", kind="decision", model="judge", extra="route: {by: go, to: {next: aide}}\n"
+            "triage",
+            kind="decision",
+            model="judge",
+            extra=f"route: {{by: go, to: {{next: {target}}}}}\n",
         ),
     )
     write(
@@ -684,6 +718,8 @@ async def test_a_route_to_a_generation_agent_after_its_engine_closes_fails_the_d
         '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep", "next": "Pass"}}',
     )
     write(tmp_path / "aide/AGENT.md", agent_md("aide"))
+    write(tmp_path / "checker/AGENT.md", agent_md("checker", kind="decision", model="judge"))
+    write(tmp_path / "checker/questions/fine.json", '{"type": "check", "instructions": "Fine?"}')
     engine: Engine
 
     class Closing(Answering):
@@ -692,11 +728,12 @@ async def test_a_route_to_a_generation_agent_after_its_engine_closes_fails_the_d
             return await super().decide(state, questions)
 
     llm = Scripted()
-    engine = Engine(tmp_path, models={"strong": llm, "judge": Closing()})
+    closing = Closing()
+    engine = Engine(tmp_path, models={"strong": llm, "judge": closing})
     with pytest.raises(InputError) as raised:
         await engine.run("triage", "acme", "x")
     assert str(raised.value) == "engine: this engine was closed; build a new Engine"
-    assert llm.calls == []
+    assert llm.calls == [] and [list(questions) for _, questions in closing.calls] == [["go"]]
 
 
 async def test_an_edit_to_a_script_after_the_engine_loads_runs_in_the_next_engine_only(
