@@ -128,9 +128,10 @@ async def test_it_replays_the_top_level_runs_of_the_agent_oldest_first(
             "judge": Desk(),
         },
     )
-    first = await recorder.run("support", "acme", "It is down")
-    second = await recorder.run("support", "acme", "Hello")
+    down = await recorder.run("support", "acme", "It is down")
+    hello = await recorder.run("support", "acme", "Hello")
     await recorder.run("triage", "acme", "It is down")
+    first, second = sorted([down, hello], key=lambda run: (run.at, run.run_id))
     pairs = await collect(refinery.replay("acme", candidate(fixtures), agent="support"))
     assert [pair.recorded.run_id for pair in pairs] == [first.run_id, second.run_id]
     assert pairs[0].recorded == first and pairs[0].labels == []
@@ -265,15 +266,13 @@ async def test_the_candidate_is_sent_the_input_history_task_and_context_as_recor
     with_text = await recorder.run("support", "acme", "Plain text.", history=history[1:])
     llm = Echo()
     pairs = await collect(refinery.replay("acme", candidate(fixtures, llm), agent="support"))
-    assert [pair.recorded.run_id for pair in pairs] == [
-        with_parts.run_id,
-        with_object.run_id,
-        with_text.run_id,
-    ], [(pair.recorded.run_id, pair.recorded.at) for pair in pairs]
+    runs = [with_parts, with_object, with_text]
+    oldest_first = sorted(runs, key=lambda run: (run.at, run.run_id))
+    assert [pair.recorded.run_id for pair in pairs] == [run.run_id for run in oldest_first]
     assert [pair.error for pair in pairs] == [None, None, None]
-    for (system, messages, _), pair, recorded in zip(
-        llm.calls, pairs, (with_parts, with_object, with_text), strict=True
-    ):
+    sent = {pair.recorded.run_id: (call, pair) for call, pair in zip(llm.calls, pairs, strict=True)}
+    for recorded in runs:
+        (system, messages, _), pair = sent[recorded.run_id]
         assert isinstance(recorded, Generation) and isinstance(pair.candidate, Generation)
         assert messages == recorded.messages
         assert system == recorded.system
@@ -281,15 +280,16 @@ async def test_the_candidate_is_sent_the_input_history_task_and_context_as_recor
         assert pair.candidate.task == recorded.task
         assert pair.candidate.context == recorded.context
         assert pair.candidate.fingerprint == recorded.fingerprint
-    first = pairs[0].candidate
+    (system, _, _), first_pair = sent[with_parts.run_id]
+    first = first_pair.candidate
     assert isinstance(first, Generation) and first.input == parts
     assert isinstance(first.messages[-1].content, list)
     assert first.messages[-1].content[1] == parts[1]
-    second = pairs[1].candidate
+    second = sent[with_object.run_id][1].candidate
     assert isinstance(second, Generation) and second.input == {"order": "A-1", "items": [1, 2]}
     assert second.messages[-1].content == json.dumps({"order": "A-1", "items": [1, 2]})
-    assert "Decide whether this message needs a person." in llm.calls[0][0]
-    assert "Acme is on the enterprise plan." in llm.calls[0][0]
+    assert "Decide whether this message needs a person." in system
+    assert "Acme is on the enterprise plan." in system
 
 
 class Verdict(BaseModel):
