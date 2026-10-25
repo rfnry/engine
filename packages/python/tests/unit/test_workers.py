@@ -1,10 +1,12 @@
 import asyncio
+import contextlib
 import datetime
+import gc
 import logging
 import os
 import time
 from collections import Counter
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Iterator
 from pathlib import Path
 
 import pytest
@@ -65,6 +67,28 @@ def on_a_loop_of_its_own(work: Awaitable[JsonValue]) -> JsonValue:
             return await work
 
     return asyncio.run(bounded())
+
+
+def reaped(pid: int) -> bool:
+    return not Path(f"/proc/{pid}").exists()
+
+
+def held() -> tuple[int, list[str]]:
+    states = []
+    for task in Path("/proc/self/task").glob("*/children"):
+        for child in task.read_text().split():
+            with contextlib.suppress(OSError):
+                states.append(Path(f"/proc/{child}/stat").read_text().rsplit(")", 1)[1].split()[0])
+    return len(os.listdir("/proc/self/fd")), states
+
+
+@contextlib.contextmanager
+def no_collector() -> Iterator[None]:
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.enable()
 
 
 async def test_a_call_runs_the_script_and_returns_its_result(tmp_path: Path) -> None:
@@ -550,3 +574,95 @@ def test_close_from_another_event_loop_leaves_no_worker_behind(tmp_path: Path) -
     with pytest.raises(WorkerError, match="the worker for nap stopped: it was closed"):
         on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5))
     on_a_loop_of_its_own(pool.close())
+
+
+def test_a_pool_that_follows_one_event_loop_after_another_holds_no_more_files_or_processes(
+    tmp_path: Path,
+) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)], threads=2)
+    try:
+        on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5))
+        fds, children = held()
+        with no_collector():
+            pids = [pid(on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5))) for _ in range(200)]
+            after, now = held()
+    finally:
+        on_a_loop_of_its_own(pool.close())
+    assert after <= fds + 3 and now == children == ["S"]
+    assert len(set(pids)) == 200 and all(reaped(old) for old in pids)
+
+
+def test_closing_pools_from_another_event_loop_holds_no_more_files_or_processes(
+    tmp_path: Path,
+) -> None:
+    nap = script(tmp_path, "nap", PID)
+    fds, children = held()
+    with no_collector():
+        for _ in range(200):
+            pool = WorkerPool([nap])
+            last = pid(on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5)))
+            on_a_loop_of_its_own(pool.close())
+            assert reaped(last)
+        after, now = held()
+    assert after <= fds + 3 and now == children == []
+
+
+def test_a_call_left_on_an_event_loop_closed_under_it_does_not_hold_the_next_loop(
+    tmp_path: Path,
+) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    first = asyncio.new_event_loop()
+    first.set_exception_handler(lambda loop, context: None)
+    left = first.create_task(pool.call("nap", {"sleep": 30}, CALL, None))
+    first.run_until_complete(asyncio.sleep(0.5))
+    first.close()
+    try:
+        assert not left.done()
+        second = pid(on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5)))
+        on_a_loop_of_its_own(pool.close())
+        assert reaped(second)
+    finally:
+        on_a_loop_of_its_own(pool.close())
+
+
+@pytest.mark.parametrize("ending", ["os._exit(3)", "os.kill(os.getpid(), 9)"])
+async def test_a_worker_that_dies_is_reaped_before_its_calls_fail_and_its_last_words_are_logged(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, ending: str
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="rfnry_engine.workers")
+    body = (
+        "import os, sys\n"
+        "def run(args, call):\n"
+        "    if args.get('die'):\n"
+        "        print('last words', file=sys.stderr, flush=True)\n"
+        f"        {ending}\n"
+        "    return os.getpid()\n"
+    )
+    pool = WorkerPool([script(tmp_path, "dying", body)])
+    try:
+        first = pid(await pool.call("dying", {}, CALL, 5))
+        with pytest.raises(WorkerError, match="the worker for dying stopped"):
+            await pool.call("dying", {"die": True}, CALL, 5)
+        assert reaped(first) and "last words" in caplog.text
+    finally:
+        await pool.close()
+
+
+async def test_a_retired_worker_is_reaped_before_the_next_call_returns(tmp_path: Path) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)], threads=1)
+    try:
+        first = pid(await pool.call("nap", {}, CALL, 5))
+        with pytest.raises(TimeoutError):
+            await pool.call("nap", {"sleep": 30}, CALL, 0.2)
+        assert pid(await pool.call("nap", {}, CALL, 5)) != first and reaped(first)
+    finally:
+        await pool.close()
+
+
+async def test_close_reaps_every_worker_before_it_returns(tmp_path: Path) -> None:
+    pool = WorkerPool([script(tmp_path, "wait", WAIT)], processes=2)
+    try:
+        pids = await asyncio.gather(*(pool.call("wait", {"sleep": 0.2}, CALL, 5) for _ in range(2)))
+    finally:
+        await pool.close()
+    assert len(set(pids)) == 2 and all(reaped(pid(value)) for value in pids)

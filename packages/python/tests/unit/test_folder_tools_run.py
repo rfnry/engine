@@ -665,6 +665,75 @@ async def test_a_closed_engine_refuses_every_use_and_records_nothing(
     assert len(llm.calls) == 2
 
 
+async def test_a_run_in_flight_when_its_engine_closes_is_refused_the_generation_runs_it_would_start(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "lead/AGENT.md", agent_md("lead", extra="agents: [aide, judge]\n"))
+    write(tmp_path / "aide/AGENT.md", agent_md("aide", extra="description: Helps\n"))
+    write(
+        tmp_path / "judge/AGENT.md",
+        agent_md("judge", kind="decision", model="judge", extra="description: Judges\n"),
+    )
+    write(tmp_path / "judge/questions/fine.json", '{"type": "check", "instructions": "Fine?"}')
+    llm = Scripted(
+        calling(("close", {})),
+        calling(
+            ("Delegate", {"agent": "aide", "input": "x"}),
+            ("Delegate", {"agent": "judge", "input": "x"}),
+        ),
+        text_reply("done"),
+    )
+    engine = Engine(tmp_path, models={"strong": llm, "judge": Answering()})
+
+    async def close(args: dict[str, Any]) -> str:
+        await engine.close()
+        return "closed"
+
+    run = await generated(
+        engine, "lead", "acme", "x", tools=Tools([Tool("close", "Close", body=close)])
+    )
+    said = "InputError: engine: this engine was closed; build a new Engine"
+    closed, aide, judge = run.steps
+    assert run.reply == "done"
+    assert (closed.result, closed.is_error, aide.result, aide.is_error) == (
+        "closed",
+        False,
+        said,
+        True,
+    )
+    assert not judge.is_error and isinstance(judge.result, str)
+    assert list(json.loads(judge.result)["answers"]) == ["fine"]
+
+
+async def test_a_route_to_a_generation_agent_after_its_engine_closes_fails_the_decision_run(
+    tmp_path: Path,
+) -> None:
+    write(
+        tmp_path / "triage/AGENT.md",
+        agent_md(
+            "triage", kind="decision", model="judge", extra="route: {by: go, to: {next: aide}}\n"
+        ),
+    )
+    write(
+        tmp_path / "triage/questions/go.json",
+        '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep", "next": "Pass"}}',
+    )
+    write(tmp_path / "aide/AGENT.md", agent_md("aide"))
+    engine: Engine
+
+    class Closing(Answering):
+        async def decide(self, state: Any, questions: Any) -> Any:
+            await engine.close()
+            return await super().decide(state, questions)
+
+    llm = Scripted()
+    engine = Engine(tmp_path, models={"strong": llm, "judge": Closing()})
+    with pytest.raises(InputError) as raised:
+        await engine.run("triage", "acme", "x")
+    assert str(raised.value) == "engine: this engine was closed; build a new Engine"
+    assert llm.calls == []
+
+
 async def test_an_edit_to_a_script_after_the_engine_loads_runs_in_the_next_engine_only(
     tmp_path: Path,
 ) -> None:

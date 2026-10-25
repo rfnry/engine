@@ -1962,8 +1962,11 @@ deadline`.
 An engine's workers follow the event loop that calls them, one loop at a time, as a workspace's
 jobs live in one loop: a call from a loop other than the one that started them — `asyncio.run` per
 request or per task, a test's own loop — stops those workers and starts fresh ones on its own, and
-`close()` from another loop stops them at once. Two loops that call one engine at the same time keep
-stopping each other's workers, so give each live loop its own engine.
+`close()` from another loop stops them at once. A worker that stops — for another loop, a
+retirement, a crash or `close()` — is reaped and its pipes closed then and there, so a thousand
+`asyncio.run` calls leave the engine holding no more files or processes than one does. Two loops
+that call one engine at the same time keep stopping each other's workers, so give each live loop
+its own engine.
 
 By default every agent of the tree shares one worker. `Engine(root, models=...,
 workers={"customer_support": 1, "reports": 4})` makes each folder named — by its path from the root,

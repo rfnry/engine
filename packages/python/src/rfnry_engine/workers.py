@@ -5,10 +5,12 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 from collections.abc import Collection, Mapping, Sequence
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import IO, TYPE_CHECKING, Any, NamedTuple, cast
 
 from pydantic import JsonValue
 
@@ -52,25 +54,41 @@ def _kill(group: int) -> None:
         os.killpg(group, signal.SIGKILL)
 
 
-class _Worker(asyncio.SubprocessProtocol):
-    transport: asyncio.SubprocessTransport
-    pid: int
+class _Pipe(asyncio.Protocol):
+    def __init__(self, worker: _Worker, fd: int) -> None:
+        self.worker = worker
+        self.fd = fd
 
-    def __init__(self) -> None:
+    def data_received(self, data: bytes) -> None:
+        self.worker.received(self.fd, data)
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        if self.fd == 1:
+            self.worker.stop()
+
+
+class _Worker:
+    def __init__(self, process: subprocess.Popen[bytes], loop: asyncio.AbstractEventLoop) -> None:
+        self.process = process
+        self.pid = process.pid
         self.calls: dict[int, tuple[str, asyncio.Future[JsonValue]]] = {}
         self.held: set[int] = set()
-        self.ended = asyncio.Event()
-        self._stopped_by: str | None = None
+        self.ended = False
+        self._loop = loop
+        self._stdin: asyncio.WriteTransport | None = None
+        self._readers: list[asyncio.ReadTransport] = []
         self._out = bytearray()
         self._err = bytearray()
-        self._open = {1, 2}
-        self._exited = False
 
-    def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        self.transport = cast(asyncio.SubprocessTransport, transport)
-        self.pid = self.transport.get_pid()
+    async def connect(self) -> None:
+        self._stdin, _ = await self._loop.connect_write_pipe(
+            partial(_Pipe, self, 0), self.process.stdin
+        )
+        for fd, pipe in ((2, self.process.stderr), (1, self.process.stdout)):
+            reader, _ = await self._loop.connect_read_pipe(partial(_Pipe, self, fd), pipe)
+            self._readers.append(reader)
 
-    def pipe_data_received(self, fd: int, data: bytes) -> None:
+    def received(self, fd: int, data: bytes) -> None:
         if fd == 1:
             for line in _lines(self._out, data):
                 self._answer(json.loads(line))
@@ -78,20 +96,8 @@ class _Worker(asyncio.SubprocessProtocol):
             for line in _lines(self._err, data):
                 self._log(line)
 
-    def pipe_connection_lost(self, fd: int, exc: Exception | None) -> None:
-        if fd == 2 and self._err:
-            self._log(bytes(self._err))
-            self._err.clear()
-        self._open.discard(fd)
-        self._finish()
-
-    def process_exited(self) -> None:
-        self._exited = True
-        self._finish()
-
     def write(self, text: str) -> None:
-        pipe = cast(asyncio.WriteTransport, self.transport.get_pipe_transport(0))
-        pipe.write(f"{text}\n".encode())
+        cast(asyncio.WriteTransport, self._stdin).write(f"{text}\n".encode())
 
     def send(self, id: int, name: str, text: str) -> asyncio.Future[JsonValue]:
         reply: asyncio.Future[JsonValue] = asyncio.get_running_loop().create_future()
@@ -100,14 +106,34 @@ class _Worker(asyncio.SubprocessProtocol):
         return reply
 
     def abandon(self, id: int) -> None:
-        if self.calls.pop(id, None) is not None and not self.ended.is_set():
+        if self.calls.pop(id, None) is not None and not self.ended:
             self.held.add(id)
             self.write(json.dumps({"id": id, "cancel": True}))
 
-    def kill(self, reason: str) -> None:
-        if not self.ended.is_set():
-            self._stopped_by = self._stopped_by or reason
-            _kill(self.pid)
+    def stop(self, reason: str | None = None) -> None:
+        if self.ended:
+            return
+        self.ended = True
+        _kill(self.pid)
+        if not self._loop.is_closed():
+            for reader in self._readers:
+                reader.close()
+            if self._stdin is not None:
+                self._stdin.abort()
+        code = self.process.wait()
+        stderr = cast(IO[bytes], self.process.stderr)
+        if not stderr.closed:
+            self.received(2, stderr.read() or b"")
+        if self._err:
+            self._log(bytes(self._err))
+        for pipe in (self.process.stdin, self.process.stdout, stderr):
+            cast(IO[bytes], pipe).close()
+        stopped = f"stopped: {reason or _reason(code)}"
+        for name, future in self.calls.values():
+            if not future.done() and not future.get_loop().is_closed():
+                future.set_exception(WorkerError(f"workers: the worker for {name} {stopped}"))
+        self.calls.clear()
+        self.held.clear()
 
     def _answer(self, reply: dict[str, Any]) -> None:
         self.held.discard(reply["id"])
@@ -122,23 +148,6 @@ class _Worker(asyncio.SubprocessProtocol):
 
     def _log(self, line: bytes) -> None:
         logger.debug("workers: worker %d: %s", self.pid, line.decode(errors="replace"))
-
-    def _finish(self) -> None:
-        if not self._exited or 1 in self._open:
-            return
-        if not self.ended.is_set():
-            _kill(self.pid)
-            reason = self._stopped_by or _reason(cast(int, self.transport.get_returncode()))
-            for name, future in self.calls.values():
-                if not future.done():
-                    future.set_exception(
-                        WorkerError(f"workers: the worker for {name} stopped: {reason}")
-                    )
-            self.calls.clear()
-            self.held.clear()
-            self.ended.set()
-        if 2 not in self._open:
-            self.transport.close()
 
 
 def _load(worker: _Worker | None) -> int:
@@ -192,16 +201,13 @@ class WorkerPool:
             self._drop(CLOSED)
             return
         async with self._lock:
-            workers = self._drop(CLOSED)
-        for worker in workers:
-            await worker.ended.wait()
+            self._drop(CLOSED)
 
-    def _drop(self, reason: str) -> list[_Worker]:
+    def _drop(self, reason: str) -> None:
         workers = [worker for worker in self._workers if worker is not None]
         self._workers = [None] * len(self._workers)
         for worker in workers:
-            worker.kill(reason)
-        return workers
+            worker.stop(reason)
 
     def _follow(self) -> None:
         loop = asyncio.get_running_loop()
@@ -216,9 +222,8 @@ class WorkerPool:
                 raise WorkerError(f"workers: the worker for {name} stopped: {CLOSED}")
             for index, worker in enumerate(self._workers):
                 if worker is not None and len(worker.held) >= self._threads:
-                    worker.kill(RETIRED)
-                    await worker.ended.wait()
-                if worker is not None and worker.ended.is_set():
+                    worker.stop(RETIRED)
+                if worker is not None and worker.ended:
                     self._workers[index] = None
             index = min(range(len(self._workers)), key=lambda i: _load(self._workers[i]))
             chosen = self._workers[index]
@@ -227,16 +232,20 @@ class WorkerPool:
             return chosen
 
     async def _spawn(self) -> _Worker:
-        _, worker = await asyncio.get_running_loop().subprocess_exec(
-            _Worker,
-            sys.executable,
-            "-P",
-            str(PROGRAM),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        process = subprocess.Popen(
+            [sys.executable, "-P", str(PROGRAM)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
             start_new_session=True,
         )
+        worker = _Worker(process, asyncio.get_running_loop())
+        try:
+            await worker.connect()
+        except BaseException:
+            worker.stop()
+            raise
         worker.write(json.dumps(self._scripts))
         return worker
 
