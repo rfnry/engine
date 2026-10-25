@@ -65,7 +65,7 @@ async def test_the_holdout_replay_grades_the_candidate_on_what_each_run_was_give
     for path, text in {
         "support/AGENT.md": "---\nname: support\nkind: generation\nmodel: strong\n---\nYou help.\n",
         "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\n---\n",
-        "grader/questions/matches.md": "---\ntype: check\n---\nDoes the reply match?\n",
+        "grader/questions/matches.json": '{"type": "check", "instructions": "Does the reply match?"}',
     }.items():
         (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / path).write_text(text, encoding="utf-8")

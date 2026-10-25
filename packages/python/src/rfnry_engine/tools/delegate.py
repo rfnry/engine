@@ -13,11 +13,11 @@ from rfnry_engine.models import ToolCall
 from rfnry_engine.records import EventHandler, Generation
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, ToolsLike
-from rfnry_engine.tree import AgentSpec
 
 if TYPE_CHECKING:
     from rfnry_engine.engine import Engine
     from rfnry_engine.tools.workspace import Workspace
+    from rfnry_engine.tree import AgentSpec
 
 DELEGATE_TOOL = "Delegate"
 QUESTION: dict[str, Any] = {

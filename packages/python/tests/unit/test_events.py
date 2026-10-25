@@ -1126,8 +1126,8 @@ async def test_a_run_routed_under_a_delegated_decision_names_the_delegate_call(
         },
     )
     (root / "router" / "questions").mkdir()
-    (root / "router" / "questions" / "team.md").write_text(
-        "---\ntype: choice\noptions: {billing: Charges, other: Anything else}\n---\nWhich team?\n",
+    (root / "router" / "questions" / "team.json").write_text(
+        '{"type": "choice", "instructions": "Which team?", "options": {"billing": "Charges", "other": "Anything else"}}',
         encoding="utf-8",
     )
     llm = ByAgent(
@@ -1217,8 +1217,8 @@ async def test_a_routed_run_whose_start_handler_raises_sits_in_its_router(tmp_pa
         },
     )
     (root / "router" / "questions").mkdir()
-    (root / "router" / "questions" / "team.md").write_text(
-        "---\ntype: choice\noptions: {billing: Charges, other: Anything else}\n---\nWhich team?\n",
+    (root / "router" / "questions" / "team.json").write_text(
+        '{"type": "choice", "instructions": "Which team?", "options": {"billing": "Charges", "other": "Anything else"}}',
         encoding="utf-8",
     )
 

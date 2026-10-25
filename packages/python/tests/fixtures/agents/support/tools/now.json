@@ -1,0 +1,4 @@
+{
+  "description": "The current UTC time",
+  "input_schema": {"type": "object", "properties": {}}
+}

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,7 @@ def test_generation_agent_carries_body_agents_tools_tasks() -> None:
     assert support.body.startswith("You are the support desk")
     assert support.agents == ["triage"]
     assert support.tasks == {"triage": ""}
-    assert support.tools == ["lookup_order", "now"]
+    assert list(support.folder_tools) == ["lookup_order", "now"] and support.keep is None
 
 
 def test_decision_agent_carries_typed_questions_and_route() -> None:
@@ -58,9 +59,7 @@ def test_route_must_point_at_existing_agents(tmp_path: Path) -> None:
     (tmp_path / "d" / "AGENT.md").write_text(
         "---\nname: a\nkind: decision\nmodel: judge\nroute: {by: q, to: {x: ghost}}\n---\n"
     )
-    (tmp_path / "d" / "questions" / "q.md").write_text(
-        "---\ntype: choice\noptions: {x: X, y: Y}\n---\nWhich?\n"
-    )
+    (tmp_path / "d" / "questions" / "q.json").write_text(CHOICE)
     with pytest.raises(ConfigurationError, match="ghost"):
         validate_tree(load_tree(tmp_path))
 
@@ -69,10 +68,10 @@ def test_question_with_one_option_is_refused(tmp_path: Path) -> None:
     (tmp_path / "d").mkdir()
     (tmp_path / "d" / "questions").mkdir()
     (tmp_path / "d" / "AGENT.md").write_text("---\nname: d\nkind: decision\nmodel: judge\n---\n")
-    (tmp_path / "d" / "questions" / "q.md").write_text(
-        "---\ntype: choice\noptions: {x: X}\n---\n?\n"
+    (tmp_path / "d" / "questions" / "q.json").write_text(
+        '{"type": "choice", "instructions": "?", "options": {"x": "X"}}'
     )
-    with pytest.raises(ConfigurationError):
+    with pytest.raises(ConfigurationError, match="a choice needs at least two options"):
         load_agent(tmp_path / "d")
 
 
@@ -103,11 +102,11 @@ def _agent(
     (root / name / "AGENT.md").write_text(f"---\nname: {name}\n{front}{listed}---\n")
     for qid, text in (questions or {}).items():
         (root / name / "questions").mkdir(exist_ok=True)
-        (root / name / "questions" / f"{qid}.md").write_text(text)
+        (root / name / "questions" / f"{qid}.json").write_text(text)
 
 
-CHOICE = "---\ntype: choice\noptions: {x: X, y: Y}\n---\nWhich?\n"
-CHECK = "---\ntype: check\n---\nIs it?\n"
+CHOICE = '{"type": "choice", "instructions": "Which?", "options": {"x": "X", "y": "Y"}}'
+CHECK = '{"type": "check", "instructions": "Is it?"}'
 
 
 @pytest.mark.parametrize(
@@ -199,11 +198,10 @@ def test_an_unknown_frontmatter_key_is_refused_by_name(
 def test_only_true_and_false_are_booleans_in_frontmatter(tmp_path: Path) -> None:
     _agent(tmp_path, "a", "kind: generation\nmodel: strong\nworkspace: true\n")
     assert load_agent(tmp_path / "a").workspace is True
-    choice = "---\ntype: choice\noptions: {yes: Agrees, no: Disagrees, off: Unrelated}\n---\n?\n"
-    _agent(tmp_path, "d", "kind: decision\nmodel: judge\n", {"q": choice})
-    question = load_agent(tmp_path / "d").questions["q"]
-    assert isinstance(question, Choice)
-    assert question.options == {"yes": "Agrees", "no": "Disagrees", "off": "Unrelated"}
+    _agent(tmp_path, "b", "kind: generation\nmodel: strong\nreads: [yes, on]\n")
+    (tmp_path / "yes").mkdir()
+    (tmp_path / "on").mkdir()
+    assert list(load_tree(tmp_path)["b"].reads) == ["yes", "on"]
 
 
 def test_every_example_tree_loads_with_its_checks_criteria() -> None:
@@ -216,47 +214,52 @@ def test_every_example_tree_loads_with_its_checks_criteria() -> None:
             for qid, question in spec.questions.items():
                 if not isinstance(question, Check):
                     continue
-                text = (spec.root / "questions" / f"{qid}.md").read_text(encoding="utf-8")
-                assert (question.yes is not None) == ("\nyes:" in text), (root, qid)
-                assert (question.no is not None) == ("\nno:" in text), (root, qid)
+                written = json.loads((spec.root / "questions" / f"{qid}.json").read_text())
+                assert (question.yes is not None) == ("yes" in written), (root, qid)
+                assert (question.no is not None) == ("no" in written), (root, qid)
 
 
 def test_an_unknown_key_in_a_question_is_refused_by_name(tmp_path: Path) -> None:
-    typo = "---\ntype: choice\noptoins: {x: X, y: Y}\n---\nWhich?\n"
+    typo = '{"type": "choice", "instructions": "Which?", "optoins": {"x": "X", "y": "Y"}}'
     _agent(tmp_path, "d", "kind: decision\nmodel: judge\n", {"q": typo})
     with pytest.raises(ConfigurationError) as refused:
         load_agent(tmp_path / "d")
-    path = tmp_path / "d" / "questions" / "q.md"
+    path = tmp_path / "d" / "questions" / "q.json"
     assert str(refused.value) == (
-        f"frontmatter: unknown key 'optoins' in {path}; it takes type, instructions, options, levels, yes, no"
+        f"tree: {path} has the unknown key 'optoins'; a question takes type, instructions, options, levels, yes and no"
     )
 
 
-def test_a_question_takes_structure_through_its_frontmatter(tmp_path: Path) -> None:
-    choice = (
-        "---\ntype: choice\n"
-        "instructions:\n  question: Which team handles `ticket`?\n  ticket: {id: 7, vip: true}\n"
-        "options:\n"
-        "  billing:\n    what: Charges\n    examples: [charged twice, yes, on]\n"
-        "  orders: [Delivery, Returns]\n"
-        "  other:\n"
-        "  legal: Contracts\n"
-        "---\n"
-    )
-    score = (
-        "---\ntype: score\nlevels:\n  - {summary: One change, signals: [a single fix]}\n"
-        "  - [Several]\n  - Many\n---\nHow focused is the change?\n"
-    )
-    check = (
-        "---\ntype: check\ninstructions:\n  - Does `message` ask for a credential?\n  - message\n"
-        "yes: {what: Asks for a password, examples: [Reply with your PIN]}\n"
-        "no: [No credential is requested]\n---\n"
-    )
+def test_a_question_takes_structure_as_json(tmp_path: Path) -> None:
+    choice = {
+        "type": "choice",
+        "instructions": {
+            "question": "Which team handles `ticket`?",
+            "ticket": {"id": 7, "vip": True},
+        },
+        "options": {
+            "billing": {"what": "Charges", "examples": ["charged twice", "yes", "on"]},
+            "orders": ["Delivery", "Returns"],
+            "other": None,
+            "legal": "Contracts",
+        },
+    }
+    score = {
+        "type": "score",
+        "instructions": "How focused is the change?",
+        "levels": [{"summary": "One change", "signals": ["a single fix"]}, ["Several"], "Many"],
+    }
+    check = {
+        "type": "check",
+        "instructions": ["Does `message` ask for a credential?", "message"],
+        "yes": {"what": "Asks for a password", "examples": ["Reply with your PIN"]},
+        "no": ["No credential is requested"],
+    }
     _agent(
         tmp_path,
         "d",
         "kind: decision\nmodel: judge\n",
-        {"team": choice, "scope": score, "creds": check},
+        {"team": json.dumps(choice), "scope": json.dumps(score), "creds": json.dumps(check)},
     )
     assert load_agent(tmp_path / "d").questions == {
         "creds": Check(
@@ -286,138 +289,50 @@ def test_a_question_takes_structure_through_its_frontmatter(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("text", "message"),
     [
+        ('{"type": "check"}', "instructions: field required"),
         (
-            "---\ntype: check\ninstructions:\n  question: Is it?\n---\nIs it?\n",
-            "gives instructions both in its frontmatter and in its body",
+            '{"type": "check", "instructions": "  "}',
+            "instructions: instructions must say something",
         ),
-        ("---\ntype: check\n---\n\n", "gives no instructions, in its body or its frontmatter"),
-        (
-            "---\ntype: check\ninstructions: {}\n---\n",
-            "gives no instructions, in its body or its frontmatter",
-        ),
+        ('{"type": "check", "instructions": {}}', "instructions: instructions must say something"),
+        ('{"type": "check", "instructions": []}', "instructions: instructions must say something"),
     ],
 )
-def test_a_question_has_its_instructions_in_its_frontmatter_or_its_body(
+def test_a_question_has_instructions_that_say_something(
     tmp_path: Path, text: str, message: str
 ) -> None:
     _agent(tmp_path, "d", "kind: decision\nmodel: judge\n", {"q": text})
-    path = tmp_path / "d" / "questions" / "q.md"
+    path = tmp_path / "d" / "questions" / "q.json"
     with pytest.raises(ConfigurationError) as refused:
         load_agent(tmp_path / "d")
-    assert str(refused.value).startswith(f"tree: question {path} {message}; ")
+    assert str(refused.value).startswith(f"tree: invalid question {path}; {message}")
 
 
 @pytest.mark.parametrize(
     "text",
     [
-        "---\ntype: check\ninstructions: Is it?\n---\n",
-        "---\ntype: score\nlevels: [low, ~]\n---\nHow?\n",
-        "---\ntype: score\nlevels: [low, 2]\n---\nHow?\n",
-        "---\ntype: choice\noptions: {a: A, b: 2026-01-01}\n---\nWhich?\n",
+        '{"type": "score", "instructions": "How?", "levels": ["low", null]}',
+        '{"type": "score", "instructions": "How?", "levels": ["low", 2]}',
+        '{"type": "choice", "instructions": "Which?", "options": {"a": "A", "b": 2026}}',
+        '{"type": "check", "instructions": "Is it?", "yes": true}',
     ],
 )
-def test_structure_in_frontmatter_is_an_object_or_a_list_of_json(tmp_path: Path, text: str) -> None:
+def test_a_question_s_text_is_a_string_an_object_or_a_list(tmp_path: Path, text: str) -> None:
     _agent(tmp_path, "d", "kind: decision\nmodel: judge\n", {"q": text})
-    with pytest.raises(ConfigurationError, match="^frontmatter: invalid question "):
+    with pytest.raises(ConfigurationError, match="^tree: invalid question "):
         load_agent(tmp_path / "d")
 
 
 def test_a_decision_agent_may_have_no_questions_of_its_own(tmp_path: Path) -> None:
     _agent(tmp_path, "a", "kind: decision\nmodel: judge\n")
     spec = load_agent(tmp_path / "a")
-    assert spec.questions == {} and spec.tasks == {} and spec.task_questions == {}
-
-
-def test_a_decision_agent_s_tasks_are_folders_of_questions(tmp_path: Path) -> None:
-    _agent(tmp_path, "a", "kind: decision\nmodel: judge\n", {"urgent": CHECK})
-    for task, qid, text in (
-        ("grade", "tone", CHECK),
-        ("grade", "pick", CHOICE),
-        ("sort", "q", CHECK),
-    ):
-        (tmp_path / "a" / "tasks" / task).mkdir(parents=True, exist_ok=True)
-        (tmp_path / "a" / "tasks" / task / f"{qid}.md").write_text(text)
-    (tmp_path / "a" / "tasks" / "_drafts").mkdir()
-    (tmp_path / "a" / "tasks" / "_drafts" / "x.md").write_text(CHECK)
-    (tmp_path / "a" / "tasks" / "_index.md").write_text("grade, sort\n")
-    spec = load_agent(tmp_path / "a")
-    assert spec.tasks == {"grade": "", "sort": ""} and set(spec.questions) == {"urgent"}
-    assert {task: sorted(qs) for task, qs in spec.task_questions.items()} == {
-        "grade": ["pick", "tone"],
-        "sort": ["q"],
-    }
-    assert isinstance(spec.task_questions["grade"]["pick"], Choice)
-
-
-def test_a_bad_question_in_a_task_is_refused_like_any_question_file(tmp_path: Path) -> None:
-    _agent(tmp_path, "a", "kind: decision\nmodel: judge\n")
-    (tmp_path / "a" / "tasks" / "grade").mkdir(parents=True)
-    (tmp_path / "a" / "tasks" / "grade" / "q.md").write_text(
-        "---\ntype: choice\noptions: {x: X}\n---\n?\n"
-    )
-    with pytest.raises(ConfigurationError, match="^tree: invalid question .*q.md"):
-        load_agent(tmp_path / "a")
-
-
-def test_a_decision_agent_s_task_is_a_folder_not_a_file(tmp_path: Path) -> None:
-    _agent(tmp_path, "a", "kind: decision\nmodel: judge\n", {"q": CHECK})
-    (tmp_path / "a" / "tasks").mkdir()
-    (tmp_path / "a" / "tasks" / "grade.md").write_text("Grade it.\n")
-    message = "^tree: decision agent 'a' has tasks/grade.md, but keeps each task's questions in a folder; move it to tasks/grade/$"
-    with pytest.raises(ConfigurationError, match=message):
-        load_agent(tmp_path / "a")
-
-
-def _task(root: Path, agent: str, task: str, qid: str, text: str = CHECK) -> None:
-    (root / agent / "tasks" / task).mkdir(parents=True, exist_ok=True)
-    (root / agent / "tasks" / task / f"{qid}.md").write_text(text)
-
-
-def test_a_task_adds_questions_so_it_repeats_no_id_of_questions(tmp_path: Path) -> None:
-    _agent(tmp_path, "a", "kind: decision\nmodel: judge\n", {"urgent": CHECK, "tone": CHECK})
-    _task(tmp_path, "a", "grade", "pick", CHOICE)
-    _task(tmp_path, "a", "grade", "tone")
-    _task(tmp_path, "a", "grade", "urgent")
-    message = "^tree: decision agent 'a' asks 'tone', 'urgent' in both questions/ and tasks/grade/; rename one$"
-    with pytest.raises(ConfigurationError, match=message):
-        load_agent(tmp_path / "a")
-
-
-def test_two_tasks_may_share_an_id_since_they_are_never_asked_together(tmp_path: Path) -> None:
-    _agent(tmp_path, "a", "kind: decision\nmodel: judge\n", {"urgent": CHECK})
-    _task(tmp_path, "a", "grade", "tone")
-    _task(tmp_path, "a", "sort", "tone", CHOICE)
-    spec = load_agent(tmp_path / "a")
-    assert isinstance(spec.task_questions["grade"]["tone"], Check)
-    assert isinstance(spec.task_questions["sort"]["tone"], Choice)
-
-
-def test_a_decision_agent_s_questions_may_all_live_in_tasks(tmp_path: Path) -> None:
-    _agent(tmp_path, "a", "kind: decision\nmodel: judge\n")
-    _task(tmp_path, "a", "grade", "tone")
-    spec = load_agent(tmp_path / "a")
-    assert spec.questions == {} and spec.tasks == {"grade": ""}
-
-
-def test_a_routing_agent_may_declare_tasks(tmp_path: Path) -> None:
-    _agent(
-        tmp_path,
-        "a",
-        "kind: decision\nmodel: judge\nroute: {by: q, to: {x: b}}\n",
-        {"q": CHOICE},
-    )
-    _agent(tmp_path, "b", "kind: generation\nmodel: strong\n")
-    _task(tmp_path, "a", "grade", "tone")
-    agents = load_tree(tmp_path)
-    validate_tree(agents)
-    assert agents["a"].tasks == {"grade": ""} and set(agents["a"].questions) == {"q"}
+    assert spec.questions == {} and spec.tasks == {} and spec.scripted == {}
 
 
 def test_a_delegate_target_needs_no_questions_of_its_own(tmp_path: Path) -> None:
     _agent(tmp_path, "a", "kind: generation\nmodel: strong\nagents: [b, c]\n")
     _agent(tmp_path, "b", "kind: decision\nmodel: judge\n")
     _agent(tmp_path, "c", "kind: decision\nmodel: judge\n")
-    _task(tmp_path, "c", "grade", "tone")
     validate_tree(load_tree(tmp_path))
 
 
@@ -429,54 +344,43 @@ def _router(root: Path, to: str) -> None:
         {"q": CHOICE},
     )
     _agent(root, "b", "kind: decision\nmodel: judge\n")
-    _task(root, "b", "grade", "tone")
-    (root / "b" / "tasks" / "empty").mkdir()
     _agent(root, "g", "kind: generation\nmodel: strong\n")
     (root / "g" / "tasks").mkdir()
     (root / "g" / "tasks" / "billing.md").write_text("Answer the billing question.\n")
 
 
-@pytest.mark.parametrize(
-    "to",
-    [
-        "{x: b}",
-        "{x: {agent: b}}",
-        "{x: {agent: b, task: empty}}",
-    ],
-)
+@pytest.mark.parametrize("to", ["{x: b}", "{x: {agent: b}}"])
 def test_a_route_to_a_decision_agent_that_could_never_ask_anything_is_refused(
     tmp_path: Path, to: str
 ) -> None:
     _router(tmp_path, to)
     message = (
-        "^tree: route of 'a' gives decision agent 'b' nothing to ask: it has no questions/ "
-        "and the route names no task with questions; give it questions/"
+        "^tree: route of 'a' gives decision agent 'b' nothing to ask: it has no questions/; "
+        "give it questions/, since a route hands it only the input$"
     )
     with pytest.raises(ConfigurationError, match=message):
         validate_tree(load_tree(tmp_path))
 
 
-@pytest.mark.parametrize(
-    ("to", "agent", "task"),
-    [("{x: {agent: b, task: ghost}}", "b", "ghost"), ("{x: {agent: g, task: tone}}", "g", "tone")],
-)
-def test_a_route_names_only_a_task_its_agent_has(
-    tmp_path: Path, to: str, agent: str, task: str
-) -> None:
-    _router(tmp_path, to)
-    message = f"^tree: route of 'a' points at agent '{agent}', which has no task '{task}';"
+def test_a_route_names_only_a_task_its_agent_has(tmp_path: Path) -> None:
+    _router(tmp_path, "{x: {agent: g, task: tone}}")
+    message = (
+        "^tree: route of 'a' points at agent 'g', which has no task 'tone'; its tasks are billing$"
+    )
     with pytest.raises(ConfigurationError, match=message):
         validate_tree(load_tree(tmp_path))
 
 
-def test_a_route_entry_is_an_agent_or_an_agent_with_one_of_its_tasks(tmp_path: Path) -> None:
-    _router(tmp_path, "{x: {agent: b, task: grade}, y: {agent: g, task: billing}}")
+def test_a_route_entry_is_an_agent_or_a_generation_agent_with_one_of_its_tasks(
+    tmp_path: Path,
+) -> None:
+    _router(tmp_path, "{x: g, y: {agent: g, task: billing}}")
     agents = load_tree(tmp_path)
     validate_tree(agents)
     route = agents["a"].route
     assert route is not None
     assert {option: (t.agent, t.task) for option, t in route.to.items()} == {
-        "x": ("b", "grade"),
+        "x": ("g", None),
         "y": ("g", "billing"),
     }
     named = load_tree(FIXTURES)["frontdesk"].route

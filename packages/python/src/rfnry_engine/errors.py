@@ -32,3 +32,7 @@ class DelegationDepthError(EngineException):
 
 class StorageError(EngineException):
     pass
+
+
+class WorkerError(EngineException):
+    pass

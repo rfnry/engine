@@ -38,7 +38,7 @@ from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Fixed, Scripted, Streaming, said, text_reply
+from .fakes import Fixed, Scripted, Streaming, said, text_reply
 
 
 def _tool_use(*calls: ToolCall) -> Reply:
@@ -48,7 +48,7 @@ def _tool_use(*calls: ToolCall) -> Reply:
 
 
 def engine_for(fixtures: Path, llm: Any, **kwargs: Any) -> Engine:
-    return Engine(fixtures, tools=TOOLS, **kwargs, models={"strong": llm})
+    return Engine(fixtures, **kwargs, models={"strong": llm})
 
 
 async def test_plain_reply_is_the_record(fixtures: Path) -> None:
@@ -186,12 +186,9 @@ async def test_calls_after_an_accepted_output_are_answered_but_never_run(
             ToolCall(id="l", name="lookup_order", args={"order_id": "A-1"}),
         )
     )
-    engine = Engine(
-        fixtures,
-        tools=[Tool("lookup_order", "Fetch an order", body=lookup), TOOLS[1]],
-        models={"strong": llm},
-    )
-    run = await engine.run("support", "acme", "x", expect=Verdict)
+    engine = Engine(fixtures, models={"strong": llm})
+    tools = Tools([Tool("lookup_order", "Fetch an order", body=lookup)])
+    run = await engine.run("support", "acme", "x", expect=Verdict, tools=tools)
     assert isinstance(run, Generation) and looked == []
     assert [(m.tool_call_id, m.is_error, m.content) for m in run.conversation[-2:]] == [
         ("o", False, "accepted"),
@@ -215,12 +212,9 @@ async def test_calls_in_a_reply_that_ran_out_of_room_are_answered_but_never_run(
         stop_reason="max_tokens",
     )
     llm = Scripted(cut, text_reply("It is on its way."))
-    engine = Engine(
-        fixtures,
-        tools=[Tool("lookup_order", "Fetch an order", body=lookup), TOOLS[1]],
-        models={"strong": llm},
-    )
-    first = await engine.run("support", "acme", "Where is A-1?")
+    engine = Engine(fixtures, models={"strong": llm})
+    tools = Tools([Tool("lookup_order", "Fetch an order", body=lookup)])
+    first = await engine.run("support", "acme", "Where is A-1?", tools=tools)
     assert isinstance(first, Generation) and first.reply == "Let me look" and looked == []
     assert first.conversation[-1] == Message(
         role="tool",
@@ -229,7 +223,9 @@ async def test_calls_in_a_reply_that_ran_out_of_room_are_answered_but_never_run(
         is_error=True,
     )
     assert [(s.tool, s.is_error, s.duration_ms) for s in first.steps] == [("lookup_order", True, 0)]
-    second = await engine.run("support", "acme", "And now?", history=first.added, start=0)
+    second = await engine.run(
+        "support", "acme", "And now?", history=first.added, start=0, tools=tools
+    )
     assert isinstance(second, Generation) and second.reply == "It is on its way."
     assert looked == []
 
@@ -274,7 +270,8 @@ async def test_each_delta_names_its_turn_and_the_reply_is_the_last_turns_text(
     async def collect(event: Event) -> None:
         seen.append(event)
 
-    run = await engine_for(fixtures, llm).run("support", "acme", "Where is A-1?", on_event=collect)
+    async with engine_for(fixtures, llm) as engine:
+        run = await engine.run("support", "acme", "Where is A-1?", on_event=collect)
     assert isinstance(run, Generation)
     order = [e.turn if isinstance(e, TextDelta) else type(e).__name__ for e in seen]
     assert [kind for kind, _ in groupby(order)] == [
@@ -307,7 +304,6 @@ async def test_a_run_that_raises_is_recorded_with_its_children(
     llm = Scripted(_tool_use(delegate), _tool_use(ToolCall(id="c", name="LS", args={})))
     engine = Engine(
         fixtures,
-        tools=TOOLS,
         models={"strong": llm, "judge": Fixed(triage)},
         refinery=Refinery(storage),
         max_steps=2,
@@ -326,7 +322,7 @@ async def test_refusals(fixtures: Path) -> None:
     with pytest.raises(ConfigurationError, match="agent .triage. runs on model .judge., which"):
         await engine.run("triage", "acme", "x")
     with pytest.raises(ConfigurationError, match="agent .billing. runs on model .strong., which"):
-        await Engine(fixtures, tools=TOOLS, models={}).run("billing", "acme", "x")
+        await Engine(fixtures, models={}).run("billing", "acme", "x")
 
 
 @pytest.mark.parametrize("task", ["ghost", "../AGENT", "../../billing/AGENT", "../rules/refunds"])
@@ -388,21 +384,6 @@ async def test_a_slow_call_tool_times_out_and_the_run_continues(fixtures: Path) 
     )
     assert not run.steps[1].is_error and run.steps[1].result == "pong"
     assert llm.calls[1][1][-2].content == "TimeoutError: slow timed out after 0.05s"
-
-
-async def test_a_slow_declared_tool_times_out(fixtures: Path) -> None:
-    llm = Scripted(
-        _tool_use(ToolCall(id="l", name="lookup_order", args={"order_id": "1"})), text_reply("ok")
-    )
-    engine = Engine(
-        fixtures,
-        tools=[Tool("lookup_order", "Fetch an order", body=_slow), TOOLS[1]],
-        tool_timeout=0.05,
-        models={"strong": llm},
-    )
-    run = await engine.run("support", "acme", "x")
-    assert isinstance(run, Generation)
-    assert run.steps[0].result == "TimeoutError: lookup_order timed out after 0.05s"
 
 
 async def test_a_tool_raising_its_own_timeout_is_not_the_deadline(fixtures: Path) -> None:

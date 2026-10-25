@@ -34,7 +34,7 @@ from rfnry_engine.models import (
 from rfnry_engine.records import Decision, Generation
 
 from . import lookalike as other
-from .fakes import TOOLS, Fixed, Scripted, Streaming
+from .fakes import Fixed, Scripted, Streaming
 
 
 class Adapter:
@@ -69,7 +69,7 @@ async def test_an_adapter_typed_against_lookalike_classes_runs_in_the_engine(
     fixtures: Path,
 ) -> None:
     adapter = Adapter()
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": adapter, "judge": adapter})
+    engine = Engine(fixtures, models={"strong": adapter, "judge": adapter})
     generation = await engine.run("support", "acme", "x")
     assert isinstance(generation, Generation) and generation.reply == "done"
     assert generation.steps[0].tool == "Read" and generation.usage == Usage(input=3, output=1)
@@ -129,7 +129,7 @@ async def test_parts_from_another_library_are_read_by_their_fields(fixtures: Pat
         Reply(tool_calls=[ToolCall(id="p", name="photo")], stop_reason="tool_use"),
         Reply(text="A cat."),
     )
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
+    engine = Engine(fixtures, models={"strong": llm})
     run = await engine.run(
         "billing",
         "acme",
@@ -149,7 +149,7 @@ async def test_parts_from_another_library_are_read_by_their_fields(fixtures: Pat
 
 async def test_history_from_another_library_is_read_by_its_fields(fixtures: Path) -> None:
     llm = Scripted(Reply(text="Still a cat."))
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
+    engine = Engine(fixtures, models={"strong": llm})
     history = [
         other.Message(
             role="user",
@@ -185,7 +185,7 @@ async def test_history_from_another_library_is_read_by_its_fields(fixtures: Path
 async def test_a_malformed_part_from_another_library_in_history_is_an_input_error(
     fixtures: Path,
 ) -> None:
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted(Reply(text="x"))})
+    engine = Engine(fixtures, models={"strong": Scripted(Reply(text="x"))})
     missing = other.Message.model_construct(
         role="user", content=[other.Text.model_construct(type="text")]
     )
@@ -200,7 +200,7 @@ async def test_a_malformed_part_from_another_library_in_history_is_an_input_erro
 
 
 async def test_a_history_that_does_not_fit_is_refused_without_its_content(fixtures: Path) -> None:
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted(Reply(text="x"))})
+    engine = Engine(fixtures, models={"strong": Scripted(Reply(text="x"))})
     row = {"role": "user", "content": {"card": "4242"}}
     with pytest.raises(InputError, match=r"^engine: history does not fit the contract") as caught:
         await engine.run("billing", "acme", "x", history=[row])

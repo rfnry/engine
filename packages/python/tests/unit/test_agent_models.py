@@ -8,7 +8,6 @@ from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.models import Message
 from rfnry_engine.records import Generation
 from rfnry_engine.tools.engine_tools import EngineTools
-from rfnry_engine.tools.tools import Tool
 
 from .fakes import Answering, Scripted, delegating, text_reply
 
@@ -42,10 +41,6 @@ def pair(root: Path) -> Path:
     write(root / "lead/AGENT.md", agent_md("lead", extra="agents: [writer]\n"))
     write(root / "writer/AGENT.md", agent_md("writer", model="fast"))
     return root
-
-
-async def noop(args: dict[str, Any]) -> str:
-    return "ok"
 
 
 async def test_each_agent_runs_on_the_model_its_agent_md_names(tmp_path: Path) -> None:
@@ -144,8 +139,8 @@ async def test_a_router_is_refused_before_its_questions_when_a_target_s_model_wa
         ),
     )
     write(
-        tmp_path / "triage/questions/team.md",
-        "---\ntype: choice\noptions: {writing: Writing, other: Other}\n---\nWhich?\n",
+        tmp_path / "triage/questions/team.json",
+        '{"type": "choice", "instructions": "Which?", "options": {"writing": "Writing", "other": "Other"}}',
     )
     write(tmp_path / "writer/AGENT.md", agent_md("writer", model="fast"))
     judge = Answering()
@@ -186,24 +181,6 @@ async def test_load_follows_the_media_types_of_the_agent_s_model(tmp_path: Path)
         await EngineTools(engine, agent="writer", scope="acme").dispatch(
             "Load", {"path": "diagram.png"}
         )
-
-
-def declaring(root: Path) -> Path:
-    pair(root)
-    write(root / "writer/AGENT.md", agent_md("writer", model="fast", extra="tools: [fetch]\n"))
-    return root
-
-
-def test_declared_tools_need_bodies_only_for_agents_whose_model_was_given(tmp_path: Path) -> None:
-    root = declaring(tmp_path)
-    Engine(root, models={"strong": Scripted()})
-    with pytest.raises(ConfigurationError, match="fetch"):
-        Engine(root, models={"strong": Scripted(), "fast": Scripted()})
-    Engine(
-        root,
-        models={"strong": Scripted(), "fast": Scripted()},
-        tools=[Tool("fetch", "Fetch a page", body=noop)],
-    )
 
 
 def test_engine_models_is_the_mapping_given_and_there_is_no_generation(tmp_path: Path) -> None:

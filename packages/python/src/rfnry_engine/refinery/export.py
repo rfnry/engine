@@ -139,7 +139,6 @@ def decision_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[di
                 "run_id": row.run_id,
                 "holdout": holdout,
                 "agent": row.agent,
-                "task": row.task,
                 "tags": body["tags"],
                 "at": row.at.isoformat(),
                 "model": row.model,

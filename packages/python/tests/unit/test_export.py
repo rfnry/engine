@@ -16,15 +16,13 @@ from rfnry_engine.refinery.labels import Outcome, Review
 from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import RunRow, Storage
-from rfnry_engine.tools.tools import Tool
+from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import (
-    TOOLS,
     MemoryBucket,
     Scripted,
     decision_record,
     generation_record,
-    lookup_order,
     text_reply,
 )
 
@@ -74,6 +72,7 @@ async def test_export_writes_three_datasets_with_labels_and_holdout(storage: Sto
     [decision_row] = _lines(bucket.objects[keys[0]])
     assert decision_row["holdout"] is is_holdout(decision.run_id)
     assert decision_row["question_id"] == "urgent" and decision_row["answer"] == 0.8
+    assert "task" not in decision_row
     assert (
         decision_row["truth"] is False
         and decision_row["truth_source"] == "human"
@@ -145,16 +144,9 @@ async def test_a_run_still_working_at_an_export_is_in_the_next_one(
             return text_reply("answer")
 
     refinery = Refinery(storage)
-    engine = Engine(
-        fixtures,
-        tools=[
-            Tool("lookup_order", "Fetch an order", body=lookup_order),
-            Tool("now", "The current time", body=slow),
-        ],
-        refinery=refinery,
-        models={"strong": Model()},
-    )
-    long = asyncio.create_task(engine.run("support", "acme", "long"))
+    engine = Engine(fixtures, refinery=refinery, models={"strong": Model()})
+    gated = Tools([Tool("now", "The current time", body=slow)])
+    long = asyncio.create_task(engine.run("support", "acme", "long", tools=gated))
     await started.wait()
     await engine.run("support", "acme", "quick")
     first = await refinery.export("acme", MemoryBucket())
@@ -322,13 +314,16 @@ async def test_a_generation_row_carries_the_tools_offered_and_the_conversation_i
         text_reply("Refunded."),
     )
     refinery = Refinery(storage)
-    engine = Engine(fixtures, tools=TOOLS, refinery=refinery, models={"strong": llm})
-    run = await engine.run(
-        "support",
-        "acme",
-        "Charged twice.",
-        history=[Message(role="user", content="hi"), Message(role="assistant", content="hello")],
-    )
+    async with Engine(fixtures, refinery=refinery, models={"strong": llm}) as engine:
+        run = await engine.run(
+            "support",
+            "acme",
+            "Charged twice.",
+            history=[
+                Message(role="user", content="hi"),
+                Message(role="assistant", content="hello"),
+            ],
+        )
     assert isinstance(run, Generation)
     offered = llm.calls[0][2]
     assert run.tools == offered and {"lookup_order", "now", "Read", "Delegate"} <= {

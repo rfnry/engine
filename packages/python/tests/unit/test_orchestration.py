@@ -169,11 +169,11 @@ async def test_spent_sums_delegated_routed_and_decision_runs(tmp_path: Path) -> 
         "lead/AGENT.md": "---\nname: lead\nkind: generation\nmodel: strong\nagents: [worker, router, judge]\n---\nLead.\n",
         "worker/AGENT.md": "---\nname: worker\nkind: generation\nmodel: strong\n---\nWork.\n",
         "router/AGENT.md": "---\nname: router\nkind: decision\nmodel: judge\nroute:\n  by: pick\n  to: {go: worker}\n---\n",
-        "router/questions/pick.md": (
-            "---\ntype: choice\noptions: {go: Go on, stay: Stay}\n---\nWhere to?\n"
+        "router/questions/pick.json": (
+            '{"type": "choice", "instructions": "Where to?", "options": {"go": "Go on", "stay": "Stay"}}'
         ),
         "judge/AGENT.md": "---\nname: judge\nkind: decision\nmodel: judge\n---\n",
-        "judge/questions/ok.md": "---\ntype: check\n---\nIs it fine?\n",
+        "judge/questions/ok.json": '{"type": "check", "instructions": "Is it fine?"}',
     }
     delegating = calls(
         ("d0", "Delegate", {"agent": "worker", "input": "a"}),

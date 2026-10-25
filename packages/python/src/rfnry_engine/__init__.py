@@ -9,6 +9,7 @@ from rfnry_engine.errors import (
     NotFoundError,
     RunawayError,
     StorageError,
+    WorkerError,
 )
 from rfnry_engine.foreground import current_call
 from rfnry_engine.jail import Jail
@@ -148,6 +149,7 @@ __all__ = [
     "ToolSpec",
     "Tools",
     "Usage",
+    "WorkerError",
     "Workspace",
     "Backend",
     "Local",

@@ -6,7 +6,7 @@ from rfnry_engine.models import Reply, ToolCall
 from rfnry_engine.records import Generation
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Scripted, text_reply
+from .fakes import Scripted, text_reply
 
 
 async def venue(args: dict[str, Any]) -> dict[str, Any]:
@@ -20,7 +20,7 @@ async def test_a_dict_result_reaches_the_model_unescaped(fixtures: Path) -> None
         ),
         text_reply("ok"),
     )
-    run = await Engine(fixtures, tools=TOOLS, models={"strong": llm}).run(
+    run = await Engine(fixtures, models={"strong": llm}).run(
         "billing", "acme", "x", tools=Tools([Tool("venue", body=venue)])
     )
     assert isinstance(run, Generation)

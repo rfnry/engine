@@ -15,6 +15,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with asyncpg.create_pool(os.environ["RFNRY_EXAMPLES_POSTGRES_URL"]) as pool:
         await harness.setup(pool)
         yield
+        await harness.engine.close()
 
 
 app = FastAPI(lifespan=lifespan)

@@ -1,4 +1,0 @@
----
-type: check
----
-Is every claim in the reply supported by a tool result?

@@ -1,6 +1,5 @@
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from copy import deepcopy
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -9,7 +8,7 @@ from rfnry_engine.models import HistoryLike, ToolCall
 from rfnry_engine.records import EventHandler
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.builtins import builtins, load_tool
-from rfnry_engine.tools.declared import declared_tools, described
+from rfnry_engine.tools.declared import chosen, described, folder_tool, picked
 from rfnry_engine.tools.delegate import delegate_tool
 from rfnry_engine.tools.history import HISTORY_TOOL, history_tool
 from rfnry_engine.tools.tools import Tool, Tools, ToolsLike
@@ -42,6 +41,7 @@ class EngineTools(Tools):
         on_event: EventHandler | None = None,
         stop: Callable[[], Stop | None] | None = None,
     ) -> None:
+        engine._open()
         if not scope:
             raise InputError("engine_tools: scope is required")
         if workspace is not None and workspace.scope != scope:
@@ -63,22 +63,19 @@ class EngineTools(Tools):
             raise ConfigurationError(
                 f"engine_tools: agent {agent!r} declares workspace: true; pass workspace= to the run"
             )
-        declared = [
-            replace(tool, input_schema=deepcopy(tool.input_schema))
-            for tool in engine._declared.get(agent) or declared_tools(spec, engine.tools)
-        ]
-        given = [] if tools is None else [d["name"] for d in tools.definitions()]
-        if HISTORY_TOOL in [*(t.name for t in declared), *given]:
+        given = Tools() if tools is None else Tools([tools])
+        if HISTORY_TOOL in given:
             raise ConfigurationError(
                 f"engine_tools: a tool named {HISTORY_TOOL!r} collides with the builtin"
             )
         room = workspace if spec.workspace else None
         media_types = getattr(engine.models.get(spec.model), "media_types", None)
         backend = room.backend if room else None
-        items: list[Tool | ToolsLike] = [
+        files = [
             *builtins(spec.root, from_agent(spec.path, spec.reads), backend),
             load_tool(spec.root, backend, media_types, spec.reads.values()),
         ]
+        items = [tool for tool in files if picked(spec, tool.name)]
         if history is not None and start > 0:
             items.append(
                 history_tool(
@@ -89,13 +86,19 @@ class EngineTools(Tools):
                     timeout=engine.tool_timeout,
                 )
             )
-        items.extend(declared)
+        pool = engine._workers.pool(agent)
+        folder = [
+            folder_tool(definition, pool, engine.tool_timeout, scope)
+            for name, definition in chosen(spec).items()
+            if name not in given
+        ]
+        items.extend(folder)
         if room is not None:
             items.extend(room.tools())
         if spec.agents:
             items.append(
                 delegate_tool(engine, spec, scope, tools, workspace, tags, approve, on_event, stop)
             )
-        if tools is not None:
-            items.append(tools)
-        super().__init__(map(_own, items))
+        kept: list[Tool | ToolsLike] = [tool for tool in items if tool.name not in spec.drop]
+        super().__init__(map(_own, [*kept, given.without(*spec.drop)]))
+        self._in_workers = frozenset(tool.name for tool in folder)

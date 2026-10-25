@@ -27,7 +27,6 @@ from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import (
     PICK,
-    TOOLS,
     Answering,
     Desk,
     Fixed,
@@ -53,7 +52,7 @@ def _delegate(agent: str, text: str, call_id: str = "d1") -> Reply:
 
 async def test_delegate_tool_exists_only_when_agents_are_named(fixtures: Path) -> None:
     llm = Scripted(text_reply("a"), text_reply("b"))
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm})
+    engine = Engine(fixtures, models={"strong": llm})
     await engine.run("support", "acme", "x")
     await engine.run("billing", "acme", "x")
     assert "Delegate" in [t.name for t in llm.calls[0][2]]
@@ -68,7 +67,7 @@ async def test_delegate_tool_exists_only_when_agents_are_named(fixtures: Path) -
 
 async def test_generation_agent_consults_a_decision_agent(fixtures: Path) -> None:
     llm = Scripted(_delegate("triage", "It is down"), text_reply("Escalating."))
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": Fixed(TRIAGE)})
+    engine = Engine(fixtures, models={"strong": llm, "judge": Fixed(TRIAGE)})
     run = await engine.run("support", "acme", "It is down")
     assert isinstance(run, Generation) and len(run.children) == 1
     child = run.children[0]
@@ -90,7 +89,7 @@ async def test_the_whole_chain_frontdesk_support_triage(fixtures: Path) -> None:
     answers: list[Any] = [intent, TRIAGE]
     dm = Fixed(lambda state: answers.pop(0))
     llm = Scripted(_delegate("triage", "It is down"), text_reply("Handled."))
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": dm})
+    engine = Engine(fixtures, models={"strong": llm, "judge": dm})
     run = await engine.run("frontdesk", "acme", "It is down")
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     assert run.routed_to.agent == "support" and run.routed_to.children[0].agent == "triage"
@@ -135,8 +134,8 @@ async def test_a_route_back_into_the_chain_raises(tmp_path: Path) -> None:
         (tmp_path / name / "AGENT.md").write_text(
             f"---\nname: {name}\nkind: decision\nmodel: judge\nroute: {{by: go, to: {{next: {other}}}}}\n---\n"
         )
-        (tmp_path / name / "questions" / "go.md").write_text(
-            "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
+        (tmp_path / name / "questions" / "go.json").write_text(
+            '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep it", "next": "Pass it on"}}'
         )
     engine = Engine(tmp_path, models={"judge": Answering()})
     with pytest.raises(DelegationLoopError, match=r"^delegate: loop at r1 -> r2 -> r1$"):
@@ -148,8 +147,8 @@ def _router(tmp_path: Path, name: str, target: str) -> None:
     (tmp_path / name / "AGENT.md").write_text(
         f"---\nname: {name}\nkind: decision\nmodel: judge\nroute: {{by: go, to: {{next: {target}}}}}\n---\n"
     )
-    (tmp_path / name / "questions" / "go.md").write_text(
-        "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
+    (tmp_path / name / "questions" / "go.json").write_text(
+        '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep it", "next": "Pass it on"}}'
     )
 
 
@@ -227,7 +226,7 @@ async def test_the_child_serves_the_same_tenant_with_its_context(tmp_path: Path)
 
 
 async def test_dispatch_delegate_outside_a_run(fixtures: Path) -> None:
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted(), "judge": Fixed(TRIAGE)})
+    engine = Engine(fixtures, models={"strong": Scripted(), "judge": Fixed(TRIAGE)})
     tools = EngineTools(engine, agent="support", scope="acme")
     result = await tools.dispatch("Delegate", {"agent": "triage", "input": "It is down"})
     assert isinstance(result, str) and json.loads(result)["answers"]["urgent"]["probability"] == 0.9
@@ -285,9 +284,7 @@ async def test_delegate_is_not_bound_by_the_tool_deadline(fixtures: Path) -> Non
             return TRIAGE
 
     llm = Scripted(_delegate("triage", "It is down"), text_reply("Escalating."))
-    engine = Engine(
-        fixtures, tools=TOOLS, tool_timeout=0.05, models={"strong": llm, "judge": Slow(TRIAGE)}
-    )
+    engine = Engine(fixtures, tool_timeout=0.05, models={"strong": llm, "judge": Slow(TRIAGE)})
     run = await engine.run("support", "acme", "It is down")
     assert isinstance(run, Generation) and not run.steps[0].is_error
     assert run.children[0].agent == "triage"
@@ -301,8 +298,8 @@ BAD_DELEGATIONS: list[tuple[dict[str, Any], type[Exception], str]] = [
     ),
     (
         {"agent": "grader", "input": "x", "task": "apology"},
-        NotFoundError,
-        "engine: agent 'grader' has no task 'apology'",
+        InputError,
+        "engine: decision agent 'grader' takes no task; it asks its questions/, so run another decision agent for another set of questions",
     ),
     (
         {"agent": "writer", "input": "x", "questions": {"area": PICK}},
@@ -320,14 +317,14 @@ BAD_DELEGATIONS: list[tuple[dict[str, Any], type[Exception], str]] = [
         "engine: questions do not fit the contract: ",
     ),
     (
-        {"agent": "grader", "input": "x", "task": "tone", "questions": {"polite": PICK}},
+        {"agent": "grader", "input": "x", "questions": {"urgent": PICK}},
         InputError,
-        "engine: decision agent 'grader' already asks 'polite' from its folder",
+        "engine: decision agent 'grader' already asks 'urgent' from its folder",
     ),
     (
         {"agent": "blank", "input": "x"},
         InputError,
-        "engine: decision agent 'blank' has no questions to ask; give it questions/ or tasks/<name>/, or ask it through Delegate",
+        "engine: decision agent 'blank' has no questions to ask; give it questions/, or ask it through Delegate",
     ),
     (
         {"agent": "blank", "input": "x", "questions": "Which area?"},
@@ -379,13 +376,13 @@ async def test_delegate_offers_a_task_and_questions_only_when_a_target_takes_the
     assert schema["required"] == ["agent", "input"]
     assert schema["properties"]["task"] == {
         "type": "string",
-        "enum": ["tone", "apology"],
+        "enum": ["apology"],
         "description": "A task of the agent, to run it with",
     }
     assert schema["properties"]["questions"]["additionalProperties"] == QUESTION
     assert offered["description"] == (
         "Hand an input to another agent and get its reply.\n"
-        "- grader (decision agent; tasks: tone): Grades replies\n"
+        "- grader (decision agent): Grades replies\n"
         "- writer (tasks: apology): Writes replies\n"
         "- blank (decision agent): Answers what it is asked"
     )
@@ -416,22 +413,20 @@ async def test_a_generation_agent_asks_a_decision_agent_a_question_it_composed(
     assert isinstance(run, Generation) and not run.steps[0].is_error
     [child] = run.children
     assert isinstance(child, Decision) and child.agent == "blank" and child.runtime == ["area"]
-    assert child.questions == {"area": Choice.model_validate(PICK)} and child.task is None
+    assert child.questions == {"area": Choice.model_validate(PICK)}
     assert json.loads(str(run.steps[0].result))["answers"]["area"]["choice"] == "orders"
     assert run.steps[0].args["questions"] == {"area": PICK}
     assert dm.calls == [("Charged twice", {"area": Choice.model_validate(PICK)})]
 
 
-async def test_delegate_names_a_task_for_either_kind_and_adds_questions_to_it(
+async def test_delegate_names_a_generation_agent_s_task_and_a_decision_agent_s_own_questions(
     tmp_path: Path,
 ) -> None:
     angry = {"type": "check", "instructions": "Is `message` angry?", "yes": ["Insults", "Caps"]}
     llm = Scripted(
         Reply(
             tool_calls=[
-                *delegating(
-                    "grader", "Sorry!", "g", task="tone", questions={"angry": angry}
-                ).tool_calls,
+                *delegating("grader", "Sorry!", "g", questions={"angry": angry}).tool_calls,
                 *delegating("writer", "Late parcel", "w", task="apology").tool_calls,
             ],
             stop_reason="tool_use",
@@ -444,8 +439,8 @@ async def test_delegate_names_a_task_for_either_kind_and_adds_questions_to_it(
     )
     assert isinstance(run, Generation) and [s.is_error for s in run.steps] == [False, False]
     graded, written = run.children
-    assert isinstance(graded, Decision) and graded.task == "tone" and graded.runtime == ["angry"]
-    assert list(graded.questions) == ["urgent", "polite", "angry"]
+    assert isinstance(graded, Decision) and graded.runtime == ["angry"]
+    assert list(graded.questions) == ["urgent", "angry"]
     assert graded.questions["angry"] == Check.model_validate(angry)
     assert isinstance(written, Generation) and written.task == "apology"
     assert "<<<TASK>>>\nApologise first." in written.system and written.reply == "Apologised."
@@ -465,7 +460,7 @@ async def test_children_follow_their_steps_whatever_order_they_finish_in(fixture
 
     both = delegate_triage("d1", "slow").tool_calls + delegate_triage("d2", "fast").tool_calls
     llm = Scripted(Reply(tool_calls=both, stop_reason="tool_use"), text_reply("Both triaged."))
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": llm, "judge": SlowFirst()})
+    engine = Engine(fixtures, models={"strong": llm, "judge": SlowFirst()})
     run = await engine.run("support", "acme", "Two tickets")
     assert isinstance(run, Generation) and finished == ["fast", "slow"]
     assert [child.run_id for child in run.children] == [step.child_run_id for step in run.steps]

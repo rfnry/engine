@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import ConfigurationError, InputError, ModelError, NotFoundError
+from rfnry_engine.errors import ConfigurationError, InputError, ModelError
 from rfnry_engine.models import (
     Answer,
     Audio,
@@ -31,7 +31,7 @@ from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import TOOLS, Answering, Fixed, MemoryBucket, Scripted, sorter, text_reply
+from .fakes import Answering, Fixed, MemoryBucket, Scripted, sorter, text_reply
 
 
 def _intent(choice: str, p: float) -> dict[str, Any]:
@@ -51,7 +51,7 @@ async def test_decision_run_settles_answers(fixtures: Path) -> None:
             "severity": ScoreAnswer(score=2.4, probabilities=[0.0, 0.1, 0.4, 0.5]),
         }
     )
-    run = await Engine(fixtures, tools=TOOLS, models={"judge": dm}).run(
+    run = await Engine(fixtures, models={"judge": dm}).run(
         "triage", "acme", {"message": "It is down"}
     )
     assert isinstance(run, Decision)
@@ -63,9 +63,7 @@ async def test_decision_run_settles_answers(fixtures: Path) -> None:
 
 async def test_route_runs_the_target_with_the_same_input(fixtures: Path) -> None:
     llm = Scripted(text_reply("Support here."))
-    engine = Engine(
-        fixtures, tools=TOOLS, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))}
-    )
+    engine = Engine(fixtures, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))})
     run = await engine.run("frontdesk", "acme", "The app crashes", context="Team plan")
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     assert run.routed_to.agent == "support" and run.routed_to.reply == "Support here."
@@ -76,14 +74,11 @@ async def test_route_runs_the_target_with_the_same_input(fixtures: Path) -> None
 async def test_no_route_below_the_floor_or_for_an_unmapped_option(fixtures: Path) -> None:
     engine = Engine(
         fixtures,
-        tools=TOOLS,
         models={"strong": Scripted(), "judge": Fixed(_intent("technical", 0.5))},
     )
     low = await engine.run("frontdesk", "acme", "x")
     assert isinstance(low, Decision) and low.routed_to is None
-    engine = Engine(
-        fixtures, tools=TOOLS, models={"strong": Scripted(), "judge": Fixed(_intent("other", 0.99))}
-    )
+    engine = Engine(fixtures, models={"strong": Scripted(), "judge": Fixed(_intent("other", 0.99))})
     other = await engine.run("frontdesk", "acme", "x")
     assert isinstance(other, Decision) and other.routed_to is None
 
@@ -99,9 +94,7 @@ async def test_decided_carries_usage_and_model(fixtures: Path) -> None:
             model="d1",
         )
 
-    run = await Engine(fixtures, tools=TOOLS, models={"judge": Fixed(decide)}).run(
-        "triage", "acme", "x"
-    )
+    run = await Engine(fixtures, models={"judge": Fixed(decide)}).run("triage", "acme", "x")
     assert isinstance(run, Decision) and run.usage == Usage(input=40) and run.model == "d1"
 
 
@@ -116,18 +109,17 @@ async def test_a_decision_run_names_its_adapter_s_model_when_the_call_reports_no
         "urgent": CheckAnswer(probability=0.2),
         "severity": ScoreAnswer(score=0, probabilities=[1, 0, 0, 0]),
     }
-    engine = Engine(fixtures, tools=TOOLS, models={"judge": Declaring(answers)})
+    engine = Engine(fixtures, models={"judge": Declaring(answers)})
     reported = Engine(
         fixtures,
-        tools=TOOLS,
         models={"judge": Declaring(lambda _: Decided(answers=answers, model="d1"))},
     )
-    silent = Engine(fixtures, tools=TOOLS, models={"judge": Fixed(answers)})
+    silent = Engine(fixtures, models={"judge": Fixed(answers)})
     models = [(await e.run("triage", "acme", "x")).model for e in (engine, reported, silent)]
     assert models == ["d", "d1", None]
 
 
-async def test_a_decision_only_engine_runs_a_mixed_tree_without_tool_bodies(fixtures: Path) -> None:
+async def test_a_decision_only_engine_runs_a_mixed_tree(fixtures: Path) -> None:
     dm = Fixed(
         {
             "urgent": CheckAnswer(probability=0.9),
@@ -136,10 +128,6 @@ async def test_a_decision_only_engine_runs_a_mixed_tree_without_tool_bodies(fixt
     )
     run = await Engine(fixtures, models={"judge": dm}).run("triage", "acme", "x")
     assert isinstance(run, Decision)
-    with pytest.raises(ConfigurationError, match="weather"):
-        Engine(
-            fixtures, tools=[Tool("weather", "Forecast", body=TOOLS[1].body)], models={"judge": dm}
-        )
 
 
 async def test_a_route_to_an_agent_without_its_model_is_refused_before_the_decision(
@@ -187,9 +175,7 @@ async def test_a_foreign_decided_is_accepted_by_its_fields(fixtures: Path) -> No
     def decide(state: State) -> Any:
         return ForeignDecided(answers=_foreign(0.9), usage=ForeignUsage(input=7), model="d2")
 
-    run = await Engine(fixtures, tools=TOOLS, models={"judge": Fixed(decide)}).run(
-        "triage", "acme", "x"
-    )
+    run = await Engine(fixtures, models={"judge": Fixed(decide)}).run("triage", "acme", "x")
     assert isinstance(run, Decision) and run.usage == Usage(input=7) and run.model == "d2"
     assert isinstance(run.answers["urgent"], CheckAnswer) and run.answers[
         "urgent"
@@ -198,24 +184,20 @@ async def test_a_foreign_decided_is_accepted_by_its_fields(fixtures: Path) -> No
 
 
 async def test_foreign_answers_alone_are_accepted_and_still_validated(fixtures: Path) -> None:
-    run = await Engine(fixtures, tools=TOOLS, models={"judge": Fixed(_foreign(0.9))}).run(
-        "triage", "acme", "x"
-    )
+    run = await Engine(fixtures, models={"judge": Fixed(_foreign(0.9))}).run("triage", "acme", "x")
     assert isinstance(run, Decision) and isinstance(run.answers["urgent"], CheckAnswer)
     with pytest.raises(
         ModelError, match="^models: the decision model's answers do not fit the contract"
     ):
-        await Engine(fixtures, tools=TOOLS, models={"judge": Fixed(_foreign(1.5))}).run(
-            "triage", "acme", "x"
-        )
+        await Engine(fixtures, models={"judge": Fixed(_foreign(1.5))}).run("triage", "acme", "x")
 
 
-async def test_a_routing_agent_s_unknown_task_is_not_found_before_it_is_asked(
+async def test_a_routing_agent_given_a_task_is_refused_before_it_is_asked(
     fixtures: Path,
 ) -> None:
     dm = Fixed(_intent("other", 0.9))
-    engine = Engine(fixtures, tools=TOOLS, models={"strong": Scripted(), "judge": dm})
-    with pytest.raises(NotFoundError, match="^engine: agent 'frontdesk' has no task 'triage'; "):
+    engine = Engine(fixtures, models={"strong": Scripted(), "judge": dm})
+    with pytest.raises(InputError, match="^engine: decision agent 'frontdesk' takes no task; "):
         await engine.run("frontdesk", "acme", "x", task="triage")
     assert dm.calls == []
 
@@ -236,9 +218,7 @@ async def test_a_route_forwards_everything_the_run_was_given(fixtures: Path) -> 
     async def on_event(event: Any) -> None:
         events.append(event)
 
-    engine = Engine(
-        fixtures, tools=TOOLS, models={"strong": llm, "judge": Fixed(_intent("technical", 0.9))}
-    )
+    engine = Engine(fixtures, models={"strong": llm, "judge": Fixed(_intent("technical", 0.9))})
     history = [Message(role="user", content="earlier"), Message(role="assistant", content="noted")]
     run = await engine.run(
         "frontdesk",
@@ -269,7 +249,7 @@ async def test_a_decision_agent_refuses_media_before_the_model_is_called(fixture
             "severity": ScoreAnswer(score=1, probabilities=[0, 1, 0, 0]),
         }
     )
-    engine = Engine(fixtures, tools=TOOLS, models={"judge": dm})
+    engine = Engine(fixtures, models={"judge": dm})
     parts = [Text(text="Is this down?"), Image(media_type="image/png", url="https://x/screen.png")]
     with pytest.raises(
         InputError, match="^engine: decision agent 'triage' takes text only; got image/png$"
@@ -285,7 +265,7 @@ async def test_a_decision_agent_joins_text_parts_into_its_state(fixtures: Path) 
             "severity": ScoreAnswer(score=1, probabilities=[0, 1, 0, 0]),
         }
     )
-    run = await Engine(fixtures, tools=TOOLS, models={"judge": dm}).run(
+    run = await Engine(fixtures, models={"judge": dm}).run(
         "triage", "acme", [Text(text="It is down."), Text(text="Since noon.")]
     )
     assert isinstance(run, Decision) and run.state == "It is down.\nSince noon."
@@ -294,9 +274,7 @@ async def test_a_decision_agent_joins_text_parts_into_its_state(fixtures: Path) 
 
 async def test_a_route_forwards_the_parts_to_its_target(fixtures: Path) -> None:
     llm = Scripted(text_reply("Support here."))
-    engine = Engine(
-        fixtures, tools=TOOLS, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))}
-    )
+    engine = Engine(fixtures, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))})
     parts: list[Part] = [Text(text="The app crashes"), Text(text="on login")]
     run = await engine.run("frontdesk", "acme", parts)
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
@@ -309,13 +287,15 @@ async def test_a_checks_yes_and_no_reach_the_decision_model(tmp_path: Path) -> N
     (tmp_path / "triage" / "AGENT.md").write_text(
         "---\nname: triage\nkind: decision\nmodel: judge\n---\n"
     )
-    (tmp_path / "triage" / "questions" / "urgent.md").write_text(
-        "---\n"
-        "type: check\n"
-        "yes: The service is down or data is at risk\n"
-        "no: A question, a request, or a problem with a workaround\n"
-        "---\n"
-        "Does the message need a person right now?\n"
+    (tmp_path / "triage" / "questions" / "urgent.json").write_text(
+        json.dumps(
+            {
+                "type": "check",
+                "instructions": "Does the message need a person right now?",
+                "yes": "The service is down or data is at risk",
+                "no": "A question, a request, or a problem with a workaround",
+            }
+        )
     )
     dm = Fixed({"urgent": CheckAnswer(probability=0.9)})
     await Engine(tmp_path, models={"judge": dm}).run("triage", "acme", "It is down")

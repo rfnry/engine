@@ -17,11 +17,9 @@ import rfnry_engine
 from rfnry_engine import (
     CheckAnswer,
     ChoiceAnswer,
-    Document,
     Engine,
     Local,
     Message,
-    Part,
     QuestionLike,
     Refinery,
     Reply,
@@ -36,9 +34,8 @@ from rfnry_engine import (
     Workspace,
 )
 from rfnry_engine.records import Decision
+from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tree import load_agent, load_tree, validate_tree
-
-from .fakes import lookup_order
 
 DOCS = Path(__file__).parents[4] / "docs" / "engine.md"
 BLOCKS: list[tuple[str, str]] = re.findall(
@@ -46,6 +43,19 @@ BLOCKS: list[tuple[str, str]] = re.findall(
 )
 PYTHON = [body for lang, body in BLOCKS if lang == "python"]
 MARKDOWN = [body for lang, body in BLOCKS if lang in ("markdown", "")]
+LOOKUP = next(body for lang, body in BLOCKS if lang == "json" and "Fetch an order" in body)
+SCRIPT = next(body for body in PYTHON if body.startswith("import json\n"))
+KINDS = ("choice", "score", "check")
+QUESTIONS = [
+    body for lang, body in BLOCKS if lang == "json" and json.loads(body).get("type") in KINDS
+]
+ORDER = next(body for body in QUESTIONS if "customer's orders" in body)
+FILLS = next(body for body in PYTHON if body.startswith("from json import load\n"))
+MATCHES = 'async with Engine(root=Path("agents"), models={"judge": dm}) as engine:'
+ORDERS = [
+    {"id": "A-1001", "summary": "Standing desk, shipped"},
+    {"id": "A-1002", "summary": "Lamp"},
+]
 
 
 def first_line(block: str) -> str:
@@ -56,6 +66,10 @@ def markdown(start: str) -> str:
     return next(block for block in MARKDOWN if start in block)
 
 
+def asked(start: str) -> str:
+    return next(block for block in QUESTIONS if start in block)
+
+
 ILLUSTRATIVE = {
     "class Conversation:": "needs a database pool; a list stands in for it in the block above",
     "refinery = Refinery(PostgresStorage(pool))": "needs a Postgres pool; the integration tier runs PostgresStorage",
@@ -63,6 +77,9 @@ ILLUSTRATIVE = {
     "from pathlib import Path": "needs agents that declare `workspace: true`",
     'engine = Engine(root, models={"strong": strong_llm, "fast": fast_llm, "judge": dm})': "the test tree has no agent on fast",
     "jobs = {}": "needs a model that calls start and then check",
+    "import json": "a tool script, which the test tree holds as support/tools/lookup_order.py",
+    "import _client": "a tool script, which runs in a worker beside its helper _client.py",
+    "from json import load": "a question's script, which the test tree holds as matcher/questions/order.py",
 }
 
 SIGNATURES = {
@@ -120,7 +137,7 @@ SETUPS = {
             ),
         )
     ),
-    'engine = Engine(root, models={"strong": llm, "judge": dm}, tools=tools)': Setup(
+    'engine = Engine(root, models={"strong": llm, "judge": dm})': Setup(
         replies=(delegating("triage"),), intent="technical"
     ),
     ASKS: Setup(
@@ -202,8 +219,8 @@ def agent(name: str, kind: str, body: str = "") -> str:
     return f"---\nname: {name}\nkind: {kind}\nmodel: {model}\ndescription: The {name} agent\n---\n{body}\n"
 
 
-def question(kind: str, extra: str = "") -> str:
-    return f"---\ntype: {kind}\n{extra}---\nA question.\n"
+def question(kind: str, **fields: Any) -> str:
+    return json.dumps({"type": kind, "instructions": "A question.", **fields})
 
 
 def tree(root: Path) -> None:
@@ -215,54 +232,38 @@ def tree(root: Path) -> None:
         "---\ndescription: When a refund is owed\n---\nA double charge is refunded in full.\n",
     )
     write(root / "support/tasks/triage.md", "Triage the message.\n")
+    write(root / "support/tools/lookup_order.json", LOOKUP)
+    write(root / "support/tools/lookup_order.py", SCRIPT)
     write(
         root / "support/skills/escalate.md",
         "---\ndescription: Hand a conversation to a person\n---\nSay so, then stop.\n",
     )
     write(root / "frontdesk/AGENT.md", markdown("description: Routes an incoming message"))
     write(
-        root / "frontdesk/questions/intent.md",
-        markdown("Which department should handle this message?"),
+        root / "frontdesk/questions/intent.json",
+        asked("Which department should handle this message?"),
     )
     write(root / "coder/AGENT.md", markdown("description: Writes and runs code").split("\n", 1)[1])
     write(root / "billing/AGENT.md", agent("billing", "generation"))
     write(root / "teacher/AGENT.md", agent("teacher", "generation"))
     write(root / "triage/AGENT.md", agent("triage", "decision"))
-    write(root / "triage/questions/urgent.md", markdown("type: check"))
-    write(root / "triage/questions/severity.md", markdown("type: score"))
-    write(root / "grader/AGENT.md", agent("grader", "decision"))
-    write(root / "grader/questions/grounded.md", question("check"))
-    write(root / "grader/tasks/tone/polite.md", question("check"))
-    write(
-        root / "grader/tasks/tone/register.md",
-        question("choice", "options: {formal: Formal, casual: Casual}\n"),
-    )
+    write(root / "triage/questions/urgent.json", asked("Does the message need a person right now?"))
+    write(root / "triage/questions/severity.json", asked("How severe is the problem?"))
+    write(root / "matcher/AGENT.md", agent("matcher", "decision"))
+    write(root / "matcher/questions/order.json", ORDER)
+    write(root / "matcher/questions/order.py", FILLS)
     write(root / "judge/AGENT.md", agent("judge", "decision"))
-    write(root / "judge/questions/grounded.md", question("check"))
-    write(root / "judge/questions/rule.md", question("check"))
+    write(root / "judge/questions/grounded.json", question("check"))
+    write(root / "judge/questions/rule.json", question("check"))
     write(
-        root / "judge/questions/done.md",
-        question("score", "levels: [Not addressed, Partly, Fully, Fully and confirmed]\n"),
+        root / "judge/questions/done.json",
+        question("score", levels=["Not addressed", "Partly", "Fully", "Fully and confirmed"]),
     )
-
-
-class InvoiceArgs(BaseModel):
-    invoice_id: str = Field(description="The invoice id")
-
-
-async def fetch_invoice(args: dict[str, Any]) -> list[Part]:
-    return [Document(media_type="application/pdf", name="a.pdf", data=b"%PDF-1.4")]
 
 
 class Invoices:
     async def get(self, invoice_id: str) -> bytes:
         return b"%PDF-1.4"
-
-
-TOOLS = [
-    Tool("lookup_order", "Fetch an order by its id", body=lookup_order),
-    Tool("fetch_invoice", "Fetch an invoice as its PDF", body=fetch_invoice, args=InvoiceArgs),
-]
 
 
 def memory_tools(memory: object, corpus_id: str) -> Tools:
@@ -279,12 +280,12 @@ async def ask_a_person(agent: str, call: ToolCall) -> bool:
 async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, Any]:
     root = tmp_path / "agents"
     tree(root)
+    write(tmp_path / "orders/acme/customers/c-17/orders", json.dumps(ORDERS))
     (tmp_path / "work").mkdir()
     refinery = Refinery(storage)
     recorded = Engine(
         root,
         models={"strong": Model(), "judge": Answering("billing")},
-        tools=TOOLS,
         refinery=refinery,
     )
     llm, dm = Model(*setup.replies), Answering(setup.intent)
@@ -298,12 +299,8 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
         "llm": llm,
         "dm": dm,
         "refinery": refinery,
-        "engine": Engine(root, models={"strong": llm, "judge": dm}, tools=TOOLS, refinery=refinery),
-        "tools": list(TOOLS),
-        "InvoiceArgs": InvoiceArgs,
-        "fetch_invoice": fetch_invoice,
+        "engine": Engine(root, models={"strong": llm, "judge": dm}, refinery=refinery),
         "invoices": Invoices(),
-        "lookup_order": lookup_order,
         "png": b"\x89PNG\r\n\x1a\n",
         "wav": b"RIFF",
         "MemoryTools": memory_tools,
@@ -367,6 +364,7 @@ async def test_docs_example_runs(
     block: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, storage: Storage
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ORDERS_URL", (tmp_path / "orders").as_uri())
     setup = SETUPS.get(first_line(block), Setup())
     for old, new in setup.replace.items():
         block = block.replace(old, new)
@@ -377,14 +375,35 @@ async def test_docs_example_runs(
         await result
 
 
-@pytest.mark.parametrize(
-    "block", [b for b in MARKDOWN if b.startswith("---\ntype: ")], ids=lambda b: b.split("\n")[1]
-)
+@pytest.mark.parametrize("block", QUESTIONS, ids=lambda b: json.loads(b)["type"])
 def test_every_question_in_the_docs_loads(block: str, tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", agent("a", "decision"))
-    write(tmp_path / "a/questions/q.md", block)
-    question = load_agent(tmp_path / "a").questions["q"]
-    assert question.instructions and question.type in block.split("\n")[1]
+    write(tmp_path / "a/questions/q.json", block)
+    if block == ORDER:
+        write(tmp_path / "a/questions/q.py", FILLS)
+    spec = load_agent(tmp_path / "a")
+    if block == ORDER:
+        assert list(spec.questions) == [] and list(spec.scripted) == ["q"]
+        return
+    question = spec.questions["q"]
+    assert question.instructions and question.type == json.loads(block)["type"]
+
+
+async def test_the_question_script_of_the_docs_fills_the_customer_s_orders_as_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, storage: Storage
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ORDERS_URL", (tmp_path / "orders").as_uri())
+    namespace = await context(tmp_path, Setup(), storage)
+    block = next(block for block in PYTHON if first_line(block) == MATCHES)
+    await eval(compile(block, "engine.md", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT), namespace)
+    run = namespace["run"]
+    assert isinstance(run, Decision) and run.state == {"message": "It is down", "customer": "c-17"}
+    assert run.questions["order"].model_dump()["options"] == {
+        "A-1001": "Standing desk, shipped",
+        "A-1002": "Lamp",
+    }
+    assert run.answers["order"].model_dump()["choice"] == "A-1001"
 
 
 async def test_the_question_the_model_composes_reaches_the_decision_agent(
@@ -419,3 +438,16 @@ def test_the_agent_that_preloads_its_folder_loads(tmp_path: Path) -> None:
     spec = load_agent(tmp_path / "tagger")
     assert spec.kind == "generation" and spec.body.startswith("Tag the document.")
     assert spec.preload == [Text(text="<<<rules/house.md>>>\nTag by department.\n")]
+
+
+async def test_the_tool_of_getting_started_runs_in_its_worker_as_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "agents"
+    tree(root)
+    write(tmp_path / "orders/acme/orders/A-1001", json.dumps({"status": "shipped"}))
+    monkeypatch.setenv("ORDERS_URL", (tmp_path / "orders").as_uri())
+    async with Engine(root, models={}) as engine:
+        surface = EngineTools(engine, agent="support", scope="acme")
+        found = await surface.dispatch("lookup_order", {"order_id": "A-1001"})
+    assert found == {"status": "shipped"}

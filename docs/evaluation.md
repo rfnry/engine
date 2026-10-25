@@ -140,7 +140,7 @@ This works with any model, frontier or local, because nothing is trained.
 
 About one run in five is held out, by a hash of its run id, so it never moves between exports.
 Held-out runs with golden labels are your test set. `refinery.replay` runs a candidate — an
-`Engine` on a new folder or a new model, with the same tools — on what each of them was given,
+`Engine` on a new folder, its tools in it, or on a new model — on what each of them was given,
 records nothing, and yields the recorded run, its labels and the candidate's run side by side.
 Grade the candidate's replies against the right answers with a decision agent of your own:
 
@@ -166,7 +166,7 @@ async for pair in refinery.replay("acme", candidate, agent="support", holdout=Tr
 **Replay runs the candidate's tools for real.** A tool that refunds refunds again; a tool that sends
 a message sends it. `read_only` lets through only the tools that read — the builtins, `Delegate`,
 whose runs it is asked about too, and a lookup — and the model reads any other call as refused; or
-build the candidate with bodies that only read.
+replay with `tools=` stubs that only read, which win over the folder's tools of the same names.
 
 Each replay is given the recorded input — an image replays as an image — the history before it (with
 `conversation=`, the conversation before it, and `History`), the task and the context, so the
@@ -191,8 +191,8 @@ the same runtime questions on a new model show in neither. When you would rather
 ### Level 2: choose models on evidence
 
 When a new model ships, replay the same holdout with it. Build an engine on the candidate adapter —
-the same folder, the same tools, the candidate under the name the agent's `model:` gives it
-(`Engine(root, models={"strong": candidate_llm}, tools=tools)`) — and compare the grade rate, the whole tree's usage and model calls (`spent` in
+the same folder, its tools in it, the candidate under the name the agent's `model:` gives it
+(`Engine(root, models={"strong": candidate_llm})`) — and compare the grade rate, the whole tree's usage and model calls (`spent` in
 [Orchestrating](engine.md#orchestrating)) and `pair.candidate.duration_ms` against what you run today.
 Not `pair.candidate.usage` alone: a candidate that delegates spends in its children. When the two fingerprints match, the tree is the same, so the model
 is the only thing that differs, and `pair.candidate.model` names it. Editing an agent's `model:` is a tree change, and moves its fingerprint. The answer to "is the local

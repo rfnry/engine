@@ -246,8 +246,8 @@ def router(root: Path, name: str, target: str) -> None:
     (root / name / "AGENT.md").write_text(
         f"---\nname: {name}\nkind: decision\nmodel: judge\nroute: {{by: go, to: {{next: {target}}}}}\n---\n"
     )
-    (root / name / "questions" / "go.md").write_text(
-        "---\ntype: choice\noptions: {stay: Keep it, next: Pass it on}\n---\nWhere?\n"
+    (root / name / "questions" / "go.json").write_text(
+        '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep it", "next": "Pass it on"}}'
     )
 
 
@@ -400,7 +400,9 @@ async def test_a_failed_decision_run_keeps_its_call(tmp_path: Path) -> None:
     (tmp_path / "judge" / "AGENT.md").write_text(
         "---\nname: judge\nkind: decision\nmodel: judge\n---\n"
     )
-    (tmp_path / "judge" / "questions" / "ok.md").write_text("---\ntype: check\n---\nOk?\n")
+    (tmp_path / "judge" / "questions" / "ok.json").write_text(
+        '{"type": "check", "instructions": "Ok?"}'
+    )
     tree(tmp_path, lead="agents: [judge]\n")
     llm = Scripted(use(delegate("judge", "d1")), text_reply("done"))
     engine = Engine(tmp_path, models={"strong": llm, "judge": Failing()})

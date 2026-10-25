@@ -11,7 +11,6 @@ import asyncpg
 import pytest
 from unit.fakes import (
     PICK,
-    TOOLS,
     Answering,
     Desk,
     MemoryBucket,
@@ -48,7 +47,7 @@ from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery, label_of
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 from rfnry_engine.stop import Stop
-from rfnry_engine.tools.tools import Tool
+from rfnry_engine.tools.tools import Tool, Tools
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "agents"
 
@@ -514,9 +513,9 @@ async def test_a_recorded_tree_reads_back_as_it_ran(storage: Storage) -> None:
         return [Text(text="a\x00b"), Image(media_type="image/png", data=bytes(range(256)))]
 
     both = delegate_triage("d1", "one").tool_calls + delegate_triage("d2", "two").tool_calls
+    looking = Tools([Tool("lookup_order", "Fetch an order", body=lookup)])
     engine = Engine(
         FIXTURES,
-        tools=[Tool("lookup_order", "Fetch an order", body=lookup), TOOLS[1]],
         refinery=refinery,
         models={
             "strong": Scripted(
@@ -530,7 +529,9 @@ async def test_a_recorded_tree_reads_back_as_it_ran(storage: Storage) -> None:
             "judge": Desk(),
         },
     )
-    run = await engine.run("frontdesk", "a", "It is down", tags={"customer": "c-81"}, stop=stop)
+    run = await engine.run(
+        "frontdesk", "a", "It is down", tags={"customer": "c-81"}, stop=stop, tools=looking
+    )
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     support = run.routed_to
     assert support.stopped == "after_step" and len(support.children) == 2
@@ -551,7 +552,6 @@ async def test_a_tree_reads_back_with_its_one_record_stamp(storage: Storage) -> 
     refinery = Refinery(storage)
     engine = Engine(
         FIXTURES,
-        tools=TOOLS,
         refinery=refinery,
         models={"strong": Scripted(delegate_triage(), text_reply("Handled.")), "judge": Desk()},
     )
@@ -573,7 +573,6 @@ async def test_fingerprints_and_context_round_trip(
     refinery = Refinery(storage)
     engine = Engine(
         FIXTURES,
-        tools=TOOLS,
         refinery=refinery,
         models={"strong": Scripted(delegate_triage(), text_reply("Handled.")), "judge": Desk()},
     )
@@ -632,7 +631,6 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     refinery = Refinery(storage)
     recorder = Engine(
         FIXTURES,
-        tools=TOOLS,
         refinery=refinery,
         models={
             "strong": Scripted(
@@ -661,9 +659,7 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     await refinery.outcome("a", third.run_id, Outcome(status="failed"))
     counted = await storage.count_scope("a")
     model = Seeing()
-    candidate = Engine(
-        FIXTURES, tools=TOOLS, refinery=refinery, models={"strong": model, "judge": Desk()}
-    )
+    candidate = Engine(FIXTURES, refinery=refinery, models={"strong": model, "judge": Desk()})
 
     async def replayed(**selectors: Any) -> list[str]:
         pairs = [p async for p in refinery.replay("a", candidate, agent="support", **selectors)]
@@ -709,29 +705,28 @@ AREA = Choice(
 def grader(root: Path, urgent: str = "Is it urgent?") -> Path:
     for path, text in {
         "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\n---\n",
-        "grader/questions/urgent.md": f"---\ntype: check\n---\n{urgent}\n",
-        "grader/tasks/tone/polite.md": "---\ntype: check\n---\nPolite?\n",
+        "grader/questions/urgent.json": json.dumps({"type": "check", "instructions": urgent}),
     }.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_text(text, encoding="utf-8")
     return root
 
 
-async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_replay(
+async def test_runtime_questions_and_the_questions_part_round_trip_and_replay(
     storage: Storage, tmp_path: Path
 ) -> None:
     refinery = Refinery(storage)
     engine = Engine(grader(tmp_path / "old"), refinery=refinery, models={"judge": Answering()})
-    asked = await ask(engine, "grader", "a", "x", task="tone", questions={"area": AREA})
+    asked = await ask(engine, "grader", "a", "x", questions={"area": AREA})
     plain = await engine.run("grader", "a", "y")
     assert isinstance(asked, Decision)
     again = await refinery.run("a", asked.run_id)
     assert again == asked and isinstance(again, Decision)
-    assert again.task == "tone" and again.runtime == ["area"]
-    assert list(again.questions) == ["urgent", "polite", "area"]
+    assert again.runtime == ["area"]
+    assert list(again.questions) == ["urgent", "area"]
     assert list(again.questions["area"].model_dump()["options"]) == ["returns", "delivery"]
     [row] = await storage.runs("a", run_ids=[asked.run_id])
-    assert row.task == "tone"
+    assert row.task is None and "task" not in row.body
     bucket = MemoryBucket()
     await refinery.export("a", bucket)
     rows = [
@@ -741,8 +736,8 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
         for line in data.decode().splitlines()
     ]
     mine = [r for r in rows if r["run_id"] == asked.run_id]
-    assert {r["question_id"] for r in mine} == {"urgent", "polite", "area"}
-    assert all(r["task"] == "tone" for r in mine)
+    assert {r["question_id"] for r in mine} == {"urgent", "area"}
+    assert all("task" not in r for r in mine)
     assert all(r["fingerprint"] == asked.fingerprint.model_dump() for r in mine)
     dm = Answering()
     candidate = Engine(grader(tmp_path / "new", "Due today?"), models={"judge": dm})
@@ -756,18 +751,17 @@ async def test_runtime_questions_a_task_and_the_questions_part_round_trip_and_re
     [(_, sent)] = dm.calls
     expected: dict[str, Any] = {
         "urgent": Check(instructions="Due today?"),
-        "polite": Check(instructions="Polite?"),
         "area": AREA,
     }
     assert sent == expected
     assert plain.fingerprint.questions != asked.fingerprint.questions
 
 
-async def test_a_delegated_child_keeps_its_task_and_runtime_questions(
+async def test_a_delegated_child_keeps_its_runtime_questions(
     storage: Storage, tmp_path: Path
 ) -> None:
     refinery = Refinery(storage)
-    asked = delegating("grader", "Sorry!", task="tone", questions={"area": PICK})
+    asked = delegating("grader", "Sorry!", questions={"area": PICK})
     engine = Engine(
         lead(tmp_path),
         refinery=refinery,
@@ -779,10 +773,10 @@ async def test_a_delegated_child_keeps_its_task_and_runtime_questions(
     assert await refinery.run("a", run.run_id) == run
     again = await refinery.run("a", child.run_id)
     assert again == child and isinstance(again, Decision)
-    assert again.task == "tone" and again.runtime == ["area"]
-    assert list(again.questions) == ["urgent", "polite", "area"]
+    assert again.runtime == ["area"]
+    assert list(again.questions) == ["urgent", "area"]
     [row] = await storage.runs("a", run_ids=[child.run_id])
-    assert row.task == "tone" and row.parent_run_id == run.run_id
+    assert row.parent_run_id == run.run_id
 
 
 class Looking(Answering):

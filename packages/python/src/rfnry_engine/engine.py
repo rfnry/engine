@@ -6,19 +6,22 @@ from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from fnmatch import fnmatch
+from itertools import permutations
 from pathlib import Path
 from typing import Annotated, Any, NoReturn, Protocol, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
 from rfnry_engine.bundle import build_bundle
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
+    ModelError,
     NotFoundError,
     RunawayError,
+    WorkerError,
 )
 from rfnry_engine.fingerprint import questions_fingerprint, tools_fingerprint
 from rfnry_engine.foreground import (
@@ -30,6 +33,7 @@ from rfnry_engine.foreground import (
     returned,
     taking,
 )
+from rfnry_engine.frontmatter import plainly
 from rfnry_engine.models import (
     Answer,
     ChoiceAnswer,
@@ -70,7 +74,7 @@ from rfnry_engine.records import (
     ToolResultReady,
 )
 from rfnry_engine.stop import Stop, Stopped, requested, wait
-from rfnry_engine.tools.declared import check_declarations
+from rfnry_engine.tools.declared import chosen
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
     AgentArgs,
@@ -83,9 +87,19 @@ from rfnry_engine.tools.delegate import (
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import WORKSPACE_TOOLS, Workspace
-from rfnry_engine.tree import AgentSpec, Kind, load_tree, validate_tree
+from rfnry_engine.tree import (
+    OUTPUT_TOOL,
+    TAKEN,
+    AgentSpec,
+    Kind,
+    as_question,
+    foreign,
+    load_tree,
+    tree_folders,
+    validate_tree,
+)
+from rfnry_engine.workers import Script, Workers
 
-OUTPUT_TOOL = "Output"
 STOPPED = "stopped by the user"
 NO_TOOLS = tools_fingerprint([])
 
@@ -132,6 +146,7 @@ class Recorder(Protocol):
 
 
 PART = TypeAdapter[Part](Part)
+STATE = TypeAdapter[State](State)
 HISTORY = TypeAdapter(list[Message])
 QUESTIONS = TypeAdapter(dict[str, Annotated[Question, Field(discriminator="type")]])
 PART_TYPES = ("text", "image", "audio", "document")
@@ -375,13 +390,38 @@ def _check_models(
             _kind_clash(spec, "decide")
 
 
+def _groups(root: Path, workers: Mapping[str, int] | None) -> dict[str, int]:
+    if workers is None:
+        return {}
+    if not isinstance(workers, Mapping):
+        raise ConfigurationError(
+            "engine: workers must map folders of the tree to their number of processes"
+        )
+    folders = set(tree_folders(root))
+    for name, count in workers.items():
+        if name not in folders:
+            raise ConfigurationError(
+                f"engine: workers names {name!r}, which is not a folder of the tree; name folders by their path from the root"
+            )
+        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+            raise ConfigurationError(
+                f"engine: workers gives {name!r} {count!r} processes; give each folder 1 or more"
+            )
+    for one, other in permutations(workers, 2):
+        if one.startswith(f"{other}/"):
+            raise ConfigurationError(
+                f"engine: workers names {one!r} inside {other!r}, which it names too; keep one"
+            )
+    return dict(workers)
+
+
 class Engine:
     def __init__(
         self,
         root: Path | str,
         *,
         models: Mapping[str, GenerationModel | DecisionModel],
-        tools: list[Tool] | None = None,
+        workers: Mapping[str, int] | None = None,
         refinery: Recorder | None = None,
         max_steps: int = 200,
         max_depth: int = 5,
@@ -405,11 +445,6 @@ class Engine:
         if not self.root.is_dir():
             raise ConfigurationError(f"engine: root is not a directory: {root}")
         self.models = _models(models)
-        self.tools: dict[str, Tool] = {}
-        for tool in tools or []:
-            if tool.name in self.tools:
-                raise ConfigurationError(f"engine: duplicate tool {tool.name!r}")
-            self.tools[tool.name] = tool
         self.refinery = refinery
         self.max_steps = max_steps
         self.max_depth = max_depth
@@ -422,8 +457,23 @@ class Engine:
         )
         validate_tree(self._agents)
         _check_models(self._agents, self.models)
-        self._declared = check_declarations(self._agents, self.tools, self.models)
+        self._workers = Workers(self._agents, _groups(self.root, workers))
+        self._closed = False
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
+
+    async def close(self) -> None:
+        self._closed = True
+        await self._workers.close()
+
+    def _open(self) -> None:
+        if self._closed:
+            raise InputError("engine: this engine was closed; build a new Engine")
+
+    async def __aenter__(self) -> Engine:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
@@ -436,7 +486,7 @@ class Engine:
                 description=spec.description,
                 agents=spec.agents,
                 reads=list(spec.reads),
-                tools=list(spec.tools),
+                tools=list(chosen(spec)),
                 tasks=dict(spec.tasks),
                 skills={called: skill.description for called, skill in spec.skills.items()},
             )
@@ -512,6 +562,7 @@ class Engine:
         tags: Mapping[str, str] | None = None,
         approve: Approve | None = None,
     ) -> Run:
+        self._open()
         if not scope:
             raise InputError("engine: scope is required")
         if workspace is not None and workspace.scope != scope:
@@ -637,6 +688,10 @@ class Engine:
         parent_run_id: str | None,
         routed: bool = False,
     ) -> Run:
+        if options.task is not None and spec.kind == "decision":
+            raise InputError(
+                f"engine: decision agent {spec.name!r} takes no task; it asks its questions/, so run another decision agent for another set of questions"
+            )
         if options.task is not None and options.task not in spec.tasks:
             have = f"its tasks are {', '.join(spec.tasks)}" if spec.tasks else "it has no tasks"
             raise NotFoundError(f"engine: agent {spec.name!r} has no task {options.task!r}; {have}")
@@ -661,20 +716,18 @@ class Engine:
         if not isinstance(model_, DecisionModel):
             _kind_clash(spec, "decide")
         self._check_routes(spec, set())
-        folder = dict(spec.questions)
-        if options.task is not None:
-            folder.update(spec.task_questions[options.task])
+        folder = {*spec.questions, *spec.scripted}
         clash = [qid for qid in options.questions if qid in folder]
         if clash:
             raise InputError(
                 f"engine: decision agent {spec.name!r} already asks {', '.join(map(repr, clash))} from its folder"
             )
-        questions = {**folder, **options.questions}
-        if not questions:
-            hint = "give it questions/ or tasks/<name>/, or ask it through Delegate"
+        if not folder and not options.questions:
+            hint = "give it questions/, or ask it through Delegate"
             raise InputError(
                 f"engine: decision agent {spec.name!r} has no questions to ask; {hint}"
             )
+        questions = {**spec.questions, **options.questions}
         state = _state(spec, input, getattr(model_, "media_types", None))
         run_id = uuid4().hex
         started = time.monotonic()
@@ -692,7 +745,6 @@ class Engine:
                 agent=spec.name,
                 scope=scope,
                 tags=dict(options.tags),
-                task=options.task,
                 at=at,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 model=(decided.model if decided is not None else None) or _declared(model_),
@@ -711,6 +763,10 @@ class Engine:
             )
 
         try:
+            if spec.scripted:
+                filled = await self._filled(spec, scope, run_id, state)
+                asked = dict(sorted({**spec.questions, **filled}.items()))
+                questions = {**asked, **options.questions}
             decided = as_decided(await model_.decide(state, questions))
             answers = settle(questions, decided.answers)
             route = spec.route
@@ -727,6 +783,55 @@ class Engine:
             options.failed.append(decision(exc))
             raise
         return decision()
+
+    async def _filled(
+        self, spec: AgentSpec, scope: str, run_id: str, state: State
+    ) -> dict[str, Question]:
+        pool = self._workers.pool(spec.name)
+        given = STATE.dump_python(state, mode="json")
+
+        async def fill(qid: str, front: dict[str, JsonValue], script: Script) -> Question:
+            call = {"scope": scope, "run_id": run_id, "agent": spec.name, "question": qid}
+            named = f"{script.path.name} of decision agent {spec.name!r}"
+            try:
+                held = await pool.call(script.key, given, call, self.tool_timeout)
+            except WorkerError as exc:
+                raise WorkerError(
+                    f"engine: {named} could not fill question {qid!r}: {exc}"
+                ) from exc
+            such = 'such as {"options": {...}}'
+            if not isinstance(held, dict):
+                kind = type(held).__name__
+                shown = "None" if held is None else f"{'an' if kind[0] in 'aeiou' else 'a'} {kind}"
+                raise ModelError(
+                    f"engine: {named} returned {shown}, not a dict; it returns the fields it fills in {qid}.json, {such}"
+                )
+            taken = sorted(key for key in held if key in front)
+            if taken:
+                raise ModelError(
+                    f"engine: {named} returned {taken[0]!r}, which question {qid!r} sets in {qid}.json; a script returns only what its question's JSON leaves out, {such}"
+                )
+            other = foreign(front["type"], held)
+            if other is not None:
+                raise ModelError(
+                    f"engine: {named} returned {other!r}, which question {qid!r}, a {front['type']}, does not take; {TAKEN}"
+                )
+            try:
+                return as_question({**front, **held})
+            except ValidationError as exc:
+                raise ModelError(
+                    f"engine: question {qid!r} of decision agent {spec.name!r} does not fit once {script.path.name} fills it: {plainly(exc, 'the question')}"
+                ) from exc
+
+        try:
+            async with asyncio.TaskGroup() as group:
+                filling = {
+                    qid: group.create_task(fill(qid, front, script))
+                    for qid, (front, script) in spec.scripted.items()
+                }
+        except ExceptionGroup as failed:
+            raise failed.exceptions[0] from None
+        return {qid: task.result() for qid, task in filling.items()}
 
     def _check_routes(self, spec: AgentSpec, seen: set[str]) -> None:
         seen.add(spec.name)
@@ -773,7 +878,7 @@ class Engine:
             history=options.source,
             start=options.start,
         )
-        bounded_by_workspace = (
+        own_deadline = surface._in_workers | (
             WORKSPACE_TOOLS if spec.workspace and options.workspace is not None else frozenset()
         )
         specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
@@ -792,7 +897,7 @@ class Engine:
         fingerprint = Fingerprint(
             agent=spec.fingerprint, tools=tools_fingerprint(specs), questions=None
         )
-        targets = [self._agents[name] for name in spec.agents]
+        targets = [self._agents[name] for name in spec.agents] if DELEGATE_TOOL in surface else []
         system = build_bundle(
             spec,
             task=options.task,
@@ -925,10 +1030,10 @@ class Engine:
             try:
                 if approved is False:
                     content, is_error = f"NotApproved: {call.name} was not approved", True
-                elif spec.agents and call.name == DELEGATE_TOOL:
+                elif call.name == DELEGATE_TOOL and spec.agents and DELEGATE_TOOL in surface:
                     content, is_error, child_run_id, stopped = await delegate(call)
                 else:
-                    limit = None if call.name in bounded_by_workspace else self.tool_timeout
+                    limit = None if call.name in own_deadline else self.tool_timeout
                     deadline = asyncio.timeout(limit)
                     try:
                         async with deadline:
