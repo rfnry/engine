@@ -105,23 +105,18 @@ class AgentFront(BaseModel):
 
     @field_validator("tools")
     @classmethod
-    def _tools_keep_or_drop_each_once(cls, value: list[str]) -> list[str]:
+    def _tools_keep_each_once(cls, value: list[str]) -> list[str]:
         for entry in value:
-            name = entry.removeprefix("!")
-            if not name.strip() or name != name.strip():
+            if not entry.strip() or entry != entry.strip():
                 raise ValueError(
-                    f'tree: an entry must not be blank or padded, got {entry!r}; write a tool to keep, such as tools: [lookup_order], or one to drop, such as tools: ["!Grep"]'
+                    f"tree: an entry must not be blank or padded, got {entry!r}; write the name of a tool to keep, such as tools: [lookup_order]"
                 )
         twice = sorted({entry for entry in value if value.count(entry) > 1})
         if twice:
             raise ValueError(f"tree: {twice[0]!r} is listed twice; list each tool once")
-        if OUTPUT_TOOL in (entry.removeprefix("!") for entry in value):
+        if OUTPUT_TOOL in value:
             raise ValueError(
-                f"tree: {OUTPUT_TOOL!r} cannot be dropped or kept by name; it comes with expect= on a run"
-            )
-        if len({entry.startswith("!") for entry in value}) > 1:
-            raise ValueError(
-                "tree: an entry list mixes names and !names; list the tools to keep, or the tools to drop with !"
+                f"tree: {OUTPUT_TOOL!r} cannot be kept by name; it comes with expect= on a run, so leave it out of tools:"
             )
         return value
 
@@ -194,7 +189,6 @@ class AgentSpec(BaseModel):
     route: RouteSpec | None
     questions: dict[str, Question]
     keep: list[str] | None
-    drop: list[str]
     tasks: dict[str, str]
     task_bodies: dict[str, str] = Field(default_factory=dict)
     fingerprint: str
@@ -535,7 +529,7 @@ def _folder_tools(
 
 
 def _kept(agent: str, front: AgentFront, tools: Collection[str]) -> list[str] | None:
-    if not front.tools or front.tools[0].startswith("!"):
+    if not front.tools:
         return None
     seen = sorted({*tools, *BUILTINS})
     for name in front.tools:
@@ -641,7 +635,6 @@ def load_agent(
         route=front.route,
         questions=questions,
         keep=_kept(agent, front, folder_tools),
-        drop=[entry.removeprefix("!") for entry in front.tools if entry.startswith("!")],
         tasks=tasks,
         task_bodies=task_bodies,
         fingerprint=folder_fingerprint(files, read),

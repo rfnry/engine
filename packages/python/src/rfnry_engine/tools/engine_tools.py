@@ -75,7 +75,7 @@ class EngineTools(Tools):
             *builtins(spec.root, from_agent(spec.path, spec.reads), backend),
             load_tool(spec.root, backend, media_types, spec.reads.values()),
         ]
-        items = [tool for tool in files if picked(spec, tool.name)]
+        items: list[Tool | ToolsLike] = [tool for tool in files if picked(spec, tool.name)]
         if history is not None and start > 0:
             items.append(
                 history_tool(
@@ -99,6 +99,5 @@ class EngineTools(Tools):
             items.append(
                 delegate_tool(engine, spec, scope, tools, workspace, tags, approve, on_event, stop)
             )
-        kept: list[Tool | ToolsLike] = [tool for tool in items if tool.name not in spec.drop]
-        super().__init__(map(_own, [*kept, given.without(*spec.drop)]))
+        super().__init__(map(_own, [*items, given]))
         self._in_workers = frozenset(tool.name for tool in folder)

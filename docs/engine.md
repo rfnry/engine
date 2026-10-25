@@ -277,7 +277,7 @@ agents/
 
 The frontmatter of `AGENT.md` names the agent (`name:`), its kind (`kind:`), the model it runs on
 (`model:`) and what the agent may call, and, when it needs fewer tools than it has, the ones it
-keeps or drops (`tools:`); its body is the persona.
+keeps (`tools:`); its body is the persona.
 `name:`, `kind:` and `model:` are required: a missing one, a `kind:` other than `generation` or
 `decision`, or a blank, padded or non-text `name:` or `model:` is a `ConfigurationError` naming the
 file. A `name:` is plain text — not blank, not hidden, not padded, no slash — and is what `run`,
@@ -1850,7 +1850,7 @@ agents/
     tools/_client.py                           a helper of the scripts beside it, not a tool
     triage/AGENT.md
     billing/
-      AGENT.md                                 tools: ["!notify"]
+      AGENT.md                                 tools: [lookup_order, refund, Read]
       tools/refund.json, refund.py             only billing, and the agents inside it, see refund
 ```
 
@@ -1976,31 +1976,31 @@ outside the named folders share the default group, one process. A name that is n
 tree, or a folder inside another one named, is a `ConfigurationError`: `engine: workers names
 'support/billing' inside 'support', which it names too; keep one`.
 
-Every tool an agent sees is on. `tools:` in its `AGENT.md` narrows them — `tools: [lookup_order,
-Read]` keeps only these, `tools: ["!notify", "!Grep"]` all but these, quoted, since YAML reads a
-bare `!` as a tag — and a list keeps or drops, never both:
+Every tool an agent sees is on. `tools:` in its `AGENT.md` narrows them to the ones it lists —
+`tools: [lookup_order, Read]` keeps only these — so an agent leaves out a tool it inherits by
+listing the ones it keeps. In the tree above, billing keeps `lookup_order` from
+`customer_support/`, its own `refund` and `Read`, leaving out `notify` and the other file tools:
 
 ```markdown
 ---
 name: billing
 kind: generation
 model: strong
-tools: ["!notify"]
+tools: [lookup_order, refund, Read]
 ---
 Refund a duplicate charge with refund. Never promise a refund the rules do not allow.
 ```
 
 `Read Grep Glob LS Load` come with every generation agent, `Delegate` with `agents:`, a workspace's
 tools with `workspace: true`, `History` with a run whose `start=` is past the beginning of its
-history, and `Output` with `expect=`. A list that keeps narrows the folders' tools and those five
-file tools only: what comes with a declaration or with the run follows it and stays, and `!` drops
-any of them but `Output`, which cannot be named in `tools:`. When the tree loads, a kept name that
-is neither a tool the agent sees nor a file tool is a `ConfigurationError` that names the ones it
-has — `tree: agent 'support' keeps 'refnd' in tools:, which it does not see; its tools are Glob,
-Grep, LS, Load, Read, refund` — while a dropped name the tree does not have is taken for a tool a
-run may pass, and is dropped from any run that passes it. A tool in a folder named like one the
-engine gives the agent is a `ConfigurationError` naming its file, and `History`'s name is taken on
-every run, so a tool named `History` is refused from the first.
+history, and `Output` with `expect=`. A list narrows the folders' tools and those five file tools
+only: each of the others comes with its own declaration, or with the run, and stays as long as
+that does, so there is nothing else to leave out, and `Output` cannot be named in `tools:`. When
+the tree loads, a kept name that is neither a tool the agent sees nor a file tool is a
+`ConfigurationError` that names the ones it has — `tree: agent 'support' keeps 'refnd' in tools:,
+which it does not see; its tools are Glob, Grep, LS, Load, Read, refund`. A tool in a folder named
+like one the engine gives the agent is a `ConfigurationError` naming its file, and `History`'s name
+is taken on every run, so a tool named `History` is refused from the first.
 
 Tools that must live in your process ride a run: `run(tools=)` takes a `Tools`, or anything with its
 two verbs, for that one run — a tool bound to a tenant's connection, one that streams to a UI,
@@ -2313,9 +2313,9 @@ not have, an unknown key in the frontmatter of an `AGENT.md` or a task (`frontma
 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid
 YAML or a `description:` that is not a string in a file the map would show, a decision agent with
 `preload: true`, `workspace: true` or `tools:`, a generation agent with `questions/` or `route:`, a
-`tools:` entry that is blank, padded or listed twice, a `tools:` that mixes names and `!names`,
-names `Output` or keeps a tool the agent does not see, a tool's `.json` without its `.py` or a
-script without its `.json`, a tool's JSON with an unknown key, no description, an `input_schema`
+`tools:` entry that is blank, padded or listed twice, a `tools:` that names `Output` or keeps a
+tool the agent does not see, a tool's `.json` without its `.py` or a script without its `.json`, a
+tool's JSON with an unknown key, no description, an `input_schema`
 that is not an object or a schema that does not compile, a script or helper that is not valid
 Python, imports the engine, the server's own code or a module relatively, or imports a helper inside
 a function, a tool named like one the engine gives the agent, a `workers=` naming a folder the tree

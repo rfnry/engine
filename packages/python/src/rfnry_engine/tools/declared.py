@@ -33,7 +33,7 @@ def _compiled(schema: dict[str, JsonValue]) -> jsonschema_rs.Validator:
 
 
 def picked(spec: AgentSpec, name: str) -> bool:
-    return (spec.keep is None or name in spec.keep) and name not in spec.drop
+    return spec.keep is None or name in spec.keep
 
 
 def chosen(spec: AgentSpec) -> dict[str, ToolDef]:

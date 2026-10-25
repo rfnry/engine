@@ -66,8 +66,6 @@ _FIXES = (
     ("tab character", "indent with spaces, not tabs"),
     ("character '\\t'", "indent with spaces, not tabs"),
     ("unacceptable character", "remove the control character"),
-    ("while scanning a tag", 'quote a value that starts with !, such as "!Grep"'),
-    ("constructor for the tag", 'quote a value that starts with !, such as "!Grep"'),
     ("quoted scalar", "close the quote"),
     ("could not find expected ':'", "write each entry as key: value"),
     ("expected ',' or ']'", "close the [ with ]"),
