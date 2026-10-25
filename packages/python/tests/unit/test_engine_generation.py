@@ -100,6 +100,20 @@ async def test_a_reply_s_settings_win_over_the_ones_its_adapter_declares(fixture
     assert unreported.conversation[-1].settings == {"effort": "low"}
 
 
+async def test_a_run_s_settings_are_those_of_its_last_call(fixtures: Path) -> None:
+    llm = Configured(
+        _tool_use(ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})).model_copy(
+            update={"settings": {"effort": "high"}}
+        ),
+        text_reply("done"),
+    )
+    run = await engine_for(fixtures, llm).run("support", "acme", "x")
+    assert isinstance(run, Generation)
+    written = [m.settings for m in run.conversation if m.role == "assistant"]
+    assert written == [{"effort": "high"}, {"effort": "low"}]
+    assert run.settings == {"effort": "low"}
+
+
 async def test_a_reply_s_empty_settings_are_kept(fixtures: Path) -> None:
     run = await engine_for(fixtures, Configured(text_reply("a", settings={}))).run(
         "billing", "acme", "x"

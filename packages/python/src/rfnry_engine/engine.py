@@ -1228,8 +1228,7 @@ class Engine:
                     usage = usage + reply.usage
                 if reply.model:
                     model = reply.model
-                if reply.settings is not None:
-                    settings = reply.settings
+                settings = reply.settings if reply.settings is not None else _settings(model_)
                 prefix = await chained.stamp(messages) if reply.reasoning is not None else None
                 messages.append(_assistant(reply, prefix, _declared(model_), _settings(model_)))
                 asked = list(reply.tool_calls)

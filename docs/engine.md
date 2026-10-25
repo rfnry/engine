@@ -188,7 +188,7 @@ refuse the rest with an error the model can act on, instead of the next model ca
 it, `Load` hands the model any file. Each agent follows the `media_types` of its own model: a file a
 model does not take is a `ConfigurationError` where that agent's `preload: true` would read it, and
 `Load` refuses it for that agent alone. An adapter that has `model`, the name of the model it calls,
-names the run's model before any reply does. An adapter that has `settings`, a JSON object of what it sends its vendor besides the conversation — `{"effort": "high", "max_tokens": 4096}` — has them recorded beside the model; a `Reply` or a `Decided` may carry its own for one call, and they win, even when empty. Settings that are not a JSON object are ignored. They are stored and exported with the run, so a credential or an endpoint never goes in them.
+names the run's model before any reply does. An adapter that has `settings`, a JSON object of what it sends its vendor besides the conversation — `{"effort": "high", "max_tokens": 4096}` — has them recorded beside the model; a `Reply` or a `Decided` may carry its own for one call, and they win, even when empty. An adapter's `settings` attribute that is not a JSON object is ignored; a reply's or a decided's settings that are not JSON break the contract (`ModelError`). They are stored and exported with the run, so a credential or an endpoint never goes in them.
 
 A decision model answers three kinds of question:
 
@@ -205,8 +205,8 @@ formula for every adapter and every type, so a threshold means the same thing ev
 generation model can stand in as a decision model through an adapter that asks it for
 probabilities; the calibration is worse, the code is the same. `decide` may return the answers
 alone, or a `Decided(answers, usage, model, settings)` when the adapter can report what the call cost and
-which model answered; the record carries both, and the adapter's `model` attribute when the call
-reports no model. A decision adapter may carry `media_types` too, the media its model reads in a
+which model answered; the record carries the usage, model and settings the call reported, and the adapter's
+`model` and `settings` attributes when the call reports none. A decision adapter may carry `media_types` too, the media its model reads in a
 state; without it, its model is handed text.
 
 The instructions, what an option means, each level, and `yes` and `no` are strings, or JSON objects
@@ -500,8 +500,9 @@ run.children                                         # runs made through Delegat
 
 `run.model` is the model the replies reported, the resolved one — a dated snapshot, say. When no
 reply reported one — a run stopped during its first model call — it is the adapter's `model`
-attribute, if it has one that is a non-empty string, and `None` otherwise. `run.settings` follows the
-same rule: the last reply's `settings` that were not `None`, else the adapter's `settings`.
+attribute, if it has one that is a non-empty string, and `None` otherwise. `run.settings` is the
+settings of the call that wrote the run's last assistant message: that reply's `settings`, else the
+adapter's `settings`.
 
 Every run says which agent and which tools produced it, beside the model that answered:
 
@@ -859,7 +860,7 @@ what came before them changed — and the run goes on without it.
 Reasoning goes back only where it was given. Some vendors bind a model's reasoning to the exact
 conversation it was given in and refuse it anywhere else. Every assistant message the engine makes
 from a reply carries `usage`, what the call that wrote it reported, `model`, the model that wrote
-it, and, when the reply carries reasoning, `prefix`, a short hash of everything sent before it — the
+it, `settings`, the settings it reported or its adapter declared, and, when the reply carries reasoning, `prefix`, a short hash of everything sent before it — the
 model, as its adapter names it,
 the system prompt, the tools, the preloaded files and the messages. A message's `reasoning` is sent
 again only when what comes before it is still the same; otherwise the message goes without it, its
