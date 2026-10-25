@@ -62,6 +62,7 @@ class ReplyLike(Protocol):
     usage: UsageLike | None
     stop_reason: StopReason
     model: str | None
+    settings: Mapping[str, JsonValue] | None
     reasoning: Any
 ```
 
@@ -74,6 +75,7 @@ class DecidedLike(Protocol):
     answers: Mapping[str, AnswerLike]
     usage: UsageLike | None
     model: str | None
+    settings: Mapping[str, JsonValue] | None
 ```
 
 The shape a decision model's result is read by when it is more than the answers: the read-only fields of `Decided`. `UsageLike` is a protocol of `input`, `output`, `cache_creation` and `cache_read`, each an `int`.
@@ -107,11 +109,12 @@ class Message(BaseModel):
     prefix: str | None = None
     usage: Usage | None = None
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 ```
 
 One turn of a conversation. An assistant turn carries its text in `content`, its calls in `tool_calls` and its `reasoning` as the model returned it; a tool result has `role="tool"`, the `tool_call_id` it answers, and `is_error` when the call failed.
 
-`prefix`, `usage` and `model` are the engine's record of an assistant message it made from a reply, never sent to a model and outside the vocabulary shared with rfnry-memory: `prefix` is the first 16 hex characters of a sha256 over everything sent before the message when it was written — the model, as its adapter names it, the system prompt, the tools, the preloaded files and the earlier messages as sent — and its `reasoning` is sent again only while what precedes it is the same; `usage` is what the call that wrote it reported, and `model` the model that wrote it — the one the reply named, else the adapter's `model` attribute — so a run whose adapter changed models mid-run says which wrote each reply, where the run's `model` names the last. `prefix` is set on an assistant message whose reply carried reasoning, and is `None` otherwise. A `usage`, `prefix` or `model` that does not fit these fields — another library's usage, a prefix that is not 16 hex characters, a model that is not a string — reads as `None`, so a message from elsewhere is taken without them; only a `prefix` that is dropped costs its `reasoning`, which is not sent again.
+`prefix`, `usage`, `model` and `settings` are the engine's record of an assistant message it made from a reply, never sent to a model and outside the vocabulary shared with rfnry-memory: `prefix` is the first 16 hex characters of a sha256 over everything sent before the message when it was written — the model, as its adapter names it, the system prompt, the tools, the preloaded files and the earlier messages as sent — and its `reasoning` is sent again only while what precedes it is the same; `usage` is what the call that wrote it reported, and `model` the model that wrote it — the one the reply named, else the adapter's `model` attribute — so a run whose adapter changed models mid-run says which wrote each reply, where the run's `model` names the last; `settings` are the JSON object the reply reported, else the adapter's `settings` attribute, and stay out of the `prefix` hash. `prefix` is set on an assistant message whose reply carried reasoning, and is `None` otherwise. A `usage`, `prefix`, `model` or `settings` that does not fit these fields — another library's usage, a prefix that is not 16 hex characters, a model that is not a string, settings that are not a JSON object — reads as `None`, so a message from elsewhere is taken without them; only a `prefix` that is dropped costs its `reasoning`, which is not sent again.
 
 ### `HistoryLike`
 
@@ -153,6 +156,7 @@ class Reply(BaseModel):
     usage: Usage | None = None
     stop_reason: StopReason = "end_turn"
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
     reasoning: Any = None
 ```
 
@@ -341,6 +345,7 @@ class Decided(BaseModel):
     answers: dict[str, Answer]
     usage: Usage | None = None
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 ```
 
 What `decide` returns instead of the answers alone when the adapter can report what the call cost and which model answered. The run's record carries both.
@@ -506,6 +511,7 @@ class Generation(BaseModel):
     at: datetime
     duration_ms: int
     model: str | None
+    settings: dict[str, JsonValue] | None = None
     fingerprint: Fingerprint
     input: State
     system: str
@@ -541,6 +547,7 @@ class Decision(BaseModel):
     at: datetime
     duration_ms: int
     model: str | None
+    settings: dict[str, JsonValue] | None = None
     fingerprint: Fingerprint
     state: State
     questions: dict[str, Question]

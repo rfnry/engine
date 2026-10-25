@@ -2,6 +2,7 @@ import base64
 import json
 import math
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -219,3 +220,26 @@ def test_structure_is_json_and_still_needs_two_options_or_levels() -> None:
     ]:
         with pytest.raises(ValidationError):
             TypeAdapter(Question).validate_python(fields)
+
+
+def test_a_reply_and_a_decided_carry_their_settings() -> None:
+    assert as_reply(Reply(settings={"effort": "high"})).settings == {"effort": "high"}
+    assert as_decided(Decided(answers={}, settings={"effort": "low"})).settings == {"effort": "low"}
+    bare = SimpleNamespace(
+        text="x", tool_calls=[], usage=None, stop_reason="end_turn", model=None, reasoning=None
+    )
+    assert as_reply(bare).settings is None
+
+
+def test_settings_that_are_not_json_break_the_contract() -> None:
+    odd = SimpleNamespace(
+        text="",
+        tool_calls=[],
+        usage=None,
+        stop_reason="end_turn",
+        model=None,
+        reasoning=None,
+        settings={"effort": object()},
+    )
+    with pytest.raises(ModelError):
+        as_reply(odd)

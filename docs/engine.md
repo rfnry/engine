@@ -188,7 +188,7 @@ refuse the rest with an error the model can act on, instead of the next model ca
 it, `Load` hands the model any file. Each agent follows the `media_types` of its own model: a file a
 model does not take is a `ConfigurationError` where that agent's `preload: true` would read it, and
 `Load` refuses it for that agent alone. An adapter that has `model`, the name of the model it calls,
-names the run's model before any reply does.
+names the run's model before any reply does. An adapter that has `settings`, a JSON object of what it sends its vendor besides the conversation — `{"effort": "high", "max_tokens": 4096}` — has them recorded beside the model; a `Reply` or a `Decided` may carry its own for one call, and they win, even when empty. Settings that are not a JSON object are ignored. They are stored and exported with the run, so a credential or an endpoint never goes in them.
 
 A decision model answers three kinds of question:
 
@@ -204,7 +204,7 @@ the library computes from the distribution's peakedness, `(n·p_max − 1)/(n �
 formula for every adapter and every type, so a threshold means the same thing everywhere. A
 generation model can stand in as a decision model through an adapter that asks it for
 probabilities; the calibration is worse, the code is the same. `decide` may return the answers
-alone, or a `Decided(answers, usage, model)` when the adapter can report what the call cost and
+alone, or a `Decided(answers, usage, model, settings)` when the adapter can report what the call cost and
 which model answered; the record carries both, and the adapter's `model` attribute when the call
 reports no model. A decision adapter may carry `media_types` too, the media its model reads in a
 state; without it, its model is handed text.
@@ -500,7 +500,8 @@ run.children                                         # runs made through Delegat
 
 `run.model` is the model the replies reported, the resolved one — a dated snapshot, say. When no
 reply reported one — a run stopped during its first model call — it is the adapter's `model`
-attribute, if it has one that is a non-empty string, and `None` otherwise.
+attribute, if it has one that is a non-empty string, and `None` otherwise. `run.settings` follows the
+same rule: the last reply's `settings` that were not `None`, else the adapter's `settings`.
 
 Every run says which agent and which tools produced it, beside the model that answered:
 
@@ -867,9 +868,9 @@ changed `context=`, `task=` or `tools=`, another agent, another model and a repl
 reasoning a vendor would refuse. A run stopped after a step and continued after a change ahead of
 its history — a new date in `context=`, a moved window — sends its last tool call without its
 reasoning; a vendor that wants reasoning back on an open tool loop may refuse that, and handling it
-is the adapter's job. `prefix`, `usage` and `model` are the engine's record; no model sees them, and
+is the adapter's job. `prefix`, `usage`, `model` and `settings` are the engine's record; no model sees them, and
 `model` says which model wrote each reply when an adapter changes models mid-run, where the run's
-`model` names the last.
+`model` names the last. `settings` are not part of the hash: changing them never takes reasoning away.
 
 Caching is the adapter's. An adapter that marks a cache point has every call of a window read from
 the cache what the last call sent; a new window restarts it, and so does any change ahead of the
