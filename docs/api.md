@@ -1224,7 +1224,7 @@ async def export(
 ) -> Exported: ...
 ```
 
-Writes every run recorded or labeled after `since`, with all its labels, to `bucket` as JSONL under `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, in the datasets `generation`, `preference` and `decision`. Every row carries `holdout`, from a hash of its run id and `holdout_percent`, and its run's `fingerprint` as `{"agent", "tools", "questions"}`. A generation row carries the run's `stopped` and `stop_reason`. A run whose `error` is set is in no dataset, except a decision run that answered before the run it routed to raised: its rows are written. Returns the keys, the rows per dataset and the watermark for the next `since`.
+Writes every run recorded or labeled after `since`, with all its labels, to `bucket` as JSONL under `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, in the datasets `generation`, `preference` and `decision`. Every row carries, after `run_id`, its run's `parent_run_id` and `call` (`null` for a top-level run and one no tool call started), `holdout`, from a hash of its run id and `holdout_percent`, and its run's `fingerprint` as `{"agent", "tools", "questions"}`. A generation row carries the run's `stopped` and `stop_reason`. A run whose `error` is set is in no dataset, except a decision run that answered before the run it routed to raised: its rows are written. Returns the keys, the rows per dataset and the watermark for the next `since`.
 
 Raises `InputError` when `scope` is empty or `holdout_percent` is outside 0 to 100, before anything is read or written.
 

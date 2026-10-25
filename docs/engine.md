@@ -1696,7 +1696,11 @@ datasets:
 
 Every row carries its run's `tags`, `{}` for a run that had none, and its `fingerprint`,
 `{"agent": …, "tools": …, "questions": …}` — `questions` is `null` for a generation run; group or
-filter the rows by them in your own code.
+filter the rows by them in your own code. Every row also carries, right after `run_id`, the run's
+`parent_run_id` — the run that delegated or routed to it, `null` for a top-level run — and its
+`call`, the tool call that started it (`{run_id, agent, scope, tool, call_id}`, a `Delegate` or a
+consult through `engine.tool`), `null` when no call did; a dataset regroups its rows by tree with
+them.
 
 `model` and `settings` are the model that wrote the run's reply, or made its decision, and the
 settings it reported or its adapter declared, `null` when neither said; a preference row's name the
@@ -1715,7 +1719,7 @@ want it in. The third is a decision agent's answers beside what turned out true:
 is one whose 0.8 was right 80% of the time, and this is the table that says whether it was:
 
 ```json
-{"run_id": "…", "holdout": false, "agent": "frontdesk", "tags": {"arm": "b"}, "question_id": "intent", "answer": "billing",
+{"run_id": "…", "parent_run_id": null, "call": null, "holdout": false, "agent": "frontdesk", "tags": {"arm": "b"}, "question_id": "intent", "answer": "billing",
  "probabilities": {"billing": 0.8, "technical": 0.15, "other": 0.05}, "confidence": 0.7,
  "truth": "technical", "truth_source": "human", "truth_model": null, "truth_settings": null,
  "outcome": "failed"}

@@ -11,7 +11,7 @@ import pytest
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError
 from rfnry_engine.models import CheckAnswer, Document, Image, Message, Part, Reply, Text, ToolCall
-from rfnry_engine.records import Generation, Step
+from rfnry_engine.records import CallInfo, Generation, Step
 from rfnry_engine.refinery.holdout import is_holdout
 from rfnry_engine.refinery.labels import Label, Outcome, Review
 from rfnry_engine.refinery.postgres import PostgresStorage
@@ -97,6 +97,8 @@ async def test_export_writes_three_datasets_with_labels_and_holdout(storage: Sto
     [preference_row] = _lines(bucket.objects[keys[2]])
     assert preference_row == {
         "run_id": generation.run_id,
+        "parent_run_id": None,
+        "call": None,
         "holdout": is_holdout(generation.run_id),
         "tags": {},
         "fingerprint": generation.fingerprint.model_dump(),
@@ -546,3 +548,36 @@ async def test_a_preference_row_names_the_model_and_settings_that_wrote_rejected
         "model",
         "settings",
     ]
+
+
+async def test_every_row_carries_the_run_above_it_and_the_call_that_started_it(
+    storage: Storage,
+) -> None:
+    refinery = Refinery(storage)
+    parent = generation_record()
+    call = CallInfo(
+        run_id=parent.run_id, agent="support", scope="acme", tool="Delegate", call_id="d1"
+    )
+    child = generation_record(agent="billing", reply="Sorry, no.").model_copy(
+        update={"parent_run_id": parent.run_id, "call": call}
+    )
+    asked = decision_record(agent="frontdesk").model_copy(
+        update={"parent_run_id": parent.run_id, "call": call}
+    )
+    await refinery.record(parent.model_copy(update={"children": [child, asked]}))
+    await refinery.review("acme", child.run_id, Review(stance="objection", correction="Refund."))
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    rows = {tuple(key.split("/")[1:3]): _lines(data)[0] for key, data in bucket.objects.items()}
+    linked = call.model_dump(mode="json")
+    assert sorted(rows) == [
+        ("billing", "generation"),
+        ("billing", "preference"),
+        ("frontdesk", "decision"),
+        ("support", "generation"),
+    ]
+    for name, row in rows.items():
+        assert list(row)[:3] == ["run_id", "parent_run_id", "call"], name
+        top = name == ("support", "generation")
+        assert row["parent_run_id"] == (None if top else parent.run_id), name
+        assert row["call"] == (None if top else linked), name
