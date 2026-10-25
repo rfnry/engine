@@ -34,7 +34,7 @@ from rfnry_engine.tools.delegate import DELEGATE_TOOL
 from rfnry_engine.tools.folder import ToolDef, load_scripts, load_tools, project_of
 from rfnry_engine.tools.history import HISTORY_TOOL
 from rfnry_engine.tools.workspace import WORKSPACE_NAMES
-from rfnry_engine.workers import Script
+from rfnry_engine.workers.pool import Script
 
 Kind = Literal["generation", "decision"]
 OUTPUT_TOOL = "Output"

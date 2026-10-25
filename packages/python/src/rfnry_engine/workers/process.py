@@ -126,7 +126,9 @@ async def _serve(
 
     async def handle(id: int, key: str, args: Any, call: Any) -> None:
         try:
-            loaded = modules.get(key, f"workers: the worker has no tool {key.rsplit('/', 1)[-1]}")
+            loaded = modules.get(
+                key, f"workers/process: the worker has no tool {key.rsplit('/', 1)[-1]}"
+            )
             if isinstance(loaded, str):
                 text = json.dumps({"id": id, "error": loaded})
             else:

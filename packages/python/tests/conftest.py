@@ -71,7 +71,7 @@ def _workers_left() -> list[int]:
                 state = Path(f"/proc/{child}/stat").read_text().rsplit(")", 1)[1].split()[0]
             except OSError:
                 continue
-            if b"_worker.py" in command and state != "Z":
+            if b"workers/process.py" in command and state != "Z":
                 found.append(int(child))
     return found
 
