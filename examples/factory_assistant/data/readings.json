@@ -1,0 +1,46 @@
+{
+  "note": "Synthetic data for the example: the machines' vibration readings are invented.",
+  "unit": "mm/s RMS, one reading a day from the date in since",
+  "plants": {
+    "plant-reno": {
+      "M-13": {
+        "point": "hydraulic pump, motor drive end",
+        "alert": 4.5,
+        "since": "2026-09-24",
+        "daily": [1.8, 1.9, 1.7, 1.8, 1.8, 1.9, 1.8, 1.7, 1.8, 1.9, 1.8, 1.8, 1.7, 1.8]
+      },
+      "M-21": {
+        "point": "hydraulic pump, motor drive end",
+        "alert": 4.5,
+        "since": "2026-09-24",
+        "daily": [3.6, 3.7, 2.9, 2.8, 2.8, 2.7, 2.8, 2.7, 2.7, 2.8, 2.7, 2.6, 2.7, 2.7]
+      },
+      "M-22": {
+        "point": "hydraulic pump, motor drive end",
+        "alert": 4.5,
+        "since": "2026-09-24",
+        "daily": [2.1, 2.2, 2.2, 2.3, 2.5, 2.6, 2.8, 3.0, 3.3, 3.6, 4.0, 4.6, 5.0, 5.5]
+      }
+    },
+    "plant-monterrey": {
+      "MA-1": {
+        "point": "injection servo motor, drive end",
+        "alert": 2.8,
+        "since": "2026-09-24",
+        "daily": [0.9, 0.9, 1.0, 0.9, 0.9, 1.0, 0.9, 0.9, 1.0, 0.9, 0.9, 1.0, 0.9, 0.9]
+      },
+      "MA-2": {
+        "point": "injection servo motor, drive end",
+        "alert": 2.8,
+        "since": "2026-09-24",
+        "daily": [1.1, 1.2, 1.1, 1.1, 1.2, 1.1, 1.2, 1.1, 1.1, 1.2, 1.1, 1.1, 1.2, 1.1]
+      },
+      "MA-3": {
+        "point": "injection servo motor, drive end",
+        "alert": 2.8,
+        "since": "2026-09-24",
+        "daily": [1.2, 1.3, 1.3, 1.4, 1.5, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.4]
+      }
+    }
+  }
+}

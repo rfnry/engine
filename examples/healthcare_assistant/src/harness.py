@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from rfnry_engine import Engine
@@ -5,6 +6,7 @@ from rfnry_engine import Engine
 from providers import decision, generation
 
 ROOT = Path(__file__).resolve().parent.parent
+CLINICS = json.loads((ROOT / "data" / "clinics.json").read_text())["clinics"]
 CALLBACK = "Triage is not sure who should take this: a nurse will call the patient back."
 
 engine = Engine(ROOT / "agents", models={"strong": generation(), "judge": decision()})
