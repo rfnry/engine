@@ -44,6 +44,8 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
     body = row.body
     return {
         "run_id": row.run_id,
+        "parent_run_id": row.parent_run_id,
+        "call": body["call"],
         "holdout": holdout,
         "agent": row.agent,
         "task": row.task,
@@ -73,6 +75,8 @@ def preference_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[
     return [
         {
             "run_id": row.run_id,
+            "parent_run_id": row.parent_run_id,
+            "call": row.body["call"],
             "holdout": holdout,
             "tags": row.body["tags"],
             "fingerprint": _fingerprint(row.body),
@@ -142,6 +146,8 @@ def decision_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[di
         rows.append(
             {
                 "run_id": row.run_id,
+                "parent_run_id": row.parent_run_id,
+                "call": body["call"],
                 "holdout": holdout,
                 "agent": row.agent,
                 "tags": body["tags"],

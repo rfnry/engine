@@ -30,6 +30,14 @@ def test_reads_names_a_folder_by_its_path_from_the_root(tmp_path: Path) -> None:
     assert Engine(tmp_path, models={}).agents["coding"].reads == ["shared/books"]
 
 
+def test_a_bytecode_cache_is_no_folder_of_the_tree(tmp_path: Path) -> None:
+    write(tmp_path / "shared/books/__pycache__/async.cpython-314.pyc", "x")
+    books(tmp_path, "[shared/books/__pycache__]")
+    assert "shared/books/__pycache__" not in _tree_folders(tmp_path)[0]
+    with pytest.raises(ConfigurationError, match="shared/books/__pycache__"):
+        load_tree(tmp_path)
+
+
 def test_the_fingerprint_follows_the_files_of_a_read_folder(tmp_path: Path) -> None:
     root = books(tmp_path)
     before = load_tree(root)["coding"].fingerprint

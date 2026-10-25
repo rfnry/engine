@@ -335,6 +335,70 @@ async def test_a_consult_inside_a_run_records_the_callers_call(tmp_path: Path) -
     assert consult.call.run_id == outer.run_id and consult.call.call_id == "b1"
 
 
+async def test_a_consult_inside_a_run_that_is_not_recorded_is_not_recorded(
+    tmp_path: Path,
+) -> None:
+    keeping = Keeping()
+    engine = consulting(
+        tmp_path,
+        keeping,
+        use(ToolCall(id="b1", name="billing", args={"input": "paid?"})),
+        text_reply("Paid."),
+        text_reply("Done."),
+    )
+    run = await engine.run(
+        "support", "acme", "x", tools=engine.tool("billing", scope="acme"), record=False
+    )
+    assert isinstance(run, Generation) and run.steps[0].result == "Paid."
+    assert keeping.runs == []
+
+
+async def test_a_delegate_through_engine_tools_inside_a_run_that_is_not_recorded_is_not_recorded(
+    tmp_path: Path,
+) -> None:
+    keeping = Keeping()
+    engine = Engine(
+        tree(tmp_path, support="agents: [billing]\n", billing=""),
+        refinery=keeping,
+        models={
+            "strong": Scripted(
+                use(ToolCall(id="a1", name="ask", args={})),
+                text_reply("Paid."),
+                text_reply("Done."),
+            )
+        },
+    )
+    surface = EngineTools(engine, agent="support", scope="acme")
+
+    async def ask(args: dict[str, Any]) -> Any:
+        return await surface.dispatch("Delegate", {"agent": "billing", "input": "paid?"})
+
+    tools = Tools([Tool("ask", "Asks billing", body=ask)])
+    run = await engine.run("support", "acme", "x", tools=tools, record=False)
+    assert isinstance(run, Generation) and run.steps[0].result == "Paid."
+    assert keeping.runs == []
+
+
+async def test_a_run_asked_to_record_inside_one_that_is_not_records(tmp_path: Path) -> None:
+    keeping = Keeping()
+    engine = consulting(
+        tmp_path,
+        keeping,
+        use(ToolCall(id="b1", name="recorded", args={})),
+        text_reply("Paid."),
+        text_reply("Done."),
+    )
+
+    async def recorded(args: dict[str, Any]) -> str:
+        run = await engine.run("billing", "acme", "paid?", record=True)
+        assert isinstance(run, Generation)
+        return run.reply
+
+    tools = Tools([Tool("recorded", "Runs billing, recorded", body=recorded)])
+    await engine.run("support", "acme", "x", tools=tools, record=False)
+    assert [run.agent for run in keeping.runs] == ["billing"]
+
+
 async def test_a_consult_outside_any_run_records_none(tmp_path: Path) -> None:
     keeping = Keeping()
     engine = consulting(tmp_path, keeping, text_reply("Paid."))

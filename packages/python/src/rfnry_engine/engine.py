@@ -27,6 +27,7 @@ from rfnry_engine.fingerprint import questions_fingerprint, tools_fingerprint
 from rfnry_engine.foreground import (
     CALL,
     FOREGROUND,
+    RECORDING,
     Foreground,
     halted,
     hooks,
@@ -604,6 +605,7 @@ class Engine:
             start=start,
             source=held,
         )
+        recording = RECORDING.set(record)
         try:
             run = await self._run(spec, scope, input, options, None)
         except Exception:
@@ -611,6 +613,8 @@ class Engine:
                 with taking(stop):
                     await self._record(options.failed[-1])
             raise
+        finally:
+            RECORDING.reset(recording)
         if record:
             with taking(stop):
                 await self._record(run)
@@ -667,6 +671,7 @@ class Engine:
                 approve=approve,
                 on_event=watching,
                 stop=held,
+                record=RECORDING.get(),
             )
             return run_result(returned(run))
 

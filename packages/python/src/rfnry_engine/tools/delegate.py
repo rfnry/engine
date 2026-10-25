@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ValidationError
 
 from rfnry_engine.errors import DelegationDepthError, DelegationLoopError, InputError
-from rfnry_engine.foreground import hooks, returned
+from rfnry_engine.foreground import RECORDING, hooks, returned
 from rfnry_engine.models import ToolCall
 from rfnry_engine.records import EventHandler, Generation
 from rfnry_engine.stop import Stop
@@ -187,6 +187,7 @@ def delegate_tool(
                     approve=approve,
                     on_event=watching,
                     stop=held,
+                    record=RECORDING.get(),
                 )
             )
         )

@@ -378,7 +378,11 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     def walk(folder: Path, at: str) -> None:
         holds = declares(folder)
         for child in _subfolders(folder):
-            if child.name.startswith(".") or (holds and child.name in DECLARED):
+            if (
+                child.name.startswith(".")
+                or child.name == "__pycache__"
+                or (holds and child.name in DECLARED)
+            ):
                 continue
             place = child.resolve()
             key = f"{at}/{child.name}" if at else child.name

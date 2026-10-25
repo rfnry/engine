@@ -50,6 +50,22 @@ async def test_glob_and_ls() -> None:
     assert "rules/" in str(listing).splitlines() and "AGENT.md" in str(listing).splitlines()
 
 
+async def test_no_builtin_shows_a_bytecode_cache(tmp_path: Path) -> None:
+    (tmp_path / "rules" / "__pycache__").mkdir(parents=True)
+    (tmp_path / "rules" / "refunds.md").write_text("refund in full\n")
+    (tmp_path / "rules" / "__pycache__" / "refunds.cpython-314.pyc").write_text("refund\n")
+    (tmp_path / "__pycache__").mkdir()
+    tools = Tools(builtins(tmp_path))
+    assert str(await tools.dispatch("Glob", {"pattern": "**/*"})).splitlines() == [
+        "rules/refunds.md"
+    ]
+    assert str(await tools.dispatch("Grep", {"pattern": "refund"})).splitlines() == [
+        "rules/refunds.md"
+    ]
+    assert str(await tools.dispatch("LS", {})).splitlines() == ["rules/"]
+    assert str(await tools.dispatch("LS", {"path": "rules"})).splitlines() == ["refunds.md"]
+
+
 async def test_bad_arguments_are_refused() -> None:
     with pytest.raises(InputError, match="offset"):
         await _tools().dispatch("Read", {"path": "AGENT.md", "offset": -1})

@@ -39,6 +39,7 @@ def _walk(
             name
             for name in names
             if not name.startswith(".")
+            and name != "__pycache__"
             and not (declared and top and name in DECLARED)
             and here / name not in tools
             and (inner or not declares(here / name))
