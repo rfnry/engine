@@ -188,7 +188,7 @@ refuse the rest with an error the model can act on, instead of the next model ca
 it, `Load` hands the model any file. Each agent follows the `media_types` of its own model: a file a
 model does not take is a `ConfigurationError` where that agent's `preload: true` would read it, and
 `Load` refuses it for that agent alone. An adapter that has `model`, the name of the model it calls,
-names the run's model before any reply does.
+names the run's model before any reply does. An adapter that has `settings`, a JSON object of what it sends its vendor besides the conversation — `{"effort": "high", "max_tokens": 4096}` — has them recorded beside the model; a `Reply` or a `Decided` may carry its own for one call, and they win, even when empty. An adapter's `settings` attribute that is not a JSON object is ignored; a reply's or a decided's settings that are not JSON break the contract (`ModelError`). They are stored and exported with the run, so a credential or an endpoint never goes in them.
 
 A decision model answers three kinds of question:
 
@@ -204,9 +204,9 @@ the library computes from the distribution's peakedness, `(n·p_max − 1)/(n �
 formula for every adapter and every type, so a threshold means the same thing everywhere. A
 generation model can stand in as a decision model through an adapter that asks it for
 probabilities; the calibration is worse, the code is the same. `decide` may return the answers
-alone, or a `Decided(answers, usage, model)` when the adapter can report what the call cost and
-which model answered; the record carries both, and the adapter's `model` attribute when the call
-reports no model. A decision adapter may carry `media_types` too, the media its model reads in a
+alone, or a `Decided(answers, usage, model, settings)` when the adapter can report what the call cost and
+which model answered; the record carries the usage, model and settings the call reported, and the adapter's
+`model` and `settings` attributes when the call reports none. A decision adapter may carry `media_types` too, the media its model reads in a
 state; without it, its model is handed text.
 
 The instructions, what an option means, each level, and `yes` and `no` are strings, or JSON objects
@@ -500,7 +500,9 @@ run.children                                         # runs made through Delegat
 
 `run.model` is the model the replies reported, the resolved one — a dated snapshot, say. When no
 reply reported one — a run stopped during its first model call — it is the adapter's `model`
-attribute, if it has one that is a non-empty string, and `None` otherwise.
+attribute, if it has one that is a non-empty string, and `None` otherwise. `run.settings` is the
+settings of the call that wrote the run's last assistant message: that reply's `settings`, else the
+adapter's `settings`.
 
 Every run says which agent and which tools produced it, beside the model that answered:
 
@@ -858,7 +860,7 @@ what came before them changed — and the run goes on without it.
 Reasoning goes back only where it was given. Some vendors bind a model's reasoning to the exact
 conversation it was given in and refuse it anywhere else. Every assistant message the engine makes
 from a reply carries `usage`, what the call that wrote it reported, `model`, the model that wrote
-it, and, when the reply carries reasoning, `prefix`, a short hash of everything sent before it — the
+it, `settings`, the settings it reported or its adapter declared, and, when the reply carries reasoning, `prefix`, a short hash of everything sent before it — the
 model, as its adapter names it,
 the system prompt, the tools, the preloaded files and the messages. A message's `reasoning` is sent
 again only when what comes before it is still the same; otherwise the message goes without it, its
@@ -867,9 +869,9 @@ changed `context=`, `task=` or `tools=`, another agent, another model and a repl
 reasoning a vendor would refuse. A run stopped after a step and continued after a change ahead of
 its history — a new date in `context=`, a moved window — sends its last tool call without its
 reasoning; a vendor that wants reasoning back on an open tool loop may refuse that, and handling it
-is the adapter's job. `prefix`, `usage` and `model` are the engine's record; no model sees them, and
+is the adapter's job. `prefix`, `usage`, `model` and `settings` are the engine's record; no model sees them, and
 `model` says which model wrote each reply when an adapter changes models mid-run, where the run's
-`model` names the last.
+`model` names the last. `settings` are not part of the hash: changing them never takes reasoning away.
 
 Caching is the adapter's. An adapter that marks a cache point has every call of a window read from
 the cache what the last call sent; a new window restarts it, and so does any change ahead of the
@@ -1650,7 +1652,9 @@ A judge or teacher the tree does not have is a `NotFoundError`, and one of the w
 failed, or the teacher answered a choice with no option, a score with no level index, a check with
 anything but true or false — is named in `labeled.errors` with why, and stays unlabeled for the
 next call. Every label carries its source. A
-judge's score is exported as a judge's score, never as a person's.
+judge's score is exported as a judge's score, never as a person's. A judge's or a teacher's label also
+names the `model` and `settings` of the run that made it, so a score can be traced to what produced
+it; a person's and the world's carry `null` for both.
 
 Export writes datasets to any object with a `put(key, bytes)`:
 
@@ -1683,13 +1687,19 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | task, skill, context, tags, model, fingerprint, system, preload, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
-| `preference` | human correction | tags, fingerprint, prompt (system, preload, messages), chosen (the correction), rejected (the reply) |
-| `decision` | question of a decision run | tags, model, fingerprint, state, question, answer, probabilities, confidence, truth, outcome |
+| `generation` | generation run | task, skill, context, tags, model, settings, fingerprint, system, preload, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
+| `preference` | human correction | tags, fingerprint, model, settings, prompt (system, preload, messages), chosen (the correction), rejected (the reply) |
+| `decision` | question of a decision run | tags, model, settings, fingerprint, state, question, answer, probabilities, confidence, truth, truth_source, truth_model, truth_settings, outcome |
 
 Every row carries its run's `tags`, `{}` for a run that had none, and its `fingerprint`,
 `{"agent": …, "tools": …, "questions": …}` — `questions` is `null` for a generation run; group or
 filter the rows by them in your own code.
+
+`model` and `settings` are the model that wrote the run's reply, or made its decision, and the
+settings it reported or its adapter declared, `null` when neither said; a preference row's name the
+ones that wrote `rejected`. Each exported label carries the `model` and `settings` of the judge or
+teacher behind it, and a decision row's `truth_model` and `truth_settings` are the teacher's when
+`truth_source` is `"teacher"`, `null` when it is `"human"`.
 
 The first two are a generation agent's episodes and the corrections people made to them. A
 generation row's `tools` is what the model was offered — `{name, description, input_schema}` each —
@@ -1704,7 +1714,8 @@ is one whose 0.8 was right 80% of the time, and this is the table that says whet
 ```json
 {"run_id": "…", "holdout": false, "agent": "frontdesk", "tags": {"arm": "b"}, "question_id": "intent", "answer": "billing",
  "probabilities": {"billing": 0.8, "technical": 0.15, "other": 0.05}, "confidence": 0.7,
- "truth": "technical", "truth_source": "human", "outcome": "failed"}
+ "truth": "technical", "truth_source": "human", "truth_model": null, "truth_settings": null,
+ "outcome": "failed"}
 ```
 
 `refinery.conflicts(scope)` lists runs that carry two different human corrections — a dataset can

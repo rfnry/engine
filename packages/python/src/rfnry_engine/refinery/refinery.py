@@ -349,6 +349,8 @@ class Refinery:
                             at=datetime.now(UTC),
                             source="judge",
                             answers=run.answers,
+                            model=run.model,
+                            settings=run.settings,
                         )
                     )
                     result.judged += 1
@@ -380,6 +382,8 @@ class Refinery:
                             at=datetime.now(UTC),
                             source="teacher",
                             answers=answers,
+                            model=run.model,
+                            settings=run.settings,
                         )
                     )
                     result.taught += 1

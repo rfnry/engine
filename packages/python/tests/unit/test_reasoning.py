@@ -651,3 +651,33 @@ async def test_a_reply_that_is_not_streamed_sends_no_reasoning(fixtures: Path) -
         "support", "acme", "Charged twice.", on_event=seen
     )
     assert not any(isinstance(e, ReasoningDelta) for e in seen.events)
+
+
+def test_a_message_s_settings_that_are_not_a_json_object_are_dropped() -> None:
+    held = {"role": "assistant", "content": "x"}
+    assert Message.model_validate({**held, "settings": "high"}).settings is None
+    assert Message.model_validate({**held, "settings": {"effort": "high"}}).settings == {
+        "effort": "high"
+    }
+
+
+class Tuned(Scripted):
+    def __init__(self, settings: dict[str, Any], *replies: Reply) -> None:
+        super().__init__(*replies)
+        self.settings = settings
+
+
+async def test_changed_settings_keep_reasoning_going_back(fixtures: Path) -> None:
+    low = Tuned({"effort": "low"}, reading(), text_reply("Refund in full."))
+    first = await first_run(Engine(fixtures, models={"strong": low}))
+    assert [m.settings for m in first.conversation if m.role == "assistant"] == [
+        {"effort": "low"},
+        {"effort": "low"},
+    ]
+    high = Tuned({"effort": "high"}, text_reply("ok"))
+    await Engine(fixtures, models={"strong": high}).run(
+        "support", "acme", "Thanks.", history=first.conversation, context=CONTEXT
+    )
+    sent = [m.reasoning for m in high.calls[0][1] if m.role == "assistant"]
+    assert sent == [THOUGHT, None]
+    assert all(m.settings is None for m in high.calls[0][1])

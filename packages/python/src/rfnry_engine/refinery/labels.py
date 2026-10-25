@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, JsonValue, model_validator
 
 from rfnry_engine.models import Answer
 from rfnry_engine.records import Run
@@ -33,6 +33,8 @@ class Label(BaseModel):
     review: Review | None = None
     outcome: Outcome | None = None
     answers: dict[str, Answer] | None = None
+    model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 
 
 class Labeled(BaseModel):

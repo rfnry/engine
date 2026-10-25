@@ -55,6 +55,7 @@ class Reply(BaseModel):
     usage: Usage | None = None
     stop_reason: Literal["end_turn", "tool_use", "max_tokens", "error"] = "end_turn"
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
     reasoning: Any = None
 
 
@@ -107,6 +108,7 @@ class Decided(BaseModel):
     answers: dict[str, Answer]
     usage: Usage | None = None
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 
 
 class Photos:

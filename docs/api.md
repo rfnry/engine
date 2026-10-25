@@ -14,7 +14,7 @@ class GenerationModel(Protocol):
     ) -> ReplyLike: ...
 ```
 
-A model that writes text and calls tools: any object with this method, matched by shape. It returns a `Reply`, or anything with its fields; a result whose fields do not fit makes the run raise `ModelError`. An adapter may also carry `media_types`, the file types its model takes, such as `{"image/*", "application/pdf"}`, so `Load` refuses the rest, and `model`, the name of the model it calls, a `str` the run records as its model when no reply reports one.
+A model that writes text and calls tools: any object with this method, matched by shape. It returns a `Reply`, or anything with its fields; a result whose fields do not fit makes the run raise `ModelError`. An adapter may also carry `media_types`, the file types its model takes, such as `{"image/*", "application/pdf"}`, so `Load` refuses the rest, and `model`, the name of the model it calls, a `str` the run records as its model when no reply reports one, and `settings`, a JSON object of what it sends its vendor besides the conversation, which the run records beside the model when a reply reports none. Settings are stored and exported, so a credential or an endpoint never goes in them.
 
 ### `StreamingGenerationModel`
 
@@ -51,7 +51,7 @@ class DecisionModel(Protocol):
     ) -> Mapping[str, AnswerLike] | DecidedLike: ...
 ```
 
-A model that answers typed questions about a state in one call: any object with this method, matched by shape. It returns an answer per question id, or a `Decided` when it can report what the call cost and which model answered. An adapter may also carry `model`, the name of the model it calls, a `str` the run records as its model when the call reports none, and `media_types`, the media its model reads in a state, such as `{"image/*"}`: a run's parts with that media reach it as the state, a list of parts; without it the state is text, and parts it does not declare are refused before it is called. Answers that do not fit — a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels — make the run raise `ModelError`.
+A model that answers typed questions about a state in one call: any object with this method, matched by shape. It returns an answer per question id, or a `Decided` when it can report what the call cost and which model answered. An adapter may also carry `model`, the name of the model it calls, a `str` the run records as its model when the call reports none, `settings`, a JSON object of what it sends its vendor besides the conversation, recorded when the call reports none (stored and exported, so a credential or an endpoint never goes in them), and `media_types`, the media its model reads in a state, such as `{"image/*"}`: a run's parts with that media reach it as the state, a list of parts; without it the state is text, and parts it does not declare are refused before it is called. Answers that do not fit — a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels — make the run raise `ModelError`.
 
 ### `ReplyLike`
 
@@ -62,6 +62,7 @@ class ReplyLike(Protocol):
     usage: UsageLike | None
     stop_reason: StopReason
     model: str | None
+    settings: Mapping[str, JsonValue] | None
     reasoning: Any
 ```
 
@@ -74,6 +75,7 @@ class DecidedLike(Protocol):
     answers: Mapping[str, AnswerLike]
     usage: UsageLike | None
     model: str | None
+    settings: Mapping[str, JsonValue] | None
 ```
 
 The shape a decision model's result is read by when it is more than the answers: the read-only fields of `Decided`. `UsageLike` is a protocol of `input`, `output`, `cache_creation` and `cache_read`, each an `int`.
@@ -107,11 +109,12 @@ class Message(BaseModel):
     prefix: str | None = None
     usage: Usage | None = None
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 ```
 
 One turn of a conversation. An assistant turn carries its text in `content`, its calls in `tool_calls` and its `reasoning` as the model returned it; a tool result has `role="tool"`, the `tool_call_id` it answers, and `is_error` when the call failed.
 
-`prefix`, `usage` and `model` are the engine's record of an assistant message it made from a reply, never sent to a model and outside the vocabulary shared with rfnry-memory: `prefix` is the first 16 hex characters of a sha256 over everything sent before the message when it was written — the model, as its adapter names it, the system prompt, the tools, the preloaded files and the earlier messages as sent — and its `reasoning` is sent again only while what precedes it is the same; `usage` is what the call that wrote it reported, and `model` the model that wrote it — the one the reply named, else the adapter's `model` attribute — so a run whose adapter changed models mid-run says which wrote each reply, where the run's `model` names the last. `prefix` is set on an assistant message whose reply carried reasoning, and is `None` otherwise. A `usage`, `prefix` or `model` that does not fit these fields — another library's usage, a prefix that is not 16 hex characters, a model that is not a string — reads as `None`, so a message from elsewhere is taken without them; only a `prefix` that is dropped costs its `reasoning`, which is not sent again.
+`prefix`, `usage`, `model` and `settings` are the engine's record of an assistant message it made from a reply, never sent to a model and outside the vocabulary shared with rfnry-memory: `prefix` is the first 16 hex characters of a sha256 over everything sent before the message when it was written — the model, as its adapter names it, the system prompt, the tools, the preloaded files and the earlier messages as sent — and its `reasoning` is sent again only while what precedes it is the same; `usage` is what the call that wrote it reported, and `model` the model that wrote it — the one the reply named, else the adapter's `model` attribute — so a run whose adapter changed models mid-run says which wrote each reply, where the run's `model` names the last; `settings` are the JSON object the reply reported, else the adapter's `settings` attribute, and stay out of the `prefix` hash. `prefix` is set on an assistant message whose reply carried reasoning, and is `None` otherwise. A `usage`, `prefix`, `model` or `settings` that does not fit these fields — another library's usage, a prefix that is not 16 hex characters, a model that is not a string, settings that are not a JSON object — reads as `None`, so a message from elsewhere is taken without them; only a `prefix` that is dropped costs its `reasoning`, which is not sent again.
 
 ### `HistoryLike`
 
@@ -153,6 +156,7 @@ class Reply(BaseModel):
     usage: Usage | None = None
     stop_reason: StopReason = "end_turn"
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
     reasoning: Any = None
 ```
 
@@ -341,9 +345,10 @@ class Decided(BaseModel):
     answers: dict[str, Answer]
     usage: Usage | None = None
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 ```
 
-What `decide` returns instead of the answers alone when the adapter can report what the call cost and which model answered. The run's record carries both.
+What `decide` returns instead of the answers alone when the adapter can report what the call cost and which model answered. The run's record carries the usage and model the call reported, and its settings; the adapter's `model` and `settings` attributes stand in for what the call does not report.
 
 ### `confidence`
 
@@ -506,6 +511,7 @@ class Generation(BaseModel):
     at: datetime
     duration_ms: int
     model: str | None
+    settings: dict[str, JsonValue] | None = None
     fingerprint: Fingerprint
     input: State
     system: str
@@ -525,7 +531,7 @@ class Generation(BaseModel):
     added: list[Message]
 ```
 
-The record of a generation run: the `task` and `skill` it was run with, the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. `model` is the model the replies reported; when none did, as in a run stopped during its first model call, it is the adapter's `model` attribute if that is a non-empty string, else `None`. An accepted `Output` makes `reply` its JSON. `preload` is what `preload: true` sent, `[]` without it: the files sorted by relative path character by character, a file `Read` returns as a `Text` of `<<<path>>>` on a line of its own followed by what `Read` returns, any other file as a `Text` of `<<<path>>>` followed by the part `Load` returns; every model call receives it as one user message ahead of the messages, and neither `messages` nor `conversation` holds it. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. `start` is the position in the history the run began at, `0` when it was sent whole. `added` is computed from the record: the input and every message after it, `conversation` from the input on — what a caller keeps. `StopReason` is `Literal["end_turn", "tool_use", "max_tokens", "error"]`; `stop_reason` is the last reply's `stop_reason` — `"max_tokens"` for a reply the model's limit cut off, `"tool_use"` after an accepted `Output` — and `None` when no reply came back. `error` is `None` for a run that returned; a run that raised after its first model call, or from its `RunStarted` handler, is recorded with `error` as `"<Type>: <message>"`, `reply` `""` and what it had done by then. `call` is the tool call the run worked for, as its `RunStarted.call` within one scope: the `Delegate` call for a delegated run, the caller's call for an `engine.tool` consult made inside a run, the call a tool body was serving for a run that body or a task it started began, the router's call for a routed run, and `None` outside any tool call or for a call made in another scope.
+The record of a generation run: the `task` and `skill` it was run with, the `context` it was given, when it started (`at`), which agent folder and tools produced it (`fingerprint`), the system prompt as sent, the messages as sent to the first model call — the history, then the input — the whole `conversation`, the tools offered, every tool call as a `Step`, the model calls and their summed usage, the reply, and the runs it delegated to in `children`, in step order. `model` is the model the replies reported; when none did, as in a run stopped during its first model call, it is the adapter's `model` attribute if that is a non-empty string, else `None`. `settings` are those of the call that wrote the last assistant message: the settings its reply reported, else the adapter's `settings` attribute, `None` when neither is a JSON object. An accepted `Output` makes `reply` its JSON. `preload` is what `preload: true` sent, `[]` without it: the files sorted by relative path character by character, a file `Read` returns as a `Text` of `<<<path>>>` on a line of its own followed by what `Read` returns, any other file as a `Text` of `<<<path>>>` followed by the part `Load` returns; every model call receives it as one user message ahead of the messages, and neither `messages` nor `conversation` holds it. `Stopped` is `Literal["now", "after_step"]`; `stopped` is `None` for a run that ended on its own. `start` is the position in the history the run began at, `0` when it was sent whole. `added` is computed from the record: the input and every message after it, `conversation` from the input on — what a caller keeps. `StopReason` is `Literal["end_turn", "tool_use", "max_tokens", "error"]`; `stop_reason` is the last reply's `stop_reason` — `"max_tokens"` for a reply the model's limit cut off, `"tool_use"` after an accepted `Output` — and `None` when no reply came back. `error` is `None` for a run that returned; a run that raised after its first model call, or from its `RunStarted` handler, is recorded with `error` as `"<Type>: <message>"`, `reply` `""` and what it had done by then. `call` is the tool call the run worked for, as its `RunStarted.call` within one scope: the `Delegate` call for a delegated run, the caller's call for an `engine.tool` consult made inside a run, the call a tool body was serving for a run that body or a task it started began, the router's call for a routed run, and `None` outside any tool call or for a call made in another scope.
 
 ### `Decision`
 
@@ -541,6 +547,7 @@ class Decision(BaseModel):
     at: datetime
     duration_ms: int
     model: str | None
+    settings: dict[str, JsonValue] | None = None
     fingerprint: Fingerprint
     state: State
     questions: dict[str, Question]
@@ -552,7 +559,7 @@ class Decision(BaseModel):
     added: list[Message]
 ```
 
-The record of a decision run: the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder — a scripted one as its script filled it — and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage and model the adapter reported — its `model` attribute, a non-empty string, when the call reports no model — and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. `added` is the `added` of the run its route started, `[]` when it routed nowhere. `error` is set, and `answers` empty, when the decision model's call or a question's script raised; when a script raised, `questions` holds only the questions that need no script, the runtime ones included; a routed run that failed sits in `routed_to` with its own `error`, or `routed_to` is `None` when the routed run was refused before its first model call, and the router carries the same `error`; a routed run whose `RunStarted` handler raised had started, and sits in `routed_to`. Its `call` is the same as a generation's.
+The record of a decision run: the state as the model was handed it — a list of parts when the adapter's `media_types` took them, read back as parts — every question asked, from the folder — a scripted one as its script filled it — and at run time, with `runtime` naming the ids that came at run time, an answer per question id with its `confidence`, the usage, model and settings the adapter reported — its `model` and `settings` attributes when the call reports none — and what produced it (`fingerprint`, whose `tools` is the fingerprint of no tools and whose `questions` covers `questions`). `routed_to` is the run its route started, if any. `added` is the `added` of the run its route started, `[]` when it routed nowhere. `error` is set, and `answers` empty, when the decision model's call or a question's script raised; when a script raised, `questions` holds only the questions that need no script, the runtime ones included; a routed run that failed sits in `routed_to` with its own `error`, or `routed_to` is `None` when the routed run was refused before its first model call, and the router carries the same `error`; a routed run whose `RunStarted` handler raised had started, and sits in `routed_to`. Its `call` is the same as a generation's.
 
 ### `Run`
 
@@ -703,9 +710,11 @@ class Label(BaseModel):
     review: Review | None = None
     outcome: Outcome | None = None
     answers: dict[str, Answer] | None = None
+    model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 ```
 
-A stored label: its `source` and what it says — a person's `review`, the world's `outcome`, or a judge's or a teacher's `answers`.
+A stored label: its `source` and what it says — a person's `review`, the world's `outcome`, or a judge's or a teacher's `answers`. A judge's or a teacher's label also names the `model` and `settings` of the run that made it; a person's and the world's leave them `None`.
 
 ### `Labeled`
 

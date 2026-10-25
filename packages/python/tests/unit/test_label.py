@@ -3,7 +3,7 @@ import json
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -432,3 +432,49 @@ async def test_the_teacher_answers_a_failed_decision(fixtures: Path, storage: St
     await refinery.record(failed)
     labeled = await refinery.label("acme", engine, teacher="teacher")
     assert labeled.taught == 1 and labeled.errors == {}
+
+
+async def test_a_judge_s_label_names_its_model_and_settings(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    judge = Fixed(JUDGEMENT)
+    cast(Any, judge).model = "j"
+    cast(Any, judge).settings = {"effort": "low"}
+    engine = Engine(
+        fixtures,
+        refinery=refinery,
+        models={"strong": Scripted(text_reply("Refunded.")), "judge": judge},
+    )
+    await engine.run("billing", "acme", "Charged twice.")
+    await refinery.label("acme", engine, judge="judge")
+    [row] = await storage.labels("acme", source="judge")
+    label = label_of(row)
+    assert label.source == "judge" and label.model == "j" and label.settings == {"effort": "low"}
+
+
+async def test_a_teacher_s_label_names_its_model_and_settings(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    reply = _teacher_reply().model_copy(update={"model": "t", "settings": {"effort": "high"}})
+    engine = Engine(
+        fixtures,
+        refinery=refinery,
+        models={"strong": Scripted(reply), "judge": Fixed(TRIAGE)},
+    )
+    await engine.run("triage", "acme", {"message": "It is down"})
+    await refinery.label("acme", engine, teacher="teacher")
+    [row] = await storage.labels("acme", source="teacher")
+    label = label_of(row)
+    assert label.source == "teacher" and label.model == "t" and label.settings == {"effort": "high"}
+
+
+async def test_a_person_s_label_names_no_model(fixtures: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
+    run = generation_record()
+    await refinery.record(run)
+    await refinery.review("acme", run.run_id, Review(comment="fine"))
+    [row] = await storage.labels("acme", source="human")
+    label = label_of(row)
+    assert label.source == "human" and label.model is None and label.settings is None

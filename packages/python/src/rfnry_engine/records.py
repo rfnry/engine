@@ -2,7 +2,15 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+)
 
 from rfnry_engine.errors import InputError
 from rfnry_engine.models import (
@@ -110,6 +118,7 @@ class Generation(BaseModel):
     at: datetime
     duration_ms: int
     model: str | None
+    settings: dict[str, JsonValue] | None = None
     fingerprint: Fingerprint
     input: State
     system: str
@@ -143,6 +152,7 @@ class Decision(BaseModel):
     at: datetime
     duration_ms: int
     model: str | None
+    settings: dict[str, JsonValue] | None = None
     fingerprint: Fingerprint
     state: State
     questions: dict[str, Question]

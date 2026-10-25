@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import pytest
 from pydantic import BaseModel
@@ -117,6 +117,22 @@ async def test_a_decision_run_names_its_adapter_s_model_when_the_call_reports_no
     silent = Engine(fixtures, models={"judge": Fixed(answers)})
     models = [(await e.run("triage", "acme", "x")).model for e in (engine, reported, silent)]
     assert models == ["d", "d1", None]
+
+
+async def test_a_decided_s_settings_win_over_the_ones_its_adapter_declares(
+    fixtures: Path,
+) -> None:
+    answers: dict[str, Answer] = {
+        "urgent": CheckAnswer(probability=0.2),
+        "severity": ScoreAnswer(score=0, probabilities=[1, 0, 0, 0]),
+    }
+    pending = [Decided(answers=answers, settings={"effort": "high"})]
+    judge = Declaring(lambda _: pending.pop() if pending else Decided(answers=answers))
+    cast(Any, judge).settings = {"effort": "low"}
+    engine = Engine(fixtures, models={"judge": judge})
+    first = await engine.run("triage", "acme", "x")
+    second = await engine.run("triage", "acme", "x")
+    assert first.settings == {"effort": "high"} and second.settings == {"effort": "low"}
 
 
 async def test_a_decision_only_engine_runs_a_mixed_tree(fixtures: Path) -> None:

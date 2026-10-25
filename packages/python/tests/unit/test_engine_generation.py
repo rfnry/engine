@@ -3,9 +3,10 @@ import re
 import shutil
 import time
 from collections.abc import Awaitable, Callable
+from enum import Enum
 from itertools import groupby
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel
@@ -81,6 +82,74 @@ async def test_a_reply_s_model_wins_over_the_one_its_adapter_declares(fixtures: 
     reported = await engine_for(fixtures, llm).run("billing", "acme", "x")
     unreported = await engine_for(fixtures, llm).run("billing", "acme", "y")
     assert reported.model == "m-2026-09-01" and unreported.model == "m"
+
+
+class Configured(Scripted):
+    model = "m"
+    settings = {"effort": "low"}
+
+
+async def test_a_reply_s_settings_win_over_the_ones_its_adapter_declares(fixtures: Path) -> None:
+    llm = Configured(text_reply("a", settings={"effort": "high"}), text_reply("b"))
+    reported = await engine_for(fixtures, llm).run("billing", "acme", "x")
+    unreported = await engine_for(fixtures, llm).run("billing", "acme", "y")
+    assert isinstance(reported, Generation) and isinstance(unreported, Generation)
+    assert reported.settings == {"effort": "high"}
+    assert reported.conversation[-1].settings == {"effort": "high"}
+    assert unreported.settings == {"effort": "low"}
+    assert unreported.conversation[-1].settings == {"effort": "low"}
+
+
+async def test_a_run_s_settings_are_those_of_its_last_call(fixtures: Path) -> None:
+    llm = Configured(
+        _tool_use(ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})).model_copy(
+            update={"settings": {"effort": "high"}}
+        ),
+        text_reply("done"),
+    )
+    run = await engine_for(fixtures, llm).run("support", "acme", "x")
+    assert isinstance(run, Generation)
+    written = [m.settings for m in run.conversation if m.role == "assistant"]
+    assert written == [{"effort": "high"}, {"effort": "low"}]
+    assert run.settings == {"effort": "low"}
+
+
+async def test_a_reply_s_empty_settings_are_kept(fixtures: Path) -> None:
+    run = await engine_for(fixtures, Configured(text_reply("a", settings={}))).run(
+        "billing", "acme", "x"
+    )
+    assert isinstance(run, Generation)
+    assert run.settings == {} and run.conversation[-1].settings == {}
+
+
+class Effort(Enum):
+    HIGH = "high"
+
+
+async def test_settings_that_are_not_a_json_object_are_ignored(fixtures: Path) -> None:
+    for odd in (object(), {"effort": Effort.HIGH}):
+        llm = Scripted(text_reply("a"))
+        cast(Any, llm).settings = odd
+        run = await engine_for(fixtures, llm).run("billing", "acme", "x")
+        assert isinstance(run, Generation)
+        assert run.reply == "a" and run.settings is None and run.conversation[-1].settings is None
+
+
+async def test_settings_never_reach_the_model(fixtures: Path) -> None:
+    llm = Configured(
+        _tool_use(ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})).model_copy(
+            update={"settings": {"effort": "high"}}
+        ),
+        text_reply("done", settings={"effort": "high"}),
+    )
+    history = [
+        Message(role="user", content="hi"),
+        Message(role="assistant", content="yo", settings={"effort": "high"}),
+    ]
+    run = await engine_for(fixtures, llm).run("support", "acme", "x", history=history)
+    assert isinstance(run, Generation) and len(llm.calls) == 2
+    assert all(m.settings is None for _, messages, _ in llm.calls for m in messages)
+    assert run.conversation[-1].settings == {"effort": "high"}
 
 
 async def test_the_tree_decides_what_the_model_sees(fixtures: Path) -> None:

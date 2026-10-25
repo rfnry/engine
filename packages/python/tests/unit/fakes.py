@@ -108,7 +108,7 @@ def text_reply(text: str, **kwargs: Any) -> Reply:
 
 def said(messages: list[Message]) -> list[Message]:
     return [
-        message.model_copy(update={"prefix": None, "usage": None, "model": None})
+        message.model_copy(update={"prefix": None, "usage": None, "model": None, "settings": None})
         for message in messages
     ]
 

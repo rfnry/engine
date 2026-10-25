@@ -84,8 +84,9 @@ class Message(BaseModel):
     prefix: str | None = None
     usage: Usage | None = None
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 
-    @field_validator("prefix", "usage", "model", mode="wrap")
+    @field_validator("prefix", "usage", "model", "settings", mode="wrap")
     @classmethod
     def _engines_own(
         cls, value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo
@@ -128,6 +129,7 @@ class Reply(BaseModel):
     usage: Usage | None = None
     stop_reason: StopReason = "end_turn"
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
     reasoning: Any = None
 
 
@@ -192,6 +194,7 @@ class Decided(BaseModel):
     answers: dict[str, Answer]
     usage: Usage | None = None
     model: str | None = None
+    settings: dict[str, JsonValue] | None = None
 
 
 def as_decided(value: object) -> Decided:
@@ -287,6 +290,8 @@ class ReplyLike(Protocol):
     @property
     def model(self) -> str | None: ...
     @property
+    def settings(self) -> Mapping[str, JsonValue] | None: ...
+    @property
     def reasoning(self) -> Any: ...
 
 
@@ -357,6 +362,8 @@ class DecidedLike(Protocol):
     def usage(self) -> UsageLike | None: ...
     @property
     def model(self) -> str | None: ...
+    @property
+    def settings(self) -> Mapping[str, JsonValue] | None: ...
 
 
 @runtime_checkable

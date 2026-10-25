@@ -430,3 +430,16 @@ async def test_a_recorded_tree_is_one_put_runs(pool: Any, storage: Storage) -> N
     refinery = Refinery(Counting(pool))
     await refinery.record(generation_record(children=[decision_record(), decision_record()]))
     assert calls == [3]
+
+
+async def test_a_recorded_run_reads_back_with_its_settings(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    reply = text_reply("Handled.", settings={"effort": "high"})
+    engine = Engine(fixtures, refinery=refinery, models={"strong": Scripted(reply)})
+    run = await engine.run("billing", "acme", "x")
+    read = await refinery.run("acme", run.run_id)
+    assert isinstance(read, Generation)
+    assert read.settings == {"effort": "high"}
+    assert read.conversation[-1].settings == {"effort": "high"}

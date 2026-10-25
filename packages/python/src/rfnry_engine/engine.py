@@ -148,6 +148,7 @@ class Recorder(Protocol):
 PART = TypeAdapter[Part](Part)
 STATE = TypeAdapter[State](State)
 HISTORY = TypeAdapter(list[Message])
+SETTINGS = TypeAdapter[dict[str, JsonValue] | None](dict[str, JsonValue] | None)
 QUESTIONS = TypeAdapter(dict[str, Annotated[Question, Field(discriminator="type")]])
 PART_TYPES = ("text", "image", "audio", "document")
 MAX_TAGS = 32
@@ -290,7 +291,9 @@ def _state(spec: AgentSpec, value: State, media_types: Collection[str] | None) -
     return parts
 
 
-def _assistant(reply: Reply, prefix: str | None, model: str | None) -> Message:
+def _assistant(
+    reply: Reply, prefix: str | None, model: str | None, settings: dict[str, JsonValue] | None
+) -> Message:
     return Message(
         role="assistant",
         content=reply.text,
@@ -299,6 +302,7 @@ def _assistant(reply: Reply, prefix: str | None, model: str | None) -> Message:
         prefix=prefix,
         usage=reply.usage,
         model=reply.model or model,
+        settings=reply.settings if reply.settings is not None else settings,
     )
 
 
@@ -340,6 +344,13 @@ def _caller(scope: str) -> CallInfo | None:
 def _declared(model: object) -> str | None:
     named = getattr(model, "model", None)
     return named if isinstance(named, str) and named else None
+
+
+def _settings(model: object) -> dict[str, JsonValue] | None:
+    try:
+        return SETTINGS.validate_python(getattr(model, "settings", None))
+    except ValidationError:
+        return None
 
 
 def _not_given(spec: AgentSpec) -> NoReturn:
@@ -749,6 +760,9 @@ class Engine:
                 at=at,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 model=(decided.model if decided is not None else None) or _declared(model_),
+                settings=decided.settings
+                if decided is not None and decided.settings is not None
+                else _settings(model_),
                 fingerprint=Fingerprint(
                     agent=spec.fingerprint,
                     tools=NO_TOOLS,
@@ -927,6 +941,7 @@ class Engine:
         usage = Usage()
         calls = 0
         model = _declared(model_)
+        settings = _settings(model_)
         streaming = on_event is not None and hasattr(model_, "generate_stream")
         streamed: list[str] = []
         said = ""
@@ -1135,7 +1150,9 @@ class Engine:
             sending = [
                 *preload,
                 *(
-                    m.model_copy(update={"prefix": None, "usage": None, "model": None})
+                    m.model_copy(
+                        update={"prefix": None, "usage": None, "model": None, "settings": None}
+                    )
                     for m in messages
                 ),
             ]
@@ -1163,6 +1180,7 @@ class Engine:
                 at=at,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 model=model,
+                settings=settings,
                 fingerprint=fingerprint,
                 input=input,
                 system=system,
@@ -1210,8 +1228,9 @@ class Engine:
                     usage = usage + reply.usage
                 if reply.model:
                     model = reply.model
+                settings = reply.settings if reply.settings is not None else _settings(model_)
                 prefix = await chained.stamp(messages) if reply.reasoning is not None else None
-                messages.append(_assistant(reply, prefix, _declared(model_)))
+                messages.append(_assistant(reply, prefix, _declared(model_), _settings(model_)))
                 asked = list(reply.tool_calls)
                 ran.clear()
                 if not streaming and reply.text:
