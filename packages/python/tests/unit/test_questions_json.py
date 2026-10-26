@@ -662,7 +662,7 @@ def test_a_question_script_that_links_out_of_its_folder_is_refused(tmp_path: Pat
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"tools/folder: {tmp_path / 'matcher/questions/order.py'} links to {tmp_path / 'elsewhere.py'}, outside its folder; move the file into the folder, or link the whole folder"
+        f"tools/folder: {tmp_path / 'matcher/questions/order.py'} links to {tmp_path / 'elsewhere.py'}, outside the agent's folder; move the file into the agent's folder, or link the agent's whole folder"
     )
 
 
@@ -670,7 +670,9 @@ def test_a_question_json_that_links_out_of_its_folder_is_refused(tmp_path: Path)
     matcher(tmp_path)
     (tmp_path / "matcher/questions/order.json").replace(tmp_path / "elsewhere.json")
     (tmp_path / "matcher/questions/order.json").symlink_to(tmp_path / "elsewhere.json")
-    with pytest.raises(ConfigurationError, match="^tree: .*order.json links to .*, outside its"):
+    with pytest.raises(
+        ConfigurationError, match="^tree: .*order.json links to .*, outside the agent's folder;"
+    ):
         load_tree(tmp_path)
 
 
@@ -684,3 +686,13 @@ def test_a_question_script_named_like_a_built_in_standard_module_beside_one_that
     )
     write(tmp_path / f"matcher/questions/{name}.py", f"import {name}\n" + ORDER)
     assert sorted(load_tree(tmp_path)["matcher"].scripted) == sorted(["order", name])
+
+
+@pytest.mark.parametrize("suffix", [".json", ".py"])
+def test_a_question_file_that_links_elsewhere_in_the_agent_s_folder_loads(
+    tmp_path: Path, suffix: str
+) -> None:
+    matcher(tmp_path)
+    (tmp_path / f"matcher/questions/order{suffix}").replace(tmp_path / f"matcher/kept{suffix}")
+    (tmp_path / f"matcher/questions/order{suffix}").symlink_to(f"../kept{suffix}")
+    assert list(load_tree(tmp_path)["matcher"].scripted) == ["order"]

@@ -312,7 +312,7 @@ def test_a_task_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"tree: {tmp_path / 'a/tasks/do.md'} links to {tmp_path / 'elsewhere.md'}, outside its folder; move the file into the folder, or link the whole folder"
+        f"tree: {tmp_path / 'a/tasks/do.md'} links to {tmp_path / 'elsewhere.md'}, outside the agent's folder; move the file into the agent's folder, or link the agent's whole folder"
     )
 
 
@@ -323,7 +323,7 @@ def test_an_agent_md_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> 
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"tree: {tmp_path / 'a/AGENT.md'} links to {tmp_path / 'elsewhere.md'}, outside its folder; move the file into the folder, or link the whole folder"
+        f"tree: {tmp_path / 'a/AGENT.md'} links to {tmp_path / 'elsewhere.md'}, outside the agent's folder; move the file into the agent's folder, or link the agent's whole folder"
     )
 
 
@@ -347,3 +347,77 @@ def test_an_agent_reached_through_a_link_and_a_link_of_its_own_names_the_first_l
     said = str(caught.value)
     assert said.startswith(f"tree: {root / 'again'} and {root / 'one'} both reach ")
     assert str(root / "one/payments") not in said
+
+
+@pytest.mark.parametrize(
+    ("folder", "kind", "files"),
+    [
+        (
+            "tools",
+            "generation",
+            {
+                "notify.json": '{"description": "Do it", "input_schema": {"type": "object"}}',
+                "notify.py": "def run(args, call):\n    return {}\n",
+            },
+        ),
+        ("tasks", "generation", {"do.md": "Do it.\n"}),
+        ("questions", "decision", {"urgent.json": '{"type": "check", "instructions": "Urgent?"}'}),
+    ],
+)
+def test_an_agent_s_own_folder_that_links_out_of_the_agent_s_folder_is_refused(
+    tmp_path: Path, folder: str, kind: str, files: dict[str, str]
+) -> None:
+    root = tmp_path / "root"
+    write(root / "a/AGENT.md", agent_md("a", kind=kind))
+    for name, text in files.items():
+        write(tmp_path / "kept" / name, text)
+    (root / "a" / folder).symlink_to(tmp_path / "kept", target_is_directory=True)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(root)
+    assert str(caught.value) == (
+        f"tree: {root / 'a' / folder} links to {tmp_path / 'kept'}, outside the agent's folder; move the folder into the agent's folder, or link the agent's whole folder"
+    )
+
+
+def test_an_agent_s_own_folder_that_links_inside_the_agent_s_folder_loads(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/notes/do.md", "Do it.\n")
+    (tmp_path / "a/tasks").symlink_to("notes", target_is_directory=True)
+    assert list(load_tree(tmp_path)["a"].tasks) == ["do"]
+
+
+def test_an_agent_reached_through_a_link_keeps_its_own_folders(tmp_path: Path) -> None:
+    write(tmp_path / "elsewhere/a/AGENT.md", agent_md("a"))
+    write(tmp_path / "elsewhere/a/tasks/do.md", "Do it.\n")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a").symlink_to(tmp_path / "elsewhere/a", target_is_directory=True)
+    assert list(load_tree(root)["a"].tasks) == ["do"]
+
+
+def test_a_group_folder_s_tools_linked_from_elsewhere_load_and_count_in_the_agents_below(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    write(root / "team/writer/AGENT.md", agent_md("writer"))
+    shared = tmp_path / "shared"
+    write(shared / "notify.json", '{"description": "Do it", "input_schema": {"type": "object"}}')
+    write(shared / "notify.py", "def run(args, call):\n    return {}\n")
+    (root / "team/tools").symlink_to(shared, target_is_directory=True)
+    before = load_tree(root)["writer"]
+    assert list(before.folder_tools) == ["notify"]
+    write(shared / "notify.py", "def run(args, call):\n    return {'sent': True}\n")
+    assert load_tree(root)["writer"].fingerprint != before.fingerprint
+
+
+def test_a_task_that_links_elsewhere_in_the_agent_s_folder_loads_and_counts_in_it(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/notes/do.md", "Do it.\n")
+    (tmp_path / "a/tasks").mkdir()
+    (tmp_path / "a/tasks/do.md").symlink_to("../notes/do.md")
+    before = load_tree(tmp_path)["a"]
+    assert before.task_bodies["do"] == "Do it."
+    write(tmp_path / "a/notes/do.md", "Do it twice.\n")
+    assert load_tree(tmp_path)["a"].fingerprint != before.fingerprint

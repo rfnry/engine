@@ -373,11 +373,17 @@ leads: one to a folder of the root that holds an `AGENT.md`, in it or below it, 
 such folder elsewhere, the second link named being the one that leads to the other path; so is a
 link to a folder on the way to the link or one holding it, which would lead the walk into itself. A
 folder it cannot read is left out of the walk, with a warning on the `rfnry_engine.tree` logger that
-names it. A file the engine loads — a tool's or question's `.json`, `.py` or helper, a task, an
-`AGENT.md` — that is a link to a place outside the folder it sits in is a `ConfigurationError`
-(`tools/folder: <path> links to <target>, outside its folder; move the file into the folder, or link
-the whole folder`), since the content fingerprint leaves such a link out; a link that stays inside
-its folder loads.
+names it. What the engine loads stays where the content fingerprint finds it, since the fingerprint
+leaves out a link that leads out of the folder it walks: a tool's `.json`, `.py` or helper that is
+a link to a place outside its `tools/` folder, which the fingerprint walks on its own for every agent
+that gets its tools, is a `ConfigurationError` (`tools/folder: <path> links to <target>, outside its
+folder; move the file into its folder, or link the agent's whole folder`), and so is a question's
+`.json`, `.py` or helper, a task or an `AGENT.md` that is a link to a place outside the agent's
+folder, and an agent's own `tools/`, `tasks/` or `questions/` folder that is a link to a folder
+outside the agent's (`tree: <path> links to <target>, outside the agent's folder; move the folder
+into the agent's folder, or link the agent's whole folder`). A link that stays inside loads, and so
+do an agent's whole folder linked in and a `tools/` folder of a folder without an `AGENT.md` linked
+from elsewhere, which the agents below it walk where it leads.
 
 A root holds agents and folders without an `AGENT.md` side by side, and an agent reads other folders
 of its root by naming them in `reads:` — folders without an `AGENT.md`, or other agents' folders:
@@ -2366,9 +2372,10 @@ Everything the package exports, by role.
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a tree with
 no `AGENT.md`, a link to a folder on the way to it or one holding it, one that would reach an agent
-twice, a file the engine loads that links out of its folder, an
-`AGENT.md` whose `name:` or `model:` is not plain text, or whose `kind:` is neither `generation` nor
-`decision`, a `models` that is not a mapping of names to adapters, a model no agent runs on, an
+twice, a tool's file that links out of its `tools/` folder, a question's file, a task or an
+`AGENT.md` that links out of the agent's folder, an agent's own `tools/`, `tasks/` or `questions/`
+folder that links out of it, an `AGENT.md` without a `name:` or a `model:` in plain text, or whose
+`kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names to adapters, a model no agent runs on, an
 agent whose model has not its kind's method, two agents with one name, an agent in `agents:` or
 `route:` the tree does not have, an unknown key in the frontmatter of an `AGENT.md` or a task
 (`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that

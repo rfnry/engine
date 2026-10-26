@@ -209,12 +209,21 @@ class AgentSpec(BaseModel):
     folder_tools: dict[str, ToolDef] = Field(default_factory=dict)
 
 
-def _held(path: Path) -> None:
-    target = leads_out(path, path.parent)
+def _held(path: Path, agent: Path) -> None:
+    target = leads_out(path, agent)
     if target is not None:
         raise ConfigurationError(
-            f"tree: {path} links to {target}, outside its folder; move the file into the folder, or link the whole folder"
+            f"tree: {path} links to {target}, outside the agent's folder; move the file into the agent's folder, or link the agent's whole folder"
         )
+
+
+def _own(agent: Path) -> None:
+    for name in sorted(DECLARED):
+        target = leads_out(agent / name, agent)
+        if target is not None:
+            raise ConfigurationError(
+                f"tree: {agent / name} links to {target}, outside the agent's folder; move the folder into the agent's folder, or link the agent's whole folder"
+            )
 
 
 def _read(path: Path) -> str:
@@ -225,7 +234,6 @@ def _read(path: Path) -> str:
 
 
 def _object(path: Path) -> dict[str, JsonValue]:
-    _held(path)
     try:
         data = json.loads(_read(path))
     except json.JSONDecodeError as exc:
@@ -263,8 +271,8 @@ def _front(path: Path) -> dict[str, JsonValue]:
         raise ConfigurationError(f"tree: invalid question {path}; {plainly(exc)}") from exc
 
 
-def _task(path: Path) -> tuple[str, str]:
-    _held(path)
+def _task(path: Path, agent: Path) -> tuple[str, str]:
+    _held(path, agent)
     raw = _read(path)
     if split_frontmatter(raw) is None:
         return "", body_of(raw)
@@ -329,6 +337,8 @@ def _questions(
             raise ConfigurationError(
                 f"tree: {directory / name}.py has no {name}.json beside it; a question is {name}.json, and {name}.py fills it from data"
             )
+    for path in definitions.values():
+        _held(path, directory.parent)
     fixed = {name: _question(path) for name, path in definitions.items() if name not in scripts}
     fronts = {name: _front(definitions[name]) for name in scripts}
     folders = {*script_folders, directory.resolve()}
@@ -574,7 +584,7 @@ def load_agent(
     tool_folders: Mapping[str, dict[str, ToolDef]] | None = None,
     script_folders: Collection[Path] = (),
 ) -> AgentSpec:
-    _held(directory / "AGENT.md")
+    _held(directory / "AGENT.md", directory)
     front, body = parse_frontmatter_doc(
         _read(directory / "AGENT.md"),
         model=AgentFront,
@@ -593,7 +603,7 @@ def load_agent(
     questions, scripted = _questions(
         directory / "questions", tree_root or directory, script_folders
     )
-    loaded = {p.stem: _task(p) for p in _markdown_files(directory / "tasks")}
+    loaded = {p.stem: _task(p, directory) for p in _markdown_files(directory / "tasks")}
     tasks = {name: said for name, (said, _) in loaded.items()}
     task_bodies = {name: body for name, (_, body) in loaded.items()}
     if front.kind == "decision" and front.tools is not None:
@@ -690,6 +700,8 @@ def load_tree(
         raise ConfigurationError(
             f"tree: {root} holds no AGENT.md; give each agent a folder with an AGENT.md that names its name:, kind: and model:"
         )
+    for path in paths:
+        _own(root / path)
     project = project_of(root)
     prefixes = [
         prefix

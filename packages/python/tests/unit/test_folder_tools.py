@@ -687,7 +687,7 @@ def test_a_tool_file_that_links_out_of_its_folder_is_refused(tmp_path: Path, suf
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"tools/folder: {tmp_path / 'a/tools' / f'fetch{suffix}'} links to {outside}, outside its folder; move the file into the folder, or link the whole folder"
+        f"tools/folder: {tmp_path / 'a/tools' / f'fetch{suffix}'} links to {outside}, outside its folder; move the file into its folder, or link the agent's whole folder"
     )
 
 
@@ -758,3 +758,22 @@ async def test_a_tool_named_time_that_imports_time_runs_on_the_standard_module(
     )
     async with Engine(tmp_path, models={}) as engine:
         assert await EngineTools(engine, agent="a", scope="acme").dispatch("time", {}) == "True"
+
+
+def test_a_file_the_tools_folder_never_loads_may_link_out_of_it(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch")
+    write(tmp_path / "elsewhere.json", "{}")
+    (tmp_path / "a/tools/_draft.json").symlink_to(tmp_path / "elsewhere.json")
+    assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch"]
+
+
+def test_a_tool_file_that_links_elsewhere_in_the_agent_s_folder_is_refused(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch")
+    (tmp_path / "a/tools/fetch.py").replace(tmp_path / "a/lib.py")
+    (tmp_path / "a/tools/fetch.py").symlink_to("../lib.py")
+    with pytest.raises(
+        ConfigurationError, match="fetch.py links to .*/a/lib.py, outside its folder;"
+    ):
+        load_tree(tmp_path)

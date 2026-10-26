@@ -183,13 +183,12 @@ def _beside(folder: Path) -> frozenset[str]:
     )
 
 
-def _held(files: Collection[Path]) -> None:
-    for path in files:
-        target = leads_out(path, path.parent)
-        if target is not None:
-            raise ConfigurationError(
-                f"tools/folder: {path} links to {target}, outside its folder; move the file into the folder, or link the whole folder"
-            )
+def _held(path: Path, folder: Path, named: str) -> None:
+    target = leads_out(path, folder)
+    if target is not None:
+        raise ConfigurationError(
+            f"tools/folder: {path} links to {target}, outside {named}; move the file into {named}, or link the agent's whole folder"
+        )
 
 
 def _check_imports(
@@ -246,11 +245,12 @@ def load_tools(
 ) -> dict[str, ToolDef]:
     folder, root, project = folder.absolute(), root.absolute(), project.resolve()
     files = sorted(p for p in folder.iterdir() if p.is_file() and not p.name.startswith("."))
-    _held([p for p in files if p.suffix in {".json", ".py"}])
     named = [p for p in files if not p.name.startswith("_")]
     helpers = [p for p in files if p.name.startswith("_") and p.suffix == ".py"]
     definitions = {p.stem: p for p in named if p.suffix == ".json"}
     scripts = {p.stem: p for p in named if p.suffix == ".py"}
+    for path in sorted([*definitions.values(), *scripts.values(), *helpers]):
+        _held(path, folder, "its folder")
     for name in sorted({*definitions, *scripts}):
         if name not in scripts:
             raise ConfigurationError(
@@ -283,7 +283,8 @@ def load_scripts(
         p for p in folder.iterdir() if p.is_file() and p.name.startswith("_") and p.suffix == ".py"
     )
     scripts = {name: folder / f"{name}.py" for name in names}
-    _held([*scripts.values(), *helpers])
+    for path in [*scripts.values(), *helpers]:
+        _held(path, folder.parent, "the agent's folder")
     sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
     shared = {p.stem: sources[p] for p in helpers}
     what = "question's script"
