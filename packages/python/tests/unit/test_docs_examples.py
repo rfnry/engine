@@ -348,8 +348,12 @@ def runnable() -> list[Any]:
 def test_every_named_block_is_in_the_docs() -> None:
     lines = [first_line(block) for block in PYTHON]
     assert len(lines) == len(set(lines))
-    held = {line for block in PYTHON for line in block.splitlines()}
-    assert set(ILLUSTRATIVE) <= held and set(SIGNATURES) | set(SETUPS) <= set(lines)
+    assert set(SIGNATURES) | set(SETUPS) <= set(lines)
+
+
+def test_each_illustrative_line_marks_exactly_one_block() -> None:
+    marked = {line: sum(line in block.splitlines() for block in PYTHON) for line in ILLUSTRATIVE}
+    assert marked == dict.fromkeys(ILLUSTRATIVE, 1)
 
 
 @pytest.mark.parametrize(
