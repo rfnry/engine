@@ -1959,7 +1959,8 @@ and the helpers of its own `tools/` folder — its `_name.py` files, by name, at
 script; a tool's script or a package beside it is no helper, and importing one is a
 `ConfigurationError` at load (`tools/folder: <path> imports 'b', which sits in its tools/ folder but
 is not a helper; a tool reaches only the helpers of its folder, so move the shared code into a
-helper _b.py`), unless the name resolves to the standard library or an installed package.
+helper _b.py`), unless the name is one of the standard library's, `time` or `json`, or resolves to
+an installed package.
 It never imports the engine, nor your server's code. When the tree loads, each script is read
 without running it: a script with no `def run` or `async def run` at its top level is a
 `ConfigurationError` (`tools/folder: <path> has no run at its top level; a tool defines def run(args,

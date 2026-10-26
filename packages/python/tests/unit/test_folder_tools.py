@@ -735,3 +735,26 @@ def test_a_tool_named_like_a_standard_module_beside_one_that_imports_it_loads(
     tool(tmp_path / "a/tools", "json")
     tool(tmp_path / "a/tools", "fetch", body="import json\n" + RUN)
     assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch", "json"]
+
+
+@pytest.mark.parametrize("name", ["time", "math", "os", "sys", "io", "itertools", "zlib"])
+def test_a_tool_named_like_a_built_in_standard_module_beside_one_that_imports_it_loads(
+    tmp_path: Path, name: str
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", name, body=f"import {name}\n" + RUN)
+    tool(tmp_path / "a/tools", "fetch", body=f"import {name}\n" + RUN)
+    assert list(load_tree(tmp_path)["a"].folder_tools) == sorted(["fetch", name])
+
+
+async def test_a_tool_named_time_that_imports_time_runs_on_the_standard_module(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(
+        tmp_path / "a/tools",
+        "time",
+        body="import time\ndef run(args, call):\n    return str(time.monotonic() > 0)\n",
+    )
+    async with Engine(tmp_path, models={}) as engine:
+        assert await EngineTools(engine, agent="a", scope="acme").dispatch("time", {}) == "True"

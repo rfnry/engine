@@ -672,3 +672,15 @@ def test_a_question_json_that_links_out_of_its_folder_is_refused(tmp_path: Path)
     (tmp_path / "matcher/questions/order.json").symlink_to(tmp_path / "elsewhere.json")
     with pytest.raises(ConfigurationError, match="^tree: .*order.json links to .*, outside its"):
         load_tree(tmp_path)
+
+
+@pytest.mark.parametrize("name", ["time", "math"])
+def test_a_question_script_named_like_a_built_in_standard_module_beside_one_that_imports_it_loads(
+    tmp_path: Path, name: str
+) -> None:
+    matcher(tmp_path, f"import {name}\n" + ORDER)
+    write(
+        tmp_path / f"matcher/questions/{name}.json", '{"type": "choice", "instructions": "Which?"}'
+    )
+    write(tmp_path / f"matcher/questions/{name}.py", f"import {name}\n" + ORDER)
+    assert sorted(load_tree(tmp_path)["matcher"].scripted) == sorted(["order", name])

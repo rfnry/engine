@@ -2,6 +2,7 @@ import ast
 import importlib.util
 import json
 import site
+import sys
 import sysconfig
 from collections.abc import Collection, Iterator
 from functools import cache
@@ -225,7 +226,11 @@ def _check_imports(
                     )
                 continue
             origins = _origins(top)
-            if top in beside and all(path.parent.resolve() in o.resolve().parents for o in origins):
+            if (
+                top in beside
+                and top not in sys.stdlib_module_names
+                and all(path.parent.resolve() in o.resolve().parents for o in origins)
+            ):
                 raise ConfigurationError(
                     f"tools/folder: {path} imports {top!r}, which sits in its {held} folder but is not a helper; a {what} reaches only the helpers of its folder, so move the shared code into a helper _{top}.py"
                 )
