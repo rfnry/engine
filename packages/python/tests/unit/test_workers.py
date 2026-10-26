@@ -479,6 +479,33 @@ async def test_a_worker_that_exits_fails_every_call_in_flight_and_the_next_call_
         await pool.close()
 
 
+async def test_a_worker_that_exits_past_a_child_it_forked_fails_its_call_with_its_exit_code(
+    tmp_path: Path,
+) -> None:
+    body = (
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "def run(args, call):\n"
+        "    child = os.fork()\n"
+        "    if child == 0:\n"
+        "        time.sleep(30)\n"
+        "        os._exit(0)\n"
+        "    Path(args['file']).write_text(str(child))\n"
+        "    os._exit(3)\n"
+    )
+    pool = WorkerPool([script(tmp_path, "forks", body)])
+    held = tmp_path / "child.txt"
+    try:
+        started = time.monotonic()
+        with pytest.raises(WorkerError) as raised:
+            await pool.call("forks", {"file": str(held)}, CALL, 10)
+        assert time.monotonic() - started < 5
+        assert str(raised.value) == "workers/pool: the worker for forks stopped: exited with code 3"
+    finally:
+        await pool.close()
+    assert await gone(int(held.read_text()))
+
+
 async def test_many_processes_share_the_calls(tmp_path: Path) -> None:
     body = "import asyncio, os\nasync def run(args, call):\n    await asyncio.sleep(0.3)\n    return os.getpid()\n"
     pool = WorkerPool([script(tmp_path, "wait", body)], processes=2)
