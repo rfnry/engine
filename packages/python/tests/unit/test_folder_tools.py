@@ -221,6 +221,17 @@ def test_a_malformed_definition_is_refused_naming_the_file(
         load_tree(tmp_path)
 
 
+def test_a_folder_s_definitions_are_checked_before_any_of_its_scripts(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "broken", body="def run(args, call:\n")
+    tool(tmp_path / "a/tools", "plain", description=" ")
+    with pytest.raises(ConfigurationError) as raised:
+        load_tree(tmp_path)
+    assert str(raised.value).startswith(
+        f"tools/folder: {tmp_path / 'a/tools/plain.json'} gives no description in text; "
+    )
+
+
 def test_a_definition_or_a_script_that_is_not_utf8_is_refused_naming_it(tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a"))
     tool(tmp_path / "a/tools", "x")
