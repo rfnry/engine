@@ -769,7 +769,7 @@ async def test_a_workspace_read_or_load_past_the_tool_timeout_returns_once_its_t
     async with asyncio.timeout(2):
         run = await running
     assert isinstance(run, Generation)
-    assert run.steps[0].result == f"TimeoutError: {name} timed out after 0.05s"
+    assert run.steps[0].result == f"TimeoutError: engine: {name} timed out after 0.05s"
 
 
 async def test_write_and_edit_reach_the_directory(root: Path, tmp_path: Path) -> None:

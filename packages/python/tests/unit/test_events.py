@@ -125,7 +125,7 @@ async def test_every_finished_call_sends_the_step_the_run_records(tmp_path: Path
     ok, failed, late, refused, delegated = run.steps
     assert ok.result == '{"order": "A-1", "status": "shipped"}' and not ok.is_error
     assert failed.result == "RuntimeError: the ledger is down" and failed.is_error
-    assert late.result == "TimeoutError: slow timed out after 0.05s" and late.is_error
+    assert late.result == "TimeoutError: engine: slow timed out after 0.05s" and late.is_error
     assert refused.result == "NotApproved: refund was not approved" and refused.approved is False
     [child] = run.children
     assert delegated.child_run_id == child.run_id and delegated.result == "Hi from chat."

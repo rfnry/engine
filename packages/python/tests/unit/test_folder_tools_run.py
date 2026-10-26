@@ -398,7 +398,7 @@ async def test_a_run_tool_named_like_a_folder_tool_keeps_the_run_s_deadline(
         run = await generated(
             engine, "shop", "acme", "x", tools=Tools([Tool("slow", "Slow", body=stalls)])
         )
-    assert run.steps[0].result == "TimeoutError: slow timed out after 0.2s"
+    assert run.steps[0].result == "TimeoutError: engine: slow timed out after 0.2s"
 
 
 @pytest.mark.parametrize(

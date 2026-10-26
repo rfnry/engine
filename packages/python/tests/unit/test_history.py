@@ -420,7 +420,7 @@ async def test_a_slow_source_meets_the_tool_deadline(fixtures: Path) -> None:
     engine = Engine(fixtures, tool_timeout=0.05, models={"strong": llm})
     run = await engine.run("support", "acme", "x", history=Slow(looked_up()), start=4)
     assert isinstance(run, Generation)
-    assert run.steps[0].result == "TimeoutError: History timed out after 0.05s"
+    assert run.steps[0].result == "TimeoutError: engine: History timed out after 0.05s"
 
 
 def test_history_is_described_the_same_whatever_the_start(fixtures: Path) -> None:

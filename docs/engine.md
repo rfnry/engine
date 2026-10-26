@@ -2056,8 +2056,9 @@ Two tools of one run with one name are refused, and so is a run's tool named lik
 gives the agent.
 
 Every tool call inside a run has a deadline, `Engine(tool_timeout=30.0)` by default and `None` to
-turn it off. When it passes, the model gets the error `timed out after 30s` and the run continues. A
-folder tool's deadline is its worker's, above. `History` reads your storage under the same deadline.
+turn it off. When it passes, the model gets the error
+`TimeoutError: engine: lookup_order timed out after 30s` and the run continues. A folder tool's
+deadline is its worker's, above. `History` reads your storage under the same deadline.
 A run's tools are async and the deadline cancels them, so a body that runs blocking work in a thread
 must put its own limit on that work: cancelling the await does not stop the thread. A workspace's
 `Shell`, `Job`, `Write` and `Edit` keep the workspace's own `timeout` instead. `Delegate` has no
