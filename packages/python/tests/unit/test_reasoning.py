@@ -49,6 +49,24 @@ async def first_run(engine: Engine) -> Generation:
     return run
 
 
+class Mutating(Scripted):
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        tools[0].input_schema.setdefault("properties", {})["sneaked"] = {"type": "string"}
+        return await super().generate(system, messages, tools)
+
+
+async def test_the_opening_digest_is_taken_before_the_first_call(fixtures: Path) -> None:
+    plain = await first_run(
+        Engine(fixtures, models={"strong": Scripted(reading(), text_reply("Refund in full."))})
+    )
+    mutated = await first_run(
+        Engine(fixtures, models={"strong": Mutating(reading(), text_reply("Refund in full."))})
+    )
+    [one, *_] = [m.prefix for m in plain.conversation if m.role == "assistant"]
+    [two, *_] = [m.prefix for m in mutated.conversation if m.role == "assistant"]
+    assert one is not None and one == two
+
+
 async def test_an_assistant_message_keeps_the_usage_of_the_call_that_wrote_it(
     fixtures: Path,
 ) -> None:
@@ -116,7 +134,7 @@ async def test_only_an_assistant_message_with_reasoning_carries_a_prefix(
     assert all(m.prefix is None for m in run.conversation if m.role != "assistant")
 
 
-async def test_a_window_without_reasoning_is_never_hashed(
+async def test_a_window_without_reasoning_is_never_chained(
     fixtures: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     hashed: list[str] = []
@@ -141,7 +159,7 @@ async def test_a_window_without_reasoning_is_never_hashed(
         "support", "acme", "Charged twice.", history=history, context=CONTEXT
     )
     assert isinstance(run, Generation) and run.reply == "Refund in full."
-    assert hashed == []
+    assert hashed == ["opening"]
 
 
 PNG = b"\x89PNG\r\n\x1a\n"

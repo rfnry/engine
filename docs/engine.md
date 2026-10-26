@@ -330,7 +330,7 @@ as YAML forbids, in any file of the folder — or a `description:` that is not a
 `ConfigurationError` naming the file and what to change, and for YAML the line, when the tree loads,
 so a typo is caught before any run. Everything else the model reads when it needs it, with the
 `Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can read only inside its own directory and the
-folders it reads. `Read` returns a text file as text. `Load` hands the model any other file as it is
+folders it reads, and nothing hidden: a path whose name, as written, has a segment starting with `.` or named `__pycache__` is an `InputError` (`tools/builtins: .env is hidden; names starting with . and __pycache__ are not part of the agent's folder`), as the fingerprint leaves those out; a visible link to a hidden file reads, for the fingerprint covers it under the link's name. `Read` returns a text file as text. `Load` hands the model any other file as it is
 — an image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in
 the folder as it came, the model reads it with its own understanding of images and documents, there
 is no parser in between, and nothing is loaded until the model asks — unless the agent sets

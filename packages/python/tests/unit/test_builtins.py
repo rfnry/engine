@@ -674,3 +674,35 @@ def test_a_file_far_over_the_limit_is_refused_without_reading_it(
     monkeypatch.setattr("rfnry_engine.tools.builtins.open", never, raising=False)
     with pytest.raises(InputError, match="^tools/builtins: file exceeds 10 bytes: sparse.bin$"):
         _contents(Jail(tmp_path), "sparse.bin", 10)
+
+
+@pytest.fixture
+def hidden(tmp_path: Path) -> Path:
+    (tmp_path / ".env").write_text("TOKEN=1", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("[core]", encoding="utf-8")
+    (tmp_path / "tools" / "__pycache__").mkdir(parents=True)
+    (tmp_path / "tools" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    (tmp_path / "plain.md").write_text("plain", encoding="utf-8")
+    (tmp_path / "shown.md").symlink_to(tmp_path / ".env")
+    return tmp_path
+
+
+async def test_the_file_tools_refuse_a_hidden_path_named_directly(hidden: Path) -> None:
+    tools = Tools(builtins(hidden))
+    load = Tools([load_tool(hidden)])
+    for tool, name, args in [
+        (tools, "Read", {"path": ".env"}),
+        (tools, "Read", {"path": "./tools/../.env"}),
+        (load, "Load", {"path": "tools/__pycache__/x.pyc"}),
+        (tools, "Grep", {"pattern": "core", "path": ".git/config"}),
+        (tools, "LS", {"path": ".git"}),
+    ]:
+        with pytest.raises(InputError, match=r"^tools/builtins: .* is hidden"):
+            await tool.dispatch(name, args)
+
+
+async def test_a_visible_link_to_a_hidden_file_still_reads(hidden: Path) -> None:
+    tools = Tools(builtins(hidden))
+    assert await tools.dispatch("Read", {"path": "shown.md"}) == "TOKEN=1"
+    assert await tools.dispatch("Read", {"path": "plain.md"}) == "plain"

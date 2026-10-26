@@ -74,6 +74,14 @@ def _hidden(rel: Path) -> bool:
     )
 
 
+def _named(path: str) -> str:
+    if _hidden(Path(os.path.normpath(path))):
+        raise InputError(
+            f"tools/builtins: {path} is hidden; names starting with . and __pycache__ are not part of the agent's folder"
+        )
+    return path
+
+
 _SIGNATURES = {
     "image/png": (b"\x89PNG\r\n\x1a\n",),
     "image/jpeg": (b"\xff\xd8\xff",),
@@ -229,7 +237,7 @@ class _Directory:
     def read(self, args: dict[str, Any]) -> Result:
         a = ReadArgs.model_validate(args)
         missing = 'Read with where="workspace" reads from your workspace' if self.workspace else ""
-        return _lines(_contents(self.jail, a.path, _MAX_BYTES, missing)[1], a)
+        return _lines(_contents(self.jail, _named(a.path), _MAX_BYTES, missing)[1], a)
 
     def _files_under(self, base: Path, glob: str | None) -> tuple[list[Path], bool]:
         if base.is_file():
@@ -264,7 +272,7 @@ class _Directory:
                     f"tools/builtins: pattern took longer than {budget:g}s; simplify it or narrow path and glob"
                 ) from exc
 
-        base = self.jail.resolve(a.path) if a.path else self.root
+        base = self.jail.resolve(_named(a.path)) if a.path else self.root
         lines: list[str] = []
         scanned = 0
         exhausted = False
@@ -339,7 +347,7 @@ class _Directory:
 
     def ls(self, args: dict[str, Any]) -> str:
         a = LSArgs.model_validate(args)
-        path = a.path or "."
+        path = _named(a.path or ".")
         try:
             fd = self.jail.open(path, os.O_RDONLY | os.O_DIRECTORY)
             try:
@@ -419,7 +427,7 @@ def load_tool(
     )
 
     def load(path: str) -> list[Part]:
-        opened, data = _contents(jail, path, _LOAD_BYTES, missing)
+        opened, data = _contents(jail, _named(path), _LOAD_BYTES, missing)
         return [_handed(opened, data, path, media_types)]
 
     async def body(args: dict[str, Any]) -> Result:
