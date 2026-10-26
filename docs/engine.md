@@ -335,19 +335,23 @@ as YAML forbids, in any file of the folder — or a `description:` that is not a
 `ConfigurationError` naming the file and what to change, and for YAML the line, when the tree loads,
 so a typo is caught before any run. Everything else the model reads when it needs it, with the
 `Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can read only inside its own directory and the
-folders it reads, and nothing hidden: a path whose name, as written, has a segment starting with `.`
-or named `__pycache__` is an `InputError`
-(`tools/builtins: .env is hidden; names starting with . and __pycache__ are not part of the agent's folder`),
-as the fingerprint leaves those out. An absolute path counts from the agent's folder or the read
-folder it lies in, spelled as it is or through a link: a link to that folder or a folder above it
-counts as the folder, and a link to a file or folder inside it counts as the name that file or
-folder has there, so `/elsewhere/git/config` is hidden when `/elsewhere/git` links to the agent's
-`.git`. A visible link inside the folder to a hidden file reads, for the fingerprint covers it under
-the link's name. `Read` returns a text file as text. `Load` hands the model any other file as it is
-— an image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in
-the folder as it came, the model reads it with its own understanding of images and documents, there
-is no parser in between, and nothing is loaded until the model asks — unless the agent sets
-`preload: true`, below.
+folders it reads, and nothing the content fingerprint leaves out, which is every name starting with
+`.` and every `__pycache__`: such a path is an `InputError`
+(`tools/builtins: .env is hidden; names starting with . and __pycache__ are not part of the agent's folder`).
+A path is judged where it leads, its links and `..` resolved, from the agent's folder or the read
+folder it lies in, as the fingerprint walks them. A file reads when the folder that holds it has no
+hidden name on its way there and its own name, as written, is not hidden: a visible link to a hidden
+file, `notes.md -> .env`, reads under its own name, the one the fingerprint covers it under, while
+`kb/../.env` is hidden, and so is `/elsewhere/git/config` when `/elsewhere/git` links to the agent's
+`.git`. A folder that `LS` or `Grep` is given reads when the folder it leads to has no hidden name:
+a visible link to a hidden folder, `shown -> .secret`, is hidden, and so is every file read through
+it, for the fingerprint never follows a folder link. A link from outside those folders to a file
+inside them counts as that file, and a path that leads outside them is the jail's error (`jail: path
+outside the agent directory: <path>`). `Read` returns a text file as text. `Load` hands the model
+any other file as it is — an image, a PDF, a recording, a spreadsheet — so a price list, a diagram
+or a scanned form sits in the folder as it came, the model reads it with its own understanding of
+images and documents, there is no parser in between, and nothing is loaded until the model asks —
+unless the agent sets `preload: true`, below.
 
 `AGENT.md` makes a directory an agent, and its frontmatter names it. `Engine(root)` walks `root` and
 loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested

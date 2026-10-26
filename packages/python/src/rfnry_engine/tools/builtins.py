@@ -74,20 +74,21 @@ def _hidden(rel: Path) -> bool:
     )
 
 
-def _judged(jail: Jail, named: Path) -> Path:
-    for place in [*reversed(named.parents), named]:
-        real = Path(os.path.realpath(place))
-        for root in (jail.root, *jail.also):
-            if real == root or root in real.parents:
-                return real.relative_to(root) / named.relative_to(place)
-    return Path(".")
+def _within(jail: Jail, path: Path) -> Path | None:
+    real = Path(os.path.realpath(path))
+    root = next((r for r in (jail.root, *jail.also) if real == r or r in real.parents), None)
+    return None if root is None else real.relative_to(root)
 
 
 def _named(jail: Jail, path: str) -> str:
-    named = Path(os.path.normpath(path))
-    if named.is_absolute():
-        named = _judged(jail, named)
-    if _hidden(named):
+    named = jail.root / path
+    seen = _within(jail, named)
+    if seen is None:
+        return path
+    folder = _within(jail, named.parent)
+    if folder is not None and not os.path.isdir(named):
+        seen = folder / named.name
+    if _hidden(seen):
         raise InputError(
             f"tools/builtins: {path} is hidden; names starting with . and __pycache__ are not part of the agent's folder"
         )
