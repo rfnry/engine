@@ -2126,8 +2126,8 @@ That is how rfnry-memory mounts: its `MemoryTools` is a `Tools`, and neither lib
 other. The set an agent runs with is itself a first-class object, so you can drive it without a
 model — from a test, or from a loop of your own. `EngineTools` holds exactly what the model of such
 a run is offered: the file tools, `History`, the folder tools, whose calls go to their worker under
-`tool_timeout` with `call` holding the scope, the workspace's, `Delegate` and the run's `tools`, as
-`tools:` narrows them:
+`tool_timeout` with `call` holding the scope, the workspace's, `Delegate` and the run's `tools`.
+`tools:` narrows only the folders' tools and those five file tools; the rest stay:
 
 ```python
 surface = EngineTools(engine, agent="support", scope="acme")
@@ -2349,8 +2349,8 @@ Everything the package exports, by role.
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a tree with
 no `AGENT.md`, a link to a folder on the way to it or one holding it, one that would reach an agent
 twice, a file the engine loads that links out of its folder, an
-`AGENT.md` without a plain `name:`, a `kind:` of `generation` or `decision`, or a plain `model:`, a
-`models` that is not a mapping of names to adapters, a model no agent runs on, an agent whose model
+`AGENT.md` whose `name:` or `model:` is not plain text, or whose `kind:` is neither `generation` nor
+`decision`, a `models` that is not a mapping of names to adapters, a model no agent runs on, an agent whose model
 has not its kind's method, two agents with one name, an agent in `agents:` or `route:` the tree does
 not have, an unknown key in the frontmatter of an `AGENT.md` or a task (`frontmatter: unknown key
 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid
