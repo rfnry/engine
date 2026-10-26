@@ -5,6 +5,7 @@ import gc
 import logging
 import os
 import signal
+import threading
 import time
 from collections import Counter
 from collections.abc import Awaitable, Iterator
@@ -14,7 +15,7 @@ import pytest
 from pydantic import JsonValue
 
 from rfnry_engine.errors import InputError, WorkerError
-from rfnry_engine.workers.pool import CAP, Script, WorkerPool
+from rfnry_engine.workers.pool import CAP, Script, WorkerPool, _Worker
 
 CALL = {"scope": "acme"}
 PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
@@ -650,6 +651,32 @@ def test_close_from_another_event_loop_leaves_no_worker_behind(tmp_path: Path) -
     with pytest.raises(WorkerError, match="the worker for nap stopped: it was closed"):
         on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5))
     on_a_loop_of_its_own(pool.close())
+
+
+async def test_close_from_another_thread_stops_the_workers_on_the_loop_they_serve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stops: list[int] = []
+    stop = _Worker.stop
+
+    def stopping(worker: _Worker, reason: str | None = None) -> None:
+        stops.append(threading.get_ident())
+        stop(worker, reason)
+
+    monkeypatch.setattr(_Worker, "stop", stopping)
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        first = asyncio.run_coroutine_threadsafe(pool.call("nap", {}, CALL, 5), loop)
+        worker = pid(await asyncio.wrap_future(first))
+        await pool.close()
+        assert reaped(worker) and set(stops) == {thread.ident}
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
 
 
 def test_a_pool_that_follows_one_event_loop_after_another_holds_no_more_files_or_processes(

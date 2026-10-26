@@ -1981,14 +1981,19 @@ still had in flight fail with
 `WorkerError: workers/pool: the worker for refund stopped: every thread was held by a call past its
 deadline`.
 
-An engine's workers follow the event loop that calls them, one loop at a time, as a workspace's
-jobs live in one loop: a call from a loop other than the one that started them — `asyncio.run` per
-request or per task, a test's own loop — stops those workers and starts fresh ones on its own, and
-`close()` from another loop stops them at once. A worker that stops — for another loop, a
-retirement, a crash or `close()` — is reaped and its pipes closed then and there, so a thousand
-`asyncio.run` calls leave the engine holding no more files or processes than one does. Two loops
-that call one engine at the same time keep stopping each other's workers, so give each live loop
-its own engine.
+An engine serves one event loop at a time, as a workspace's jobs live in one loop, and its workers
+follow the loop that calls them: a call from a loop other than the one that started them stops
+those workers and starts fresh ones on its own. A sync server keeps one loop running in a thread of
+its own and hands each run to it, `asyncio.run_coroutine_threadsafe(engine.run(...), loop)`.
+`asyncio.run` per request or per task, or a test's own loop, starts the workers anew each time, and
+loops in several threads that call one engine at once keep stopping each other's workers, so give
+each live loop its own engine. A worker that stops — for another loop, a retirement, a crash or
+`close()` — is reaped and its pipes closed then and there, so a thousand `asyncio.run` calls leave
+the engine holding no more files or processes than one does. `close()` from another loop stops the
+workers at once: while their loop runs in another thread, the stop runs on that loop, and `close()`
+returns once it is done. Close the engine before its loop ends: closing it later from another loop
+still stops every worker, but Python warns of the worker pipes left on the closed loop
+(`ResourceWarning`).
 
 By default every agent of the tree shares one worker. `Engine(root, models=...,
 workers={"customer_support": 1, "reports": 4})` makes each folder named — by its path from the root,

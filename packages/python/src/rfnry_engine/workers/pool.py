@@ -207,10 +207,13 @@ class WorkerPool:
 
     async def close(self) -> None:
         self._closed = True
-        if self._loop is not asyncio.get_running_loop():
-            self._drop(CLOSED)
-            return
-        async with self._lock:
+        loop = self._loop
+        if loop is asyncio.get_running_loop():
+            async with self._lock:
+                self._drop(CLOSED)
+        elif loop is not None and loop.is_running():
+            await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(self.close(), loop))
+        else:
             self._drop(CLOSED)
 
     def _drop(self, reason: str) -> None:
