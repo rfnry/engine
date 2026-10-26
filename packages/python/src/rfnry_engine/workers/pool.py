@@ -173,6 +173,11 @@ class _Worker:
         logger.debug("workers/pool: worker %d: %s", self.pid, line.decode(errors="replace"))
 
 
+def _log(*errors: BaseException) -> None:
+    for error in errors:
+        logger.error("workers/pool: could not stop a worker: %s", error, exc_info=error)
+
+
 def _load(worker: _Worker | None) -> int:
     return 0 if worker is None else len(worker.calls) + len(worker.held) + len(worker.cancelling)
 
@@ -257,6 +262,7 @@ class WorkerPool:
                 worker.stop(reason)
             except BaseException as exc:
                 failed.append(exc)
+        _log(*failed[1:])
         if failed:
             raise failed[0]
 
@@ -334,4 +340,10 @@ class Workers:
         return self._pools[self._groups[agent]]
 
     async def close(self) -> None:
-        await asyncio.gather(*(pool.close() for pool in self._pools.values()))
+        closed = await asyncio.gather(
+            *(pool.close() for pool in self._pools.values()), return_exceptions=True
+        )
+        failed = [result for result in closed if isinstance(result, BaseException)]
+        _log(*failed[1:])
+        if failed:
+            raise failed[0]

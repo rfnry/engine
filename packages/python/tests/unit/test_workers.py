@@ -16,7 +16,7 @@ import pytest
 from pydantic import JsonValue
 
 from rfnry_engine.errors import InputError, WorkerError
-from rfnry_engine.workers.pool import CAP, CLOSED, Script, WorkerPool, _Worker
+from rfnry_engine.workers.pool import CAP, CLOSED, Script, WorkerPool, Workers, _Worker
 
 CALL = {"scope": "acme"}
 PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
@@ -797,8 +797,9 @@ async def test_close_from_another_thread_raises_what_stopping_a_worker_raised(
 
 
 async def test_close_stops_every_worker_before_it_raises_what_the_first_stop_raised(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.ERROR, logger="rfnry_engine.workers.pool")
     stop = _Worker.stop
     stopped: list[_Worker] = []
 
@@ -814,6 +815,44 @@ async def test_close_stops_every_worker_before_it_raises_what_the_first_stop_rai
     with pytest.raises(OSError, match="^stop 1 would not close its pipe$"):
         await pool.close()
     assert len(stopped) == 2 and all(reaped(pid(value)) for value in pids)
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "rfnry_engine.workers.pool"
+    ] == ["workers/pool: could not stop a worker: stop 2 would not close its pipe"]
+
+
+async def test_closing_the_workers_closes_every_pool_before_it_raises_what_the_first_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.ERROR, logger="rfnry_engine.workers.pool")
+    first = WorkerPool([script(tmp_path / "one", "nap", PID)])
+    second = WorkerPool([script(tmp_path / "two", "nap", PID)])
+    third = WorkerPool([script(tmp_path / "three", "nap", PID)])
+    pids = [pid(await pool.call("nap", {}, CALL, 5)) for pool in (first, second, third)]
+    close = WorkerPool.close
+
+    async def failing(pool: WorkerPool, said: str) -> None:
+        await close(pool)
+        raise OSError(f"the {said} pool would not close")
+
+    async def slow() -> None:
+        await asyncio.sleep(0.2)
+        await close(second)
+
+    workers = Workers({}, None)
+    workers._pools = {None: first, "billing": second, "support": third}
+    monkeypatch.setattr(first, "close", lambda: failing(first, "first"))
+    monkeypatch.setattr(second, "close", slow)
+    monkeypatch.setattr(third, "close", lambda: failing(third, "third"))
+    with pytest.raises(OSError, match="^the first pool would not close$"):
+        await workers.close()
+    assert all(reaped(value) for value in pids)
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "rfnry_engine.workers.pool"
+    ] == ["workers/pool: could not stop a worker: the third pool would not close"]
 
 
 def test_a_worker_started_while_its_pool_closes_is_stopped(tmp_path: Path) -> None:

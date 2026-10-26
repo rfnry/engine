@@ -2003,7 +2003,8 @@ still finds the data beside it: an edit to a tool reaches the next `Engine`, nev
 whose records keep naming what ran, while a data file a script opens when it is called is read
 from disk then. A worker starts at the first call that needs it, never when the engine is built,
 and again after a crash, and lives until you close the engine — `await engine.close()`, or leaving
-`async with Engine(...) as engine:` — which stops every worker and whatever it started. A closed
+`async with Engine(...) as engine:` — which stops every worker and whatever it started, and raises
+the first error stopping one raised once all are stopped, logging the others. A closed
 engine stays closed: a run, a tool call or an `EngineTools` after `close()` is an `InputError`,
 `engine: this engine was closed; build a new Engine`, before any model is called, so nothing is
 recorded of it, and a run still in flight when it closed starts no other run — its `Delegate` call

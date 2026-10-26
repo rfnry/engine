@@ -15,7 +15,7 @@ ALLOWED: dict[tuple[str, str], str] = {
     (
         "workers/pool.py",
         "failed[0]",
-    ): "a worker's stop() error reaches the caller as it is, once every worker is stopped",
+    ): "a worker's stop() or a pool's close() error reaches the caller once every one has ended",
     (
         "engine.py",
         "failed.exceptions[0]",
