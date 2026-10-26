@@ -12,7 +12,7 @@ import jsonschema_rs
 from pydantic import BaseModel, JsonValue
 
 from rfnry_engine.errors import ConfigurationError
-from rfnry_engine.folders import leads_out
+from rfnry_engine.folders import declares, leads_out
 from rfnry_engine.workers.pool import Script
 
 ENGINE = "rfnry_engine"
@@ -183,11 +183,11 @@ def _beside(folder: Path) -> frozenset[str]:
     )
 
 
-def _held(path: Path, folder: Path, named: str) -> None:
+def _held(path: Path, folder: Path, named: str, whole: str) -> None:
     target = leads_out(path, folder)
     if target is not None:
         raise ConfigurationError(
-            f"tools/folder: {path} links to {target}, outside {named}; move the file into {named}, or link the agent's whole folder"
+            f"tools/folder: {path} links to {target}, outside {named}; move the file into {named}, or link {whole}"
         )
 
 
@@ -249,8 +249,9 @@ def load_tools(
     helpers = [p for p in files if p.name.startswith("_") and p.suffix == ".py"]
     definitions = {p.stem: p for p in named if p.suffix == ".json"}
     scripts = {p.stem: p for p in named if p.suffix == ".py"}
+    whole = "the agent's whole folder" if declares(folder.parent) else "the whole tools/ folder"
     for path in sorted([*definitions.values(), *scripts.values(), *helpers]):
-        _held(path, folder, "its folder")
+        _held(path, folder, "its folder", whole)
     for name in sorted({*definitions, *scripts}):
         if name not in scripts:
             raise ConfigurationError(
@@ -284,7 +285,7 @@ def load_scripts(
     )
     scripts = {name: folder / f"{name}.py" for name in names}
     for path in [*scripts.values(), *helpers]:
-        _held(path, folder.parent, "the agent's folder")
+        _held(path, folder.parent, "the agent's folder", "the agent's whole folder")
     sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
     shared = {p.stem: sources[p] for p in helpers}
     what = "question's script"

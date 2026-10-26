@@ -379,6 +379,52 @@ def test_an_agent_s_own_folder_that_links_out_of_the_agent_s_folder_is_refused(
     )
 
 
+@pytest.mark.parametrize(
+    ("folder", "kind", "files"),
+    [
+        (
+            "tools",
+            "generation",
+            {
+                "notify.json": '{"description": "Do it", "input_schema": {"type": "object"}}',
+                "notify.py": "def run(args, call):\n    return {}\n",
+            },
+        ),
+        ("tasks", "generation", {"do.md": "Do it.\n"}),
+        ("questions", "decision", {"urgent.json": '{"type": "check", "instructions": "Urgent?"}'}),
+    ],
+)
+@pytest.mark.parametrize("hidden", [".lib", "kept/.lib", "__pycache__"])
+def test_an_agent_s_own_folder_that_links_to_a_hidden_folder_of_the_agent_s_is_refused(
+    tmp_path: Path, folder: str, kind: str, files: dict[str, str], hidden: str
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", kind=kind))
+    for name, text in files.items():
+        write(tmp_path / "a" / hidden / name, text)
+    (tmp_path / "a" / folder).symlink_to(hidden, target_is_directory=True)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {tmp_path / 'a' / folder} links to {tmp_path / 'a' / hidden}, a hidden folder the agent's fingerprint leaves out; move the folder to a visible name"
+    )
+
+
+def test_an_agent_s_tools_linked_to_a_visible_folder_of_the_agent_s_load_and_count_in_it(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(
+        tmp_path / "a/lib/notify.json",
+        '{"description": "Do it", "input_schema": {"type": "object"}}',
+    )
+    write(tmp_path / "a/lib/notify.py", "def run(args, call):\n    return {}\n")
+    (tmp_path / "a/tools").symlink_to("lib", target_is_directory=True)
+    before = load_tree(tmp_path)["a"]
+    assert list(before.folder_tools) == ["notify"]
+    write(tmp_path / "a/lib/notify.py", "def run(args, call):\n    return {'sent': True}\n")
+    assert load_tree(tmp_path)["a"].fingerprint != before.fingerprint
+
+
 def test_an_agent_s_own_folder_that_links_inside_the_agent_s_folder_loads(tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a"))
     write(tmp_path / "a/notes/do.md", "Do it.\n")

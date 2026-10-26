@@ -224,6 +224,12 @@ def _own(agent: Path) -> None:
             raise ConfigurationError(
                 f"tree: {agent / name} links to {target}, outside the agent's folder; move the folder into the agent's folder, or link the agent's whole folder"
             )
+        target = (agent / name).resolve()
+        parts = target.relative_to(agent.resolve()).parts
+        if any(part.startswith(".") or part == "__pycache__" for part in parts):
+            raise ConfigurationError(
+                f"tree: {agent / name} links to {target}, a hidden folder the agent's fingerprint leaves out; move the folder to a visible name"
+            )
 
 
 def _read(path: Path) -> str:

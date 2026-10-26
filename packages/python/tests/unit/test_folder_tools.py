@@ -691,6 +691,21 @@ def test_a_tool_file_that_links_out_of_its_folder_is_refused(tmp_path: Path, suf
     )
 
 
+def test_a_group_folder_s_tool_file_that_links_out_of_its_folder_is_refused(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "team/writer/AGENT.md", agent_md("writer"))
+    tool(tmp_path / "team/tools", "fetch")
+    outside = tmp_path / "elsewhere.py"
+    (tmp_path / "team/tools/fetch.py").replace(outside)
+    (tmp_path / "team/tools/fetch.py").symlink_to(outside)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tools/folder: {tmp_path / 'team/tools/fetch.py'} links to {outside}, outside its folder; move the file into its folder, or link the whole tools/ folder"
+    )
+
+
 def test_a_helper_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a"))
     write(tmp_path / "shared.py", "BASE = 1\n")

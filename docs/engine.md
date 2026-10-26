@@ -382,13 +382,16 @@ fingerprint finds it, since the fingerprint leaves out a link that leads out of 
 a tool's `.json`, `.py` or helper that is a link to a place outside its `tools/` folder, which the
 fingerprint walks on its own for every agent that gets its tools, is a `ConfigurationError`
 (`tools/folder: <path> links to <target>, outside its folder; move the file into its folder, or link
-the agent's whole folder`), and so is a question's `.json`, `.py` or helper, a task or an `AGENT.md`
-that is a link to a place outside the agent's folder, and an agent's own `tools/`, `tasks/` or
-`questions/` folder that is a link to a folder outside the agent's (`tree: <path> links to <target>,
-outside the agent's folder; move the folder into the agent's folder, or link the agent's whole
-folder`). A link that stays inside loads, and so do an agent's whole folder linked in and a `tools/`
-folder of a folder without an `AGENT.md` linked from elsewhere, which the agents below it walk where
-it leads.
+the agent's whole folder`, or `the whole tools/ folder` for the `tools/` folder of a folder without
+an `AGENT.md`), and so is a question's `.json`, `.py` or helper, a task or an `AGENT.md` that is a
+link to a place outside the agent's folder, and an agent's own `tools/`, `tasks/` or `questions/`
+folder that is a link to a folder outside the agent's (`tree: <path> links to <target>, outside the
+agent's folder; move the folder into the agent's folder, or link the agent's whole folder`) or to a
+hidden folder inside it, which the fingerprint leaves out as it leaves out every hidden name (`tree:
+<path> links to <target>, a hidden folder the agent's fingerprint leaves out; move the folder to a
+visible name`). Any other link that stays inside loads, and so do an agent's whole folder linked in
+and a `tools/` folder of a folder without an `AGENT.md` linked from elsewhere, which the agents
+below it walk where it leads.
 
 A root holds agents and folders without an `AGENT.md` side by side, and an agent reads other folders
 of its root by naming them in `reads:` — folders without an `AGENT.md`, or other agents' folders:
