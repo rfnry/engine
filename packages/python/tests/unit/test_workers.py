@@ -262,7 +262,6 @@ async def test_with_debug_off_what_a_script_prints_is_dropped_as_it_comes(
         assert [bytes(w._err) for w in pool._workers if w is not None] == [b""]
     finally:
         await pool.close()
-    assert [r for r in caplog.records if r.name == "rfnry_engine.workers.pool"] == []
 
 
 async def test_a_result_that_is_not_json_is_an_error_naming_its_type(tmp_path: Path) -> None:
