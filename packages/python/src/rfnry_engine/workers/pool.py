@@ -115,12 +115,12 @@ class _Worker:
         self.write(text)
         return reply
 
-    def abandon(self, id: int, held: bool) -> None:
+    def abandon(self, id: int, held: bool, expired: bool) -> None:
         entry = self.calls.pop(id, None)
         if entry is None or self.ended:
             return
         _, _, number = entry
-        wedged = any(number > mark for mark in self.cancelling.values())
+        wedged = expired and any(number > mark for mark in self.cancelling.values())
         if wedged:
             self.held.update(self.cancelling)
             self.cancelling.clear()
@@ -219,7 +219,7 @@ class WorkerPool:
             raise TimeoutError(f"workers/pool: {name} timed out after {timeout:g}s") from None
         finally:
             if worker is not None:
-                worker.abandon(id, held=key not in self._awaits)
+                worker.abandon(id, held=key not in self._awaits, expired=deadline.expired())
 
     async def close(self) -> None:
         self._closed = True
@@ -232,15 +232,21 @@ class WorkerPool:
             soon = loop.call_soon_threadsafe(self._hand, handed)
             while not handed.done() and loop.is_running():
                 await asyncio.sleep(POLL)
-            if not handed.done():
+            if handed.done():
+                handed.result()
+            else:
                 soon.cancel()
                 self._drop(CLOSED)
         else:
             self._drop(CLOSED)
 
     def _hand(self, handed: Future[None]) -> None:
-        closing = asyncio.create_task(self.close(), eager_start=True)
-        closing.add_done_callback(lambda _: handed.set_result(None))
+        try:
+            self._drop(CLOSED)
+        except BaseException as exc:
+            handed.set_exception(exc)
+        else:
+            handed.set_result(None)
 
     def _drop(self, reason: str) -> None:
         workers = [worker for worker in self._workers if worker is not None]

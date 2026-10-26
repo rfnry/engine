@@ -8,14 +8,15 @@ import signal
 import threading
 import time
 from collections import Counter
-from collections.abc import Awaitable, Iterator
+from collections.abc import Awaitable, Coroutine, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import JsonValue
 
 from rfnry_engine.errors import InputError, WorkerError
-from rfnry_engine.workers.pool import CAP, Script, WorkerPool, _Worker
+from rfnry_engine.workers.pool import CAP, CLOSED, Script, WorkerPool, _Worker
 
 CALL = {"scope": "acme"}
 PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
@@ -462,6 +463,25 @@ async def test_an_async_call_that_blocks_its_worker_s_loop_gets_the_worker_retir
         await pool.close()
 
 
+async def test_a_call_cancelled_from_outside_after_an_unanswered_cancel_holds_no_thread(
+    tmp_path: Path,
+) -> None:
+    body = "import os, time\nasync def run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
+    pool = WorkerPool([script(tmp_path, "block", body)], threads=2)
+    try:
+        with pytest.raises(TimeoutError):
+            await pool.call("block", {"sleep": 30}, CALL, 0.2)
+        second = asyncio.create_task(pool.call("block", {}, CALL, 5))
+        await asyncio.sleep(0.2)
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        worker = pool._workers[0]
+        assert worker is not None and worker.held == set() and len(worker.cancelling) == 2
+    finally:
+        await pool.close()
+
+
 @pytest.mark.parametrize(
     ("ending", "reason"),
     [("os._exit(3)", "exited with code 3"), ("os.kill(os.getpid(), 9)", "killed by signal 9")],
@@ -707,6 +727,68 @@ async def test_close_from_another_thread_as_the_workers_loop_stops_returns_and_s
         loop.call_soon_threadsafe(loop.stop)
         async with asyncio.timeout(5):
             await pool.close()
+        assert reaped(worker)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+
+
+def plain_task(
+    loop: asyncio.AbstractEventLoop, coro: Coroutine[Any, Any, Any]
+) -> asyncio.Task[Any]:
+    return asyncio.Task(coro, loop=loop)
+
+
+async def test_close_from_another_thread_returns_when_the_workers_loop_starts_no_task_eagerly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stops: list[int] = []
+    stop = _Worker.stop
+
+    def stopping(worker: _Worker, reason: str | None = None) -> None:
+        stops.append(threading.get_ident())
+        stop(worker, reason)
+
+    monkeypatch.setattr(_Worker, "stop", stopping)
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    loop = asyncio.new_event_loop()
+    loop.set_task_factory(plain_task)
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        first = asyncio.run_coroutine_threadsafe(pool.call("nap", {}, CALL, 5), loop)
+        worker = pid(await asyncio.wrap_future(first))
+        async with asyncio.timeout(5):
+            await pool.close()
+        assert reaped(worker) and set(stops) == {thread.ident}
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        pool._drop(CLOSED)
+        loop.close()
+
+
+async def test_close_from_another_thread_raises_what_stopping_a_worker_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stop = _Worker.stop
+
+    def failing(worker: _Worker, reason: str | None = None) -> None:
+        stop(worker, reason)
+        raise OSError("the pipe would not close")
+
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        first = asyncio.run_coroutine_threadsafe(pool.call("nap", {}, CALL, 5), loop)
+        worker = pid(await asyncio.wrap_future(first))
+        monkeypatch.setattr(_Worker, "stop", failing)
+        with pytest.raises(OSError, match="the pipe would not close"):
+            async with asyncio.timeout(5):
+                await pool.close()
         assert reaped(worker)
     finally:
         loop.call_soon_threadsafe(loop.stop)
