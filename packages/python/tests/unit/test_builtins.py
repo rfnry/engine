@@ -750,8 +750,8 @@ def linked(tmp_path: Path) -> Path:
     (agent / ".env").write_text("TOKEN=1", encoding="utf-8")
     (agent / "plain.md").write_text("plain", encoding="utf-8")
     (agent / ".secret").mkdir()
-    (agent / ".secret" / "k.md").write_text("kept", encoding="utf-8")
-    (agent / "shown").symlink_to(".secret", target_is_directory=True)
+    (agent / ".secret" / "up").symlink_to("..", target_is_directory=True)
+    (agent / "shown.md").symlink_to(".env")
     (tmp_path / "real" / "books").mkdir()
     (tmp_path / "real" / "books" / ".x").write_text("x", encoding="utf-8")
     (tmp_path / "real" / ".other").mkdir()
@@ -771,11 +771,12 @@ async def test_an_absolute_path_through_a_linked_ancestor_is_judged_inside_the_f
         (load, "Load", {"path": str(spelled / ".env")}),
         (tools, "Grep", {"pattern": "core", "path": str(spelled / ".git" / "config")}),
         (tools, "LS", {"path": str(spelled / ".git")}),
+        (tools, "Read", {"path": str(spelled / ".secret" / "up" / "plain.md")}),
         (tools, "Read", {"path": str(tmp_path / "link" / "books" / ".x")}),
     ]:
         with pytest.raises(InputError, match=r"^tools/builtins: .* is hidden"):
             await tool.dispatch(name, args)
     assert await tools.dispatch("Read", {"path": str(spelled / "plain.md")}) == "plain"
-    assert await tools.dispatch("Read", {"path": str(spelled / "shown" / "k.md")}) == "kept"
+    assert await tools.dispatch("Read", {"path": str(spelled / "shown.md")}) == "TOKEN=1"
     with pytest.raises(InputError, match="outside the agent directory"):
         await tools.dispatch("Read", {"path": str(tmp_path / "link" / ".other" / "x.md")})
