@@ -357,7 +357,7 @@ def test_a_question_script_without_a_run_at_its_top_level_is_refused(tmp_path: P
     with pytest.raises(ConfigurationError) as raised:
         load_tree(tmp_path)
     assert str(raised.value) == (
-        f"folder: {tmp_path / 'matcher/questions/order.py'} has no run at its top level; a question's script defines def run(input, call) or async def run(input, call)"
+        f"tools/folder: {tmp_path / 'matcher/questions/order.py'} has no run at its top level; a question's script defines def run(input, call) or async def run(input, call)"
     )
 
 
@@ -371,16 +371,16 @@ def test_a_server_package_named_questions_is_the_server_s_code_to_a_question_scr
     with pytest.raises(ConfigurationError) as raised:
         load_tree(tmp_path / "agents")
     assert str(raised.value) == (
-        f"folder: {tmp_path / 'agents/matcher/questions/order.py'} imports 'questions' from {tmp_path / 'src/questions/__init__.py'}, the server's own code; a question's script imports the standard library, installed packages and helpers of its questions/ folder"
+        f"tools/folder: {tmp_path / 'agents/matcher/questions/order.py'} imports 'questions' from {tmp_path / 'src/questions/__init__.py'}, the server's own code; a question's script imports the standard library, installed packages and helpers of its questions/ folder"
     )
 
 
 def test_a_question_script_that_imports_the_engine_is_refused(tmp_path: Path) -> None:
     matcher(tmp_path, "import rfnry_engine\ndef run(input, call):\n    return {}\n")
     path = tmp_path / "matcher/questions/order.py"
-    with pytest.raises(ConfigurationError, match="^folder: ") as raised:
+    with pytest.raises(ConfigurationError, match="^tools/folder: ") as raised:
         load_tree(tmp_path)
-    assert str(raised.value).startswith(f"folder: {path} imports 'rfnry_engine'; ")
+    assert str(raised.value).startswith(f"tools/folder: {path} imports 'rfnry_engine'; ")
 
 
 async def test_a_question_script_runs_in_its_agent_s_worker_group(tmp_path: Path) -> None:

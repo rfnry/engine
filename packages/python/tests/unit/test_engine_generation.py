@@ -736,7 +736,7 @@ async def test_the_model_adapter_says_which_files_load_may_hand_it(
     run = await engine_for(root, llm).run("billing", "acme", "What does express cost?")
     assert isinstance(run, Generation) and run.steps[0].is_error
     assert run.steps[0].result == (
-        "InputError: builtins: the model does not take application/pdf files: knowledge/rates.pdf"
+        "InputError: tools/builtins: the model does not take application/pdf files: knowledge/rates.pdf"
     )
 
 

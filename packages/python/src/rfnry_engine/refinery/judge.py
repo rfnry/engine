@@ -108,11 +108,13 @@ def teacher_answers(questions: dict[str, Question], taught: TeacherAnswers) -> d
     for question_id, question in questions.items():
         value = taught.answers.get(question_id)
         if value is None:
-            raise ModelError(f"judge: teacher gave no answer for {question_id!r}")
+            raise ModelError(f"refinery/judge: teacher gave no answer for {question_id!r}")
         if isinstance(question, Choice):
             key = str(value)
             if key not in question.options:
-                raise ModelError(f"judge: teacher chose {key!r}, not an option of {question_id!r}")
+                raise ModelError(
+                    f"refinery/judge: teacher chose {key!r}, not an option of {question_id!r}"
+                )
             answers[question_id] = ChoiceAnswer(
                 choice=key,
                 probabilities={k: 1.0 if k == key else 0.0 for k in question.options},
@@ -120,10 +122,12 @@ def teacher_answers(questions: dict[str, Question], taught: TeacherAnswers) -> d
             )
         elif isinstance(question, Score):
             if isinstance(value, bool | str) or not float(value).is_integer():
-                raise ModelError(f"judge: teacher gave {value!r}, not a level of {question_id!r}")
+                raise ModelError(
+                    f"refinery/judge: teacher gave {value!r}, not a level of {question_id!r}"
+                )
             index = int(value)
             if not 0 <= index < len(question.levels):
-                raise ModelError(f"judge: teacher gave level {index} for {question_id!r}")
+                raise ModelError(f"refinery/judge: teacher gave level {index} for {question_id!r}")
             answers[question_id] = ScoreAnswer(
                 score=float(index),
                 probabilities=[1.0 if i == index else 0.0 for i in range(len(question.levels))],
@@ -132,7 +136,7 @@ def teacher_answers(questions: dict[str, Question], taught: TeacherAnswers) -> d
         else:
             if not isinstance(value, bool):
                 raise ModelError(
-                    f"judge: teacher gave {value!r}, not true or false for {question_id!r}"
+                    f"refinery/judge: teacher gave {value!r}, not true or false for {question_id!r}"
                 )
             answers[question_id] = CheckAnswer(probability=1.0 if value else 0.0, confidence=1.0)
     return answers

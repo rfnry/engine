@@ -46,7 +46,7 @@ async def test_call_tools_ride_along_and_collisions_are_refused(fixtures: Path) 
 
 def test_engine_tools_need_a_scope(fixtures: Path) -> None:
     engine = Engine(fixtures, models={"strong": Scripted()})
-    with pytest.raises(InputError, match="^engine_tools: scope is required$"):
+    with pytest.raises(InputError, match="^tools/engine_tools: scope is required$"):
         EngineTools(engine, agent="support", scope="")
 
 

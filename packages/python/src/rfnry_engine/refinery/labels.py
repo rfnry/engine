@@ -15,7 +15,7 @@ class Review(BaseModel):
     @model_validator(mode="after")
     def _at_least_one(self) -> Review:
         if self.stance is None and not self.comment and self.correction is None:
-            raise ValueError("labels: a review needs a stance, a comment or a correction")
+            raise ValueError("refinery/labels: a review needs a stance, a comment or a correction")
         return self
 
 

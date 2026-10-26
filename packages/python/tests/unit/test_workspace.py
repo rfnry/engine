@@ -278,7 +278,8 @@ async def test_edit_with_all_still_needs_one_occurrence() -> None:
     machine.files["f.txt"] = b"a\n"
     edit = tool(Workspace(machine, scope="acme"), "Edit")
     with pytest.raises(
-        InputError, match="^workspace: old appears 0 times in f.txt; it must appear at least once$"
+        InputError,
+        match="^tools/workspace: old appears 0 times in f.txt; it must appear at least once$",
     ):
         await edit.call({"path": "f.txt", "old": "x", "new": "y", "all": True})
 
@@ -299,7 +300,7 @@ async def test_edit_refuses_zero_or_several_matches(content: str, count: int) ->
     edit = tool(Workspace(machine, scope="acme"), "Edit")
     with pytest.raises(
         InputError,
-        match=f"^workspace: old appears {count} times in f.txt; it must appear exactly once$",
+        match=f"^tools/workspace: old appears {count} times in f.txt; it must appear exactly once$",
     ):
         await edit.call({"path": "f.txt", "old": "x", "new": "y"})
     assert machine.files["f.txt"] == content.encode()
@@ -309,11 +310,11 @@ async def test_edit_refuses_empty_old_and_binary_and_passes_the_backends_errors_
     machine = Machine()
     machine.files.update({"bin": b"\xff\xfe", "f.txt": b"x"})
     edit = tool(Workspace(machine, scope="acme"), "Edit")
-    with pytest.raises(InputError, match="^workspace: old must not be empty$"):
+    with pytest.raises(InputError, match="^tools/workspace: old must not be empty$"):
         await edit.call({"path": "f.txt", "old": "", "new": "y"})
     with pytest.raises(InputError, match="^machine: not a file: missing.txt$"):
         await edit.call({"path": "missing.txt", "old": "x", "new": "y"})
-    with pytest.raises(InputError, match="^workspace: not a UTF-8 text file: bin$"):
+    with pytest.raises(InputError, match="^tools/workspace: not a UTF-8 text file: bin$"):
         await edit.call({"path": "bin", "old": "x", "new": "y"})
 
 
@@ -323,7 +324,7 @@ async def test_write_and_edit_are_bounded_by_the_timeout() -> None:
             await asyncio.sleep(1)
 
     write = tool(Workspace(Slow(), scope="acme", timeout=0.2), "Write")
-    with pytest.raises(TimeoutError, match=r"^workspace: Write did not finish within 0\.2s$"):
+    with pytest.raises(TimeoutError, match=r"^tools/workspace: Write did not finish within 0\.2s$"):
         await write.call({"path": "a.txt", "content": "x"})
 
 
@@ -345,13 +346,13 @@ def test_shell_tells_the_model_its_terms() -> None:
     ],
 )
 def test_a_workspace_that_cannot_work_is_refused(kwargs: dict[str, Any], message: str) -> None:
-    with pytest.raises(ConfigurationError, match=f"^workspace: {message}$"):
+    with pytest.raises(ConfigurationError, match=f"^tools/workspace: {message}$"):
         Workspace(Machine(), **{"scope": "acme", **kwargs})
 
 
 def test_a_backend_needs_its_three_methods() -> None:
     with pytest.raises(
-        ConfigurationError, match="^workspace: backend must have spawn, read and write$"
+        ConfigurationError, match="^tools/workspace: backend must have spawn, read and write$"
     ):
         Workspace(object(), scope="acme")  # type: ignore[arg-type]
 
@@ -417,7 +418,7 @@ async def test_stop_ends_a_job_returns_its_last_output_and_then_it_is_gone() -> 
         "exit_code": -15,
     }
     assert ran.kills >= 1
-    with pytest.raises(InputError, match="^workspace: there is no job j1$"):
+    with pytest.raises(InputError, match="^tools/workspace: there is no job j1$"):
         await tool(ws, "Job").call({"id": "j1"})
     assert await tool(ws, "Jobs").call({}) == {"jobs": []}
 
@@ -781,7 +782,7 @@ async def test_a_wait_outside_the_timeout_is_refused(wait: int) -> None:
     ws = Workspace(Machine(), scope="acme", timeout=120)
     await background(ws, "serve")
     with pytest.raises(
-        InputError, match=f"^workspace: wait must be between 0 and 120 seconds; got {wait}$"
+        InputError, match=f"^tools/workspace: wait must be between 0 and 120 seconds; got {wait}$"
     ):
         await tool(ws, "Job").call({"id": "j1", "wait": wait})
     await ws.close()
@@ -861,7 +862,7 @@ class Late(Slow):
         return ran
 
 
-LOST = "workspace: could not stop the command: docker: kill failed"
+LOST = "tools/workspace: could not stop the command: docker: kill failed"
 
 
 def kills(machine: Machine) -> int:

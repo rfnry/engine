@@ -154,7 +154,7 @@ def _words(value: Sequence[str], name: str, example: str) -> list[str]:
         or not all(isinstance(part, str) and part for part in value)
     ):
         raise ConfigurationError(
-            f"workspace: {name} must be a non-empty list of strings, such as {example}"
+            f"tools/workspace: {name} must be a non-empty list of strings, such as {example}"
         )
     return list(value)
 
@@ -175,7 +175,7 @@ class Local:
     ) -> None:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
-            raise ConfigurationError(f"workspace: root is not a directory: {root}")
+            raise ConfigurationError(f"tools/workspace: root is not a directory: {root}")
         self.env = (
             dict(env)
             if env is not None
@@ -188,7 +188,7 @@ class Local:
         self.shell = _words(shell, "shell", "['bash', '-c']")
         if shutil.which(self.shell[0], path=self.env.get("PATH")) is None:
             raise ConfigurationError(
-                f"workspace: {self.shell[0]} was not found; pass shell=, such as ['sh', '-c']"
+                f"tools/workspace: {self.shell[0]} was not found; pass shell=, such as ['sh', '-c']"
             )
         self._jail = Jail(self.root)
 
@@ -207,7 +207,7 @@ class Local:
                 start_new_session=True,
             )
         except OSError as exc:
-            raise InputError(f"workspace: cannot start the command: {exc.strerror}") from None
+            raise InputError(f"tools/workspace: cannot start the command: {exc.strerror}") from None
         return _Running(transport, pipes)
 
     async def read(self, path: str, limit: int) -> bytes:
@@ -220,7 +220,7 @@ class Local:
         try:
             return self._jail.open(path, flags)
         except InputError:
-            raise InputError(f"workspace: path outside the workspace: {path}") from None
+            raise InputError(f"tools/workspace: path outside the workspace: {path}") from None
 
     def _read(self, path: str, limit: int) -> bytes:
         try:
@@ -228,9 +228,9 @@ class Local:
             try:
                 found = os.fstat(fd)
                 if not stat.S_ISREG(found.st_mode):
-                    raise InputError(f"workspace: not a file: {path}")
+                    raise InputError(f"tools/workspace: not a file: {path}")
                 if found.st_size > limit:
-                    raise InputError(f"workspace: file exceeds {limit} bytes: {path}")
+                    raise InputError(f"tools/workspace: file exceeds {limit} bytes: {path}")
                 data = bytearray()
                 while len(data) <= limit and (
                     chunk := os.read(fd, min(CHUNK, limit + 1 - len(data)))
@@ -240,10 +240,10 @@ class Local:
                 os.close(fd)
         except OSError as exc:
             if exc.errno in (errno.ENOENT, errno.ENXIO, errno.ENOTDIR):
-                raise InputError(f"workspace: not a file: {path}") from None
-            raise InputError(f"workspace: cannot read {path}: {exc.strerror}") from None
+                raise InputError(f"tools/workspace: not a file: {path}") from None
+            raise InputError(f"tools/workspace: cannot read {path}: {exc.strerror}") from None
         if len(data) > limit:
-            raise InputError(f"workspace: file exceeds {limit} bytes: {path}")
+            raise InputError(f"tools/workspace: file exceeds {limit} bytes: {path}")
         return bytes(data)
 
     def _write(self, path: str, data: bytes) -> None:
@@ -251,7 +251,7 @@ class Local:
             fd = self._open(path, os.O_WRONLY | os.O_CREAT)
             try:
                 if not stat.S_ISREG(os.fstat(fd).st_mode):
-                    raise InputError(f"workspace: not a file: {path}")
+                    raise InputError(f"tools/workspace: not a file: {path}")
                 os.ftruncate(fd, 0)
                 view = memoryview(data)
                 while view:
@@ -260,10 +260,10 @@ class Local:
                 os.close(fd)
         except OSError as exc:
             if exc.errno == errno.EISDIR:
-                raise InputError(f"workspace: is a directory: {path}") from None
+                raise InputError(f"tools/workspace: is a directory: {path}") from None
             if exc.errno == errno.ENXIO:
-                raise InputError(f"workspace: not a file: {path}") from None
-            raise InputError(f"workspace: cannot write {path}: {exc.strerror}") from None
+                raise InputError(f"tools/workspace: not a file: {path}") from None
+            raise InputError(f"tools/workspace: cannot write {path}: {exc.strerror}") from None
 
 
 def _complete(data: bytearray) -> int:
@@ -359,7 +359,7 @@ def _discard(reading: list[asyncio.Task[None]]) -> None:
 def _log(*errors: BaseException | None) -> None:
     for error in errors:
         if error is not None:
-            logger.error("workspace: could not stop the command: %s", error, exc_info=error)
+            logger.error("tools/workspace: could not stop the command: %s", error, exc_info=error)
 
 
 async def _kill_all(
@@ -446,13 +446,13 @@ class Workspace:
         output_bytes: int = 30_000,
     ) -> None:
         if not isinstance(backend, Backend):
-            raise ConfigurationError("workspace: backend must have spawn, read and write")
+            raise ConfigurationError("tools/workspace: backend must have spawn, read and write")
         if not scope:
-            raise ConfigurationError("workspace: scope is required")
+            raise ConfigurationError("tools/workspace: scope is required")
         if timeout <= 0:
-            raise ConfigurationError("workspace: timeout must be positive")
+            raise ConfigurationError("tools/workspace: timeout must be positive")
         if output_bytes <= 0:
-            raise ConfigurationError("workspace: output_bytes must be positive")
+            raise ConfigurationError("tools/workspace: output_bytes must be positive")
         self.backend = backend
         self.scope = scope
         self.timeout = timeout
@@ -602,12 +602,12 @@ class Workspace:
         a = JobArgs.model_validate(args)
         if not 0 <= a.wait <= self.timeout:
             raise InputError(
-                f"workspace: wait must be between 0 and {self.timeout:g} seconds; got {a.wait:g}"
+                f"tools/workspace: wait must be between 0 and {self.timeout:g} seconds; got {a.wait:g}"
             )
         deadline = asyncio.get_running_loop().time() + self.timeout
         job = self._jobs.get(a.id)
         if job is None:
-            raise InputError(f"workspace: there is no job {a.id}")
+            raise InputError(f"tools/workspace: there is no job {a.id}")
         if a.wait:
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(a.wait):
@@ -645,7 +645,7 @@ class Workspace:
                 return await work
         except TimeoutError:
             raise TimeoutError(
-                f"workspace: {name} did not finish within {self.timeout:g}s"
+                f"tools/workspace: {name} did not finish within {self.timeout:g}s"
             ) from None
 
     async def _write(self, args: dict[str, Any]) -> str:
@@ -657,7 +657,7 @@ class Workspace:
     async def _edit(self, args: dict[str, Any]) -> str:
         a = EditArgs.model_validate(args)
         if not a.old:
-            raise InputError("workspace: old must not be empty")
+            raise InputError("tools/workspace: old must not be empty")
         count = await self._bounded("Edit", self._replace(a))
         return f"edited {a.path} ({count} occurrence{'' if count == 1 else 's'})"
 
@@ -665,12 +665,12 @@ class Workspace:
         try:
             text = (await self.backend.read(a.path, TEXT_BYTES)).decode("utf-8")
         except UnicodeDecodeError:
-            raise InputError(f"workspace: not a UTF-8 text file: {a.path}") from None
+            raise InputError(f"tools/workspace: not a UTF-8 text file: {a.path}") from None
         count = text.count(a.old)
         if count == 0 or (count > 1 and not a.all):
             need = "at least once" if a.all else "exactly once"
             raise InputError(
-                f"workspace: old appears {count} times in {a.path}; it must appear {need}"
+                f"tools/workspace: old appears {count} times in {a.path}; it must appear {need}"
             )
         await self.backend.write(
             a.path, text.replace(a.old, a.new, -1 if a.all else 1).encode("utf-8")

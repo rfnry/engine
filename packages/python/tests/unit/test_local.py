@@ -182,9 +182,13 @@ async def test_read_and_write_stay_inside_the_root(
     (elsewhere / "secret.txt").write_text("s")
     (root / "out").symlink_to(elsewhere)
     for path in ("../x.txt", "/etc/x.txt", "out/x.txt"):
-        with pytest.raises(InputError, match=f"^workspace: path outside the workspace: {path}$"):
+        with pytest.raises(
+            InputError, match=f"^tools/workspace: path outside the workspace: {path}$"
+        ):
             await local.write(path, b"x")
-    with pytest.raises(InputError, match="^workspace: path outside the workspace: out/secret.txt$"):
+    with pytest.raises(
+        InputError, match="^tools/workspace: path outside the workspace: out/secret.txt$"
+    ):
         await local.read("out/secret.txt", 100)
     assert not (elsewhere / "x.txt").exists()
 
@@ -194,34 +198,34 @@ async def test_read_refuses_a_missing_file_a_directory_and_a_file_over_the_limit
 ) -> None:
     (root / "dir").mkdir()
     (root / "big.txt").write_bytes(b"x" * 11)
-    with pytest.raises(InputError, match="^workspace: not a file: missing.txt$"):
+    with pytest.raises(InputError, match="^tools/workspace: not a file: missing.txt$"):
         await local.read("missing.txt", 100)
-    with pytest.raises(InputError, match="^workspace: not a file: dir$"):
+    with pytest.raises(InputError, match="^tools/workspace: not a file: dir$"):
         await local.read("dir", 100)
-    with pytest.raises(InputError, match="^workspace: file exceeds 10 bytes: big.txt$"):
+    with pytest.raises(InputError, match="^tools/workspace: file exceeds 10 bytes: big.txt$"):
         await local.read("big.txt", 10)
     assert await local.read("big.txt", 11) == b"x" * 11
 
 
 async def test_write_refuses_a_directory(local: Local, root: Path) -> None:
     (root / "dir").mkdir()
-    with pytest.raises(InputError, match="^workspace: is a directory: dir$"):
+    with pytest.raises(InputError, match="^tools/workspace: is a directory: dir$"):
         await local.write("dir", b"x")
     assert (root / "dir").is_dir()
 
 
 async def test_read_reads_up_to_the_limit_across_chunks(local: Local, root: Path) -> None:
     (root / "big.bin").write_bytes(b"y" * 200_001)
-    with pytest.raises(InputError, match="^workspace: file exceeds 200000 bytes: big.bin$"):
+    with pytest.raises(InputError, match="^tools/workspace: file exceeds 200000 bytes: big.bin$"):
         await local.read("big.bin", 200_000)
     assert await local.read("big.bin", 200_001) == b"y" * 200_001
 
 
 async def test_a_pipe_is_not_a_file_and_never_blocks(local: Local, root: Path) -> None:
     os.mkfifo(root / "pipe")
-    with pytest.raises(InputError, match="^workspace: not a file: pipe$"):
+    with pytest.raises(InputError, match="^tools/workspace: not a file: pipe$"):
         await asyncio.wait_for(local.read("pipe", 100), 5)
-    with pytest.raises(InputError, match="^workspace: not a file: pipe$"):
+    with pytest.raises(InputError, match="^tools/workspace: not a file: pipe$"):
         await asyncio.wait_for(local.write("pipe", b"x"), 5)
 
 
@@ -278,7 +282,7 @@ async def test_a_folder_swapped_for_a_link_after_the_check_is_refused(
         (root / "sub").symlink_to(elsewhere)
 
     swap_after_the_check(monkeypatch, swap)
-    with pytest.raises(InputError, match=f"^workspace: path outside the workspace: {path}$"):
+    with pytest.raises(InputError, match=f"^tools/workspace: path outside the workspace: {path}$"):
         await call(local, verb, path)
     assert [p.name for p in elsewhere.iterdir()] == ["secret.txt"]
     assert (elsewhere / "secret.txt").read_text() == "secret"
@@ -298,7 +302,9 @@ async def test_a_file_swapped_for_a_link_after_the_check_is_refused(
         (root / "notes.txt").symlink_to(elsewhere / "secret.txt")
 
     swap_after_the_check(monkeypatch, swap)
-    with pytest.raises(InputError, match="^workspace: path outside the workspace: notes.txt$"):
+    with pytest.raises(
+        InputError, match="^tools/workspace: path outside the workspace: notes.txt$"
+    ):
         await call(local, verb, "notes.txt")
     assert (elsewhere / "secret.txt").read_text() == "secret"
 
@@ -323,7 +329,7 @@ async def test_a_folder_above_the_root_swapped_for_a_link_after_the_check_is_ref
         above.symlink_to(other)
 
     swap_after_the_check(monkeypatch, swap)
-    with pytest.raises(InputError, match=f"^workspace: path outside the workspace: {path}$"):
+    with pytest.raises(InputError, match=f"^tools/workspace: path outside the workspace: {path}$"):
         await call(local, verb, path)
     assert [p.name for p in (other / "work").iterdir()] == ["notes.txt"]
     assert (other / "work/notes.txt").read_text() == "secret"
@@ -337,7 +343,9 @@ async def test_a_root_replaced_by_another_folder_is_refused(
     root.rename(tmp_path / "moved")
     root.mkdir()
     (root / "notes.txt").write_text("other")
-    with pytest.raises(InputError, match="^workspace: path outside the workspace: notes.txt$"):
+    with pytest.raises(
+        InputError, match="^tools/workspace: path outside the workspace: notes.txt$"
+    ):
         await call(local, verb, "notes.txt")
     assert (root / "notes.txt").read_text() == "other"
 
@@ -355,7 +363,9 @@ async def test_a_root_swapped_for_a_link_after_the_check_is_refused(
         root.symlink_to(elsewhere)
 
     swap_after_the_check(monkeypatch, swap)
-    with pytest.raises(InputError, match="^workspace: path outside the workspace: notes.txt$"):
+    with pytest.raises(
+        InputError, match="^tools/workspace: path outside the workspace: notes.txt$"
+    ):
         await call(local, verb, "notes.txt")
     assert (elsewhere / "notes.txt").read_text() == "secret"
 
@@ -390,29 +400,31 @@ async def test_what_the_system_refuses_is_said_without_the_host_path(
     local: Local, verb: str, path: str
 ) -> None:
     with pytest.raises(
-        InputError, match=f"^workspace: cannot {verb} {re.escape(path)}: File name too long$"
+        InputError, match=f"^tools/workspace: cannot {verb} {re.escape(path)}: File name too long$"
     ):
         await call(local, verb, path)
 
 
 async def test_a_path_through_a_file_is_not_outside_the_workspace(local: Local, root: Path) -> None:
     (root / "notes.txt").write_text("notes")
-    with pytest.raises(InputError, match="^workspace: not a file: notes.txt/x$"):
+    with pytest.raises(InputError, match="^tools/workspace: not a file: notes.txt/x$"):
         await local.read("notes.txt/x", 100)
-    with pytest.raises(InputError, match="^workspace: cannot write notes.txt/x: Not a directory$"):
+    with pytest.raises(
+        InputError, match="^tools/workspace: cannot write notes.txt/x: Not a directory$"
+    ):
         await local.write("notes.txt/x", b"x")
     assert (root / "notes.txt").read_text() == "notes"
 
 
 def test_root_must_be_a_directory(tmp_path: Path) -> None:
-    with pytest.raises(ConfigurationError, match="^workspace: root is not a directory: "):
+    with pytest.raises(ConfigurationError, match="^tools/workspace: root is not a directory: "):
         Local(tmp_path / "missing")
 
 
 def test_a_missing_shell_is_refused_with_the_way_out(tmp_path: Path) -> None:
     with pytest.raises(
         ConfigurationError,
-        match=r"^workspace: bash was not found; pass shell=, such as \['sh', '-c'\]$",
+        match=r"^tools/workspace: bash was not found; pass shell=, such as \['sh', '-c'\]$",
     ):
         Local(tmp_path, env={"PATH": str(tmp_path)})
 
@@ -420,7 +432,7 @@ def test_a_missing_shell_is_refused_with_the_way_out(tmp_path: Path) -> None:
 @pytest.mark.parametrize("shell", ["bash -c", [], ["bash", ""]])
 def test_a_shell_that_is_not_a_list_of_words_is_refused(tmp_path: Path, shell: Any) -> None:
     with pytest.raises(
-        ConfigurationError, match="^workspace: shell must be a non-empty list of strings"
+        ConfigurationError, match="^tools/workspace: shell must be a non-empty list of strings"
     ):
         Local(tmp_path, shell=shell)
 
@@ -474,7 +486,7 @@ async def test_a_command_that_cannot_start_is_refused_without_the_host_path(root
     ws = workspace(root)
     root.rmdir()
     with pytest.raises(
-        InputError, match="^workspace: cannot start the command: No such file or directory$"
+        InputError, match="^tools/workspace: cannot start the command: No such file or directory$"
     ):
         await shell(ws, "echo hi")
 
@@ -727,7 +739,9 @@ async def test_a_write_or_edit_past_the_timeout_returns_once_its_thread_has_ende
         assert not task.done()
     finally:
         local.release.set()
-    with pytest.raises(TimeoutError, match=rf"^workspace: {name} did not finish within 0.3s$"):
+    with pytest.raises(
+        TimeoutError, match=rf"^tools/workspace: {name} did not finish within 0.3s$"
+    ):
         async with asyncio.timeout(2):
             await task
     assert (root / "notes.txt").read_text() == ("old\n" if held == "read" else "new\n")
@@ -765,7 +779,7 @@ async def test_write_and_edit_reach_the_directory(root: Path, tmp_path: Path) ->
     edited = await tool(ws, "Edit").call({"path": "src/main.py", "old": "x = 1", "new": "x = 3"})
     assert edited == "edited src/main.py (1 occurrence)"
     assert (root / "src/main.py").read_bytes() == b"x = 3\r\ny = 2\n"
-    with pytest.raises(InputError, match="^workspace: path outside the workspace: ../x.txt$"):
+    with pytest.raises(InputError, match="^tools/workspace: path outside the workspace: ../x.txt$"):
         await tool(ws, "Write").call({"path": "../x.txt", "content": "x"})
     assert not (tmp_path / "x.txt").exists()
 
@@ -926,5 +940,5 @@ async def test_read_refuses_a_file_far_over_the_limit_without_reading_it(
         raise AssertionError("read called")
 
     monkeypatch.setattr("rfnry_engine.tools.workspace.os.read", never)
-    with pytest.raises(InputError, match="^workspace: file exceeds 10 bytes: sparse.bin$"):
+    with pytest.raises(InputError, match="^tools/workspace: file exceeds 10 bytes: sparse.bin$"):
         await local.read("sparse.bin", 10)

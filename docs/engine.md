@@ -1432,7 +1432,7 @@ shell can do both too. `Read` and `Load` take `where="workspace"`: `Read` for a 
 workspace, with `offset` and `limit` selecting lines, `Load` to hand the model a file as it is, so
 an agent looks at the chart it just plotted. Both go through the backend. `LS`, `Grep` and `Glob`
 stay on the folder; a path the folder does not hold, given to `LS`, `Read` or `Load` of a run with a
-workspace, is answered with the way to the workspace: `builtins: not a directory of your folder:
+workspace, is answered with the way to the workspace: `tools/builtins: not a directory of your folder:
 task_folder; Shell lists your workspace`. Each command starts fresh
 in the directory, so a `cd` or a variable does not carry over, and the tool's description tells the
 model so, along with its limits.
@@ -1478,7 +1478,7 @@ that has only a POSIX shell, such as Alpine.
 
 On `Local`, `Write`, `Edit`, `Read` and `Load` stay inside the directory: they refuse a path that
 leaves it, symlinks included. What the system refuses reaches the model with its reason and the
-model's own path, never the path on your machine: `workspace: cannot write notes.txt/x: Not a
+model's own path, never the path on your machine: `tools/workspace: cannot write notes.txt/x: Not a
 directory`. `Shell` reaches what the process running it can reach, so the real boundary is the
 sandbox in front of the shell, or the machine. `Local` reads and writes files in a thread, which a
 cancel cannot stop, so a `Write` or `Edit` cancelled while it writes returns once the file is
@@ -1534,7 +1534,7 @@ workspace started on its own, for a command past its timeout or that has ended, 
 everything it started, at once, before it returns; `Local` sends SIGKILL in a `finally`, and so does
 the Docker backend in `examples/workspaces/`. A `kill()` that raises is the call's error; when the
 call is already leaving with a cancellation, or with the error of a `wait()` that raised, it is
-logged as an error instead, `workspace: could not stop the command: …`, and the kill that follows a
+logged as an error instead, `tools/workspace: could not stop the command: …`, and the kill that follows a
 job's end puts its error in the job's output. `read` refuses a file larger than `limit`; `write`
 creates parent directories. A path is the model's, relative to the workspace, and what it can reach
 is the backend's to decide; an error a backend raises reaches the model as the tool's error. A
@@ -1904,12 +1904,12 @@ arguments, its descriptions included, whose top level is `"type": "object"`; `ou
 optional, is one of the result. When the tree loads, each file is checked and both schemas are
 compiled — any draft, 2020-12 included, and never a reference fetched from the network — and an
 unknown key, a missing or blank description, an `input_schema` that is not an object or a schema
-that does not compile is a `ConfigurationError` naming the file: `folder: <path> has the unknown key
+that does not compile is a `ConfigurationError` naming the file: `tools/folder: <path> has the unknown key
 'inputSchema'; a tool's JSON takes description, input_schema and output_schema`. The model is
 offered the name, the description and the `input_schema`; `output_schema` never reaches it. A call's
 arguments are checked against `input_schema` before they reach the script, and its result against
 `output_schema` after; either that does not fit is a tool error the model reads, `InputError:
-declared: invalid arguments for refund: 5 is not of type "string" at charge_id`, so the script never
+tools/declared: invalid arguments for refund: 5 is not of type "string" at charge_id`, so the script never
 sees arguments its schema refuses and the model never reasons over a malformed result.
 
 `<name>.py` holds the logic: a function `run(args, call)`, plain or `async`.
@@ -1938,7 +1938,7 @@ and the helpers of its own `tools/` folder — its `_name.py` files, by name, at
 script; a tool's script or a package beside it is no helper, and importing one fails in the worker.
 It never imports the engine, nor your server's code. When the tree loads, each script is read
 without running it: a script with no `def run` or `async def run` at its top level is a
-`ConfigurationError` (`folder: <path> has no run at its top level; a tool defines def run(args,
+`ConfigurationError` (`tools/folder: <path> has no run at its top level; a tool defines def run(args,
 call) or async def run(args, call)`), and so is an import of `rfnry_engine`, of a module whose file
 lies in the project that holds the tree — the nearest folder at or above the root with a
 `pyproject.toml` — outside the standard library, the installed packages and the tree's `tools/` and
@@ -2387,5 +2387,5 @@ its worker. Inside a run,
 a tool's error is the model's to read, never raised. All under `EngineException` — the root takes
 the `Exception` suffix, every child ends in `Error`, the same shape as rfnry-memory's. Every message
 names the module that raised it, then says what went wrong in lowercase: `engine: agent 'ghost' was
-not found`, `workspace: path outside the workspace: ../x`. A tool's error reaches the model with its
+not found`, `tools/workspace: path outside the workspace: ../x`. A tool's error reaches the model with its
 type in front: `InputError: tools: unknown tool 'Ghost'`.

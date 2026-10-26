@@ -158,7 +158,7 @@ async def test_invalid_arguments_never_reach_the_worker(tmp_path: Path) -> None:
             await EngineTools(engine, agent="shop", scope="acme").dispatch("lookup_order", {})
     assert run.steps[0].is_error
     assert run.steps[0].result == (
-        'InputError: declared: invalid arguments for lookup_order: 5 is not of type "string" at order_id'
+        'InputError: tools/declared: invalid arguments for lookup_order: 5 is not of type "string" at order_id'
     )
     assert not marker.exists()
 
@@ -194,7 +194,7 @@ async def test_a_result_off_its_output_schema_is_a_tool_error(tmp_path: Path) ->
     assert run.steps[0].is_error
     assert isinstance(run.steps[0].result, str)
     assert run.steps[0].result.startswith(
-        "ModelError: declared: lookup_order returned a result that does not match its output_schema: "
+        "ModelError: tools/declared: lookup_order returned a result that does not match its output_schema: "
         '"status" is a required property'
     )
 
@@ -253,7 +253,7 @@ async def test_parts_that_do_not_fit_their_contract_are_a_tool_error(tmp_path: P
         run = await generated(engine, "shop", "acme", "x")
     assert run.steps[0].is_error and isinstance(run.steps[0].result, str)
     assert run.steps[0].result.startswith(
-        "ModelError: declared: label returned parts that do not fit the contract: "
+        "ModelError: tools/declared: label returned parts that do not fit the contract: "
     )
     assert "media_type" in run.steps[0].result
 

@@ -866,14 +866,16 @@ async def test_put_runs_stores_a_tree_whole(storage: Storage) -> None:
 
 
 async def test_put_runs_with_a_row_of_another_scope_stores_nothing(storage: Storage) -> None:
-    with pytest.raises(StorageError, match="^postgres: row scope does not match the call scope$"):
+    with pytest.raises(
+        StorageError, match="^refinery/postgres: row scope does not match the call scope$"
+    ):
         await storage.put_runs("a", [_run("a", "r1"), _run("b", "r2")])
     assert await storage.count_scope("a") == 0 and await storage.count_scope("b") == 0
 
 
 async def test_put_runs_stores_nothing_when_the_database_refuses_a_row(storage: Storage) -> None:
     bad = _run("a", "r2", agent="a\x00b")
-    with pytest.raises(StorageError, match="^postgres: storage rejected put_runs: "):
+    with pytest.raises(StorageError, match="^refinery/postgres: storage rejected put_runs: "):
         await storage.put_runs("a", [_run("a", "r1"), bad])
     assert await storage.get_run("a", "r1") is None
 
@@ -915,7 +917,7 @@ async def test_initialize_on_a_table_an_earlier_version_made_says_what_to_do(poo
         with pytest.raises(StorageError) as refused:
             await PostgresStorage(old).initialize()
         assert str(refused.value) == (
-            "postgres: engine_runs was made by an earlier version and lacks tags; "
+            "refinery/postgres: engine_runs was made by an earlier version and lacks tags; "
             "drop engine_runs and engine_labels, then run initialize() again"
         )
     finally:

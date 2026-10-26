@@ -274,7 +274,7 @@ def test_a_preloaded_file_that_is_not_the_type_its_name_says_is_refused_when_the
     preload_all(root / "support")
     with pytest.raises(
         ConfigurationError,
-        match=r"^tree: agent 'support' cannot preload its folder: builtins: diagram.png is not the image/png its name says; move that file out of its folders, or drop preload: true$",
+        match=r"^tree: agent 'support' cannot preload its folder: tools/builtins: diagram.png is not the image/png its name says; move that file out of its folders, or drop preload: true$",
     ):
         engine(root, Scripted())
 
@@ -391,7 +391,7 @@ async def test_a_file_over_load_s_cap_is_refused_when_the_tree_loads_with_load_s
     with (root / "support" / "knowledge" / "archive.bin").open("wb") as file:
         file.truncate(20 * 1024 * 1024 + 1)
     load = await refusal(root, Scripted(), "knowledge/archive.bin")
-    assert load == "builtins: file exceeds 20971520 bytes: knowledge/archive.bin"
+    assert load == "tools/builtins: file exceeds 20971520 bytes: knowledge/archive.bin"
     preload_all(root / "support")
     with pytest.raises(ConfigurationError) as refused:
         engine(root, Scripted())
@@ -408,7 +408,7 @@ async def test_a_text_file_over_read_s_cap_goes_in_as_load_hands_it(
     name = "knowledge/notes.txt"
     (root / "support" / name).write_text("a" * (5 * 1024 * 1024 + 1), encoding="utf-8")
     read = await refusal(root, Scripted(), name, tool="Read")
-    assert read == f"builtins: file exceeds 5242880 bytes: {name}"
+    assert read == f"tools/builtins: file exceeds 5242880 bytes: {name}"
     preload_all(root / "support")
     built = engine(root, Scripted(text_reply("ok")))
     run = await built.run("support", "acme", "x")
@@ -433,7 +433,7 @@ async def test_a_file_the_model_does_not_take_is_refused_when_the_tree_loads_wit
     (root / "support" / name).write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00")
     load = await refusal(root, PicturesAndDocuments(), name)
     kind = mimetypes.guess_type(name)[0]
-    assert load == f"builtins: the model does not take {kind} files: {name}"
+    assert load == f"tools/builtins: the model does not take {kind} files: {name}"
     preload_all(root / "support")
     with pytest.raises(ConfigurationError) as refused:
         engine(root, PicturesAndDocuments())

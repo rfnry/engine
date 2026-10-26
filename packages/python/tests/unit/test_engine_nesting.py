@@ -124,7 +124,8 @@ async def test_a_delegation_cycle_runs_until_max_depth(tmp_path: Path) -> None:
     child = run.children[0]
     assert isinstance(child, Generation) and child.steps[0].is_error
     assert (
-        child.steps[0].result == "DelegationDepthError: delegate: depth 2 exceeded at a -> b -> a"
+        child.steps[0].result
+        == "DelegationDepthError: tools/delegate: depth 2 exceeded at a -> b -> a"
     )
 
 
@@ -138,7 +139,7 @@ async def test_a_route_back_into_the_chain_raises(tmp_path: Path) -> None:
             '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep it", "next": "Pass it on"}}'
         )
     engine = Engine(tmp_path, models={"judge": Answering()})
-    with pytest.raises(DelegationLoopError, match=r"^delegate: loop at r1 -> r2 -> r1$"):
+    with pytest.raises(DelegationLoopError, match=r"^tools/delegate: loop at r1 -> r2 -> r1$"):
         await engine.run("r1", "acme", "x")
 
 
@@ -185,7 +186,7 @@ async def test_a_route_loop_below_a_delegate_is_still_refused(tmp_path: Path) ->
     )
     assert isinstance(run, Generation) and run.reply == "a done"
     assert run.steps[0].is_error
-    assert run.steps[0].result == "DelegationLoopError: delegate: loop at a -> r1 -> r2 -> r1"
+    assert run.steps[0].result == "DelegationLoopError: tools/delegate: loop at a -> r1 -> r2 -> r1"
     told = llm.calls[1][1][-1]
     assert told.role == "tool" and told.is_error and told.content == run.steps[0].result
 
@@ -329,14 +330,14 @@ BAD_DELEGATIONS: list[tuple[dict[str, Any], type[Exception], str]] = [
     (
         {"agent": "blank", "input": "x", "questions": "Which area?"},
         InputError,
-        "delegate: invalid arguments: ",
+        "tools/delegate: invalid arguments: ",
     ),
     (
         {"agent": "support", "input": "x"},
         InputError,
-        "delegate: agent 'lead' may not delegate to 'support'",
+        "tools/delegate: agent 'lead' may not delegate to 'support'",
     ),
-    ({"agent": "blank"}, InputError, "delegate: invalid arguments: "),
+    ({"agent": "blank"}, InputError, "tools/delegate: invalid arguments: "),
 ]
 
 

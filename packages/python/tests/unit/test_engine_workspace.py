@@ -320,7 +320,7 @@ async def test_a_workspace_of_another_scope_is_refused_before_anything_runs(
             await engine.run(agent, "globex", "x", workspace=work)
     with pytest.raises(InputError, match=f"^engine: {refused}"):
         engine.tool("coder", scope="globex", workspace=work)
-    with pytest.raises(InputError, match=f"^engine_tools: {refused}"):
+    with pytest.raises(InputError, match=f"^tools/engine_tools: {refused}"):
         EngineTools(engine, agent="coder", scope="globex", workspace=work)
     assert llm.calls == []
 

@@ -39,7 +39,7 @@ async def _read(history: Sequence[object] | HistoryLike, first: int, stop: int) 
         return _MESSAGES.validate_python(list(found)[: stop - first], from_attributes=True)
     except ValidationError as exc:
         raise InputError(
-            "history: the conversation does not fit the contract: "
+            "tools/history: the conversation does not fit the contract: "
             f"{exc.errors(include_url=False, include_input=False)}"
         ) from exc
 
@@ -116,7 +116,7 @@ def _matching(pattern: regex.Pattern[str], indexed: Found, deadline: float | Non
                 hits.append((position, message))
         except TimeoutError as exc:
             raise InputError(
-                "history: the pattern ran past the tool's deadline; simplify it"
+                "tools/history: the pattern ran past the tool's deadline; simplify it"
             ) from exc
     return hits
 
@@ -143,7 +143,7 @@ def _compiled(pattern: str, case_insensitive: bool) -> regex.Pattern[str]:
     try:
         return regex.compile(pattern, regex.IGNORECASE if case_insensitive else 0)
     except regex.error as exc:
-        raise InputError(f"history: invalid pattern: {exc}") from exc
+        raise InputError(f"tools/history: invalid pattern: {exc}") from exc
 
 
 async def _searching(

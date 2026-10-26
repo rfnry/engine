@@ -23,17 +23,15 @@ ALLOWED: dict[tuple[str, str], str] = {
 }
 
 
-PATHED = {"workers"}
-
-
 def _sources() -> list[Path]:
     return sorted(SRC.rglob("*.py"))
 
 
 def _prefix(path: Path) -> str:
-    if path.parent.name in PATHED:
-        return f"{path.relative_to(SRC).with_suffix('').as_posix()}: "
-    return f"{path.stem}: "
+    parts = path.relative_to(SRC).with_suffix("").parts
+    if len(parts) > 1 and parts[-1] == parts[-2]:
+        parts = parts[:-1]
+    return f"{'/'.join(parts)}: "
 
 
 def _leading(node: ast.expr) -> str | None:

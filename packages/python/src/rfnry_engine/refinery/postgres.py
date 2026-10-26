@@ -111,7 +111,7 @@ class PostgresStorage:
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"postgres: storage rejected {operation}: {exc}") from exc
+            raise StorageError(f"refinery/postgres: storage rejected {operation}: {exc}") from exc
 
     async def initialize(self) -> None:
         async with self._guard("initialize"), self._pool.acquire() as conn:
@@ -125,7 +125,7 @@ class PostgresStorage:
                 missing = [column for column in columns if held and column not in held]
                 if missing:
                     raise StorageError(
-                        f"postgres: {table} was made by an earlier version and lacks "
+                        f"refinery/postgres: {table} was made by an earlier version and lacks "
                         f"{', '.join(missing)}; drop engine_runs and engine_labels, then run "
                         "initialize() again"
                     )
@@ -134,7 +134,7 @@ class PostgresStorage:
 
     async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
         if any(row.scope != scope for row in rows):
-            raise StorageError("postgres: row scope does not match the call scope")
+            raise StorageError("refinery/postgres: row scope does not match the call scope")
         if not rows:
             return
         async with self._guard("put_runs"), self._pool.acquire() as conn, conn.transaction():
@@ -213,7 +213,7 @@ class PostgresStorage:
 
     async def put_label(self, scope: str, row: LabelRow) -> LabelRow:
         if row.scope != scope:
-            raise StorageError("postgres: row scope does not match the call scope")
+            raise StorageError("refinery/postgres: row scope does not match the call scope")
         async with self._guard("put_label"), self._pool.acquire() as conn:
             inserted = await conn.fetchval(
                 f"INSERT INTO engine_labels ({_LABEL_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6::json) "
