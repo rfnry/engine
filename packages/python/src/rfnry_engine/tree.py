@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import posixpath
 from collections.abc import Callable, Collection, Mapping
@@ -19,7 +20,7 @@ from pydantic import (
 from rfnry_engine.chain import preload_digest
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
-from rfnry_engine.folders import DECLARED, content, declares, entries, joined
+from rfnry_engine.folders import DECLARED, content, declares, entries, joined, leads_out
 from rfnry_engine.frontmatter import (
     body_of,
     description,
@@ -35,6 +36,8 @@ from rfnry_engine.tools.folder import ToolDef, load_scripts, load_tools, project
 from rfnry_engine.tools.history import HISTORY_TOOL
 from rfnry_engine.tools.workspace import WORKSPACE_NAMES
 from rfnry_engine.workers.pool import Script
+
+logger = logging.getLogger(__name__)
 
 Kind = Literal["generation", "decision"]
 OUTPUT_TOOL = "Output"
@@ -206,6 +209,14 @@ class AgentSpec(BaseModel):
     folder_tools: dict[str, ToolDef] = Field(default_factory=dict)
 
 
+def _held(path: Path) -> None:
+    target = leads_out(path, path.parent)
+    if target is not None:
+        raise ConfigurationError(
+            f"tree: {path} links to {target}, outside its folder; move the file into the folder, or link the whole folder"
+        )
+
+
 def _read(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -214,6 +225,7 @@ def _read(path: Path) -> str:
 
 
 def _object(path: Path) -> dict[str, JsonValue]:
+    _held(path)
     try:
         data = json.loads(_read(path))
     except json.JSONDecodeError as exc:
@@ -252,6 +264,7 @@ def _front(path: Path) -> dict[str, JsonValue]:
 
 
 def _task(path: Path) -> tuple[str, str]:
+    _held(path)
     raw = _read(path)
     if split_frontmatter(raw) is None:
         return "", body_of(raw)
@@ -360,7 +373,8 @@ def _subfolders(folder: Path) -> list[Path]:
     try:
         with os.scandir(folder) as entries:
             return sorted(Path(entry.path) for entry in entries if _is_folder(entry))
-    except OSError:
+    except OSError as exc:
+        logger.warning("tree: cannot read %s: %s; it is left out", folder, exc)
         return []
 
 
@@ -397,10 +411,6 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     return found, links
 
 
-def tree_folders(root: Path) -> list[str]:
-    return list(_tree_folders(root)[0])
-
-
 def _holds_agent(folder: Path) -> bool:
     return declares(folder) or any(
         _holds_agent(child)
@@ -411,21 +421,28 @@ def _holds_agent(folder: Path) -> bool:
 
 def _refuse_links(root: Path, found: Mapping[str, Path], links: Mapping[str, Path]) -> None:
     top = root.resolve()
+    reached: dict[Path, list[str]] = {}
+    for other, place in found.items():
+        reached.setdefault(place, []).append(other)
     for key, target in sorted(links.items()):
         inside = target.is_relative_to(top)
         shown = root / target.relative_to(top) if inside else target
         if _loops(top, found, key, target):
             raise ConfigurationError(
-                f"tree: {root / key} links to {shown}, a folder that holds the link; remove the link, since the tree would lead into itself"
+                f"tree: {root / key} links to {shown}, a folder on the way to the link or one holding it; remove the link, since the tree would lead into itself"
             )
         if inside and _holds_agent(target):
             raise ConfigurationError(
                 f"tree: {root / key} links to {shown}, a folder of the root that holds an AGENT.md; remove the link, since an agent lives in one folder and is called by its name: from anywhere"
             )
-        twice = sorted(other for other, place in found.items() if place == target and other != key)
+        twice = sorted(other for other in reached.get(target, []) if other != key)
         if not inside and twice and _holds_agent(target):
+            parts = twice[0].split("/")
+            other = next(
+                at for n in range(len(parts), 0, -1) if (at := "/".join(parts[:n])) in links
+            )
             raise ConfigurationError(
-                f"tree: {root / key} and {root / twice[0]} both reach {shown}, which holds an AGENT.md; remove one of the links, since an agent lives in one folder and is called by its name: from anywhere"
+                f"tree: {root / key} and {root / other} both reach {shown}, which holds an AGENT.md; remove one of the links, since an agent lives in one folder and is called by its name: from anywhere"
             )
 
 
@@ -557,6 +574,7 @@ def load_agent(
     tool_folders: Mapping[str, dict[str, ToolDef]] | None = None,
     script_folders: Collection[Path] = (),
 ) -> AgentSpec:
+    _held(directory / "AGENT.md")
     front, body = parse_frontmatter_doc(
         _read(directory / "AGENT.md"),
         model=AgentFront,

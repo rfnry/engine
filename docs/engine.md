@@ -360,8 +360,14 @@ Folder links are followed: an agent's folder kept elsewhere is linked in and fou
 is. A link to a folder of the root is not followed — the folder is walked once, under its own path —
 and a link that would reach an agent twice is a `ConfigurationError` naming the link and where it
 leads: one to a folder of the root that holds an `AGENT.md`, in it or below it, or two links to one
-such folder elsewhere; so is a link to a folder that holds the link, which would lead the walk into
-itself.
+such folder elsewhere, the second link named being the one that leads to the other path; so is a
+link to a folder on the way to the link or one holding it, which would lead the walk into itself. A
+folder it cannot read is left out of the walk, with a warning on the `rfnry_engine.tree` logger that
+names it. A file the engine loads — a tool's or question's `.json`, `.py` or helper, a task, an
+`AGENT.md` — that is a link to a place outside the folder it sits in is a `ConfigurationError`
+(`tools/folder: <path> links to <target>, outside its folder; move the file into the folder, or link
+the whole folder`), since the content fingerprint leaves such a link out; a link that stays inside
+its folder loads.
 
 A root holds agents and folders without an `AGENT.md` side by side, and an agent reads other folders
 of its root by naming them in `reads:` — folders without an `AGENT.md`, or other agents' folders:
@@ -1935,7 +1941,10 @@ a PDF the model reads itself, an image it looks at. A result JSON cannot hold, a
 `InputError` before any worker sees them (`workers/pool: the arguments for refund are not JSON: Object of
 type datetime is not JSON serializable`). A script imports the standard library, installed packages
 and the helpers of its own `tools/` folder — its `_name.py` files, by name, at the top of the
-script; a tool's script or a package beside it is no helper, and importing one fails in the worker.
+script; a tool's script or a package beside it is no helper, and importing one is a
+`ConfigurationError` at load (`tools/folder: <path> imports 'b', which sits in its tools/ folder but
+is not a helper; a tool reaches only the helpers of its folder, so move the shared code into a
+helper _b.py`), unless the name resolves to the standard library or an installed package.
 It never imports the engine, nor your server's code. When the tree loads, each script is read
 without running it: a script with no `def run` or `async def run` at its top level is a
 `ConfigurationError` (`tools/folder: <path> has no run at its top level; a tool defines def run(args,
@@ -2001,8 +2010,8 @@ By default every agent of the tree shares one worker. `Engine(root, models=...,
 workers={"customer_support": 1, "reports": 4})` makes each folder named — by its path from the root,
 as `reads:` spells it — a group of its own, for every agent inside it at any depth, with that many
 processes, and a call goes to the group's process with the fewest calls in flight; the agents
-outside the named folders share the default group, one process. A name that is not a folder of the
-tree, or a folder inside another one named, is a `ConfigurationError`: `engine: workers names
+outside the named folders share the default group, one process. A name that is not a folder holding
+an agent, at any depth below it or itself, or a folder inside another one named, is a `ConfigurationError`: `engine: workers names
 'support/billing' inside 'support', which it names too; keep one`.
 
 Every tool an agent sees is on. `tools:` in its `AGENT.md` narrows them to the ones it lists —
@@ -2338,7 +2347,8 @@ Everything the package exports, by role.
 ## Errors
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a tree with
-no `AGENT.md`, a link to a folder that holds it or one that would reach an agent twice, an
+no `AGENT.md`, a link to a folder on the way to it or one holding it, one that would reach an agent
+twice, a file the engine loads that links out of its folder, an
 `AGENT.md` without a plain `name:`, a `kind:` of `generation` or `decision`, or a plain `model:`, a
 `models` that is not a mapping of names to adapters, a model no agent runs on, an agent whose model
 has not its kind's method, two agents with one name, an agent in `agents:` or `route:` the tree does
@@ -2350,9 +2360,9 @@ YAML or a `description:` that is not a string in a file the map would show, a de
 names `Output` or keeps a tool the agent does not see, a tool's `.json` without its `.py` or a
 script without its `.json`, a tool's JSON with an unknown key, no description, an `input_schema`
 that is not an object or a schema that does not compile, a script or helper that is not valid
-Python, imports the engine, the server's own code or a module relatively, or imports a helper inside
-a function, a tool named like one the engine gives the agent, a `workers=` naming a folder the tree
-does not have or one inside another it names, a `reads:` that is not a path from the root, names no
+Python, imports the engine, the server's own code, a module relatively or a sibling script or subfolder of
+its folder, or imports a helper inside a function, a tool named like one the engine gives the
+agent, a `workers=` naming a folder that holds no agent or one inside another it names, a `reads:` that is not a path from the root, names no
 folder of the tree, a `tools/` folder on an agent's path or a folder inside one, leaves the root,
 names the agent's own folder, one that holds it or one inside it, or names two folders one inside
 the other, `reads:` on a decision agent or on an agent whose folder is a link to a folder elsewhere,

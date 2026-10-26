@@ -11,6 +11,7 @@ import jsonschema_rs
 from pydantic import BaseModel, JsonValue
 
 from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.folders import leads_out
 from rfnry_engine.workers.pool import Script
 
 ENGINE = "rfnry_engine"
@@ -173,12 +174,30 @@ def _awaits(path: Path, module: ast.Module, what: str, given: str) -> bool:
     return isinstance(runs[-1], ast.AsyncFunctionDef)
 
 
+def _beside(folder: Path) -> frozenset[str]:
+    return frozenset(
+        p.stem if p.is_file() else p.name
+        for p in folder.iterdir()
+        if not p.name.startswith((".", "_")) and (p.is_dir() or p.suffix == ".py")
+    )
+
+
+def _held(files: Collection[Path]) -> None:
+    for path in files:
+        target = leads_out(path, path.parent)
+        if target is not None:
+            raise ConfigurationError(
+                f"tools/folder: {path} links to {target}, outside its folder; move the file into the folder, or link the whole folder"
+            )
+
+
 def _check_imports(
     path: Path,
     module: ast.Module,
     project: Path,
     folders: Collection[Path],
     helpers: Collection[str],
+    beside: Collection[str],
     what: str,
 ) -> None:
     held = f"{path.parent.name}/"
@@ -205,7 +224,12 @@ def _check_imports(
                         f"tools/folder: {path} imports the helper {top!r} inside a function or class; import it at the top of the script, since a helper is reachable only while its folder's scripts load"
                     )
                 continue
-            for origin in _origins(top):
+            origins = _origins(top)
+            if top in beside and all(path.parent.resolve() in o.resolve().parents for o in origins):
+                raise ConfigurationError(
+                    f"tools/folder: {path} imports {top!r}, which sits in its {held} folder but is not a helper; a {what} reaches only the helpers of its folder, so move the shared code into a helper _{top}.py"
+                )
+            for origin in origins:
                 if _owned(origin, project, folders):
                     raise ConfigurationError(
                         f"tools/folder: {path} imports {top!r} from {origin}, the server's own code; a {what} imports the standard library, installed packages and helpers of its {held} folder"
@@ -217,6 +241,7 @@ def load_tools(
 ) -> dict[str, ToolDef]:
     folder, root, project = folder.absolute(), root.absolute(), project.resolve()
     files = sorted(p for p in folder.iterdir() if p.is_file() and not p.name.startswith("."))
+    _held([p for p in files if p.suffix in {".json", ".py"}])
     named = [p for p in files if not p.name.startswith("_")]
     helpers = [p for p in files if p.name.startswith("_") and p.suffix == ".py"]
     definitions = {p.stem: p for p in named if p.suffix == ".json"}
@@ -236,9 +261,10 @@ def load_tools(
         for name in sorted(scripts)
     }
     names = {p.stem for p in helpers}
+    beside = _beside(folder)
     for path, source in sources.items():
         module = _parsed(path, source)
-        _check_imports(path, module, project, folders, names, "tool")
+        _check_imports(path, module, project, folders, names, beside, "tool")
         if path in scripts.values():
             tools[path.stem].awaits = _awaits(path, module, "tool", "args")
     return tools
@@ -252,13 +278,15 @@ def load_scripts(
         p for p in folder.iterdir() if p.is_file() and p.name.startswith("_") and p.suffix == ".py"
     )
     scripts = {name: folder / f"{name}.py" for name in names}
+    _held([*scripts.values(), *helpers])
     sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
     shared = {p.stem: sources[p] for p in helpers}
     what = "question's script"
     awaits = {}
+    beside = _beside(folder)
     for path, source in sources.items():
         module = _parsed(path, source)
-        _check_imports(path, module, project, folders, shared, what)
+        _check_imports(path, module, project, folders, shared, beside, what)
         if path in scripts.values():
             awaits[path] = _awaits(path, module, what, "input")
     return {

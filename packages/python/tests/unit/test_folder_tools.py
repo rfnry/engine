@@ -675,3 +675,63 @@ def test_an_unknown_read_folder_is_offered_every_folder_but_the_tools_folders_on
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value).endswith("one of: desk, kb, kb/tools, support, support/billing")
+
+
+@pytest.mark.parametrize("suffix", [".py", ".json"])
+def test_a_tool_file_that_links_out_of_its_folder_is_refused(tmp_path: Path, suffix: str) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch")
+    outside = tmp_path / f"elsewhere{suffix}"
+    (tmp_path / "a/tools" / f"fetch{suffix}").replace(outside)
+    (tmp_path / "a/tools" / f"fetch{suffix}").symlink_to(outside)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tools/folder: {tmp_path / 'a/tools' / f'fetch{suffix}'} links to {outside}, outside its folder; move the file into the folder, or link the whole folder"
+    )
+
+
+def test_a_helper_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "shared.py", "BASE = 1\n")
+    tool(tmp_path / "a/tools", "fetch", body="import _client\n" + RUN)
+    (tmp_path / "a/tools/_client.py").symlink_to(tmp_path / "shared.py")
+    with pytest.raises(ConfigurationError, match="_client.py links to .*, outside its folder"):
+        load_tree(tmp_path)
+
+
+def test_a_tool_file_that_links_inside_its_folder_loads(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch")
+    write(tmp_path / "a/tools/sub/shared.py", RUN)
+    (tmp_path / "a/tools/other.json").symlink_to("fetch.json")
+    (tmp_path / "a/tools/other.py").symlink_to("sub/shared.py")
+    assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch", "other"]
+
+
+def test_a_tool_that_imports_a_sibling_tool_is_refused(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "b")
+    tool(tmp_path / "a/tools", "fetch", body="import b\n" + RUN)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tools/folder: {tmp_path / 'a/tools/fetch.py'} imports 'b', which sits in its tools/ folder but is not a helper; a tool reaches only the helpers of its folder, so move the shared code into a helper _b.py"
+    )
+
+
+def test_a_tool_that_imports_a_subfolder_package_is_refused(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/tools/pkg/__init__.py", "X = 1\n")
+    tool(tmp_path / "a/tools", "fetch", body="from pkg import X\n" + RUN)
+    with pytest.raises(ConfigurationError, match="imports 'pkg', which sits in its tools/ folder"):
+        load_tree(tmp_path)
+
+
+def test_a_tool_named_like_a_standard_module_beside_one_that_imports_it_loads(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "json")
+    tool(tmp_path / "a/tools", "fetch", body="import json\n" + RUN)
+    assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch", "json"]

@@ -1,3 +1,4 @@
+import logging
 import os
 from collections.abc import Collection, Mapping
 from pathlib import Path
@@ -5,6 +6,8 @@ from pathlib import Path
 from rfnry_engine.errors import InputError
 from rfnry_engine.frontmatter import described
 from rfnry_engine.jail import Jail
+
+logger = logging.getLogger(__name__)
 
 DECLARED = frozenset({"tools", "tasks", "questions"})
 DECLARATIONS = frozenset({"AGENT.md"})
@@ -24,6 +27,14 @@ def _inside(jail: Jail, entry: Path) -> bool:
     return True
 
 
+def leads_out(path: Path, folder: Path) -> Path | None:
+    return None if _inside(Jail(folder), path) else path.resolve()
+
+
+def _unreadable(exc: OSError) -> None:
+    logger.warning("folders: cannot read %s: %s; it is left out", exc.filename, exc)
+
+
 def _walk(
     folder: Path, declared: bool, inner: bool = False, tools: Collection[Path] = ()
 ) -> tuple[list[str], list[tuple[str, Path]]]:
@@ -31,7 +42,7 @@ def _walk(
     jail = Jail(folder)
     dirs: list[str] = []
     files: list[tuple[str, Path]] = []
-    for directory, names, filenames in os.walk(folder):
+    for directory, names, filenames in os.walk(folder, onerror=_unreadable):
         here = Path(directory)
         at = here.relative_to(folder).as_posix()
         top = at == "."

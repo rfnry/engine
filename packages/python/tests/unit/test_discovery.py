@@ -146,7 +146,7 @@ def test_a_link_inside_the_tree_to_a_folder_that_holds_it_is_refused(tmp_path: P
     team(tmp_path)
     write(tmp_path / "shared/books/a.md", "A.\n")
     (tmp_path / "shared/books/loop").symlink_to(tmp_path / "shared", target_is_directory=True)
-    with pytest.raises(ConfigurationError, match="holds the link") as caught:
+    with pytest.raises(ConfigurationError, match="on the way to the link") as caught:
         load_tree(tmp_path)
     said = str(caught.value)
     assert str(tmp_path / "shared/books/loop") in said and str(tmp_path / "shared") in said
@@ -188,7 +188,7 @@ def test_a_link_out_of_the_tree_to_a_folder_that_holds_the_tree_is_refused(
 ) -> None:
     root = team(tmp_path / "root")
     (root / "desks/up").symlink_to(tmp_path, target_is_directory=True)
-    with pytest.raises(ConfigurationError, match="holds the link") as caught:
+    with pytest.raises(ConfigurationError, match="on the way to the link") as caught:
         load_tree(root)
     assert str(root / "desks/up") in str(caught.value)
 
@@ -245,7 +245,7 @@ def test_a_link_out_of_the_tree_to_a_folder_holding_a_link_to_itself_is_refused(
     (tmp_path / "outside").mkdir()
     (tmp_path / "outside/self").symlink_to(tmp_path / "outside", target_is_directory=True)
     (root / "out").symlink_to(tmp_path / "outside", target_is_directory=True)
-    with pytest.raises(ConfigurationError, match="holds the link") as caught:
+    with pytest.raises(ConfigurationError, match="on the way to the link") as caught:
         load_tree(root)
     said = str(caught.value)
     assert str(root / "out/self") in said and str(tmp_path / "outside") in said
@@ -260,14 +260,14 @@ def test_two_outside_folders_linking_each_other_are_refused_with_both_paths(
     (tmp_path / "one/next").symlink_to(tmp_path / "two", target_is_directory=True)
     (tmp_path / "two/next").symlink_to(tmp_path / "one", target_is_directory=True)
     (root / "out").symlink_to(tmp_path / "one", target_is_directory=True)
-    with pytest.raises(ConfigurationError, match="holds the link") as caught:
+    with pytest.raises(ConfigurationError, match="on the way to the link") as caught:
         load_tree(root)
     said = str(caught.value)
     assert str(root / "out/next/next") in said and str(tmp_path / "one") in said
 
 
 def test_an_unreadable_folder_beside_an_agent_is_skipped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     team(tmp_path)
     (tmp_path / "lost+found").mkdir()
@@ -282,7 +282,12 @@ def test_an_unreadable_folder_beside_an_agent_is_skipped(
     monkeypatch.setattr(os, "scandir", scandir)
     with pytest.raises(PermissionError):
         os.scandir(blocked)
-    assert list(load_tree(tmp_path)) == ["lead", "triage", "writer"]
+    with caplog.at_level(logging.WARNING, logger="rfnry_engine.tree"):
+        assert list(load_tree(tmp_path)) == ["lead", "triage", "writer"]
+    assert (
+        f"tree: cannot read {blocked}: [Errno 13] denied: '{blocked}'; it is left out"
+        in caplog.messages
+    )
 
 
 def test_a_link_that_loops_on_itself_does_not_hide_the_agents_beside_it(tmp_path: Path) -> None:
@@ -297,3 +302,48 @@ def test_a_looping_link_inside_a_group_folder_does_not_hide_the_agent_beside_it(
     write(tmp_path / "team/writer/AGENT.md", agent_md("writer"))
     (tmp_path / "team/loop").symlink_to("loop")
     assert list(load_tree(tmp_path)) == ["writer"]
+
+
+def test_a_task_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "elsewhere.md", "Do it.\n")
+    (tmp_path / "a/tasks").mkdir()
+    (tmp_path / "a/tasks/do.md").symlink_to(tmp_path / "elsewhere.md")
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {tmp_path / 'a/tasks/do.md'} links to {tmp_path / 'elsewhere.md'}, outside its folder; move the file into the folder, or link the whole folder"
+    )
+
+
+def test_an_agent_md_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
+    write(tmp_path / "elsewhere.md", agent_md("a"))
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a/AGENT.md").symlink_to(tmp_path / "elsewhere.md")
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {tmp_path / 'a/AGENT.md'} links to {tmp_path / 'elsewhere.md'}, outside its folder; move the file into the folder, or link the whole folder"
+    )
+
+
+def test_a_task_that_links_inside_its_folder_loads(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/tasks/sub/real.md", "Do it.\n")
+    (tmp_path / "a/tasks/do.md").symlink_to("sub/real.md")
+    assert "do" in load_tree(tmp_path)["a"].tasks
+
+
+def test_an_agent_reached_through_a_link_and_a_link_of_its_own_names_the_first_link(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "elsewhere/desk/payments/AGENT.md", agent_md("billing"))
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "one").symlink_to(tmp_path / "elsewhere/desk", target_is_directory=True)
+    (root / "again").symlink_to(tmp_path / "elsewhere/desk/payments", target_is_directory=True)
+    with pytest.raises(ConfigurationError, match="both reach") as caught:
+        load_tree(root)
+    said = str(caught.value)
+    assert said.startswith(f"tree: {root / 'again'} and {root / 'one'} both reach ")
+    assert str(root / "one/payments") not in said

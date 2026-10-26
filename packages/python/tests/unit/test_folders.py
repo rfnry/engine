@@ -1,3 +1,5 @@
+import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -185,3 +187,25 @@ def test_a_folder_holding_an_agent_md_below_the_top_is_left_out_unless_inner(
     assert "notes/\n  draft.md\n  style.md — The house style\n" in "\n".join(entries(root, True))
     inner = [rel for rel, _ in content(root, False, inner=True)]
     assert "notes/inner/AGENT.md" in inner and "notes/inner/voice.md" in inner
+
+
+def test_an_unreadable_folder_is_named_in_a_warning_and_left_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    write(tmp_path / "notes/a.md", "A.\n")
+    write(tmp_path / "lost/b.md", "B.\n")
+    blocked = (tmp_path / "lost").resolve()
+    real = os.scandir
+
+    def scandir(path: object = ".") -> object:
+        if Path(str(path)) == blocked:
+            raise PermissionError(13, "denied", str(path))
+        return real(path)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    with caplog.at_level(logging.WARNING, logger="rfnry_engine.folders"):
+        found = content(tmp_path, declared=False)
+    assert [rel for rel, _ in found] == ["notes/a.md"]
+    assert f"folders: cannot read {blocked}: [Errno 13] denied: '{blocked}'; it is left out" in (
+        caplog.messages
+    )

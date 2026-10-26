@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, JsonValue
 
-from rfnry_engine import Engine
+from rfnry_engine import Engine, tree
 from rfnry_engine.errors import ConfigurationError, InputError, WorkerError
 from rfnry_engine.models import Image, Message, Reply, Text, ToolCall
 from rfnry_engine.records import Generation
@@ -570,7 +570,7 @@ async def test_workers_tells_its_pool_which_scripts_are_async(tmp_path: Path) ->
     [
         (
             {"billing": 1},
-            "engine: workers names 'billing', which is not a folder of the tree; name folders by their path from the root",
+            "engine: workers names 'billing', which holds no agent of the tree; name a folder that holds agents by its path from the root",
         ),
         (
             {"support": 1, "support/billing": 2},
@@ -593,6 +593,37 @@ def test_workers_names_folders_of_the_tree_none_inside_another(
     with pytest.raises(ConfigurationError) as caught:
         Engine(tmp_path, models={}, workers=workers)
     assert str(caught.value) == said
+
+
+@pytest.mark.parametrize("name", ["shared/tools", "shared", "."])
+def test_workers_refuses_a_folder_that_holds_no_agent(tmp_path: Path, name: str) -> None:
+    write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
+    write(tmp_path / "shared/tools/x.txt", "x")
+    with pytest.raises(ConfigurationError) as caught:
+        Engine(tmp_path, models={}, workers={name: 2})
+    assert str(caught.value) == (
+        f"engine: workers names {name!r}, which holds no agent of the tree; name a folder that holds agents by its path from the root"
+    )
+
+
+@pytest.mark.parametrize("name", ["a", "a/b", "a/b/c"])
+def test_workers_accepts_a_folder_that_holds_agents(tmp_path: Path, name: str) -> None:
+    write(tmp_path / "a/b/c/AGENT.md", agent_md("c"))
+    Engine(tmp_path, models={}, workers={name: 2})
+
+
+def test_an_engine_walks_the_tree_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    walked: list[Path] = []
+    real = tree._tree_folders
+
+    def walk(root: Path) -> object:
+        walked.append(root)
+        return real(root)
+
+    monkeypatch.setattr(tree, "_tree_folders", walk)
+    Engine(tmp_path, models={}, workers={"a": 1})
+    assert len(walked) == 1
 
 
 def ended(pid: int) -> bool:

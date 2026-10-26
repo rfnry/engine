@@ -627,3 +627,23 @@ def test_a_generation_agent_s_questions_folder_without_questions_loads(tmp_path:
     write(tmp_path / "a/questions/notes.txt", "Ideas for later.\n")
     write(tmp_path / "a/questions/_draft.json", "{")
     assert load_tree(tmp_path)["a"].questions == {}
+
+
+def test_a_question_script_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
+    matcher(tmp_path)
+    (tmp_path / "matcher/questions/order.py").unlink()
+    write(tmp_path / "elsewhere.py", ORDER)
+    (tmp_path / "matcher/questions/order.py").symlink_to(tmp_path / "elsewhere.py")
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tools/folder: {tmp_path / 'matcher/questions/order.py'} links to {tmp_path / 'elsewhere.py'}, outside its folder; move the file into the folder, or link the whole folder"
+    )
+
+
+def test_a_question_json_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
+    matcher(tmp_path)
+    (tmp_path / "matcher/questions/order.json").replace(tmp_path / "elsewhere.json")
+    (tmp_path / "matcher/questions/order.json").symlink_to(tmp_path / "elsewhere.json")
+    with pytest.raises(ConfigurationError, match="^tree: .*order.json links to .*, outside its"):
+        load_tree(tmp_path)
