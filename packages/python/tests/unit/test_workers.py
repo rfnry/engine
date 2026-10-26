@@ -447,6 +447,22 @@ async def test_an_async_call_past_its_deadline_holds_no_thread(tmp_path: Path) -
         await pool.close()
 
 
+async def test_an_async_call_that_blocks_its_worker_s_loop_gets_the_worker_retired(
+    tmp_path: Path,
+) -> None:
+    body = "import os, time\nasync def run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
+    pool = WorkerPool([script(tmp_path, "block", body)], threads=2)
+    try:
+        first = pid(await pool.call("block", {}, CALL, 5))
+        for _ in range(2):
+            with pytest.raises(TimeoutError):
+                await pool.call("block", {"sleep": 30}, CALL, 0.2)
+        assert pid(await pool.call("block", {}, CALL, 5)) != first
+        assert await gone(first)
+    finally:
+        await pool.close()
+
+
 @pytest.mark.parametrize(
     ("ending", "reason"),
     [("os._exit(3)", "exited with code 3"), ("os.kill(os.getpid(), 9)", "killed by signal 9")],

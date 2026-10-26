@@ -73,8 +73,10 @@ class _Worker:
     def __init__(self, process: subprocess.Popen[bytes], loop: asyncio.AbstractEventLoop) -> None:
         self.process = process
         self.pid = process.pid
-        self.calls: dict[int, tuple[str, asyncio.Future[JsonValue]]] = {}
+        self.calls: dict[int, tuple[str, asyncio.Future[JsonValue], int]] = {}
         self.held: set[int] = set()
+        self.cancelling: dict[int, int] = {}
+        self.sent = 0
         self.ended = False
         self._loop = loop
         self._stdin: asyncio.WriteTransport | None = None
@@ -106,15 +108,25 @@ class _Worker:
 
     def send(self, id: int, name: str, text: str) -> asyncio.Future[JsonValue]:
         reply: asyncio.Future[JsonValue] = asyncio.get_running_loop().create_future()
-        self.calls[id] = (name, reply)
+        self.sent += 1
+        self.calls[id] = (name, reply, self.sent)
         self.write(text)
         return reply
 
     def abandon(self, id: int, held: bool) -> None:
-        if self.calls.pop(id, None) is not None and not self.ended:
-            if held:
-                self.held.add(id)
-            self.write(json.dumps({"id": id, "cancel": True}))
+        entry = self.calls.pop(id, None)
+        if entry is None or self.ended:
+            return
+        _, _, number = entry
+        wedged = any(number > mark for mark in self.cancelling.values())
+        if wedged:
+            self.held.update(self.cancelling)
+            self.cancelling.clear()
+        if held or wedged:
+            self.held.add(id)
+        else:
+            self.cancelling[id] = self.sent
+        self.write(json.dumps({"id": id, "cancel": True}))
 
     def stop(self, reason: str | None = None) -> None:
         if self.ended:
@@ -136,18 +148,20 @@ class _Worker:
         for pipe in (self.process.stdin, self.process.stdout, stderr):
             cast(IO[bytes], pipe).close()
         stopped = f"stopped: {reason or _reason(code)}"
-        for name, future in self.calls.values():
+        for name, future, _ in self.calls.values():
             if not future.done() and not future.get_loop().is_closed():
                 future.set_exception(WorkerError(f"workers/pool: the worker for {name} {stopped}"))
         self.calls.clear()
         self.held.clear()
+        self.cancelling.clear()
 
     def _answer(self, reply: dict[str, Any]) -> None:
         self.held.discard(reply["id"])
+        self.cancelling.pop(reply["id"], None)
         entry = self.calls.pop(reply["id"], None)
         if entry is None or entry[1].done():
             return
-        _, future = entry
+        _, future, _ = entry
         if "error" in reply:
             future.set_exception(WorkerError(reply["error"]))
         else:
@@ -158,7 +172,7 @@ class _Worker:
 
 
 def _load(worker: _Worker | None) -> int:
-    return 0 if worker is None else len(worker.calls) + len(worker.held)
+    return 0 if worker is None else len(worker.calls) + len(worker.held) + len(worker.cancelling)
 
 
 class WorkerPool:
