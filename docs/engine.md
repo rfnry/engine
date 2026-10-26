@@ -1966,11 +1966,13 @@ recorded of it, and a run still in flight when it closed starts no other run —
 reads that error, its route fails with it. A plain `def run` runs on one of the worker's 32 threads,
 and calls past those wait; an `async def run` runs on its event loop, as many at once as come. What
 a script prints goes to the log, at DEBUG on the `rfnry_engine.workers.pool` logger, never into its
-result. A script that raises, `sys.exit()` included, is a tool error the model reads, `WorkerError:
-ValueError: no order A-1`, and the worker goes on. A worker that exits — `os._exit()`, a signal, out
-of memory, a crash in a C extension — fails every call it had in flight, `WorkerError: workers/pool: the
-worker for refund stopped: exited with code 3`, or `killed by signal 9` when a signal ended it, the
-run goes on, and the next call starts a new worker. Past `tool_timeout` the model reads
+result: a record per line, and 64 KiB at a time of a line whose end has not come; with DEBUG off it
+is dropped as it comes. A script that raises, `sys.exit()` included, is a tool error the model
+reads, `WorkerError: ValueError: no order A-1`, and the worker goes on. A worker that exits —
+`os._exit()`, a signal, out of memory, a crash in a C extension — fails every call it had in
+flight, `WorkerError: workers/pool: the worker for refund stopped: exited with code 3`, or
+`killed by signal 9` when a signal ended it, the run goes on, and the next call starts a new
+worker. Past `tool_timeout` the model reads
 `TimeoutError: workers/pool: refund timed out after 30s`, a deadline that counts the wait for a worker
 too: an `async def run` is cancelled in the worker and holds none of its threads; a `def run`
 cannot be stopped, so its thread runs on and its result is discarded, and once every thread of a

@@ -25,6 +25,7 @@ PROGRAM = Path(__file__).with_name("process.py")
 CLOSED = "it was closed"
 RETIRED = "every thread was held by a call past its deadline"
 MOVED = "a call came from another event loop"
+CAP = 64 * 1024
 
 
 class Script(NamedTuple):
@@ -93,9 +94,12 @@ class _Worker:
         if fd == 1:
             for line in _lines(self._out, data):
                 self._answer(json.loads(line))
-        else:
+        elif logger.isEnabledFor(logging.DEBUG):
             for line in _lines(self._err, data):
                 self._log(line)
+            while len(self._err) >= CAP:
+                self._log(bytes(self._err[:CAP]))
+                del self._err[:CAP]
 
     def write(self, text: str) -> None:
         cast(asyncio.WriteTransport, self._stdin).write(f"{text}\n".encode())

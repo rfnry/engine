@@ -14,11 +14,12 @@ import pytest
 from pydantic import JsonValue
 
 from rfnry_engine.errors import InputError, WorkerError
-from rfnry_engine.workers.pool import Script, WorkerPool
+from rfnry_engine.workers.pool import CAP, Script, WorkerPool
 
 CALL = {"scope": "acme"}
 PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
 WAIT = "import asyncio, os\nasync def run(args, call):\n    await asyncio.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
+NOISE = "import os, sys\ndef run(args, call):\n    print('x' * 200 * 1024, end='', file=sys.stderr, flush=True)\n    return os.getpid()\n"
 
 
 def script(tmp_path: Path, name: str, body: str) -> Script:
@@ -233,6 +234,34 @@ async def test_what_a_script_prints_goes_to_the_log_and_leaves_its_result_intact
         assert all(text in caplog.text for text in printed)
     finally:
         await pool.close()
+
+
+async def test_a_line_that_never_ends_is_logged_in_pieces_no_longer_than_the_cap(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="rfnry_engine.workers.pool")
+    pool = WorkerPool([script(tmp_path, "noisy", NOISE)])
+    try:
+        worker = pid(await pool.call("noisy", {}, CALL, 5))
+    finally:
+        await pool.close()
+    pieces = [r.getMessage() for r in caplog.records if r.name == "rfnry_engine.workers.pool"]
+    prefix = f"workers/pool: worker {worker}: "
+    assert len(pieces) > 1 and sum(piece.count("x") for piece in pieces) == 200 * 1024
+    assert all(piece.startswith(prefix) and len(piece) <= len(prefix) + CAP for piece in pieces)
+
+
+async def test_with_debug_off_what_a_script_prints_is_dropped_as_it_comes(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="rfnry_engine.workers.pool")
+    pool = WorkerPool([script(tmp_path, "noisy", NOISE)])
+    try:
+        await pool.call("noisy", {}, CALL, 5)
+        assert [bytes(w._err) for w in pool._workers if w is not None] == [b""]
+    finally:
+        await pool.close()
+    assert [r for r in caplog.records if r.name == "rfnry_engine.workers.pool"] == []
 
 
 async def test_a_result_that_is_not_json_is_an_error_naming_its_type(tmp_path: Path) -> None:
