@@ -1062,7 +1062,9 @@ class Engine:
                         content, is_error = _content(result), False
                     except Exception as exc:
                         if deadline.expired():
-                            content = f"TimeoutError: engine: {call.name} timed out after {limit:g}s"
+                            content = (
+                                f"TimeoutError: engine: {call.name} timed out after {limit:g}s"
+                            )
                         else:
                             content = f"{type(exc).__name__}: {exc}"
                         is_error = True

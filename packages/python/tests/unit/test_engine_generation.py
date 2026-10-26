@@ -449,7 +449,8 @@ async def test_a_slow_call_tool_times_out_and_the_run_continues(fixtures: Path) 
     assert time.monotonic() - started < 2
     assert isinstance(run, Generation) and run.reply == "carried on"
     assert (
-        run.steps[0].is_error and run.steps[0].result == "TimeoutError: engine: slow timed out after 0.05s"
+        run.steps[0].is_error
+        and run.steps[0].result == "TimeoutError: engine: slow timed out after 0.05s"
     )
     assert not run.steps[1].is_error and run.steps[1].result == "pong"
     assert llm.calls[1][1][-2].content == "TimeoutError: engine: slow timed out after 0.05s"
