@@ -77,10 +77,10 @@ def _hidden(rel: Path) -> bool:
 def _named(jail: Jail, path: str) -> str:
     named = Path(os.path.normpath(path))
     if named.is_absolute():
-        inside = (
-            named.relative_to(p) for p in (jail.root, *jail.also) if p in (named, *named.parents)
-        )
-        named = next(inside, Path("."))
+        roots = (jail.root, *jail.also)
+        places = [*reversed(named.parents), named]
+        above = next((p for p in places if p in roots or Path(os.path.realpath(p)) in roots), None)
+        named = Path(".") if above is None else named.relative_to(above)
     if _hidden(named):
         raise InputError(
             f"tools/builtins: {path} is hidden; names starting with . and __pycache__ are not part of the agent's folder"

@@ -338,12 +338,13 @@ so a typo is caught before any run. Everything else the model reads when it need
 folders it reads, and nothing hidden: a path whose name, as written, has a segment starting with `.`
 or named `__pycache__` is an `InputError`
 (`tools/builtins: .env is hidden; names starting with . and __pycache__ are not part of the agent's folder`),
-as the fingerprint leaves those out; a visible link to a hidden file reads, for the fingerprint
-covers it under the link's name. `Read` returns a text file as text. `Load` hands the model any
-other file as it is — an image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a
-scanned form sits in the folder as it came, the model reads it with its own understanding of images
-and documents, there is no parser in between, and nothing is loaded until the model asks — unless
-the agent sets `preload: true`, below.
+as the fingerprint leaves those out, an absolute path counting from the agent's folder or the read
+folder it lies in, spelled as it is or through a link to a folder above them; a visible link to a
+hidden file reads, for the fingerprint covers it under the link's name. `Read` returns a text file
+as text. `Load` hands the model any other file as it is — an image, a PDF, a recording, a
+spreadsheet — so a price list, a diagram or a scanned form sits in the folder as it came, the model
+reads it with its own understanding of images and documents, there is no parser in between, and
+nothing is loaded until the model asks — unless the agent sets `preload: true`, below.
 
 `AGENT.md` makes a directory an agent, and its frontmatter names it. `Engine(root)` walks `root` and
 loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested

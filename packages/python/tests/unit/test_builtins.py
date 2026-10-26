@@ -740,3 +740,42 @@ async def test_a_hidden_name_inside_a_reads_folder_is_refused(tmp_path: Path) ->
     for path in ["../books/.x", str(books / ".x")]:
         with pytest.raises(InputError, match="is hidden"):
             await tools.dispatch("Read", {"path": path})
+
+
+@pytest.fixture
+def linked(tmp_path: Path) -> Path:
+    agent = tmp_path / "real" / "agent"
+    (agent / ".git").mkdir(parents=True)
+    (agent / ".git" / "config").write_text("[core]", encoding="utf-8")
+    (agent / ".env").write_text("TOKEN=1", encoding="utf-8")
+    (agent / "plain.md").write_text("plain", encoding="utf-8")
+    (agent / ".secret").mkdir()
+    (agent / ".secret" / "k.md").write_text("kept", encoding="utf-8")
+    (agent / "shown").symlink_to(".secret", target_is_directory=True)
+    (tmp_path / "real" / "books").mkdir()
+    (tmp_path / "real" / "books" / ".x").write_text("x", encoding="utf-8")
+    (tmp_path / "real" / ".other").mkdir()
+    (tmp_path / "real" / ".other" / "x.md").write_text("x", encoding="utf-8")
+    (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory=True)
+    return agent
+
+
+async def test_an_absolute_path_through_a_linked_ancestor_is_judged_inside_the_folder(
+    linked: Path, tmp_path: Path
+) -> None:
+    spelled = tmp_path / "link" / "agent"
+    tools = Tools(builtins(linked, {"books": tmp_path / "real" / "books"}))
+    load = Tools([load_tool(linked)])
+    for tool, name, args in [
+        (tools, "Read", {"path": str(spelled / ".env")}),
+        (load, "Load", {"path": str(spelled / ".env")}),
+        (tools, "Grep", {"pattern": "core", "path": str(spelled / ".git" / "config")}),
+        (tools, "LS", {"path": str(spelled / ".git")}),
+        (tools, "Read", {"path": str(tmp_path / "link" / "books" / ".x")}),
+    ]:
+        with pytest.raises(InputError, match=r"^tools/builtins: .* is hidden"):
+            await tool.dispatch(name, args)
+    assert await tools.dispatch("Read", {"path": str(spelled / "plain.md")}) == "plain"
+    assert await tools.dispatch("Read", {"path": str(spelled / "shown" / "k.md")}) == "kept"
+    with pytest.raises(InputError, match="outside the agent directory"):
+        await tools.dispatch("Read", {"path": str(tmp_path / "link" / ".other" / "x.md")})
