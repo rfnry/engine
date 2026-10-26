@@ -5,7 +5,7 @@ import pytest
 
 import rfnry_engine
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.errors import ConfigurationError, NotFoundError
 from rfnry_engine.models import Reply, Text, ToolCall
 from rfnry_engine.records import Generation
 from rfnry_engine.tree import load_tree
@@ -126,13 +126,15 @@ async def test_a_linked_agent_folder_is_named_by_its_frontmatter_not_its_link(
         "---\nname: billing\nkind: generation\nmodel: strong\n---\nYou bill.\n",
     )
     (tmp_path / "root").mkdir()
-    (tmp_path / "root/billing").symlink_to(
+    (tmp_path / "root/accounts").symlink_to(
         tmp_path / "elsewhere/payments", target_is_directory=True
     )
     engine = Engine(tmp_path / "root", models={"strong": Scripted(text_reply("ok"))})
     assert list(engine.agents) == ["billing"]
     run = await engine.run("billing", "acme", "x")
     assert run.agent == "billing"
+    with pytest.raises(NotFoundError):
+        await engine.run("accounts", "acme", "x")
 
 
 def test_a_linked_agent_keeps_its_own_name_beside_the_root(tmp_path: Path) -> None:
@@ -141,8 +143,9 @@ def test_a_linked_agent_keeps_its_own_name_beside_the_root(tmp_path: Path) -> No
         tmp_path / "elsewhere/desk/AGENT.md",
         "---\nname: kid\nkind: generation\nmodel: strong\n---\nA kid.\n",
     )
-    (root / "kid").symlink_to(tmp_path / "elsewhere/desk", target_is_directory=True)
+    (root / "child").symlink_to(tmp_path / "elsewhere/desk", target_is_directory=True)
     tree = load_tree(root)
+    assert "child" not in tree
     assert tree["kid"].name == "kid" and tree["desk"].root == root.resolve()
 
 

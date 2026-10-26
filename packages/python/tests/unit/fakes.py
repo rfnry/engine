@@ -24,6 +24,8 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import Decision, Fingerprint, Generation, Run, Step
 
+NO_QUESTIONS = "engine: decision agent 'blank' has no questions to ask; give it questions/, or ask it through Delegate"
+
 
 class Scripted:
     def __init__(self, *replies: Reply) -> None:

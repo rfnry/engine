@@ -13,7 +13,7 @@ from rfnry_engine.models import Answer, CheckAnswer, ChoiceAnswer, Decided, Usag
 
 from .test_docs_examples import ILLUSTRATIVE, PYTHON, first_line
 
-COPY = "from pathlib import Path"
+COPY = "class PerRun:"
 BACKGROUND = "jobs = {}"
 
 
@@ -33,7 +33,7 @@ def calls(*made: tuple[str, str, dict[str, Any]]) -> Reply:
 
 async def execute(start: str, engine: Engine, **given: Any) -> dict[str, Any]:
     assert start in ILLUSTRATIVE
-    block = next(block for block in PYTHON if first_line(block) == start)
+    block = next(block for block in PYTHON if start in block.splitlines())
     namespace: dict[str, Any] = {
         **{name: getattr(rfnry_engine, name) for name in rfnry_engine.__all__},
         "asyncio": asyncio,

@@ -243,3 +243,11 @@ def test_settings_that_are_not_json_break_the_contract() -> None:
     )
     with pytest.raises(ModelError):
         as_reply(odd)
+
+
+def test_a_message_s_settings_that_are_not_a_json_object_are_dropped() -> None:
+    held = {"role": "assistant", "content": "x"}
+    assert Message.model_validate({**held, "settings": "high"}).settings is None
+    assert Message.model_validate({**held, "settings": {"effort": "high"}}).settings == {
+        "effort": "high"
+    }

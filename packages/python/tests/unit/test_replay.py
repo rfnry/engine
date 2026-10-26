@@ -928,6 +928,43 @@ async def test_a_decision_replay_re_asks_runtime_questions_as_recorded_and_the_f
         assert recorded.fingerprint.questions != pair.candidate.fingerprint.questions
 
 
+def scripted(root: Path, tag: str) -> Path:
+    for path, text in {
+        "matcher/AGENT.md": "---\nname: matcher\nkind: decision\nmodel: judge\n---\n",
+        "matcher/questions/order.json": '{"type": "choice", "instructions": "Which order?"}',
+        "matcher/questions/order.py": f"def run(input, call):\n    return {{'options': {{'{tag}-1': 'First', '{tag}-2': 'Second'}}}}\n",
+    }.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text, encoding="utf-8")
+    return root
+
+
+async def test_a_decision_replay_fills_a_scripted_question_anew_through_the_candidate_s_script(
+    tmp_path: Path,
+    storage: Storage,
+) -> None:
+    refinery = Refinery(storage)
+    async with Engine(
+        scripted(tmp_path / "old", "old"), refinery=refinery, models={"judge": Answering()}
+    ) as recorder:
+        recorded = await recorder.run("matcher", "acme", "my desk")
+    assert isinstance(recorded, Decision)
+    assert recorded.questions["order"] == Choice(
+        instructions="Which order?", options={"old-1": "First", "old-2": "Second"}
+    )
+    dm = Answering()
+    async with Engine(scripted(tmp_path / "new", "new"), models={"judge": dm}) as candidate_:
+        [pair] = await collect(refinery.replay("acme", candidate_, agent="matcher"))
+    assert pair.error is None and isinstance(pair.candidate, Decision)
+    assert pair.candidate.questions["order"] == Choice(
+        instructions="Which order?", options={"new-1": "First", "new-2": "Second"}
+    )
+    assert (
+        pair.candidate.runtime == []
+        and dm.calls[0][1]["order"] == pair.candidate.questions["order"]
+    )
+
+
 async def test_a_routed_decision_replays_from_its_router(
     tmp_path: Path,
     storage: Storage,

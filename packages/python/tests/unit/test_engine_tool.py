@@ -19,7 +19,7 @@ from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.tools.delegate import QUESTION, child_result
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import PICK, Answering, Fixed, Scripted, lead, text_reply
+from .fakes import NO_QUESTIONS, PICK, Answering, Fixed, Scripted, lead, text_reply
 
 TRIAGE: dict[str, Answer] = {
     "urgent": CheckAnswer(probability=0.9),
@@ -165,7 +165,7 @@ async def test_a_decision_agent_as_a_tool_takes_questions_of_the_caller(
         await blank.dispatch("blank", {"input": "x", "questions": {"area": {"type": "score"}}})
     with pytest.raises(
         InputError,
-        match="^engine: decision agent 'blank' has no questions to ask; give it questions/, or ask it through Delegate$",
+        match=f"^{NO_QUESTIONS}$",
     ):
         await blank.dispatch("blank", {"input": "x"})
 

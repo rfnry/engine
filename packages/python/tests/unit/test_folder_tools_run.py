@@ -5,7 +5,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel, JsonValue
@@ -548,6 +548,30 @@ async def test_workers_holds_a_script_once_per_pool_however_many_agents_see_it(
         assert pool is engine._workers.pool("help")
     assert pool._scripts["scripts"] == [
         {"key": "tools/pid", "path": str((tmp_path / "tools/pid.py").resolve()), "source": PID}
+    ]
+
+
+async def test_two_tools_folders_of_one_worker_group_hold_a_tool_of_one_name_each(
+    tmp_path: Path,
+) -> None:
+    for side in ("left", "right"):
+        tool(
+            tmp_path / "shop" / side / "tools",
+            "who",
+            body=f"def run(args, call):\n    return '{side}'\n",
+        )
+        write(tmp_path / "shop" / side / "agent/AGENT.md", agent_md(f"{side}_agent"))
+    async with Engine(tmp_path, models={}, workers={"shop": 1}) as engine:
+        pool = engine._workers.pool("left_agent")
+        assert pool is engine._workers.pool("right_agent")
+        got = [
+            await EngineTools(engine, agent=agent, scope="acme").dispatch("who", {})
+            for agent in ("left_agent", "right_agent", "left_agent")
+        ]
+    assert got == ["left", "right", "left"]
+    assert [item["key"] for item in cast(Any, pool._scripts)["scripts"]] == [
+        "shop/left/tools/who",
+        "shop/right/tools/who",
     ]
 
 

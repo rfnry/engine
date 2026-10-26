@@ -671,14 +671,6 @@ async def test_a_reply_that_is_not_streamed_sends_no_reasoning(fixtures: Path) -
     assert not any(isinstance(e, ReasoningDelta) for e in seen.events)
 
 
-def test_a_message_s_settings_that_are_not_a_json_object_are_dropped() -> None:
-    held = {"role": "assistant", "content": "x"}
-    assert Message.model_validate({**held, "settings": "high"}).settings is None
-    assert Message.model_validate({**held, "settings": {"effort": "high"}}).settings == {
-        "effort": "high"
-    }
-
-
 class Tuned(Scripted):
     def __init__(self, settings: dict[str, Any], *replies: Reply) -> None:
         super().__init__(*replies)

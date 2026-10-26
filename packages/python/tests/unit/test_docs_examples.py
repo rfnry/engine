@@ -62,6 +62,10 @@ def first_line(block: str) -> str:
     return block.splitlines()[0]
 
 
+def illustrative(block: str) -> bool:
+    return any(line in ILLUSTRATIVE for line in block.splitlines())
+
+
 def markdown(start: str) -> str:
     return next(block for block in MARKDOWN if start in block)
 
@@ -74,8 +78,7 @@ ILLUSTRATIVE = {
     "class Conversation:": "needs a database pool; a list stands in for it in the block above",
     "refinery = Refinery(PostgresStorage(pool))": "needs a Postgres pool; the integration tier runs PostgresStorage",
     "pool = await asyncpg.create_pool(dsn)": "needs a Postgres pool and rfnry-memory",
-    "from pathlib import Path": "needs agents that declare `workspace: true`",
-    'engine = Engine(root, models={"strong": strong_llm, "fast": fast_llm, "judge": dm})': "the test tree has no agent on fast",
+    "class PerRun:": "needs agents that declare `workspace: true`",
     "jobs = {}": "needs a model that calls start and then check",
     "import json": "a tool script, which the test tree holds as support/tools/lookup_order.py",
     "import _client": "a tool script, which runs in a worker beside its helper _client.py",
@@ -108,6 +111,14 @@ class Setup:
 
 
 SETUPS = {
+    'engine = Engine(root, models={"strong": strong_llm, "fast": fast_llm, "judge": dm})': Setup(
+        replace={
+            "dm})": (
+                "dm})\nassert list(engine.models) == ['strong', 'fast', 'judge']\n"
+                "assert (await engine.run('drafter', 'acme', 'x')).model == 'fast-1'"
+            )
+        }
+    ),
     "class Budget:": Setup(
         replies=(delegating("triage"),),
         intent="technical",
@@ -246,6 +257,10 @@ def tree(root: Path) -> None:
     write(root / "coder/AGENT.md", markdown("description: Writes and runs code").split("\n", 1)[1])
     write(root / "billing/AGENT.md", agent("billing", "generation"))
     write(root / "teacher/AGENT.md", agent("teacher", "generation"))
+    write(
+        root / "drafter/AGENT.md",
+        "---\nname: drafter\nkind: generation\nmodel: fast\ndescription: The drafter agent\n---\n",
+    )
     write(root / "triage/AGENT.md", agent("triage", "decision"))
     write(root / "triage/questions/urgent.json", asked("Does the message need a person right now?"))
     write(root / "triage/questions/severity.json", asked("How severe is the problem?"))
@@ -297,6 +312,8 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
         "asyncio": asyncio,
         "root": root,
         "llm": llm,
+        "strong_llm": llm,
+        "fast_llm": Model(Reply(text="drafted", stop_reason="end_turn", model="fast-1")),
         "dm": dm,
         "refinery": refinery,
         "engine": Engine(root, models={"strong": llm, "judge": dm}, refinery=refinery),
@@ -324,14 +341,15 @@ def runnable() -> list[Any]:
     return [
         pytest.param(block, id=first_line(block)[:60])
         for block in PYTHON
-        if first_line(block) not in ILLUSTRATIVE and first_line(block) not in SIGNATURES
+        if not illustrative(block) and first_line(block) not in SIGNATURES
     ]
 
 
 def test_every_named_block_is_in_the_docs() -> None:
     lines = [first_line(block) for block in PYTHON]
     assert len(lines) == len(set(lines))
-    assert set(ILLUSTRATIVE) | set(SIGNATURES) | set(SETUPS) <= set(lines)
+    held = {line for block in PYTHON for line in block.splitlines()}
+    assert set(ILLUSTRATIVE) <= held and set(SIGNATURES) | set(SETUPS) <= set(lines)
 
 
 @pytest.mark.parametrize(

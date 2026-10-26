@@ -606,6 +606,31 @@ def test_a_question_holding_a_field_of_another_type_is_refused_naming_its_file(
 
 
 @pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (
+            '{"type": "choice", "instructions": "Which?", "option": "x"}',
+            "has the unknown key 'option'; a question takes type, instructions, options, levels, yes and no",
+        ),
+        ('{"type": "choice", "instructions": "Which?",}', "is not valid JSON: "),
+        ('{"type": "choice", "instructions": " "}', "instructions must say something"),
+    ],
+)
+def test_a_scripted_question_s_json_that_does_not_fit_is_refused_beside_its_script(
+    tmp_path: Path, text: str, message: str
+) -> None:
+    write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
+    path = tmp_path / "triage/questions/q.json"
+    write(path, text)
+    write(tmp_path / "triage/questions/q.py", ORDER)
+    with pytest.raises(ConfigurationError) as raised:
+        load_tree(tmp_path)
+    said = str(raised.value)
+    assert said.startswith(f"tree: {path} ") or said.startswith(f"tree: invalid question {path}; ")
+    assert message in said
+
+
+@pytest.mark.parametrize(
     "files",
     [{"x.md": "---\ntype: check\n---\nUrgent?\n"}, {"x.py": ORDER}, {"x.json": "{"}],
 )

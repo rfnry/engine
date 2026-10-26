@@ -26,6 +26,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import (
+    NO_QUESTIONS,
     PICK,
     Answering,
     Desk,
@@ -325,7 +326,7 @@ BAD_DELEGATIONS: list[tuple[dict[str, Any], type[Exception], str]] = [
     (
         {"agent": "blank", "input": "x"},
         InputError,
-        "engine: decision agent 'blank' has no questions to ask; give it questions/, or ask it through Delegate",
+        NO_QUESTIONS,
     ),
     (
         {"agent": "blank", "input": "x", "questions": "Which area?"},

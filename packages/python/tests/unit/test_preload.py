@@ -11,6 +11,7 @@ from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import tools_fingerprint
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import (
+    Audio,
     Document,
     GenerationModel,
     Image,
@@ -441,7 +442,15 @@ async def test_a_file_the_model_does_not_take_is_refused_when_the_tree_loads_wit
         f"tree: agent 'support' cannot preload its folder: {load}; "
         "move that file out of its folders, or drop preload: true"
     )
-    assert engine(root, Scripted()).agents["support"].kind == "generation"
+    built = engine(root, Scripted(text_reply("ok")))
+    run = await built.run("support", "acme", "x")
+    assert isinstance(run, Generation)
+    loaded = await EngineTools(built, agent="support", scope="acme").dispatch(
+        "Load", {"path": name}
+    )
+    assert isinstance(loaded, list) and len(loaded) == 1 and isinstance(loaded[0], Audio)
+    at = run.preload.index(Text(text=f"<<<{name}>>>"))
+    assert run.preload[at + 1 : at + 2] == loaded
 
 
 def test_the_preload_and_the_fingerprint_come_from_one_read_of_each_file(

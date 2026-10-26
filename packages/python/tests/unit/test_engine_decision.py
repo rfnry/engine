@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 import pytest
 from pydantic import BaseModel
@@ -119,6 +119,10 @@ async def test_a_decision_run_names_its_adapter_s_model_when_the_call_reports_no
     assert models == ["d", "d1", None]
 
 
+class Tuned(Declaring):
+    settings = {"effort": "low"}
+
+
 async def test_a_decided_s_settings_win_over_the_ones_its_adapter_declares(
     fixtures: Path,
 ) -> None:
@@ -127,8 +131,7 @@ async def test_a_decided_s_settings_win_over_the_ones_its_adapter_declares(
         "severity": ScoreAnswer(score=0, probabilities=[1, 0, 0, 0]),
     }
     pending = [Decided(answers=answers, settings={"effort": "high"})]
-    judge = Declaring(lambda _: pending.pop() if pending else Decided(answers=answers))
-    cast(Any, judge).settings = {"effort": "low"}
+    judge = Tuned(lambda _: pending.pop() if pending else Decided(answers=answers))
     engine = Engine(fixtures, models={"judge": judge})
     first = await engine.run("triage", "acme", "x")
     second = await engine.run("triage", "acme", "x")

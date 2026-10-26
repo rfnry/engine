@@ -126,13 +126,13 @@ class Effort(Enum):
     HIGH = "high"
 
 
-async def test_settings_that_are_not_a_json_object_are_ignored(fixtures: Path) -> None:
-    for odd in (object(), {"effort": Effort.HIGH}):
-        llm = Scripted(text_reply("a"))
-        cast(Any, llm).settings = odd
-        run = await engine_for(fixtures, llm).run("billing", "acme", "x")
-        assert isinstance(run, Generation)
-        assert run.reply == "a" and run.settings is None and run.conversation[-1].settings is None
+@pytest.mark.parametrize("odd", [object(), {"effort": Effort.HIGH}])
+async def test_settings_that_are_not_a_json_object_are_ignored(fixtures: Path, odd: Any) -> None:
+    llm = Scripted(text_reply("a"))
+    cast(Any, llm).settings = odd
+    run = await engine_for(fixtures, llm).run("billing", "acme", "x")
+    assert isinstance(run, Generation)
+    assert run.reply == "a" and run.settings is None and run.conversation[-1].settings is None
 
 
 async def test_settings_never_reach_the_model(fixtures: Path) -> None:

@@ -11,7 +11,7 @@ from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 
-from .fakes import Answering, Scripted, ask, delegate_triage, text_reply
+from .fakes import NO_QUESTIONS, Answering, Scripted, ask, delegate_triage, text_reply
 
 AREA = Choice(
     instructions={"question": "Which area does `message` belong to?", "within": "orders"},
@@ -103,7 +103,7 @@ async def test_a_decision_agent_with_no_questions_of_its_own_runs_on_runtime_one
     for given in nothing:
         with pytest.raises(
             InputError,
-            match="^engine: decision agent 'blank' has no questions to ask; give it questions/, or ask it through Delegate$",
+            match=f"^{NO_QUESTIONS}$",
         ):
             await ask(engine, "blank", "acme", "x", questions=given)
     assert len(dm.calls) == 1
