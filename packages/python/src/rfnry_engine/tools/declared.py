@@ -56,7 +56,7 @@ def _parted(name: str, result: JsonValue) -> Result:
         return PARTS.validate_json(json.dumps(result))
     except ValidationError as exc:
         raise ModelError(
-            f"declared: {name} returned parts that do not fit the contract: {exc.errors(include_url=False, include_input=False)}"
+            f"tools/declared: {name} returned parts that do not fit the contract: {exc.errors(include_url=False, include_input=False)}"
         ) from exc
 
 
@@ -69,14 +69,16 @@ def folder_tool(definition: ToolDef, pool: WorkerPool, timeout: float | None, sc
         try:
             arguments.validate(args)
         except jsonschema_rs.ValidationError as exc:
-            raise InputError(f"declared: invalid arguments for {name}: {reason(exc)}") from exc
+            raise InputError(
+                f"tools/declared: invalid arguments for {name}: {reason(exc)}"
+            ) from exc
         result = await pool.call(definition.key, args, _call(scope), timeout)
         if returns is not None:
             try:
                 returns.validate(result)
             except jsonschema_rs.ValidationError as exc:
                 raise ModelError(
-                    f"declared: {name} returned a result that does not match its output_schema: {reason(exc)}"
+                    f"tools/declared: {name} returned a result that does not match its output_schema: {reason(exc)}"
                 ) from exc
         return _parted(name, result)
 

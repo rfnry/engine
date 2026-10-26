@@ -140,7 +140,7 @@ async def test_read_refuses_binary_files_and_points_to_load(mixed: Path) -> None
     for path in ["blob.bin", "latin.txt"]:
         with pytest.raises(
             InputError,
-            match=rf"^builtins: {path} is not a text file; Load gives you the file itself$",
+            match=rf"^tools/builtins: {path} is not a text file; Load gives you the file itself$",
         ):
             await tools.dispatch("Read", {"path": path})
     assert await tools.dispatch("Read", {"path": "notes.md"}) == "needle in text\n"
@@ -211,7 +211,7 @@ async def test_a_name_and_bytes_that_disagree_are_refused(tmp_path: Path) -> Non
         )
     ]
     with pytest.raises(
-        InputError, match=r"^builtins: broken.png is not the image/png its name says$"
+        InputError, match=r"^tools/builtins: broken.png is not the image/png its name says$"
     ):
         await tools.dispatch("Load", {"path": "broken.png"})
     assert await tools.dispatch("Load", {"path": "scan"}) == [
@@ -226,7 +226,7 @@ async def test_load_keeps_to_what_the_model_takes(media: Path) -> None:
     ]
     with pytest.raises(
         InputError,
-        match=r"^builtins: the model does not take audio/mpeg files: knowledge/call.mp3$",
+        match=r"^tools/builtins: the model does not take audio/mpeg files: knowledge/call.mp3$",
     ):
         await tools.dispatch("Load", {"path": "knowledge/call.mp3"})
 
@@ -235,7 +235,9 @@ async def test_load_refuses_files_over_its_cap(
     media: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(builtins_module, "_LOAD_BYTES", 10)
-    with pytest.raises(InputError, match=r"^builtins: file exceeds 10 bytes: knowledge/rates.pdf$"):
+    with pytest.raises(
+        InputError, match=r"^tools/builtins: file exceeds 10 bytes: knowledge/rates.pdf$"
+    ):
         await Tools([load_tool(media)]).dispatch("Load", {"path": "knowledge/rates.pdf"})
 
 
@@ -349,7 +351,7 @@ async def test_load_reaches_the_workspace_when_the_run_has_one(media: Path, tmp_
     alone = Tools([load_tool(media)])
     [schema] = alone.definitions()
     assert "where" not in schema["input_schema"]["properties"]
-    with pytest.raises(InputError, match=r"^builtins: not a file: chart.png$"):
+    with pytest.raises(InputError, match=r"^tools/builtins: not a file: chart.png$"):
         await alone.dispatch("Load", {"path": "chart.png", "where": "workspace"})
     both = Tools([load_tool(media, Local(work))])
     assert await both.dispatch("Load", {"path": "chart.png", "where": "workspace"}) == [
@@ -359,7 +361,8 @@ async def test_load_reaches_the_workspace_when_the_run_has_one(media: Path, tmp_
         Document(media_type="application/pdf", name="rates.pdf", data=PDF)
     ]
     with pytest.raises(
-        InputError, match="^workspace: path outside the workspace: ../agent/knowledge/rates.pdf$"
+        InputError,
+        match="^tools/workspace: path outside the workspace: ../agent/knowledge/rates.pdf$",
     ):
         await both.dispatch("Load", {"path": "../agent/knowledge/rates.pdf", "where": "workspace"})
 
@@ -545,13 +548,13 @@ async def test_grep_and_glob_search_the_own_folder_unless_told(shelf: Path) -> N
 
 @pytest.mark.parametrize("pattern", [".", "../books/."])
 async def test_glob_refuses_a_pattern_the_walk_cannot_take(shelf: Path, pattern: str) -> None:
-    with pytest.raises(InputError, match="^builtins: invalid glob pattern"):
+    with pytest.raises(InputError, match="^tools/builtins: invalid glob pattern"):
         await reading(shelf).dispatch("Glob", {"pattern": pattern})
 
 
 @pytest.mark.parametrize("glob", ["", "."])
 async def test_grep_refuses_a_glob_the_match_cannot_take(shelf: Path, glob: str) -> None:
-    with pytest.raises(InputError, match=f"^builtins: invalid glob '{glob}': empty pattern$"):
+    with pytest.raises(InputError, match=f"^tools/builtins: invalid glob '{glob}': empty pattern$"):
         await reading(shelf).dispatch("Grep", {"pattern": "tabs", "glob": glob})
 
 
@@ -567,11 +570,13 @@ async def test_read_reaches_the_workspace_when_the_run_has_one(media: Path, tmp_
     assert await both.dispatch("Read", read) == "two"
     assert await both.dispatch("Read", {"path": "knowledge/notes.md"}) == "plain\n"
     with pytest.raises(
-        InputError, match="^builtins: chart.png is not a text file; Load gives you the file itself$"
+        InputError,
+        match="^tools/builtins: chart.png is not a text file; Load gives you the file itself$",
     ):
         await both.dispatch("Read", {"path": "chart.png", "where": "workspace"})
     with pytest.raises(
-        InputError, match="^workspace: path outside the workspace: ../agent/knowledge/notes.md$"
+        InputError,
+        match="^tools/workspace: path outside the workspace: ../agent/knowledge/notes.md$",
     ):
         await both.dispatch("Read", {"path": "../agent/knowledge/notes.md", "where": "workspace"})
 
@@ -585,27 +590,27 @@ async def test_a_path_the_folder_lacks_says_how_to_reach_the_workspace(
     both = Tools([*builtins(media, None, Local(work)), load_tool(media, Local(work))])
     with pytest.raises(
         InputError,
-        match="^builtins: not a directory of your folder: task_folder; Shell lists your workspace$",
+        match="^tools/builtins: not a directory of your folder: task_folder; Shell lists your workspace$",
     ):
         await both.dispatch("LS", {"path": "task_folder"})
     for name, verb in [("Read", "reads"), ("Load", "loads")]:
         with pytest.raises(
             InputError,
             match=(
-                f"^builtins: not a file of your folder: task_folder/a.csv; "
+                f"^tools/builtins: not a file of your folder: task_folder/a.csv; "
                 f'{name} with where="workspace" {verb} from your workspace$'
             ),
         ):
             await both.dispatch(name, {"path": "task_folder/a.csv"})
-    with pytest.raises(InputError, match="^builtins: not a directory: knowledge/notes.md$"):
+    with pytest.raises(InputError, match="^tools/builtins: not a directory: knowledge/notes.md$"):
         await both.dispatch("LS", {"path": "knowledge/notes.md"})
-    with pytest.raises(InputError, match="^builtins: not a file: knowledge$"):
+    with pytest.raises(InputError, match="^tools/builtins: not a file: knowledge$"):
         await both.dispatch("Read", {"path": "knowledge"})
     alone = Tools([*builtins(media), load_tool(media)])
-    with pytest.raises(InputError, match="^builtins: not a directory: task_folder$"):
+    with pytest.raises(InputError, match="^tools/builtins: not a directory: task_folder$"):
         await alone.dispatch("LS", {"path": "task_folder"})
     for name in ["Read", "Load"]:
-        with pytest.raises(InputError, match="^builtins: not a file: task_folder/a.csv$"):
+        with pytest.raises(InputError, match="^tools/builtins: not a file: task_folder/a.csv$"):
             await alone.dispatch(name, {"path": "task_folder/a.csv"})
 
 
@@ -642,11 +647,13 @@ async def test_what_the_system_refuses_is_said_with_the_model_s_path(tmp_path: P
     (root / "closed.md").chmod(0o000)
     tools = Tools([*builtins(root), load_tool(root)])
     try:
-        with pytest.raises(InputError, match="^builtins: cannot list locked: Permission denied$"):
+        with pytest.raises(
+            InputError, match="^tools/builtins: cannot list locked: Permission denied$"
+        ):
             await tools.dispatch("LS", {"path": "locked"})
         for name in ["Read", "Load"]:
             with pytest.raises(
-                InputError, match="^builtins: cannot read closed.md: Permission denied$"
+                InputError, match="^tools/builtins: cannot read closed.md: Permission denied$"
             ):
                 await tools.dispatch(name, {"path": "closed.md"})
         assert await tools.dispatch("Read", {"path": "locked/a.md"}) == "a\n"
@@ -665,5 +672,5 @@ def test_a_file_far_over_the_limit_is_refused_without_reading_it(
         raise AssertionError("opened for reading")
 
     monkeypatch.setattr("rfnry_engine.tools.builtins.open", never, raising=False)
-    with pytest.raises(InputError, match="^builtins: file exceeds 10 bytes: sparse.bin$"):
+    with pytest.raises(InputError, match="^tools/builtins: file exceeds 10 bytes: sparse.bin$"):
         _contents(Jail(tmp_path), "sparse.bin", 10)

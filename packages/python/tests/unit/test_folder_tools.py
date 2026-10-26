@@ -111,27 +111,27 @@ def test_each_pinned_tool_folder_message_names_its_file_and_its_fix(tmp_path: Pa
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"folder: {folder / 'x.json'} has no x.py beside it; a tool is x.json and x.py in a tools/ folder"
+        f"tools/folder: {folder / 'x.json'} has no x.py beside it; a tool is x.json and x.py in a tools/ folder"
     )
     (folder / "x.json").unlink()
     write(folder / "x.py", RUN)
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"folder: {folder / 'x.py'} has no x.json beside it; describe the tool in x.json, or name a helper _x.py"
+        f"tools/folder: {folder / 'x.py'} has no x.json beside it; describe the tool in x.json, or name a helper _x.py"
     )
     write(folder / "x.json", '{"description": "D", "input_schema": {}, "inputSchema": {}}')
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"folder: {folder / 'x.json'} has the unknown key 'inputSchema'; a tool's JSON takes description, input_schema and output_schema"
+        f"tools/folder: {folder / 'x.json'} has the unknown key 'inputSchema'; a tool's JSON takes description, input_schema and output_schema"
     )
     write(folder / "x.json", DEF)
     write(folder / "x.py", "from rfnry_engine.models import Text\n" + RUN)
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"folder: {folder / 'x.py'} imports 'rfnry_engine'; a tool never imports the engine, so keep what it needs in the tool or a helper beside it"
+        f"tools/folder: {folder / 'x.py'} imports 'rfnry_engine'; a tool never imports the engine, so keep what it needs in the tool or a helper beside it"
     )
 
 
@@ -144,7 +144,7 @@ def test_a_schema_that_does_not_compile_is_refused_with_its_reason(
     schemas = {"input_schema": {"type": "object"}, key: bad}
     write(tmp_path / "a/tools/x.json", json.dumps({"description": "D", **schemas}))
     write(tmp_path / "a/tools/x.py", RUN)
-    said = f"folder: {tmp_path / 'a/tools/x.json'} has an {key} that is not a valid JSON Schema: "
+    said = f"tools/folder: {tmp_path / 'a/tools/x.json'} has an {key} that is not a valid JSON Schema: "
     with pytest.raises(
         ConfigurationError, match=rf"^{re.escape(said)}.*minimum.*; fix it in that file$"
     ):
@@ -216,7 +216,7 @@ def test_a_malformed_definition_is_refused_naming_the_file(
     write(tmp_path / "a/tools/x.json", text)
     write(tmp_path / "a/tools/x.py", RUN)
     with pytest.raises(
-        ConfigurationError, match=re.escape(f"folder: {tmp_path / 'a/tools/x.json'} {said}")
+        ConfigurationError, match=re.escape(f"tools/folder: {tmp_path / 'a/tools/x.json'} {said}")
     ):
         load_tree(tmp_path)
 
@@ -264,7 +264,7 @@ def test_a_helper_imported_inside_a_function_or_class_is_refused(tmp_path: Path,
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"folder: {tmp_path / 'a/tools/fetch.py'} imports the helper '_client' inside a function or class; import it at the top of the script, since a helper is reachable only while its folder's scripts load"
+        f"tools/folder: {tmp_path / 'a/tools/fetch.py'} imports the helper '_client' inside a function or class; import it at the top of the script, since a helper is reachable only while its folder's scripts load"
     )
 
 
@@ -289,7 +289,7 @@ def test_a_relative_import_is_refused_naming_the_file(
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"folder: {tmp_path / 'a/tools/fetch.py'} imports {shown!r} relatively; import a helper of its tools/ folder by its name, such as import _client"
+        f"tools/folder: {tmp_path / 'a/tools/fetch.py'} imports {shown!r} relatively; import a helper of its tools/ folder by its name, such as import _client"
     )
 
 
@@ -304,7 +304,7 @@ def test_a_script_importing_the_server_s_own_code_is_refused(
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path / "agents")
     assert str(caught.value) == (
-        f"folder: {tmp_path / 'agents/a/tools/fetch.py'} imports 'myapp' from {tmp_path / 'myapp/__init__.py'}, the server's own code; a tool imports the standard library, installed packages and helpers of its tools/ folder"
+        f"tools/folder: {tmp_path / 'agents/a/tools/fetch.py'} imports 'myapp' from {tmp_path / 'myapp/__init__.py'}, the server's own code; a tool imports the standard library, installed packages and helpers of its tools/ folder"
     )
     body = "import json\nimport urllib.request\nimport yaml\nimport not_installed_anywhere\n" + RUN
     tool(tmp_path / "agents/a/tools", "fetch", body=body)
@@ -349,7 +349,7 @@ def test_a_server_package_named_like_a_declaration_folder_is_the_server_s_code(
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path / "agents")
     assert str(caught.value) == (
-        f"folder: {tmp_path / 'agents/a/tools/fetch.py'} imports {name!r} from {tmp_path / 'src' / name / '__init__.py'}, the server's own code; a tool imports the standard library, installed packages and helpers of its tools/ folder"
+        f"tools/folder: {tmp_path / 'agents/a/tools/fetch.py'} imports {name!r} from {tmp_path / 'src' / name / '__init__.py'}, the server's own code; a tool imports the standard library, installed packages and helpers of its tools/ folder"
     )
 
 
@@ -380,7 +380,7 @@ def test_a_tool_script_without_a_run_at_its_top_level_is_refused(tmp_path: Path,
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"folder: {tmp_path / 'a/tools/fetch.py'} has no run at its top level; a tool defines def run(args, call) or async def run(args, call)"
+        f"tools/folder: {tmp_path / 'a/tools/fetch.py'} has no run at its top level; a tool defines def run(args, call) or async def run(args, call)"
     )
 
 

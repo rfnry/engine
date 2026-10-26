@@ -855,7 +855,7 @@ async def test_the_tools_and_workspace_a_run_had_are_the_caller_s(
     engine = Engine(tmp_path, models={"strong": Echo()})
     [bare] = await collect(refinery.replay("acme", engine, agent="coder"))
     assert bare.candidate is None and bare.error is not None
-    assert bare.error.startswith("ConfigurationError: engine_tools: agent 'coder'")
+    assert bare.error.startswith("ConfigurationError: tools/engine_tools: agent 'coder'")
     [pair] = await collect(
         refinery.replay("acme", engine, agent="coder", tools=memory, workspace=work)
     )

@@ -94,7 +94,7 @@ def _media_type(path: Path, data: bytes) -> str:
     if named is None:
         return signed or "application/octet-stream"
     if (named in _SIGNATURES or named == "image/webp") and signed != named:
-        raise InputError(f"builtins: {path.name} is not the {named} its name says")
+        raise InputError(f"tools/builtins: {path.name} is not the {named} its name says")
     return named
 
 
@@ -118,7 +118,7 @@ def _decoded(data: bytes) -> str | None:
 def _handed(path: Path, data: bytes, shown: str, media_types: Collection[str] | None) -> Part:
     media_type = _media_type(path, data)
     if media_types is not None and not any(fnmatch(media_type, t) for t in media_types):
-        raise InputError(f"builtins: the model does not take {media_type} files: {shown}")
+        raise InputError(f"tools/builtins: the model does not take {media_type} files: {shown}")
     return _part(path, data, media_type)
 
 
@@ -152,9 +152,9 @@ def _contents(jail: Jail, path: str, limit: int, missing: str = "") -> tuple[Pat
         try:
             found = os.fstat(fd)
             if not stat.S_ISREG(found.st_mode):
-                raise InputError(f"builtins: not a file: {path}")
+                raise InputError(f"tools/builtins: not a file: {path}")
             if found.st_size > limit:
-                raise InputError(f"builtins: file exceeds {limit} bytes: {path}")
+                raise InputError(f"tools/builtins: file exceeds {limit} bytes: {path}")
             opened = _name_of(fd, path, found.st_nlink == 0)
             with open(fd, "rb", closefd=False) as file:
                 data = file.read(limit + 1)
@@ -162,19 +162,23 @@ def _contents(jail: Jail, path: str, limit: int, missing: str = "") -> tuple[Pat
             os.close(fd)
     except OSError as exc:
         if exc.errno == errno.ENOENT and missing:
-            raise InputError(f"builtins: not a file of your folder: {path}; {missing}") from None
+            raise InputError(
+                f"tools/builtins: not a file of your folder: {path}; {missing}"
+            ) from None
         if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ENXIO):
-            raise InputError(f"builtins: not a file: {path}") from None
-        raise InputError(f"builtins: cannot read {path}: {exc.strerror}") from None
+            raise InputError(f"tools/builtins: not a file: {path}") from None
+        raise InputError(f"tools/builtins: cannot read {path}: {exc.strerror}") from None
     if len(data) > limit:
-        raise InputError(f"builtins: file exceeds {limit} bytes: {path}")
+        raise InputError(f"tools/builtins: file exceeds {limit} bytes: {path}")
     return opened, data
 
 
 def _lines(data: bytes, a: ReadArgs) -> str:
     text = _decoded(data)
     if text is None:
-        raise InputError(f"builtins: {a.path} is not a text file; Load gives you the file itself")
+        raise InputError(
+            f"tools/builtins: {a.path} is not a text file; Load gives you the file itself"
+        )
     if a.offset or a.limit is not None:
         lines = text.splitlines()
         end = a.offset + a.limit if a.limit is not None else len(lines)
@@ -246,7 +250,7 @@ class _Directory:
         try:
             pattern = regex.compile(a.pattern, regex.IGNORECASE if a.case_insensitive else 0)
         except regex.error as exc:
-            raise InputError(f"builtins: invalid pattern: {exc}") from exc
+            raise InputError(f"tools/builtins: invalid pattern: {exc}") from exc
         budget = _GREP_SECONDS
         deadline = time.monotonic() + budget
 
@@ -257,7 +261,7 @@ class _Directory:
                 )
             except TimeoutError as exc:
                 raise InputError(
-                    f"builtins: pattern took longer than {budget:g}s; simplify it or narrow path and glob"
+                    f"tools/builtins: pattern took longer than {budget:g}s; simplify it or narrow path and glob"
                 ) from exc
 
         base = self.jail.resolve(a.path) if a.path else self.root
@@ -267,7 +271,7 @@ class _Directory:
         try:
             paths, walked_out = self._files_under(base, a.glob)
         except ValueError as exc:
-            raise InputError(f"builtins: invalid glob {a.glob!r}: {exc}") from exc
+            raise InputError(f"tools/builtins: invalid glob {a.glob!r}: {exc}") from exc
         for path in paths:
             rel = self._shown(path)
             try:
@@ -318,12 +322,12 @@ class _Directory:
                 break
         if not pattern or pattern.startswith("/") or ".." in pattern.split("/"):
             raise InputError(
-                "builtins: pattern must be relative and stay inside the agent directory or a folder it reads"
+                "tools/builtins: pattern must be relative and stay inside the agent directory or a folder it reads"
             )
         try:
             entries = list(islice(base.glob(pattern), _MAX_WALK + 1))
         except ValueError as exc:
-            raise InputError(f"builtins: invalid glob pattern {a.pattern!r}: {exc}") from exc
+            raise InputError(f"tools/builtins: invalid glob pattern {a.pattern!r}: {exc}") from exc
         truncated = len(entries) > _MAX_WALK
         matches = sorted(
             self._shown(p)
@@ -349,11 +353,11 @@ class _Directory:
         except OSError as exc:
             if exc.errno == errno.ENOENT and self.workspace:
                 raise InputError(
-                    f"builtins: not a directory of your folder: {path}; Shell lists your workspace"
+                    f"tools/builtins: not a directory of your folder: {path}; Shell lists your workspace"
                 ) from None
             if exc.errno in (errno.ENOENT, errno.ENOTDIR):
-                raise InputError(f"builtins: not a directory: {path}") from None
-            raise InputError(f"builtins: cannot list {path}: {exc.strerror}") from None
+                raise InputError(f"tools/builtins: not a directory: {path}") from None
+            raise InputError(f"tools/builtins: cannot list {path}: {exc.strerror}") from None
         if not entries:
             return "(empty)"
         suffix = f"\n[truncated to {a.limit} of {len(entries)}]" if len(entries) > a.limit else ""

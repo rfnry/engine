@@ -43,30 +43,30 @@ class EngineTools(Tools):
     ) -> None:
         engine._open()
         if not scope:
-            raise InputError("engine_tools: scope is required")
+            raise InputError("tools/engine_tools: scope is required")
         if workspace is not None and workspace.scope != scope:
             raise InputError(
-                f"engine_tools: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
+                f"tools/engine_tools: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
             )
         if start < 0:
-            raise InputError(f"engine_tools: start must not be negative; got {start}")
+            raise InputError(f"tools/engine_tools: start must not be negative; got {start}")
         if start and history is None:
-            raise InputError("engine_tools: start needs a history")
+            raise InputError("tools/engine_tools: start needs a history")
         if history is not None and not isinstance(history, HistoryLike):
             history = list(history)
             if start > len(history):
                 raise InputError(
-                    f"engine_tools: start must be between 0 and {len(history)}; got {start}"
+                    f"tools/engine_tools: start must be between 0 and {len(history)}; got {start}"
                 )
         spec = engine._spec(agent)
         if spec.workspace and workspace is None:
             raise ConfigurationError(
-                f"engine_tools: agent {agent!r} declares workspace: true; pass workspace= to the run"
+                f"tools/engine_tools: agent {agent!r} declares workspace: true; pass workspace= to the run"
             )
         given = Tools() if tools is None else Tools([tools])
         if HISTORY_TOOL in given:
             raise ConfigurationError(
-                f"engine_tools: a tool named {HISTORY_TOOL!r} collides with the builtin"
+                f"tools/engine_tools: a tool named {HISTORY_TOOL!r} collides with the builtin"
             )
         room = workspace if spec.workspace else None
         media_types = getattr(engine.models.get(spec.model), "media_types", None)

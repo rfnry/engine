@@ -390,7 +390,7 @@ async def test_history_names_each_file_and_never_hands_it_over(fixtures: Path) -
 
 
 async def test_an_invalid_pattern_is_an_error_the_model_reads(fixtures: Path) -> None:
-    with pytest.raises(InputError, match=r"^history: invalid pattern"):
+    with pytest.raises(InputError, match=r"^tools/history: invalid pattern"):
         await surface(fixtures, looked_up(), start=4).dispatch("History", {"pattern": "("})
 
 
@@ -420,7 +420,7 @@ async def test_a_slow_source_meets_the_tool_deadline(fixtures: Path) -> None:
     engine = Engine(fixtures, tool_timeout=0.05, models={"strong": llm})
     run = await engine.run("support", "acme", "x", history=Slow(looked_up()), start=4)
     assert isinstance(run, Generation)
-    assert run.steps[0].result == "TimeoutError: History timed out after 0.05s"
+    assert run.steps[0].result == "TimeoutError: engine: History timed out after 0.05s"
 
 
 def test_history_is_described_the_same_whatever_the_start(fixtures: Path) -> None:
@@ -433,9 +433,11 @@ def test_history_is_described_the_same_whatever_the_start(fixtures: Path) -> Non
 
 def test_engine_tools_refuse_a_start_they_cannot_use(fixtures: Path) -> None:
     engine = Engine(fixtures, models={"strong": Scripted()})
-    with pytest.raises(InputError, match=r"^engine_tools: start must not be negative; got -1$"):
+    with pytest.raises(
+        InputError, match=r"^tools/engine_tools: start must not be negative; got -1$"
+    ):
         EngineTools(engine, agent="support", scope="acme", history=[], start=-1)
-    with pytest.raises(InputError, match=r"^engine_tools: start needs a history$"):
+    with pytest.raises(InputError, match=r"^tools/engine_tools: start needs a history$"):
         EngineTools(engine, agent="support", scope="acme", start=3)
     assert "History" not in EngineTools(engine, agent="support", scope="acme", history=two()).names
 
@@ -447,7 +449,7 @@ def test_history_bounds_must_be_positive(fixtures: Path, name: str) -> None:
         Engine(fixtures, **settings, models={"strong": Scripted()})
 
 
-COLLIDES = r"^engine_tools: a tool named 'History' collides with the builtin$"
+COLLIDES = r"^tools/engine_tools: a tool named 'History' collides with the builtin$"
 
 
 async def mine(args: dict[str, Any]) -> str:
@@ -498,7 +500,9 @@ async def test_a_row_that_does_not_fit_is_refused_without_its_content(fixtures: 
         async def read(self, start: int, stop: int | None = None) -> Sequence[object]:
             return [{"content": "card 4242"}]
 
-    with pytest.raises(InputError, match=r"^history: the conversation does not fit") as caught:
+    with pytest.raises(
+        InputError, match=r"^tools/history: the conversation does not fit"
+    ) as caught:
         await surface(fixtures, Odd([]), start=2).dispatch("History", {})
     assert "4242" not in str(caught.value)
 
@@ -568,7 +572,9 @@ async def test_engine_tools_take_a_generator_history(fixtures: Path) -> None:
 
 
 def test_engine_tools_refuse_a_start_past_the_end_of_a_list(fixtures: Path) -> None:
-    with pytest.raises(InputError, match=r"^engine_tools: start must be between 0 and 4; got 9$"):
+    with pytest.raises(
+        InputError, match=r"^tools/engine_tools: start must be between 0 and 4; got 9$"
+    ):
         surface(fixtures, looked_up(), start=9)
 
 
@@ -602,7 +608,9 @@ async def test_a_pattern_that_runs_past_the_deadline_is_an_error_the_model_reads
 ) -> None:
     slow = [Message(role="user", content="a" * 34 + "!"), Message(role="user", content="now")]
     tools = surface(fixtures, slow, start=1, tool_timeout=0.05)
-    with pytest.raises(InputError, match=r"^history: the pattern ran past the tool's deadline"):
+    with pytest.raises(
+        InputError, match=r"^tools/history: the pattern ran past the tool's deadline"
+    ):
         await tools.dispatch("History", {"pattern": "(a|aa)+$"})
 
 

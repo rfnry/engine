@@ -91,9 +91,13 @@ def permit(spec: AgentSpec, args: dict[str, Any]) -> DelegateArgs:
     try:
         parsed = DelegateArgs.model_validate(args)
     except ValidationError as exc:
-        raise InputError(f"delegate: invalid arguments: {exc.errors(include_url=False)}") from exc
+        raise InputError(
+            f"tools/delegate: invalid arguments: {exc.errors(include_url=False)}"
+        ) from exc
     if parsed.agent not in spec.agents:
-        raise InputError(f"delegate: agent {spec.name!r} may not delegate to {parsed.agent!r}")
+        raise InputError(
+            f"tools/delegate: agent {spec.name!r} may not delegate to {parsed.agent!r}"
+        )
     return parsed
 
 
@@ -102,10 +106,10 @@ async def enter(name: str, max_depth: int, *, routed: bool = False) -> AsyncIter
     stack = _stack.get()
     routes = _routes.get()
     if routed and name in routes:
-        raise DelegationLoopError(f"delegate: loop at {' -> '.join([*stack, name])}")
+        raise DelegationLoopError(f"tools/delegate: loop at {' -> '.join([*stack, name])}")
     if len(stack) >= max_depth:
         raise DelegationDepthError(
-            f"delegate: depth {max_depth} exceeded at {' -> '.join([*stack, name])}"
+            f"tools/delegate: depth {max_depth} exceeded at {' -> '.join([*stack, name])}"
         )
     stack_token = _stack.set((*stack, name))
     routes_token = _routes.set((*routes, name) if routed else (name,))

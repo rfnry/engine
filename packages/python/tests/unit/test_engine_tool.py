@@ -110,7 +110,7 @@ async def test_the_depth_guard_holds_across_the_tool(fixtures: Path) -> None:
     run = await engine.run("billing", "acme", "hi", tools=engine.tool("billing", scope="acme"))
     assert isinstance(run, Generation) and run.steps[0].is_error
     assert run.steps[0].result == (
-        "DelegationDepthError: delegate: depth 1 exceeded at billing -> billing"
+        "DelegationDepthError: tools/delegate: depth 1 exceeded at billing -> billing"
     )
 
 

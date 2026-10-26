@@ -174,34 +174,34 @@ def test_teacher_answers_are_validated_against_the_questions() -> None:
     assert answers["severity"] == ScoreAnswer(score=1.0, probabilities=[0.0, 1.0], confidence=1.0)
     assert answers["urgent"] == CheckAnswer(probability=0.0, confidence=1.0)
     cases: list[tuple[dict[str, str | float | bool], str]] = [
-        ({"intent": "a", "severity": 0}, "^judge: teacher gave no answer for 'urgent'$"),
+        ({"intent": "a", "severity": 0}, "^refinery/judge: teacher gave no answer for 'urgent'$"),
         (
             {"intent": "c", "severity": 0, "urgent": True},
-            "^judge: teacher chose 'c', not an option of 'intent'$",
+            "^refinery/judge: teacher chose 'c', not an option of 'intent'$",
         ),
         (
             {"intent": "a", "severity": 2, "urgent": True},
-            "^judge: teacher gave level 2 for 'severity'$",
+            "^refinery/judge: teacher gave level 2 for 'severity'$",
         ),
         (
             {"intent": "a", "severity": 0, "urgent": "false"},
-            "^judge: teacher gave 'false', not true or false for 'urgent'$",
+            "^refinery/judge: teacher gave 'false', not true or false for 'urgent'$",
         ),
         (
             {"intent": "a", "severity": 0, "urgent": 1.0},
-            "^judge: teacher gave 1.0, not true or false for 'urgent'$",
+            "^refinery/judge: teacher gave 1.0, not true or false for 'urgent'$",
         ),
         (
             {"intent": "a", "severity": 0.7, "urgent": True},
-            "^judge: teacher gave 0.7, not a level of 'severity'$",
+            "^refinery/judge: teacher gave 0.7, not a level of 'severity'$",
         ),
         (
             {"intent": "a", "severity": True, "urgent": True},
-            "^judge: teacher gave True, not a level of 'severity'$",
+            "^refinery/judge: teacher gave True, not a level of 'severity'$",
         ),
         (
             {"intent": "a", "severity": "1", "urgent": True},
-            "^judge: teacher gave '1', not a level of 'severity'$",
+            "^refinery/judge: teacher gave '1', not a level of 'severity'$",
         ),
     ]
     for given, message in cases:
