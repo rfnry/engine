@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 from collections.abc import Collection, Mapping, Sequence
+from concurrent.futures import Future
 from functools import partial
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, NamedTuple, cast
@@ -26,6 +27,7 @@ CLOSED = "it was closed"
 RETIRED = "every thread was held by a call past its deadline"
 MOVED = "a call came from another event loop"
 CAP = 64 * 1024
+POLL = 0.01
 
 
 class Script(NamedTuple):
@@ -226,9 +228,19 @@ class WorkerPool:
             async with self._lock:
                 self._drop(CLOSED)
         elif loop is not None and loop.is_running():
-            await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(self.close(), loop))
+            handed: Future[None] = Future()
+            soon = loop.call_soon_threadsafe(self._hand, handed)
+            while not handed.done() and loop.is_running():
+                await asyncio.sleep(POLL)
+            if not handed.done():
+                soon.cancel()
+                self._drop(CLOSED)
         else:
             self._drop(CLOSED)
+
+    def _hand(self, handed: Future[None]) -> None:
+        closing = asyncio.create_task(self.close(), eager_start=True)
+        closing.add_done_callback(lambda _: handed.set_result(None))
 
     def _drop(self, reason: str) -> None:
         workers = [worker for worker in self._workers if worker is not None]
@@ -255,7 +267,11 @@ class WorkerPool:
             index = min(range(len(self._workers)), key=lambda i: _load(self._workers[i]))
             chosen = self._workers[index]
             if chosen is None:
-                chosen = self._workers[index] = await self._spawn()
+                chosen = await self._spawn()
+                if self._closed:
+                    chosen.stop(CLOSED)
+                    raise WorkerError(f"workers/pool: the worker for {name} stopped: {CLOSED}")
+                self._workers[index] = chosen
             return chosen
 
     async def _spawn(self) -> _Worker:

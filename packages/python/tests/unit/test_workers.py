@@ -695,6 +695,43 @@ async def test_close_from_another_thread_stops_the_workers_on_the_loop_they_serv
         loop.close()
 
 
+async def test_close_from_another_thread_as_the_workers_loop_stops_returns_and_stops_them(
+    tmp_path: Path,
+) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        first = asyncio.run_coroutine_threadsafe(pool.call("nap", {}, CALL, 5), loop)
+        worker = pid(await asyncio.wrap_future(first))
+        loop.call_soon_threadsafe(loop.stop)
+        async with asyncio.timeout(5):
+            await pool.close()
+        assert reaped(worker)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+
+
+def test_a_worker_started_while_its_pool_closes_is_stopped(tmp_path: Path) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    _, children = held()
+    loop = asyncio.new_event_loop()
+    try:
+        call = loop.create_task(pool.call("nap", {}, CALL, 5))
+        loop.run_until_complete(asyncio.sleep(0))
+        assert len(held()[1]) == len(children) + 1
+        on_a_loop_of_its_own(pool.close())
+        with pytest.raises(WorkerError, match="the worker for nap stopped: it was closed"):
+            loop.run_until_complete(call)
+    finally:
+        on_a_loop_of_its_own(pool.close())
+        loop.close()
+    assert held()[1] == children
+
+
 def test_a_pool_that_follows_one_event_loop_after_another_holds_no_more_files_or_processes(
     tmp_path: Path,
 ) -> None:
