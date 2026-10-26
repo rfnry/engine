@@ -251,8 +251,14 @@ class WorkerPool:
     def _drop(self, reason: str) -> None:
         workers = [worker for worker in self._workers if worker is not None]
         self._workers = [None] * len(self._workers)
+        failed: list[BaseException] = []
         for worker in workers:
-            worker.stop(reason)
+            try:
+                worker.stop(reason)
+            except BaseException as exc:
+                failed.append(exc)
+        if failed:
+            raise failed[0]
 
     def _follow(self) -> None:
         loop = asyncio.get_running_loop()

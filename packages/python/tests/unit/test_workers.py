@@ -796,6 +796,26 @@ async def test_close_from_another_thread_raises_what_stopping_a_worker_raised(
         loop.close()
 
 
+async def test_close_stops_every_worker_before_it_raises_what_the_first_stop_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stop = _Worker.stop
+    stopped: list[_Worker] = []
+
+    def failing(worker: _Worker, reason: str | None = None) -> None:
+        stop(worker, reason)
+        stopped.append(worker)
+        raise OSError(f"stop {len(stopped)} would not close its pipe")
+
+    pool = WorkerPool([script(tmp_path, "wait", WAIT)], processes=2)
+    pids = await asyncio.gather(*(pool.call("wait", {"sleep": 0.2}, CALL, 5) for _ in range(2)))
+    assert len(set(pids)) == 2
+    monkeypatch.setattr(_Worker, "stop", failing)
+    with pytest.raises(OSError, match="^stop 1 would not close its pipe$"):
+        await pool.close()
+    assert len(stopped) == 2 and all(reaped(pid(value)) for value in pids)
+
+
 def test_a_worker_started_while_its_pool_closes_is_stopped(tmp_path: Path) -> None:
     pool = WorkerPool([script(tmp_path, "nap", PID)])
     _, children = held()
