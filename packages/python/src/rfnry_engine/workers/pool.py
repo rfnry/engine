@@ -32,6 +32,7 @@ class Script(NamedTuple):
     path: Path
     source: str
     helpers: Mapping[str, str]
+    awaits: bool
 
 
 def _lines(pending: bytearray, data: bytes) -> list[bytes]:
@@ -105,9 +106,10 @@ class _Worker:
         self.write(text)
         return reply
 
-    def abandon(self, id: int) -> None:
+    def abandon(self, id: int, held: bool) -> None:
         if self.calls.pop(id, None) is not None and not self.ended:
-            self.held.add(id)
+            if held:
+                self.held.add(id)
             self.write(json.dumps({"id": id, "cancel": True}))
 
     def stop(self, reason: str | None = None) -> None:
@@ -160,11 +162,12 @@ class WorkerPool:
         self._scripts = {
             "scripts": [
                 {"key": key, "path": str(path), "source": source}
-                for key, path, source, _ in scripts
+                for key, path, source, _, _ in scripts
             ],
-            "helpers": {str(path.parent): dict(helpers) for _, path, _, helpers in scripts},
+            "helpers": {str(path.parent): dict(helpers) for _, path, _, helpers, _ in scripts},
             "threads": threads,
         }
+        self._awaits = {script.key for script in scripts if script.awaits}
         self._threads = threads
         self._workers: list[_Worker | None] = [None] * processes
         self._ids = itertools.count()
@@ -196,7 +199,7 @@ class WorkerPool:
             raise TimeoutError(f"workers/pool: {name} timed out after {timeout:g}s") from None
         finally:
             if worker is not None:
-                worker.abandon(id)
+                worker.abandon(id, held=key not in self._awaits)
 
     async def close(self) -> None:
         self._closed = True
@@ -265,7 +268,9 @@ class Workers:
         for name, spec in agents.items():
             own = scripts[self._groups[name]]
             for tool in spec.folder_tools.values():
-                own[tool.key] = Script(tool.key, tool.script, tool.source, tool.helpers)
+                own[tool.key] = Script(
+                    tool.key, tool.script, tool.source, tool.helpers, tool.awaits
+                )
             for _, script in spec.scripted.values():
                 own[script.key] = script
         self._pools = {

@@ -551,6 +551,20 @@ async def test_workers_holds_a_script_once_per_pool_however_many_agents_see_it(
     ]
 
 
+async def test_workers_tells_its_pool_which_scripts_are_async(tmp_path: Path) -> None:
+    tool(tmp_path / "tools", "pid", body=PID)
+    tool(tmp_path / "tools", "wait", body="async def run(args, call):\n    return 1\n")
+    write(tmp_path / "shop/AGENT.md", agent_md("shop"))
+    write(tmp_path / "desk/AGENT.md", agent_md("desk", kind="decision", model="judge"))
+    write(tmp_path / "desk/questions/order.json", '{"type": "choice", "instructions": "Which?"}')
+    write(
+        tmp_path / "desk/questions/order.py",
+        "async def run(input, call):\n    return {'options': {'a': 'A', 'b': 'B'}}\n",
+    )
+    async with Engine(tmp_path, models={}) as engine:
+        assert engine._workers.pool("shop")._awaits == {"tools/wait", "desk/questions/order"}
+
+
 @pytest.mark.parametrize(
     ("workers", "said"),
     [

@@ -392,6 +392,24 @@ def test_a_helper_needs_no_run_and_an_async_run_is_a_run(tmp_path: Path) -> None
     assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch"]
 
 
+@pytest.mark.parametrize(
+    ("body", "awaits"),
+    [
+        (RUN, False),
+        ("async def run(args, call):\n    return {}\n", True),
+        (RUN + "async def run(args, call):\n    return {}\n", True),
+        ("async def run(args, call):\n    return {}\n" + RUN, False),
+        ("class Tool:\n    async def run(self, args, call):\n        return {}\n" + RUN, False),
+    ],
+)
+def test_a_tool_awaits_when_its_last_run_at_the_top_level_is_async(
+    tmp_path: Path, body: str, awaits: bool
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch", body=body)
+    assert load_tree(tmp_path)["a"].folder_tools["fetch"].awaits is awaits
+
+
 def test_a_package_of_the_interpreter_s_site_packages_inside_the_project_passes(
     tmp_path: Path,
 ) -> None:

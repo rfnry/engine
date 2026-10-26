@@ -1972,9 +1972,10 @@ of memory, a crash in a C extension — fails every call it had in flight, `Work
 worker for refund stopped: exited with code 3`, or `killed by signal 9` when a signal ended it, the
 run goes on, and the next call starts a new worker. Past `tool_timeout` the model reads
 `TimeoutError: workers/pool: refund timed out after 30s`, a deadline that counts the wait for a worker
-too: an `async def run` is cancelled in the worker; a `def run` cannot be stopped, so its thread
-runs on and its result is discarded, and once every thread of a worker is held so, the next call
-stops that worker and starts a new one, and the calls the old one still had in flight fail with
+too: an `async def run` is cancelled in the worker and holds none of its threads; a `def run`
+cannot be stopped, so its thread runs on and its result is discarded, and once every thread of a
+worker is held so, the next call stops that worker and starts a new one, and the calls the old one
+still had in flight fail with
 `WorkerError: workers/pool: the worker for refund stopped: every thread was held by a call past its
 deadline`.
 

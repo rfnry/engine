@@ -28,6 +28,7 @@ class ToolDef(BaseModel):
     key: str
     source: str
     helpers: dict[str, str]
+    awaits: bool
 
 
 def script_key(root: Path, script: Path) -> str:
@@ -69,7 +70,9 @@ def _compiled(path: Path, key: str, schema: dict[str, JsonValue]) -> None:
         ) from exc
 
 
-def _definition(path: Path, script: Path, root: Path, sources: dict[Path, str]) -> ToolDef:
+def _definition(
+    path: Path, script: Path, root: Path, sources: dict[Path, str], awaits: bool
+) -> ToolDef:
     try:
         data = json.loads(_text(path))
     except json.JSONDecodeError as exc:
@@ -117,6 +120,7 @@ def _definition(path: Path, script: Path, root: Path, sources: dict[Path, str]) 
         key=script_key(root, script),
         source=sources[script],
         helpers={p.stem: text for p, text in sources.items() if p.name.startswith("_")},
+        awaits=awaits,
     )
 
 
@@ -159,14 +163,17 @@ def _parsed(path: Path, source: str) -> ast.Module:
         ) from exc
 
 
-def _check_run(path: Path, module: ast.Module, what: str, given: str) -> None:
-    if not any(
-        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "run"
+def _check_run(path: Path, module: ast.Module, what: str, given: str) -> bool:
+    runs = [
+        node
         for node in module.body
-    ):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "run"
+    ]
+    if not runs:
         raise ConfigurationError(
             f"tools/folder: {path} has no run at its top level; a {what} defines def run({given}, call) or async def run({given}, call)"
         )
+    return isinstance(runs[-1], ast.AsyncFunctionDef)
 
 
 def _check_imports(
@@ -227,17 +234,17 @@ def load_tools(
                 f"tools/folder: {scripts[name]} has no {name}.json beside it; describe the tool in {name}.json, or name a helper _{name}.py"
             )
     sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
-    tools = {
-        name: _definition(definitions[name], scripts[name], root, sources)
-        for name in sorted(scripts)
-    }
     names = {p.stem for p in helpers}
+    awaits = {}
     for path, source in sources.items():
         module = _parsed(path, source)
         _check_imports(path, module, project, folders, names, "tool")
         if path in scripts.values():
-            _check_run(path, module, "tool", "args")
-    return tools
+            awaits[path] = _check_run(path, module, "tool", "args")
+    return {
+        name: _definition(definitions[name], scripts[name], root, sources, awaits[scripts[name]])
+        for name in sorted(scripts)
+    }
 
 
 def load_scripts(
@@ -251,12 +258,13 @@ def load_scripts(
     sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
     shared = {p.stem: sources[p] for p in helpers}
     what = "question's script"
+    awaits = {}
     for path, source in sources.items():
         module = _parsed(path, source)
         _check_imports(path, module, project, folders, shared, what)
         if path in scripts.values():
-            _check_run(path, module, what, "input")
+            awaits[path] = _check_run(path, module, what, "input")
     return {
-        name: Script(script_key(root, path), path, sources[path], shared)
+        name: Script(script_key(root, path), path, sources[path], shared, awaits[path])
         for name, path in scripts.items()
     }

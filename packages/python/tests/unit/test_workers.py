@@ -26,7 +26,7 @@ def script(tmp_path: Path, name: str, body: str) -> Script:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
     helpers = {p.stem: p.read_text(encoding="utf-8") for p in path.parent.glob("_*.py")}
-    return Script(name, path, body, helpers)
+    return Script(name, path, body, helpers, "async def run" in body)
 
 
 def pid(value: JsonValue) -> int:
@@ -298,7 +298,7 @@ async def test_a_worker_runs_the_source_it_was_given_under_the_script_s_path(
         "def run(args, call):\n"
         "    return [_client.NAME, __file__, run.__code__.co_filename, _client.__file__]\n"
     )
-    pool = WorkerPool([Script("tools/given", path, body, {"_client": "NAME = 'given'\n"})])
+    pool = WorkerPool([Script("tools/given", path, body, {"_client": "NAME = 'given'\n"}, False)])
     try:
         assert await pool.call("tools/given", {}, CALL, 5) == [
             "given",
@@ -401,6 +401,17 @@ async def test_an_async_call_past_its_timeout_is_cancelled_in_the_worker(tmp_pat
             await pool.call("wait", {"file": str(late)}, CALL, 0.1)
         await asyncio.sleep(0.5)
         assert not late.exists()
+        assert await pool.call("wait", {}, CALL, 5) == first
+    finally:
+        await pool.close()
+
+
+async def test_an_async_call_past_its_deadline_holds_no_thread(tmp_path: Path) -> None:
+    pool = WorkerPool([script(tmp_path, "wait", WAIT)], threads=1)
+    try:
+        first = await pool.call("wait", {}, CALL, 5)
+        with pytest.raises(TimeoutError):
+            await pool.call("wait", {"sleep": 30}, CALL, 0.1)
         assert await pool.call("wait", {}, CALL, 5) == first
     finally:
         await pool.close()

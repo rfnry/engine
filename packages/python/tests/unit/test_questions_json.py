@@ -361,6 +361,17 @@ def test_a_question_script_without_a_run_at_its_top_level_is_refused(tmp_path: P
     )
 
 
+@pytest.mark.parametrize(
+    ("script", "awaits"), [(ORDER, False), (ORDER.replace("def run", "async def run"), True)]
+)
+def test_a_question_script_awaits_when_its_last_run_at_the_top_level_is_async(
+    tmp_path: Path, script: str, awaits: bool
+) -> None:
+    matcher(tmp_path, script)
+    _, held = load_tree(tmp_path)["matcher"].scripted["order"]
+    assert held.awaits is awaits
+
+
 def test_a_server_package_named_questions_is_the_server_s_code_to_a_question_script(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
