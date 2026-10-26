@@ -706,3 +706,37 @@ async def test_a_visible_link_to_a_hidden_file_still_reads(hidden: Path) -> None
     tools = Tools(builtins(hidden))
     assert await tools.dispatch("Read", {"path": "shown.md"}) == "TOKEN=1"
     assert await tools.dispatch("Read", {"path": "plain.md"}) == "plain"
+
+
+async def test_an_absolute_path_is_judged_inside_the_folder_not_by_its_ancestors(
+    tmp_path: Path,
+) -> None:
+    agent = tmp_path / ".h" / "agent"
+    agent.mkdir(parents=True)
+    (agent / "a.md").write_text("visible", encoding="utf-8")
+    (agent / ".env").write_text("TOKEN=1", encoding="utf-8")
+    tools = Tools(builtins(agent))
+    assert await tools.dispatch("Read", {"path": str(agent / "a.md")}) == "visible"
+    with pytest.raises(InputError, match="is hidden"):
+        await tools.dispatch("Read", {"path": str(agent / ".env")})
+
+
+async def test_an_absolute_path_outside_the_folder_is_outside_not_hidden(hidden: Path) -> None:
+    other = hidden.parent / ".other" / "x.md"
+    other.parent.mkdir(exist_ok=True)
+    other.write_text("x", encoding="utf-8")
+    with pytest.raises(InputError, match="outside the agent directory"):
+        await Tools(builtins(hidden)).dispatch("Read", {"path": str(other)})
+
+
+async def test_a_hidden_name_inside_a_reads_folder_is_refused(tmp_path: Path) -> None:
+    agent, books = tmp_path / "agent", tmp_path / "books"
+    agent.mkdir()
+    books.mkdir()
+    (books / ".x").write_text("x", encoding="utf-8")
+    (books / "y.md").write_text("y", encoding="utf-8")
+    tools = Tools(builtins(agent, {"books": books}))
+    assert await tools.dispatch("Read", {"path": "../books/y.md"}) == "y"
+    for path in ["../books/.x", str(books / ".x")]:
+        with pytest.raises(InputError, match="is hidden"):
+            await tools.dispatch("Read", {"path": path})
