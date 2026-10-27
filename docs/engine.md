@@ -341,17 +341,18 @@ folders it reads, and nothing the content fingerprint leaves out, which is every
 A path is judged where it leads, its links and `..` resolved, from the agent's folder or the read
 folder it lies in, as the fingerprint walks them. A file reads when the folder that holds it has no
 hidden name on its way there and its own name, as written, is not hidden: a visible link to a hidden
-file, `notes.md -> .env`, reads under its own name, the one the fingerprint covers it under, while
-`kb/../.env` is hidden, and so is `/elsewhere/git/config` when `/elsewhere/git` links to the agent's
-`.git`. A folder that `LS` or `Grep` is given reads when the folder it leads to has no hidden name:
-a visible link to a hidden folder, `shown -> .secret`, is hidden, and so is every file read through
-it, for the fingerprint never follows a folder link. A link from outside those folders to a file
-inside them counts as that file, and a path that leads outside them is the jail's error (`jail: path
-outside the agent directory: <path>`). `Read` returns a text file as text. `Load` hands the model
-any other file as it is — an image, a PDF, a recording, a spreadsheet — so a price list, a diagram
-or a scanned form sits in the folder as it came, the model reads it with its own understanding of
-images and documents, there is no parser in between, and nothing is loaded until the model asks —
-unless the agent sets `preload: true`, below.
+file of the same folder, `notes.md -> .env`, reads under its own name, the one the fingerprint
+covers it under, while `kb/../.env` is hidden, and so is `/elsewhere/git/config` when
+`/elsewhere/git` links to the agent's `.git`. A folder that `LS` or `Grep` is given reads when the
+folder it leads to has no hidden name: a visible link to a hidden folder, `shown -> .secret`, is
+hidden, and so is every file read through it, for the fingerprint never follows a folder link. A
+file link that comes from outside those folders, or leads from one of them into another, counts as
+the file it leads to, since the fingerprint covers it only there, and a path that leads outside them
+is the jail's error (`jail: path outside the agent directory: <path>`). `Read` returns a text file
+as text. `Load` hands the model any other file as it is — an image, a PDF, a recording, a
+spreadsheet — so a price list, a diagram or a scanned form sits in the folder as it came, the model
+reads it with its own understanding of images and documents, there is no parser in between, and
+nothing is loaded until the model asks — unless the agent sets `preload: true`, below.
 
 `AGENT.md` makes a directory an agent, and its frontmatter names it. `Engine(root)` walks `root` and
 loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested
