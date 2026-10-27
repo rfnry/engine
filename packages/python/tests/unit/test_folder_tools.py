@@ -3,6 +3,7 @@ import re
 import site
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.models import Text
 from rfnry_engine.tools import folder
 from rfnry_engine.tools.engine_tools import EngineTools
-from rfnry_engine.tools.folder import _started, load_tools, project_of
+from rfnry_engine.tools.folder import load_tools, project_of
 from rfnry_engine.tree import load_tree
 
 DEF = '{"description": "Do it", "input_schema": {"type": "object"}}'
@@ -462,8 +463,8 @@ def test_a_site_folder_the_interpreter_adds_at_startup_inside_the_project_passes
     write(own / "overlay.pth", f"import site; site.addsitedir({str(packages)!r})\n")
     monkeypatch.setattr(sys, "executable", str(venv / "bin/python"))
     monkeypatch.syspath_prepend(packages)
-    _started.cache_clear()
-    request.addfinalizer(_started.cache_clear)
+    folder._started.cache_clear()
+    request.addfinalizer(folder._started.cache_clear)
     write(tmp_path / "pyproject.toml", "")
     write(packages / "vendored/__init__.py", "")
     write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
@@ -481,8 +482,8 @@ def test_a_folder_a_path_line_of_a_pth_adds_inside_the_project_is_refused(
     write(own / "editable.pth", f"{source}\n")
     monkeypatch.setattr(sys, "executable", str(venv / "bin/python"))
     monkeypatch.syspath_prepend(source)
-    _started.cache_clear()
-    request.addfinalizer(_started.cache_clear)
+    folder._started.cache_clear()
+    request.addfinalizer(folder._started.cache_clear)
     write(tmp_path / "pyproject.toml", "")
     write(source / "server/__init__.py", "")
     write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
@@ -516,9 +517,9 @@ def test_the_workers_interpreter_is_asked_only_when_the_server_s_site_folders_mi
     monkeypatch.setattr(site, "getsitepackages", lambda: [str(packages)])
     monkeypatch.setattr(subprocess, "run", refused)
     folder._installed.cache_clear()
-    _started.cache_clear()
+    folder._started.cache_clear()
     request.addfinalizer(folder._installed.cache_clear)
-    request.addfinalizer(_started.cache_clear)
+    request.addfinalizer(folder._started.cache_clear)
     assert list(load_tree(tmp_path / "agents")["a"].folder_tools) == ["fetch"]
     tool(tmp_path / "agents/a/tools", "fetch", body="import json\n" + RUN)
     folder._installed.cache_clear()
@@ -541,8 +542,8 @@ def test_a_workers_interpreter_that_cannot_answer_leaves_the_server_s_site_folde
         monkeypatch.setattr(sys, "executable", str(tmp_path / "no-python"))
     else:
         monkeypatch.setattr(subprocess, "run", late if failure == "timeout" else noise)
-    _started.cache_clear()
-    request.addfinalizer(_started.cache_clear)
+    folder._started.cache_clear()
+    request.addfinalizer(folder._started.cache_clear)
     with pytest.raises(
         ConfigurationError,
         match=re.escape(
@@ -550,6 +551,44 @@ def test_a_workers_interpreter_that_cannot_answer_leaves_the_server_s_site_folde
         ),
     ):
         load_tree(tmp_path / "agents")
+
+
+def test_a_line_printed_before_the_workers_interpreter_answers_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    packages = _vendored(tmp_path, monkeypatch)
+
+    def answered(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        said = f"hello from sitecustomize\n{json.dumps([str(packages)])}\n"
+        return subprocess.CompletedProcess(["python"], 0, stdout=said)
+
+    monkeypatch.setattr(subprocess, "run", answered)
+    folder._started.cache_clear()
+    request.addfinalizer(folder._started.cache_clear)
+    assert list(load_tree(tmp_path / "agents")["a"].folder_tools) == ["fetch"]
+
+
+def test_the_workers_interpreter_answers_past_a_startup_that_prints_late_or_lingers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    packages = tmp_path / "overlay/site-packages"
+    venv = tmp_path / "venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", venv], check=True)
+    [own] = venv.glob("lib/python*/site-packages")
+    write(
+        own / "sitecustomize.py",
+        "import atexit, pathlib, site, sys, threading, time\n"
+        f"site.addsitedir(pathlib.Path({str(packages)!r}))\n"
+        "sys.stdout.write('no newline')\n"
+        "atexit.register(print, 0)\n"
+        "threading.Thread(target=time.sleep, args=(60,)).start()\n",
+    )
+    monkeypatch.setattr(sys, "executable", str(venv / "bin/python"))
+    folder._started.cache_clear()
+    request.addfinalizer(folder._started.cache_clear)
+    began = time.monotonic()
+    assert packages.resolve() in folder._started()
+    assert time.monotonic() - began < 5
 
 
 def test_the_project_is_the_nearest_folder_with_a_pyproject_toml_else_the_root(

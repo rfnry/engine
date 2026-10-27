@@ -44,15 +44,17 @@ def project_of(root: Path) -> Path:
 
 
 SITE = """
-import json, site
+import json, os, site, sys
 seen = []
 add = site.addsitedir
 def record(sitedir, known_paths=None):
-    seen.append(sitedir)
+    seen.append(os.fsdecode(sitedir))
     return add(sitedir, known_paths)
 site.addsitedir = record
 site.main()
-print(json.dumps(seen))
+sys.stdout.write("\\n" + json.dumps(seen) + "\\n")
+sys.stdout.flush()
+os._exit(0)
 """
 PROBE = 10.0
 
@@ -75,10 +77,9 @@ def _started() -> tuple[Path, ...]:
             timeout=PROBE,
             check=False,
         )
-        places = json.loads(found.stdout.splitlines()[-1])
-    except OSError, subprocess.SubprocessError, ValueError, IndexError:
+        return tuple(Path(place).resolve() for place in json.loads(found.stdout.splitlines()[-1]))
+    except OSError, subprocess.SubprocessError, ValueError, IndexError, TypeError:
         return ()
-    return tuple(Path(place).resolve() for place in places)
 
 
 def _among(place: Path, places: tuple[Path, ...]) -> bool:
