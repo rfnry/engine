@@ -1,5 +1,6 @@
 import json
 import re
+import site
 import subprocess
 import sys
 from pathlib import Path
@@ -11,8 +12,9 @@ from pydantic import JsonValue
 from rfnry_engine import Engine
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.models import Text
+from rfnry_engine.tools import folder
 from rfnry_engine.tools.engine_tools import EngineTools
-from rfnry_engine.tools.folder import _installed, load_tools, project_of
+from rfnry_engine.tools.folder import _started, load_tools, project_of
 from rfnry_engine.tree import load_tree
 
 DEF = '{"description": "Do it", "input_schema": {"type": "object"}}'
@@ -422,7 +424,7 @@ def test_a_tool_awaits_when_its_last_run_at_the_top_level_is_async(
     assert load_tree(tmp_path)["a"].folder_tools["fetch"].awaits is awaits
 
 
-def test_a_package_of_the_interpreter_s_site_packages_inside_the_project_passes(
+def test_an_installed_package_inside_the_project_passes(
     tmp_path: Path,
 ) -> None:
     project = project_of(Path(yaml.__file__))
@@ -457,11 +459,11 @@ def test_a_site_folder_the_interpreter_adds_at_startup_inside_the_project_passes
     venv = tmp_path / "venv"
     subprocess.run([sys.executable, "-m", "venv", "--without-pip", venv], check=True)
     [own] = venv.glob("lib/python*/site-packages")
-    write(own / "overlay.pth", f'import site; site.addsitedir("{packages}")\n')
+    write(own / "overlay.pth", f"import site; site.addsitedir({str(packages)!r})\n")
     monkeypatch.setattr(sys, "executable", str(venv / "bin/python"))
     monkeypatch.syspath_prepend(packages)
-    _installed.cache_clear()
-    request.addfinalizer(_installed.cache_clear)
+    _started.cache_clear()
+    request.addfinalizer(_started.cache_clear)
     write(tmp_path / "pyproject.toml", "")
     write(packages / "vendored/__init__.py", "")
     write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
@@ -479,8 +481,8 @@ def test_a_folder_a_path_line_of_a_pth_adds_inside_the_project_is_refused(
     write(own / "editable.pth", f"{source}\n")
     monkeypatch.setattr(sys, "executable", str(venv / "bin/python"))
     monkeypatch.syspath_prepend(source)
-    _installed.cache_clear()
-    request.addfinalizer(_installed.cache_clear)
+    _started.cache_clear()
+    request.addfinalizer(_started.cache_clear)
     write(tmp_path / "pyproject.toml", "")
     write(source / "server/__init__.py", "")
     write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
@@ -489,6 +491,62 @@ def test_a_folder_a_path_line_of_a_pth_adds_inside_the_project_is_refused(
         ConfigurationError,
         match=re.escape(
             f"imports 'server' from {source / 'server/__init__.py'}, the server's own code"
+        ),
+    ):
+        load_tree(tmp_path / "agents")
+
+
+def _vendored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    packages = tmp_path / "vendor"
+    monkeypatch.syspath_prepend(packages)
+    write(tmp_path / "pyproject.toml", "")
+    write(packages / "vendored/__init__.py", "")
+    write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "agents/a/tools", "fetch", body="import vendored\n" + RUN)
+    return packages
+
+
+def test_the_workers_interpreter_is_asked_only_when_the_server_s_site_folders_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    def refused(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the workers' interpreter was asked")
+
+    packages = _vendored(tmp_path, monkeypatch)
+    monkeypatch.setattr(site, "getsitepackages", lambda: [str(packages)])
+    monkeypatch.setattr(subprocess, "run", refused)
+    folder._installed.cache_clear()
+    _started.cache_clear()
+    request.addfinalizer(folder._installed.cache_clear)
+    request.addfinalizer(_started.cache_clear)
+    assert list(load_tree(tmp_path / "agents")["a"].folder_tools) == ["fetch"]
+    tool(tmp_path / "agents/a/tools", "fetch", body="import json\n" + RUN)
+    folder._installed.cache_clear()
+    monkeypatch.setattr(site, "getsitepackages", lambda: [])
+    assert list(load_tree(tmp_path / "agents")["a"].folder_tools) == ["fetch"]
+
+
+@pytest.mark.parametrize("failure", ["missing", "timeout", "noise"])
+def test_a_workers_interpreter_that_cannot_answer_leaves_the_server_s_site_folders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest, failure: str
+) -> None:
+    def late(*args: object, **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired("python", 10)
+
+    def noise(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(["python"], 0, stdout="hello from sitecustomize\n")
+
+    packages = _vendored(tmp_path, monkeypatch)
+    if failure == "missing":
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "no-python"))
+    else:
+        monkeypatch.setattr(subprocess, "run", late if failure == "timeout" else noise)
+    _started.cache_clear()
+    request.addfinalizer(_started.cache_clear)
+    with pytest.raises(
+        ConfigurationError,
+        match=re.escape(
+            f"imports 'vendored' from {packages / 'vendored/__init__.py'}, the server's own code"
         ),
     ):
         load_tree(tmp_path / "agents")

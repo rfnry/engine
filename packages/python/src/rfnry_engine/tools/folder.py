@@ -54,24 +54,35 @@ site.addsitedir = record
 site.main()
 print(json.dumps(seen))
 """
-
-
-def _sites() -> list[str]:
-    found = subprocess.run(
-        [sys.executable, "-P", "-S", "-c", SITE], capture_output=True, text=True, check=False
-    )
-    try:
-        places = json.loads(found.stdout)
-    except ValueError:
-        return []
-    return [place for place in places if isinstance(place, str)] if isinstance(places, list) else []
+PROBE = 10.0
 
 
 @cache
 def _installed() -> tuple[Path, ...]:
     paths = sysconfig.get_paths()
     places = {paths[key] for key in ("stdlib", "platstdlib", "purelib", "platlib")}
-    return tuple(Path(place).resolve() for place in {*places, *site.getsitepackages(), *_sites()})
+    return tuple(Path(place).resolve() for place in {*places, *site.getsitepackages()})
+
+
+@cache
+def _started() -> tuple[Path, ...]:
+    try:
+        found = subprocess.run(
+            [sys.executable, "-P", "-S", "-c", SITE],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=PROBE,
+            check=False,
+        )
+        places = json.loads(found.stdout.splitlines()[-1])
+    except OSError, subprocess.SubprocessError, ValueError, IndexError:
+        return ()
+    return tuple(Path(place).resolve() for place in places)
+
+
+def _among(place: Path, places: tuple[Path, ...]) -> bool:
+    return any(place.is_relative_to(held) for held in places)
 
 
 def _text(path: Path) -> str:
@@ -175,7 +186,7 @@ def _owned(origin: Path, project: Path, folders: Collection[Path]) -> bool:
         return False
     if any(place.is_relative_to(folder) for folder in folders):
         return False
-    return not any(place.is_relative_to(installed) for installed in _installed())
+    return not (_among(place, _installed()) or _among(place, _started()))
 
 
 def _parsed(path: Path, source: str) -> ast.Module:

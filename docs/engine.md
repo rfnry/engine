@@ -1456,8 +1456,8 @@ sees none of this: it has the same tools, and its command runs inside.
 
 A sandbox per command, as here, gives each command its own network, so a server a job starts
 answers only commands inside the same sandbox; to start a server in one message and reach it in
-the next, keep one sandbox per workspace, such as a container kept for the workspace's life that
-each command enters with `docker exec`.
+the next, keep one sandbox per workspace, such as a container kept for the workspace's life behind
+a backend of yours, below.
 
 The agent then has five more tools. `Shell(command, background=false)` runs a command and returns
 `exit_code`, `stdout`, `stderr` and `timed_out`; when the command ends, anything it left running is
@@ -1545,8 +1545,19 @@ limits nothing: one command can take all the memory, CPU or processes of the mac
 other tenant. Where the service's user has a systemd user session,
 `systemd-run --user --scope -p MemoryMax=1G -p CPUQuota=100% -p TasksMax=256 --quiet` before
 `bwrap` runs each command in a scope with those limits; `env=` then needs `XDG_RUNTIME_DIR` too,
-which `systemd-run` uses to find the session. Docker serves the same way, with a container per
-command, or one per workspace that each command enters with `docker exec`.
+which `systemd-run` uses to find the session.
+
+Docker can be the sandbox too. A container per command is a `shell=` of `docker run --rm` with the
+directory mounted at its own path and `timeout -s KILL <seconds>` before the command inside: the
+`docker` client passes SIGTERM on to the container, but SIGKILL stops only the client, so the limit
+inside is what ends a container whose command ignores SIGTERM. `env=` is then the client's
+environment, not the command's — the command's own variables go in with `-e` — and the client reads
+its configuration from `$HOME/.docker`, which `Local`'s default `HOME` puts in the workspace, where
+a command could write a `.docker/config.json` the next command's client obeys; point
+`DOCKER_CONFIG` outside the workspace. One container per workspace, entered with `docker exec`,
+needs a backend of yours: signals do not pass through `docker exec`, so its `kill()` must reach the
+command's processes inside the container itself — a tag in their environment that everything they
+start inherits, say, whose processes it signals.
 
 Without a sandbox, the kill reaches every process the command started except one that leaves its
 process group with `setsid`; the process namespace of a container or of bubblewrap closes that gap.
@@ -1574,7 +1585,7 @@ at the same moment — cancels that kill, once, and so does the second cancel du
 workspace started on its own, for a command past its timeout or that has ended, `Job(stop=true)` or
 `close()`. The call still waits for the kill: a cancelled `kill()` must still end the command and
 everything it started, at once, before it returns; `Local` sends SIGKILL in a `finally`, and a
-backend of yours does the same. A `kill()` that raises is the call's error; when the
+backend of yours must do the same. A `kill()` that raises is the call's error; when the
 call is already leaving with a cancellation, or with the error of a `wait()` that raised, it is
 logged as an error instead, `tools/workspace: could not stop the command: …`, and the kill that follows a
 job's end puts its error in the job's output. `read` refuses a file larger than `limit`; `write`
@@ -1991,13 +2002,18 @@ lies in the project that holds the tree — the nearest folder at or above the r
 `pyproject.toml` — outside the standard library, the installed packages and the tree's `tools/` and
 `questions/` folders, of a module relatively, or of a helper inside a function or class (`import it
 at the top of the script, since a helper is reachable only while its folder's scripts load`), each
-naming the file and the module. The installed packages are those of the site folders the
-interpreter that runs the workers sets up at its start: its own `site-packages` and every site
-folder a `.pth` file adds, as `uv run --with` does with your project's `.venv`. A folder a `.pth`
+naming the file and the module. The installed packages are those of the site folders of your
+server's interpreter and of the folders the interpreter that runs the workers passes to
+`site.addsitedir` as it starts — its own `site-packages`, the user's, and every site folder a `.pth`
+file or `sitecustomize` adds, as `uv run --with` does with your project's `.venv`. A folder a `.pth`
 line merely puts on the path, as an editable install of your own app does, stays your server's
-code. A server package named `tools` is your server's code like any other: what counts is the
-folder the module's file lies in, not its name. That catches a mistake; it is not a sandbox, and a
-script is trusted as your server's code is.
+code. To learn those folders, loading runs that interpreter once, with `-P -S` and for at most ten
+seconds, and only when a script imports a module of the project that your server's own site
+folders do not hold; that run executes your `.pth` lines and `sitecustomize` as any start of it
+does, and when it cannot answer, the server's own site folders are the installed packages. A server
+package named `tools` is your server's code like any other: what counts is the folder the module's
+file lies in, not its name. That catches a mistake; it is not a sandbox, and a script is trusted as
+your server's code is.
 
 A tool runs in a worker: a process the engine starts with your server's interpreter, so it has the
 packages your server has, which runs the scripts of its group's agents — their tools' and their
