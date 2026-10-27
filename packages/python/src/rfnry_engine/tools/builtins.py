@@ -89,10 +89,12 @@ def _hides(jail: Jail, path: str | Path) -> bool:
     if place is None:
         return False
     root, seen = place
+    if os.path.isdir(named):
+        return _hidden(seen)
     folder = _within(jail, named.parent)
-    if folder is not None and folder[0] == root and not os.path.isdir(named):
+    if folder is not None and folder[0] == root:
         seen = folder[1] / named.name
-    return _hidden(seen)
+    return _hidden(seen) or _hidden(Path(named.name))
 
 
 def _named(jail: Jail, path: str) -> str:
