@@ -3,6 +3,7 @@ import base64
 import datetime
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -285,6 +286,22 @@ async def test_a_crashing_script_is_a_tool_error_and_the_run_goes_on(tmp_path: P
     )
     assert (run.steps[1].result, run.steps[1].is_error) == ("fine", False)
     assert run.reply == "carried on"
+
+
+async def test_a_folder_tool_s_result_is_held_to_the_engine_s_limit(tmp_path: Path) -> None:
+    body = "def run(args, call):\n    return 'x' * args['size']\n"
+    tool(shop(tmp_path) / "shop/tools", "big", body=body)
+    llm = Scripted(calling(("big", {"size": 5000})), text_reply("done"))
+    async with Engine(tmp_path, models={"strong": llm}, worker_result_bytes=1000) as engine:
+        run = await generated(engine, "shop", "acme", "x")
+        surface = EngineTools(engine, agent="shop", scope="acme")
+        assert await surface.dispatch("big", {"size": 100}) == "x" * 100
+    assert run.steps[0].is_error
+    assert re.fullmatch(
+        r"WorkerError: workers/process: big sent back \d+ bytes, over the limit of 1000 bytes",
+        str(run.steps[0].result),
+    )
+    assert run.reply == "done"
 
 
 async def test_a_folder_tool_owns_its_deadline_inside_a_run_and_from_code(tmp_path: Path) -> None:

@@ -111,7 +111,11 @@ def _read(requests: BinaryIO, loop: asyncio.AbstractEventLoop, lines: asyncio.Qu
 
 
 async def _serve(
-    modules: dict[str, ModuleType | str], threads: int, requests: BinaryIO, replies: int
+    modules: dict[str, ModuleType | str],
+    threads: int,
+    limit: int | None,
+    requests: BinaryIO,
+    replies: int,
 ) -> None:
     loop = asyncio.get_running_loop()
     pool = ThreadPoolExecutor(threads)
@@ -126,10 +130,9 @@ async def _serve(
         return await asyncio.wrap_future(work)
 
     async def handle(id: int, key: str, args: Any, call: Any) -> None:
+        name = key.rsplit("/", 1)[-1]
         try:
-            loaded = modules.get(
-                key, f"workers/process: the worker has no tool {key.rsplit('/', 1)[-1]}"
-            )
+            loaded = modules.get(key, f"workers/process: the worker has no tool {name}")
             if isinstance(loaded, str):
                 text = json.dumps({"id": id, "error": loaded})
             else:
@@ -139,6 +142,9 @@ async def _serve(
             text = json.dumps({"id": id, "error": "CancelledError: the call was cancelled"})
         except BaseException as exc:
             text = json.dumps({"id": id, "error": _error(exc)})
+        if limit is not None and len(text) > limit:
+            over = f"workers/process: {name} sent back {len(text)} bytes, over the limit of {limit} bytes"
+            text = json.dumps({"id": id, "error": over})
         tasks.pop(id, None)
         works.pop(id, None)
         _write(replies, text)
@@ -181,7 +187,7 @@ def main() -> None:
     sys.stdout = sys.stderr
     start = json.loads(requests.readline())
     modules = _load(start["scripts"], start["helpers"])
-    asyncio.run(_serve(modules, start["threads"], requests, replies))
+    asyncio.run(_serve(modules, start["threads"], start["limit"], requests, replies))
 
 
 if __name__ == "__main__":

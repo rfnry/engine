@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -282,6 +283,22 @@ async def test_a_filled_question_that_does_not_fit_fails_the_run_before_the_mode
     [failed] = recorded.runs
     assert isinstance(failed, Decision) and failed.error is not None
     assert failed.error.startswith("ModelError: engine: ")
+
+
+async def test_a_script_whose_result_is_over_the_limit_fails_the_run(tmp_path: Path) -> None:
+    matcher(
+        tmp_path, "def run(input, call):\n    return {'options': {'a': 'x' * 5000, 'b': 'B'}}\n"
+    )
+    judge = Answering()
+    async with Engine(tmp_path, models={"judge": judge}, worker_result_bytes=1000) as engine:
+        with pytest.raises(WorkerError) as raised:
+            await engine.run("matcher", "acme", "my desk")
+    assert re.fullmatch(
+        r"engine: order\.py of decision agent 'matcher' could not fill question 'order': "
+        r"workers/process: order sent back \d+ bytes, over the limit of 1000 bytes",
+        str(raised.value),
+    )
+    assert judge.calls == []
 
 
 async def test_a_script_past_the_tool_timeout_fails_the_run(tmp_path: Path) -> None:
