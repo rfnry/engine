@@ -80,7 +80,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Backend, Local, Process, Workspace
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 __all__ = [
     "AgentInfo",
