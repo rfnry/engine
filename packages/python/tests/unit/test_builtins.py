@@ -908,3 +908,19 @@ async def test_a_path_through_a_link_and_back_up_is_judged_where_it_lands(
     assert (
         await tools.dispatch("Read", {"path": str(elsewhere / "shelf" / ".." / "top.md")}) == "top"
     )
+
+
+@pytest.mark.parametrize("spelled", ["relative", "absolute"])
+async def test_a_path_holding_a_nul_is_outside_the_folder(tmp_path: Path, spelled: str) -> None:
+    (tmp_path / "a.md").write_text("a", encoding="utf-8")
+    path = "a\x00b" if spelled == "relative" else str(tmp_path / "a\x00b")
+    tools = Tools(builtins(tmp_path))
+    load = Tools([load_tool(tmp_path)])
+    for tool, name, args in [
+        (tools, "Read", {"path": path}),
+        (load, "Load", {"path": path}),
+        (tools, "Grep", {"pattern": "a", "path": path}),
+        (tools, "LS", {"path": path}),
+    ]:
+        with pytest.raises(InputError, match="^jail: path outside the agent directory: "):
+            await tool.dispatch(name, args)

@@ -75,7 +75,10 @@ def _hidden(rel: Path) -> bool:
 
 
 def _within(jail: Jail, path: Path) -> Path | None:
-    real = Path(os.path.realpath(path))
+    try:
+        real = Path(os.path.realpath(path))
+    except ValueError:
+        return None
     root = next((r for r in (jail.root, *jail.also) if real == r or r in real.parents), None)
     return None if root is None else real.relative_to(root)
 
