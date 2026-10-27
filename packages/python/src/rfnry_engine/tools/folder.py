@@ -2,6 +2,7 @@ import ast
 import importlib.util
 import json
 import site
+import subprocess
 import sys
 import sysconfig
 from collections.abc import Collection, Iterator
@@ -42,11 +43,35 @@ def project_of(root: Path) -> Path:
     return next((p for p in [place, *place.parents] if (p / "pyproject.toml").is_file()), place)
 
 
+SITE = """
+import json, site
+seen = []
+add = site.addsitedir
+def record(sitedir, known_paths=None):
+    seen.append(sitedir)
+    return add(sitedir, known_paths)
+site.addsitedir = record
+site.main()
+print(json.dumps(seen))
+"""
+
+
+def _sites() -> list[str]:
+    found = subprocess.run(
+        [sys.executable, "-P", "-S", "-c", SITE], capture_output=True, text=True, check=False
+    )
+    try:
+        places = json.loads(found.stdout)
+    except ValueError:
+        return []
+    return [place for place in places if isinstance(place, str)] if isinstance(places, list) else []
+
+
 @cache
 def _installed() -> tuple[Path, ...]:
     paths = sysconfig.get_paths()
     places = {paths[key] for key in ("stdlib", "platstdlib", "purelib", "platlib")}
-    return tuple(Path(place).resolve() for place in {*places, *site.getsitepackages()})
+    return tuple(Path(place).resolve() for place in {*places, *site.getsitepackages(), *_sites()})
 
 
 def _text(path: Path) -> str:
@@ -146,11 +171,11 @@ def _origins(name: str) -> list[Path]:
 
 def _owned(origin: Path, project: Path, folders: Collection[Path]) -> bool:
     place = origin.resolve()
-    if any(place.is_relative_to(installed) for installed in _installed()):
-        return False
     if not place.is_relative_to(project):
         return False
-    return not any(place.is_relative_to(folder) for folder in folders)
+    if any(place.is_relative_to(folder) for folder in folders):
+        return False
+    return not any(place.is_relative_to(installed) for installed in _installed())
 
 
 def _parsed(path: Path, source: str) -> ast.Module:

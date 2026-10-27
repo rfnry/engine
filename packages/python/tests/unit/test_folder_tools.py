@@ -1,5 +1,6 @@
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from rfnry_engine import Engine
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.models import Text
 from rfnry_engine.tools.engine_tools import EngineTools
-from rfnry_engine.tools.folder import load_tools, project_of
+from rfnry_engine.tools.folder import _installed, load_tools, project_of
 from rfnry_engine.tree import load_tree
 
 DEF = '{"description": "Do it", "input_schema": {"type": "object"}}'
@@ -424,7 +425,7 @@ def test_a_tool_awaits_when_its_last_run_at_the_top_level_is_async(
 def test_a_package_of_the_interpreter_s_site_packages_inside_the_project_passes(
     tmp_path: Path,
 ) -> None:
-    project = project_of(Path(sys.prefix))
+    project = project_of(Path(yaml.__file__))
     assert Path(yaml.__file__).resolve().is_relative_to(project)
     tool(tmp_path / "tools", "fetch", body="import yaml\n" + RUN)
     folders = {(tmp_path / "tools").resolve()}
@@ -444,6 +445,50 @@ def test_a_site_packages_folder_of_the_project_that_is_not_the_interpreter_s_is_
         ConfigurationError,
         match=re.escape(
             f"imports 'vendored' from {packages / 'vendored/__init__.py'}, the server's own code"
+        ),
+    ):
+        load_tree(tmp_path / "agents")
+
+
+def test_a_site_folder_the_interpreter_adds_at_startup_inside_the_project_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    packages = tmp_path / "overlay/site-packages"
+    venv = tmp_path / "venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", venv], check=True)
+    [own] = venv.glob("lib/python*/site-packages")
+    write(own / "overlay.pth", f'import site; site.addsitedir("{packages}")\n')
+    monkeypatch.setattr(sys, "executable", str(venv / "bin/python"))
+    monkeypatch.syspath_prepend(packages)
+    _installed.cache_clear()
+    request.addfinalizer(_installed.cache_clear)
+    write(tmp_path / "pyproject.toml", "")
+    write(packages / "vendored/__init__.py", "")
+    write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "agents/a/tools", "fetch", body="import vendored\n" + RUN)
+    assert list(load_tree(tmp_path / "agents")["a"].folder_tools) == ["fetch"]
+
+
+def test_a_folder_a_path_line_of_a_pth_adds_inside_the_project_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    source = tmp_path / "src"
+    venv = tmp_path / "venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", venv], check=True)
+    [own] = venv.glob("lib/python*/site-packages")
+    write(own / "editable.pth", f"{source}\n")
+    monkeypatch.setattr(sys, "executable", str(venv / "bin/python"))
+    monkeypatch.syspath_prepend(source)
+    _installed.cache_clear()
+    request.addfinalizer(_installed.cache_clear)
+    write(tmp_path / "pyproject.toml", "")
+    write(source / "server/__init__.py", "")
+    write(tmp_path / "agents/a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "agents/a/tools", "fetch", body="import server\n" + RUN)
+    with pytest.raises(
+        ConfigurationError,
+        match=re.escape(
+            f"imports 'server' from {source / 'server/__init__.py'}, the server's own code"
         ),
     ):
         load_tree(tmp_path / "agents")

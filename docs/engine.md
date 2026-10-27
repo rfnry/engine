@@ -1991,9 +1991,13 @@ lies in the project that holds the tree — the nearest folder at or above the r
 `pyproject.toml` — outside the standard library, the installed packages and the tree's `tools/` and
 `questions/` folders, of a module relatively, or of a helper inside a function or class (`import it
 at the top of the script, since a helper is reachable only while its folder's scripts load`), each
-naming the file and the module. A server package named `tools` is your server's code like any other:
-what counts is the folder the module's file lies in, not its name. That catches a mistake; it is not
-a sandbox, and a script is trusted as your server's code is.
+naming the file and the module. The installed packages are those of the site folders the
+interpreter that runs the workers sets up at its start: its own `site-packages` and every site
+folder a `.pth` file adds, as `uv run --with` does with your project's `.venv`. A folder a `.pth`
+line merely puts on the path, as an editable install of your own app does, stays your server's
+code. A server package named `tools` is your server's code like any other: what counts is the
+folder the module's file lies in, not its name. That catches a mistake; it is not a sandbox, and a
+script is trusted as your server's code is.
 
 A tool runs in a worker: a process the engine starts with your server's interpreter, so it has the
 packages your server has, which runs the scripts of its group's agents — their tools' and their
