@@ -267,7 +267,12 @@ class _Directory:
         found: list[Path] = []
         for candidate in walked[:_MAX_WALK]:
             rel = Path(self._shown(candidate))
-            if not candidate.is_file() or _hidden(rel) or not self._inside(candidate):
+            if (
+                not candidate.is_file()
+                or _hidden(rel)
+                or _hides(self.jail, candidate)
+                or not self._inside(candidate)
+            ):
                 continue
             if glob is not None and not rel.match(glob):
                 continue
@@ -361,7 +366,10 @@ class _Directory:
         matches = sorted(
             self._shown(p)
             for p in entries[:_MAX_WALK]
-            if p.is_file() and not _hidden(Path(self._shown(p))) and self._inside(p)
+            if p.is_file()
+            and not _hidden(Path(self._shown(p)))
+            and not _hides(self.jail, p)
+            and self._inside(p)
         )
         suffix = f"\n[truncated: walk exceeded {_MAX_WALK} entries]" if truncated else ""
         return "\n".join(matches) + suffix
@@ -369,12 +377,18 @@ class _Directory:
     def ls(self, args: dict[str, Any]) -> str:
         a = LSArgs.model_validate(args)
         path = _named(self.jail, a.path or ".")
+        place = self.jail.resolve(path)
         try:
             fd = self.jail.open(path, os.O_RDONLY | os.O_DIRECTORY)
             try:
                 with os.scandir(fd) as found:
                     entries = sorted(
-                        (e for e in found if not _hidden(Path(e.name))), key=lambda e: e.name
+                        (
+                            e
+                            for e in found
+                            if not _hidden(Path(e.name)) and not _hides(self.jail, place / e.name)
+                        ),
+                        key=lambda e: e.name,
                     )
                 shown = [f"{e.name}/" if e.is_dir() else e.name for e in entries[: a.limit]]
             finally:

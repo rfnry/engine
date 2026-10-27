@@ -27,6 +27,13 @@ def _inside(jail: Jail, entry: Path) -> bool:
     return True
 
 
+def _shown(folder: Path, entry: Path) -> bool:
+    if not entry.is_symlink():
+        return True
+    parts = entry.resolve().relative_to(folder).parts
+    return not any(part.startswith(".") or part == "__pycache__" for part in parts)
+
+
 def leads_out(path: Path, folder: Path) -> Path | None:
     return None if _inside(Jail(folder), path) else path.resolve()
 
@@ -55,6 +62,7 @@ def _walk(
             and here / name not in tools
             and (inner or not declares(here / name))
             and _inside(jail, here / name)
+            and _shown(folder, here / name)
         ]
         dirs += [name if top else f"{at}/{name}" for name in names]
         for name in filenames:

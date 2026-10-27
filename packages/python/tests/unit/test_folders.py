@@ -170,6 +170,20 @@ def test_a_link_out_of_the_folder_is_neither_mapped_nor_content(tmp_path: Path) 
     assert entries(root, True) == [] and content(root, True) == []
 
 
+def test_a_folder_link_to_a_hidden_folder_is_not_mapped_and_adds_no_content(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / ".secret/k.md", "k\n")
+    write(tmp_path / "docs/d.md", "d\n")
+    before = content(tmp_path, False, inner=True)
+    (tmp_path / "shown").symlink_to(".secret", target_is_directory=True)
+    (tmp_path / "d2").symlink_to(".secret", target_is_directory=True)
+    (tmp_path / "d1").symlink_to("d2", target_is_directory=True)
+    (tmp_path / "linked").symlink_to("docs", target_is_directory=True)
+    assert entries(tmp_path, False) == ["docs/", "  d.md", "linked/"]
+    assert content(tmp_path, False, inner=True) == before
+
+
 def test_a_bad_description_stops_the_map_naming_the_file(tmp_path: Path) -> None:
     root = coding(tmp_path / "coding")
     write(root / "notes/broken.md", "---\ndescription: [x\n---\n")

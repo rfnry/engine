@@ -954,3 +954,29 @@ async def test_a_file_link_into_another_folder_is_judged_by_the_file_it_leads_to
             await tool.dispatch(name, args)
     assert await tools.dispatch("Read", {"path": "y.md"}) == "y"
     assert await tools.dispatch("Read", {"path": "notes.md"}) == "TOKEN=1"
+
+
+async def test_glob_grep_and_ls_show_nothing_the_file_tools_hide(tmp_path: Path) -> None:
+    agent, books = tmp_path / "agent", tmp_path / "books"
+    (agent / ".secret").mkdir(parents=True)
+    (agent / ".secret" / "k.md").write_text("k", encoding="utf-8")
+    (agent / "docs").mkdir()
+    (agent / "docs" / "d.md").write_text("d", encoding="utf-8")
+    (agent / "shown").symlink_to(".secret", target_is_directory=True)
+    (agent / "d2").symlink_to(".secret", target_is_directory=True)
+    (agent / "d1").symlink_to("d2", target_is_directory=True)
+    (agent / "linked").symlink_to("docs", target_is_directory=True)
+    books.mkdir()
+    (books / ".x").write_text("x", encoding="utf-8")
+    (agent / "x.md").symlink_to(books / ".x")
+    (tmp_path / "elsewhere.md").write_text("e", encoding="utf-8")
+    (agent / ".out").symlink_to(tmp_path / "elsewhere.md")
+    tools = Tools(builtins(agent, {"books": books}))
+    for pattern in ["shown/*", "shown/**/*", "d1/*", "d2/*"]:
+        assert await tools.dispatch("Glob", {"pattern": pattern}) == ""
+    assert await tools.dispatch("Glob", {"pattern": "**/*.md"}) == "docs/d.md"
+    assert await tools.dispatch("Glob", {"pattern": "linked/*"}) == "linked/d.md"
+    assert await tools.dispatch("Grep", {"pattern": "k|x", "mode": "content"}) == (
+        "no matches found"
+    )
+    assert await tools.dispatch("LS", {}) == "docs/\nlinked/"

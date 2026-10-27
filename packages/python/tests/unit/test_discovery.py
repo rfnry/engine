@@ -425,6 +425,20 @@ def test_an_agent_s_tools_linked_to_a_visible_folder_of_the_agent_s_load_and_cou
     assert load_tree(tmp_path)["a"].fingerprint != before.fingerprint
 
 
+def test_a_folder_link_to_a_hidden_folder_leaves_the_agent_s_map_and_fingerprint(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/.secret/k.md", "k\n")
+    write(tmp_path / "a/docs/d.md", "d\n")
+    before = load_tree(tmp_path)["a"]
+    (tmp_path / "a/shown").symlink_to(".secret", target_is_directory=True)
+    (tmp_path / "a/linked").symlink_to("docs", target_is_directory=True)
+    after = load_tree(tmp_path)["a"]
+    assert after.listing == "docs/\n  d.md\nlinked/"
+    assert after.fingerprint == before.fingerprint
+
+
 def test_an_agent_s_own_folder_that_links_inside_the_agent_s_folder_loads(tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a"))
     write(tmp_path / "a/notes/do.md", "Do it.\n")
