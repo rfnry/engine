@@ -24,7 +24,6 @@ dev = [
     "asyncpg>=0.31.0,<1.0",
     "types-PyYAML>=6.0.12",
     "types-regex>=2026.9.10.20260911",
-    "httpx>=0.28.1",
 ]
 
 [build-system]

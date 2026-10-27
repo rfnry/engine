@@ -1,4 +1,3 @@
-import ast
 from pathlib import Path
 
 import pytest
@@ -6,7 +5,6 @@ import pytest
 ROOT = Path(__file__).parents[4]
 SIBLING = ROOT.parent / "memory"
 SRC = "packages/python/src"
-FAMILY = ("engine", "memory", "thread", "senses")
 
 BLOCKS = {
     "parts and messages": (
@@ -49,29 +47,3 @@ def test_the_shared_block_is_byte_identical_with_the_sibling_library(name: str) 
     if not SIBLING.is_dir():
         pytest.skip(f"no sibling checkout at {SIBLING}")
     assert cut(ROOT / SRC / own, start, end) == cut(SIBLING / SRC / theirs, start, end)
-
-
-def classes(path: Path) -> dict[str, str]:
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines(keepends=True)
-    return {
-        node.name: "".join(lines[node.lineno - 1 : node.end_lineno])
-        for node in ast.parse(text).body
-        if isinstance(node, ast.ClassDef)
-    }
-
-
-def providers(library: str) -> list[Path]:
-    examples = ROOT.parent / library / "examples"
-    found = [*examples.glob("*/providers.py"), *examples.glob("*/src/providers.py")]
-    return sorted(path for path in found if ".venv" not in path.parts)
-
-
-def test_every_provider_class_is_byte_identical_in_every_example_that_carries_it() -> None:
-    copies: dict[str, set[str]] = {}
-    for library in FAMILY:
-        for path in providers(library):
-            for name, text in classes(path).items():
-                copies.setdefault(name, set()).add(text)
-    assert {"TypeSafeProvider", "AnthropicProvider"} <= set(copies)
-    assert sorted(name for name, texts in copies.items() if len(texts) > 1) == []

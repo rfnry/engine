@@ -493,9 +493,9 @@ beside it, in a generation agent's own folder; a skill folder written for anothe
 is, its other keys left alone. Skills are files in the map, with their descriptions, and the model
 opens one when it judges it fits, as it opens any file. A script a skill keeps is a file like any
 other, which the model reads; to run it, the agent needs a [workspace](#workspace) whose shell can
-reach the agent's folder — mount it read-only, outside the workspace, and say where in `AGENT.md`,
-as `examples/accounting_assistant/` does. A person can also ask for one — `/skill
-escalate` in a chat — and the run is given it with `skill=`:
+reach the agent's folder — mount it read-only, outside the workspace, and say where in `AGENT.md`.
+A person can also ask for one — `/skill escalate` in a chat — and the run is given it with
+`skill=`:
 
 ```python
 run = await engine.run("support", scope="acme", input="A third complaint this week.", skill="escalate")
@@ -1456,7 +1456,8 @@ sees none of this: it has the same tools, and its command runs inside.
 
 A sandbox per command, as here, gives each command its own network, so a server a job starts
 answers only commands inside the same sandbox; to start a server in one message and reach it in
-the next, keep one sandbox per workspace — `examples/workspaces/` does it with a container.
+the next, keep one sandbox per workspace, such as a container kept for the workspace's life that
+each command enters with `docker exec`.
 
 The agent then has five more tools. `Shell(command, background=false)` runs a command and returns
 `exit_code`, `stdout`, `stderr` and `timed_out`; when the command ends, anything it left running is
@@ -1544,8 +1545,8 @@ limits nothing: one command can take all the memory, CPU or processes of the mac
 other tenant. Where the service's user has a systemd user session,
 `systemd-run --user --scope -p MemoryMax=1G -p CPUQuota=100% -p TasksMax=256 --quiet` before
 `bwrap` runs each command in a scope with those limits; `env=` then needs `XDG_RUNTIME_DIR` too,
-which `systemd-run` uses to find the session. A container per command, with Docker, and a backend
-that keeps one container per workspace, entered with `docker exec`, are in `examples/workspaces/`.
+which `systemd-run` uses to find the session. Docker serves the same way, with a container per
+command, or one per workspace that each command enters with `docker exec`.
 
 Without a sandbox, the kill reaches every process the command started except one that leaves its
 process group with `setsid`; the process namespace of a container or of bubblewrap closes that gap.
@@ -1572,8 +1573,8 @@ the next cancel after the one that started a kill — even one that comes while 
 at the same moment — cancels that kill, once, and so does the second cancel during a kill the
 workspace started on its own, for a command past its timeout or that has ended, `Job(stop=true)` or
 `close()`. The call still waits for the kill: a cancelled `kill()` must still end the command and
-everything it started, at once, before it returns; `Local` sends SIGKILL in a `finally`, and so does
-the Docker backend in `examples/workspaces/`. A `kill()` that raises is the call's error; when the
+everything it started, at once, before it returns; `Local` sends SIGKILL in a `finally`, and a
+backend of yours does the same. A `kill()` that raises is the call's error; when the
 call is already leaving with a cancellation, or with the error of a `wait()` that raised, it is
 logged as an error instead, `tools/workspace: could not stop the command: …`, and the kill that follows a
 job's end puts its error in the job's output. `read` refuses a file larger than `limit`; `write`

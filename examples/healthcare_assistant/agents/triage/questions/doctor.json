@@ -1,7 +1,0 @@
-{
-  "type": "choice",
-  "instructions": {
-    "question": "Which of the clinic's doctors is the patient's `message` about?",
-    "focus": "The doctor the patient names; pick none when the message names no doctor"
-  }
-}
