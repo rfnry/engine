@@ -122,6 +122,35 @@ async def test_a_call_runs_the_script_and_returns_its_result(tmp_path: Path) -> 
         await pool.close()
 
 
+BIG = "def run(args, call):\n    return 'x' * args['size']\n"
+LOUD = "def run(args, call):\n    raise ValueError('x' * args['size'])\n"
+OVER = "^workers/process: big sent back {} bytes, over the limit of 100 bytes$"
+
+
+async def test_a_result_over_the_limit_fails_its_call_and_the_worker_serves_on(
+    tmp_path: Path,
+) -> None:
+    pool = WorkerPool([script(tmp_path, "big", BIG)], limit=100)
+    try:
+        assert await pool.call("big", {"size": 50}, CALL, 5) == "x" * 50
+        with pytest.raises(WorkerError, match=OVER.format(300_023)):
+            await pool.call("big", {"size": 300_000}, CALL, 5)
+        assert await pool.call("big", {"size": 10}, CALL, 5) == "x" * 10
+    finally:
+        await pool.close()
+
+
+async def test_an_error_over_the_limit_is_cut_the_same_way(tmp_path: Path) -> None:
+    pool = WorkerPool([script(tmp_path, "big", LOUD)], limit=100)
+    try:
+        with pytest.raises(WorkerError, match="^ValueError: x{10}$"):
+            await pool.call("big", {"size": 10}, CALL, 5)
+        with pytest.raises(WorkerError, match=OVER.format(300_034)):
+            await pool.call("big", {"size": 300_000}, CALL, 5)
+    finally:
+        await pool.close()
+
+
 async def test_async_scripts_run_together_on_one_process(tmp_path: Path) -> None:
     body = "import asyncio\nasync def run(args, call):\n    await asyncio.sleep(0.5)\n    return args['i']\n"
     pool = WorkerPool([script(tmp_path, "slow", body)])

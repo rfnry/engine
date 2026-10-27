@@ -183,7 +183,14 @@ def _load(worker: _Worker | None) -> int:
 
 
 class WorkerPool:
-    def __init__(self, scripts: Sequence[Script], *, processes: int = 1, threads: int = 32) -> None:
+    def __init__(
+        self,
+        scripts: Sequence[Script],
+        *,
+        processes: int = 1,
+        threads: int = 32,
+        limit: int | None = None,
+    ) -> None:
         self._scripts = {
             "scripts": [
                 {"key": key, "path": str(path), "source": source}
@@ -191,6 +198,7 @@ class WorkerPool:
             ],
             "helpers": {str(path.parent): dict(helpers) for _, path, _, helpers, _ in scripts},
             "threads": threads,
+            "limit": limit,
         }
         self._awaits = {script.key for script in scripts if script.awaits}
         self._threads = threads
@@ -316,7 +324,12 @@ def _group(path: str, groups: Collection[str]) -> str | None:
 
 
 class Workers:
-    def __init__(self, agents: Mapping[str, AgentSpec], groups: Mapping[str, int] | None) -> None:
+    def __init__(
+        self,
+        agents: Mapping[str, AgentSpec],
+        groups: Mapping[str, int] | None,
+        limit: int | None = None,
+    ) -> None:
         named = dict(groups or {})
         scripts: dict[str | None, dict[str, Script]] = {None: {}, **{name: {} for name in named}}
         self._groups = {name: _group(spec.path, named) for name, spec in agents.items()}
@@ -332,6 +345,7 @@ class Workers:
             group: WorkerPool(
                 [held[key] for key in sorted(held)],
                 processes=1 if group is None else named[group],
+                limit=limit,
             )
             for group, held in scripts.items()
         }

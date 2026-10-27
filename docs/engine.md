@@ -2036,20 +2036,24 @@ and calls past those wait; an `async def run` runs on its event loop, as many at
 a script prints goes to the log, at DEBUG on the `rfnry_engine.workers.pool` logger, never into its
 result: a record per line, and 64 KiB at a time of a line whose end has not come; with DEBUG off it
 is dropped as it comes. A script that raises, `sys.exit()` included, is a tool error the model
-reads, `WorkerError: ValueError: no order A-1`, and the worker goes on. A worker that exits —
-`os._exit()`, a signal, out of memory, a crash in a C extension — fails every call it had in
-flight, `WorkerError: workers/pool: the worker for refund stopped: exited with code 3`, or
-`killed by signal 9` when a signal ended it, the run goes on, and the next call starts a new
-worker. Past `tool_timeout` the model reads
-`TimeoutError: workers/pool: refund timed out after 30s`, a deadline that counts the wait for a worker
-too: an `async def run` is cancelled in the worker and holds none of its threads, unless it blocks
-the worker's event loop — `time.sleep` or blocking I/O inside it — so that its cancel is still
-unanswered when a call sent after it passes its deadline too, and then each of those calls holds a
-thread; a `def run` cannot be stopped, so its thread runs on and its result is discarded, and once
-every thread of a worker is held so, the next call stops that worker and starts a new one, and the
-calls the old one still had in flight fail with
-`WorkerError: workers/pool: the worker for refund stopped: every thread was held by a call past its
-deadline`.
+reads, `WorkerError: ValueError: no order A-1`, and the worker goes on. What a script returns or
+raises crosses back as JSON of at most `Engine(worker_result_bytes=)` bytes as the worker writes it,
+a non-ASCII character escaped to six, 32 MiB unless you set another number, `None` for no limit;
+past it the worker sends a short error in its place, so a result too large never reaches your
+server, the model reads `WorkerError: workers/process: refund sent back 40000023 bytes, over the
+limit of 33554432 bytes`, and the worker goes on. A result under the limit still costs your server
+about three times its size while it is read, for each worker with one in flight. A worker that exits
+— `os._exit()`, a signal, out of memory, a crash in a C extension — fails every call it had in
+flight, `WorkerError: workers/pool: the worker for refund stopped: exited with code 3`, or `killed
+by signal 9` when a signal ended it, the run goes on, and the next call starts a new worker. Past
+`tool_timeout` the model reads `TimeoutError: workers/pool: refund timed out after 30s`, a deadline
+that counts the wait for a worker too: an `async def run` is cancelled in the worker and holds none
+of its threads, unless it blocks the worker's event loop — `time.sleep` or blocking I/O inside it —
+so that its cancel is still unanswered when a call sent after it passes its deadline too, and then
+each of those calls holds a thread; a `def run` cannot be stopped, so its thread runs on and its
+result is discarded, and once every thread of a worker is held so, the next call stops that worker
+and starts a new one, and the calls the old one still had in flight fail with `WorkerError:
+workers/pool: the worker for refund stopped: every thread was held by a call past its deadline`.
 
 An engine serves one event loop at a time, as a workspace's jobs live in one loop, and its workers
 follow the loop that calls them: a call from a loop other than the one that started them stops
@@ -2412,46 +2416,46 @@ twice, a tool's file that links out of its `tools/` folder, a question's file, a
 `AGENT.md` that links out of the agent's folder, an agent's own `tools/`, `tasks/` or `questions/`
 folder that links out of it, an `AGENT.md` without a `name:` or a `model:` in plain text, or whose
 `kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names to
-adapters, a model no agent runs on, an
-agent whose model has not its kind's method, two agents with one name, an agent in `agents:` or
-`route:` the tree does not have, an unknown key in the frontmatter of an `AGENT.md` or a task
-(`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that
-is not valid YAML or a `description:` that is not a string in a file the map would show, a decision
-agent with `preload: true`, `workspace: true` or `tools:`, a generation agent with `questions/` or
-`route:`, a `tools:` with no list, a `tools:` entry that is blank, padded or listed twice, a
-`tools:` that names `Output` or keeps a tool the agent does not see, a tool's `.json` without its
-`.py` or a script without its `.json`, a tool's JSON with an unknown key, no description, an
-`input_schema` that is not an object or a schema that does not compile, a script or helper that is
-not valid Python, imports the engine, the server's own code, a module relatively or a sibling script
-or subfolder of its folder, or imports a helper inside a function, a tool named like one the engine
-gives the agent, a `workers=` naming a folder that holds no agent or one inside another it names, a
-`reads:` that is not a path from the root, names no folder of the tree, a `tools/` folder on an
-agent's path or a folder inside one, leaves the root, names the agent's own folder, one that holds
-it or one inside it, or names two folders one inside the other, `reads:` on a decision agent or on
-an agent whose folder is a link to a folder elsewhere, a file `preload: true` would send that
-neither `Read` nor `Load` would hand over — over 20 MB, of a type the model's `media_types` does not
-name, or not the type its name says — one skill as both `skills/x.md` and `skills/x/SKILL.md`, a
-question in markdown, a question's JSON that is not an object, holds an unknown key, has no
-instructions or does not fit its type, a question's script without its `.json`, a decision agent
-with `tasks/`, a route not by a choice question of the router's `questions/`, by one a script fills,
-or that maps an option the question does not have, a route entry that names a task its agent does
-not have, a task for a decision agent, or gives a decision agent nothing to ask, two tools of a run
-with one name or one named like a tool the engine gives the agent, a run of an agent whose model was
-not given, or of a router whose target's model was not given, a missing workspace, a `Local` root
-that is not a directory, a `shell` that is not a list of strings or whose first word is not on
-`PATH`, a backend without `spawn`, `read` and `write`, a `Workspace` without a scope, a `max_steps`,
-`max_depth`, `tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is
-not positive, an `approve` that returns anything but `True` or `False`, a judge that is not a
-decision agent or a teacher that is not a generation agent. `NotFoundError` for an agent the tree
-does not have — a judge, a teacher or a replay's agent in the candidate included — a task the agent
-does not have (`engine: agent 'support' has no task 'ghost'`), found when the run starts, or a run
-the refinery does not. `InputError` for a call the library refuses: an empty scope, a workspace of
-another scope, a history that breaks a tool call from its result, a `start` outside the history or
-without one, tags outside their limits, runtime questions that do not fit, a runtime id the run
-already asks, questions for a generation agent, a task or a skill for a decision agent, a decision
-run with no question to ask, media the decision model does not declare, a media part with both or
-neither of `data` and `url`, a correction of the wrong shape or for a question the run was not
-asked, a `delete_runs` or `verify_absent` given both `run_ids` and `tags` or an empty one, a
+adapters, a model no agent runs on, an agent whose model has not its kind's method, two agents with
+one name, an agent in `agents:` or `route:` the tree does not have, an unknown key in the
+frontmatter of an `AGENT.md` or a task (`frontmatter: unknown key 'route.min_confidance' in
+agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a `description:` that is not a
+string in a file the map would show, a decision agent with `preload: true`, `workspace: true` or
+`tools:`, a generation agent with `questions/` or `route:`, a `tools:` with no list, a `tools:`
+entry that is blank, padded or listed twice, a `tools:` that names `Output` or keeps a tool the
+agent does not see, a tool's `.json` without its `.py` or a script without its `.json`, a tool's
+JSON with an unknown key, no description, an `input_schema` that is not an object or a schema that
+does not compile, a script or helper that is not valid Python, imports the engine, the server's own
+code, a module relatively or a sibling script or subfolder of its folder, or imports a helper inside
+a function, a tool named like one the engine gives the agent, a `workers=` naming a folder that
+holds no agent or one inside another it names, a `reads:` that is not a path from the root, names no
+folder of the tree, a `tools/` folder on an agent's path or a folder inside one, leaves the root,
+names the agent's own folder, one that holds it or one inside it, or names two folders one inside
+the other, `reads:` on a decision agent or on an agent whose folder is a link to a folder elsewhere,
+a file `preload: true` would send that neither `Read` nor `Load` would hand over — over 20 MB, of a
+type the model's `media_types` does not name, or not the type its name says — one skill as both
+`skills/x.md` and `skills/x/SKILL.md`, a question in markdown, a question's JSON that is not an
+object, holds an unknown key, has no instructions or does not fit its type, a question's script
+without its `.json`, a decision agent with `tasks/`, a route not by a choice question of the
+router's `questions/`, by one a script fills, or that maps an option the question does not have, a
+route entry that names a task its agent does not have, a task for a decision agent, or gives a
+decision agent nothing to ask, two tools of a run with one name or one named like a tool the engine
+gives the agent, a run of an agent whose model was not given, or of a router whose target's model
+was not given, a missing workspace, a `Local` root that is not a directory, a `shell` that is not a
+list of strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and `write`,
+a `Workspace` without a scope, a `max_steps`, `max_depth`, `tool_timeout`, `history_walk`,
+`history_chars`, `timeout` or `output_bytes` that is not positive, a `worker_result_bytes` that is
+neither a positive integer nor `None`, an `approve` that returns anything but `True` or `False`, a
+judge that is not a decision agent or a teacher that is not a generation agent. `NotFoundError` for
+an agent the tree does not have — a judge, a teacher or a replay's agent in the candidate included —
+a task the agent does not have (`engine: agent 'support' has no task 'ghost'`), found when the run
+starts, or a run the refinery does not. `InputError` for a call the library refuses: an empty scope,
+a workspace of another scope, a history that breaks a tool call from its result, a `start` outside
+the history or without one, tags outside their limits, runtime questions that do not fit, a runtime
+id the run already asks, questions for a generation agent, a task or a skill for a decision agent, a
+decision run with no question to ask, media the decision model does not declare, a media part with
+both or neither of `data` and `url`, a correction of the wrong shape or for a question the run was
+not asked, a `delete_runs` or `verify_absent` given both `run_ids` and `tags` or an empty one, a
 `delete_runs` given neither, an `export` or a `replay` given a `holdout_percent` outside 0 to 100, a
 `replay` given empty `tags` or a `limit`, `concurrency` or `repeat` below 1, a tool called with bad
 arguments, arguments JSON cannot hold or a path outside its directory, and any use of an engine
@@ -2464,12 +2468,12 @@ object, a key its JSON sets or one its type does not take, or a question that do
 an agent already in the same chain of routes; `DelegationDepthError` for nesting past `max_depth`,
 which reaches the model as a tool error through `Delegate` and raises through a route.
 `StorageError` for the database. `WorkerError` for a tool or a question's script that fails in its
-worker process: what its script raised, `sys.exit()` included, a result JSON cannot hold, a worker
-that stopped while the call was in flight
+worker process: what its script raised, `sys.exit()` included, a result JSON cannot hold, a result
+or error over `worker_result_bytes`, a worker that stopped while the call was in flight
 (`workers/pool: the worker for lookup_order stopped: exited with code 3`) or a call in flight when
 `close()` stopped its worker. Inside a run, a tool's error is the model's to read, never raised. All
 under `EngineException` — the root takes the `Exception` suffix, every child ends in `Error`, the
 same shape as rfnry-memory's. Every message names the module that raised it, then says what went
-wrong in lowercase: `engine: agent 'ghost' was not found`,
-`tools/workspace: path outside the workspace: ../x`. A tool's error reaches the model with its type
-in front: `InputError: tools: unknown tool 'Ghost'`.
+wrong in lowercase: `engine: agent 'ghost' was not found`, `tools/workspace: path outside the
+workspace: ../x`. A tool's error reaches the model with its type in front: `InputError: tools:
+unknown tool 'Ghost'`.

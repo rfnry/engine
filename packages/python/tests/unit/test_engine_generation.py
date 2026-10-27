@@ -483,6 +483,17 @@ async def test_the_deadline_defaults_to_thirty_seconds_and_none_disables_it(fixt
             engine_for(fixtures, Scripted(), tool_timeout=bad)
 
 
+def test_the_worker_result_limit_is_a_positive_number_of_bytes_or_none(fixtures: Path) -> None:
+    assert engine_for(fixtures, Scripted()).worker_result_bytes == 32 * 2**20
+    assert engine_for(fixtures, Scripted(), worker_result_bytes=None).worker_result_bytes is None
+    for bad in (0, -1, 1.5, True, "10"):
+        with pytest.raises(
+            ConfigurationError,
+            match=r"^engine: worker_result_bytes must be a positive number of bytes, or None for no limit$",
+        ):
+            engine_for(fixtures, Scripted(), worker_result_bytes=bad)
+
+
 def test_step_and_depth_caps_must_be_positive(fixtures: Path) -> None:
     for name in ("max_steps", "max_depth"):
         for bad in (0, -1):

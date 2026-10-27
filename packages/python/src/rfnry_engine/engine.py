@@ -444,12 +444,21 @@ class Engine:
         max_steps: int = 200,
         max_depth: int = 5,
         tool_timeout: float | None = 30.0,
+        worker_result_bytes: int | None = 33_554_432,
         history_walk: int = 10_000,
         history_chars: int = 100_000,
     ) -> None:
         if tool_timeout is not None and tool_timeout <= 0:
             raise ConfigurationError(
                 "engine: tool_timeout must be positive, or None for no deadline"
+            )
+        if worker_result_bytes is not None and (
+            not isinstance(worker_result_bytes, int)
+            or isinstance(worker_result_bytes, bool)
+            or worker_result_bytes <= 0
+        ):
+            raise ConfigurationError(
+                "engine: worker_result_bytes must be a positive number of bytes, or None for no limit"
             )
         if max_steps <= 0:
             raise ConfigurationError("engine: max_steps must be positive")
@@ -467,6 +476,7 @@ class Engine:
         self.max_steps = max_steps
         self.max_depth = max_depth
         self.tool_timeout = tool_timeout
+        self.worker_result_bytes = worker_result_bytes
         self.history_walk = history_walk
         self.history_chars = history_chars
         self._agents = load_tree(
@@ -475,7 +485,7 @@ class Engine:
         )
         validate_tree(self._agents)
         _check_models(self._agents, self._models)
-        self._workers = Workers(self._agents, _groups(self._agents, workers))
+        self._workers = Workers(self._agents, _groups(self._agents, workers), worker_result_bytes)
         self._closed = False
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
 
