@@ -2,6 +2,7 @@ import ast
 import importlib.util
 import json
 import site
+import subprocess
 import sys
 import sysconfig
 from collections.abc import Collection, Iterator
@@ -42,11 +43,47 @@ def project_of(root: Path) -> Path:
     return next((p for p in [place, *place.parents] if (p / "pyproject.toml").is_file()), place)
 
 
+SITE = """
+import json, os, site, sys
+seen = []
+add = site.addsitedir
+def record(sitedir, known_paths=None):
+    seen.append(os.fsdecode(sitedir))
+    return add(sitedir, known_paths)
+site.addsitedir = record
+site.main()
+sys.stdout.write("\\n" + json.dumps(seen) + "\\n")
+sys.stdout.flush()
+os._exit(0)
+"""
+PROBE = 10.0
+
+
 @cache
 def _installed() -> tuple[Path, ...]:
     paths = sysconfig.get_paths()
     places = {paths[key] for key in ("stdlib", "platstdlib", "purelib", "platlib")}
     return tuple(Path(place).resolve() for place in {*places, *site.getsitepackages()})
+
+
+@cache
+def _started() -> tuple[Path, ...]:
+    try:
+        found = subprocess.run(
+            [sys.executable, "-P", "-S", "-c", SITE],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=PROBE,
+            check=False,
+        )
+        return tuple(Path(place).resolve() for place in json.loads(found.stdout.splitlines()[-1]))
+    except OSError, subprocess.SubprocessError, ValueError, IndexError, TypeError:
+        return ()
+
+
+def _among(place: Path, places: tuple[Path, ...]) -> bool:
+    return any(place.is_relative_to(held) for held in places)
 
 
 def _text(path: Path) -> str:
@@ -146,11 +183,11 @@ def _origins(name: str) -> list[Path]:
 
 def _owned(origin: Path, project: Path, folders: Collection[Path]) -> bool:
     place = origin.resolve()
-    if any(place.is_relative_to(installed) for installed in _installed()):
-        return False
     if not place.is_relative_to(project):
         return False
-    return not any(place.is_relative_to(folder) for folder in folders)
+    if any(place.is_relative_to(folder) for folder in folders):
+        return False
+    return not (_among(place, _installed()) or _among(place, _started()))
 
 
 def _parsed(path: Path, source: str) -> ast.Module:

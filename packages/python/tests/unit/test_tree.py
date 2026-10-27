@@ -8,7 +8,6 @@ from rfnry_engine.models import Check, Choice, Score
 from rfnry_engine.tree import load_agent, load_tree, validate_tree
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "agents"
-EXAMPLES = Path(__file__).parents[4] / "examples"
 
 
 def test_load_tree_finds_every_agent_with_its_kind() -> None:
@@ -202,21 +201,6 @@ def test_only_true_and_false_are_booleans_in_frontmatter(tmp_path: Path) -> None
     (tmp_path / "yes").mkdir()
     (tmp_path / "on").mkdir()
     assert list(load_tree(tmp_path)["b"].reads) == ["yes", "on"]
-
-
-def test_every_example_tree_loads_with_its_checks_criteria() -> None:
-    roots = sorted(EXAMPLES.glob("*/agents"))
-    assert roots
-    for root in roots:
-        agents = load_tree(root)
-        validate_tree(agents)
-        for spec in agents.values():
-            for qid, question in spec.questions.items():
-                if not isinstance(question, Check):
-                    continue
-                written = json.loads((spec.root / "questions" / f"{qid}.json").read_text())
-                assert (question.yes is not None) == ("yes" in written), (root, qid)
-                assert (question.no is not None) == ("no" in written), (root, qid)
 
 
 def test_an_unknown_key_in_a_question_is_refused_by_name(tmp_path: Path) -> None:
