@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from fnmatch import fnmatch
 from itertools import permutations
 from pathlib import Path
+from types import MappingProxyType
 from typing import Annotated, Any, NoReturn, Protocol, cast
 from uuid import uuid4
 
@@ -96,7 +97,6 @@ from rfnry_engine.tree import (
     as_question,
     foreign,
     load_tree,
-    tree_folders,
     validate_tree,
 )
 from rfnry_engine.workers.pool import Script, Workers
@@ -402,18 +402,24 @@ def _check_models(
             _kind_clash(spec, "decide")
 
 
-def _groups(root: Path, workers: Mapping[str, int] | None) -> dict[str, int]:
+def _groups(agents: Mapping[str, AgentSpec], workers: Mapping[str, int] | None) -> dict[str, int]:
     if workers is None:
         return {}
     if not isinstance(workers, Mapping):
         raise ConfigurationError(
             "engine: workers must map folders of the tree to their number of processes"
         )
-    folders = set(tree_folders(root))
+    folders = {
+        "/".join(parts[:n])
+        for spec in agents.values()
+        if spec.path != "."
+        for parts in [spec.path.split("/")]
+        for n in range(1, len(parts) + 1)
+    }
     for name, count in workers.items():
         if name not in folders:
             raise ConfigurationError(
-                f"engine: workers names {name!r}, which is not a folder of the tree; name folders by their path from the root"
+                f"engine: workers names {name!r}, which holds no agent of the tree; name a folder that holds agents by its path from the root"
             )
         if not isinstance(count, int) or isinstance(count, bool) or count < 1:
             raise ConfigurationError(
@@ -456,7 +462,7 @@ class Engine:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"engine: root is not a directory: {root}")
-        self.models = _models(models)
+        self._models = _models(models)
         self.refinery = refinery
         self.max_steps = max_steps
         self.max_depth = max_depth
@@ -465,11 +471,11 @@ class Engine:
         self.history_chars = history_chars
         self._agents = load_tree(
             self.root,
-            {name: getattr(model, "media_types", None) for name, model in self.models.items()},
+            {name: getattr(model, "media_types", None) for name, model in self._models.items()},
         )
         validate_tree(self._agents)
-        _check_models(self._agents, self.models)
-        self._workers = Workers(self._agents, _groups(self.root, workers))
+        _check_models(self._agents, self._models)
+        self._workers = Workers(self._agents, _groups(self._agents, workers))
         self._closed = False
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
 
@@ -486,6 +492,10 @@ class Engine:
 
     async def __aexit__(self, *exc: object) -> None:
         await self.close()
+
+    @property
+    def models(self) -> Mapping[str, GenerationModel | DecisionModel]:
+        return MappingProxyType(self._models)
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
@@ -727,11 +737,10 @@ class Engine:
         parent_run_id: str | None,
     ) -> Decision:
         caller = _caller(scope)
-        model_ = self.models.get(spec.model)
+        model_ = self._models.get(spec.model)
         if model_ is None:
             _not_given(spec)
-        if not isinstance(model_, DecisionModel):
-            _kind_clash(spec, "decide")
+        model_ = cast(DecisionModel, model_)
         self._check_routes(spec, set())
         folder = {*spec.questions, *spec.scripted}
         clash = [qid for qid in options.questions if qid in folder]
@@ -857,7 +866,7 @@ class Engine:
         seen.add(spec.name)
         for target in spec.route.to.values() if spec.route is not None else []:
             routed = self._agents[target.agent]
-            if routed.model not in self.models:
+            if routed.model not in self._models:
                 raise ConfigurationError(
                     f"engine: agent {spec.name!r} routes to agent {target.agent!r}, which runs on model {routed.model!r}, which this engine was not given"
                 )
@@ -873,11 +882,10 @@ class Engine:
         parent_run_id: str | None,
     ) -> Generation:
         caller = _caller(scope)
-        model_ = self.models.get(spec.model)
+        model_ = self._models.get(spec.model)
         if model_ is None:
             _not_given(spec)
-        if not isinstance(model_, GenerationModel):
-            _kind_clash(spec, "generate")
+        model_ = cast(GenerationModel, model_)
         run_id = uuid4().hex
         started = time.monotonic()
         at = _now()
@@ -926,9 +934,7 @@ class Engine:
             context=options.context,
         )
         preload = [Message(role="user", content=list(spec.preload))] if spec.preload else []
-        chained = chain.Chain(
-            lambda: chain.opening(_declared(model_), system, specs, spec.preload_digest)
-        )
+        chained = chain.Chain(chain.opening(_declared(model_), system, specs, spec.preload_digest))
         history = await chained.settle(options.history)
         opening = _content(input)
         if options.skill is not None:

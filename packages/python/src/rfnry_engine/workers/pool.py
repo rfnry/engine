@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 from collections.abc import Collection, Mapping, Sequence
+from concurrent.futures import Future
 from functools import partial
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, NamedTuple, cast
@@ -25,6 +26,8 @@ PROGRAM = Path(__file__).with_name("process.py")
 CLOSED = "it was closed"
 RETIRED = "every thread was held by a call past its deadline"
 MOVED = "a call came from another event loop"
+CAP = 64 * 1024
+POLL = 0.01
 
 
 class Script(NamedTuple):
@@ -32,6 +35,7 @@ class Script(NamedTuple):
     path: Path
     source: str
     helpers: Mapping[str, str]
+    awaits: bool
 
 
 def _lines(pending: bytearray, data: bytes) -> list[bytes]:
@@ -71,8 +75,10 @@ class _Worker:
     def __init__(self, process: subprocess.Popen[bytes], loop: asyncio.AbstractEventLoop) -> None:
         self.process = process
         self.pid = process.pid
-        self.calls: dict[int, tuple[str, asyncio.Future[JsonValue]]] = {}
+        self.calls: dict[int, tuple[str, asyncio.Future[JsonValue], int]] = {}
         self.held: set[int] = set()
+        self.cancelling: dict[int, int] = {}
+        self.sent = 0
         self.ended = False
         self._loop = loop
         self._stdin: asyncio.WriteTransport | None = None
@@ -92,23 +98,37 @@ class _Worker:
         if fd == 1:
             for line in _lines(self._out, data):
                 self._answer(json.loads(line))
-        else:
+        elif logger.isEnabledFor(logging.DEBUG):
             for line in _lines(self._err, data):
                 self._log(line)
+            while len(self._err) >= CAP:
+                self._log(bytes(self._err[:CAP]))
+                del self._err[:CAP]
 
     def write(self, text: str) -> None:
         cast(asyncio.WriteTransport, self._stdin).write(f"{text}\n".encode())
 
     def send(self, id: int, name: str, text: str) -> asyncio.Future[JsonValue]:
         reply: asyncio.Future[JsonValue] = asyncio.get_running_loop().create_future()
-        self.calls[id] = (name, reply)
+        self.sent += 1
+        self.calls[id] = (name, reply, self.sent)
         self.write(text)
         return reply
 
-    def abandon(self, id: int) -> None:
-        if self.calls.pop(id, None) is not None and not self.ended:
+    def abandon(self, id: int, held: bool, expired: bool) -> None:
+        entry = self.calls.pop(id, None)
+        if entry is None or self.ended:
+            return
+        _, _, number = entry
+        wedged = expired and any(number > mark for mark in self.cancelling.values())
+        if wedged:
+            self.held.update(self.cancelling)
+            self.cancelling.clear()
+        if held or wedged:
             self.held.add(id)
-            self.write(json.dumps({"id": id, "cancel": True}))
+        else:
+            self.cancelling[id] = self.sent
+        self.write(json.dumps({"id": id, "cancel": True}))
 
     def stop(self, reason: str | None = None) -> None:
         if self.ended:
@@ -130,18 +150,20 @@ class _Worker:
         for pipe in (self.process.stdin, self.process.stdout, stderr):
             cast(IO[bytes], pipe).close()
         stopped = f"stopped: {reason or _reason(code)}"
-        for name, future in self.calls.values():
+        for name, future, _ in self.calls.values():
             if not future.done() and not future.get_loop().is_closed():
                 future.set_exception(WorkerError(f"workers/pool: the worker for {name} {stopped}"))
         self.calls.clear()
         self.held.clear()
+        self.cancelling.clear()
 
     def _answer(self, reply: dict[str, Any]) -> None:
         self.held.discard(reply["id"])
+        self.cancelling.pop(reply["id"], None)
         entry = self.calls.pop(reply["id"], None)
         if entry is None or entry[1].done():
             return
-        _, future = entry
+        _, future, _ = entry
         if "error" in reply:
             future.set_exception(WorkerError(reply["error"]))
         else:
@@ -151,8 +173,13 @@ class _Worker:
         logger.debug("workers/pool: worker %d: %s", self.pid, line.decode(errors="replace"))
 
 
+def _log(*errors: BaseException) -> None:
+    for error in errors:
+        logger.error("workers/pool: could not stop a worker: %s", error, exc_info=error)
+
+
 def _load(worker: _Worker | None) -> int:
-    return 0 if worker is None else len(worker.calls) + len(worker.held)
+    return 0 if worker is None else len(worker.calls) + len(worker.held) + len(worker.cancelling)
 
 
 class WorkerPool:
@@ -160,11 +187,12 @@ class WorkerPool:
         self._scripts = {
             "scripts": [
                 {"key": key, "path": str(path), "source": source}
-                for key, path, source, _ in scripts
+                for key, path, source, _, _ in scripts
             ],
-            "helpers": {str(path.parent): dict(helpers) for _, path, _, helpers in scripts},
+            "helpers": {str(path.parent): dict(helpers) for _, path, _, helpers, _ in scripts},
             "threads": threads,
         }
+        self._awaits = {script.key for script in scripts if script.awaits}
         self._threads = threads
         self._workers: list[_Worker | None] = [None] * processes
         self._ids = itertools.count()
@@ -196,21 +224,47 @@ class WorkerPool:
             raise TimeoutError(f"workers/pool: {name} timed out after {timeout:g}s") from None
         finally:
             if worker is not None:
-                worker.abandon(id)
+                worker.abandon(id, held=key not in self._awaits, expired=deadline.expired())
 
     async def close(self) -> None:
         self._closed = True
-        if self._loop is not asyncio.get_running_loop():
+        loop = self._loop
+        if loop is asyncio.get_running_loop():
+            async with self._lock:
+                self._drop(CLOSED)
+        elif loop is not None and loop.is_running():
+            handed: Future[None] = Future()
+            soon = loop.call_soon_threadsafe(self._hand, handed)
+            while not handed.done() and loop.is_running():
+                await asyncio.sleep(POLL)
+            if handed.done():
+                handed.result()
+            else:
+                soon.cancel()
+                self._drop(CLOSED)
+        else:
             self._drop(CLOSED)
-            return
-        async with self._lock:
+
+    def _hand(self, handed: Future[None]) -> None:
+        try:
             self._drop(CLOSED)
+        except BaseException as exc:
+            handed.set_exception(exc)
+        else:
+            handed.set_result(None)
 
     def _drop(self, reason: str) -> None:
         workers = [worker for worker in self._workers if worker is not None]
         self._workers = [None] * len(self._workers)
+        failed: list[BaseException] = []
         for worker in workers:
-            worker.stop(reason)
+            try:
+                worker.stop(reason)
+            except BaseException as exc:
+                failed.append(exc)
+        _log(*failed[1:])
+        if failed:
+            raise failed[0]
 
     def _follow(self) -> None:
         loop = asyncio.get_running_loop()
@@ -231,7 +285,11 @@ class WorkerPool:
             index = min(range(len(self._workers)), key=lambda i: _load(self._workers[i]))
             chosen = self._workers[index]
             if chosen is None:
-                chosen = self._workers[index] = await self._spawn()
+                chosen = await self._spawn()
+                if self._closed:
+                    chosen.stop(CLOSED)
+                    raise WorkerError(f"workers/pool: the worker for {name} stopped: {CLOSED}")
+                self._workers[index] = chosen
             return chosen
 
     async def _spawn(self) -> _Worker:
@@ -265,7 +323,9 @@ class Workers:
         for name, spec in agents.items():
             own = scripts[self._groups[name]]
             for tool in spec.folder_tools.values():
-                own[tool.key] = Script(tool.key, tool.script, tool.source, tool.helpers)
+                own[tool.key] = Script(
+                    tool.key, tool.script, tool.source, tool.helpers, tool.awaits
+                )
             for _, script in spec.scripted.values():
                 own[script.key] = script
         self._pools = {
@@ -280,4 +340,10 @@ class Workers:
         return self._pools[self._groups[agent]]
 
     async def close(self) -> None:
-        await asyncio.gather(*(pool.close() for pool in self._pools.values()))
+        closed = await asyncio.gather(
+            *(pool.close() for pool in self._pools.values()), return_exceptions=True
+        )
+        failed = [result for result in closed if isinstance(result, BaseException)]
+        _log(*failed[1:])
+        if failed:
+            raise failed[0]

@@ -74,6 +74,37 @@ def _hidden(rel: Path) -> bool:
     )
 
 
+def _within(jail: Jail, path: Path) -> tuple[Path, Path] | None:
+    try:
+        real = Path(os.path.realpath(path))
+    except ValueError:
+        return None
+    root = next((r for r in (jail.root, *jail.also) if real == r or r in real.parents), None)
+    return None if root is None else (root, real.relative_to(root))
+
+
+def _hides(jail: Jail, path: str | Path) -> bool:
+    named = jail.root / path
+    place = _within(jail, named)
+    if place is None:
+        return False
+    root, seen = place
+    if os.path.isdir(named):
+        return _hidden(seen)
+    folder = _within(jail, named.parent)
+    if folder is not None and folder[0] == root:
+        seen = folder[1] / named.name
+    return _hidden(seen) or _hidden(Path(named.name))
+
+
+def _named(jail: Jail, path: str) -> str:
+    if _hides(jail, path):
+        raise InputError(
+            f"tools/builtins: {path} is hidden; names starting with . and __pycache__ are not part of the agent's folder"
+        )
+    return path
+
+
 _SIGNATURES = {
     "image/png": (b"\x89PNG\r\n\x1a\n",),
     "image/jpeg": (b"\xff\xd8\xff",),
@@ -229,7 +260,7 @@ class _Directory:
     def read(self, args: dict[str, Any]) -> Result:
         a = ReadArgs.model_validate(args)
         missing = 'Read with where="workspace" reads from your workspace' if self.workspace else ""
-        return _lines(_contents(self.jail, a.path, _MAX_BYTES, missing)[1], a)
+        return _lines(_contents(self.jail, _named(self.jail, a.path), _MAX_BYTES, missing)[1], a)
 
     def _files_under(self, base: Path, glob: str | None) -> tuple[list[Path], bool]:
         if base.is_file():
@@ -238,7 +269,12 @@ class _Directory:
         found: list[Path] = []
         for candidate in walked[:_MAX_WALK]:
             rel = Path(self._shown(candidate))
-            if not candidate.is_file() or _hidden(rel) or not self._inside(candidate):
+            if (
+                not candidate.is_file()
+                or _hidden(rel)
+                or _hides(self.jail, candidate)
+                or not self._inside(candidate)
+            ):
                 continue
             if glob is not None and not rel.match(glob):
                 continue
@@ -264,7 +300,7 @@ class _Directory:
                     f"tools/builtins: pattern took longer than {budget:g}s; simplify it or narrow path and glob"
                 ) from exc
 
-        base = self.jail.resolve(a.path) if a.path else self.root
+        base = self.jail.resolve(_named(self.jail, a.path)) if a.path else self.root
         lines: list[str] = []
         scanned = 0
         exhausted = False
@@ -332,20 +368,29 @@ class _Directory:
         matches = sorted(
             self._shown(p)
             for p in entries[:_MAX_WALK]
-            if p.is_file() and not _hidden(Path(self._shown(p))) and self._inside(p)
+            if p.is_file()
+            and not _hidden(Path(self._shown(p)))
+            and not _hides(self.jail, p)
+            and self._inside(p)
         )
         suffix = f"\n[truncated: walk exceeded {_MAX_WALK} entries]" if truncated else ""
         return "\n".join(matches) + suffix
 
     def ls(self, args: dict[str, Any]) -> str:
         a = LSArgs.model_validate(args)
-        path = a.path or "."
+        path = _named(self.jail, a.path or ".")
+        place = self.jail.resolve(path)
         try:
             fd = self.jail.open(path, os.O_RDONLY | os.O_DIRECTORY)
             try:
                 with os.scandir(fd) as found:
                     entries = sorted(
-                        (e for e in found if not _hidden(Path(e.name))), key=lambda e: e.name
+                        (
+                            e
+                            for e in found
+                            if not _hidden(Path(e.name)) and not _hides(self.jail, place / e.name)
+                        ),
+                        key=lambda e: e.name,
                     )
                 shown = [f"{e.name}/" if e.is_dir() else e.name for e in entries[: a.limit]]
             finally:
@@ -419,7 +464,7 @@ def load_tool(
     )
 
     def load(path: str) -> list[Part]:
-        opened, data = _contents(jail, path, _LOAD_BYTES, missing)
+        opened, data = _contents(jail, _named(jail, path), _LOAD_BYTES, missing)
         return [_handed(opened, data, path, media_types)]
 
     async def body(args: dict[str, Any]) -> Result:

@@ -142,7 +142,7 @@ def test_each_kind_holds_only_what_it_can_use(
     tmp_path: Path, front: str, questions: dict[str, str], tools: tuple[str, ...], message: str
 ) -> None:
     _agent(tmp_path, "a", front, questions, tools)
-    with pytest.raises(ConfigurationError, match=f"^tree: {message}"):
+    with pytest.raises(ConfigurationError, match=f"^tree: {message}(;|$)"):
         load_agent(tmp_path / "a")
 
 
@@ -166,7 +166,7 @@ def test_each_kind_holds_only_what_it_can_use(
 def test_routes_and_agents_must_resolve(tmp_path: Path, front: str, message: str) -> None:
     _agent(tmp_path, "a", front, {"q": CHOICE, "urgent": CHECK})
     _agent(tmp_path, "b", "kind: generation\nmodel: strong\n")
-    with pytest.raises(ConfigurationError, match=f"^tree: {message}"):
+    with pytest.raises(ConfigurationError, match=f"^tree: {message}(;|$)"):
         validate_tree(load_tree(tmp_path))
 
 
@@ -433,7 +433,7 @@ def test_an_agent_reads_the_folders_it_names(tmp_path: Path) -> None:
         ),
         (
             "kind: generation\nmodel: strong\nreads: [coding]\n",
-            "agent 'coding' reads 'coding', its own folder",
+            "agent 'coding' reads 'coding', its own folder or one that holds it",
         ),
         (
             "kind: generation\nmodel: strong\nreads: [.hidden]\n",
@@ -441,7 +441,7 @@ def test_an_agent_reads_the_folders_it_names(tmp_path: Path) -> None:
         ),
         (
             "kind: generation\nmodel: strong\nreads: [outside]\n",
-            "agent 'coding' reads 'outside', which resolves outside the root",
+            "agent 'coding' reads 'outside', which resolves outside the root to .*/elsewhere",
         ),
         (
             "kind: generation\nmodel: strong\nreads: [alias]\n",
@@ -463,7 +463,40 @@ def test_reads_names_a_readable_folder_of_the_root(
     (tmp_path / "elsewhere").mkdir()
     (root / "outside").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
     (root / "alias").symlink_to(root / "books", target_is_directory=True)
-    with pytest.raises(ConfigurationError, match=f"^tree: {message}"):
+    with pytest.raises(ConfigurationError, match=f"^tree: {message}(;|$)"):
+        load_tree(root)
+
+
+@pytest.mark.parametrize(
+    ("front", "message"),
+    [
+        (
+            "kind: decision\nmodel: judge\nreads: [ghost]\n",
+            "decision agent 'coding' cannot declare reads:",
+        ),
+        (
+            "kind: generation\nmodel: strong\nreads: [coding, ghost]\n",
+            "agent 'coding' reads unknown folder 'ghost'",
+        ),
+        (
+            "kind: generation\nmodel: strong\nreads: [outside, coding]\n",
+            "agent 'coding' reads 'outside', which resolves outside the root to .*/elsewhere",
+        ),
+        (
+            "kind: generation\nmodel: strong\nreads: [books, books/python, coding]\n",
+            "agent 'coding' reads 'coding', its own folder or one that holds it",
+        ),
+    ],
+)
+def test_reads_that_breaks_two_rules_is_refused_for_the_rule_checked_first(
+    tmp_path: Path, front: str, message: str
+) -> None:
+    root = tmp_path / "root"
+    _agent(root, "coding", front, {"q": CHECK} if "decision" in front else None)
+    (root / "books" / "python").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    (root / "outside").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    with pytest.raises(ConfigurationError, match=f"^tree: {message}(;|$)"):
         load_tree(root)
 
 

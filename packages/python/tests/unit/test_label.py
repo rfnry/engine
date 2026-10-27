@@ -3,7 +3,7 @@ import json
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -434,13 +434,16 @@ async def test_the_teacher_answers_a_failed_decision(fixtures: Path, storage: St
     assert labeled.taught == 1 and labeled.errors == {}
 
 
+class Named(Fixed):
+    model = "j"
+    settings = {"effort": "low"}
+
+
 async def test_a_judge_s_label_names_its_model_and_settings(
     fixtures: Path, storage: Storage
 ) -> None:
     refinery = Refinery(storage)
-    judge = Fixed(JUDGEMENT)
-    cast(Any, judge).model = "j"
-    cast(Any, judge).settings = {"effort": "low"}
+    judge = Named(JUDGEMENT)
     engine = Engine(
         fixtures,
         refinery=refinery,

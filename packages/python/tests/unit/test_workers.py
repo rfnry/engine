@@ -5,20 +5,23 @@ import gc
 import logging
 import os
 import signal
+import threading
 import time
 from collections import Counter
-from collections.abc import Awaitable, Iterator
+from collections.abc import Awaitable, Coroutine, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import JsonValue
 
 from rfnry_engine.errors import InputError, WorkerError
-from rfnry_engine.workers.pool import Script, WorkerPool
+from rfnry_engine.workers.pool import CAP, CLOSED, Script, WorkerPool, Workers, _Worker
 
 CALL = {"scope": "acme"}
 PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
 WAIT = "import asyncio, os\nasync def run(args, call):\n    await asyncio.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
+NOISE = "import os, sys\ndef run(args, call):\n    print('x' * 200 * 1024, end='', file=sys.stderr, flush=True)\n    return os.getpid()\n"
 
 
 def script(tmp_path: Path, name: str, body: str) -> Script:
@@ -26,7 +29,7 @@ def script(tmp_path: Path, name: str, body: str) -> Script:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
     helpers = {p.stem: p.read_text(encoding="utf-8") for p in path.parent.glob("_*.py")}
-    return Script(name, path, body, helpers)
+    return Script(name, path, body, helpers, "async def run" in body)
 
 
 def pid(value: JsonValue) -> int:
@@ -235,6 +238,33 @@ async def test_what_a_script_prints_goes_to_the_log_and_leaves_its_result_intact
         await pool.close()
 
 
+async def test_a_line_that_never_ends_is_logged_in_pieces_no_longer_than_the_cap(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="rfnry_engine.workers.pool")
+    pool = WorkerPool([script(tmp_path, "noisy", NOISE)])
+    try:
+        worker = pid(await pool.call("noisy", {}, CALL, 5))
+    finally:
+        await pool.close()
+    pieces = [r.getMessage() for r in caplog.records if r.name == "rfnry_engine.workers.pool"]
+    prefix = f"workers/pool: worker {worker}: "
+    assert len(pieces) > 1 and sum(piece.count("x") for piece in pieces) == 200 * 1024
+    assert all(piece.startswith(prefix) and len(piece) <= len(prefix) + CAP for piece in pieces)
+
+
+async def test_with_debug_off_what_a_script_prints_is_dropped_as_it_comes(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="rfnry_engine.workers.pool")
+    pool = WorkerPool([script(tmp_path, "noisy", NOISE)])
+    try:
+        await pool.call("noisy", {}, CALL, 5)
+        assert [bytes(w._err) for w in pool._workers if w is not None] == [b""]
+    finally:
+        await pool.close()
+
+
 async def test_a_result_that_is_not_json_is_an_error_naming_its_type(tmp_path: Path) -> None:
     body = (
         "import datetime\n"
@@ -298,7 +328,7 @@ async def test_a_worker_runs_the_source_it_was_given_under_the_script_s_path(
         "def run(args, call):\n"
         "    return [_client.NAME, __file__, run.__code__.co_filename, _client.__file__]\n"
     )
-    pool = WorkerPool([Script("tools/given", path, body, {"_client": "NAME = 'given'\n"})])
+    pool = WorkerPool([Script("tools/given", path, body, {"_client": "NAME = 'given'\n"}, False)])
     try:
         assert await pool.call("tools/given", {}, CALL, 5) == [
             "given",
@@ -406,6 +436,52 @@ async def test_an_async_call_past_its_timeout_is_cancelled_in_the_worker(tmp_pat
         await pool.close()
 
 
+async def test_an_async_call_past_its_deadline_holds_no_thread(tmp_path: Path) -> None:
+    pool = WorkerPool([script(tmp_path, "wait", WAIT)], threads=1)
+    try:
+        first = await pool.call("wait", {}, CALL, 5)
+        with pytest.raises(TimeoutError):
+            await pool.call("wait", {"sleep": 30}, CALL, 0.1)
+        assert await pool.call("wait", {}, CALL, 5) == first
+    finally:
+        await pool.close()
+
+
+async def test_an_async_call_that_blocks_its_worker_s_loop_gets_the_worker_retired(
+    tmp_path: Path,
+) -> None:
+    body = "import os, time\nasync def run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
+    pool = WorkerPool([script(tmp_path, "block", body)], threads=2)
+    try:
+        first = pid(await pool.call("block", {}, CALL, 5))
+        for _ in range(2):
+            with pytest.raises(TimeoutError):
+                await pool.call("block", {"sleep": 30}, CALL, 0.2)
+        assert pid(await pool.call("block", {}, CALL, 5)) != first
+        assert await gone(first)
+    finally:
+        await pool.close()
+
+
+async def test_a_call_cancelled_from_outside_after_an_unanswered_cancel_holds_no_thread(
+    tmp_path: Path,
+) -> None:
+    body = "import os, time\nasync def run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
+    pool = WorkerPool([script(tmp_path, "block", body)], threads=2)
+    try:
+        with pytest.raises(TimeoutError):
+            await pool.call("block", {"sleep": 30}, CALL, 0.2)
+        second = asyncio.create_task(pool.call("block", {}, CALL, 5))
+        await asyncio.sleep(0.2)
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        worker = pool._workers[0]
+        assert worker is not None and worker.held == set() and len(worker.cancelling) == 2
+    finally:
+        await pool.close()
+
+
 @pytest.mark.parametrize(
     ("ending", "reason"),
     [("os._exit(3)", "exited with code 3"), ("os.kill(os.getpid(), 9)", "killed by signal 9")],
@@ -437,6 +513,33 @@ async def test_a_worker_that_exits_fails_every_call_in_flight_and_the_next_call_
         assert await pool.call("support/tools/wait", {}, CALL, 5) != first
     finally:
         await pool.close()
+
+
+async def test_a_worker_that_exits_past_a_child_it_forked_fails_its_call_with_its_exit_code(
+    tmp_path: Path,
+) -> None:
+    body = (
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "def run(args, call):\n"
+        "    child = os.fork()\n"
+        "    if child == 0:\n"
+        "        time.sleep(30)\n"
+        "        os._exit(0)\n"
+        "    Path(args['file']).write_text(str(child))\n"
+        "    os._exit(3)\n"
+    )
+    pool = WorkerPool([script(tmp_path, "forks", body)])
+    held = tmp_path / "child.txt"
+    try:
+        started = time.monotonic()
+        with pytest.raises(WorkerError) as raised:
+            await pool.call("forks", {"file": str(held)}, CALL, 10)
+        assert time.monotonic() - started < 5
+        assert str(raised.value) == "workers/pool: the worker for forks stopped: exited with code 3"
+    finally:
+        await pool.close()
+    assert await gone(int(held.read_text()))
 
 
 async def test_many_processes_share_the_calls(tmp_path: Path) -> None:
@@ -583,6 +686,190 @@ def test_close_from_another_event_loop_leaves_no_worker_behind(tmp_path: Path) -
     with pytest.raises(WorkerError, match="the worker for nap stopped: it was closed"):
         on_a_loop_of_its_own(pool.call("nap", {}, CALL, 5))
     on_a_loop_of_its_own(pool.close())
+
+
+async def test_close_from_another_thread_stops_the_workers_on_the_loop_they_serve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stops: list[int] = []
+    stop = _Worker.stop
+
+    def stopping(worker: _Worker, reason: str | None = None) -> None:
+        stops.append(threading.get_ident())
+        stop(worker, reason)
+
+    monkeypatch.setattr(_Worker, "stop", stopping)
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        first = asyncio.run_coroutine_threadsafe(pool.call("nap", {}, CALL, 5), loop)
+        worker = pid(await asyncio.wrap_future(first))
+        await pool.close()
+        assert reaped(worker) and set(stops) == {thread.ident}
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+
+
+async def test_close_from_another_thread_as_the_workers_loop_stops_returns_and_stops_them(
+    tmp_path: Path,
+) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        first = asyncio.run_coroutine_threadsafe(pool.call("nap", {}, CALL, 5), loop)
+        worker = pid(await asyncio.wrap_future(first))
+        loop.call_soon_threadsafe(loop.stop)
+        async with asyncio.timeout(5):
+            await pool.close()
+        assert reaped(worker)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+
+
+def plain_task(
+    loop: asyncio.AbstractEventLoop, coro: Coroutine[Any, Any, Any]
+) -> asyncio.Task[Any]:
+    return asyncio.Task(coro, loop=loop)
+
+
+async def test_close_from_another_thread_returns_when_the_workers_loop_starts_no_task_eagerly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stops: list[int] = []
+    stop = _Worker.stop
+
+    def stopping(worker: _Worker, reason: str | None = None) -> None:
+        stops.append(threading.get_ident())
+        stop(worker, reason)
+
+    monkeypatch.setattr(_Worker, "stop", stopping)
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    loop = asyncio.new_event_loop()
+    loop.set_task_factory(plain_task)
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        first = asyncio.run_coroutine_threadsafe(pool.call("nap", {}, CALL, 5), loop)
+        worker = pid(await asyncio.wrap_future(first))
+        async with asyncio.timeout(5):
+            await pool.close()
+        assert reaped(worker) and set(stops) == {thread.ident}
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        pool._drop(CLOSED)
+        loop.close()
+
+
+async def test_close_from_another_thread_raises_what_stopping_a_worker_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stop = _Worker.stop
+
+    def failing(worker: _Worker, reason: str | None = None) -> None:
+        stop(worker, reason)
+        raise OSError("the pipe would not close")
+
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        first = asyncio.run_coroutine_threadsafe(pool.call("nap", {}, CALL, 5), loop)
+        worker = pid(await asyncio.wrap_future(first))
+        monkeypatch.setattr(_Worker, "stop", failing)
+        with pytest.raises(OSError, match="the pipe would not close"):
+            async with asyncio.timeout(5):
+                await pool.close()
+        assert reaped(worker)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+
+
+async def test_close_stops_every_worker_before_it_raises_what_the_first_stop_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.ERROR, logger="rfnry_engine.workers.pool")
+    stop = _Worker.stop
+    stopped: list[_Worker] = []
+
+    def failing(worker: _Worker, reason: str | None = None) -> None:
+        stop(worker, reason)
+        stopped.append(worker)
+        raise OSError(f"stop {len(stopped)} would not close its pipe")
+
+    pool = WorkerPool([script(tmp_path, "wait", WAIT)], processes=2)
+    pids = await asyncio.gather(*(pool.call("wait", {"sleep": 0.2}, CALL, 5) for _ in range(2)))
+    assert len(set(pids)) == 2
+    monkeypatch.setattr(_Worker, "stop", failing)
+    with pytest.raises(OSError, match="^stop 1 would not close its pipe$"):
+        await pool.close()
+    assert len(stopped) == 2 and all(reaped(pid(value)) for value in pids)
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "rfnry_engine.workers.pool"
+    ] == ["workers/pool: could not stop a worker: stop 2 would not close its pipe"]
+
+
+async def test_closing_the_workers_closes_every_pool_before_it_raises_what_the_first_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.ERROR, logger="rfnry_engine.workers.pool")
+    first = WorkerPool([script(tmp_path / "one", "nap", PID)])
+    second = WorkerPool([script(tmp_path / "two", "nap", PID)])
+    third = WorkerPool([script(tmp_path / "three", "nap", PID)])
+    pids = [pid(await pool.call("nap", {}, CALL, 5)) for pool in (first, second, third)]
+    close = WorkerPool.close
+
+    async def failing(pool: WorkerPool, said: str) -> None:
+        await close(pool)
+        raise OSError(f"the {said} pool would not close")
+
+    async def slow() -> None:
+        await asyncio.sleep(0.2)
+        await close(second)
+
+    workers = Workers({}, None)
+    workers._pools = {None: first, "billing": second, "support": third}
+    monkeypatch.setattr(first, "close", lambda: failing(first, "first"))
+    monkeypatch.setattr(second, "close", slow)
+    monkeypatch.setattr(third, "close", lambda: failing(third, "third"))
+    with pytest.raises(OSError, match="^the first pool would not close$"):
+        await workers.close()
+    assert all(reaped(value) for value in pids)
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "rfnry_engine.workers.pool"
+    ] == ["workers/pool: could not stop a worker: the third pool would not close"]
+
+
+def test_a_worker_started_while_its_pool_closes_is_stopped(tmp_path: Path) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    _, children = held()
+    loop = asyncio.new_event_loop()
+    try:
+        call = loop.create_task(pool.call("nap", {}, CALL, 5))
+        loop.run_until_complete(asyncio.sleep(0))
+        assert len(held()[1]) == len(children) + 1
+        on_a_loop_of_its_own(pool.close())
+        with pytest.raises(WorkerError, match="the worker for nap stopped: it was closed"):
+            loop.run_until_complete(call)
+    finally:
+        on_a_loop_of_its_own(pool.close())
+        loop.close()
+    assert held()[1] == children
 
 
 def test_a_pool_that_follows_one_event_loop_after_another_holds_no_more_files_or_processes(

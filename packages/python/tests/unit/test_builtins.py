@@ -674,3 +674,338 @@ def test_a_file_far_over_the_limit_is_refused_without_reading_it(
     monkeypatch.setattr("rfnry_engine.tools.builtins.open", never, raising=False)
     with pytest.raises(InputError, match="^tools/builtins: file exceeds 10 bytes: sparse.bin$"):
         _contents(Jail(tmp_path), "sparse.bin", 10)
+
+
+@pytest.fixture
+def hidden(tmp_path: Path) -> Path:
+    (tmp_path / ".env").write_text("TOKEN=1", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("[core]", encoding="utf-8")
+    (tmp_path / "tools" / "__pycache__").mkdir(parents=True)
+    (tmp_path / "tools" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    (tmp_path / "plain.md").write_text("plain", encoding="utf-8")
+    (tmp_path / "shown.md").symlink_to(tmp_path / ".env")
+    return tmp_path
+
+
+async def test_the_file_tools_refuse_a_hidden_path_named_directly(hidden: Path) -> None:
+    tools = Tools(builtins(hidden))
+    load = Tools([load_tool(hidden)])
+    for tool, name, args in [
+        (tools, "Read", {"path": ".env"}),
+        (tools, "Read", {"path": "./tools/../.env"}),
+        (load, "Load", {"path": "tools/__pycache__/x.pyc"}),
+        (tools, "Grep", {"pattern": "core", "path": ".git/config"}),
+        (tools, "LS", {"path": ".git"}),
+    ]:
+        with pytest.raises(InputError, match=r"^tools/builtins: .* is hidden"):
+            await tool.dispatch(name, args)
+
+
+async def test_a_visible_link_to_a_hidden_file_still_reads(hidden: Path) -> None:
+    tools = Tools(builtins(hidden))
+    assert await tools.dispatch("Read", {"path": "shown.md"}) == "TOKEN=1"
+    assert await tools.dispatch("Read", {"path": "plain.md"}) == "plain"
+
+
+async def test_an_absolute_path_is_judged_inside_the_folder_not_by_its_ancestors(
+    tmp_path: Path,
+) -> None:
+    agent = tmp_path / ".h" / "agent"
+    agent.mkdir(parents=True)
+    (agent / "a.md").write_text("visible", encoding="utf-8")
+    (agent / ".env").write_text("TOKEN=1", encoding="utf-8")
+    tools = Tools(builtins(agent))
+    assert await tools.dispatch("Read", {"path": str(agent / "a.md")}) == "visible"
+    with pytest.raises(InputError, match="is hidden"):
+        await tools.dispatch("Read", {"path": str(agent / ".env")})
+
+
+async def test_an_absolute_path_outside_the_folder_is_outside_not_hidden(hidden: Path) -> None:
+    other = hidden.parent / ".other" / "x.md"
+    other.parent.mkdir(exist_ok=True)
+    other.write_text("x", encoding="utf-8")
+    with pytest.raises(InputError, match="outside the agent directory"):
+        await Tools(builtins(hidden)).dispatch("Read", {"path": str(other)})
+
+
+async def test_a_hidden_name_inside_a_reads_folder_is_refused(tmp_path: Path) -> None:
+    agent, books = tmp_path / "agent", tmp_path / "books"
+    agent.mkdir()
+    books.mkdir()
+    (books / ".x").write_text("x", encoding="utf-8")
+    (books / "y.md").write_text("y", encoding="utf-8")
+    tools = Tools(builtins(agent, {"books": books}))
+    assert await tools.dispatch("Read", {"path": "../books/y.md"}) == "y"
+    for path in ["../books/.x", str(books / ".x")]:
+        with pytest.raises(InputError, match="is hidden"):
+            await tools.dispatch("Read", {"path": path})
+
+
+@pytest.fixture
+def linked(tmp_path: Path) -> Path:
+    agent = tmp_path / "real" / "agent"
+    (agent / ".git").mkdir(parents=True)
+    (agent / ".git" / "config").write_text("[core]", encoding="utf-8")
+    (agent / ".env").write_text("TOKEN=1", encoding="utf-8")
+    (agent / "plain.md").write_text("plain", encoding="utf-8")
+    (agent / ".secret").mkdir()
+    (agent / ".secret" / "up").symlink_to("..", target_is_directory=True)
+    (agent / "shown.md").symlink_to(".env")
+    (tmp_path / "real" / "books").mkdir()
+    (tmp_path / "real" / "books" / ".x").write_text("x", encoding="utf-8")
+    (tmp_path / "real" / ".other").mkdir()
+    (tmp_path / "real" / ".other" / "x.md").write_text("x", encoding="utf-8")
+    (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory=True)
+    return agent
+
+
+async def test_an_absolute_path_through_a_linked_ancestor_is_judged_inside_the_folder(
+    linked: Path, tmp_path: Path
+) -> None:
+    spelled = tmp_path / "link" / "agent"
+    tools = Tools(builtins(linked, {"books": tmp_path / "real" / "books"}))
+    load = Tools([load_tool(linked)])
+    for tool, name, args in [
+        (tools, "Read", {"path": str(spelled / ".env")}),
+        (load, "Load", {"path": str(spelled / ".env")}),
+        (tools, "Grep", {"pattern": "core", "path": str(spelled / ".git" / "config")}),
+        (tools, "LS", {"path": str(spelled / ".git")}),
+        (tools, "Read", {"path": str(tmp_path / "link" / "books" / ".x")}),
+    ]:
+        with pytest.raises(InputError, match=r"^tools/builtins: .* is hidden"):
+            await tool.dispatch(name, args)
+    assert await tools.dispatch("Read", {"path": str(spelled / "plain.md")}) == "plain"
+    assert await tools.dispatch("Read", {"path": str(spelled / ".secret/up/plain.md")}) == "plain"
+    assert await tools.dispatch("Read", {"path": str(spelled / "shown.md")}) == "TOKEN=1"
+    with pytest.raises(InputError, match="outside the agent directory"):
+        await tools.dispatch("Read", {"path": str(tmp_path / "link" / ".other" / "x.md")})
+
+
+@pytest.fixture
+def below(tmp_path: Path) -> Path:
+    agent = tmp_path / "root" / "a"
+    (agent / "kb").mkdir(parents=True)
+    (agent / "kb" / ".hidden").write_text("HIDDEN", encoding="utf-8")
+    (agent / "kb" / "ok.md").write_text("ok", encoding="utf-8")
+    (agent / "kb" / ".cache").mkdir()
+    (agent / "kb" / ".cache" / "c.md").write_text("c", encoding="utf-8")
+    (agent / ".git").mkdir()
+    (agent / ".git" / "config").write_text("[core]", encoding="utf-8")
+    (agent / ".env").write_text("TOKEN=1", encoding="utf-8")
+    (agent / "plain.md").write_text("plain", encoding="utf-8")
+    (tmp_path / "books" / "shelf").mkdir(parents=True)
+    (tmp_path / "books" / ".top").write_text("top", encoding="utf-8")
+    (tmp_path / "books" / "top.md").write_text("top", encoding="utf-8")
+    (tmp_path / "books" / "shelf" / ".x").write_text("x", encoding="utf-8")
+    (tmp_path / "books" / "shelf" / "y.md").write_text("y", encoding="utf-8")
+    (tmp_path / "root" / "kb_link").symlink_to(agent / "kb", target_is_directory=True)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "git").symlink_to(agent / ".git", target_is_directory=True)
+    (tmp_path / "elsewhere" / "env").symlink_to(agent / ".env")
+    (tmp_path / "elsewhere" / "notes.md").symlink_to(agent / "plain.md")
+    (tmp_path / "elsewhere" / "kb").symlink_to(agent / "kb", target_is_directory=True)
+    (tmp_path / "elsewhere" / "shelf").symlink_to(
+        tmp_path / "books" / "shelf", target_is_directory=True
+    )
+    return agent
+
+
+async def test_an_absolute_path_through_a_link_into_the_folder_is_judged_where_it_leads(
+    below: Path, tmp_path: Path
+) -> None:
+    tools = Tools(builtins(below, {"books": tmp_path / "books"}))
+    load = Tools([load_tool(below)])
+    kb, elsewhere = tmp_path / "root" / "kb_link", tmp_path / "elsewhere"
+    git = elsewhere / "git"
+    for tool, name, args in [
+        (tools, "Read", {"path": str(kb / ".hidden")}),
+        (load, "Load", {"path": str(kb / ".hidden")}),
+        (tools, "Grep", {"pattern": "HIDDEN", "path": str(kb / ".hidden")}),
+        (tools, "LS", {"path": str(kb / ".cache")}),
+        (tools, "Read", {"path": str(git / "config")}),
+        (load, "Load", {"path": str(git / "config")}),
+        (tools, "Grep", {"pattern": "core", "path": str(git / "config")}),
+        (tools, "LS", {"path": str(git)}),
+        (tools, "Read", {"path": str(elsewhere / "env")}),
+        (tools, "Read", {"path": str(elsewhere / "shelf" / ".x")}),
+    ]:
+        with pytest.raises(InputError, match=r"^tools/builtins: .* is hidden"):
+            await tool.dispatch(name, args)
+    assert await tools.dispatch("Read", {"path": str(kb / "ok.md")}) == "ok"
+    assert await tools.dispatch("Read", {"path": str(elsewhere / "notes.md")}) == "plain"
+    assert await tools.dispatch("Read", {"path": str(elsewhere / "shelf" / "y.md")}) == "y"
+    with pytest.raises(InputError, match="is hidden"):
+        await tools.dispatch("Read", {"path": "kb/.hidden"})
+
+
+async def test_an_agent_folder_reached_through_links_reads_by_every_spelling(
+    tmp_path: Path,
+) -> None:
+    agent = tmp_path / "home" / ".agents" / "b"
+    agent.mkdir(parents=True)
+    (agent / "plain.md").write_text("plain-b", encoding="utf-8")
+    (tmp_path / "root").mkdir()
+    (tmp_path / "root" / "b").symlink_to(agent, target_is_directory=True)
+    (tmp_path / "link").symlink_to(tmp_path / "root", target_is_directory=True)
+    tools = Tools(builtins(tmp_path / "link" / "b"))
+    for path in [
+        "plain.md",
+        str(agent / "plain.md"),
+        str(tmp_path / "root" / "b" / "plain.md"),
+        str(tmp_path / "link" / "b" / "plain.md"),
+    ]:
+        assert await tools.dispatch("Read", {"path": path}) == "plain-b"
+
+
+async def test_a_folder_link_reads_a_visible_folder_and_hides_a_hidden_one(tmp_path: Path) -> None:
+    (tmp_path / ".secret").mkdir()
+    (tmp_path / ".secret" / "k.md").write_text("k", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "d.md").write_text("d", encoding="utf-8")
+    (tmp_path / "shown").symlink_to(".secret", target_is_directory=True)
+    (tmp_path / "linked").symlink_to("docs", target_is_directory=True)
+    tools = Tools(builtins(tmp_path))
+    load = Tools([load_tool(tmp_path)])
+    for tool, name, args in [
+        (tools, "Read", {"path": "shown/k.md"}),
+        (tools, "Read", {"path": str(tmp_path / "shown" / "k.md")}),
+        (load, "Load", {"path": "shown/k.md"}),
+        (tools, "Grep", {"pattern": "k", "path": "shown/k.md"}),
+        (tools, "Grep", {"pattern": "k", "path": "shown"}),
+        (tools, "LS", {"path": "shown"}),
+        (tools, "Read", {"path": ".secret/k.md"}),
+    ]:
+        with pytest.raises(InputError, match=r"^tools/builtins: .* is hidden"):
+            await tool.dispatch(name, args)
+    assert await tools.dispatch("Read", {"path": "linked/d.md"}) == "d"
+    assert await tools.dispatch("Read", {"path": str(tmp_path / "linked" / "d.md")}) == "d"
+    assert await tools.dispatch("LS", {"path": "linked"}) == "d.md"
+    assert await tools.dispatch("Grep", {"pattern": "d", "path": "linked"}) == "docs/d.md"
+
+
+async def test_a_path_through_a_link_and_back_up_is_judged_where_it_lands(
+    below: Path, tmp_path: Path
+) -> None:
+    tools = Tools(builtins(below, {"books": tmp_path / "books"}))
+    load = Tools([load_tool(below)])
+    kb, elsewhere = tmp_path / "elsewhere" / "kb", tmp_path / "elsewhere"
+    for tool, name, args in [
+        (tools, "Read", {"path": str(tmp_path / "root" / "kb_link" / ".." / ".env")}),
+        (tools, "Read", {"path": str(kb / ".." / ".env")}),
+        (tools, "Read", {"path": str(elsewhere / "git" / ".." / ".env")}),
+        (tools, "Read", {"path": str(kb / ".." / ".git" / "config")}),
+        (load, "Load", {"path": str(kb / ".." / ".env")}),
+        (tools, "Grep", {"pattern": "TOKEN", "path": str(kb / ".." / ".env")}),
+        (tools, "Grep", {"pattern": "core", "path": str(kb / ".." / ".git")}),
+        (tools, "LS", {"path": str(kb / ".." / ".git")}),
+        (tools, "Read", {"path": str(elsewhere / "shelf" / ".." / ".top")}),
+        (tools, "Read", {"path": "kb/../.env"}),
+    ]:
+        with pytest.raises(InputError, match=r"^tools/builtins: .* is hidden"):
+            await tool.dispatch(name, args)
+    assert await tools.dispatch("Read", {"path": str(kb / ".." / "plain.md")}) == "plain"
+    assert (
+        await tools.dispatch("Read", {"path": str(elsewhere / "shelf" / ".." / "top.md")}) == "top"
+    )
+
+
+@pytest.mark.parametrize("spelled", ["relative", "absolute"])
+async def test_a_path_holding_a_nul_is_outside_the_folder(tmp_path: Path, spelled: str) -> None:
+    (tmp_path / "a.md").write_text("a", encoding="utf-8")
+    path = "a\x00b" if spelled == "relative" else str(tmp_path / "a\x00b")
+    tools = Tools(builtins(tmp_path))
+    load = Tools([load_tool(tmp_path)])
+    for tool, name, args in [
+        (tools, "Read", {"path": path}),
+        (load, "Load", {"path": path}),
+        (tools, "Grep", {"pattern": "a", "path": path}),
+        (tools, "LS", {"path": path}),
+    ]:
+        with pytest.raises(InputError, match="^jail: path outside the agent directory: "):
+            await tool.dispatch(name, args)
+
+
+async def test_a_file_link_into_another_folder_is_judged_by_the_file_it_leads_to(
+    tmp_path: Path,
+) -> None:
+    agent, books = tmp_path / "agent", tmp_path / "books"
+    agent.mkdir()
+    books.mkdir()
+    (agent / ".env").write_text("TOKEN=1", encoding="utf-8")
+    (agent / "notes.md").symlink_to(".env")
+    (books / ".x").write_text("x", encoding="utf-8")
+    (books / "y.md").write_text("y", encoding="utf-8")
+    (agent / "x.md").symlink_to(books / ".x")
+    (agent / "y.md").symlink_to(books / "y.md")
+    (books / "z.md").symlink_to(agent / ".env")
+    tools = Tools(builtins(agent, {"books": books}))
+    load = Tools([load_tool(agent, reads=[books])])
+    for tool, name, args in [
+        (tools, "Read", {"path": "x.md"}),
+        (tools, "Read", {"path": str(agent / "x.md")}),
+        (load, "Load", {"path": "x.md"}),
+        (tools, "Grep", {"pattern": "x", "path": "x.md"}),
+        (tools, "Read", {"path": "../books/z.md"}),
+        (tools, "Read", {"path": str(books / "z.md")}),
+        (load, "Load", {"path": "../books/z.md"}),
+    ]:
+        with pytest.raises(InputError, match=r"^tools/builtins: .* is hidden"):
+            await tool.dispatch(name, args)
+    assert await tools.dispatch("Read", {"path": "y.md"}) == "y"
+    assert await tools.dispatch("Read", {"path": "notes.md"}) == "TOKEN=1"
+
+
+async def test_glob_grep_and_ls_show_nothing_the_file_tools_hide(tmp_path: Path) -> None:
+    agent, books = tmp_path / "agent", tmp_path / "books"
+    (agent / ".secret").mkdir(parents=True)
+    (agent / ".secret" / "k.md").write_text("k", encoding="utf-8")
+    (agent / "docs").mkdir()
+    (agent / "docs" / "d.md").write_text("d", encoding="utf-8")
+    (agent / "shown").symlink_to(".secret", target_is_directory=True)
+    (agent / "d2").symlink_to(".secret", target_is_directory=True)
+    (agent / "d1").symlink_to("d2", target_is_directory=True)
+    (agent / "linked").symlink_to("docs", target_is_directory=True)
+    books.mkdir()
+    (books / ".x").write_text("x", encoding="utf-8")
+    (agent / "x.md").symlink_to(books / ".x")
+    (tmp_path / "elsewhere.md").write_text("e", encoding="utf-8")
+    (agent / ".out").symlink_to(tmp_path / "elsewhere.md")
+    tools = Tools(builtins(agent, {"books": books}))
+    for pattern in ["shown/*", "shown/**/*", "d1/*", "d2/*"]:
+        assert await tools.dispatch("Glob", {"pattern": pattern}) == ""
+    assert await tools.dispatch("Glob", {"pattern": "**/*.md"}) == "docs/d.md"
+    assert await tools.dispatch("Glob", {"pattern": "linked/*"}) == "linked/d.md"
+    assert await tools.dispatch("Grep", {"pattern": "k|x", "mode": "content"}) == (
+        "no matches found"
+    )
+    assert await tools.dispatch("LS", {}) == "docs/\nlinked/"
+
+
+async def test_a_file_whose_own_name_is_hidden_is_refused_whatever_it_leads_to(
+    tmp_path: Path,
+) -> None:
+    agent, books, elsewhere = tmp_path / "agent", tmp_path / "books", tmp_path / "elsewhere"
+    for folder in (agent, books, elsewhere):
+        folder.mkdir()
+    (agent / "plain.md").write_text("plain", encoding="utf-8")
+    (agent / ".env").write_text("TOKEN=1", encoding="utf-8")
+    (books / "y.md").write_text("y", encoding="utf-8")
+    (agent / ".alias").symlink_to(books / "y.md")
+    (books / ".balias").symlink_to(agent / "plain.md")
+    (elsewhere / ".l").symlink_to(agent / "plain.md")
+    (agent / "y.md").symlink_to(books / "y.md")
+    (agent / "notes.md").symlink_to(".env")
+    tools = Tools(builtins(agent, {"books": books}))
+    load = Tools([load_tool(agent, reads=[books])])
+    for tool, name, args in [
+        (tools, "Read", {"path": ".alias"}),
+        (load, "Load", {"path": ".alias"}),
+        (tools, "Read", {"path": "../books/.balias"}),
+        (load, "Load", {"path": "../books/.balias"}),
+        (tools, "Read", {"path": str(elsewhere / ".l")}),
+    ]:
+        with pytest.raises(InputError, match=r"^tools/builtins: .* is hidden"):
+            await tool.dispatch(name, args)
+    assert await tools.dispatch("Read", {"path": "y.md"}) == "y"
+    assert await tools.dispatch("Read", {"path": "notes.md"}) == "TOKEN=1"

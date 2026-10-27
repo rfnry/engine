@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import json
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 from rfnry_engine.models import Content, Message, Part, Text, ToolSpec
@@ -53,9 +53,8 @@ def mark(digest: bytes) -> str:
 
 
 class Chain:
-    def __init__(self, head: Callable[[], bytes]) -> None:
-        self._head = head
-        self._digest: bytes | None = None
+    def __init__(self, head: bytes) -> None:
+        self._digest = head
         self._hashed = 0
         self._busy = 0.0
 
@@ -74,8 +73,6 @@ class Chain:
         return mark(await self._reach(messages, len(messages)))
 
     async def _reach(self, messages: Sequence[Message], end: int) -> bytes:
-        if self._digest is None:
-            self._digest = self._head()
         while self._hashed < end:
             began = time.perf_counter()
             self._digest = extend(self._digest, messages[self._hashed])

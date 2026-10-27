@@ -84,6 +84,14 @@ def test_engine_tool_on_an_agent_without_a_description_is_refused(tmp_path: Path
         Engine(tmp_path, models={}).tool("billing", scope="acme")
 
 
+def test_engine_tool_on_an_agent_whose_description_is_only_whitespace_is_refused(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "billing/AGENT.md", agent_md("billing", extra='description: "   "\n'))
+    with pytest.raises(ConfigurationError, match="no description: in its AGENT.md"):
+        Engine(tmp_path, models={}).tool("billing", scope="acme")
+
+
 def test_shell_says_nothing_a_backend_describes(tmp_path: Path) -> None:
     assert "description" not in inspect.signature(Local).parameters
     backend = Local(tmp_path)

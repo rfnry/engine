@@ -7,6 +7,7 @@ import sys
 import threading
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from functools import partial
 from importlib.abc import Loader, MetaPathFinder
 from importlib.machinery import ModuleSpec, PathFinder
 from pathlib import Path
@@ -161,10 +162,18 @@ async def _serve(
     os._exit(0)
 
 
+def _release(fds: tuple[int, ...]) -> None:
+    nothing = os.open(os.devnull, os.O_RDWR)
+    for fd in fds:
+        os.dup2(nothing, fd, inheritable=False)
+    os.close(nothing)
+
+
 def main() -> None:
     sys.dont_write_bytecode = True
     requests = os.fdopen(os.dup(0), "rb")
     replies = os.dup(1)
+    os.register_at_fork(after_in_child=partial(_release, (requests.fileno(), replies)))
     nothing = os.open(os.devnull, os.O_RDONLY)
     os.dup2(nothing, 0)
     os.close(nothing)

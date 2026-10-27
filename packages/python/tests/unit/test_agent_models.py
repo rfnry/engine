@@ -57,6 +57,17 @@ async def test_each_agent_runs_on_the_model_its_agent_md_names(tmp_path: Path) -
     assert len(strong.calls) == 2 and len(fast.calls) == 1
 
 
+def test_the_engines_models_read_as_given_and_cannot_be_changed(tmp_path: Path) -> None:
+    strong, fast = Scripted(), Scripted()
+    engine = Engine(pair(tmp_path), models={"strong": strong, "fast": fast})
+    assert dict(engine.models) == {"strong": strong, "fast": fast}
+    with pytest.raises(TypeError):
+        engine.models["strong"] = fast  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        engine.models = {}  # type: ignore[misc]
+    assert engine.models["strong"] is strong
+
+
 def test_a_model_no_agent_runs_on_is_refused(tmp_path: Path) -> None:
     with pytest.raises(
         ConfigurationError,

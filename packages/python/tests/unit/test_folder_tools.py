@@ -221,6 +221,17 @@ def test_a_malformed_definition_is_refused_naming_the_file(
         load_tree(tmp_path)
 
 
+def test_a_folder_s_definitions_are_checked_before_any_of_its_scripts(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "broken", body="def run(args, call:\n")
+    tool(tmp_path / "a/tools", "plain", description=" ")
+    with pytest.raises(ConfigurationError) as raised:
+        load_tree(tmp_path)
+    assert str(raised.value).startswith(
+        f"tools/folder: {tmp_path / 'a/tools/plain.json'} gives no description in text; "
+    )
+
+
 def test_a_definition_or_a_script_that_is_not_utf8_is_refused_naming_it(tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a"))
     tool(tmp_path / "a/tools", "x")
@@ -390,6 +401,24 @@ def test_a_helper_needs_no_run_and_an_async_run_is_a_run(tmp_path: Path) -> None
     body = "import _client\nasync def run(args, call):\n    return _client.BASE\n"
     tool(tmp_path / "a/tools", "fetch", body=body)
     assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch"]
+
+
+@pytest.mark.parametrize(
+    ("body", "awaits"),
+    [
+        (RUN, False),
+        ("async def run(args, call):\n    return {}\n", True),
+        (RUN + "async def run(args, call):\n    return {}\n", True),
+        ("async def run(args, call):\n    return {}\n" + RUN, False),
+        ("class Tool:\n    async def run(self, args, call):\n        return {}\n" + RUN, False),
+    ],
+)
+def test_a_tool_awaits_when_its_last_run_at_the_top_level_is_async(
+    tmp_path: Path, body: str, awaits: bool
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch", body=body)
+    assert load_tree(tmp_path)["a"].folder_tools["fetch"].awaits is awaits
 
 
 def test_a_package_of_the_interpreter_s_site_packages_inside_the_project_passes(
@@ -646,3 +675,120 @@ def test_an_unknown_read_folder_is_offered_every_folder_but_the_tools_folders_on
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value).endswith("one of: desk, kb, kb/tools, support, support/billing")
+
+
+@pytest.mark.parametrize("suffix", [".py", ".json"])
+def test_a_tool_file_that_links_out_of_its_folder_is_refused(tmp_path: Path, suffix: str) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch")
+    outside = tmp_path / f"elsewhere{suffix}"
+    (tmp_path / "a/tools" / f"fetch{suffix}").replace(outside)
+    (tmp_path / "a/tools" / f"fetch{suffix}").symlink_to(outside)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tools/folder: {tmp_path / 'a/tools' / f'fetch{suffix}'} links to {outside}, outside its folder; move the file into its folder, or link the agent's whole folder"
+    )
+
+
+def test_a_group_folder_s_tool_file_that_links_out_of_its_folder_is_refused(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "team/writer/AGENT.md", agent_md("writer"))
+    tool(tmp_path / "team/tools", "fetch")
+    outside = tmp_path / "elsewhere.py"
+    (tmp_path / "team/tools/fetch.py").replace(outside)
+    (tmp_path / "team/tools/fetch.py").symlink_to(outside)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tools/folder: {tmp_path / 'team/tools/fetch.py'} links to {outside}, outside its folder; move the file into its folder, or link the whole tools/ folder"
+    )
+
+
+def test_a_helper_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "shared.py", "BASE = 1\n")
+    tool(tmp_path / "a/tools", "fetch", body="import _client\n" + RUN)
+    (tmp_path / "a/tools/_client.py").symlink_to(tmp_path / "shared.py")
+    with pytest.raises(ConfigurationError, match="_client.py links to .*, outside its folder"):
+        load_tree(tmp_path)
+
+
+def test_a_tool_file_that_links_inside_its_folder_loads(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch")
+    write(tmp_path / "a/tools/sub/shared.py", RUN)
+    (tmp_path / "a/tools/other.json").symlink_to("fetch.json")
+    (tmp_path / "a/tools/other.py").symlink_to("sub/shared.py")
+    assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch", "other"]
+
+
+def test_a_tool_that_imports_a_sibling_tool_is_refused(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "b")
+    tool(tmp_path / "a/tools", "fetch", body="import b\n" + RUN)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tools/folder: {tmp_path / 'a/tools/fetch.py'} imports 'b', which sits in its tools/ folder but is not a helper; a tool reaches only the helpers of its folder, so move the shared code into a helper _b.py"
+    )
+
+
+def test_a_tool_that_imports_a_subfolder_package_is_refused(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / "a/tools/pkg/__init__.py", "X = 1\n")
+    tool(tmp_path / "a/tools", "fetch", body="from pkg import X\n" + RUN)
+    with pytest.raises(ConfigurationError, match="imports 'pkg', which sits in its tools/ folder"):
+        load_tree(tmp_path)
+
+
+def test_a_tool_named_like_a_standard_module_beside_one_that_imports_it_loads(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "json")
+    tool(tmp_path / "a/tools", "fetch", body="import json\n" + RUN)
+    assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch", "json"]
+
+
+@pytest.mark.parametrize("name", ["time", "math", "os", "sys", "io", "itertools", "zlib"])
+def test_a_tool_named_like_a_built_in_standard_module_beside_one_that_imports_it_loads(
+    tmp_path: Path, name: str
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", name, body=f"import {name}\n" + RUN)
+    tool(tmp_path / "a/tools", "fetch", body=f"import {name}\n" + RUN)
+    assert list(load_tree(tmp_path)["a"].folder_tools) == sorted(["fetch", name])
+
+
+async def test_a_tool_named_time_that_imports_time_runs_on_the_standard_module(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(
+        tmp_path / "a/tools",
+        "time",
+        body="import time\ndef run(args, call):\n    return str(time.monotonic() > 0)\n",
+    )
+    async with Engine(tmp_path, models={}) as engine:
+        assert await EngineTools(engine, agent="a", scope="acme").dispatch("time", {}) == "True"
+
+
+def test_a_file_the_tools_folder_never_loads_may_link_out_of_it(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch")
+    write(tmp_path / "elsewhere.json", "{}")
+    (tmp_path / "a/tools/_draft.json").symlink_to(tmp_path / "elsewhere.json")
+    assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch"]
+
+
+def test_a_tool_file_that_links_elsewhere_in_the_agent_s_folder_is_refused(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch")
+    (tmp_path / "a/tools/fetch.py").replace(tmp_path / "a/lib.py")
+    (tmp_path / "a/tools/fetch.py").symlink_to("../lib.py")
+    with pytest.raises(
+        ConfigurationError, match="fetch.py links to .*/a/lib.py, outside its folder;"
+    ):
+        load_tree(tmp_path)

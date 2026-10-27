@@ -2,6 +2,7 @@ import ast
 import importlib.util
 import json
 import site
+import sys
 import sysconfig
 from collections.abc import Collection, Iterator
 from functools import cache
@@ -11,6 +12,7 @@ import jsonschema_rs
 from pydantic import BaseModel, JsonValue
 
 from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.folders import declares, leads_out
 from rfnry_engine.workers.pool import Script
 
 ENGINE = "rfnry_engine"
@@ -28,6 +30,7 @@ class ToolDef(BaseModel):
     key: str
     source: str
     helpers: dict[str, str]
+    awaits: bool = False
 
 
 def script_key(root: Path, script: Path) -> str:
@@ -159,13 +162,32 @@ def _parsed(path: Path, source: str) -> ast.Module:
         ) from exc
 
 
-def _check_run(path: Path, module: ast.Module, what: str, given: str) -> None:
-    if not any(
-        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "run"
+def _awaits(path: Path, module: ast.Module, what: str, given: str) -> bool:
+    runs = [
+        node
         for node in module.body
-    ):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "run"
+    ]
+    if not runs:
         raise ConfigurationError(
             f"tools/folder: {path} has no run at its top level; a {what} defines def run({given}, call) or async def run({given}, call)"
+        )
+    return isinstance(runs[-1], ast.AsyncFunctionDef)
+
+
+def _beside(folder: Path) -> frozenset[str]:
+    return frozenset(
+        p.stem if p.is_file() else p.name
+        for p in folder.iterdir()
+        if not p.name.startswith((".", "_")) and (p.is_dir() or p.suffix == ".py")
+    )
+
+
+def _held(path: Path, folder: Path, named: str, whole: str) -> None:
+    target = leads_out(path, folder)
+    if target is not None:
+        raise ConfigurationError(
+            f"tools/folder: {path} links to {target}, outside {named}; move the file into {named}, or link {whole}"
         )
 
 
@@ -175,6 +197,7 @@ def _check_imports(
     project: Path,
     folders: Collection[Path],
     helpers: Collection[str],
+    beside: Collection[str],
     what: str,
 ) -> None:
     held = f"{path.parent.name}/"
@@ -201,7 +224,16 @@ def _check_imports(
                         f"tools/folder: {path} imports the helper {top!r} inside a function or class; import it at the top of the script, since a helper is reachable only while its folder's scripts load"
                     )
                 continue
-            for origin in _origins(top):
+            origins = _origins(top)
+            if (
+                top in beside
+                and top not in sys.stdlib_module_names
+                and all(path.parent.resolve() in o.resolve().parents for o in origins)
+            ):
+                raise ConfigurationError(
+                    f"tools/folder: {path} imports {top!r}, which sits in its {held} folder but is not a helper; a {what} reaches only the helpers of its folder, so move the shared code into a helper _{top}.py"
+                )
+            for origin in origins:
                 if _owned(origin, project, folders):
                     raise ConfigurationError(
                         f"tools/folder: {path} imports {top!r} from {origin}, the server's own code; a {what} imports the standard library, installed packages and helpers of its {held} folder"
@@ -217,6 +249,9 @@ def load_tools(
     helpers = [p for p in files if p.name.startswith("_") and p.suffix == ".py"]
     definitions = {p.stem: p for p in named if p.suffix == ".json"}
     scripts = {p.stem: p for p in named if p.suffix == ".py"}
+    whole = "the agent's whole folder" if declares(folder.parent) else "the whole tools/ folder"
+    for path in sorted([*definitions.values(), *scripts.values(), *helpers]):
+        _held(path, folder, "its folder", whole)
     for name in sorted({*definitions, *scripts}):
         if name not in scripts:
             raise ConfigurationError(
@@ -232,11 +267,12 @@ def load_tools(
         for name in sorted(scripts)
     }
     names = {p.stem for p in helpers}
+    beside = _beside(folder)
     for path, source in sources.items():
         module = _parsed(path, source)
-        _check_imports(path, module, project, folders, names, "tool")
+        _check_imports(path, module, project, folders, names, beside, "tool")
         if path in scripts.values():
-            _check_run(path, module, "tool", "args")
+            tools[path.stem].awaits = _awaits(path, module, "tool", "args")
     return tools
 
 
@@ -248,15 +284,19 @@ def load_scripts(
         p for p in folder.iterdir() if p.is_file() and p.name.startswith("_") and p.suffix == ".py"
     )
     scripts = {name: folder / f"{name}.py" for name in names}
+    for path in [*scripts.values(), *helpers]:
+        _held(path, folder.parent, "the agent's folder", "the agent's whole folder")
     sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
     shared = {p.stem: sources[p] for p in helpers}
     what = "question's script"
+    awaits = {}
+    beside = _beside(folder)
     for path, source in sources.items():
         module = _parsed(path, source)
-        _check_imports(path, module, project, folders, shared, what)
+        _check_imports(path, module, project, folders, shared, beside, what)
         if path in scripts.values():
-            _check_run(path, module, what, "input")
+            awaits[path] = _awaits(path, module, what, "input")
     return {
-        name: Script(script_key(root, path), path, sources[path], shared)
+        name: Script(script_key(root, path), path, sources[path], shared, awaits[path])
         for name, path in scripts.items()
     }

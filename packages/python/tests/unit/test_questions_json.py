@@ -361,6 +361,17 @@ def test_a_question_script_without_a_run_at_its_top_level_is_refused(tmp_path: P
     )
 
 
+@pytest.mark.parametrize(
+    ("script", "awaits"), [(ORDER, False), (ORDER.replace("def run", "async def run"), True)]
+)
+def test_a_question_script_awaits_when_its_last_run_at_the_top_level_is_async(
+    tmp_path: Path, script: str, awaits: bool
+) -> None:
+    matcher(tmp_path, script)
+    _, held = load_tree(tmp_path)["matcher"].scripted["order"]
+    assert held.awaits is awaits
+
+
 def test_a_server_package_named_questions_is_the_server_s_code_to_a_question_script(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -595,6 +606,31 @@ def test_a_question_holding_a_field_of_another_type_is_refused_naming_its_file(
 
 
 @pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (
+            '{"type": "choice", "instructions": "Which?", "option": "x"}',
+            "has the unknown key 'option'; a question takes type, instructions, options, levels, yes and no",
+        ),
+        ('{"type": "choice", "instructions": "Which?",}', "is not valid JSON: "),
+        ('{"type": "choice", "instructions": " "}', "instructions must say something"),
+    ],
+)
+def test_a_scripted_question_s_json_that_does_not_fit_is_refused_beside_its_script(
+    tmp_path: Path, text: str, message: str
+) -> None:
+    write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
+    path = tmp_path / "triage/questions/q.json"
+    write(path, text)
+    write(tmp_path / "triage/questions/q.py", ORDER)
+    with pytest.raises(ConfigurationError) as raised:
+        load_tree(tmp_path)
+    said = str(raised.value)
+    assert said.startswith(f"tree: {path} ") or said.startswith(f"tree: invalid question {path}; ")
+    assert message in said
+
+
+@pytest.mark.parametrize(
     "files",
     [{"x.md": "---\ntype: check\n---\nUrgent?\n"}, {"x.py": ORDER}, {"x.json": "{"}],
 )
@@ -616,3 +652,47 @@ def test_a_generation_agent_s_questions_folder_without_questions_loads(tmp_path:
     write(tmp_path / "a/questions/notes.txt", "Ideas for later.\n")
     write(tmp_path / "a/questions/_draft.json", "{")
     assert load_tree(tmp_path)["a"].questions == {}
+
+
+def test_a_question_script_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
+    matcher(tmp_path)
+    (tmp_path / "matcher/questions/order.py").unlink()
+    write(tmp_path / "elsewhere.py", ORDER)
+    (tmp_path / "matcher/questions/order.py").symlink_to(tmp_path / "elsewhere.py")
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tools/folder: {tmp_path / 'matcher/questions/order.py'} links to {tmp_path / 'elsewhere.py'}, outside the agent's folder; move the file into the agent's folder, or link the agent's whole folder"
+    )
+
+
+def test_a_question_json_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
+    matcher(tmp_path)
+    (tmp_path / "matcher/questions/order.json").replace(tmp_path / "elsewhere.json")
+    (tmp_path / "matcher/questions/order.json").symlink_to(tmp_path / "elsewhere.json")
+    with pytest.raises(
+        ConfigurationError, match="^tree: .*order.json links to .*, outside the agent's folder;"
+    ):
+        load_tree(tmp_path)
+
+
+@pytest.mark.parametrize("name", ["time", "math"])
+def test_a_question_script_named_like_a_built_in_standard_module_beside_one_that_imports_it_loads(
+    tmp_path: Path, name: str
+) -> None:
+    matcher(tmp_path, f"import {name}\n" + ORDER)
+    write(
+        tmp_path / f"matcher/questions/{name}.json", '{"type": "choice", "instructions": "Which?"}'
+    )
+    write(tmp_path / f"matcher/questions/{name}.py", f"import {name}\n" + ORDER)
+    assert sorted(load_tree(tmp_path)["matcher"].scripted) == sorted(["order", name])
+
+
+@pytest.mark.parametrize("suffix", [".json", ".py"])
+def test_a_question_file_that_links_elsewhere_in_the_agent_s_folder_loads(
+    tmp_path: Path, suffix: str
+) -> None:
+    matcher(tmp_path)
+    (tmp_path / f"matcher/questions/order{suffix}").replace(tmp_path / f"matcher/kept{suffix}")
+    (tmp_path / f"matcher/questions/order{suffix}").symlink_to(f"../kept{suffix}")
+    assert list(load_tree(tmp_path)["matcher"].scripted) == ["order"]

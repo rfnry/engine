@@ -13,6 +13,10 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("tools/workspace.py", "cancelled"): "a cancel that came during a kill goes on once it ends",
     ("stop.py", "cancelled"): "a cancel that came while tasks ended goes on once they have",
     (
+        "workers/pool.py",
+        "failed[0]",
+    ): "a worker's stop() or a pool's close() error reaches the caller once every one has ended",
+    (
         "engine.py",
         "failed.exceptions[0]",
     ): "a question script's error ends its decision as the decision model's would",

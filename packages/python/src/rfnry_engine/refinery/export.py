@@ -119,7 +119,7 @@ def _probabilities(answer: dict[str, Any]) -> Any:
     return answer["probabilities"]
 
 
-def _truth(question_id: str, labels: list[Label]) -> tuple[Any, str | None, Label | None]:
+def _truth(question_id: str, labels: list[Label]) -> tuple[Any, Label | None]:
     for label in labels:
         if (
             label.source == "human"
@@ -127,11 +127,11 @@ def _truth(question_id: str, labels: list[Label]) -> tuple[Any, str | None, Labe
             and isinstance(label.review.correction, dict)
             and question_id in label.review.correction
         ):
-            return label.review.correction[question_id], "human", None
+            return label.review.correction[question_id], label
     for label in labels:
         if label.source == "teacher" and label.answers is not None and question_id in label.answers:
-            return _truth_value(label.answers[question_id].model_dump()), "teacher", label
-    return None, None, None
+            return _truth_value(label.answers[question_id].model_dump()), label
+    return None, None
 
 
 def decision_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[dict[str, Any]]:
@@ -142,7 +142,7 @@ def decision_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[di
     rows = []
     for question_id, question in body["questions"].items():
         answer = body["answers"][question_id]
-        truth, truth_source, teacher = _truth(question_id, labels)
+        truth, label = _truth(question_id, labels)
         rows.append(
             {
                 "run_id": row.run_id,
@@ -162,9 +162,9 @@ def decision_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[di
                 "probabilities": _probabilities(answer),
                 "confidence": answer["confidence"],
                 "truth": truth,
-                "truth_source": truth_source,
-                "truth_model": teacher.model if teacher else None,
-                "truth_settings": teacher.settings if teacher else None,
+                "truth_source": label.source if label else None,
+                "truth_model": label.model if label else None,
+                "truth_settings": label.settings if label else None,
                 "outcome": outcome,
             }
         )
