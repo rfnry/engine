@@ -1654,7 +1654,7 @@ routed runs in place, to continue it anywhere — see [Running an agent](#runnin
 
 ```python
 refinery = Refinery(PostgresStorage(pool))
-await refinery.initialize()
+await refinery.check()
 engine = Engine(root, models={"strong": llm, "judge": dm}, refinery=refinery)
 ```
 
@@ -2283,25 +2283,81 @@ cancels any tool's. Outside a run, a stopped consult's `dispatch` returns what i
 ## Storage
 
 The refinery is the only part of the library that stores anything, and it stores in Postgres:
-`PostgresStorage(pool)`, over an asyncpg pool you built. A Postgres to try it on is one container:
+`PostgresStorage(pool)`, over an asyncpg pool you built, in a schema of its own. A Postgres to try it
+on is one container, with engine's schema prepared by the command the package installs:
 
 ```bash
 docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
+rfnry-engine create --url postgresql://postgres:postgres@127.0.0.1:5432/postgres
 ```
 
-`initialize()` creates two tables, `engine_runs` and `engine_labels`, and their indexes — among them
+### Preparing the database
+
+Your app never creates or changes engine's tables. `rfnry-engine`, the command the package
+installs, prepares the schema before the app runs:
+
+```sh
+rfnry-engine create --schema engine          # the schema and its tables
+rfnry-engine create --schema engine --sql    # print every statement, run nothing
+```
+
+`create` makes two tables, `engine_runs` and `engine_labels`, and their indexes — among them
 `(scope, parent_run_id)`, which a run's tree is found by, and a GIN index on the `tags` column of
-`engine_runs`, which tag selection uses — and is safe to run again. It never alters a table. On a
-table an earlier version made, it raises a `StorageError` naming the columns the table lacks; drop
-`engine_runs` and `engine_labels` yourself and run it again. A run's row keeps `at`, when the run
-started, and `recorded`, when the refinery stored it — one stamp for a run and every child run under
-it — and `runs(since=)` reads `recorded`. The tables are prefixed `engine_` so one database can also
-hold rfnry-memory's and rfnry-thread's:
+`engine_runs`, which tag selection uses. It takes the connection string with `--url`, or reads
+Postgres' standard `PG*` variables, and never prints it. `--sql` prints the statements as the
+command runs them — the `search_path` they run under, then one transaction holding the migration
+lock — so they land in the same schema when you run them yourself. Engine's tables never go in
+`public`. An app that connects as a role of its own, not the one that ran the command, needs `USAGE`
+on the schema and `SELECT`, `INSERT`, `UPDATE` and `DELETE` on its tables.
+
+Your pool points at the schema, and the app checks it at start:
 
 ```python
-pool = await asyncpg.create_pool(dsn)
-memory = Memory(rfnry_memory.PostgresStorage(pool), embedding=emb)
-refinery = Refinery(rfnry_engine.PostgresStorage(pool))
+pool = await asyncpg.create_pool(dsn, server_settings={"search_path": "engine"})
+await Refinery(PostgresStorage(pool)).check()
+```
+
+`check()` only reads. It raises a `ConfigurationError` saying how the schema does not fit this
+version and the command that fixes it: no engine schema on the pool's `search_path`, a schema
+behind or ahead of this version, tables an earlier version's `initialize()` made, or a schema the
+pool's role cannot use.
+
+A version of engine that changes its tables ships a migration, and the schema follows it in place,
+its data kept:
+
+```sh
+rfnry-engine upgrade --schema engine --sql    # what would run
+rfnry-engine upgrade --schema engine          # lists the steps, asks, runs them in one transaction
+rfnry-engine check --schema engine            # exits 0 when the schema fits this version
+```
+
+Take a snapshot and stop the app instances running the old version first: `upgrade` reminds you,
+asks before it runs unless `--yes`, and runs every pending step in one transaction under a lock.
+
+Tables made by `initialize()` in rfnry-engine 0.1.4 or earlier are adopted where they are:
+`rfnry-engine upgrade --schema <their schema>` records them, and gives a table from before 0.1.4
+its `tags` column — filled from each recorded run's own tags — and the indexes it lacked. Tables in
+a shared schema such as `public`, where a pool with the default `search_path` put them, move into
+engine's schema in the same transaction:
+
+```sh
+rfnry-engine upgrade --schema engine --from public
+```
+
+and the pool's `search_path` then names `engine`. Run again, it has nothing left to do; until it
+runs, `check()` and the command point at it whenever engine's schema is missing or empty while
+tables `initialize()` made sit in another.
+
+A run's row keeps `at`, when the run started, and `recorded`, when the refinery stored it — one
+stamp for a run and every child run under it — and `runs(since=)` reads `recorded`. The tables are
+prefixed `engine_`, and each rfnry library keeps a schema of its own, so one database holds
+rfnry-memory's and rfnry-thread's beside them, each through a pool that names its schema:
+
+```python
+memory_pool = await asyncpg.create_pool(dsn, server_settings={"search_path": "memory, public"})
+engine_pool = await asyncpg.create_pool(dsn, server_settings={"search_path": "engine"})
+memory = Memory(rfnry_memory.PostgresStorage(memory_pool), embedding=emb)
+refinery = Refinery(rfnry_engine.PostgresStorage(engine_pool))
 ```
 
 A storage of your own is any object with the methods below. `scope` comes first in every one, and
@@ -2311,7 +2367,7 @@ what an engine with a refinery does after each run not made with `record=False`:
 
 ```python
 class Storage(Protocol):
-    async def initialize(self) -> None
+    async def check(self) -> None
     async def put_runs(self, scope: str, rows: list[RunRow]) -> None  # every row of one recorded tree, in one transaction
     async def get_run(self, scope: str, run_id: str) -> RunRow | None
     async def runs(self, scope: str, *, run_ids: list[str] | None = None, kind: str | None = None,

@@ -77,7 +77,8 @@ def asked(start: str) -> str:
 ILLUSTRATIVE = {
     "class Conversation:": "needs a database pool; a list stands in for it in the block above",
     "refinery = Refinery(PostgresStorage(pool))": "needs a Postgres pool; the integration tier runs PostgresStorage",
-    "pool = await asyncpg.create_pool(dsn)": "needs a Postgres pool and rfnry-memory",
+    'memory_pool = await asyncpg.create_pool(dsn, server_settings={"search_path": "memory, public"})': "needs a Postgres pool and rfnry-memory",
+    'pool = await asyncpg.create_pool(dsn, server_settings={"search_path": "engine"})': "needs a Postgres pool; the integration tier runs the command and check()",
     "class PerRun:": "needs agents that declare `workspace: true`",
     "jobs = {}": "needs a model that calls start and then check",
     "import json": "a tool script, which the test tree holds as support/tools/lookup_order.py",

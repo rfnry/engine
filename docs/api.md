@@ -1036,7 +1036,7 @@ Raises `ConfigurationError` when `root` is not a directory, `shell` is not a non
 ```python
 @runtime_checkable
 class Storage(Protocol):
-    async def initialize(self) -> None: ...
+    async def check(self) -> None: ...
 
     async def put_runs(self, scope: str, rows: list[RunRow]) -> None: ...
 
@@ -1085,7 +1085,7 @@ class Storage(Protocol):
     async def count_scope(self, scope: str) -> int: ...
 ```
 
-The one storage protocol, as the refinery calls it; `PostgresStorage` implements exactly these methods, as a storage of your own does. Every method but `initialize` takes `scope` first and reads and writes that scope only: `initialize` creates what the storage needs and is safe to run again; `PostgresStorage` refuses a table an earlier version made, naming the columns it lacks; `put_runs` stores every row of one recorded tree in one transaction, replacing rows with the same ids; a row of another scope raises `StorageError` and nothing is stored; `put_label` stores a row unless the scope already holds a label with its id, which it never replaces, and returns the row stored under that id, so calls racing on one id all get the same row; `get_run` returns a run or `None`; `runs` returns runs newest first by `at`, at most `limit` or all with `None`, narrowed by `run_ids`, `kind`, `since` (stored after it, by `recorded`) and `unlabeled_by`, which keeps the runs no label from that source names; `labels` returns labels oldest first, narrowed by `run_ids`, `source` and `since`; `run_tree` returns the runs `run_ids` or `tags` (by containment) match and every run under them, oldest first; `delete_runs` removes those runs and every label on them, and `delete_scope` every run and label in the scope, each returning the number of rows removed; `count_scope` counts the scope's runs and labels. A storage raises `StorageError` when a row's scope is not the call's, and `PostgresStorage` raises it whenever the database refuses.
+The one storage protocol, as the refinery calls it; `PostgresStorage` implements exactly these methods, as a storage of your own does. Every method but `check` takes `scope` first and reads and writes that scope only: `check` only reads, and raises `ConfigurationError` when the storage does not fit this version; `put_runs` stores every row of one recorded tree in one transaction, replacing rows with the same ids; a row of another scope raises `StorageError` and nothing is stored; `put_label` stores a row unless the scope already holds a label with its id, which it never replaces, and returns the row stored under that id, so calls racing on one id all get the same row; `get_run` returns a run or `None`; `runs` returns runs newest first by `at`, at most `limit` or all with `None`, narrowed by `run_ids`, `kind`, `since` (stored after it, by `recorded`) and `unlabeled_by`, which keeps the runs no label from that source names; `labels` returns labels oldest first, narrowed by `run_ids`, `source` and `since`; `run_tree` returns the runs `run_ids` or `tags` (by containment) match and every run under them, oldest first; `delete_runs` removes those runs and every label on them, and `delete_scope` every run and label in the scope, each returning the number of rows removed; `count_scope` counts the scope's runs and labels. A storage raises `StorageError` when a row's scope is not the call's, and `PostgresStorage` raises it whenever the database refuses.
 
 ### `PostgresStorage`
 
@@ -1094,7 +1094,7 @@ class PostgresStorage:
     def __init__(self, pool: Any) -> None: ...
 ```
 
-Implements `Storage` in Postgres, over an asyncpg pool you built. `initialize` creates the tables `engine_runs` and `engine_labels` and their indexes, so one database can hold other libraries' tables beside them; `delete_runs` and `delete_scope` each run in one transaction; `put_label` inserts unless the id is taken and then reads the stored row back, so processes racing on one id store one row and all get it.
+Implements `Storage` in Postgres, over an asyncpg pool you built, in the tables `engine_runs` and `engine_labels` of the schema first on the pool's `search_path`, which the `rfnry-engine` command creates and upgrades. `check` raises `ConfigurationError` naming the command to run when that schema holds no engine tables (naming tables `initialize()` made in another schema to move with `upgrade --from`), is behind or ahead of this version, holds tables `initialize()` made in 0.1.4 or earlier, or is one the pool's role cannot use; `delete_runs` and `delete_scope` each run in one transaction; `put_label` inserts unless the id is taken and then reads the stored row back, so processes racing on one id store one row and all get it.
 
 ### `RunRow`
 
@@ -1140,13 +1140,13 @@ class Refinery:
 
 Records runs, stores labels on them, exports datasets and replays recorded runs on a candidate, all through `storage`, which stays readable to read the rows back yourself. Passed as `Engine(refinery=)`, it records every run that returns. A storage's `StorageError` passes through every verb.
 
-### `Refinery.initialize`
+### `Refinery.check`
 
 ```python
-async def initialize(self) -> None: ...
+async def check(self) -> None: ...
 ```
 
-Initializes the storage: for `PostgresStorage`, creates its tables. Safe to run again.
+Checks the storage: for `PostgresStorage`, that its schema fits this version; it only reads. Raises `ConfigurationError` naming the command that fixes it.
 
 ### `Refinery.record`
 

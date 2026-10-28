@@ -1,18 +1,17 @@
 import asyncio
 import os
 import signal
-import uuid
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
 import asyncpg
 import pytest
+from database import SCHEMA, URL, Schemas
 
+from rfnry_engine.refinery import migrations
 from rfnry_engine.refinery.postgres import PostgresStorage
 
-URL = os.environ.get("RFNRY_TEST_POSTGRES_URL", "")
-SCHEMA = f"engine_test_{uuid.uuid4().hex}"
 CONTAINER = "start the rfnry-engine-pg container (docker start rfnry-engine-pg)"
 
 
@@ -51,9 +50,17 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
 @pytest.fixture(scope="session")
 async def pool() -> AsyncIterator[Any]:
     pool = await asyncpg.create_pool(URL, min_size=1, server_settings={"search_path": SCHEMA})
-    await PostgresStorage(pool).initialize()
+    async with pool.acquire() as conn:
+        await migrations.apply(conn, migrations.plan_create)
     yield pool
     await pool.close()
+
+
+@pytest.fixture
+async def schemas() -> AsyncIterator[Schemas]:
+    held = Schemas()
+    yield held
+    await held.close()
 
 
 @pytest.fixture

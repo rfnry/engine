@@ -156,8 +156,8 @@ class Refinery:
     def __init__(self, storage: Storage) -> None:
         self.storage = storage
 
-    async def initialize(self) -> None:
-        await self.storage.initialize()
+    async def check(self) -> None:
+        await self.storage.check()
 
     async def record(self, run: Run) -> None:
         if not run.scope:
