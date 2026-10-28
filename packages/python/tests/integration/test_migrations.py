@@ -66,8 +66,8 @@ async def initialized(schemas: Schemas, ddl: list[str] = WITH_TAGS) -> tuple[str
     return name, pool
 
 
-def run(run_id: str, tags: dict[str, str] | None = None) -> RunRow:
-    body: dict[str, Any] = {"reply": run_id}
+def run(run_id: str, tags: dict[str, str] | None = None, reply: str = "") -> RunRow:
+    body: dict[str, Any] = {"reply": reply or run_id}
     if tags is not None:
         body["tags"] = tags
     return RunRow(
@@ -85,16 +85,20 @@ def run(run_id: str, tags: dict[str, str] | None = None) -> RunRow:
     )
 
 
+HOSTILE = run("r3", {"customer": "c-퀴"}, reply="tool said a\x00b \udc80")
+OLD_TAGS = "replace(replace($10::text, '\\ud', '\\u0'), '\\u0000', '\\ufffd')::jsonb"
+
+
 async def written_before(pool: Any, tagged: bool) -> None:
     async with pool.acquire() as conn:
-        for row in (run("r1", {"customer": "c-81"}), run("r2")):
+        for row in (run("r1", {"customer": "c-81"}), run("r2"), HOSTILE):
             columns = "scope, run_id, agent, kind, at, recorded, duration_ms, model, body"
             values = "$1, $2, $3, $4, $5, $6, $7, $8, $9::json"
             args = [row.scope, row.run_id, row.agent, row.kind, row.at, row.recorded, 1, "m"]
             args.append(json.dumps(row.body))
             if tagged:
                 columns += ", tags"
-                values += ", $10::jsonb"
+                values += f", {OLD_TAGS}"
                 args.append(json.dumps(row.body.get("tags") or {}))
             await conn.execute(f"INSERT INTO engine_runs ({columns}) VALUES ({values})", *args)
         await conn.execute(
@@ -105,8 +109,12 @@ async def written_before(pool: Any, tagged: bool) -> None:
 
 
 async def kept(storage: PostgresStorage) -> None:
-    assert sorted(r.run_id for r in await storage.runs("acme")) == ["r1", "r2"]
+    assert sorted(r.run_id for r in await storage.runs("acme")) == ["r1", "r2", "r3"]
     assert [r.run_id for r in await storage.run_tree("acme", tags={"customer": "c-81"})] == ["r1"]
+    assert [r.run_id for r in await storage.run_tree("acme", tags={"customer": "c-퀴"})] == ["r3"]
+    assert await storage.run_tree("acme", tags={"customer": "c-4"}) == []
+    stored = await storage.get_run("acme", "r3")
+    assert stored is not None and stored.body == HOSTILE.body
     assert [label.label_id for label in await storage.labels("acme")] == ["l1"]
 
 
@@ -350,7 +358,7 @@ async def test_check_names_the_command_for_each_way_a_schema_does_not_fit(
     )
     assert await problem(await schemas.pool("public")) == (
         "refinery/postgres: no engine schema on search_path '\"public\"' — run rfnry-engine "
-        "create and put its schema first on the pool's search_path"
+        "create --schema engine and put it first on the pool's search_path"
     )
     old, held = await initialized(schemas)
     monkeypatch.setattr(migrations, "_shared", lambda schema: schema == old)
@@ -368,10 +376,11 @@ async def test_check_names_the_command_for_each_way_a_schema_does_not_fit(
     )
 
 
-async def test_check_and_upgrade_point_at_tables_initialize_made_in_another_schema(
-    schemas: Schemas,
+async def test_check_and_upgrade_point_at_tables_initialize_made_in_a_shared_schema(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     old, _ = await initialized(schemas)
+    monkeypatch.setattr(migrations, "_shared", lambda schema: schema == old)
 
     async def problem(pool: Any) -> str:
         with pytest.raises(ConfigurationError) as raised:
@@ -427,3 +436,97 @@ def test_the_first_schema_of_a_search_path_is_read_as_postgres_reads_it() -> Non
     assert migrations._first("Engine, public", "engine", None) == "engine"
     assert migrations._first("", "engine", None) is None
     assert migrations._first('""', "engine", None) is None
+
+
+async def test_check_lists_tables_initialize_made_elsewhere_without_choosing_them(
+    schemas: Schemas,
+) -> None:
+    old, _ = await initialized(schemas)
+    empty = await schemas.create()
+    with pytest.raises(ConfigurationError) as raised:
+        await PostgresStorage(await schemas.pool(empty)).check()
+    assert str(raised.value) == (
+        f"refinery/postgres: no engine schema in {empty} — run rfnry-engine create --schema "
+        f"{empty}; if the tables initialize() made in {old} are this app's, run rfnry-engine "
+        f"upgrade --schema {empty} --from that schema instead"
+    )
+
+
+async def test_check_never_sends_engine_into_another_librarys_schema(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = await schemas.create()
+    pool = await schemas.pool(other)
+    async with pool.acquire() as conn:
+        await conn.execute("CREATE TABLE memory_sources (id TEXT)")
+    old, _ = await initialized(schemas)
+    monkeypatch.setattr(migrations, "_shared", lambda schema: schema == old)
+    home = schemas.name()
+    monkeypatch.setattr(migrations, "DEFAULT", home)
+
+    async def problem() -> str:
+        with pytest.raises(ConfigurationError) as raised:
+            await PostgresStorage(pool).check()
+        return str(raised.value)
+
+    assert await problem() == (
+        f"refinery/postgres: no engine schema in {other} — the engine tables initialize() made "
+        f"are in {old} — run rfnry-engine upgrade --schema {home} --from {old} and put it first "
+        "on the pool's search_path"
+    )
+    await admin(f"CREATE SCHEMA {quoted(home)}")
+    async with (await schemas.pool(home)).acquire() as conn:
+        await migrations.apply(conn, partial(migrations.plan_create, fresh=True))
+    assert await problem() == (
+        f"refinery/postgres: no engine schema in {other} — engine's tables are in {home} — "
+        "put it first on the pool's search_path"
+    )
+
+
+async def test_create_refuses_while_tables_initialize_made_sit_in_a_shared_schema(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old, _ = await initialized(schemas)
+    monkeypatch.setattr(migrations, "_shared", lambda schema: schema == old)
+    name = await schemas.create()
+    async with (await schemas.pool(name)).acquire() as conn:
+        with pytest.raises(
+            ConfigurationError,
+            match=f"^refinery/migrations: the engine tables initialize\\(\\) made are in {old} — "
+            f"run rfnry-engine upgrade --schema {name} --from {old} to keep their runs, or "
+            "create with --fresh to start without them$",
+        ):
+            await migrations.apply(conn, migrations.plan_create)
+        await migrations.apply(conn, partial(migrations.plan_create, fresh=True))
+    await PostgresStorage(await schemas.pool(name)).check()
+
+
+async def test_check_names_the_grants_a_role_lacks(schemas: Schemas) -> None:
+    name, _ = await created(schemas)
+    role = f"engine_probe_{uuid4().hex[:8]}"
+    await admin(f"CREATE ROLE {role} LOGIN PASSWORD 'probe'")
+    try:
+        await admin(f"GRANT USAGE ON SCHEMA {quoted(name)} TO {role}")
+        await admin(f"GRANT SELECT ON ALL TABLES IN SCHEMA {quoted(name)} TO {role}")
+        parts = urlsplit(URL)
+        url = urlunsplit(parts._replace(netloc=f"{role}:probe@{parts.hostname}:{parts.port}"))
+        pool = await asyncpg.create_pool(
+            url, min_size=1, max_size=1, server_settings={"search_path": quoted(name)}
+        )
+        try:
+            with pytest.raises(ConfigurationError) as raised:
+                await PostgresStorage(pool).check()
+            assert str(raised.value) == (
+                f"refinery/postgres: {role} lacks INSERT, UPDATE, DELETE on engine_labels and "
+                "engine_runs — grant it SELECT, INSERT, UPDATE, DELETE on them and SELECT on "
+                "engine_migrations"
+            )
+            await admin(
+                f"GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {quoted(name)} TO {role}"
+            )
+            await PostgresStorage(pool).check()
+        finally:
+            await pool.close()
+    finally:
+        await admin(f"DROP OWNED BY {role}")
+        await admin(f"DROP ROLE {role}")

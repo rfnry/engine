@@ -1,3 +1,4 @@
+import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, NamedTuple
@@ -5,15 +6,20 @@ from typing import Any, NamedTuple
 from rfnry_engine.errors import ConfigurationError, InputError, StorageError
 
 
+class Call(NamedTuple):
+    name: str
+    run: Callable[[Any], Awaitable[None]]
+
+
 class Migration(NamedTuple):
     version: int
     name: str
-    statements: Sequence[str]
+    statements: Sequence[str | Call]
 
 
 class Plan(NamedTuple):
     steps: list[str]
-    statements: list[str]
+    statements: list[str | Call]
 
 
 Planner = Callable[[Any], Awaitable[Plan]]
@@ -39,11 +45,28 @@ _CREATE = (
 )
 
 
-_TAGS = (
+async def _fill_tags(conn: Any) -> None:
+    from rfnry_engine.refinery.postgres import stored_tags
+
+    after: tuple[str, str] = ("", "")
+    while True:
+        rows = await conn.fetch(
+            "SELECT scope, run_id, body::text AS body FROM engine_runs "
+            "WHERE (scope, run_id) > ($1, $2) ORDER BY scope, run_id LIMIT 1000",
+            *after,
+        )
+        if not rows:
+            return
+        await conn.executemany(
+            "UPDATE engine_runs SET tags = $3::jsonb WHERE scope = $1 AND run_id = $2",
+            [(r["scope"], r["run_id"], stored_tags(json.loads(r["body"]))) for r in rows],
+        )
+        after = (rows[-1]["scope"], rows[-1]["run_id"])
+
+
+_TAGS: tuple[str | Call, ...] = (
     "ALTER TABLE engine_runs ADD COLUMN IF NOT EXISTS tags JSONB",
-    "UPDATE engine_runs SET tags = CASE WHEN json_typeof(body->'tags') = 'object' "
-    "THEN replace(replace((body->'tags')::text, '\\ud', '\\u0'), '\\u0000', '\\ufffd')::jsonb "
-    "ELSE '{}'::jsonb END WHERE tags IS NULL",
+    Call("fill engine_runs.tags from each run's body, computed by rfnry-engine", _fill_tags),
     "ALTER TABLE engine_runs ALTER COLUMN tags SET NOT NULL",
     "CREATE INDEX IF NOT EXISTS ix_engine_runs_scope_parent ON engine_runs (scope, parent_run_id)",
     "CREATE INDEX IF NOT EXISTS ix_engine_runs_tags ON engine_runs USING GIN (tags jsonb_path_ops)",
@@ -59,7 +82,13 @@ LATEST = MIGRATIONS[-1].version
 LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('engine.migrate:' || current_schema(), 0))"
 
 
+DEFAULT = "engine"
+
+
 _INITIALIZED = ("engine_labels", "engine_runs")
+
+
+_WRITES = ("SELECT", "INSERT", "UPDATE", "DELETE")
 
 
 _STATE = (
@@ -81,16 +110,40 @@ _ELSEWHERE = (
 )
 
 
-def _first(path: str, role: str, schema: str | None) -> str | None:
+_OCCUPIED = (
+    "SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+    "WHERE n.nspname = $1 AND c.relkind IN ('r', 'p'))"
+)
+
+
+_MIGRATED = "SELECT to_regclass(quote_ident($1) || '.engine_migrations') IS NOT NULL"
+
+
+_LACKING = (
+    "SELECT t.name AS table_name, p.name AS privilege "
+    "FROM unnest($1::text[]) WITH ORDINALITY AS t(name, n) "
+    "CROSS JOIN unnest($2::text[]) WITH ORDINALITY AS p(name, m) "
+    "WHERE NOT has_table_privilege(quote_ident(current_schema()) || '.' || t.name, p.name) "
+    "ORDER BY p.m, t.name"
+)
+
+
+def _names(path: str, role: str, schema: str | None) -> list[str]:
+    found: list[str] = []
     for quoted, bare in _NAMES.findall(path):
         name: str = quoted.replace('""', '"') if quoted else bare.lower()
-        if not name:
+        if name == "$user":
+            if role == schema:
+                found.append(role)
             continue
-        if name != "$user":
-            return name
-        if role == schema:
-            return role
-    return None
+        if name:
+            found.append(name)
+    return found
+
+
+def _first(path: str, role: str, schema: str | None) -> str | None:
+    names = _names(path, role, schema)
+    return names[0] if names else None
 
 
 def _literal(value: str) -> str:
@@ -115,20 +168,48 @@ def _shared(schema: str) -> bool:
     return schema in ("public", "information_schema") or schema.startswith("pg_")
 
 
-async def remedy(conn: Any, schema: str) -> str:
-    found = [row["name"] for row in await conn.fetch(_ELSEWHERE, schema)]
-    if not found:
-        return f"run rfnry-engine create --schema {schema}"
-    return (
-        f"the engine tables initialize() made are in {', '.join(found)} — "
-        f"run rfnry-engine upgrade --schema {schema} --from {found[0]}"
-    )
+async def remedy(conn: Any, schema: str, path: Sequence[str] = ()) -> str:
+    moved = _shared(schema) or bool(await conn.fetchval(_OCCUPIED, schema))
+    target = DEFAULT if moved else schema
+    tail = " and put it first on the pool's search_path" if moved else ""
+    if moved and await conn.fetchval(_MIGRATED, target):
+        return f"engine's tables are in {target} — put it first on the pool's search_path"
+    found = [row["name"] for row in await conn.fetch(_ELSEWHERE, target)]
+    near = [name for name in found if _shared(name) or name in path]
+    if near:
+        return (
+            f"the engine tables initialize() made are in {near[0]} — "
+            f"run rfnry-engine upgrade --schema {target} --from {near[0]}{tail}"
+        )
+    if found:
+        return (
+            f"run rfnry-engine create --schema {target}{tail}; if the tables initialize() made "
+            f"in {', '.join(found)} are this app's, run rfnry-engine upgrade --schema {target} "
+            "--from that schema instead"
+        )
+    return f"run rfnry-engine create --schema {target}{tail}"
+
+
+async def _lacking(conn: Any, role: str) -> list[str]:
+    rows = [
+        *await conn.fetch(_LACKING, list(_INITIALIZED), list(_WRITES)),
+        *await conn.fetch(_LACKING, ["engine_migrations"], ["SELECT"]),
+    ]
+    if not rows:
+        return []
+    privileges = list(dict.fromkeys(row["privilege"] for row in rows))
+    tables = sorted({row["table_name"] for row in rows})
+    return [
+        f"{role} lacks {', '.join(privileges)} on {' and '.join(tables)} — grant it "
+        f"{', '.join(_WRITES)} on them and SELECT on engine_migrations"
+    ]
 
 
 async def problems(conn: Any) -> list[str]:
     state = await conn.fetchrow(_STATE)
     schema, path, role = state["schema"], state["path"], state["role"]
-    first = _first(path, role, schema)
+    names = _names(path, role, schema)
+    first = names[0] if names else None
     if first is not None and first != schema:
         held = await conn.fetchval(
             "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", first
@@ -138,9 +219,12 @@ async def problems(conn: Any) -> list[str]:
                 f"{role} cannot use schema {first} — grant it USAGE on the schema and SELECT, "
                 "INSERT, UPDATE, DELETE on its tables"
             ]
-        return [f"there is no schema {first} on search_path {path!r} — {await remedy(conn, first)}"]
+        return [
+            f"there is no schema {first} on search_path {path!r} — "
+            f"{await remedy(conn, first, names)}"
+        ]
     if schema is None:
-        return [f"no schema on search_path {path!r} exists — {await remedy(conn, 'engine')}"]
+        return [f"no schema on search_path {path!r} exists — {await remedy(conn, DEFAULT, names)}"]
     if not state["migrated"]:
         if state["tables"] and _shared(schema):
             return [
@@ -154,10 +238,12 @@ async def problems(conn: Any) -> list[str]:
             ]
         if _shared(schema):
             return [
-                f"no engine schema on search_path {path!r} — run rfnry-engine create "
-                "and put its schema first on the pool's search_path"
+                f"no engine schema on search_path {path!r} — {await remedy(conn, schema, names)}"
             ]
-        return [f"no engine schema in {schema} — {await remedy(conn, schema)}"]
+        return [f"no engine schema in {schema} — {await remedy(conn, schema, names)}"]
+    lacking = await _lacking(conn, role)
+    if lacking:
+        return lacking
     version = int(await conn.fetchval("SELECT max(version) FROM engine_migrations") or 0)
     if version < LATEST:
         return [
@@ -175,7 +261,7 @@ def _ahead(schema: str, version: int) -> str:
     )
 
 
-async def plan_create(conn: Any) -> Plan:
+async def plan_create(conn: Any, *, fresh: bool = False) -> Plan:
     state = await conn.fetchrow(_STATE)
     schema = state["schema"]
     if schema is None or _shared(schema):
@@ -186,6 +272,14 @@ async def plan_create(conn: Any) -> Plan:
         raise ConfigurationError(
             f"refinery/migrations: {schema} already holds engine tables — run rfnry-engine "
             "upgrade, or create into another schema"
+        )
+    found = [row["name"] for row in await conn.fetch(_ELSEWHERE, schema)]
+    shared = [name for name in found if _shared(name)]
+    if shared and not fresh:
+        raise ConfigurationError(
+            f"refinery/migrations: the engine tables initialize() made are in {shared[0]} — run "
+            f"rfnry-engine upgrade --schema {schema} --from {shared[0]} to keep their runs, or "
+            "create with --fresh to start without them"
         )
     return _steps(MIGRATIONS)
 
@@ -286,7 +380,13 @@ async def apply(
     return plan
 
 
-async def _execute(conn: Any, statement: str) -> None:
+async def _execute(conn: Any, statement: str | Call) -> None:
+    if isinstance(statement, Call):
+        try:
+            await statement.run(conn)
+        except Exception as exc:
+            raise StorageError(f"refinery/migrations: {statement.name} failed: {exc}") from exc
+        return
     try:
         await conn.execute(statement)
     except Exception as exc:

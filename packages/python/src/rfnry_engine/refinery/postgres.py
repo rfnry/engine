@@ -49,8 +49,19 @@ def _count(status: str) -> int:
     return int(status.rsplit(" ", 1)[-1])
 
 
-def _as_jsonb(text: str) -> str:
-    return f"replace(replace({text}, '\\ud', '\\u0'), '\\u0000', '\\ufffd')::jsonb"
+def _clean(value: Any) -> Any:
+    if isinstance(value, str):
+        return "".join("\ufffd" if c == "\x00" or "\ud800" <= c <= "\udfff" else c for c in value)
+    if isinstance(value, dict):
+        return {_clean(key): _clean(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clean(item) for item in value]
+    return value
+
+
+def stored_tags(body: Any) -> str:
+    tags = body.get("tags") if isinstance(body, dict) else None
+    return json.dumps(_clean(tags or {}))
 
 
 def _tree(
@@ -64,8 +75,8 @@ def _tree(
             f"(run_id = ANY(${len(params)}::text[]) OR parent_run_id = ANY(${len(params)}::text[]))"
         )
     if tags is not None:
-        params.append(json.dumps(tags))
-        conditions.append(f"tags @> {_as_jsonb(f'${len(params)}::text')}")
+        params.append(json.dumps(_clean(tags)))
+        conditions.append(f"tags @> ${len(params)}::jsonb")
     sql = (
         "WITH RECURSIVE tree(run_id) AS (SELECT run_id FROM engine_runs WHERE "
         + " AND ".join(conditions)
@@ -102,7 +113,7 @@ class PostgresStorage:
         async with self._guard("put_runs"), self._pool.acquire() as conn, conn.transaction():
             await conn.executemany(
                 f"INSERT INTO engine_runs ({_RUN_COLUMNS}, tags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::json, "
-                f"{_as_jsonb('$12::text')}) "
+                "$12::jsonb) "
                 "ON CONFLICT (scope, run_id) DO UPDATE SET parent_run_id = EXCLUDED.parent_run_id, agent = EXCLUDED.agent, "
                 "kind = EXCLUDED.kind, task = EXCLUDED.task, at = EXCLUDED.at, recorded = EXCLUDED.recorded, "
                 "duration_ms = EXCLUDED.duration_ms, model = EXCLUDED.model, body = EXCLUDED.body, tags = EXCLUDED.tags",
@@ -119,7 +130,7 @@ class PostgresStorage:
                         row.duration_ms,
                         row.model,
                         json.dumps(row.body),
-                        json.dumps(row.body.get("tags") or {}),
+                        stored_tags(row.body),
                     )
                     for row in rows
                 ],

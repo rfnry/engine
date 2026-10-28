@@ -474,6 +474,32 @@ async def test_tags_match_beside_bodies_json_cannot_hold(storage: Storage) -> No
     assert {r.run_id for r in await storage.runs("a")} == {"emoji", "other"}
 
 
+async def test_tags_keep_every_character_so_no_two_tags_collide(
+    storage: Storage, pool: Any
+) -> None:
+    for run_id, customer in (
+        ("hangul", "c-퀴"),
+        ("digit", "c-4"),
+        ("lone", "c-\udc80"),
+        ("nul", "x-\x00"),
+    ):
+        await storage.put_runs("a", [_tagged("a", run_id, {"customer": customer})])
+    for run_id, customer in (
+        ("hangul", "c-퀴"),
+        ("digit", "c-4"),
+        ("lone", "c-\udc80"),
+        ("nul", "x-\x00"),
+    ):
+        found = await storage.run_tree("a", tags={"customer": customer})
+        assert [r.run_id for r in found] == [run_id]
+    stored = await pool.fetchval(
+        "SELECT tags->>'customer' FROM engine_runs WHERE scope = 'a' AND run_id = 'hangul'"
+    )
+    assert stored == "c-퀴"
+    assert await storage.delete_runs("a", tags={"customer": "c-4"}) == 1
+    assert {r.run_id for r in await storage.runs("a")} == {"hangul", "lone", "nul"}
+
+
 async def test_delete_runs_takes_descendants_and_labels_in_its_scope(storage: Storage) -> None:
     t0 = datetime.now(UTC)
     await storage.put_runs("a", [_tagged("a", "r1", {"customer": "c-81"}, at=t0)])

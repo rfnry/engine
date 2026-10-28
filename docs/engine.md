@@ -2283,8 +2283,8 @@ cancels any tool's. Outside a run, a stopped consult's `dispatch` returns what i
 ## Storage
 
 The refinery is the only part of the library that stores anything, and it stores in Postgres:
-`PostgresStorage(pool)`, over an asyncpg pool you built, in a schema of its own. A Postgres to try it
-on is one container, with engine's schema prepared by the command the package installs:
+`PostgresStorage(pool)`, over an asyncpg pool you built, in a schema of its own. A Postgres to try
+it on is one container, with engine's schema prepared by the command the package installs:
 
 ```bash
 docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
@@ -2301,14 +2301,17 @@ rfnry-engine create --schema engine          # the schema and its tables
 rfnry-engine create --schema engine --sql    # print every statement, run nothing
 ```
 
-`create` makes two tables, `engine_runs` and `engine_labels`, and their indexes — among them
-`(scope, parent_run_id)`, which a run's tree is found by, and a GIN index on the `tags` column of
-`engine_runs`, which tag selection uses. It takes the connection string with `--url`, or reads
-Postgres' standard `PG*` variables, and never prints it. `--sql` prints the statements as the
-command runs them — the `search_path` they run under, then one transaction holding the migration
-lock — so they land in the same schema when you run them yourself. Engine's tables never go in
-`public`. An app that connects as a role of its own, not the one that ran the command, needs `USAGE`
-on the schema and `SELECT`, `INSERT`, `UPDATE` and `DELETE` on its tables.
+`create` makes `engine_runs` and `engine_labels` and their indexes — among them `(scope,
+parent_run_id)`, which a run's tree is found by, and a GIN index on the `tags` column of
+`engine_runs`, which tag selection uses — and `engine_migrations`, its record of the migrations run.
+While tables `initialize()` made sit in a shared schema such as `public`, `create` refuses and names
+the `upgrade --from` that keeps their runs; `create --fresh` starts empty anyway. It takes the
+connection string with `--url`, or reads Postgres' standard `PG*` variables, and never prints it.
+`--sql` prints the statements as the command runs them — the `search_path` they run under, then one
+transaction holding the migration lock — so they land in the same schema when you run them yourself.
+Engine's tables never go in `public`. An app that connects as a role of its own, not the one that
+ran the command, needs `USAGE` on the schema, `SELECT`, `INSERT`, `UPDATE` and `DELETE` on
+`engine_runs` and `engine_labels`, and `SELECT` on `engine_migrations`.
 
 Your pool points at the schema, and the app checks it at start:
 
@@ -2318,9 +2321,10 @@ await Refinery(PostgresStorage(pool)).check()
 ```
 
 `check()` only reads. It raises a `ConfigurationError` saying how the schema does not fit this
-version and the command that fixes it: no engine schema on the pool's `search_path`, a schema
-behind or ahead of this version, tables an earlier version's `initialize()` made, or a schema the
-pool's role cannot use.
+version and the command that fixes it: no engine schema on the pool's `search_path`, a schema behind
+or ahead of this version, tables an earlier version's `initialize()` made, or a schema or tables the
+pool's role cannot use. When the pool's first schema is another library's, it points at engine's own
+schema instead of offering that one.
 
 A version of engine that changes its tables ships a migration, and the schema follows it in place,
 its data kept:
@@ -2335,10 +2339,13 @@ Take a snapshot and stop the app instances running the old version first: `upgra
 asks before it runs unless `--yes`, and runs every pending step in one transaction under a lock.
 
 Tables made by `initialize()` in rfnry-engine 0.1.4 or earlier are adopted where they are:
-`rfnry-engine upgrade --schema <their schema>` records them, and gives a table from before 0.1.4
-its `tags` column — filled from each recorded run's own tags — and the indexes it lacked. Tables in
-a shared schema such as `public`, where a pool with the default `search_path` put them, move into
-engine's schema in the same transaction:
+`rfnry-engine upgrade --schema <their schema>` records them, and gives a table from before 0.1.4 its
+`tags` column and the indexes it lacked. It fills `tags` again from each recorded run's own tags, in
+a table 0.1.4 made too: before, a character written as an escape starting `\ud` — Hangul, emoji —
+was stored rewritten, so two different tags could select each other's runs. A tag holding a NUL or
+an unpaired surrogate, which Postgres cannot store, is kept and matched with U+FFFD in its place.
+Tables in a shared schema such as `public`, where a pool with the default `search_path` put them,
+move into engine's schema in the same transaction:
 
 ```sh
 rfnry-engine upgrade --schema engine --from public

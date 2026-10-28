@@ -1094,7 +1094,7 @@ class PostgresStorage:
     def __init__(self, pool: Any) -> None: ...
 ```
 
-Implements `Storage` in Postgres, over an asyncpg pool you built, in the tables `engine_runs` and `engine_labels` of the schema first on the pool's `search_path`, which the `rfnry-engine` command creates and upgrades. `check` raises `ConfigurationError` naming the command to run when that schema holds no engine tables (naming tables `initialize()` made in another schema to move with `upgrade --from`), is behind or ahead of this version, holds tables `initialize()` made in 0.1.4 or earlier, or is one the pool's role cannot use; `delete_runs` and `delete_scope` each run in one transaction; `put_label` inserts unless the id is taken and then reads the stored row back, so processes racing on one id store one row and all get it.
+Implements `Storage` in Postgres, over an asyncpg pool you built, in the tables `engine_runs` and `engine_labels` of the schema first on the pool's `search_path`, which the `rfnry-engine` command creates and upgrades. `check` raises `ConfigurationError` naming the command to run when that schema holds no engine tables (naming tables `initialize()` made in another schema to move with `upgrade --from`), is behind or ahead of this version, holds tables `initialize()` made in 0.1.4 or earlier, or is one whose schema or tables the pool's role cannot use; `delete_runs` and `delete_scope` each run in one transaction; `put_label` inserts unless the id is taken and then reads the stored row back, so processes racing on one id store one row and all get it.
 
 ### `RunRow`
 
