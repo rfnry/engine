@@ -663,8 +663,8 @@ included; any other call the engine answers without running it sends neither: an
 or refuses, a call after an accepted `Output`, a call in a reply that was cut short. Its step is in
 `run.steps`.
 
-A foreground `Shell` command of a run with a `Workspace` also sends a `CommandOutput` for each
-chunk it writes, while it runs. See the [Workspace](#workspace) section.
+A foreground `Shell` command of a run with a `Workspace` also sends a `CommandOutput` for what
+it writes, while it runs. See the [Workspace](#workspace) section.
 
 Every model call is a turn, and a `TextDelta` carries the `turn` that said it, from 0. Text of a
 turn that ends in tool calls — "Let me look that up." — is said beside them; a run that ends in
@@ -1579,8 +1579,8 @@ get the variables too; a `Shell` that code dispatches outside a run gets none. C
 - `refinery.replay(candidate, workspace=)` needs a workspace whose sandbox mounts the candidate's
   tree.
 
-Showing a command. With `on_event`, a foreground `Shell` command sends a `CommandOutput` for each
-chunk it writes, as it arrives, with its `call_id`, the `stream` (`"stdout"` or `"stderr"`) and the
+Showing a command. With `on_event`, a foreground `Shell` command sends a `CommandOutput` for what
+it writes, as it arrives (chunks that queued while the handler was busy arrive joined), with its `call_id`, the `stream` (`"stdout"` or `"stderr"`) and the
 `text`, decoded as UTF-8 per stream so a character split across two writes arrives whole. A frontend
 can show a long build as it runs instead of after it. The model's view is unchanged: it reads the
 same capped `stdout` and `stderr` in the `Shell` result, and a handler never slows the command. The

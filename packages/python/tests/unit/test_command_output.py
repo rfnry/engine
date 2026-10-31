@@ -2,12 +2,14 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.models import ToolCall
 from rfnry_engine.records import CommandOutput, Event, EventHandler, Generation, ToolResultReady
+from rfnry_engine.stop import Stop
 from rfnry_engine.tools.workspace import Local, Workspace
 
 from .fakes import Scripted, text_reply
@@ -21,22 +23,37 @@ def root(tmp_path: Path) -> Path:
     return path
 
 
+class Kept:
+    def __init__(self) -> None:
+        self.runs: list[Any] = []
+
+    async def record(self, run: Any) -> None:
+        self.runs.append(run)
+
+
 def python(root: Path, source: str) -> ToolCall:
     (root / "script.py").write_text(source, encoding="utf-8")
     return ToolCall(id="1", name="Shell", args={"command": f"{sys.executable} script.py"})
 
 
 async def go(
-    tmp_path: Path, root: Path, call: ToolCall, handler: EventHandler, work: Workspace | None = None
+    tmp_path: Path,
+    root: Path,
+    call: ToolCall,
+    handler: EventHandler,
+    work: Workspace | None = None,
+    kept: Kept | None = None,
+    stop: Stop | None = None,
 ) -> Generation:
     llm = Scripted(use(call), text_reply("ok"))
-    engine = Engine(make_tree(tmp_path), models={"strong": llm})
+    engine = Engine(make_tree(tmp_path), models={"strong": llm}, refinery=kept)
     run = await engine.run(
         "coder",
         "acme",
         "x",
         workspace=work or Workspace(Local(root), scope="acme"),
         on_event=handler,
+        stop=stop,
     )
     assert isinstance(run, Generation)
     return run
@@ -155,9 +172,52 @@ async def test_a_handler_that_raises_on_command_output_fails_the_run(
         if isinstance(event, CommandOutput):
             raise RuntimeError("boom")
 
+    kept = Kept()
     with pytest.raises(RuntimeError, match="boom"):
-        await go(tmp_path, root, python(root, source), handler)
+        await go(tmp_path, root, python(root, source), handler, kept=kept)
     assert (root / "after.txt").exists()
+    [recorded] = kept.runs
+    assert [step.tool for step in recorded.steps] == ["Shell"]
+    assert [m.role for m in recorded.conversation] == ["user", "assistant", "tool"]
+
+
+async def test_a_handler_error_fails_a_run_whose_call_was_stopped(
+    tmp_path: Path, root: Path
+) -> None:
+    source = "import time\nprint('hi', flush=True)\ntime.sleep(5)\n"
+    stop = Stop()
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, CommandOutput):
+            asyncio.get_running_loop().call_later(0.3, stop.now)
+            raise RuntimeError("boom")
+
+    kept = Kept()
+    with pytest.raises(RuntimeError, match="boom"):
+        await go(tmp_path, root, python(root, source), handler, kept=kept, stop=stop)
+    [recorded] = kept.runs
+    assert [step.stopped for step in recorded.steps] == [True]
+
+
+async def test_chunks_that_queued_while_the_handler_was_busy_arrive_joined(
+    tmp_path: Path, root: Path
+) -> None:
+    source = (
+        "import os, time\n"
+        "for i in range(200):\n"
+        "    os.write(1, str(i % 10).encode())\n"
+        "    time.sleep(0.002)\n"
+    )
+    events: list[CommandOutput] = []
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, CommandOutput):
+            events.append(event)
+            await asyncio.sleep(0.05)
+
+    await go(tmp_path, root, python(root, source), handler)
+    assert "".join(e.text for e in events) == "".join(str(i % 10) for i in range(200))
+    assert len(events) < 100
 
 
 async def test_a_background_job_sends_no_command_output(tmp_path: Path, root: Path) -> None:

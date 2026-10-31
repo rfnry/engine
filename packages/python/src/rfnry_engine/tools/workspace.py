@@ -363,12 +363,27 @@ class _Told:
             "stdout": codecs.getincrementaldecoder("utf-8")(errors="replace"),
             "stderr": codecs.getincrementaldecoder("utf-8")(errors="replace"),
         }
-        while (item := await self.queue.get()) is not None:
-            stream, gap, data = item
-            self.queued -= len(data)
-            if gap:
-                decoders[stream].reset()
-            await self._say(stream, gap, decoders[stream].decode(data))
+        closing = False
+        while not closing:
+            taken = [await self.queue.get()]
+            while not self.queue.empty():
+                taken.append(self.queue.get_nowait())
+            if taken[-1] is None:
+                closing = True
+                taken.pop()
+            events: list[tuple[Literal["stdout", "stderr"], int, bytearray]] = []
+            for item in taken:
+                assert item is not None
+                stream, gap, data = item
+                self.queued -= len(data)
+                if events and events[-1][0] == stream and not gap:
+                    events[-1][2].extend(data)
+                else:
+                    events.append((stream, gap, bytearray(data)))
+            for stream, gap, joined in events:
+                if gap:
+                    decoders[stream].reset()
+                await self._say(stream, gap, decoders[stream].decode(bytes(joined)))
         for stream, decoder in decoders.items():
             await self._say(stream, 0, decoder.decode(b"", final=True))
         for stream, gap in self.missed.items():

@@ -11,6 +11,7 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("tools/workspace.py", "failed[0]"): "a backend's kill() error reaches the caller as it is",
     ("tools/workspace.py", "error"): "a backend's kill() error reaches the caller as it is",
     ("tools/workspace.py", "cancelled"): "a cancel that came during a kill goes on once it ends",
+    ("engine.py", "failures[0]"): "an on_event error reaches the run as it would from any handler",
     ("engine.py", "here.failed"): "an on_event error reaches the run as it would from any handler",
     ("stop.py", "cancelled"): "a cancel that came while tasks ended goes on once they have",
     (

@@ -1129,8 +1129,6 @@ class Engine:
                         content, is_error, stopped = STOPPED, True, True
             finally:
                 here.over = True
-            if here.failed is not None:
-                raise here.failed
             step = Step(
                 tool=call.name,
                 args=call.args,
@@ -1142,6 +1140,9 @@ class Engine:
                 stopped=stopped,
                 approved=approved,
             )
+            if here.failed is not None:
+                ran.append((call, step))
+                raise here.failed
             return await hand_over(call, step)
 
         def answer(call: ToolCall, step: Step) -> None:
@@ -1199,9 +1200,14 @@ class Engine:
                 return kept
 
             stopped = await wait(tasks, stop, finishing)
+            failures: list[Exception] = []
             for call, task in zip(batch, tasks, strict=True):
                 answer(call, await cut(call, began) if task.cancelled() else task.result())
-                foregrounds.pop(id(call), None)
+                here = foregrounds.pop(id(call), None)
+                if here is not None and here.failed is not None:
+                    failures.append(here.failed)
+            if failures:
+                raise failures[0]
             return stopped
 
         def drain() -> list[Message]:
