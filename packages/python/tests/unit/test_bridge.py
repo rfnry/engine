@@ -328,14 +328,19 @@ async def test_a_reply_made_after_close_began_does_not_wait_for_a_client_that_ne
 class Held:
     def __init__(self) -> None:
         self.calls = 0
-        self.release = asyncio.Event()
+        self.gates = [asyncio.Event() for _ in range(CALLS)]
         self.entered = asyncio.Event()
+
+    def release(self, *which: int) -> None:
+        for i in which or range(CALLS):
+            self.gates[i].set()
 
     async def __call__(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         self.calls += 1
         if self.calls == CALLS:
             self.entered.set()
-        await self.release.wait()
+        if args["x"] < CALLS:
+            await self.gates[args["x"]].wait()
         return {"result": args["x"]}
 
 
@@ -355,19 +360,22 @@ async def test_a_connection_past_the_cap_is_refused_at_once(root: Path) -> None:
         connections = await hold(b, CALLS)
         async with asyncio.timeout(10):
             await held.entered.wait()
-        reply = await ask(b, request(b))
-        assert reply == {
+        reader, writer = await asyncio.open_unix_connection(b.path, limit=1 << 26)
+        async with asyncio.timeout(1):
+            line = await reader.readline()
+        assert json.loads(line) == {
             "error": f"tools/bridge: at most {CALLS} calls at once; wait for one to finish"
         }
+        writer.close()
         assert held.calls == CALLS
-        held.release.set()
+        held.release()
         async with asyncio.timeout(10):
             replies = [json.loads(await reader.readline()) for reader, _ in connections]
         assert replies == [{"result": i} for i in range(CALLS)]
         for _, writer in connections:
             writer.close()
     finally:
-        held.release.set()
+        held.release()
         await b.close()
 
 
@@ -378,13 +386,18 @@ async def test_a_slot_frees_when_a_call_ends(root: Path) -> None:
         connections = await hold(b, CALLS)
         async with asyncio.timeout(10):
             await held.entered.wait()
-        connections[0][1].close()
-        held.release.set()
+        held.release(0)
         async with asyncio.timeout(10):
-            await connections[1][0].readline()
-        assert await ask(b, request(b, args={"x": 7})) == {"result": 7}
+            assert json.loads(await connections[0][0].readline()) == {"result": 0}
+        assert await ask(b, request(b, args={"x": CALLS})) == {"result": CALLS}
+        assert held.calls == CALLS + 1
+        assert all(not reader.at_eof() for reader, _ in connections[1:])
+        held.release()
+        async with asyncio.timeout(10):
+            replies = [json.loads(await reader.readline()) for reader, _ in connections[1:]]
+        assert replies == [{"result": i} for i in range(1, CALLS)]
         for _, writer in connections:
             writer.close()
     finally:
-        held.release.set()
+        held.release()
         await b.close()

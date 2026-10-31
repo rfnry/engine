@@ -775,7 +775,8 @@ class Workspace:
                 ' {"key": <the key>, "tool": <name>, "args": {...}}, and read one line back:'
                 ' {"result": <what you would read for that call>} or {"error": <its error>}.'
                 f" Each connection makes one call; open several to make calls at once, up to {CALLS},"
-                " and a call past that is refused, so retry it later. Every tool"
+                " and a connection past that is closed at once, with the error line or a broken pipe or"
+                " a reset, so retry it later. Every tool"
                 " you have is there except the workspace's own (Shell, Job, Jobs, Write, Edit)"
                 " and, when you have them, Delegate and Output."
             )

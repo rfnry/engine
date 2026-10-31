@@ -1656,9 +1656,10 @@ the run's `tools=` — except the workspace's own (`Shell`, `Job`, `Jobs`, `Writ
 and the builtin `Delegate`; any other name gets the model's error for an unknown tool,
 `InputError: tools: unknown tool 'Shell'`, and leaves no step and no event. Connections are answered
 as they come, so calls a script makes at once — from threads, or with `asyncio` — run at once, as a
-reply's calls do, up to 64 at once per command: a connection that arrives while 64 are in flight gets
-`{"error": "tools/bridge: at most 64 calls at once; wait for one to finish"}` without being read, and
-the script can retry it. A `Shell` command of a delegated or routed run calls that run's tools, under its
+reply's calls do, up to 64 at once per command: a connection that arrives while 64 are in flight is
+closed at once, unread, after an `{"error": "tools/bridge: at most 64 calls at once; wait for one to
+finish"}` line. The script may read that line or see a broken pipe or a connection reset instead, and
+should retry on any of them. A `Shell` command of a delegated or routed run calls that run's tools, under its
 own `run_id`.
 
 Each call runs as the model's calls do — `ToolCallStarted`, `approve`, the deadline (`tool_timeout`,
@@ -1713,8 +1714,8 @@ but where a deployment puts the workspace does not.
 - Until its command ends, each open connection holds a file descriptor and up to 1 MiB in the
   engine's process, which a sandbox's limits don't cover. The workspace `timeout` bounds how long,
   and a command has at most 64 calls in flight at once, so it holds at most 64 file descriptors and
-  about 64 MiB of requests in the engine's process. A script that opens more gets the error and can
-  retry.
+  64 requests of up to 1 MiB each, plus their parsed arguments, in the engine's process. A script
+  that opens more is closed on, and should retry.
 - The socket lives only while the command runs; something the command leaves running cannot call
   afterwards.
 
