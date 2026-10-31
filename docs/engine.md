@@ -1667,12 +1667,12 @@ A call ends with its command. When the command ends, for any reason — it exits
 workspace's `timeout` — a call still in flight is cut as a stopped call is: its step is recorded with
 `stopped` and `stopped by the user` as its result, its `ToolResultReady` is sent, and a script still
 connected reads `{"error": "stopped by the user"}`. A consult that a script's call started, an
-`engine.tool` passed in `tools=`, is cancelled when its command ends, and leaves no record of its
-own, as no cancelled run does; the script's step is recorded stopped. Under `stop.now()` the consult
-takes the stop and is recorded, as a model's would be. A reply to a process that outlived the
-command, one that left its process group outside a sandbox, is sent but never waited on: the socket
-closes whether that process reads it or not. An `on_event` that raises on a script's call fails the
-run once the command has ended.
+`engine.tool` passed in `tools=`, ends with the command: under `stop.now()` it takes the stop, but
+its own record is kept only when that record is written before the command is killed, and otherwise
+it leaves none, as no cancelled run does; the script's step is recorded stopped either way. A reply
+to a process that outlived the command, one that left its process group outside a sandbox, is sent
+but never waited on: the socket closes whether that process reads it or not. An `on_event` that
+raises on a script's call fails the run once the command has ended.
 
 The socket is the one file the engine creates itself, `<root>/.rfnry-<8 hex>.sock`, inside the
 workspace you passed, for the life of one command: made just before the command starts, closed and
@@ -2390,7 +2390,9 @@ cut once the consult has taken the stop — a stop that lands before a call retu
 its consult had just finished, and that consult keeps its record — and the caller's step reads
 `stopped by the user`, as a stopped `Delegate` step does; `after_step()` ends it after its current
 step. A consult a tool of yours starts in a task of its own — two at once, say — is in the
-foreground too. Its events reach the caller's handler, told apart by `agent` and `run_id`:
+foreground too; one a script's call started through the workspace's tool bridge ends with the
+script's command instead, as "Calling tools from code" says. Its events reach the caller's handler,
+told apart by `agent` and `run_id`:
 
 ```python
 async def status(event):
