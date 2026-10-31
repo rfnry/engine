@@ -15,6 +15,10 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("engine.py", "here.failed"): "an on_event error reaches the run as it would from any handler",
     ("stop.py", "cancelled"): "a cancel that came while tasks ended goes on once they have",
     (
+        "tools/bridge.py",
+        "cancelled",
+    ): "a cancel that came while connections ended goes on once they have",
+    (
         "workers/pool.py",
         "failed[0]",
     ): "a worker's stop() or a pool's close() error reaches the caller once every one has ended",
