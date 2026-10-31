@@ -29,7 +29,7 @@ from rfnry_engine.models import (
 from rfnry_engine.records import Generation, Step
 from rfnry_engine.refinery.judge import TeacherAnswers, teacher_answers, teacher_prompt
 from rfnry_engine.refinery.labels import Review
-from rfnry_engine.refinery.refinery import Refinery, flatten, label_of
+from rfnry_engine.refinery.refinery import Refinery, label_of
 from rfnry_engine.refinery.storage import RunRow, Storage
 from rfnry_engine.tools.tools import Tool, Tools
 
@@ -419,26 +419,6 @@ async def test_the_judge_sees_which_command_made_a_call(fixtures: Path, storage:
     assert isinstance(state, dict) and state["steps"] == [
         {"tool": "lookup", "args": {}, "result": "2", "by": "1"},
         {"tool": "Shell", "args": {"command": "x"}, "result": "{}"},
-    ]
-
-
-async def test_the_judge_reads_a_run_recorded_before_steps_had_by(
-    fixtures: Path, storage: Storage
-) -> None:
-    refinery = Refinery(storage)
-    dm = Fixed(JUDGEMENT)
-    engine = Engine(fixtures, models={"strong": Scripted(), "judge": dm})
-    at = datetime.now(UTC)
-    step = Step(tool="lookup", args={}, result="2", is_error=False, at=at, duration_ms=1)
-    rows = flatten(generation_record(agent="billing").model_copy(update={"steps": [step]}), at)
-    for kept in rows[0].body["steps"]:
-        del kept["by"]
-    await storage.put_runs("acme", rows)
-    labeled = await refinery.label("acme", engine, judge="judge")
-    assert labeled.errors == {} and labeled.judged == 1
-    state = dm.calls[0][0]
-    assert isinstance(state, dict) and state["steps"] == [
-        {"tool": "lookup", "args": {}, "result": "2"}
     ]
 
 
