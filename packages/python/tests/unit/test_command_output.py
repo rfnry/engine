@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -249,7 +250,9 @@ async def test_alternating_streams_with_a_slow_handler_do_not_hold_the_shell(
     assert shown - float((root / "ended").read_text(encoding="utf-8")) < 1.0
 
 
-async def test_a_chunk_after_a_gap_starts_its_own_event_and_a_batch_joins_per_stream() -> None:
+async def test_a_stream_that_missed_bytes_drops_until_the_next_batch_and_a_batch_joins_per_stream() -> (
+    None
+):
     said: list[tuple[str, str]] = []
     busy = asyncio.Event()
     free = asyncio.Event()
@@ -274,8 +277,75 @@ async def test_a_chunk_after_a_gap_starts_its_own_event_and_a_batch_joins_per_st
         ("stdout", "a"),
         ("stdout", "b"),
         ("stderr", "12"),
-        ("stdout", f"[... {BACKLOG} bytes not shown ...]\nc"),
+        ("stdout", f"[... {BACKLOG + 1} bytes not shown ...]\n"),
     ]
+
+
+async def test_a_chunk_after_the_next_batch_starts_its_own_event_with_the_note() -> None:
+    said: list[tuple[str, str]] = []
+    gates = [asyncio.Event(), asyncio.Event()]
+    entered = [asyncio.Event(), asyncio.Event()]
+
+    async def say(stream: Literal["stdout", "stderr"], text: str) -> None:
+        said.append((stream, text))
+        n = len(said) - 1
+        if n < 2:
+            entered[n].set()
+            await gates[n].wait()
+
+    told = _Told(say)
+    told.add("stdout", b"a")
+    await entered[0].wait()
+    told.add("stdout", b"x" * BACKLOG)
+    told.add("stdout", b"d")
+    gates[0].set()
+    await entered[1].wait()
+    told.add("stdout", b"c")
+    gates[1].set()
+    told.close()
+    await told.task
+    assert said == [
+        ("stdout", "a"),
+        ("stdout", "x" * BACKLOG),
+        ("stdout", "[... 1 bytes not shown ...]\nc"),
+    ]
+
+
+async def test_a_crafted_overflow_pattern_cannot_hold_the_shell(tmp_path: Path, root: Path) -> None:
+    source = (
+        "import os, time\n"
+        f"os.write(1, b'x' * {2 * BACKLOG})\n"
+        "for i in range(400):\n"
+        "    os.write(1, b'y' * 65536)\n"
+        "    os.write(1, b'z')\n"
+        "    os.write(2, b'e' * 65536)\n"
+        "    os.write(2, b'f')\n"
+        "    time.sleep(0.001)\n"
+        "open('ended', 'w').write(repr(time.time()))\n"
+    )
+    events: list[CommandOutput] = []
+    ready: list[float] = []
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, CommandOutput):
+            events.append(event)
+            await asyncio.sleep(0.2)
+        elif isinstance(event, ToolResultReady):
+            ready.append(time.time())
+
+    await go(tmp_path, root, python(root, source), handler)
+    [shown] = ready
+    assert shown - float((root / "ended").read_text(encoding="utf-8")) < 2.0
+    wrote = {"stdout": 2 * BACKLOG + 400 * 65537, "stderr": 400 * 65537}
+    for stream, total in wrote.items():
+        said = [e.text for e in events if e.stream == stream]
+        missed = sum(
+            int(m.group(1))
+            for t in said
+            if (m := re.match(r"\[\.\.\. (\d+) bytes not shown \.\.\.\]\n", t))
+        )
+        body = sum(len(re.sub(r"^\[\.\.\. \d+ bytes not shown \.\.\.\]\n", "", t)) for t in said)
+        assert missed + body == total
 
 
 async def test_a_background_job_sends_no_command_output(tmp_path: Path, root: Path) -> None:

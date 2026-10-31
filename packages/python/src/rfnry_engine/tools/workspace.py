@@ -20,7 +20,7 @@ from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.foreground import current
 from rfnry_engine.jail import Jail
 from rfnry_engine.stop import join, wait
-from rfnry_engine.tools.bridge import Answer, Bridge
+from rfnry_engine.tools.bridge import CALLS, Answer, Bridge
 from rfnry_engine.tools.tools import Tool
 
 logger = logging.getLogger(__name__)
@@ -365,10 +365,12 @@ class _Told:
         )
         self.queued = 0
         self.missed: dict[Literal["stdout", "stderr"], int] = {"stdout": 0, "stderr": 0}
+        self.dropping: set[Literal["stdout", "stderr"]] = set()
         self.task = asyncio.create_task(self._send())
 
     def add(self, stream: Literal["stdout", "stderr"], data: bytes) -> None:
-        if self.queued + len(data) > BACKLOG:
+        if stream in self.dropping or self.queued + len(data) > BACKLOG:
+            self.dropping.add(stream)
             self.missed[stream] += len(data)
             return
         self.queued += len(data)
@@ -388,6 +390,7 @@ class _Told:
             taken = [await self.queue.get()]
             while not self.queue.empty():
                 taken.append(self.queue.get_nowait())
+            self.dropping.clear()
             if taken[-1] is None:
                 closing = True
                 taken.pop()
@@ -771,7 +774,8 @@ class Workspace:
                 " $RFNRY_TOOLS_KEY its key, for that command only. Connect, send one JSON line,"
                 ' {"key": <the key>, "tool": <name>, "args": {...}}, and read one line back:'
                 ' {"result": <what you would read for that call>} or {"error": <its error>}.'
-                " Each connection makes one call; open several to make calls at once. Every tool"
+                f" Each connection makes one call; open several to make calls at once, up to {CALLS},"
+                " and a call past that is refused, so retry it later. Every tool"
                 " you have is there except the workspace's own (Shell, Job, Jobs, Write, Edit)"
                 " and, when you have them, Delegate and Output."
             )

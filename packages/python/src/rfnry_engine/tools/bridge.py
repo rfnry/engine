@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 LINE = 1_048_576
+CALLS = 64
 
 Answer = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -25,6 +26,7 @@ class Bridge:
         self._answer = answer
         self._handlers: set[asyncio.Task[Any]] = set()
         self._closed = False
+        self._open = 0
 
     @classmethod
     async def open(cls, root: Path, answer: Answer) -> Bridge:
@@ -66,16 +68,24 @@ class Bridge:
         task = asyncio.current_task()
         if task is not None:
             self._handlers.add(task)
+        counted = False
         try:
             if self._closed:
                 return
-            try:
-                line: bytes | None = await reader.readuntil(b"\n")
-            except asyncio.IncompleteReadError as exc:
-                line = exc.partial
-            except asyncio.LimitOverrunError:
-                line = None
-            reply = await self._reply(line)
+            counted = self._open < CALLS
+            if counted:
+                self._open += 1
+                try:
+                    line: bytes | None = await reader.readuntil(b"\n")
+                except asyncio.IncompleteReadError as exc:
+                    line = exc.partial
+                except asyncio.LimitOverrunError:
+                    line = None
+                reply = await self._reply(line)
+            else:
+                reply = {
+                    "error": f"tools/bridge: at most {CALLS} calls at once; wait for one to finish"
+                }
             try:
                 writer.write(
                     json.dumps(reply, ensure_ascii=False).encode("utf-8", "backslashreplace")
@@ -86,6 +96,8 @@ class Bridge:
             except ConnectionError:
                 pass
         finally:
+            if counted:
+                self._open -= 1
             writer.close()
             if task is not None:
                 self._handlers.discard(task)

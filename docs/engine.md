@@ -1599,7 +1599,9 @@ UTF-8 per stream so a character split across two writes arrives whole. A fronten
 build as it runs instead of after it. The model's view is unchanged: it reads the same capped
 `stdout` and `stderr` in the `Shell` result, and a handler never slows the command. The events wait
 in a queue of 1 MiB per command; while a handler is busy past that, chunks are dropped from the
-events, and the next event of that stream starts with `[... <n> bytes not shown ...]`. Every event
+events, and once a stream overflows its output is dropped until the handler catches up and takes
+what is queued; the next event of that stream starts with `[... <n> bytes not shown ...]`, counting
+all of it. Every event
 of a command comes before the `ToolResultReady` of its call, in order per stream — `stdout` and
 `stderr` are two pipes, with no order between them — and a handler that raises fails the run once
 the command has ended. A command started with `background=true` sends none.
@@ -1654,7 +1656,9 @@ the run's `tools=` — except the workspace's own (`Shell`, `Job`, `Jobs`, `Writ
 and the builtin `Delegate`; any other name gets the model's error for an unknown tool,
 `InputError: tools: unknown tool 'Shell'`, and leaves no step and no event. Connections are answered
 as they come, so calls a script makes at once — from threads, or with `asyncio` — run at once, as a
-reply's calls do. A `Shell` command of a delegated or routed run calls that run's tools, under its
+reply's calls do, up to 64 at once per command: a connection that arrives while 64 are in flight gets
+`{"error": "tools/bridge: at most 64 calls at once; wait for one to finish"}` without being read, and
+the script can retry it. A `Shell` command of a delegated or routed run calls that run's tools, under its
 own `run_id`.
 
 Each call runs as the model's calls do — `ToolCallStarted`, `approve`, the deadline (`tool_timeout`,
@@ -1707,8 +1711,10 @@ but where a deployment puts the workspace does not.
   read a running command's key and call the run's tools through its socket. `by` names the command
   whose socket was used.
 - Until its command ends, each open connection holds a file descriptor and up to 1 MiB in the
-  engine's process, which a sandbox's limits don't cover. The workspace `timeout` bounds how long;
-  nothing bounds how many in this version.
+  engine's process, which a sandbox's limits don't cover. The workspace `timeout` bounds how long,
+  and a command has at most 64 calls in flight at once, so it holds at most 64 file descriptors and
+  about 64 MiB of requests in the engine's process. A script that opens more gets the error and can
+  retry.
 - The socket lives only while the command runs; something the command leaves running cannot call
   afterwards.
 

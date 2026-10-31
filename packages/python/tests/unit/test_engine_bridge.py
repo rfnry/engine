@@ -27,6 +27,7 @@ from rfnry_engine.records import (
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.stop import Stop
+from rfnry_engine.tools.bridge import CALLS
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Backend, Local, Process, Workspace
@@ -810,3 +811,43 @@ async def test_a_reply_a_process_that_escaped_the_command_never_reads_does_not_h
     assert [s.tool for s in run.steps] == ["stubborn", "Shell"]
     assert result(run.steps[-1])["exit_code"] == 0
     assert run.duration_ms < 5000
+
+
+async def test_a_call_past_the_cap_is_refused_and_leaves_no_step(
+    tmp_path: Path, root: Path
+) -> None:
+    entered = 0
+
+    async def wait(args: dict[str, Any]) -> str:
+        nonlocal entered
+        entered += 1
+        if entered == CALLS:
+            (root / "full").write_text("x", encoding="utf-8")
+        async with asyncio.timeout(30):
+            while not (root / "go").exists():
+                await asyncio.sleep(0.01)
+        return "done"
+
+    script(
+        root,
+        f"import json\n{UNTIL}"
+        "from concurrent.futures import ThreadPoolExecutor\n"
+        f"with ThreadPoolExecutor({CALLS}) as pool:\n"
+        f"    held = [pool.submit(call, 'wait') for _ in range({CALLS})]\n"
+        "    until('full')\n"
+        "    extra = call('wait')\n"
+        "    open('go', 'w').write('x')\n"
+        "    replies = [f.result() for f in held]\n"
+        "print(json.dumps([extra, replies]))\n",
+    )
+    async with Workspace(Local(root), scope="acme") as work:
+        run, _, _ = await run_coder(tmp_path, work, tools=[Tool("wait", "Wait", body=wait)])
+    [shell_step] = [s for s in run.steps if s.tool == "Shell"]
+    extra, replies = json.loads(result(shell_step)["stdout"])
+    assert extra == {
+        "error": f"tools/bridge: at most {CALLS} calls at once; wait for one to finish"
+    }
+    assert replies == [{"result": "done"}] * CALLS
+    bridged = [s for s in run.steps if s.tool == "wait"]
+    assert len(bridged) == CALLS
+    assert all(s.by == "1" for s in bridged)

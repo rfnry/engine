@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from rfnry_engine.tools import bridge as bridging
-from rfnry_engine.tools.bridge import Bridge
+from rfnry_engine.tools.bridge import CALLS, Bridge
 
 BAD = "tools/bridge: a request is one JSON line: " + '{"key": …, "tool": …, "args": {…}}'
 WRONG = "tools/bridge: the key is not this command's"
@@ -323,3 +323,68 @@ async def test_a_reply_made_after_close_began_does_not_wait_for_a_client_that_ne
     writer.close()
     await closing
     assert done == {closing}
+
+
+class Held:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.release = asyncio.Event()
+        self.entered = asyncio.Event()
+
+    async def __call__(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        self.calls += 1
+        if self.calls == CALLS:
+            self.entered.set()
+        await self.release.wait()
+        return {"result": args["x"]}
+
+
+async def hold(b: Bridge, n: int) -> list[tuple[asyncio.StreamReader, asyncio.StreamWriter]]:
+    held = []
+    for i in range(n):
+        reader, writer = await asyncio.open_unix_connection(b.path, limit=1 << 26)
+        writer.write(request(b, args={"x": i}))
+        held.append((reader, writer))
+    return held
+
+
+async def test_a_connection_past_the_cap_is_refused_at_once(root: Path) -> None:
+    held = Held()
+    b = await Bridge.open(root, held)
+    try:
+        connections = await hold(b, CALLS)
+        async with asyncio.timeout(10):
+            await held.entered.wait()
+        reply = await ask(b, request(b))
+        assert reply == {
+            "error": f"tools/bridge: at most {CALLS} calls at once; wait for one to finish"
+        }
+        assert held.calls == CALLS
+        held.release.set()
+        async with asyncio.timeout(10):
+            replies = [json.loads(await reader.readline()) for reader, _ in connections]
+        assert replies == [{"result": i} for i in range(CALLS)]
+        for _, writer in connections:
+            writer.close()
+    finally:
+        held.release.set()
+        await b.close()
+
+
+async def test_a_slot_frees_when_a_call_ends(root: Path) -> None:
+    held = Held()
+    b = await Bridge.open(root, held)
+    try:
+        connections = await hold(b, CALLS)
+        async with asyncio.timeout(10):
+            await held.entered.wait()
+        connections[0][1].close()
+        held.release.set()
+        async with asyncio.timeout(10):
+            await connections[1][0].readline()
+        assert await ask(b, request(b, args={"x": 7})) == {"result": 7}
+        for _, writer in connections:
+            writer.close()
+    finally:
+        held.release.set()
+        await b.close()
