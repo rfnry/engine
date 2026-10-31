@@ -1492,6 +1492,11 @@ what it printed waits for `Job`, kept to its first and last `output_bytes // 2` 
 jobs is not in the system prompt, which would change with every job and cost the cached prefix of
 every conversation on the workspace; the model asks `Jobs()`.
 
+A frontend shows the same jobs with `workspace.jobs()`, a list of `JobInfo(job, command, started,
+running, exit_code)`, and reads one with `workspace.output("j1")`, everything the job printed so far
+in the same cap. Neither changes what the model's `Job` reads next, and a job that ended leaves the
+list once the model reads its last output. An unknown id is an `InputError`.
+
 Close the workspace when you are done with it — `async with Workspace(…) as workspace:` or `await
 workspace.close()` — and every job is stopped; the workspace stays usable. A workspace never closed
 leaves its jobs to the backend: on `Local` they may outlive your process, unless the sandbox ties

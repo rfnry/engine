@@ -57,6 +57,14 @@ class Backend(Protocol):
     async def write(self, path: str, data: bytes) -> None: ...
 
 
+class JobInfo(BaseModel):
+    job: str
+    command: str
+    started: datetime
+    running: bool
+    exit_code: int | None
+
+
 class ShellArgs(BaseModel):
     command: str
     background: bool = False
@@ -305,25 +313,36 @@ class _Kept:
         if len(self.tail) > self.half:
             del self.tail[: len(self.tail) - self.half]
 
-    def take(self, final: bool = True) -> str:
-        held = b""
+    def _split(self, final: bool) -> tuple[bytes, bytes, bytes]:
+        head, tail, held = bytearray(self.head), bytearray(self.tail), b""
         if not final:
-            if self.total == len(self.head) + len(self.tail):
-                whole = self.head + self.tail
+            if self.total == len(head) + len(tail):
+                whole = head + tail
                 held = bytes(whole[_complete(whole) :])
                 cut = len(held)
-                from_tail = min(cut, len(self.tail))
+                from_tail = min(cut, len(tail))
                 if from_tail:
-                    del self.tail[len(self.tail) - from_tail :]
+                    del tail[len(tail) - from_tail :]
                 if cut > from_tail:
-                    del self.head[len(self.head) - (cut - from_tail) :]
+                    del head[len(head) - (cut - from_tail) :]
             else:
-                held = bytes(self.tail[_complete(self.tail) :])
+                held = bytes(tail[_complete(tail) :])
                 if held:
-                    del self.tail[len(self.tail) - len(held) :]
-        head, tail = bytes(self.head), bytes(self.tail)
+                    del tail[len(tail) - len(held) :]
+        return bytes(head), bytes(tail), held
+
+    def show(self, final: bool) -> str:
+        head, tail, held = self._split(final)
+        return self._text(head, tail, self.total - len(held) - len(head) - len(tail))
+
+    def take(self, final: bool = True) -> str:
+        head, tail, held = self._split(final)
         omitted = self.total - len(held) - len(head) - len(tail)
         self.head, self.tail, self.total = bytearray(held), bytearray(), len(held)
+        return self._text(head, tail, omitted)
+
+    @staticmethod
+    def _text(head: bytes, tail: bytes, omitted: int) -> str:
         if omitted <= 0:
             return (head + tail).decode("utf-8", errors="replace")
         return (
@@ -474,33 +493,35 @@ class _Job:
     command: str
     process: Process
     kept: _Kept
+    shown: _Kept
     started: datetime = field(default_factory=lambda: datetime.now(UTC))
     ended: asyncio.Event = field(default_factory=asyncio.Event)
     code: int | None = None
     task: asyncio.Task[None] | None = None
 
 
-def _note(kept: _Kept, error: BaseException | None, said: str = "") -> str:
+def _note(job: _Job, error: BaseException | None, said: str = "") -> str:
     line = "" if error is None else f"\n{type(error).__name__}: {error}\n"
     if line and line != said:
-        kept.add(line.encode())
+        job.kept.add(line.encode())
+        job.shown.add(line.encode())
     return line
 
 
 async def _follow(job: _Job) -> None:
-    reading = _reading(job.process, [job.kept.add], [job.kept.add])
+    reading = _reading(job.process, [job.kept.add, job.shown.add], [job.kept.add, job.shown.add])
     said = ""
     try:
         try:
             job.code = await job.process.wait()
         except Exception as exc:
-            said = _note(job.kept, exc)
+            said = _note(job, exc)
         finally:
             [error] = await _see_through(job.process.kill())
-            _note(job.kept, error, said)
+            _note(job, error, said)
         await _settle(reading)
     except Exception as exc:
-        _note(job.kept, exc)
+        _note(job, exc)
     finally:
         _discard(reading)
         job.ended.set()
@@ -684,7 +705,12 @@ class Workspace:
         process = await self.backend.spawn(command, env)
         self._count += 1
         name = f"j{self._count}"
-        job = _Job(command=command, process=process, kept=_Kept(self.output_bytes))
+        job = _Job(
+            command=command,
+            process=process,
+            kept=_Kept(self.output_bytes),
+            shown=_Kept(self.output_bytes),
+        )
         job.task = asyncio.create_task(_follow(job))
         self._jobs[name] = job
         return name
@@ -731,16 +757,28 @@ class Workspace:
     async def _list(self, args: dict[str, Any]) -> dict[str, Any]:
         return {
             "jobs": [
-                {
-                    "job": name,
-                    "command": job.command,
-                    "started": job.started.isoformat(timespec="seconds"),
-                    "running": not job.ended.is_set(),
-                    "exit_code": job.code if job.ended.is_set() else None,
-                }
-                for name, job in self._jobs.items()
+                {**info.model_dump(), "started": info.started.isoformat(timespec="seconds")}
+                for info in self.jobs()
             ]
         }
+
+    def jobs(self) -> list[JobInfo]:
+        return [
+            JobInfo(
+                job=name,
+                command=job.command,
+                started=job.started,
+                running=not job.ended.is_set(),
+                exit_code=job.code if job.ended.is_set() else None,
+            )
+            for name, job in self._jobs.items()
+        ]
+
+    def output(self, job: str) -> str:
+        found = self._jobs.get(job)
+        if found is None:
+            raise InputError(f"tools/workspace: there is no job {job}")
+        return found.shown.show(final=found.ended.is_set())
 
     async def _bounded[T](self, name: str, work: Awaitable[T]) -> T:
         try:

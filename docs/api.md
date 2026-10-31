@@ -956,6 +956,19 @@ Opens `path`, resolved as `resolve` does, and returns its file descriptor, which
 
 Raises `InputError` when `path` resolves outside `root` and every place in `also`, when the walk meets a link, or when the place is no longer the folder it was. What the system refuses, such as a missing file, is raised as the `OSError` it is.
 
+### `JobInfo`
+
+```python
+class JobInfo(BaseModel):
+    job: str
+    command: str
+    started: datetime
+    running: bool
+    exit_code: int | None
+```
+
+A job of a workspace, as `Workspace.jobs` returns it: its id, its command, when it started (timezone-aware), whether it still runs, and its exit code once it has ended.
+
 ### `Workspace`
 
 ```python
@@ -982,6 +995,22 @@ Where an agent with `workspace: true` writes code and runs it, passed as `run(wo
 `tree` is where the agent tree is mounted in the sandbox, as commands see it, such as `/srv/agents`. With it, the commands of a run get `RFNRY_TREE`, the tree, and `RFNRY_AGENT`, the running agent's folder in it, and the `Shell` description tells the model where they are, in variables and never in a path; a command started with `background=true` gets them too. A `Shell` that code dispatches outside a run, or from inside another tool, gets neither. Without `tree`, nothing is added.
 
 Raises `ConfigurationError` when `backend` lacks `spawn`, `read` or `write`, `scope` is empty, `timeout` or `output_bytes` is not positive, or `tree` is not an absolute path.
+
+### `Workspace.jobs`
+
+```python
+def jobs(self) -> list[JobInfo]: ...
+```
+
+The jobs the workspace lists now, in the order they started, for a frontend that shows them. It reads memory and changes nothing: the model's `Jobs()` lists the same jobs, and a job leaves the list once the model reads its last output.
+
+### `Workspace.output`
+
+```python
+def output(self, job: str) -> str: ...
+```
+
+Everything `job` has printed so far, in the cap of `output_bytes`: its first and last half, with the bytes between omitted, as the model's `Job` would show the whole of it. It does not take the output from the model: what `Job` returns next is unchanged. While the job runs, a character not yet complete is left out. Raises `InputError` when the workspace lists no job `job`.
 
 ### `Workspace.tools`
 

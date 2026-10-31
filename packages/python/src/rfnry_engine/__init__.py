@@ -79,7 +79,7 @@ from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
-from rfnry_engine.tools.workspace import Backend, Local, Process, Workspace
+from rfnry_engine.tools.workspace import Backend, JobInfo, Local, Process, Workspace
 
 __version__ = "0.1.5"
 
@@ -113,6 +113,7 @@ __all__ = [
     "HistoryLike",
     "InputError",
     "Jail",
+    "JobInfo",
     "Label",
     "LabelRow",
     "Labeled",

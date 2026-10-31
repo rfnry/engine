@@ -61,6 +61,7 @@ EXPECTED = {
     "Tools",
     "EngineTools",
     "Jail",
+    "JobInfo",
     "Workspace",
     "Backend",
     "Process",
