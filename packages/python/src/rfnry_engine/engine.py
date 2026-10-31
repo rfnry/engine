@@ -1090,7 +1090,10 @@ class Engine:
             if calling.cancelled():
                 step = stopped(call, began, shell.id)
                 steps.append(step)
-                await hand_over(call, step)
+                try:
+                    await hand_over(call, step)
+                except Exception as exc:
+                    here.failed = here.failed or exc
                 return {"error": STOPPED}
             failed = calling.exception()
             if isinstance(failed, Exception):

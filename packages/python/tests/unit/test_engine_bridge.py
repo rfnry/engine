@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import signal
 import socket
@@ -382,6 +383,79 @@ async def test_the_socket_is_gone_after_the_command(tmp_path: Path, root: Path) 
     assert list(root.glob(".rfnry-*")) == []
 
 
+async def test_a_file_the_command_put_at_the_socket_s_path_is_kept(
+    tmp_path: Path, root: Path
+) -> None:
+    script(
+        root,
+        "import os\np = os.environ['RFNRY_TOOLS']\nos.unlink(p)\n"
+        "with open(p, 'w') as f:\n    f.write('mine')\nprint(p)\n",
+    )
+    async with Workspace(Local(root), scope="acme") as work:
+        run, _, _ = await run_coder(tmp_path, work)
+    path = Path(result(run.steps[-1])["stdout"].strip())
+    assert path.parent == root and path.name.startswith(".rfnry-")
+    assert path.read_text(encoding="utf-8") == "mine"
+
+
+async def test_a_command_that_makes_the_root_read_only_reads_its_output(
+    tmp_path: Path, root: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    try:
+        with caplog.at_level(logging.DEBUG):
+            async with Workspace(Local(root), scope="acme") as work:
+                run, _, llm = await run_coder(
+                    tmp_path, work, command='chmod a-w . && echo "protected $RFNRY_TOOLS"'
+                )
+    finally:
+        root.chmod(0o755)
+    assert "RFNRY_TOOLS" in described(llm)
+    assert not run.steps[-1].is_error
+    shown = result(run.steps[-1])
+    said, path = shown.pop("stdout").split()
+    assert said == "protected" and Path(path).parent == root
+    assert shown == {"exit_code": 0, "stderr": "", "timed_out": False}
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+
+@pytest.mark.parametrize(
+    "swap", ["os.unlink(p)\nos.mkdir(p)\n", "os.chmod('.', 0o555)\n"], ids=["dir", "read-only"]
+)
+async def test_a_call_in_flight_is_recorded_when_its_socket_cannot_be_removed(
+    tmp_path: Path, root: Path, swap: str
+) -> None:
+    ended: list[float] = []
+
+    async def nap(args: dict[str, Any]) -> str:
+        (root / "napping").touch()
+        try:
+            await asyncio.sleep(10)
+            return "rested"
+        finally:
+            ended.append(time.monotonic())
+
+    script(
+        root,
+        UNTIL
+        + 'threading.Thread(target=call, args=("nap",), daemon=True).start()\nuntil("napping")\n'
+        + f"p = os.environ['RFNRY_TOOLS']\n{swap}",
+    )
+    try:
+        async with Workspace(Local(root), scope="acme") as work:
+            run, events, _ = await run_coder(tmp_path, work, tools=[Tool("nap", "Rest", body=nap)])
+            returned, seen = time.monotonic(), len(events)
+            await asyncio.sleep(0.5)
+    finally:
+        root.chmod(0o755)
+    assert [(s.tool, s.stopped, s.by) for s in run.steps] == [
+        ("nap", True, "1"),
+        ("Shell", False, None),
+    ]
+    assert not run.steps[-1].is_error and result(run.steps[-1])["exit_code"] == 0
+    assert len(ended) == 1 and ended[0] <= returned
+    assert len(events) == seen
+
+
 async def test_the_description_tells_the_bridge_without_a_path(tmp_path: Path) -> None:
     tree = make_tree(tmp_path)
     prints: list[str] = []
@@ -572,6 +646,42 @@ async def test_a_handler_that_raises_on_a_script_s_call_fails_the_run(
     assert json.loads((root / "reply.json").read_text(encoding="utf-8")) == {
         "error": "RuntimeError: boom"
     }
+
+
+async def test_a_handler_that_raises_on_a_cut_call_s_result_fails_the_run(
+    tmp_path: Path, root: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def nap(args: dict[str, Any]) -> str:
+        (root / "napping").touch()
+        await asyncio.sleep(10)
+        return "rested"
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, ToolResultReady) and event.by is not None:
+            raise RuntimeError("boom")
+
+    script(
+        root,
+        UNTIL
+        + 'threading.Thread(target=call, args=("nap",), daemon=True).start()\nuntil("napping")\n',
+    )
+    llm = Scripted(use(shell()), text_reply("ok"))
+    with caplog.at_level(logging.DEBUG):
+        async with (
+            Workspace(Local(root), scope="acme") as work,
+            Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+        ):
+            with pytest.raises(RuntimeError, match="boom"):
+                await engine.run(
+                    "coder",
+                    "acme",
+                    "x",
+                    workspace=work,
+                    tools=Tools([Tool("nap", "Rest", body=nap)]),
+                    on_event=handler,
+                )
+    assert len(llm.calls) == 1
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
 
 
 class Waiting:

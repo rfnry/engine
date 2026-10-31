@@ -5,10 +5,12 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from rfnry_engine.tools import bridge as bridging
 from rfnry_engine.tools.bridge import Bridge
 
 BAD = "tools/bridge: a request is one JSON line: " + '{"key": …, "tool": …, "args": {…}}'
@@ -125,6 +127,28 @@ async def test_close_removes_the_socket_and_refuses_new_connections(root: Path, 
     assert not b.path.exists()
     with pytest.raises(OSError):
         await asyncio.open_unix_connection(b.path)
+
+
+async def test_close_keeps_a_file_put_at_the_socket_s_path(root: Path, seen: Seen) -> None:
+    b = await Bridge.open(root, seen)
+    b.path.unlink()
+    b.path.write_text("mine", encoding="utf-8")
+    await b.close()
+    assert b.path.read_text(encoding="utf-8") == "mine"
+
+
+async def test_open_closes_its_server_when_the_socket_is_gone_at_once(
+    root: Path, seen: Seen, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def gone(path: Path, *, follow_symlinks: bool) -> None:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(bridging, "os", SimpleNamespace(stat=gone))
+    with pytest.raises(FileNotFoundError):
+        await Bridge.open(root, seen)
+    [path] = root.glob(".rfnry-*.sock")
+    with pytest.raises(ConnectionRefusedError):
+        await asyncio.open_unix_connection(path)
 
 
 async def test_close_cancels_a_request_in_flight(root: Path) -> None:

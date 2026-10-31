@@ -1667,37 +1667,54 @@ A call ends with its command. When the command ends, for any reason — it exits
 workspace's `timeout` — a call still in flight is cut as a stopped call is: its step is recorded with
 `stopped` and `stopped by the user` as its result, its `ToolResultReady` is sent, and a script still
 connected reads `{"error": "stopped by the user"}`. A consult that a script's call started, an
-`engine.tool` passed in `tools=`, ends with the command: under `stop.now()` it takes the stop, but
+`engine.tool` passed in `tools=`, ends with the command: when the command exits or times out, the
+consult is cancelled and leaves no record of its own. Under `stop.now()` it takes the stop, but
 its own record is kept only when that record is written before the command is killed, and otherwise
 it leaves none, as no cancelled run does; the script's step is recorded stopped either way. A reply
-to a process that outlived the command, one that left its process group outside a sandbox, is sent
-but never waited on: the socket closes whether that process reads it or not. An `on_event` that
-raises on a script's call fails the run once the command has ended.
+to a process that outlived the command, one that left its process group outside a sandbox, is
+written but not waited for, and may be cut off when the socket closes. An `on_event` that raises on
+a script's call fails the run once the command has ended.
 
 The socket is the one file the engine creates itself, `<root>/.rfnry-<8 hex>.sock`, inside the
-workspace you passed, for the life of one command: made just before the command starts, closed and
-removed once it has ended and its output is read. Under bubblewrap it is in the bound directory at
-the same path, and a socket bound to a path reaches through `--unshare-all`; under Docker it is in
-the directory mounted at its own path, with `-e RFNRY_TOOLS -e RFNRY_TOOLS_KEY`. The socket can be
-reached only from a sandbox on the same kernel that sees the workspace directory at the same path:
-bubblewrap, or Docker on Linux. Docker Desktop's file sharing on macOS and Windows does not carry
-Unix sockets, so use a backend that runs the engine beside the commands there. A container user
-other than the service's needs write permission on the socket file. The `Shell` description tells
-the model of it in those variables, never in a path. Whether the bridge is on, and whether `tree=`
-is set, change that description and so `fingerprint.tools` — rightly, since the model was offered
-something different — but where a deployment puts the workspace does not.
+workspace you passed, for the life of one command: made just before the command starts, closed once
+it has ended and its output is read, and then removed if its path still holds it — a file the
+command put in its place is kept, and a socket in a directory the command made read-only stays.
+Under bubblewrap it is in the bound directory at the same path, and a socket bound to a path reaches
+through `--unshare-all`; under Docker it is in the directory mounted at its own path, with
+`-e RFNRY_TOOLS -e RFNRY_TOOLS_KEY`. The socket can be reached only from a sandbox on the same kernel
+that sees the workspace directory at the same path: bubblewrap, or Docker on Linux. Docker Desktop's
+file sharing on macOS and Windows does not carry Unix sockets, so use a backend that runs the engine
+beside the commands there. A container user other than the service's needs write permission on the
+socket file, which takes the service's umask and a new random name for each command, so it cannot be
+granted ahead of time: run the container as the service's uid, or as a user of the service's group
+with the service under a umask of 002. The `Shell` description tells the model of it in those
+variables, never in a path. Whether the bridge is on, and whether `tree=` is set, change that
+description and so `fingerprint.tools` — rightly, since the model was offered something different —
+but where a deployment puts the workspace does not.
 
 - The bridge gives code exactly what the model has — the same tools, through the same `approve`,
   scope and record — and nothing more. What is new is speed: a script can make many calls quickly;
   `approve` still sees each one.
 - Only processes that see the socket's path can connect — with a sandbox per tenant, only this
-  tenant's commands — and only the command holding the key is answered.
+  tenant's commands — and only a request with the command's key is answered.
+- The key is as private as the sandbox keeps a command's environment: a process of the same uid in
+  the same PID namespace reads it from `/proc/<pid>/environ`. A sandbox per command, as the
+  bubblewrap recipe above runs each one under `--unshare-all`, keeps it to that command. No
+  sandbox, one container per workspace entered with `docker exec`, or anything else where commands
+  share a PID namespace and a uid does not: there another command, a background job included, can
+  read a running command's key and call the run's tools through its socket. `by` names the command
+  whose socket was used.
+- Until its command ends, each open connection holds a file descriptor and up to 1 MiB in the
+  engine's process, which a sandbox's limits don't cover. The workspace `timeout` bounds how long;
+  nothing bounds how many in this version.
 - The socket lives only while the command runs; something the command leaves running cannot call
   afterwards.
 
-`Workspace(..., bridge=False)` turns the bridge off, and so do a backend without a `root`
-attribute, since the bridge needs a directory the engine and the commands see at the same path, as
-`Local`'s is, and a run that offers no tool it could carry: the `Shell` description then does not
+A backend gets the bridge when it has a `root` attribute: a local directory its commands see at
+the same path, as `Local`'s is, where each command's socket is created. A `root` that means
+anything else gets a socket created at that path, so a backend without such a directory has no
+`root`. `Workspace(..., bridge=False)` turns the bridge off, and so do a backend without a `root`
+attribute and a run that offers no tool it could carry: the `Shell` description then does not
 mention it. A command started with `background=true`, and a `Shell` that code dispatches outside a
 run's own `Shell` call, get no socket either. A command without the bridge gets no `RFNRY_TOOLS`.
 A root too deep for a socket's path — about

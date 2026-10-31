@@ -1,6 +1,8 @@
 import asyncio
+import contextlib
 import hmac
 import json
+import os
 import secrets
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -14,20 +16,27 @@ _BAD = 'tools/bridge: a request is one JSON line: {"key": …, "tool": …, "arg
 
 
 class Bridge:
+    _server: asyncio.Server
+    _made: int
+
     def __init__(self, path: Path, key: str, answer: Answer) -> None:
         self.path = path
         self.key = key
         self._answer = answer
         self._handlers: set[asyncio.Task[Any]] = set()
-        self._server: asyncio.Server | None = None
         self._closed = False
 
     @classmethod
     async def open(cls, root: Path, answer: Answer) -> Bridge:
         bridge = cls(root / f".rfnry-{secrets.token_hex(4)}.sock", secrets.token_hex(16), answer)
         bridge._server = await asyncio.start_unix_server(
-            bridge._handle, path=bridge.path, limit=LINE
+            bridge._handle, path=bridge.path, limit=LINE, cleanup_socket=False
         )
+        try:
+            bridge._made = os.stat(bridge.path, follow_symlinks=False).st_ino
+        except OSError:
+            bridge._server.close()
+            raise
         return bridge
 
     @property
@@ -82,11 +91,8 @@ class Bridge:
                 self._handlers.discard(task)
 
     async def close(self) -> None:
-        if self._server is None:
-            return
         self._closed = True
         self._server.close()
-        self.path.unlink(missing_ok=True)
         handlers = list(self._handlers)
         for task in handlers:
             task.cancel()
@@ -107,5 +113,8 @@ class Bridge:
             await self._server.wait_closed()
         except asyncio.CancelledError as exc:
             cancelled = cancelled or exc
+        with contextlib.suppress(OSError):
+            if os.stat(self.path, follow_symlinks=False).st_ino == self._made:
+                self.path.unlink()
         if cancelled is not None:
             raise cancelled
