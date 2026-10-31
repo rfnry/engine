@@ -1,8 +1,9 @@
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -10,7 +11,7 @@ from rfnry_engine.engine import Engine
 from rfnry_engine.models import ToolCall
 from rfnry_engine.records import CommandOutput, Event, EventHandler, Generation, ToolResultReady
 from rfnry_engine.stop import Stop
-from rfnry_engine.tools.workspace import Local, Workspace
+from rfnry_engine.tools.workspace import BACKLOG, Local, Workspace, _Told
 
 from .fakes import Scripted, text_reply
 from .test_engine_workspace import make_tree, use
@@ -84,7 +85,7 @@ async def test_a_command_s_output_arrives_while_it_runs(tmp_path: Path, root: Pa
     assert json.loads(str(run.steps[0].result))["stdout"] == "ready\ndone\n"
 
 
-async def test_every_byte_arrives_once_in_order_before_the_shell_s_result(
+async def test_every_byte_arrives_once_in_order_per_stream_before_the_shell_s_result(
     tmp_path: Path, root: Path
 ) -> None:
     source = (
@@ -105,8 +106,8 @@ async def test_every_byte_arrives_once_in_order_before_the_shell_s_result(
     step = json.loads(str(run.steps[0].result))
     assert texts(events, "stdout") == step["stdout"]
     assert texts(events, "stderr") == step["stderr"]
+    assert step["stdout"] == "a\nc\n" and step["stderr"] == "b\n"
     shown = [e for e in events if isinstance(e, CommandOutput)]
-    assert [e.stream for e in shown] == ["stdout", "stderr", "stdout"]
     done = next(
         i for i, e in enumerate(events) if isinstance(e, ToolResultReady) and e.call_id == "1"
     )
@@ -218,6 +219,63 @@ async def test_chunks_that_queued_while_the_handler_was_busy_arrive_joined(
     await go(tmp_path, root, python(root, source), handler)
     assert "".join(e.text for e in events) == "".join(str(i % 10) for i in range(200))
     assert len(events) < 100
+
+
+async def test_alternating_streams_with_a_slow_handler_do_not_hold_the_shell(
+    tmp_path: Path, root: Path
+) -> None:
+    source = (
+        "import os, time\n"
+        "for i in range(300):\n"
+        "    os.write(1, f'o{i}\\n'.encode())\n"
+        "    os.write(2, f'e{i}\\n'.encode())\n"
+        "    time.sleep(0.001)\n"
+        "open('ended', 'w').write(repr(time.time()))\n"
+    )
+    events: list[Event] = []
+    ready: list[float] = []
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, CommandOutput):
+            events.append(event)
+            await asyncio.sleep(0.02)
+        elif isinstance(event, ToolResultReady):
+            ready.append(time.time())
+
+    await go(tmp_path, root, python(root, source), handler)
+    assert texts(events, "stdout") == "".join(f"o{i}\n" for i in range(300))
+    assert texts(events, "stderr") == "".join(f"e{i}\n" for i in range(300))
+    [shown] = ready
+    assert shown - float((root / "ended").read_text(encoding="utf-8")) < 1.0
+
+
+async def test_a_chunk_after_a_gap_starts_its_own_event_and_a_batch_joins_per_stream() -> None:
+    said: list[tuple[str, str]] = []
+    busy = asyncio.Event()
+    free = asyncio.Event()
+
+    async def say(stream: Literal["stdout", "stderr"], text: str) -> None:
+        said.append((stream, text))
+        busy.set()
+        await free.wait()
+
+    told = _Told(say)
+    told.add("stdout", b"a")
+    await busy.wait()
+    told.add("stdout", b"b")
+    told.add("stderr", b"1")
+    told.add("stdout", b"x" * BACKLOG)
+    told.add("stdout", b"c")
+    told.add("stderr", b"2")
+    free.set()
+    told.close()
+    await told.task
+    assert said == [
+        ("stdout", "a"),
+        ("stdout", "b"),
+        ("stderr", "12"),
+        ("stdout", f"[... {BACKLOG} bytes not shown ...]\nc"),
+    ]
 
 
 async def test_a_background_job_sends_no_command_output(tmp_path: Path, root: Path) -> None:

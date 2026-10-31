@@ -392,14 +392,16 @@ class _Told:
                 closing = True
                 taken.pop()
             events: list[tuple[Literal["stdout", "stderr"], int, bytearray]] = []
+            last: dict[Literal["stdout", "stderr"], bytearray] = {}
             for item in taken:
                 assert item is not None
                 stream, gap, data = item
                 self.queued -= len(data)
-                if events and events[-1][0] == stream and not gap:
-                    events[-1][2].extend(data)
+                if stream in last and not gap:
+                    last[stream].extend(data)
                 else:
-                    events.append((stream, gap, bytearray(data)))
+                    last[stream] = bytearray(data)
+                    events.append((stream, gap, last[stream]))
             for stream, gap, joined in events:
                 if gap:
                     decoders[stream].reset()

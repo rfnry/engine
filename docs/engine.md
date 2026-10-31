@@ -1592,15 +1592,17 @@ get the variables too; a `Shell` that code dispatches outside a run gets none. C
 - `refinery.replay(candidate, workspace=)` needs a workspace whose sandbox mounts the candidate's
   tree.
 
-Showing a command. With `on_event`, a foreground `Shell` command sends a `CommandOutput` for what
-it writes, as it arrives (chunks that queued while the handler was busy arrive joined), with its `call_id`, the `stream` (`"stdout"` or `"stderr"`) and the
-`text`, decoded as UTF-8 per stream so a character split across two writes arrives whole. A frontend
-can show a long build as it runs instead of after it. The model's view is unchanged: it reads the
-same capped `stdout` and `stderr` in the `Shell` result, and a handler never slows the command. The
-events wait in a queue of 1 MiB per command; while a handler is busy past that, chunks are dropped
-from the events, and the next event of that stream starts with `[... <n> bytes not shown ...]`.
-Every event of a command comes before the `ToolResultReady` of its call, and a handler that raises
-fails the run once the command has ended. A command started with `background=true` sends none.
+Showing a command. With `on_event`, a foreground `Shell` command sends a `CommandOutput` for what it
+writes, as it arrives (chunks that queued while the handler was busy arrive joined, one event per
+stream), with its `call_id`, the `stream` (`"stdout"` or `"stderr"`) and the `text`, decoded as
+UTF-8 per stream so a character split across two writes arrives whole. A frontend can show a long
+build as it runs instead of after it. The model's view is unchanged: it reads the same capped
+`stdout` and `stderr` in the `Shell` result, and a handler never slows the command. The events wait
+in a queue of 1 MiB per command; while a handler is busy past that, chunks are dropped from the
+events, and the next event of that stream starts with `[... <n> bytes not shown ...]`. Every event
+of a command comes before the `ToolResultReady` of its call, in order per stream — `stdout` and
+`stderr` are two pipes, with no order between them — and a handler that raises fails the run once
+the command has ended. A command started with `background=true` sends none.
 
 Calling tools from code. A command can call the run's tools itself, so a script that looks up fifty
 orders, or checks every row of a table against a rule, makes its calls in a loop, and the model reads
