@@ -223,3 +223,55 @@ async def test_open_raises_when_the_path_is_too_long(tmp_path: Path, seen: Seen)
     with pytest.raises(OSError):
         await Bridge.open(root, seen)
     assert list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize("surrogate", ["key", "nested", "nested_key"])
+async def test_hostile_requests_get_a_reply_and_log_nothing(
+    bridge: Bridge, seen: Seen, caplog: pytest.LogCaptureFixture, surrogate: str
+) -> None:
+    raw = {
+        "key": b'{"key": "\\ud800", "tool": "echo", "args": {}}\n',
+        "nested": b"[" * 200_000 + b"\n",
+        "nested_key": b'{"key": "'
+        + bridge.key.encode()
+        + b'", "tool": "echo", "args": '
+        + b"[" * 200_000
+        + b"\n",
+    }[surrogate]
+    with caplog.at_level(logging.DEBUG):
+        reply = await ask(bridge, raw)
+        await asyncio.sleep(0.05)
+    assert reply == ({"error": WRONG} if surrogate == "key" else {"error": BAD})
+    assert seen.calls == []
+    assert [r for r in caplog.records if r.levelno > logging.DEBUG] == []
+
+
+async def test_a_lone_surrogate_in_a_reply_is_escaped(
+    root: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def answer(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        return {"error": f"unknown tool {tool}"}
+
+    b = await Bridge.open(root, answer)
+    try:
+        with caplog.at_level(logging.DEBUG):
+            reply = await ask(b, request(b, tool="\ud800"))
+            await asyncio.sleep(0.05)
+    finally:
+        await b.close()
+    assert reply == {"error": "unknown tool \ud800"}
+    assert [r for r in caplog.records if r.levelno > logging.DEBUG] == []
+
+
+async def test_a_client_that_never_reads_a_large_reply_does_not_hold_close(root: Path) -> None:
+    async def answer(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        return {"result": "x" * 8_000_000}
+
+    b = await Bridge.open(root, answer)
+    _, writer = await asyncio.open_unix_connection(b.path)
+    writer.write(request(b))
+    await writer.drain()
+    await asyncio.sleep(0.1)
+    async with asyncio.timeout(1):
+        await b.close()
+    writer.close()

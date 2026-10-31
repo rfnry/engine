@@ -39,12 +39,14 @@ class Bridge:
             return {"error": f"tools/bridge: a request is at most {LINE} bytes"}
         try:
             request = json.loads(line.decode())
-        except ValueError:
+        except ValueError, RecursionError:
             return {"error": _BAD}
         if not isinstance(request, dict):
             return {"error": _BAD}
         key = request.get("key")
-        if not isinstance(key, str) or not hmac.compare_digest(key.encode(), self.key.encode()):
+        if not isinstance(key, str) or not hmac.compare_digest(
+            key.encode("utf-8", "surrogatepass"), self.key.encode()
+        ):
             return {"error": "tools/bridge: the key is not this command's"}
         tool, args = request.get("tool"), request.get("args")
         if not isinstance(tool, str) or not isinstance(args, dict):
@@ -66,7 +68,10 @@ class Bridge:
                 line = None
             reply = await self._reply(line)
             try:
-                writer.write(json.dumps(reply, ensure_ascii=False).encode() + b"\n")
+                writer.write(
+                    json.dumps(reply, ensure_ascii=False).encode("utf-8", "backslashreplace")
+                    + b"\n"
+                )
                 await writer.drain()
             except ConnectionError:
                 pass
@@ -96,6 +101,7 @@ class Bridge:
                 await asyncio.wait(pending)
             except asyncio.CancelledError as exc:
                 cancelled = cancelled or exc
+        self._server.abort_clients()
         try:
             await self._server.wait_closed()
         except asyncio.CancelledError as exc:
