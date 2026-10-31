@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -275,3 +276,26 @@ async def test_a_client_that_never_reads_a_large_reply_does_not_hold_close(root:
     async with asyncio.timeout(1):
         await b.close()
     writer.close()
+
+
+async def test_a_reply_made_after_close_began_does_not_wait_for_a_client_that_never_reads(
+    root: Path,
+) -> None:
+    started = asyncio.Event()
+
+    async def answer(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        started.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.Event().wait()
+        return {"result": "x" * 8_000_000}
+
+    b = await Bridge.open(root, answer)
+    _, writer = await asyncio.open_unix_connection(b.path)
+    writer.write(request(b))
+    async with asyncio.timeout(5):
+        await started.wait()
+    closing = asyncio.ensure_future(b.close())
+    done, _ = await asyncio.wait([closing], timeout=1)
+    writer.close()
+    await closing
+    assert done == {closing}

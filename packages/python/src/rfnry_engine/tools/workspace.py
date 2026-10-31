@@ -672,7 +672,7 @@ class Workspace:
         bridge: Bridge | None = None
         missing = b""
         if lent is not None and lent.call is not None and root is not None:
-            bridge, missing = await _bridge(Path(root), lent.call)
+            bridge, missing = await _bridge(Path(root).resolve(), lent.call)
         if bridge is not None:
             env = {**env, **bridge.env}
         told: _Told | None = None
@@ -771,7 +771,7 @@ class Workspace:
                 ' {"result": <what you would read for that call>} or {"error": <its error>}.'
                 " Each connection makes one call; open several to make calls at once. Every tool"
                 " you have is there except the workspace's own (Shell, Job, Jobs, Write, Edit)"
-                " and Delegate."
+                " and, when you have them, Delegate and Output."
             )
         return told
 

@@ -55,7 +55,7 @@ def judge_state(row: RunRow) -> dict[str, Any]:
                 "tool": s["tool"],
                 "args": without_media(s["args"]),
                 "result": without_media(s["result"]),
-                **({} if s["by"] is None else {"by": s["by"]}),
+                **({} if s.get("by") is None else {"by": s["by"]}),
             }
             for s in body["steps"]
         ],

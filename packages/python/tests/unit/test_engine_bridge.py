@@ -1,7 +1,11 @@
 import asyncio
+import contextlib
 import json
+import os
+import signal
 import socket
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -10,7 +14,7 @@ import pytest
 
 from rfnry_engine.engine import Approve, Engine
 from rfnry_engine.foreground import current_call
-from rfnry_engine.models import ToolCall
+from rfnry_engine.models import Message, Reply, ToolCall, ToolSpec
 from rfnry_engine.records import (
     CallInfo,
     Event,
@@ -19,6 +23,9 @@ from rfnry_engine.records import (
     ToolCallStarted,
     ToolResultReady,
 )
+from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import Storage
+from rfnry_engine.stop import Stop
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Backend, Local, Process, Workspace
@@ -36,6 +43,13 @@ def call(tool, **args):
 """
 PY = sys.executable
 PREFIX = "tools/workspace: no tool bridge for this command: "
+UNTIL = """
+import os, threading, time
+def until(name):
+    deadline = time.monotonic() + 10
+    while not os.path.exists(name) and time.monotonic() < deadline:
+        time.sleep(0.01)
+"""
 
 
 @pytest.fixture
@@ -82,6 +96,7 @@ async def run_coder(
     command: str = f"{PY} script.py",
     tool_timeout: float = 30.0,
     approve: Approve | None = None,
+    stop: Stop | None = None,
 ) -> tuple[Generation, list[Event], Scripted]:
     events: list[Event] = []
 
@@ -100,6 +115,7 @@ async def run_coder(
             tools=Tools(tools),
             on_event=handler,
             approve=approve,
+            stop=stop,
         )
     assert isinstance(run, Generation)
     return run, events, llm
@@ -154,8 +170,13 @@ async def test_one_shell_call_reaches_a_run_tool_and_a_folder_tool(
 
 
 async def test_three_calls_at_once_run_at_once(tmp_path: Path, root: Path) -> None:
+    starts: list[float] = []
+    ends: list[float] = []
+
     async def nap(args: dict[str, Any]) -> str:
+        starts.append(time.monotonic())
         await asyncio.sleep(0.5)
+        ends.append(time.monotonic())
         return "rested"
 
     script(
@@ -169,7 +190,7 @@ async def test_three_calls_at_once_run_at_once(tmp_path: Path, root: Path) -> No
     naps = [s for s in run.steps if s.tool == "nap"]
     assert len(naps) == 3
     assert all(s.duration_ms >= 500 for s in naps)
-    assert run.steps[-1].tool == "Shell" and run.steps[-1].duration_ms < 1200
+    assert len(starts) == 3 and max(starts) < min(ends)
 
 
 async def test_approve_sees_a_script_s_call_and_can_refuse_it(tmp_path: Path, root: Path) -> None:
@@ -260,6 +281,22 @@ class Rootless:
         await self._local.write(path, data)
 
 
+class Relative(Rootless):
+    root = Path("work")
+
+
+async def test_a_backend_with_a_relative_root_gives_the_command_an_absolute_socket(
+    tmp_path: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    script(root, 'import os\nprint(os.environ["RFNRY_TOOLS"], call("lookup")["result"])\n')
+    async with Workspace(Relative(Local(root)), scope="acme") as work:
+        run, _, _ = await run_coder(tmp_path, work, tools=[Tool("lookup", "Look", body=found)])
+    path, said = result(run.steps[-1])["stdout"].split()
+    assert Path(path).is_absolute() and Path(path).parent == root.resolve()
+    assert said == "found"
+
+
 SEEN = "import glob, os\nprint(os.environ.get('RFNRY_TOOLS'), sorted(glob.glob('.rfnry-*')))\n"
 
 
@@ -289,6 +326,29 @@ async def test_no_bridge_without_the_switch_a_root_or_a_run(
     assert out == "None []\n"
     assert "RFNRY_TOOLS" not in description
     assert list(root.glob(".rfnry-*")) == []
+
+
+async def test_a_run_with_no_tool_to_offer_gets_no_bridge(tmp_path: Path, root: Path) -> None:
+    tree = make_tree(
+        tmp_path,
+        {
+            "coder": "name: coder\nkind: generation\nmodel: strong\ndescription: Writes and runs code\nworkspace: true\ntools: []"
+        },
+    )
+    (tree / "coder" / "tools").mkdir()
+    (tree / "coder" / "tools" / "double.json").write_text(
+        json.dumps({"description": "Double a number", "input_schema": {"type": "object"}}),
+        encoding="utf-8",
+    )
+    (tree / "coder" / "tools" / "double.py").write_text(
+        "def run(args, call):\n    return 2\n", encoding="utf-8"
+    )
+    script(root, SEEN)
+    async with Workspace(Local(root), scope="acme") as work:
+        run, _, llm = await run_coder(tmp_path, work, tree=tree)
+    assert [t.name for t in llm.calls[0][2]] == ["Shell", "Job", "Jobs", "Write", "Edit"]
+    assert result(run.steps[-1])["stdout"] == "None []\n"
+    assert "RFNRY_TOOLS" not in described(llm)
 
 
 async def test_the_socket_is_gone_after_the_command(tmp_path: Path, root: Path) -> None:
@@ -402,3 +462,222 @@ async def test_a_delegated_child_s_command_calls_the_child_s_tools(
     assert result(child.steps[-1])["stdout"] == "found\n"
     [bridged] = [e for e in events if isinstance(e, ToolCallStarted) and e.tool == "lookup"]
     assert bridged.run_id == child.run_id and bridged.call_id == "s.1" and bridged.by == "s"
+
+
+async def test_a_call_still_running_when_the_command_exits_is_cut(
+    tmp_path: Path, root: Path
+) -> None:
+    async def nap(args: dict[str, Any]) -> str:
+        (root / "napping").touch()
+        await asyncio.sleep(10)
+        return "rested"
+
+    script(
+        root,
+        UNTIL
+        + 'threading.Thread(target=call, args=("nap",), daemon=True).start()\nuntil("napping")\n',
+    )
+    async with Workspace(Local(root), scope="acme") as work:
+        run, events, _ = await run_coder(tmp_path, work, tools=[Tool("nap", "Rest", body=nap)])
+    [napped] = [s for s in run.steps if s.tool == "nap"]
+    assert napped.stopped is True
+    assert napped.result == "stopped by the user"
+    assert napped.by == "1"
+    assert [e.step for e in events if isinstance(e, ToolResultReady) and e.call_id == "1.1"] == [
+        napped
+    ]
+    assert not run.steps[-1].is_error and result(run.steps[-1])["exit_code"] == 0
+    assert run.duration_ms < 5000
+
+
+async def test_a_stop_ends_the_command_and_cuts_its_calls(tmp_path: Path, root: Path) -> None:
+    stop = Stop()
+
+    async def halt(args: dict[str, Any]) -> str:
+        stop.now()
+        await asyncio.sleep(10)
+        return "late"
+
+    script(root, 'call("halt")\n')
+    async with Workspace(Local(root), scope="acme") as work:
+        run, _, _ = await run_coder(
+            tmp_path, work, tools=[Tool("halt", "Halt", body=halt)], stop=stop
+        )
+    assert run.stopped == "now"
+    assert [(s.tool, s.stopped, s.by) for s in run.steps] == [
+        ("halt", True, "1"),
+        ("Shell", True, None),
+    ]
+    assert run.duration_ms < 5000
+
+
+async def test_the_workspace_timeout_cuts_the_calls_of_its_command(
+    tmp_path: Path, root: Path
+) -> None:
+    async def nap(args: dict[str, Any]) -> str:
+        await asyncio.sleep(10)
+        return "rested"
+
+    script(root, 'call("nap")\n')
+    async with Workspace(Local(root), scope="acme", timeout=1.0) as work:
+        run, _, _ = await run_coder(tmp_path, work, tools=[Tool("nap", "Rest", body=nap)])
+    assert result(run.steps[-1])["timed_out"] is True
+    [napped] = [s for s in run.steps if s.tool == "nap"]
+    assert napped.stopped is True and napped.by == "1"
+
+
+async def test_a_handler_that_raises_on_a_script_s_call_fails_the_run(
+    tmp_path: Path, root: Path
+) -> None:
+    async def handler(event: Event) -> None:
+        if isinstance(event, ToolCallStarted) and event.by is not None:
+            raise RuntimeError("boom")
+
+    script(
+        root, 'import json\nwith open("reply.json", "w") as f:\n    json.dump(call("lookup"), f)\n'
+    )
+    llm = Scripted(use(shell()), text_reply("ok"))
+    async with (
+        Workspace(Local(root), scope="acme") as work,
+        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+    ):
+        with pytest.raises(RuntimeError, match="boom"):
+            await engine.run(
+                "coder",
+                "acme",
+                "x",
+                workspace=work,
+                tools=Tools([Tool("lookup", "Look", body=lookup)]),
+                on_event=handler,
+            )
+    assert json.loads((root / "reply.json").read_text(encoding="utf-8")) == {
+        "error": "RuntimeError: boom"
+    }
+
+
+class Waiting:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.never = asyncio.Event()
+        self.cancelled = False
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        (self.root / "asked").touch()
+        try:
+            await self.never.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        raise AssertionError("Waiting was answered")
+
+
+async def test_a_consult_started_by_a_script_s_call_ends_with_the_command(
+    tmp_path: Path, root: Path, storage: Storage
+) -> None:
+    tree = make_tree(
+        tmp_path, {"chat": "name: chat\nkind: generation\nmodel: slow\ndescription: Talks"}
+    )
+    script(
+        root,
+        UNTIL
+        + 'threading.Thread(target=call, args=("chat",), kwargs={"input": "hi"}, daemon=True).start()\n'
+        'until("asked")\n',
+    )
+    llm = Scripted(use(shell()), text_reply("ok"))
+    waiting = Waiting(root)
+    async with (
+        Workspace(Local(root), scope="acme") as work,
+        Engine(tree, models={"strong": llm, "slow": waiting}, refinery=Refinery(storage)) as engine,
+    ):
+        run = await engine.run(
+            "coder", "acme", "x", workspace=work, tools=engine.tool("chat", scope="acme")
+        )
+    assert isinstance(run, Generation)
+    assert waiting.cancelled is True
+    [chatted] = [s for s in run.steps if s.tool == "chat"]
+    assert chatted.stopped is True and chatted.by == "1"
+    assert run.duration_ms < 5000
+    assert [row.agent for row in await storage.runs("acme")] == ["coder"]
+
+
+ESCAPE = (
+    UNTIL
+    + """
+import subprocess, sys
+def escape(name):
+    held = subprocess.Popen([sys.executable, name], start_new_session=True,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(name + ".pid", "w") as f:
+        f.write(str(held.pid))
+"""
+)
+HOLDER = """
+import json, os, socket, time
+s = socket.socket(socket.AF_UNIX)
+s.connect(os.environ["RFNRY_TOOLS"])
+s.sendall(json.dumps({"key": os.environ["RFNRY_TOOLS_KEY"], "tool": "stubborn", "args": {}}).encode() + b"\\n")
+time.sleep(60)
+"""
+READER = """
+import json, os
+from client import call
+reply = call("nap")
+with open("read.tmp", "w") as f:
+    json.dump(reply, f)
+os.replace("read.tmp", "read.json")
+"""
+
+
+def end_escaped(root: Path, name: str) -> None:
+    with contextlib.suppress(FileNotFoundError, ProcessLookupError):
+        os.kill(int((root / f"{name}.pid").read_text(encoding="utf-8")), signal.SIGKILL)
+
+
+async def test_a_process_that_escaped_the_command_reads_its_cut_call_s_error(
+    tmp_path: Path, root: Path
+) -> None:
+    async def nap(args: dict[str, Any]) -> str:
+        (root / "started").touch()
+        await asyncio.sleep(10)
+        return "rested"
+
+    (root / "reader.py").write_text(READER, encoding="utf-8")
+    script(root, ESCAPE + 'escape("reader.py")\nuntil("started")\n')
+    try:
+        async with Workspace(Local(root), scope="acme") as work:
+            run, _, _ = await run_coder(tmp_path, work, tools=[Tool("nap", "Rest", body=nap)])
+        async with asyncio.timeout(10):
+            while not (root / "read.json").exists():
+                await asyncio.sleep(0.01)
+    finally:
+        end_escaped(root, "reader.py")
+    [napped] = [s for s in run.steps if s.tool == "nap"]
+    assert napped.stopped is True
+    assert json.loads((root / "read.json").read_text(encoding="utf-8")) == {
+        "error": "stopped by the user"
+    }
+
+
+async def test_a_reply_a_process_that_escaped_the_command_never_reads_does_not_hold_the_shell(
+    tmp_path: Path, root: Path
+) -> None:
+    async def stubborn(args: dict[str, Any]) -> str:
+        (root / "started").touch()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.sleep(10)
+        return "x" * 5_000_000
+
+    (root / "holder.py").write_text(HOLDER, encoding="utf-8")
+    script(root, ESCAPE + 'escape("holder.py")\nuntil("started")\n')
+    async with Workspace(Local(root), scope="acme") as work:
+        running = asyncio.ensure_future(
+            run_coder(tmp_path, work, tools=[Tool("stubborn", "Stubborn", body=stubborn)])
+        )
+        try:
+            await asyncio.wait([running], timeout=10)
+        finally:
+            end_escaped(root, "holder.py")
+        run, _, _ = await running
+    assert [s.tool for s in run.steps] == ["stubborn", "Shell"]
+    assert result(run.steps[-1])["exit_code"] == 0
+    assert run.duration_ms < 5000

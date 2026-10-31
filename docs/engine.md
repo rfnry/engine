@@ -1661,19 +1661,31 @@ of the `Shell` call whose command made it; its own id is `<Shell call id>.<n>`, 
 each command. It finished first, so its step sits in `run.steps` before the `Shell` step that made
 it, and the conversation holds no message for it: the model reads only the `Shell` result.
 `ToolCallStarted`, `ToolResultReady` and `CallInfo` carry the same `by`, so `approve` and a tool tell
-a call a script made from one the model made with `current_call().by`. A call still running when its
-command ends — it exits, a stop, the workspace's `timeout` — is cut, recorded with `stopped` and
-`stopped by the user` as its result, which the script reads as its `error` if it still reads. An
-`on_event` that raises on a script's call fails the run once the command has ended.
+a call a script made from one the model made with `current_call().by`.
+
+A call ends with its command. When the command ends, for any reason — it exits, a stop, the
+workspace's `timeout` — a call still in flight is cut as a stopped call is: its step is recorded with
+`stopped` and `stopped by the user` as its result, its `ToolResultReady` is sent, and a script still
+connected reads `{"error": "stopped by the user"}`. A consult that a script's call started, an
+`engine.tool` passed in `tools=`, is cancelled when its command ends, and leaves no record of its
+own, as no cancelled run does; the script's step is recorded stopped. Under `stop.now()` the consult
+takes the stop and is recorded, as a model's would be. A reply to a process that outlived the
+command, one that left its process group outside a sandbox, is sent but never waited on: the socket
+closes whether that process reads it or not. An `on_event` that raises on a script's call fails the
+run once the command has ended.
 
 The socket is the one file the engine creates itself, `<root>/.rfnry-<8 hex>.sock`, inside the
 workspace you passed, for the life of one command: made just before the command starts, closed and
 removed once it has ended and its output is read. Under bubblewrap it is in the bound directory at
 the same path, and a socket bound to a path reaches through `--unshare-all`; under Docker it is in
-the directory mounted at its own path, with `-e RFNRY_TOOLS -e RFNRY_TOOLS_KEY`. The `Shell`
-description tells the model of it in those variables, never in a path. Whether the bridge is on, and
-whether `tree=` is set, change that description and so `fingerprint.tools` — rightly, since the model
-was offered something different — but where a deployment puts the workspace does not.
+the directory mounted at its own path, with `-e RFNRY_TOOLS -e RFNRY_TOOLS_KEY`. The socket can be
+reached only from a sandbox on the same kernel that sees the workspace directory at the same path:
+bubblewrap, or Docker on Linux. Docker Desktop's file sharing on macOS and Windows does not carry
+Unix sockets, so use a backend that runs the engine beside the commands there. A container user
+other than the service's needs write permission on the socket file. The `Shell` description tells
+the model of it in those variables, never in a path. Whether the bridge is on, and whether `tree=`
+is set, change that description and so `fingerprint.tools` — rightly, since the model was offered
+something different — but where a deployment puts the workspace does not.
 
 - The bridge gives code exactly what the model has — the same tools, through the same `approve`,
   scope and record — and nothing more. What is new is speed: a script can make many calls quickly;

@@ -1076,7 +1076,7 @@ class Engine:
             args: dict[str, Any],
         ) -> dict[str, Any]:
             if name in barred or name not in surface:
-                return {"error": f"InputError: tools: unknown tool {name!r}"}
+                return {"error": _failure(InputError(f"tools: unknown tool {name!r}"))}
             call = ToolCall(id=f"{shell.id}.{next(numbers)}", name=name, args=args)
             began = time.monotonic()
             calling = asyncio.ensure_future(call_tool(call, shell.id))

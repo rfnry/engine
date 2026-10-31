@@ -72,7 +72,8 @@ class Bridge:
                     json.dumps(reply, ensure_ascii=False).encode("utf-8", "backslashreplace")
                     + b"\n"
                 )
-                await writer.drain()
+                if not self._closed:
+                    await writer.drain()
             except ConnectionError:
                 pass
         finally:
