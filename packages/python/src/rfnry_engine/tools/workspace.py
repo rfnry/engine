@@ -672,7 +672,7 @@ class Workspace:
         bridge: Bridge | None = None
         missing = b""
         if lent is not None and lent.call is not None and root is not None:
-            bridge, missing = await _bridge(Path(root).resolve(), lent.call)
+            bridge, missing = await _bridge(Path(root).absolute(), lent.call)
         if bridge is not None:
             env = {**env, **bridge.env}
         told: _Told | None = None

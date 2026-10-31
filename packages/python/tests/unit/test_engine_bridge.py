@@ -297,6 +297,25 @@ async def test_a_backend_with_a_relative_root_gives_the_command_an_absolute_sock
     assert said == "found"
 
 
+class Linked(Rootless):
+    def __init__(self, local: Local, root: Path) -> None:
+        super().__init__(local)
+        self.root = root
+
+
+async def test_a_backend_s_symlinked_root_keeps_the_socket_on_the_path_it_gave(
+    tmp_path: Path, root: Path
+) -> None:
+    link = tmp_path / "link"
+    link.symlink_to(root, target_is_directory=True)
+    script(root, 'import os\nprint(os.environ["RFNRY_TOOLS"], call("lookup")["result"])\n')
+    async with Workspace(Linked(Local(root), link), scope="acme") as work:
+        run, _, _ = await run_coder(tmp_path, work, tools=[Tool("lookup", "Look", body=found)])
+    path, said = result(run.steps[-1])["stdout"].split()
+    assert Path(path).parent == link
+    assert said == "found"
+
+
 SEEN = "import glob, os\nprint(os.environ.get('RFNRY_TOOLS'), sorted(glob.glob('.rfnry-*')))\n"
 
 
