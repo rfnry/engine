@@ -74,6 +74,51 @@ async def test_a_coder_writes_and_runs_code(adapters: Any, tmp_path: Path) -> No
     assert "5050" in run.reply
 
 
+async def test_a_coder_calls_a_tool_from_its_script(adapters: Any, tmp_path: Path) -> None:
+    import random
+
+    from rfnry_engine import Local, Tool, Tools, Workspace
+
+    values = {name: random.randint(100_000, 999_999) for name in "abc"}
+
+    async def constant(args: dict[str, Any]) -> dict[str, Any]:
+        return {"value": values[args["name"]]}
+
+    agents = tmp_path / "agents" / "coder"
+    agents.mkdir(parents=True)
+    (agents / "AGENT.md").write_text(
+        "---\nname: coder\nkind: generation\nmodel: strong\ndescription: Writes and runs code\nworkspace: true\n---\n"
+        "You write Python and run it with Shell. Reply with the program's output only.\n",
+        encoding="utf-8",
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    tool = Tool(
+        "constant",
+        "Returns the constant of a name: a, b or c",
+        body=constant,
+        input_schema={
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    )
+    async with Engine(tmp_path / "agents", models={"strong": adapters.generation()}) as engine:
+        run = await engine.run(
+            "coder",
+            "live",
+            "Write one Python script that calls the tool `constant` for the names a, b and c through the tool "
+            "bridge your Shell description explains, and prints their sum. Run it. Reply with the sum only.",
+            workspace=Workspace(Local(work), scope="live"),
+            tools=Tools([tool]),
+        )
+    assert isinstance(run, Generation)
+    assert str(sum(values.values())) in run.reply
+    calls = [s for s in run.steps if s.tool == "constant"]
+    assert calls
+    assert all(s.by for s in calls)
+
+
 async def test_reasoning_goes_back_only_where_it_was_given(adapters: Any) -> None:
     async with Engine(FIXTURES, models={"strong": adapters.generation()}) as engine:
         today, tomorrow = "Today is 2026-10-11.", "Today is 2026-10-12."
