@@ -6,15 +6,16 @@ import os
 import shutil
 import signal
 import stat
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel
 
 from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.foreground import current
 from rfnry_engine.jail import Jail
 from rfnry_engine.stop import join
 from rfnry_engine.tools.tools import Tool
@@ -46,7 +47,7 @@ class Process(Protocol):
 
 @runtime_checkable
 class Backend(Protocol):
-    async def spawn(self, command: str) -> Process: ...
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Process: ...
 
     async def read(self, path: str, limit: int) -> bytes: ...
 
@@ -192,7 +193,7 @@ class Local:
             )
         self._jail = Jail(self.root)
 
-    async def spawn(self, command: str) -> Process:
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Process:
         loop = asyncio.get_running_loop()
         try:
             transport, pipes = await loop.subprocess_exec(
@@ -200,7 +201,7 @@ class Local:
                 *self.shell,
                 command,
                 cwd=self.root,
-                env=self.env,
+                env={**self.env, **env},
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -444,6 +445,7 @@ class Workspace:
         scope: str,
         timeout: float = 120.0,
         output_bytes: int = 30_000,
+        tree: str | None = None,
     ) -> None:
         if not isinstance(backend, Backend):
             raise ConfigurationError("tools/workspace: backend must have spawn, read and write")
@@ -453,8 +455,13 @@ class Workspace:
             raise ConfigurationError("tools/workspace: timeout must be positive")
         if output_bytes <= 0:
             raise ConfigurationError("tools/workspace: output_bytes must be positive")
+        if tree is not None and not PurePosixPath(tree).is_absolute():
+            raise ConfigurationError(
+                f"tools/workspace: tree must be an absolute path, as commands see it, such as /srv/agents; got {tree!r}"
+            )
         self.backend = backend
         self.scope = scope
+        self.tree = tree
         self.timeout = timeout
         self.output_bytes = output_bytes
         self._jobs: dict[str, _Job] = {}
@@ -546,11 +553,14 @@ class Workspace:
 
     async def _shell(self, args: dict[str, Any]) -> dict[str, Any]:
         a = ShellArgs.model_validate(args)
+        here = current()
+        lent = here.lent if here is not None else None
+        env = lent.env if lent is not None else {}
         if a.background:
-            starting = asyncio.ensure_future(self._start(a.command))
+            starting = asyncio.ensure_future(self._start(a.command, env))
             await join([starting])
             return {"job": starting.result()}
-        spawning = asyncio.create_task(self.backend.spawn(a.command))
+        spawning = asyncio.create_task(self.backend.spawn(a.command, env))
         try:
             process = await asyncio.shield(spawning)
         except asyncio.CancelledError:
@@ -589,14 +599,26 @@ class Workspace:
             "timed_out": timed_out,
         }
 
-    async def _start(self, command: str) -> str:
-        process = await self.backend.spawn(command)
+    async def _start(self, command: str, env: Mapping[str, str]) -> str:
+        process = await self.backend.spawn(command, env)
         self._count += 1
         name = f"j{self._count}"
         job = _Job(command=command, process=process, kept=_Kept(self.output_bytes))
         job.task = asyncio.create_task(_follow(job))
         self._jobs[name] = job
         return name
+
+    def _told(self, reads: Sequence[str]) -> str:
+        if self.tree is None:
+            return ""
+        told = (
+            " The agent's own folder is at $RFNRY_AGENT, read-only: its files, skills and scripts"
+            " can be read and run from there."
+        )
+        if reads:
+            places = ", ".join(f"$RFNRY_TREE/{name}" for name in reads)
+            told += f" The folders it reads are at {places}."
+        return told
 
     async def _job(self, args: dict[str, Any]) -> dict[str, Any]:
         a = JobArgs.model_validate(args)

@@ -1,4 +1,5 @@
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -619,7 +620,7 @@ async def test_read_and_load_go_through_any_backend_with_their_limits() -> None:
         def __init__(self) -> None:
             self.limits: list[int] = []
 
-        async def spawn(self, command: str) -> Process:
+        async def spawn(self, command: str, env: Mapping[str, str]) -> Process:
             raise AssertionError("no command runs")
 
         async def read(self, path: str, limit: int) -> bytes:

@@ -946,17 +946,21 @@ class Workspace:
         scope: str,
         timeout: float = 120.0,
         output_bytes: int = 30_000,
+        tree: str | None = None,
     ) -> None: ...
 
     backend: Backend
     scope: str
     timeout: float
     output_bytes: int
+    tree: str | None
 ```
 
 Where an agent with `workspace: true` writes code and runs it, passed as `run(workspace=)`: the library's tools over `backend`, for the tenant `scope`. `timeout` bounds every `Shell`, `Job`, `Write` and `Edit` call in seconds; a command still running at the limit, or when its call is cancelled, is stopped with its process's `kill()`, and so is anything a command leaves running when it ends, after which what remains of its output is read for at most a second. On `Local`, whose `read` and `write` each run in a thread a cancel cannot stop, a `Write` or `Edit` past `timeout`, like a workspace `Read` or `Load` past `Engine(tool_timeout=)`, returns its `TimeoutError` only once the thread has ended. Every kill runs to its end and the call that started it waits for it, however many cancels come meanwhile, so a stop or a cancel of `Shell` or `Job(id, stop=true)` returns once the kill has returned. A kill counts as the first stop, and two cancels that land at the same moment count as two: the next cancel after the one that started it, or the second during a kill the workspace started on its own — for a command past `timeout` or that has ended, `Job(id, stop=true)` or `close` — cancels that kill, once, so `kill()` ends the command at once. A `kill()` error the call cannot raise, because it is already leaving with a cancellation or with the error of a `wait()` that raised, is logged as an error, `tools/workspace: could not stop the command: …`; one from the kill that follows a job's end is in the job's output. `output_bytes` caps `stdout` and `stderr` each, keeping their first and last half. Jobs belong to the workspace and outlive the runs that started them; each is read in the background until it ends or `close` stops it. A workspace and its jobs live in one event loop: a job whose loop ends is stopped.
 
-Raises `ConfigurationError` when `backend` lacks `spawn`, `read` or `write`, `scope` is empty, or `timeout` or `output_bytes` is not positive.
+`tree` is where the agent tree is mounted in the sandbox, as commands see it, such as `/srv/agents`. With it, the commands of a run get `RFNRY_TREE`, the tree, and `RFNRY_AGENT`, the running agent's folder in it, and the `Shell` description tells the model where they are, in variables and never in a path; a command started with `background=true` gets them too. A `Shell` that code dispatches outside a run, or from inside another tool, gets neither. Without `tree`, nothing is added.
+
+Raises `ConfigurationError` when `backend` lacks `spawn`, `read` or `write`, `scope` is empty, `timeout` or `output_bytes` is not positive, or `tree` is not an absolute path.
 
 ### `Workspace.tools`
 
@@ -979,14 +983,14 @@ Stops every job of the workspace with its process's `kill()`, waits for each to 
 ```python
 @runtime_checkable
 class Backend(Protocol):
-    async def spawn(self, command: str) -> Process: ...
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Process: ...
 
     async def read(self, path: str, limit: int) -> bytes: ...
 
     async def write(self, path: str, data: bytes) -> None: ...
 ```
 
-Where a workspace's commands run and its files live, passed to `Workspace`. `spawn` starts `command` in the workspace's directory with no input and returns at once, and must return promptly: a stop or a cancel that comes while it runs waits for it to return, then for the kill of what it started, however many cancels come meanwhile, and a second one cancels that kill as soon as it starts; with `background=true` it waits for the job to be listed, so `close` stops it. `read` returns a file's bytes and refuses one larger than `limit`; `write` writes a file whole, creating its parent directories. Paths are the model's, relative to the workspace, and what they can reach is the backend's to decide. An error a backend raises reaches the model as the tool's error. A backend's description, if it has one, is ignored: what the environment holds is told in the agent's markdown.
+Where a workspace's commands run and its files live, passed to `Workspace`. `spawn` starts `command` in the workspace's directory with no input, with `env` added to the command's environment, and returns at once, and must return promptly: a stop or a cancel that comes while it runs waits for it to return, then for the kill of what it started, however many cancels come meanwhile, and a second one cancels that kill as soon as it starts; with `background=true` it waits for the job to be listed, so `close` stops it. `read` returns a file's bytes and refuses one larger than `limit`; `write` writes a file whole, creating its parent directories. Paths are the model's, relative to the workspace, and what they can reach is the backend's to decide. An error a backend raises reaches the model as the tool's error. A backend's description, if it has one, is ignored: what the environment holds is told in the agent's markdown.
 
 ### `Process`
 
@@ -1018,14 +1022,14 @@ class Local:
     shell: list[str]
     env: dict[str, str]
 
-    async def spawn(self, command: str) -> Process: ...
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Process: ...
 
     async def read(self, path: str, limit: int) -> bytes: ...
 
     async def write(self, path: str, data: bytes) -> None: ...
 ```
 
-A `Backend` on this machine. Commands run as `[*shell, command]` in `root`, in a new session, with `env` as their whole environment — by default `PATH`, `HOME` set to `root`, and `LANG`; a sandbox goes in front of the shell, as in `shell=["bwrap", …, "bash", "-c"]`. `kill` sends the command's process group SIGTERM and, a second later or at once when it is cancelled, SIGKILL. `read` and `write` stay inside `root`, symlinks resolved, and each runs in a thread: a call cancelled meanwhile returns once its thread has ended, however many cancels come, so a `Write` or `Edit` cancelled while it writes has written its file when the cancel returns.
+A `Backend` on this machine. Commands run as `[*shell, command]` in `root`, in a new session, with `env` as their whole environment, and what `spawn` is given added over it — by default `PATH`, `HOME` set to `root`, and `LANG`; a sandbox goes in front of the shell, as in `shell=["bwrap", …, "bash", "-c"]`. `kill` sends the command's process group SIGTERM and, a second later or at once when it is cancelled, SIGKILL. `read` and `write` stay inside `root`, symlinks resolved, and each runs in a thread: a call cancelled meanwhile returns once its thread has ended, however many cancels come, so a `Write` or `Edit` cancelled while it writes has written its file when the cancel returns.
 
 Raises `ConfigurationError` when `root` is not a directory, `shell` is not a non-empty list of non-empty strings, or its first word is not on the `PATH` of `env`. `spawn` raises `InputError` when the command cannot start, as when `root` was removed: `tools/workspace: cannot start the command: No such file or directory`. `read` and `write` raise `InputError` for a path outside `root`, through a link that leads out of it or one swapped in while they walk to the file, and for every path once `root` is no longer the folder it was when `Local` was made — replaced, or reached through a link swapped in for it or a folder above it; `read` for a path that is not a file — missing, a directory, a FIFO or a socket, or a path through a file, such as `notes.txt/x` — or a file larger than `limit`; `write` for a directory, a FIFO or a socket, and a path through a file as `tools/workspace: cannot write notes.txt/x: Not a directory`. Any other error the system gives is `tools/workspace: cannot read {path}: {reason}` or `tools/workspace: cannot write {path}: {reason}`. Every message names the path as the model gave it, never the path on this machine. The root check compares directory inode numbers, so a filesystem where they are not stable — overlayfs without `xino`, FUSE without `use_ino` — refuses a valid root and is not supported as a workspace root.
 

@@ -1,6 +1,6 @@
 import asyncio
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -58,7 +58,7 @@ class Machine:
         self.files: dict[str, bytes] = {}
         self.limits: list[int] = []
 
-    async def spawn(self, command: str) -> Command:
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
         ran = Command(command)
         self.commands.append(ran)
         if self.act is not None:
@@ -185,8 +185,8 @@ class Starting(Machine):
         self.fails = fails
         self.release = asyncio.Event()
 
-    async def spawn(self, command: str) -> Command:
-        ran = await super().spawn(command)
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
+        ran = await super().spawn(command, {})
         await self.release.wait()
         if self.fails:
             raise RuntimeError("docker: the daemon went away")
@@ -491,11 +491,11 @@ async def test_a_command_that_cannot_start_is_the_models_error_and_takes_no_id()
             super().__init__()
             self.broken = True
 
-        async def spawn(self, command: str) -> Command:
+        async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
             if self.broken:
                 self.broken = False
                 raise RuntimeError("docker: the daemon is not running")
-            return await super().spawn(command)
+            return await super().spawn(command, {})
 
     ws = Workspace(Broken(), scope="acme")
     with pytest.raises(RuntimeError, match="the daemon is not running"):
@@ -590,8 +590,8 @@ class Dying(Machine):
         self.kill_fails = kill_fails
         self.wait_fails = wait_fails
 
-    async def spawn(self, command: str) -> Command:
-        ran = await super().spawn(command)
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
+        ran = await super().spawn(command, {})
         machine = self
 
         async def kill() -> None:
@@ -653,8 +653,8 @@ async def test_a_kill_that_raises_after_a_wait_that_raised_is_in_the_output_too(
 
 async def test_a_wait_and_a_kill_that_fail_the_same_way_are_in_the_output_once() -> None:
     class Gone(Machine):
-        async def spawn(self, command: str) -> Command:
-            ran = await super().spawn(command)
+        async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
+            ran = await super().spawn(command, {})
 
             async def wait() -> int:
                 raise RuntimeError("docker: the daemon went away")
@@ -829,8 +829,8 @@ class Slow(Machine):
         self.finished = 0
         self.cut = 0
 
-    async def spawn(self, command: str) -> Command:
-        ran = await super().spawn(command)
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
+        ran = await super().spawn(command, {})
         machine = self
 
         async def kill() -> None:
@@ -856,8 +856,8 @@ class Late(Slow):
         super().__init__(fails=fails)
         self.begin = asyncio.Event()
 
-    async def spawn(self, command: str) -> Command:
-        ran = await super().spawn(command)
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
+        ran = await super().spawn(command, {})
         await self.begin.wait()
         return ran
 
@@ -1030,8 +1030,8 @@ class Held(Machine):
         self.release = asyncio.Event()
         self.failing: set[str] = set()
 
-    async def spawn(self, command: str) -> Command:
-        ran = await super().spawn(command)
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
+        ran = await super().spawn(command, {})
         kill = ran.kill
         machine = self
 
@@ -1111,8 +1111,8 @@ class Lingering(Machine):
         self.ending = ending
         self.cut = 0
 
-    async def spawn(self, command: str) -> Command:
-        ran = await super().spawn(command)
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
+        ran = await super().spawn(command, {})
         machine = self
 
         async def kill() -> None:

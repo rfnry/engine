@@ -9,6 +9,11 @@ from rfnry_engine.records import CallInfo, Decision, EventHandler, Generation, R
 from rfnry_engine.stop import Stop
 
 
+@dataclass(frozen=True)
+class Lent:
+    env: dict[str, str]
+
+
 @dataclass
 class Foreground:
     stop: Stop | None
@@ -18,6 +23,7 @@ class Foreground:
     live: int = 0
     pressed: bool = False
     over: bool = False
+    lent: Lent | None = None
 
     def settle(self) -> None:
         if self.pressed and self.live == 0 and not self.over and self.task is not None:

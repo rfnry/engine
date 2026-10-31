@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import posixpath
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -30,6 +31,7 @@ from rfnry_engine.foreground import (
     FOREGROUND,
     RECORDING,
     Foreground,
+    Lent,
     halted,
     hooks,
     returned,
@@ -916,10 +918,27 @@ class Engine:
             history=options.source,
             start=options.start,
         )
-        own_deadline = surface._in_workers | (
-            WORKSPACE_TOOLS if spec.workspace and options.workspace is not None else frozenset()
+        room = options.workspace if spec.workspace else None
+        own_deadline = surface._in_workers | (WORKSPACE_TOOLS if room is not None else frozenset())
+        variables = (
+            {
+                "RFNRY_TREE": room.tree,
+                "RFNRY_AGENT": room.tree
+                if spec.path == "."
+                else posixpath.join(room.tree, spec.path),
+            }
+            if room is not None and room.tree is not None
+            else {}
         )
         specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
+        if room is not None:
+            told = room._told(list(spec.reads))
+            specs = [
+                s.model_copy(update={"description": s.description + told})
+                if s.name == "Shell"
+                else s
+                for s in specs
+            ]
         if expect is not None:
             if OUTPUT_TOOL in surface:
                 raise ConfigurationError(
@@ -1062,6 +1081,8 @@ class Engine:
                     f"engine: approve must return True or False; got {approved!r}"
                 )
             here = Foreground(stop, on_event, asyncio.current_task())
+            if room is not None and call.name == "Shell":
+                here.lent = Lent(env=variables)
             foregrounds[id(call)] = here
             FOREGROUND.set(here)
             try:

@@ -1338,7 +1338,7 @@ class PerRun:
         place.mkdir(parents=True, exist_ok=True)
         return Local(place)
 
-    async def spawn(self, command): return await self.here().spawn(command)
+    async def spawn(self, command, env): return await self.here().spawn(command, env)
     async def read(self, path, limit): return await self.here().read(path, limit)
     async def write(self, path, data): await self.here().write(path, data)
 
@@ -1551,13 +1551,30 @@ Docker can be the sandbox too. A container per command is a `shell=` of `docker 
 directory mounted at its own path and `timeout -s KILL <seconds>` before the command inside: the
 `docker` client passes SIGTERM on to the container, but SIGKILL stops only the client, so the limit
 inside is what ends a container whose command ignores SIGTERM. `env=` is then the client's
-environment, not the command's — the command's own variables go in with `-e` — and the client reads
+environment, not the command's — the command's own variables go in with `-e`, and a workspace with
+`tree=` needs `-e RFNRY_AGENT -e RFNRY_TREE` — and the client reads
 its configuration from `$HOME/.docker`, which `Local`'s default `HOME` puts in the workspace, where
 a command could write a `.docker/config.json` the next command's client obeys; point
 `DOCKER_CONFIG` outside the workspace. One container per workspace, entered with `docker exec`,
 needs a backend of yours: signals do not pass through `docker exec`, so its `kill()` must reach the
 command's processes inside the container itself — a tag in their environment that everything they
 start inherits, say, whose processes it signals.
+
+The folder in the shell. `Workspace(local, scope="acme", tree="/srv/agents")` says where the agent
+tree is mounted in the sandbox, as commands see it. The commands of a run then get `RFNRY_TREE`, the
+tree, and `RFNRY_AGENT`, the running agent's folder in it, and the `Shell` description tells the
+model that the folder is at `$RFNRY_AGENT`, read-only, with its files, skills and scripts to read
+and run, and that each folder the agent reads is at `$RFNRY_TREE/<name>`. A skill's script is run
+as `python "$RFNRY_AGENT/skills/plot/run.py"`. The sandbox mounts the tree read-only at the same
+path: `--ro-bind /srv/agents /srv/agents` for bubblewrap, `-v /srv/agents:/srv/agents:ro` for
+Docker, and for an unsandboxed `Local` the tree's own path. Commands started with `background=true`
+get the variables too; a `Shell` that code dispatches outside a run gets none. Cautions:
+
+- the shell sees every file under the mount, hidden ones included, which the file tools refuse;
+- the fingerprint covers what the folder holds, not what a command reads;
+- a mount of the whole tree shows the other agents' folders; mount less to hide them;
+- `refinery.replay(candidate, workspace=)` needs a workspace whose sandbox mounts the candidate's
+  tree.
 
 Without a sandbox, the kill reaches every process the command started except one that leaves its
 process group with `setsid`; the process namespace of a container or of bubblewrap closes that gap.
@@ -1567,12 +1584,12 @@ caps, stopping what a command leaves behind:
 
 ```python
 class Backend(Protocol):
-    async def spawn(self, command: str) -> Process: ...
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Process: ...
     async def read(self, path: str, limit: int) -> bytes: ...
     async def write(self, path: str, data: bytes) -> None: ...
 ```
 
-`spawn` starts a command in the workspace with no input and returns at once a `Process`: its
+`spawn` starts a command in the workspace with no input, with `env` added to its environment, and returns at once a `Process`: its
 `stdout` and `stderr`, read until they end, `wait()` for its exit code, and `kill()` to end it and
 everything it started. Every kill the workspace starts runs to its end, and the call that started it
 waits for it: a stop or a cancel of a `Shell` call, of `Job(stop=true)` or of `close()` returns once

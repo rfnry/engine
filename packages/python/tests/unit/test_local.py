@@ -5,7 +5,7 @@ import socket
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -88,7 +88,7 @@ def test_a_local_is_a_backend(local: Local) -> None:
 
 
 async def test_a_command_runs_in_the_root_with_both_streams(local: Local, root: Path) -> None:
-    process = await local.spawn("pwd; echo err >&2; echo hi > made.txt; exit 3")
+    process = await local.spawn("pwd; echo err >&2; echo hi > made.txt; exit 3", {})
     assert await finished(process) == (3, f"{root}\n".encode(), b"err\n")
     assert (root / "made.txt").read_text() == "hi\n"
 
@@ -97,32 +97,33 @@ async def test_the_default_environment_does_not_leak_the_service(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("SERVICE_SECRET", "s3cret")
-    process = await Local(root).spawn('echo "[$SERVICE_SECRET]"; echo "$HOME"')
+    process = await Local(root).spawn('echo "[$SERVICE_SECRET]"; echo "$HOME"', {})
     assert await finished(process) == (0, f"[]\n{root}\n".encode(), b"")
 
 
 async def test_env_passes_through(root: Path) -> None:
     local = Local(root, env={"PATH": os.environ.get("PATH", os.defpath), "GREETING": "hi"})
-    assert (await finished(await local.spawn('echo "$GREETING"')))[1] == b"hi\n"
+    assert (await finished(await local.spawn('echo "$GREETING"', {})))[1] == b"hi\n"
 
 
 async def test_the_default_shell_is_bash(local: Local) -> None:
     assert Path(local.shell[0]).name == "bash" and local.shell[1:] == ["-c"]
     process = await local.spawn(
-        'set -o pipefail; for i in {1..3}; do [[ $i -gt 1 ]] && echo "$i"; done'
+        'set -o pipefail; for i in {1..3}; do [[ $i -gt 1 ]] && echo "$i"; done',
+        {},
     )
     assert await finished(process) == (0, b"2\n3\n", b"")
 
 
 async def test_a_sandbox_goes_in_front_of_the_shell(root: Path) -> None:
     wrapped = Local(root, shell=["env", "WRAPPED=yes", "bash", "-c"])
-    assert (await finished(await wrapped.spawn('echo "$WRAPPED"')))[1] == b"yes\n"
+    assert (await finished(await wrapped.spawn('echo "$WRAPPED"', {})))[1] == b"yes\n"
     posix = Local(root, shell=["sh", "-c"])
-    assert (await finished(await posix.spawn("echo plain")))[1] == b"plain\n"
+    assert (await finished(await posix.spawn("echo plain", {})))[1] == b"plain\n"
 
 
 async def test_wait_returns_on_exit_while_a_child_holds_the_output(local: Local) -> None:
-    process = await local.spawn("sleep 30 & echo $!")
+    process = await local.spawn("sleep 30 & echo $!", {})
     began = time.monotonic()
     assert await asyncio.wait_for(process.wait(), 5) == 0
     assert time.monotonic() - began < 2
@@ -134,7 +135,8 @@ async def test_wait_returns_on_exit_while_a_child_holds_the_output(local: Local)
 
 async def test_kill_sends_sigterm_first_so_a_command_can_clean_up(local: Local, root: Path) -> None:
     process = await local.spawn(
-        "trap 'echo stopped > stopped.txt; exit 0' TERM; touch ready; sleep 30 & wait"
+        "trap 'echo stopped > stopped.txt; exit 0' TERM; touch ready; sleep 30 & wait",
+        {},
     )
     await appears(root / "ready")
     began = time.monotonic()
@@ -147,7 +149,9 @@ async def test_kill_sends_sigterm_first_so_a_command_can_clean_up(local: Local, 
 async def test_kill_ends_a_command_that_ignores_sigterm_a_second_later(
     local: Local, root: Path
 ) -> None:
-    process = await local.spawn("trap '' TERM; sleep 30 & echo $! > child.pid; touch ready; wait")
+    process = await local.spawn(
+        "trap '' TERM; sleep 30 & echo $! > child.pid; touch ready; wait", {}
+    )
     await appears(root / "ready")
     began = time.monotonic()
     await process.kill()
@@ -159,7 +163,7 @@ async def test_kill_ends_a_command_that_ignores_sigterm_a_second_later(
 async def test_kill_after_the_exit_ends_what_the_command_left_running(
     local: Local, root: Path
 ) -> None:
-    process = await local.spawn("sleep 30 & echo $! > child.pid")
+    process = await local.spawn("sleep 30 & echo $! > child.pid", {})
     assert await asyncio.wait_for(process.wait(), 5) == 0
     pid = int((root / "child.pid").read_text())
     assert alive(pid)
@@ -443,7 +447,7 @@ CHILD_TRAP = "(trap 'sleep 0.3; echo cleaned > cleaned.txt; exit 0' TERM; sleep 
 async def test_kill_gives_a_child_the_grace_to_clean_up_while_the_leader_runs(
     local: Local, root: Path
 ) -> None:
-    process = await local.spawn(CHILD_TRAP + "sleep 30")
+    process = await local.spawn(CHILD_TRAP + "sleep 30", {})
     await asyncio.sleep(0.3)
     began = time.monotonic()
     await process.kill()
@@ -454,7 +458,7 @@ async def test_kill_gives_a_child_the_grace_to_clean_up_while_the_leader_runs(
 async def test_kill_gives_a_child_the_grace_to_clean_up_after_the_leader_exited(
     local: Local, root: Path
 ) -> None:
-    process = await local.spawn(CHILD_TRAP + "echo started")
+    process = await local.spawn(CHILD_TRAP + "echo started", {})
     assert await asyncio.wait_for(process.wait(), 5) == 0
     await asyncio.sleep(0.3)
     began = time.monotonic()
@@ -863,10 +867,10 @@ class SlowToStart(Local):
         self.entered, self.release = asyncio.Event(), asyncio.Event()
         self.groups: list[int] = []
 
-    async def spawn(self, command: str) -> Process:
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Process:
         self.entered.set()
         await self.release.wait()
-        process = await super().spawn(command)
+        process = await super().spawn(command, {})
         self.groups.append(process._pid)  # type: ignore[attr-defined]
         return process
 
