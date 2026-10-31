@@ -38,7 +38,9 @@ them as two contracts and lets you build an agent from either or both.
 storage connection, the bucket, and the tools that must live in your process. The tools of the tree
 run in worker processes the engine starts beside yours, never inside it, until you close the
 engine. There is no background loop, no plugin registry, no configuration language. Every verb is a
-function you call.
+function you call. It writes nothing of its own: the only writes are a model's, inside a `Workspace`
+you pass a run, and the one file the engine itself creates there, the socket a command calls the
+run's tools through, which lives as long as that command ([Workspace](#workspace)).
 
 **Nothing is hidden.** A run returns a record: what was sent, what came back, every tool call with
 its timing, every model call with its usage, every child run. That record is what you feed your own
@@ -556,8 +558,9 @@ deep), as the map shows them — leaving out hidden files and folders and `__pyc
 tree, so an edit to the agent or to a folder it reads shows in the next `Engine` built from the
 folder. `fingerprint.tools` is one over `run.tools` — each tool's name, description and schema — so
 it covers the tools the agent gets from its folders, the `tools=` a run passes, `Output` when
-`expect=` asks for one, and in `Delegate` the agents it may call — their names, descriptions, kinds
-and tasks. Neither sees what varies per run and is not the agent — the input, the history,
+`expect=` asks for one, in `Delegate` the agents it may call — their names, descriptions, kinds
+and tasks — and a workspace's tools, whose `Shell` description says whether the workspace has
+`tree=` and whether its commands can call tools. Neither sees what varies per run and is not the agent — the input, the history,
 `context=`, `tags=` — so two runs of an unchanged folder share it and any edit changes it, a tool's
 script included. The model is `run.model`; the code behind a tool a run passes is yours to version.
 A decision run carries one too, its `tools` the fingerprint of no tools and its `questions` the
@@ -664,7 +667,9 @@ or refuses, a call after an accepted `Output`, a call in a reply that was cut sh
 `run.steps`.
 
 A foreground `Shell` command of a run with a `Workspace` also sends a `CommandOutput` for what
-it writes, while it runs. See the [Workspace](#workspace) section.
+it writes, while it runs, and the calls it makes to the run's tools send their own
+`ToolCallStarted` and `ToolResultReady`, with `by` the `Shell` call's id. See the
+[Workspace](#workspace) section.
 
 Every model call is a turn, and a `TextDelta` carries the `turn` that said it, from 0. Text of a
 turn that ends in tool calls — "Let me look that up." — is said beside them; a run that ends in
@@ -1504,7 +1509,7 @@ them to it, as bubblewrap's `--die-with-parent` does. A workspace and its jobs l
 loop, and a job whose loop ends is stopped: a service keeps a conversation's workspace in one of its
 processes and on one loop.
 
-`Workspace(backend, scope=, timeout=, output_bytes=)`:
+`Workspace(backend, scope=, timeout=, output_bytes=, bridge=, tree=)`:
 
 | argument | default | what it does |
 | --- | --- | --- |
@@ -1512,6 +1517,8 @@ processes and on one loop.
 | `scope` | | the tenant the workspace belongs to |
 | `timeout` | `120` seconds | the limit on each `Shell`, `Job`, `Write` and `Edit` call; a `Shell` command still running is stopped — on `Local`, sent SIGTERM, then killed a second later with everything it started — and `Shell` returns what it printed with `timed_out: true` |
 | `output_bytes` | `30_000` | the cap on `stdout` and on `stderr`, each keeping its first and last half |
+| `bridge` | `True` | lets a command call the run's tools, below; `False` turns it off |
+| `tree` | `None` | where the agent tree is mounted in the sandbox, as commands see it, below |
 
 `Local(root, shell=, env=)`:
 
@@ -1559,8 +1566,9 @@ Docker can be the sandbox too. A container per command is a `shell=` of `docker 
 directory mounted at its own path and `timeout -s KILL <seconds>` before the command inside: the
 `docker` client passes SIGTERM on to the container, but SIGKILL stops only the client, so the limit
 inside is what ends a container whose command ignores SIGTERM. `env=` is then the client's
-environment, not the command's — the command's own variables go in with `-e`, and a workspace with
-`tree=` needs `-e RFNRY_AGENT -e RFNRY_TREE` — and the client reads
+environment, not the command's — the command's own variables go in with `-e`: a workspace with
+`tree=` needs `-e RFNRY_AGENT -e RFNRY_TREE`, and one with the tool bridge, below,
+`-e RFNRY_TOOLS -e RFNRY_TOOLS_KEY` — and the client reads
 its configuration from `$HOME/.docker`, which `Local`'s default `HOME` puts in the workspace, where
 a command could write a `.docker/config.json` the next command's client obeys; point
 `DOCKER_CONFIG` outside the workspace. One container per workspace, entered with `docker exec`,
@@ -1593,6 +1601,96 @@ events wait in a queue of 1 MiB per command; while a handler is busy past that, 
 from the events, and the next event of that stream starts with `[... <n> bytes not shown ...]`.
 Every event of a command comes before the `ToolResultReady` of its call, and a handler that raises
 fails the run once the command has ended. A command started with `background=true` sends none.
+
+Calling tools from code. A command can call the run's tools itself, so a script that looks up fifty
+orders, or checks every row of a table against a rule, makes its calls in a loop, and the model reads
+only what the script printed instead of making one call a turn. For each foreground `Shell` command
+of a run, the engine listens on a Unix socket in the workspace and gives the command its path and a
+key of its own:
+
+```
+ model                    engine (your process)                           sandbox (this tenant's shell)
+   │ Shell("python solve.py")    │                                                 │
+   │────────────────────────────▶│ 1. listen on <workspace root>/.rfnry-<8 hex>.sock
+   │                             │ 2. spawn the command with RFNRY_TOOLS=<that path> ──▶ python solve.py
+   │                             │◀── {"key":…,"tool":"search","args":{"query":"heat equation"}}   (connect, one line)
+   │                             │ 3. the run's call path: events, approve, deadline, dispatch, record
+   │                             │─── {"result":[ … ]} ─────────────────────────────────────▶│ (one line, close)
+   │◀── Shell result ────────────│ 4. command ended: socket closed and removed     │
+```
+
+A client is a few lines in any language; in Python:
+
+```python
+import json, os, socket
+
+
+def call(tool, **args):
+    with socket.socket(socket.AF_UNIX) as s:
+        s.connect(os.environ["RFNRY_TOOLS"])
+        request = {"key": os.environ["RFNRY_TOOLS_KEY"], "tool": tool, "args": args}
+        s.sendall(json.dumps(request).encode() + b"\n")
+        return json.loads(s.makefile(encoding="utf-8").readline())
+
+
+order = call("lookup_order", order_id="A-1001")
+print(json.loads(order["result"])["status"])
+```
+
+A connection makes one call: one line of JSON in, `{"key": …, "tool": …, "args": {…}}`, and one
+line back, `{"result": …}` or `{"error": …}`, then it closes. `result` is what the model would read
+for the call: its text as the step records it — a tool that returns an object or a number gives its
+JSON text, so a script runs `json.loads` on a result it expects to be JSON — or, for a tool that
+returns parts, their JSON list, media `data` in base64. `error` is the text the model would read:
+`NotApproved: lookup_order was not approved`, `TimeoutError: engine: lookup_order timed out after
+30s`, a tool's own error. A line that is not one JSON object with a string `tool` and an object
+`args`, a line over 1 MiB, and a request without the command's key are answered with an `error` that
+starts with `tools/bridge:`, and run nothing.
+
+The socket carries every tool the run offers the model — the builtins, `History`, the folder tools,
+the run's `tools=` — except the workspace's own (`Shell`, `Job`, `Jobs`, `Write`, `Edit`), `Output`
+and the builtin `Delegate`; any other name gets the model's error for an unknown tool,
+`InputError: tools: unknown tool 'Shell'`, and leaves no step and no event. Connections are answered
+as they come, so calls a script makes at once — from threads, or with `asyncio` — run at once, as a
+reply's calls do. A `Shell` command of a delegated or routed run calls that run's tools, under its
+own `run_id`.
+
+Each call runs as the model's calls do — `ToolCallStarted`, `approve`, the deadline (`tool_timeout`,
+or a folder tool's own), the stop, `ToolResultReady` — and is recorded as a `Step` with `by`, the id
+of the `Shell` call whose command made it; its own id is `<Shell call id>.<n>`, n counting from 1 for
+each command. It finished first, so its step sits in `run.steps` before the `Shell` step that made
+it, and the conversation holds no message for it: the model reads only the `Shell` result.
+`ToolCallStarted`, `ToolResultReady` and `CallInfo` carry the same `by`, so `approve` and a tool tell
+a call a script made from one the model made with `current_call().by`. A call still running when its
+command ends — it exits, a stop, the workspace's `timeout` — is cut, recorded with `stopped` and
+`stopped by the user` as its result, which the script reads as its `error` if it still reads. An
+`on_event` that raises on a script's call fails the run once the command has ended.
+
+The socket is the one file the engine creates itself, `<root>/.rfnry-<8 hex>.sock`, inside the
+workspace you passed, for the life of one command: made just before the command starts, closed and
+removed once it has ended and its output is read. Under bubblewrap it is in the bound directory at
+the same path, and a socket bound to a path reaches through `--unshare-all`; under Docker it is in
+the directory mounted at its own path, with `-e RFNRY_TOOLS -e RFNRY_TOOLS_KEY`. The `Shell`
+description tells the model of it in those variables, never in a path. Whether the bridge is on, and
+whether `tree=` is set, change that description and so `fingerprint.tools` — rightly, since the model
+was offered something different — but where a deployment puts the workspace does not.
+
+- The bridge gives code exactly what the model has — the same tools, through the same `approve`,
+  scope and record — and nothing more. What is new is speed: a script can make many calls quickly;
+  `approve` still sees each one.
+- Only processes that see the socket's path can connect — with a sandbox per tenant, only this
+  tenant's commands — and only the command holding the key is answered.
+- The socket lives only while the command runs; something the command leaves running cannot call
+  afterwards.
+
+`Workspace(..., bridge=False)` turns the bridge off, and so do a backend without a `root`
+attribute, since the bridge needs a directory the engine and the commands see at the same path, as
+`Local`'s is, and a run that offers no tool it could carry: the `Shell` description then does not
+mention it. A command started with `background=true`, and a `Shell` that code dispatches outside a
+run's own `Shell` call, get no socket either. A command without the bridge gets no `RFNRY_TOOLS`.
+A root too deep for a socket's path — about
+107 bytes on Linux, 103 on macOS — runs the command without it, and its `stderr` ends with the
+reason: `tools/workspace: no tool bridge for this command: AF_UNIX path too long`.
 
 Without a sandbox, the kill reaches every process the command started except one that leaves its
 process group with `setsid`; the process namespace of a container or of bubblewrap closes that gap.
@@ -1715,8 +1813,9 @@ under it; every later call with that id on the same run, racing or not, returns 
 writes nothing, and one on another run is an `InputError`.
 
 And models label what people did not. A **judge** is a decision agent in your tree whose questions
-are about an episode; it sees the input, the reply, every tool call with its result and the error a
-failed run ended with, with each image, audio or document replaced by a placeholder naming it —
+are about an episode; it sees the input, the reply, every tool call with its result — one a
+command made through the [tool bridge](#workspace) with its `by` — and the error a failed run ended
+with, with each image, audio or document replaced by a placeholder naming it —
 `[image: image/jpeg]`, `[document: application/pdf, "policy.pdf"]` — while the recorded run and the
 exported datasets keep the media. A judge sees neither the system prompt nor `run.preload`, so a
 rule a preloaded agent never had to `Read` is not in front of it; ask about them in the question
@@ -2014,7 +2113,8 @@ async def run(args, call):
 
 `args` is what the model wrote, already checked. `call` is the call it serves, set by the engine,
 never by the model: its `scope` — the tenant, always — and inside a run its `run_id`, `agent`,
-`tool` and `call_id`, the fields of `CallInfo`. What is a tenant's travels in `call`; what every
+`tool`, `call_id` and `by`, the fields of `CallInfo`, `by` naming the `Shell` call whose command
+made the call through the [tool bridge](#workspace), `None` for the model's. What is a tenant's travels in `call`; what every
 tenant shares, a URL or a token, comes from the environment, which a worker inherits from your
 server as it is — the engine never reads it. `run` returns a string; JSON — an object, a list, a
 number — the model reads as JSON; or a list of parts, each an object with the `type` and the fields
@@ -2457,7 +2557,7 @@ of every table, and no read accepts its absence. Tools pinned to a tenant are pa
 The tree of agents is shared by every tenant and holds no tenant's data. So are the workers: a
 script's module state — a client it builds when it loads, a cache it fills, a global it sets — is
 shared by every tenant whose runs call it, and only `call` is the tenant's: its `scope` always, and
-the rest of what it carries — a tool call's `run_id`, `agent`, `tool` and `call_id` inside a run, a
+the rest of what it carries — a tool call's `run_id`, `agent`, `tool`, `call_id` and `by` inside a run, a
 question's `run_id`, `agent` and `question`. A script that keeps anything between calls keys it by
 `call["scope"]`, as the engine keys every row.
 

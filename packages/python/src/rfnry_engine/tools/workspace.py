@@ -20,6 +20,7 @@ from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.foreground import current
 from rfnry_engine.jail import Jail
 from rfnry_engine.stop import join, wait
+from rfnry_engine.tools.bridge import Answer, Bridge
 from rfnry_engine.tools.tools import Tool
 
 logger = logging.getLogger(__name__)
@@ -488,6 +489,21 @@ async def _exit_code(process: Process) -> int | None:
         return None
 
 
+async def _bridge(root: Path, answer: Answer) -> tuple[Bridge | None, bytes]:
+    opening = asyncio.ensure_future(Bridge.open(root, answer))
+    try:
+        await join([opening])
+    except asyncio.CancelledError:
+        if not opening.cancelled() and opening.exception() is None:
+            await opening.result().close()
+        raise
+    failed = opening.exception()
+    if isinstance(failed, OSError):
+        why = failed.strerror or failed
+        return None, f"tools/workspace: no tool bridge for this command: {why}\n".encode()
+    return opening.result(), b""
+
+
 @dataclass
 class _Job:
     command: str
@@ -535,6 +551,7 @@ class Workspace:
         scope: str,
         timeout: float = 120.0,
         output_bytes: int = 30_000,
+        bridge: bool = True,
         tree: str | None = None,
     ) -> None:
         if not isinstance(backend, Backend):
@@ -551,6 +568,7 @@ class Workspace:
             )
         self.backend = backend
         self.scope = scope
+        self.bridge = bridge
         self.tree = tree
         self.timeout = timeout
         self.output_bytes = output_bytes
@@ -650,44 +668,60 @@ class Workspace:
             starting = asyncio.ensure_future(self._start(a.command, env))
             await join([starting])
             return {"job": starting.result()}
-        spawning = asyncio.create_task(self.backend.spawn(a.command, env))
-        try:
-            process = await asyncio.shield(spawning)
-        except asyncio.CancelledError:
-            try:
-                await join([spawning])
-            finally:
-                if not spawning.cancelled() and spawning.exception() is None:
-                    _log(*await _see_through(spawning.result().kill()))
-            raise
-        out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
-        told = None if lent is None or lent.said is None else _Told(lent.said)
-        reading = _reading(
-            process,
-            [out.add] if told is None else [out.add, partial(told.add, "stdout")],
-            [err.add] if told is None else [err.add, partial(told.add, "stderr")],
-        )
-        code: int | None = None
+        root = getattr(self.backend, "root", None)
+        bridge: Bridge | None = None
+        missing = b""
+        if lent is not None and lent.call is not None and root is not None:
+            bridge, missing = await _bridge(Path(root), lent.call)
+        if bridge is not None:
+            env = {**env, **bridge.env}
+        told: _Told | None = None
         try:
             try:
-                async with asyncio.timeout(self.timeout):
-                    code = await process.wait()
-                timed_out = False
-            except TimeoutError:
-                timed_out = True
-            except BaseException:
-                _discard(reading)
-                _log(*await _see_through(process.kill()))
-                raise
-            try:
-                [error] = await _see_through(process.kill())
-                if error is not None:
-                    raise error
-                if timed_out:
-                    code = await _exit_code(process)
-                await _settle(reading)
+                spawning = asyncio.create_task(self.backend.spawn(a.command, env))
+                try:
+                    process = await asyncio.shield(spawning)
+                except asyncio.CancelledError:
+                    try:
+                        await join([spawning])
+                    finally:
+                        if not spawning.cancelled() and spawning.exception() is None:
+                            _log(*await _see_through(spawning.result().kill()))
+                    raise
+                out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
+                told = None if lent is None or lent.said is None else _Told(lent.said)
+                reading = _reading(
+                    process,
+                    [out.add] if told is None else [out.add, partial(told.add, "stdout")],
+                    [err.add] if told is None else [err.add, partial(told.add, "stderr")],
+                )
+                code: int | None = None
+                try:
+                    async with asyncio.timeout(self.timeout):
+                        code = await process.wait()
+                    timed_out = False
+                except TimeoutError:
+                    timed_out = True
+                except BaseException:
+                    _discard(reading)
+                    _log(*await _see_through(process.kill()))
+                    raise
+                try:
+                    [error] = await _see_through(process.kill())
+                    if error is not None:
+                        raise error
+                    if timed_out:
+                        code = await _exit_code(process)
+                    await _settle(reading)
+                finally:
+                    _discard(reading)
             finally:
-                _discard(reading)
+                if bridge is not None:
+                    await bridge.close()
+            if missing:
+                err.add(missing)
+                if told is not None:
+                    told.add("stderr", missing)
             if told is not None:
                 told.close()
                 await wait([told.task], None)
@@ -715,16 +749,30 @@ class Workspace:
         self._jobs[name] = job
         return name
 
-    def _told(self, reads: Sequence[str]) -> str:
-        if self.tree is None:
-            return ""
-        told = (
-            " The agent's own folder is at $RFNRY_AGENT, read-only: its files, skills and scripts"
-            " can be read and run from there."
-        )
-        if reads:
-            places = ", ".join(f"$RFNRY_TREE/{name}" for name in reads)
-            told += f" The folders it reads are at {places}."
+    @property
+    def _bridging(self) -> bool:
+        return self.bridge and getattr(self.backend, "root", None) is not None
+
+    def _told(self, reads: Sequence[str], bridged: bool) -> str:
+        told = ""
+        if self.tree is not None:
+            told += (
+                " The agent's own folder is at $RFNRY_AGENT, read-only: its files, skills and"
+                " scripts can be read and run from there."
+            )
+            if reads:
+                places = ", ".join(f"$RFNRY_TREE/{name}" for name in reads)
+                told += f" The folders it reads are at {places}."
+        if bridged:
+            told += (
+                " While a command runs, it can call your tools: $RFNRY_TOOLS is a Unix socket and"
+                " $RFNRY_TOOLS_KEY its key, for that command only. Connect, send one JSON line,"
+                ' {"key": <the key>, "tool": <name>, "args": {...}}, and read one line back:'
+                ' {"result": <what you would read for that call>} or {"error": <its error>}.'
+                " Each connection makes one call; open several to make calls at once. Every tool"
+                " you have is there except the workspace's own (Shell, Job, Jobs, Write, Edit)"
+                " and Delegate."
+            )
         return told
 
     async def _job(self, args: dict[str, Any]) -> dict[str, Any]:

@@ -144,6 +144,7 @@ async def test_a_script_reads_the_call_it_serves(tmp_path: Path) -> None:
         "scope": "acme",
         "tool": "whose",
         "call_id": "c1",
+        "by": None,
     }
     assert outside == {"scope": "globex"}
 

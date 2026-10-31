@@ -13,6 +13,7 @@ from rfnry_engine.stop import Stop
 class Lent:
     env: dict[str, str]
     said: Callable[[Literal["stdout", "stderr"], str], Awaitable[None]] | None = None
+    call: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
 
 
 @dataclass

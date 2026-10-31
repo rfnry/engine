@@ -26,7 +26,7 @@ from rfnry_engine.models import (
     Text,
     ToolCall,
 )
-from rfnry_engine.records import Generation
+from rfnry_engine.records import Generation, Step
 from rfnry_engine.refinery.judge import TeacherAnswers, teacher_answers, teacher_prompt
 from rfnry_engine.refinery.labels import Review
 from rfnry_engine.refinery.refinery import Refinery, label_of
@@ -399,6 +399,27 @@ async def test_the_judge_is_told_a_run_failed(fixtures: Path, storage: Storage) 
     state = dm.calls[0][0]
     assert isinstance(state, dict) and state["error"] == "ModelError: anthropic: overloaded"
     assert state["reply"] == ""
+
+
+async def test_the_judge_sees_which_command_made_a_call(fixtures: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
+    dm = Fixed(JUDGEMENT)
+    engine = Engine(fixtures, models={"strong": Scripted(), "judge": dm})
+    run = generation_record(agent="billing")
+    at = datetime.now(UTC)
+    steps = [
+        Step(tool="lookup", args={}, result="2", is_error=False, at=at, duration_ms=1, by="1"),
+        Step(
+            tool="Shell", args={"command": "x"}, result="{}", is_error=False, at=at, duration_ms=2
+        ),
+    ]
+    await refinery.record(run.model_copy(update={"steps": steps}))
+    await refinery.label("acme", engine, judge="judge")
+    state = dm.calls[0][0]
+    assert isinstance(state, dict) and state["steps"] == [
+        {"tool": "lookup", "args": {}, "result": "2", "by": "1"},
+        {"tool": "Shell", "args": {"command": "x"}, "result": "{}"},
+    ]
 
 
 async def test_the_judge_of_a_run_that_returned_sees_no_error_key(
