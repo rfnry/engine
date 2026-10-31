@@ -670,10 +670,31 @@ class ToolResultReady(BaseModel):
 
 Sent to `on_event` once, when a tool call is done: `step` is the `Step` the run records for it, equal to its entry in `Generation.steps`, sent on every way a call ends — a result, an error, a timeout, a call `approve` refused, a delegation, a call `Stop.now()` cut off, whether or not it had started, an `Output` included. Any other call the engine answers without running it — an `Output` it accepts or refuses, a call after an accepted `Output`, a call in a reply that ended for a reason other than tool use, answered `NotRun` — sends neither `ToolCallStarted` nor `ToolResultReady`; its step is in `Generation.steps`. A cancelled run raises and is not recorded, so a call it cancels sends no `ToolResultReady`, a call whose tool returns after the cancel included: it ends with the cancellation before any handler sees its result.
 
+### `CommandOutput`
+
+```python
+class CommandOutput(BaseModel):
+    run_id: str
+    agent: str
+    call_id: str
+    stream: Literal["stdout", "stderr"]
+    text: str
+```
+
+Sent to `on_event` while a foreground `Shell` command of a run with a `Workspace` runs: one event for each chunk the command writes, as it arrives, with the `call_id` of the `Shell` call and the `stream` it was written to. `text` is UTF-8 decoded per stream, so a character written in two pieces arrives whole. Every event of a command comes before the `ToolResultReady` of its call, in the order the chunks arrived. The handler never slows the command or changes what the model reads: the result is the same with or without `on_event`. Chunks queue up to 1 MiB while the handler is busy; past that, a chunk is dropped from the events and the next event of that stream starts with `[... <n> bytes not shown ...]` and a newline, counting the bytes dropped. A command started with `background=true` sends none. A handler that raises on a `CommandOutput` fails the run, once the command has ended.
+
 ### `Event`
 
 ```python
-Event = RunStarted | TextDelta | ReasoningDelta | MessagesTaken | ToolCallStarted | ToolResultReady
+Event = (
+    RunStarted
+    | TextDelta
+    | ReasoningDelta
+    | MessagesTaken
+    | ToolCallStarted
+    | ToolResultReady
+    | CommandOutput
+)
 ```
 
 What `on_event` receives.

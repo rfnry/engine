@@ -48,6 +48,7 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import (
     CallInfo,
+    CommandOutput,
     Decision,
     Event,
     Fingerprint,
@@ -91,6 +92,7 @@ __all__ = [
     "Check",
     "CheckAnswer",
     "Choice",
+    "CommandOutput",
     "ChoiceAnswer",
     "ConfigurationError",
     "Conflict",

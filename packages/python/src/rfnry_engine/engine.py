@@ -10,7 +10,7 @@ from fnmatch import fnmatch
 from itertools import permutations
 from pathlib import Path
 from types import MappingProxyType
-from typing import Annotated, Any, NoReturn, Protocol, cast
+from typing import Annotated, Any, Literal, NoReturn, Protocol, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
@@ -64,6 +64,7 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import (
     CallInfo,
+    CommandOutput,
     Decision,
     EventHandler,
     Fingerprint,
@@ -998,6 +999,20 @@ class Engine:
                 run_id=run_id, agent=spec.name, scope=scope, tool=call.name, call_id=call.id
             )
 
+        async def show(
+            call: ToolCall, here: Foreground, stream: Literal["stdout", "stderr"], text: str
+        ) -> None:
+            if here.failed is not None:
+                return
+            try:
+                await emit(
+                    CommandOutput(
+                        run_id=run_id, agent=spec.name, call_id=call.id, stream=stream, text=text
+                    )
+                )
+            except Exception as exc:
+                here.failed = exc
+
         async def hand_over(call: ToolCall, step: Step) -> Step:
             if runner is not None and runner.cancelling() > calm:
                 raise asyncio.CancelledError("engine: the run was cancelled")
@@ -1082,7 +1097,12 @@ class Engine:
                 )
             here = Foreground(stop, on_event, asyncio.current_task())
             if room is not None and call.name == "Shell":
-                here.lent = Lent(env=variables)
+                here.lent = Lent(
+                    env=variables,
+                    said=None
+                    if on_event is None
+                    else lambda stream, text: show(call, here, stream, text),
+                )
             foregrounds[id(call)] = here
             FOREGROUND.set(here)
             try:
@@ -1109,6 +1129,8 @@ class Engine:
                         content, is_error, stopped = STOPPED, True, True
             finally:
                 here.over = True
+            if here.failed is not None:
+                raise here.failed
             step = Step(
                 tool=call.name,
                 args=call.args,

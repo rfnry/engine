@@ -1,9 +1,9 @@
 import asyncio
 import contextvars
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from rfnry_engine.records import CallInfo, Decision, EventHandler, Generation, Run
 from rfnry_engine.stop import Stop
@@ -12,6 +12,7 @@ from rfnry_engine.stop import Stop
 @dataclass(frozen=True)
 class Lent:
     env: dict[str, str]
+    said: Callable[[Literal["stdout", "stderr"], str], Awaitable[None]] | None = None
 
 
 @dataclass
@@ -24,6 +25,7 @@ class Foreground:
     pressed: bool = False
     over: bool = False
     lent: Lent | None = None
+    failed: Exception | None = None
 
     def settle(self) -> None:
         if self.pressed and self.live == 0 and not self.over and self.task is not None:

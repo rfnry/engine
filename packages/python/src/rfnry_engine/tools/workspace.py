@@ -1,4 +1,5 @@
 import asyncio
+import codecs
 import contextlib
 import errno
 import logging
@@ -9,15 +10,16 @@ import stat
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.foreground import current
 from rfnry_engine.jail import Jail
-from rfnry_engine.stop import join
+from rfnry_engine.stop import join, wait
 from rfnry_engine.tools.tools import Tool
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,7 @@ WORKSPACE_NAMES = frozenset({*WORKSPACE_TOOLS, "Jobs"})
 GRACE = 1.0
 CHUNK = 65_536
 TEXT_BYTES = 5 * 1024 * 1024
+BACKLOG = 1_048_576
 
 
 class Stream(Protocol):
@@ -330,15 +333,66 @@ class _Kept:
         )
 
 
-async def _drain(stream: Stream, kept: _Kept) -> None:
+Sink = Callable[[bytes], None]
+Said = Callable[[Literal["stdout", "stderr"], str], Awaitable[None]]
+
+
+class _Told:
+    def __init__(self, said: Said) -> None:
+        self.said = said
+        self.queue: asyncio.Queue[tuple[Literal["stdout", "stderr"], int, bytes] | None] = (
+            asyncio.Queue()
+        )
+        self.queued = 0
+        self.missed: dict[Literal["stdout", "stderr"], int] = {"stdout": 0, "stderr": 0}
+        self.task = asyncio.create_task(self._send())
+
+    def add(self, stream: Literal["stdout", "stderr"], data: bytes) -> None:
+        if self.queued + len(data) > BACKLOG:
+            self.missed[stream] += len(data)
+            return
+        self.queued += len(data)
+        self.queue.put_nowait((stream, self.missed[stream], data))
+        self.missed[stream] = 0
+
+    def close(self) -> None:
+        self.queue.put_nowait(None)
+
+    async def _send(self) -> None:
+        decoders: dict[Literal["stdout", "stderr"], codecs.IncrementalDecoder] = {
+            "stdout": codecs.getincrementaldecoder("utf-8")(errors="replace"),
+            "stderr": codecs.getincrementaldecoder("utf-8")(errors="replace"),
+        }
+        while (item := await self.queue.get()) is not None:
+            stream, gap, data = item
+            self.queued -= len(data)
+            if gap:
+                decoders[stream].reset()
+            await self._say(stream, gap, decoders[stream].decode(data))
+        for stream, decoder in decoders.items():
+            await self._say(stream, 0, decoder.decode(b"", final=True))
+        for stream, gap in self.missed.items():
+            if gap:
+                await self._say(stream, gap, "")
+
+    async def _say(self, stream: Literal["stdout", "stderr"], gap: int, text: str) -> None:
+        text = (f"[... {gap} bytes not shown ...]\n" if gap else "") + text
+        if text:
+            await self.said(stream, text)
+
+
+async def _drain(stream: Stream, *sinks: Sink) -> None:
     while chunk := await stream.read(CHUNK):
-        kept.add(chunk)
+        for sink in sinks:
+            sink(chunk)
 
 
-def _reading(process: Process, out: _Kept, err: _Kept) -> list[asyncio.Task[None]]:
+def _reading(
+    process: Process, out: Sequence[Sink], err: Sequence[Sink]
+) -> list[asyncio.Task[None]]:
     return [
-        asyncio.create_task(_drain(process.stdout, out)),
-        asyncio.create_task(_drain(process.stderr, err)),
+        asyncio.create_task(_drain(process.stdout, *out)),
+        asyncio.create_task(_drain(process.stderr, *err)),
     ]
 
 
@@ -419,7 +473,7 @@ def _note(kept: _Kept, error: BaseException | None, said: str = "") -> str:
 
 
 async def _follow(job: _Job) -> None:
-    reading = _reading(job.process, job.kept, job.kept)
+    reading = _reading(job.process, [job.kept.add], [job.kept.add])
     said = ""
     try:
         try:
@@ -571,27 +625,39 @@ class Workspace:
                     _log(*await _see_through(spawning.result().kill()))
             raise
         out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
-        reading = _reading(process, out, err)
+        told = None if lent is None or lent.said is None else _Told(lent.said)
+        reading = _reading(
+            process,
+            [out.add] if told is None else [out.add, partial(told.add, "stdout")],
+            [err.add] if told is None else [err.add, partial(told.add, "stderr")],
+        )
         code: int | None = None
         try:
-            async with asyncio.timeout(self.timeout):
-                code = await process.wait()
-            timed_out = False
-        except TimeoutError:
-            timed_out = True
-        except BaseException:
-            _discard(reading)
-            _log(*await _see_through(process.kill()))
-            raise
-        try:
-            [error] = await _see_through(process.kill())
-            if error is not None:
-                raise error
-            if timed_out:
-                code = await _exit_code(process)
-            await _settle(reading)
+            try:
+                async with asyncio.timeout(self.timeout):
+                    code = await process.wait()
+                timed_out = False
+            except TimeoutError:
+                timed_out = True
+            except BaseException:
+                _discard(reading)
+                _log(*await _see_through(process.kill()))
+                raise
+            try:
+                [error] = await _see_through(process.kill())
+                if error is not None:
+                    raise error
+                if timed_out:
+                    code = await _exit_code(process)
+                await _settle(reading)
+            finally:
+                _discard(reading)
+            if told is not None:
+                told.close()
+                await wait([told.task], None)
         finally:
-            _discard(reading)
+            if told is not None and not told.task.done():
+                told.task.cancel()
         return {
             "exit_code": code,
             "stdout": out.take(),

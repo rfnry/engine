@@ -663,6 +663,9 @@ included; any other call the engine answers without running it sends neither: an
 or refuses, a call after an accepted `Output`, a call in a reply that was cut short. Its step is in
 `run.steps`.
 
+A foreground `Shell` command of a run with a `Workspace` also sends a `CommandOutput` for each
+chunk it writes, while it runs. See the [Workspace](#workspace) section.
+
 Every model call is a turn, and a `TextDelta` carries the `turn` that said it, from 0. Text of a
 turn that ends in tool calls — "Let me look that up." — is said beside them; a run that ends in
 text replies with its last turn's text, so `run.reply` is that text and nothing said before it. A
@@ -1576,6 +1579,16 @@ get the variables too; a `Shell` that code dispatches outside a run gets none. C
 - `refinery.replay(candidate, workspace=)` needs a workspace whose sandbox mounts the candidate's
   tree.
 
+Showing a command. With `on_event`, a foreground `Shell` command sends a `CommandOutput` for each
+chunk it writes, as it arrives, with its `call_id`, the `stream` (`"stdout"` or `"stderr"`) and the
+`text`, decoded as UTF-8 per stream so a character split across two writes arrives whole. A frontend
+can show a long build as it runs instead of after it. The model's view is unchanged: it reads the
+same capped `stdout` and `stderr` in the `Shell` result, and a handler never slows the command. The
+events wait in a queue of 1 MiB per command; while a handler is busy past that, chunks are dropped
+from the events, and the next event of that stream starts with `[... <n> bytes not shown ...]`.
+Every event of a command comes before the `ToolResultReady` of its call, and a handler that raises
+fails the run once the command has ended. A command started with `background=true` sends none.
+
 Without a sandbox, the kill reaches every process the command started except one that leaves its
 process group with `setsid`; the process namespace of a container or of bubblewrap closes that gap.
 
@@ -2473,7 +2486,7 @@ Everything the package exports, by role.
 - **Run things:** `Engine`, `AgentInfo`, `Stop`, `HistoryLike`.
 - **What a run returns:** `Generation`, `Decision`, `Run`, `Step`, `Fingerprint`; events
   `RunStarted`, `TextDelta`, `ReasoningDelta`, `MessagesTaken`, `ToolCallStarted`,
-  `ToolResultReady`, `Event`.
+  `ToolResultReady`, `CommandOutput`, `Event`.
 - **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `OnDelta`, `DecisionModel`;
   `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`,
   `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`,

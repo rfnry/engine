@@ -40,6 +40,7 @@ EXPECTED = {
     "Part",
     "Content",
     "Choice",
+    "CommandOutput",
     "Score",
     "Check",
     "Question",

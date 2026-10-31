@@ -94,7 +94,23 @@ class ToolResultReady(BaseModel):
     step: Step
 
 
-Event = RunStarted | TextDelta | ReasoningDelta | MessagesTaken | ToolCallStarted | ToolResultReady
+class CommandOutput(BaseModel):
+    run_id: str
+    agent: str
+    call_id: str
+    stream: Literal["stdout", "stderr"]
+    text: str
+
+
+Event = (
+    RunStarted
+    | TextDelta
+    | ReasoningDelta
+    | MessagesTaken
+    | ToolCallStarted
+    | ToolResultReady
+    | CommandOutput
+)
 EventHandler = Callable[[Event], Awaitable[None]]
 
 
