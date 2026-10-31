@@ -5,6 +5,7 @@ import inspect
 import json
 import re
 import shutil
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,7 +34,7 @@ from rfnry_engine import (
     ToolSpec,
     Workspace,
 )
-from rfnry_engine.records import Decision
+from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tree import load_agent, load_tree, validate_tree
 
@@ -51,6 +52,7 @@ QUESTIONS = [
 ]
 ORDER = next(body for body in QUESTIONS if "customer's orders" in body)
 FILLS = next(body for body in PYTHON if body.startswith("from json import load\n"))
+CLIENT = next(body for body in PYTHON if body.startswith("import json, os, socket\n"))
 MATCHES = 'async with Engine(root=Path("agents"), models={"judge": dm}) as engine:'
 ORDERS = [
     {"id": "A-1001", "summary": "Standing desk, shipped"},
@@ -84,6 +86,7 @@ ILLUSTRATIVE = {
     "import json": "a tool script, which the test tree holds as support/tools/lookup_order.py",
     "import _client": "a tool script, which runs in a worker beside its helper _client.py",
     "from json import load": "a question's script, which the test tree holds as matcher/questions/order.py",
+    "import json, os, socket": "a script a workspace command runs, which the coder's Shell runs as solve.py",
 }
 
 SIGNATURES = {
@@ -474,3 +477,36 @@ async def test_the_tool_of_getting_started_runs_in_its_worker_as_written(
         surface = EngineTools(engine, agent="support", scope="acme")
         found = await surface.dispatch("lookup_order", {"order_id": "A-1001"})
     assert found == {"status": "shipped"}
+
+
+async def test_the_bridge_client_of_the_docs_calls_a_tool_from_a_command_as_written(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "agents"
+    tree(root)
+    work = tmp_path / "work"
+    work.mkdir()
+    write(work / "solve.py", CLIENT)
+
+    async def lookup_order(args: dict[str, Any]) -> dict[str, Any]:
+        return {"status": "shipped", "order": args["order_id"]}
+
+    solve = ToolCall(id="s1", name="Shell", args={"command": f"{sys.executable} solve.py"})
+    llm = Model(Reply(tool_calls=[solve], stop_reason="tool_use"))
+    async with (
+        Workspace(Local(work), scope="acme") as workspace,
+        Engine(root, models={"strong": llm}) as engine,
+    ):
+        run = await engine.run(
+            "coder",
+            "acme",
+            "look it up",
+            workspace=workspace,
+            tools=Tools([Tool("lookup_order", "Fetch an order", body=lookup_order)]),
+        )
+    assert isinstance(run, Generation)
+    assert [(s.tool, s.args, s.by) for s in run.steps[:1]] == [
+        ("lookup_order", {"order_id": "A-1001"}, "s1")
+    ]
+    assert isinstance(run.steps[1].result, str)
+    assert json.loads(run.steps[1].result)["stdout"] == "shipped\n"

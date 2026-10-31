@@ -465,7 +465,7 @@ A person's handle on a running run, passed as `run(stop=)`; it reaches the runs 
 def now(self) -> None: ...
 ```
 
-Cancels the model call in flight and every tool call still running, except a call with a generation run going under the same stop — one a `Delegate` call or an `engine.tool` started, from the call's task or one it made — which is waited for while that run takes the stop, and then cut, with whatever else it was doing, as any call is; a call waiting on a decision run, one model call, is cancelled as a model call in flight is; a call it finds not yet running never runs, so a stop from an `on_event` handler of a call's `ToolCallStarted`, or of a reply's `TextDelta`, comes before the tool runs. A handler still running when a stop cancels its call, or a streamed `TextDelta` or `ReasoningDelta` handler, is cancelled with that work, so a kill switch does its own work, such as an audit, before it calls `stop.now()`. The run returns with `stopped="now"`, and each call it cut off is answered with the error `stopped by the user`. A call that already has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady` to return, so a slow handler delays it; cancelling the run cancels the handler. The run returns once the work the stop cancelled has ended, so a tool that ignores cancellation holds the stop, as it holds a cancel of the run. `now()` is safe to call any number of times: each call after the first, while the run is stopping, cancels once more every tool call still running — not a call with a generation run under the same stop, whose run takes that `now()` itself, nor a call whose `ToolResultReady` handler the stop waits for — so a workspace command still being stopped is killed at once, with no grace period, as it is when the stopping run is cancelled.
+Cancels the model call in flight and every tool call still running, except a call with a generation run going under the same stop — one a `Delegate` call or an `engine.tool` started, from the call's task or one it made — which is waited for while that run takes the stop, and then cut, with whatever else it was doing, as any call is; a `Shell` call whose command's script started such a run through the tool bridge is not waited for: that run takes the stop too, but its record is kept only when it is written before the command is killed; a call waiting on a decision run, one model call, is cancelled as a model call in flight is; a call it finds not yet running never runs, so a stop from an `on_event` handler of a call's `ToolCallStarted`, or of a reply's `TextDelta`, comes before the tool runs. A handler still running when a stop cancels its call, or a streamed `TextDelta` or `ReasoningDelta` handler, is cancelled with that work, so a kill switch does its own work, such as an audit, before it calls `stop.now()`. The run returns with `stopped="now"`, and each call it cut off is answered with the error `stopped by the user`. A call that already has its result keeps it, and the stop waits for an `on_event` still handling its `ToolResultReady` to return, so a slow handler delays it; cancelling the run cancels the handler. The run returns once the work the stop cancelled has ended, so a tool that ignores cancellation holds the stop, as it holds a cancel of the run. `now()` is safe to call any number of times: each call after the first, while the run is stopping, cancels once more every tool call still running — not a call with a generation run under the same stop, whose run takes that `now()` itself, nor a call whose `ToolResultReady` handler the stop waits for — so a workspace command still being stopped is killed at once, with no grace period, as it is when the stopping run is cancelled.
 
 ### `Stop.after_step`
 
@@ -594,9 +594,10 @@ class Step(BaseModel):
     child_run_id: str | None = None
     stopped: bool = False
     approved: bool | None = None
+    by: str | None = None
 ```
 
-One tool call of a generation run: the tool, its arguments, its result, whether it failed, when it finished and how long it took. `child_run_id` names the run a `Delegate` started, `stopped` marks a call `Stop.now()` cut off, or one whose `Delegate` or `engine.tool` run a stop ended, and `approved` is what `approve` answered, `None` when nobody was asked.
+One tool call of a generation run: the tool, its arguments, its result, whether it failed, when it finished and how long it took. `child_run_id` names the run a `Delegate` started, `stopped` marks a call `Stop.now()` cut off, or one whose `Delegate` or `engine.tool` run a stop ended, and `approved` is what `approve` answered, `None` when nobody was asked. `by` is the id of the model's `Shell` call whose command made this call through the workspace's tool bridge, `None` for a call the model made itself; such a step finished first, so it sits in `Generation.steps` before the `Shell` step that made it, and the conversation holds no message for it. A call still running when its command ended is recorded with `stopped` set and `stopped by the user` as its result.
 
 ### `RunStarted`
 
@@ -654,9 +655,10 @@ class ToolCallStarted(BaseModel):
     call_id: str
     tool: str
     args: dict[str, Any]
+    by: str | None = None
 ```
 
-Sent to `on_event` when a tool call starts, before any approval, with the arguments the model gave it. A handler that calls `Stop.now()` stops the call before its tool runs, and a handler still running when a stop cancels its call is cancelled with it, so a kill switch does its own work, such as an audit, before it calls `Stop.now()`.
+Sent to `on_event` when a tool call starts, before any approval, with the arguments the model gave it. `by` is the id of the `Shell` call whose command made the call through the workspace's tool bridge, its `call_id` then `<Shell call id>.<n>`, n counting from 1 for each command; `None` for a call of the model's. A handler that calls `Stop.now()` stops the call before its tool runs, and a handler still running when a stop cancels its call is cancelled with it, so a kill switch does its own work, such as an audit, before it calls `Stop.now()`.
 
 ### `ToolResultReady`
 
@@ -666,14 +668,36 @@ class ToolResultReady(BaseModel):
     agent: str
     call_id: str
     step: Step
+    by: str | None = None
 ```
 
-Sent to `on_event` once, when a tool call is done: `step` is the `Step` the run records for it, equal to its entry in `Generation.steps`, sent on every way a call ends — a result, an error, a timeout, a call `approve` refused, a delegation, a call `Stop.now()` cut off, whether or not it had started, an `Output` included. Any other call the engine answers without running it — an `Output` it accepts or refuses, a call after an accepted `Output`, a call in a reply that ended for a reason other than tool use, answered `NotRun` — sends neither `ToolCallStarted` nor `ToolResultReady`; its step is in `Generation.steps`. A cancelled run raises and is not recorded, so a call it cancels sends no `ToolResultReady`, a call whose tool returns after the cancel included: it ends with the cancellation before any handler sees its result.
+Sent to `on_event` once, when a tool call is done: `step` is the `Step` the run records for it, equal to its entry in `Generation.steps`, sent on every way a call ends — a result, an error, a timeout, a call `approve` refused, a delegation, a call `Stop.now()` cut off, whether or not it had started, an `Output` included. Any other call the engine answers without running it — an `Output` it accepts or refuses, a call after an accepted `Output`, a call in a reply that ended for a reason other than tool use, answered `NotRun` — sends neither `ToolCallStarted` nor `ToolResultReady`; its step is in `Generation.steps`. A cancelled run raises and is not recorded, so a call it cancels sends no `ToolResultReady`, a call whose tool returns after the cancel included: it ends with the cancellation before any handler sees its result. `by` is `step.by`, as the call's `ToolCallStarted` has it.
+
+### `CommandOutput`
+
+```python
+class CommandOutput(BaseModel):
+    run_id: str
+    agent: str
+    call_id: str
+    stream: Literal["stdout", "stderr"]
+    text: str
+```
+
+Sent to `on_event` while a foreground `Shell` command of a run with a `Workspace` runs: one event for what the command writes, as it arrives, with chunks that queued while the handler was busy joined into one event per stream, with the `call_id` of the `Shell` call and the `stream` it was written to. `text` is UTF-8 decoded per stream, so a character written in two pieces arrives whole. Every event of a command comes before the `ToolResultReady` of its call, in order per stream; `stdout` and `stderr` are two pipes, with no order between them. The handler never slows the command or changes what the model reads: the result is the same with or without `on_event`. Chunks queue up to 1 MiB while the handler is busy; past that, a chunk is dropped from the events, and once a stream overflows its output is dropped until the handler catches up; the next event of that stream starts with `[... <n> bytes not shown ...]` and a newline, counting all the bytes dropped. A command started with `background=true` sends none. A handler that raises on a `CommandOutput` fails the run, once the command has ended.
 
 ### `Event`
 
 ```python
-Event = RunStarted | TextDelta | ReasoningDelta | MessagesTaken | ToolCallStarted | ToolResultReady
+Event = (
+    RunStarted
+    | TextDelta
+    | ReasoningDelta
+    | MessagesTaken
+    | ToolCallStarted
+    | ToolResultReady
+    | CommandOutput
+)
 ```
 
 What `on_event` receives.
@@ -878,7 +902,7 @@ class EngineTools(Tools):
     ) -> None: ...
 ```
 
-The tools `agent` runs with under `scope`, as a `Tools` to drive without a model, exactly as a run with these arguments offers them: the builtins `Read`, `Grep`, `Glob`, `LS` and `Load` (a path of `Read`, `Load`, or the `path` of `Grep` or `LS`, judged where it leads, its links and `..` resolved, from the agent's folder or the read folder it lies in, is an `InputError` when the fingerprint leaves it out, `tools/builtins: .env is hidden; names starting with . and __pycache__ are not part of the agent's folder`: a file whose folder has a name starting with `.` or named `__pycache__` on its way there, or whose own name as written is one — a visible link to a hidden file of the same folder reads — and a folder that leads to such a name, a visible link to a hidden folder included, and `Glob`, `Grep` and `LS` list nothing so hidden; a file link that comes from outside those folders, or leads from one of them into another, is judged by the file it leads to as well as by its own name, and a path that leads outside them is the jail's `InputError`, `jail: path outside the agent directory: <path>`), `History` when `start` is above 0, the tools it gets from its folders — but one `tools` holds a tool of the same name, which wins — the workspace's tools when it declares `workspace: true`, `Delegate` when it names `agents:`, and `tools`; then `tools:` in its `AGENT.md` keeps only the folder tools and builtins it names — none for `tools: []` — while `History`, the workspace's tools, `Delegate` and `tools` stay, each coming with its own declaration. A folder tool's call has its arguments checked against its `input_schema` — a mismatch an `InputError`, `tools/declared: invalid arguments for lookup_order: 5 is not of type "string" at order_id` — and goes to the agent's worker with `call` holding `scope` and, inside a run's tool call of this scope, the call's `run_id`, `agent`, `tool` and `call_id`, under the engine's `tool_timeout`, which counts the wait for a worker too (`TimeoutError: workers/pool: lookup_order timed out after 30s`); arguments JSON cannot hold, a `datetime` or a `set` passed from code, are an `InputError` before any worker sees them (`workers/pool: the arguments for lookup_order are not JSON: Object of type datetime is not JSON serializable`); its result is checked against its `output_schema`, a mismatch a `ModelError`, and a list whose every item has the `type` of a part comes back as parts, its media `data` read from base64. What the script raised, a result JSON cannot hold, and a worker that stopped are a `WorkerError`. The workers follow the event loop that calls them, one loop at a time: a call from another loop stops the workers the first one started and starts its own. `Delegate` takes `agent` and `input`, an optional `task` when one of the agents it lists has tasks, and optional `questions` — ids to objects with the fields of `Choice`, `Score` or `Check` — when one is a decision agent; its description lists each agent's name, description, kind and tasks. A `Delegate` dispatched through it runs the child as a top-level run — not recorded when it is dispatched inside a run started with `record=False` — with this scope, `tools`, `workspace`, `tags` and `approve`, and the `task` and `questions` it is called with, its `on_event` and `stop` as `engine.tool` takes them (`EventHandler` is `Callable[[Event], Awaitable[None]]`), and raises what `Engine.run` raises, and `InputError` when `questions` does not fit the contract, holds an empty id or an id the run already asks, or is given to a generation agent; inside a run the same refusals reach the model as tool errors. `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets. `History` reads `history` before position `start`: a page of up to `limit` messages — 20, at most 100 — before `before`, which defaults to `start` and never passes it, each under a JSON header with its `position`, `role`, and its `tool_calls`, or `tool_call_id` and `is_error`, in the order they happened; with `pattern`, a regular expression (`case_insensitive`), only the messages whose text matches, walking back at most the engine's `history_walk` messages. An image, audio or document shows as a line naming it — its type, its media type, a document's `name` and its `url` when it has one — never as the file. A result holds at most `history_chars` characters of messages and, when there is more, ends with where to go on; the engine's `tool_timeout` bounds a search's pattern.
+The tools `agent` runs with under `scope`, as a `Tools` to drive without a model, exactly as a run with these arguments offers them: the builtins `Read`, `Grep`, `Glob`, `LS` and `Load` (a path of `Read`, `Load`, or the `path` of `Grep` or `LS`, judged where it leads, its links and `..` resolved, from the agent's folder or the read folder it lies in, is an `InputError` when the fingerprint leaves it out, `tools/builtins: .env is hidden; names starting with . and __pycache__ are not part of the agent's folder`: a file whose folder has a name starting with `.` or named `__pycache__` on its way there, or whose own name as written is one — a visible link to a hidden file of the same folder reads — and a folder that leads to such a name, a visible link to a hidden folder included, and `Glob`, `Grep` and `LS` list nothing so hidden; a file link that comes from outside those folders, or leads from one of them into another, is judged by the file it leads to as well as by its own name, and a path that leads outside them is the jail's `InputError`, `jail: path outside the agent directory: <path>`), `History` when `start` is above 0, the tools it gets from its folders — but one `tools` holds a tool of the same name, which wins — the workspace's tools when it declares `workspace: true`, `Delegate` when it names `agents:`, and `tools`; then `tools:` in its `AGENT.md` keeps only the folder tools and builtins it names — none for `tools: []` — while `History`, the workspace's tools, `Delegate` and `tools` stay, each coming with its own declaration. A folder tool's call has its arguments checked against its `input_schema` — a mismatch an `InputError`, `tools/declared: invalid arguments for lookup_order: 5 is not of type "string" at order_id` — and goes to the agent's worker with `call` holding `scope` and, inside a run's tool call of this scope, the call's `run_id`, `agent`, `tool`, `call_id` and `by`, under the engine's `tool_timeout`, which counts the wait for a worker too (`TimeoutError: workers/pool: lookup_order timed out after 30s`); arguments JSON cannot hold, a `datetime` or a `set` passed from code, are an `InputError` before any worker sees them (`workers/pool: the arguments for lookup_order are not JSON: Object of type datetime is not JSON serializable`); its result is checked against its `output_schema`, a mismatch a `ModelError`, and a list whose every item has the `type` of a part comes back as parts, its media `data` read from base64. What the script raised, a result JSON cannot hold, and a worker that stopped are a `WorkerError`. The workers follow the event loop that calls them, one loop at a time: a call from another loop stops the workers the first one started and starts its own. `Delegate` takes `agent` and `input`, an optional `task` when one of the agents it lists has tasks, and optional `questions` — ids to objects with the fields of `Choice`, `Score` or `Check` — when one is a decision agent; its description lists each agent's name, description, kind and tasks. A `Delegate` dispatched through it runs the child as a top-level run — not recorded when it is dispatched inside a run started with `record=False` — with this scope, `tools`, `workspace`, `tags` and `approve`, and the `task` and `questions` it is called with, its `on_event` and `stop` as `engine.tool` takes them (`EventHandler` is `Callable[[Event], Awaitable[None]]`), and raises what `Engine.run` raises, and `InputError` when `questions` does not fit the contract, holds an empty id or an id the run already asks, or is given to a generation agent; inside a run the same refusals reach the model as tool errors. `ToolsLike` is a protocol of `def definitions(self) -> list[dict[str, Any]]` and `async def dispatch(self, name: str, args: dict[str, Any])`, which a `Tools` meets. `History` reads `history` before position `start`: a page of up to `limit` messages — 20, at most 100 — before `before`, which defaults to `start` and never passes it, each under a JSON header with its `position`, `role`, and its `tool_calls`, or `tool_call_id` and `is_error`, in the order they happened; with `pattern`, a regular expression (`case_insensitive`), only the messages whose text matches, walking back at most the engine's `history_walk` messages. An image, audio or document shows as a line naming it — its type, its media type, a document's `name` and its `url` when it has one — never as the file. A result holds at most `history_chars` characters of messages and, when there is more, ends with where to go on; the engine's `tool_timeout` bounds a search's pattern.
 
 Raises `InputError` when the engine was closed (`engine: this engine was closed; build a new Engine`), `scope` is empty, `workspace` belongs to another scope, `start` is negative, `start` is above 0 without a `history`, or `start` is past the end of a list `history`. Raises `NotFoundError` when the tree has no agent `agent`. Raises `ConfigurationError` when the agent declares `workspace: true` and no `workspace` is given, two tools of `tools` share a name, or one shares a name with a tool the engine gives the agent. A tool named `History` in `tools` is a `ConfigurationError` whatever `start` is: the name is the builtin's on every run.
 
@@ -899,9 +923,10 @@ class CallInfo(BaseModel):
     scope: str
     tool: str
     call_id: str
+    by: str | None = None
 ```
 
-What `current_call` returns, and what `RunStarted.call` holds: the run's id, its agent and scope, the tool called and the id of the call, as `ToolCall.id` carries it. Frozen, so it can be kept and compared.
+What `current_call` returns, and what `RunStarted.call` holds: the run's id, its agent and scope, the tool called and the id of the call, as `ToolCall.id` carries it. `by` is the id of the `Shell` call whose command made the call through the workspace's tool bridge, `None` for a call of the model's, so `approve` and a tool can tell a call a script made without reading its id. Frozen, so it can be kept and compared.
 
 ### `Jail`
 
@@ -935,6 +960,19 @@ Opens `path`, resolved as `resolve` does, and returns its file descriptor, which
 
 Raises `InputError` when `path` resolves outside `root` and every place in `also`, when the walk meets a link, or when the place is no longer the folder it was. What the system refuses, such as a missing file, is raised as the `OSError` it is.
 
+### `JobInfo`
+
+```python
+class JobInfo(BaseModel):
+    job: str
+    command: str
+    started: datetime
+    running: bool
+    exit_code: int | None
+```
+
+A job of a workspace, as `Workspace.jobs` returns it: its id, its command, when it started (timezone-aware), whether it still runs, and its exit code once it has ended.
+
 ### `Workspace`
 
 ```python
@@ -946,17 +984,41 @@ class Workspace:
         scope: str,
         timeout: float = 120.0,
         output_bytes: int = 30_000,
+        bridge: bool = True,
+        tree: str | None = None,
     ) -> None: ...
 
     backend: Backend
     scope: str
     timeout: float
     output_bytes: int
+    bridge: bool
+    tree: str | None
 ```
 
 Where an agent with `workspace: true` writes code and runs it, passed as `run(workspace=)`: the library's tools over `backend`, for the tenant `scope`. `timeout` bounds every `Shell`, `Job`, `Write` and `Edit` call in seconds; a command still running at the limit, or when its call is cancelled, is stopped with its process's `kill()`, and so is anything a command leaves running when it ends, after which what remains of its output is read for at most a second. On `Local`, whose `read` and `write` each run in a thread a cancel cannot stop, a `Write` or `Edit` past `timeout`, like a workspace `Read` or `Load` past `Engine(tool_timeout=)`, returns its `TimeoutError` only once the thread has ended. Every kill runs to its end and the call that started it waits for it, however many cancels come meanwhile, so a stop or a cancel of `Shell` or `Job(id, stop=true)` returns once the kill has returned. A kill counts as the first stop, and two cancels that land at the same moment count as two: the next cancel after the one that started it, or the second during a kill the workspace started on its own — for a command past `timeout` or that has ended, `Job(id, stop=true)` or `close` — cancels that kill, once, so `kill()` ends the command at once. A `kill()` error the call cannot raise, because it is already leaving with a cancellation or with the error of a `wait()` that raised, is logged as an error, `tools/workspace: could not stop the command: …`; one from the kill that follows a job's end is in the job's output. `output_bytes` caps `stdout` and `stderr` each, keeping their first and last half. Jobs belong to the workspace and outlive the runs that started them; each is read in the background until it ends or `close` stops it. A workspace and its jobs live in one event loop: a job whose loop ends is stopped.
 
-Raises `ConfigurationError` when `backend` lacks `spawn`, `read` or `write`, `scope` is empty, or `timeout` or `output_bytes` is not positive.
+`tree` is where the agent tree is mounted in the sandbox, as commands see it, such as `/srv/agents`. With it, the commands of a run get `RFNRY_TREE`, the tree, and `RFNRY_AGENT`, the running agent's folder in it, and the `Shell` description tells the model where they are, in variables and never in a path; a command started with `background=true` gets them too. A `Shell` that code dispatches outside a run, or from inside another tool, gets neither. Without `tree`, nothing is added.
+
+`bridge` lets a foreground `Shell` command of a run call the run's tools. When it is on, the backend has a `root` attribute — the bridge's contract with a backend: a local directory its commands see at the same path, as `Local`'s, where the socket is created — and the run offers at least one tool the bridge can carry, the `Shell` description tells the model so, in variables, never a path, and each foreground command gets `RFNRY_TOOLS`, the path of a Unix socket `<root>/.rfnry-<8 hex>.sock`, and `RFNRY_TOOLS_KEY`, a key of its own, as private as the sandbox keeps the command's environment. The socket is created just before the command starts and closed once it has ended and its output is read, then removed if its path still holds it, and every request it answers runs as a model's call of the run: its events, `approve`, its deadline, the stop and its `Step`, with `by` the `Shell` call's id. It carries every tool the run offers but `Shell`, `Job`, `Jobs`, `Write`, `Edit`, `Output` and the builtin `Delegate`; another name is answered `InputError: tools: unknown tool '<name>'` and runs nothing. When the socket cannot be made, a path too long for one included, the command runs without it and its `stderr` ends with `tools/workspace: no tool bridge for this command: <why>`. A `Shell` with `bridge=False`, on a backend without `root`, started with `background=true`, or dispatched by code outside a run's own `Shell` call, gets no socket.
+
+Raises `ConfigurationError` when `backend` lacks `spawn`, `read` or `write`, `scope` is empty, `timeout` or `output_bytes` is not positive, or `tree` is not an absolute path.
+
+### `Workspace.jobs`
+
+```python
+def jobs(self) -> list[JobInfo]: ...
+```
+
+The jobs the workspace lists now, in the order they started, for a frontend that shows them. It reads memory and changes nothing: the model's `Jobs()` lists the same jobs, and a job leaves the list once the model reads its last output.
+
+### `Workspace.output`
+
+```python
+def output(self, job: str) -> str: ...
+```
+
+Everything `job` has printed so far, in the cap of `output_bytes`: its first and last half, with the bytes between omitted, as the model's `Job` would show the whole of it. It does not take the output from the model: what `Job` returns next is unchanged. While the job runs, a character not yet complete is left out. Raises `InputError` when the workspace lists no job `job`.
 
 ### `Workspace.tools`
 
@@ -979,14 +1041,14 @@ Stops every job of the workspace with its process's `kill()`, waits for each to 
 ```python
 @runtime_checkable
 class Backend(Protocol):
-    async def spawn(self, command: str) -> Process: ...
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Process: ...
 
     async def read(self, path: str, limit: int) -> bytes: ...
 
     async def write(self, path: str, data: bytes) -> None: ...
 ```
 
-Where a workspace's commands run and its files live, passed to `Workspace`. `spawn` starts `command` in the workspace's directory with no input and returns at once, and must return promptly: a stop or a cancel that comes while it runs waits for it to return, then for the kill of what it started, however many cancels come meanwhile, and a second one cancels that kill as soon as it starts; with `background=true` it waits for the job to be listed, so `close` stops it. `read` returns a file's bytes and refuses one larger than `limit`; `write` writes a file whole, creating its parent directories. Paths are the model's, relative to the workspace, and what they can reach is the backend's to decide. An error a backend raises reaches the model as the tool's error. A backend's description, if it has one, is ignored: what the environment holds is told in the agent's markdown.
+Where a workspace's commands run and its files live, passed to `Workspace`. `spawn` starts `command` in the workspace's directory with no input, with `env` added to the command's environment, and returns at once, and must return promptly: a stop or a cancel that comes while it runs waits for it to return, then for the kill of what it started, however many cancels come meanwhile, and a second one cancels that kill as soon as it starts; with `background=true` it waits for the job to be listed, so `close` stops it. `read` returns a file's bytes and refuses one larger than `limit`; `write` writes a file whole, creating its parent directories. Paths are the model's, relative to the workspace, and what they can reach is the backend's to decide. An error a backend raises reaches the model as the tool's error. A backend's description, if it has one, is ignored: what the environment holds is told in the agent's markdown. A backend gets the tool bridge when it has a `root` attribute: a local directory its commands see at the same path, where each foreground command's socket is created; a backend whose `root` means anything else gets a socket created at that path, so one without a shared directory has no `root`.
 
 ### `Process`
 
@@ -1018,14 +1080,14 @@ class Local:
     shell: list[str]
     env: dict[str, str]
 
-    async def spawn(self, command: str) -> Process: ...
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Process: ...
 
     async def read(self, path: str, limit: int) -> bytes: ...
 
     async def write(self, path: str, data: bytes) -> None: ...
 ```
 
-A `Backend` on this machine. Commands run as `[*shell, command]` in `root`, in a new session, with `env` as their whole environment — by default `PATH`, `HOME` set to `root`, and `LANG`; a sandbox goes in front of the shell, as in `shell=["bwrap", …, "bash", "-c"]`. `kill` sends the command's process group SIGTERM and, a second later or at once when it is cancelled, SIGKILL. `read` and `write` stay inside `root`, symlinks resolved, and each runs in a thread: a call cancelled meanwhile returns once its thread has ended, however many cancels come, so a `Write` or `Edit` cancelled while it writes has written its file when the cancel returns.
+A `Backend` on this machine. Commands run as `[*shell, command]` in `root`, in a new session, with `env` as their whole environment, and what `spawn` is given added over it — by default `PATH`, `HOME` set to `root`, and `LANG`; a sandbox goes in front of the shell, as in `shell=["bwrap", …, "bash", "-c"]`. `kill` sends the command's process group SIGTERM and, a second later or at once when it is cancelled, SIGKILL. `read` and `write` stay inside `root`, symlinks resolved, and each runs in a thread: a call cancelled meanwhile returns once its thread has ended, however many cancels come, so a `Write` or `Edit` cancelled while it writes has written its file when the cancel returns.
 
 Raises `ConfigurationError` when `root` is not a directory, `shell` is not a non-empty list of non-empty strings, or its first word is not on the `PATH` of `env`. `spawn` raises `InputError` when the command cannot start, as when `root` was removed: `tools/workspace: cannot start the command: No such file or directory`. `read` and `write` raise `InputError` for a path outside `root`, through a link that leads out of it or one swapped in while they walk to the file, and for every path once `root` is no longer the folder it was when `Local` was made — replaced, or reached through a link swapped in for it or a folder above it; `read` for a path that is not a file — missing, a directory, a FIFO or a socket, or a path through a file, such as `notes.txt/x` — or a file larger than `limit`; `write` for a directory, a FIFO or a socket, and a path through a file as `tools/workspace: cannot write notes.txt/x: Not a directory`. Any other error the system gives is `tools/workspace: cannot read {path}: {reason}` or `tools/workspace: cannot write {path}: {reason}`. Every message names the path as the model gave it, never the path on this machine. The root check compares directory inode numbers, so a filesystem where they are not stable — overlayfs without `xino`, FUSE without `use_ino` — refuses a valid root and is not supported as a workspace root.
 

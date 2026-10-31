@@ -1,15 +1,16 @@
 import asyncio
 import json
 import logging
+import posixpath
 import time
-from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from fnmatch import fnmatch
-from itertools import permutations
+from itertools import count, permutations
 from pathlib import Path
 from types import MappingProxyType
-from typing import Annotated, Any, NoReturn, Protocol, cast
+from typing import Annotated, Any, Literal, NoReturn, Protocol, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
@@ -30,6 +31,7 @@ from rfnry_engine.foreground import (
     FOREGROUND,
     RECORDING,
     Foreground,
+    Lent,
     halted,
     hooks,
     returned,
@@ -62,6 +64,7 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import (
     CallInfo,
+    CommandOutput,
     Decision,
     EventHandler,
     Fingerprint,
@@ -88,7 +91,7 @@ from rfnry_engine.tools.delegate import (
 )
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
-from rfnry_engine.tools.workspace import WORKSPACE_TOOLS, Workspace
+from rfnry_engine.tools.workspace import WORKSPACE_NAMES, WORKSPACE_TOOLS, Workspace
 from rfnry_engine.tree import (
     OUTPUT_TOOL,
     TAKEN,
@@ -416,14 +419,14 @@ def _groups(agents: Mapping[str, AgentSpec], workers: Mapping[str, int] | None) 
         for parts in [spec.path.split("/")]
         for n in range(1, len(parts) + 1)
     }
-    for name, count in workers.items():
+    for name, processes in workers.items():
         if name not in folders:
             raise ConfigurationError(
                 f"engine: workers names {name!r}, which holds no agent of the tree; name a folder that holds agents by its path from the root"
             )
-        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        if not isinstance(processes, int) or isinstance(processes, bool) or processes < 1:
             raise ConfigurationError(
-                f"engine: workers gives {name!r} {count!r} processes; give each folder 1 or more"
+                f"engine: workers gives {name!r} {processes!r} processes; give each folder 1 or more"
             )
     for one, other in permutations(workers, 2):
         if one.startswith(f"{other}/"):
@@ -916,10 +919,30 @@ class Engine:
             history=options.source,
             start=options.start,
         )
-        own_deadline = surface._in_workers | (
-            WORKSPACE_TOOLS if spec.workspace and options.workspace is not None else frozenset()
+        room = options.workspace if spec.workspace else None
+        barred = WORKSPACE_NAMES | ({DELEGATE_TOOL} if spec.agents else frozenset())
+        offered = [n for n in surface.names if n not in barred]
+        bridging = room is not None and room._bridging and bool(offered)
+        own_deadline = surface._in_workers | (WORKSPACE_TOOLS if room is not None else frozenset())
+        variables = (
+            {
+                "RFNRY_TREE": room.tree,
+                "RFNRY_AGENT": room.tree
+                if spec.path == "."
+                else posixpath.join(room.tree, spec.path),
+            }
+            if room is not None and room.tree is not None
+            else {}
         )
         specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
+        if room is not None:
+            told = room._told(list(spec.reads), bridging)
+            specs = [
+                s.model_copy(update={"description": s.description + told})
+                if s.name == "Shell"
+                else s
+                for s in specs
+            ]
         if expect is not None:
             if OUTPUT_TOOL in surface:
                 raise ConfigurationError(
@@ -974,19 +997,35 @@ class Engine:
             if on_event is not None:
                 await on_event(event)
 
-        def called(call: ToolCall) -> CallInfo:
+        def called(call: ToolCall, by: str | None = None) -> CallInfo:
             return CallInfo(
-                run_id=run_id, agent=spec.name, scope=scope, tool=call.name, call_id=call.id
+                run_id=run_id, agent=spec.name, scope=scope, tool=call.name, call_id=call.id, by=by
             )
+
+        async def show(
+            call: ToolCall, here: Foreground, stream: Literal["stdout", "stderr"], text: str
+        ) -> None:
+            if here.failed is not None:
+                return
+            try:
+                await emit(
+                    CommandOutput(
+                        run_id=run_id, agent=spec.name, call_id=call.id, stream=stream, text=text
+                    )
+                )
+            except Exception as exc:
+                here.failed = exc
 
         async def hand_over(call: ToolCall, step: Step) -> Step:
             if runner is not None and runner.cancelling() > calm:
                 raise asyncio.CancelledError("engine: the run was cancelled")
             ran.append((call, step))
-            token = CALL.set(called(call))
+            token = CALL.set(called(call, step.by))
             try:
                 await emit(
-                    ToolResultReady(run_id=run_id, agent=spec.name, call_id=call.id, step=step)
+                    ToolResultReady(
+                        run_id=run_id, agent=spec.name, call_id=call.id, step=step, by=step.by
+                    )
                 )
             finally:
                 CALL.reset(token)
@@ -1029,8 +1068,49 @@ class Engine:
                 return STOPPED, True, child.run_id, True
             return child_result(child), False, child.run_id, False
 
-        async def call_tool(call: ToolCall) -> Step:
-            CALL.set(called(call))
+        async def bridged(
+            shell: ToolCall,
+            here: Foreground,
+            numbers: Iterator[int],
+            name: str,
+            args: dict[str, Any],
+        ) -> dict[str, Any]:
+            if name in barred or name not in surface:
+                return {"error": _failure(InputError(f"tools: unknown tool {name!r}"))}
+            call = ToolCall(id=f"{shell.id}.{next(numbers)}", name=name, args=args)
+            began = time.monotonic()
+            calling = asyncio.ensure_future(call_tool(call, shell.id))
+            while not calling.done():
+                try:
+                    await asyncio.wait([calling])
+                except asyncio.CancelledError:
+                    handed = any(done is call for done, _ in ran)
+                    if not handed or (runner is not None and runner.cancelling() > calm):
+                        calling.cancel()
+            if calling.cancelled():
+                step = stopped(call, began, shell.id)
+                steps.append(step)
+                try:
+                    await hand_over(call, step)
+                except Exception as exc:
+                    here.failed = here.failed or exc
+                return {"error": STOPPED}
+            failed = calling.exception()
+            if isinstance(failed, Exception):
+                steps.extend(built for done, built in ran if done is call)
+                here.failed = here.failed or failed
+                return {"error": _failure(failed)}
+            step = calling.result()
+            steps.append(step)
+            shown = (
+                step.result
+                if isinstance(step.result, str)
+                else [part.model_dump(mode="json") for part in step.result]
+            )
+            return {"error" if step.is_error else "result": shown}
+
+        async def call_tool(call: ToolCall, by: str | None = None) -> Step:
+            CALL.set(called(call, by))
             await emit(
                 ToolCallStarted(
                     run_id=run_id,
@@ -1038,11 +1118,12 @@ class Engine:
                     call_id=call.id,
                     tool=call.name,
                     args=call.args,
+                    by=by,
                 )
             )
             began = time.monotonic()
             if requested(stop) == "now":
-                return await cut(call, began)
+                return await cut(call, began, by)
             child_run_id: str | None = None
             stopped = False
             content: Content
@@ -1055,14 +1136,26 @@ class Engine:
                 finally:
                     approving.discard(id(call))
                 if halted:
-                    return await cut(call, began)
+                    return await cut(call, began, by)
                 approved = asking.result()
             if approved is not None and not isinstance(approved, bool):
                 raise ConfigurationError(
                     f"engine: approve must return True or False; got {approved!r}"
                 )
             here = Foreground(stop, on_event, asyncio.current_task())
-            foregrounds[id(call)] = here
+            if room is not None and call.name == "Shell":
+                numbers = count(1)
+                here.lent = Lent(
+                    env=variables,
+                    said=None
+                    if on_event is None
+                    else lambda stream, text: show(call, here, stream, text),
+                    call=(lambda name, args: bridged(call, here, numbers, name, args))
+                    if bridging
+                    else None,
+                )
+            if by is None:
+                foregrounds[id(call)] = here
             FOREGROUND.set(here)
             try:
                 if approved is False:
@@ -1098,7 +1191,11 @@ class Engine:
                 child_run_id=child_run_id,
                 stopped=stopped,
                 approved=approved,
+                by=by,
             )
+            if here.failed is not None:
+                ran.append((call, step))
+                raise here.failed
             return await hand_over(call, step)
 
         def answer(call: ToolCall, step: Step) -> None:
@@ -1124,8 +1221,8 @@ class Engine:
                 ),
             )
 
-        async def cut(call: ToolCall, began: float) -> Step:
-            step = Step(
+        def stopped(call: ToolCall, began: float, by: str | None = None) -> Step:
+            return Step(
                 tool=call.name,
                 args=call.args,
                 result=STOPPED,
@@ -1133,8 +1230,11 @@ class Engine:
                 at=_now(),
                 duration_ms=int((time.monotonic() - began) * 1000),
                 stopped=True,
+                by=by,
             )
-            return await hand_over(call, step)
+
+        async def cut(call: ToolCall, began: float, by: str | None = None) -> Step:
+            return await hand_over(call, stopped(call, began, by))
 
         async def run_batch(batch: list[ToolCall]) -> bool:
             began = time.monotonic()
@@ -1156,9 +1256,14 @@ class Engine:
                 return kept
 
             stopped = await wait(tasks, stop, finishing)
+            failures: list[Exception] = []
             for call, task in zip(batch, tasks, strict=True):
                 answer(call, await cut(call, began) if task.cancelled() else task.result())
-                foregrounds.pop(id(call), None)
+                here = foregrounds.pop(id(call), None)
+                if here is not None and here.failed is not None:
+                    failures.append(here.failed)
+            if failures:
+                raise failures[0]
             return stopped
 
         def drain() -> list[Message]:
@@ -1271,10 +1376,10 @@ class Engine:
                     if output is None
                     else reply.tool_calls[: reply.tool_calls.index(output)]
                 )
-                stopped = await run_batch(before)
+                pressed = await run_batch(before)
                 if output is None or expect is None:
                     continue
-                if stopped:
+                if pressed:
                     for call in reply.tool_calls[reply.tool_calls.index(output) :]:
                         answer(call, await cut(call, time.monotonic()))
                     return finish(said, "now")

@@ -40,6 +40,7 @@ class Step(BaseModel):
     child_run_id: str | None = None
     stopped: bool = False
     approved: bool | None = None
+    by: str | None = None
 
 
 class CallInfo(BaseModel):
@@ -50,6 +51,7 @@ class CallInfo(BaseModel):
     scope: str
     tool: str
     call_id: str
+    by: str | None = None
 
 
 class RunStarted(BaseModel):
@@ -85,6 +87,7 @@ class ToolCallStarted(BaseModel):
     call_id: str
     tool: str
     args: dict[str, Any]
+    by: str | None = None
 
 
 class ToolResultReady(BaseModel):
@@ -92,9 +95,26 @@ class ToolResultReady(BaseModel):
     agent: str
     call_id: str
     step: Step
+    by: str | None = None
 
 
-Event = RunStarted | TextDelta | ReasoningDelta | MessagesTaken | ToolCallStarted | ToolResultReady
+class CommandOutput(BaseModel):
+    run_id: str
+    agent: str
+    call_id: str
+    stream: Literal["stdout", "stderr"]
+    text: str
+
+
+Event = (
+    RunStarted
+    | TextDelta
+    | ReasoningDelta
+    | MessagesTaken
+    | ToolCallStarted
+    | ToolResultReady
+    | CommandOutput
+)
 EventHandler = Callable[[Event], Awaitable[None]]
 
 

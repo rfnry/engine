@@ -1,4 +1,5 @@
 import asyncio
+import codecs
 import contextlib
 import errno
 import logging
@@ -6,17 +7,20 @@ import os
 import shutil
 import signal
 import stat
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any, Protocol, cast, runtime_checkable
+from functools import partial
+from pathlib import Path, PurePosixPath
+from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel
 
 from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.foreground import current
 from rfnry_engine.jail import Jail
-from rfnry_engine.stop import join
+from rfnry_engine.stop import join, wait
+from rfnry_engine.tools.bridge import CALLS, Answer, Bridge
 from rfnry_engine.tools.tools import Tool
 
 logger = logging.getLogger(__name__)
@@ -26,6 +30,7 @@ WORKSPACE_NAMES = frozenset({*WORKSPACE_TOOLS, "Jobs"})
 GRACE = 1.0
 CHUNK = 65_536
 TEXT_BYTES = 5 * 1024 * 1024
+BACKLOG = 1_048_576
 
 
 class Stream(Protocol):
@@ -46,11 +51,19 @@ class Process(Protocol):
 
 @runtime_checkable
 class Backend(Protocol):
-    async def spawn(self, command: str) -> Process: ...
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Process: ...
 
     async def read(self, path: str, limit: int) -> bytes: ...
 
     async def write(self, path: str, data: bytes) -> None: ...
+
+
+class JobInfo(BaseModel):
+    job: str
+    command: str
+    started: datetime
+    running: bool
+    exit_code: int | None
 
 
 class ShellArgs(BaseModel):
@@ -192,7 +205,7 @@ class Local:
             )
         self._jail = Jail(self.root)
 
-    async def spawn(self, command: str) -> Process:
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Process:
         loop = asyncio.get_running_loop()
         try:
             transport, pipes = await loop.subprocess_exec(
@@ -200,7 +213,7 @@ class Local:
                 *self.shell,
                 command,
                 cwd=self.root,
-                env=self.env,
+                env={**self.env, **env},
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -301,25 +314,36 @@ class _Kept:
         if len(self.tail) > self.half:
             del self.tail[: len(self.tail) - self.half]
 
-    def take(self, final: bool = True) -> str:
-        held = b""
+    def _split(self, final: bool) -> tuple[bytes, bytes, bytes]:
+        head, tail, held = bytearray(self.head), bytearray(self.tail), b""
         if not final:
-            if self.total == len(self.head) + len(self.tail):
-                whole = self.head + self.tail
+            if self.total == len(head) + len(tail):
+                whole = head + tail
                 held = bytes(whole[_complete(whole) :])
                 cut = len(held)
-                from_tail = min(cut, len(self.tail))
+                from_tail = min(cut, len(tail))
                 if from_tail:
-                    del self.tail[len(self.tail) - from_tail :]
+                    del tail[len(tail) - from_tail :]
                 if cut > from_tail:
-                    del self.head[len(self.head) - (cut - from_tail) :]
+                    del head[len(head) - (cut - from_tail) :]
             else:
-                held = bytes(self.tail[_complete(self.tail) :])
+                held = bytes(tail[_complete(tail) :])
                 if held:
-                    del self.tail[len(self.tail) - len(held) :]
-        head, tail = bytes(self.head), bytes(self.tail)
+                    del tail[len(tail) - len(held) :]
+        return bytes(head), bytes(tail), held
+
+    def show(self, final: bool) -> str:
+        head, tail, held = self._split(final)
+        return self._text(head, tail, self.total - len(held) - len(head) - len(tail))
+
+    def take(self, final: bool = True) -> str:
+        head, tail, held = self._split(final)
         omitted = self.total - len(held) - len(head) - len(tail)
         self.head, self.tail, self.total = bytearray(held), bytearray(), len(held)
+        return self._text(head, tail, omitted)
+
+    @staticmethod
+    def _text(head: bytes, tail: bytes, omitted: int) -> str:
         if omitted <= 0:
             return (head + tail).decode("utf-8", errors="replace")
         return (
@@ -329,15 +353,86 @@ class _Kept:
         )
 
 
-async def _drain(stream: Stream, kept: _Kept) -> None:
+Sink = Callable[[bytes], None]
+Said = Callable[[Literal["stdout", "stderr"], str], Awaitable[None]]
+
+
+class _Told:
+    def __init__(self, said: Said) -> None:
+        self.said = said
+        self.queue: asyncio.Queue[tuple[Literal["stdout", "stderr"], int, bytes] | None] = (
+            asyncio.Queue()
+        )
+        self.queued = 0
+        self.missed: dict[Literal["stdout", "stderr"], int] = {"stdout": 0, "stderr": 0}
+        self.dropping: set[Literal["stdout", "stderr"]] = set()
+        self.task = asyncio.create_task(self._send())
+
+    def add(self, stream: Literal["stdout", "stderr"], data: bytes) -> None:
+        if stream in self.dropping or self.queued + len(data) > BACKLOG:
+            self.dropping.add(stream)
+            self.missed[stream] += len(data)
+            return
+        self.queued += len(data)
+        self.queue.put_nowait((stream, self.missed[stream], data))
+        self.missed[stream] = 0
+
+    def close(self) -> None:
+        self.queue.put_nowait(None)
+
+    async def _send(self) -> None:
+        decoders: dict[Literal["stdout", "stderr"], codecs.IncrementalDecoder] = {
+            "stdout": codecs.getincrementaldecoder("utf-8")(errors="replace"),
+            "stderr": codecs.getincrementaldecoder("utf-8")(errors="replace"),
+        }
+        closing = False
+        while not closing:
+            taken = [await self.queue.get()]
+            while not self.queue.empty():
+                taken.append(self.queue.get_nowait())
+            self.dropping.clear()
+            if taken[-1] is None:
+                closing = True
+                taken.pop()
+            events: list[tuple[Literal["stdout", "stderr"], int, bytearray]] = []
+            last: dict[Literal["stdout", "stderr"], bytearray] = {}
+            for item in taken:
+                assert item is not None
+                stream, gap, data = item
+                self.queued -= len(data)
+                if stream in last and not gap:
+                    last[stream].extend(data)
+                else:
+                    last[stream] = bytearray(data)
+                    events.append((stream, gap, last[stream]))
+            for stream, gap, joined in events:
+                if gap:
+                    decoders[stream].reset()
+                await self._say(stream, gap, decoders[stream].decode(bytes(joined)))
+        for stream, decoder in decoders.items():
+            await self._say(stream, 0, decoder.decode(b"", final=True))
+        for stream, gap in self.missed.items():
+            if gap:
+                await self._say(stream, gap, "")
+
+    async def _say(self, stream: Literal["stdout", "stderr"], gap: int, text: str) -> None:
+        text = (f"[... {gap} bytes not shown ...]\n" if gap else "") + text
+        if text:
+            await self.said(stream, text)
+
+
+async def _drain(stream: Stream, *sinks: Sink) -> None:
     while chunk := await stream.read(CHUNK):
-        kept.add(chunk)
+        for sink in sinks:
+            sink(chunk)
 
 
-def _reading(process: Process, out: _Kept, err: _Kept) -> list[asyncio.Task[None]]:
+def _reading(
+    process: Process, out: Sequence[Sink], err: Sequence[Sink]
+) -> list[asyncio.Task[None]]:
     return [
-        asyncio.create_task(_drain(process.stdout, out)),
-        asyncio.create_task(_drain(process.stderr, err)),
+        asyncio.create_task(_drain(process.stdout, *out)),
+        asyncio.create_task(_drain(process.stderr, *err)),
     ]
 
 
@@ -399,38 +494,55 @@ async def _exit_code(process: Process) -> int | None:
         return None
 
 
+async def _bridge(root: Path, answer: Answer) -> tuple[Bridge | None, bytes]:
+    opening = asyncio.ensure_future(Bridge.open(root, answer))
+    try:
+        await join([opening])
+    except asyncio.CancelledError:
+        if not opening.cancelled() and opening.exception() is None:
+            await opening.result().close()
+        raise
+    failed = opening.exception()
+    if isinstance(failed, OSError):
+        why = failed.strerror or failed
+        return None, f"tools/workspace: no tool bridge for this command: {why}\n".encode()
+    return opening.result(), b""
+
+
 @dataclass
 class _Job:
     command: str
     process: Process
     kept: _Kept
+    shown: _Kept
     started: datetime = field(default_factory=lambda: datetime.now(UTC))
     ended: asyncio.Event = field(default_factory=asyncio.Event)
     code: int | None = None
     task: asyncio.Task[None] | None = None
 
 
-def _note(kept: _Kept, error: BaseException | None, said: str = "") -> str:
+def _note(job: _Job, error: BaseException | None, said: str = "") -> str:
     line = "" if error is None else f"\n{type(error).__name__}: {error}\n"
     if line and line != said:
-        kept.add(line.encode())
+        job.kept.add(line.encode())
+        job.shown.add(line.encode())
     return line
 
 
 async def _follow(job: _Job) -> None:
-    reading = _reading(job.process, job.kept, job.kept)
+    reading = _reading(job.process, [job.kept.add, job.shown.add], [job.kept.add, job.shown.add])
     said = ""
     try:
         try:
             job.code = await job.process.wait()
         except Exception as exc:
-            said = _note(job.kept, exc)
+            said = _note(job, exc)
         finally:
             [error] = await _see_through(job.process.kill())
-            _note(job.kept, error, said)
+            _note(job, error, said)
         await _settle(reading)
     except Exception as exc:
-        _note(job.kept, exc)
+        _note(job, exc)
     finally:
         _discard(reading)
         job.ended.set()
@@ -444,6 +556,8 @@ class Workspace:
         scope: str,
         timeout: float = 120.0,
         output_bytes: int = 30_000,
+        bridge: bool = True,
+        tree: str | None = None,
     ) -> None:
         if not isinstance(backend, Backend):
             raise ConfigurationError("tools/workspace: backend must have spawn, read and write")
@@ -453,8 +567,14 @@ class Workspace:
             raise ConfigurationError("tools/workspace: timeout must be positive")
         if output_bytes <= 0:
             raise ConfigurationError("tools/workspace: output_bytes must be positive")
+        if tree is not None and not PurePosixPath(tree).is_absolute():
+            raise ConfigurationError(
+                f"tools/workspace: tree must be an absolute path, as commands see it, such as /srv/agents; got {tree!r}"
+            )
         self.backend = backend
         self.scope = scope
+        self.bridge = bridge
+        self.tree = tree
         self.timeout = timeout
         self.output_bytes = output_bytes
         self._jobs: dict[str, _Job] = {}
@@ -546,42 +666,73 @@ class Workspace:
 
     async def _shell(self, args: dict[str, Any]) -> dict[str, Any]:
         a = ShellArgs.model_validate(args)
+        here = current()
+        lent = here.lent if here is not None else None
+        env = lent.env if lent is not None else {}
         if a.background:
-            starting = asyncio.ensure_future(self._start(a.command))
+            starting = asyncio.ensure_future(self._start(a.command, env))
             await join([starting])
             return {"job": starting.result()}
-        spawning = asyncio.create_task(self.backend.spawn(a.command))
+        root = getattr(self.backend, "root", None)
+        bridge: Bridge | None = None
+        missing = b""
+        if lent is not None and lent.call is not None and root is not None:
+            bridge, missing = await _bridge(Path(root).absolute(), lent.call)
+        if bridge is not None:
+            env = {**env, **bridge.env}
+        told: _Told | None = None
         try:
-            process = await asyncio.shield(spawning)
-        except asyncio.CancelledError:
             try:
-                await join([spawning])
+                spawning = asyncio.create_task(self.backend.spawn(a.command, env))
+                try:
+                    process = await asyncio.shield(spawning)
+                except asyncio.CancelledError:
+                    try:
+                        await join([spawning])
+                    finally:
+                        if not spawning.cancelled() and spawning.exception() is None:
+                            _log(*await _see_through(spawning.result().kill()))
+                    raise
+                out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
+                told = None if lent is None or lent.said is None else _Told(lent.said)
+                reading = _reading(
+                    process,
+                    [out.add] if told is None else [out.add, partial(told.add, "stdout")],
+                    [err.add] if told is None else [err.add, partial(told.add, "stderr")],
+                )
+                code: int | None = None
+                try:
+                    async with asyncio.timeout(self.timeout):
+                        code = await process.wait()
+                    timed_out = False
+                except TimeoutError:
+                    timed_out = True
+                except BaseException:
+                    _discard(reading)
+                    _log(*await _see_through(process.kill()))
+                    raise
+                try:
+                    [error] = await _see_through(process.kill())
+                    if error is not None:
+                        raise error
+                    if timed_out:
+                        code = await _exit_code(process)
+                    await _settle(reading)
+                finally:
+                    _discard(reading)
             finally:
-                if not spawning.cancelled() and spawning.exception() is None:
-                    _log(*await _see_through(spawning.result().kill()))
-            raise
-        out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
-        reading = _reading(process, out, err)
-        code: int | None = None
-        try:
-            async with asyncio.timeout(self.timeout):
-                code = await process.wait()
-            timed_out = False
-        except TimeoutError:
-            timed_out = True
-        except BaseException:
-            _discard(reading)
-            _log(*await _see_through(process.kill()))
-            raise
-        try:
-            [error] = await _see_through(process.kill())
-            if error is not None:
-                raise error
-            if timed_out:
-                code = await _exit_code(process)
-            await _settle(reading)
+                if bridge is not None:
+                    await bridge.close()
+            if missing:
+                err.add(missing)
+                if told is not None:
+                    told.add("stderr", missing)
+            if told is not None:
+                told.close()
+                await wait([told.task], None)
         finally:
-            _discard(reading)
+            if told is not None and not told.task.done():
+                told.task.cancel()
         return {
             "exit_code": code,
             "stdout": out.take(),
@@ -589,14 +740,47 @@ class Workspace:
             "timed_out": timed_out,
         }
 
-    async def _start(self, command: str) -> str:
-        process = await self.backend.spawn(command)
+    async def _start(self, command: str, env: Mapping[str, str]) -> str:
+        process = await self.backend.spawn(command, env)
         self._count += 1
         name = f"j{self._count}"
-        job = _Job(command=command, process=process, kept=_Kept(self.output_bytes))
+        job = _Job(
+            command=command,
+            process=process,
+            kept=_Kept(self.output_bytes),
+            shown=_Kept(self.output_bytes),
+        )
         job.task = asyncio.create_task(_follow(job))
         self._jobs[name] = job
         return name
+
+    @property
+    def _bridging(self) -> bool:
+        return self.bridge and getattr(self.backend, "root", None) is not None
+
+    def _told(self, reads: Sequence[str], bridged: bool) -> str:
+        told = ""
+        if self.tree is not None:
+            told += (
+                " The agent's own folder is at $RFNRY_AGENT, read-only: its files, skills and"
+                " scripts can be read and run from there."
+            )
+            if reads:
+                places = ", ".join(f"$RFNRY_TREE/{name}" for name in reads)
+                told += f" The folders it reads are at {places}."
+        if bridged:
+            told += (
+                " While a command runs, it can call your tools: $RFNRY_TOOLS is a Unix socket and"
+                " $RFNRY_TOOLS_KEY its key, for that command only. Connect, send one JSON line,"
+                ' {"key": <the key>, "tool": <name>, "args": {...}}, and read one line back:'
+                ' {"result": <what you would read for that call>} or {"error": <its error>}.'
+                f" Each connection makes one call; open several to make calls at once, up to {CALLS},"
+                " and a connection past that is closed at once, with the error line or a broken pipe or"
+                " a reset, so retry it later. Every tool"
+                " you have is there except the workspace's own (Shell, Job, Jobs, Write, Edit)"
+                " and, when you have them, Delegate and Output."
+            )
+        return told
 
     async def _job(self, args: dict[str, Any]) -> dict[str, Any]:
         a = JobArgs.model_validate(args)
@@ -628,16 +812,28 @@ class Workspace:
     async def _list(self, args: dict[str, Any]) -> dict[str, Any]:
         return {
             "jobs": [
-                {
-                    "job": name,
-                    "command": job.command,
-                    "started": job.started.isoformat(timespec="seconds"),
-                    "running": not job.ended.is_set(),
-                    "exit_code": job.code if job.ended.is_set() else None,
-                }
-                for name, job in self._jobs.items()
+                {**info.model_dump(), "started": info.started.isoformat(timespec="seconds")}
+                for info in self.jobs()
             ]
         }
+
+    def jobs(self) -> list[JobInfo]:
+        return [
+            JobInfo(
+                job=name,
+                command=job.command,
+                started=job.started,
+                running=not job.ended.is_set(),
+                exit_code=job.code if job.ended.is_set() else None,
+            )
+            for name, job in self._jobs.items()
+        ]
+
+    def output(self, job: str) -> str:
+        found = self._jobs.get(job)
+        if found is None:
+            raise InputError(f"tools/workspace: there is no job {job}")
+        return found.shown.show(final=found.ended.is_set())
 
     async def _bounded[T](self, name: str, work: Awaitable[T]) -> T:
         try:
