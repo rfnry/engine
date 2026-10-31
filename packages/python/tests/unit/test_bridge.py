@@ -1,0 +1,225 @@
+import asyncio
+import json
+import logging
+import re
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from rfnry_engine.tools.bridge import Bridge
+
+BAD = "tools/bridge: a request is one JSON line: " + '{"key": …, "tool": …, "args": {…}}'
+WRONG = "tools/bridge: the key is not this command's"
+
+
+class Seen:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def __call__(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((tool, args))
+        return {"result": args.get("x", args.get("q"))}
+
+
+@pytest.fixture
+def root(tmp_path: Path) -> Path:
+    path = tmp_path / "work"
+    path.mkdir()
+    return path
+
+
+@pytest.fixture
+async def seen() -> Seen:
+    return Seen()
+
+
+@pytest.fixture
+async def bridge(root: Path, seen: Seen) -> AsyncIterator[Bridge]:
+    b = await Bridge.open(root, seen)
+    yield b
+    await b.close()
+
+
+async def ask(b: Bridge, raw: bytes, eof: bool = False) -> dict[str, Any]:
+    reader, writer = await asyncio.open_unix_connection(b.path, limit=1 << 26)
+    writer.write(raw)
+    if eof:
+        writer.write_eof()
+    async with asyncio.timeout(5):
+        line = await reader.readline()
+    writer.close()
+    reply: dict[str, Any] = json.loads(line)
+    return reply
+
+
+def request(b: Bridge, **fields: Any) -> bytes:
+    body = {"key": b.key, "tool": "echo", "args": {"x": 1}} | fields
+    return json.dumps({k: v for k, v in body.items() if v is not ...}).encode() + b"\n"
+
+
+async def test_env_names_the_socket_and_the_key(bridge: Bridge, root: Path) -> None:
+    assert bridge.env == {"RFNRY_TOOLS": str(bridge.path), "RFNRY_TOOLS_KEY": bridge.key}
+    assert bridge.path.parent == root
+    assert re.match(r"^\.rfnry-[0-9a-f]{8}\.sock$", bridge.path.name)
+    assert re.match(r"^[0-9a-f]{32}$", bridge.key)
+
+
+async def test_a_request_gets_its_answer(bridge: Bridge, seen: Seen) -> None:
+    assert await ask(bridge, request(bridge)) == {"result": 1}
+    assert seen.calls == [("echo", {"x": 1})]
+
+
+async def test_a_request_without_a_newline_is_read_at_end_of_input(bridge: Bridge) -> None:
+    assert await ask(bridge, request(bridge).rstrip(b"\n"), eof=True) == {"result": 1}
+
+
+@pytest.mark.parametrize("key", ["wrong", ..., 1])
+async def test_a_wrong_or_missing_key_runs_nothing(bridge: Bridge, seen: Seen, key: Any) -> None:
+    assert await ask(bridge, request(bridge, key=key)) == {"error": WRONG}
+    assert seen.calls == []
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [b"not json\n", b"[1]\n", b"\xff\n", b"", "tool", "args", "no args"],
+)
+async def test_a_malformed_request_is_refused(bridge: Bridge, seen: Seen, raw: Any) -> None:
+    if raw == "tool":
+        raw = request(bridge, tool=1)
+    elif raw == "args":
+        raw = request(bridge, args=[])
+    elif raw == "no args":
+        raw = request(bridge, args=...)
+    assert await ask(bridge, raw, eof=True) == {"error": BAD}
+    assert seen.calls == []
+
+
+async def test_a_line_over_the_cap_is_refused(bridge: Bridge, seen: Seen) -> None:
+    reader, writer = await asyncio.open_unix_connection(bridge.path, limit=1 << 26)
+    writer.write(b"x" * (2 << 20) + b"\n")
+    async with asyncio.timeout(5):
+        line = await reader.readline()
+    writer.close()
+    assert json.loads(line) == {"error": "tools/bridge: a request is at most 1048576 bytes"}
+    assert seen.calls == []
+
+
+async def test_two_bridges_in_one_root_refuse_each_other_s_key(root: Path, seen: Seen) -> None:
+    a = await Bridge.open(root, seen)
+    b = await Bridge.open(root, seen)
+    try:
+        assert a.path != b.path
+        assert await ask(a, request(b)) == {"error": WRONG}
+        assert await ask(b, request(b)) == {"result": 1}
+    finally:
+        await a.close()
+        await b.close()
+
+
+async def test_close_removes_the_socket_and_refuses_new_connections(root: Path, seen: Seen) -> None:
+    b = await Bridge.open(root, seen)
+    await b.close()
+    assert not b.path.exists()
+    with pytest.raises(OSError):
+        await asyncio.open_unix_connection(b.path)
+
+
+async def test_close_cancels_a_request_in_flight(root: Path) -> None:
+    started = asyncio.Event()
+    record: list[str] = []
+
+    async def answer(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            record.append("cancelled")
+            raise
+        return {}
+
+    b = await Bridge.open(root, answer)
+    _, writer = await asyncio.open_unix_connection(b.path)
+    writer.write(request(b))
+    async with asyncio.timeout(1):
+        await started.wait()
+        await b.close()
+    assert record == ["cancelled"]
+    writer.close()
+
+
+async def test_a_silent_client_does_not_hold_close(
+    root: Path, seen: Seen, caplog: pytest.LogCaptureFixture
+) -> None:
+    b = await Bridge.open(root, seen)
+    _, writer = await asyncio.open_unix_connection(b.path)
+    await asyncio.sleep(0)
+    with caplog.at_level(logging.DEBUG):
+        async with asyncio.timeout(1):
+            await b.close()
+    writer.close()
+    assert [r for r in caplog.records if r.levelno > logging.DEBUG] == []
+
+
+async def test_a_client_gone_before_the_reply_is_harmless(
+    root: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    calls: list[str] = []
+
+    async def answer(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        calls.append(tool)
+        await asyncio.sleep(0.1)
+        return {"result": "x" * 1_000_000}
+
+    b = await Bridge.open(root, answer)
+    with caplog.at_level(logging.DEBUG):
+        _, writer = await asyncio.open_unix_connection(b.path)
+        writer.write(request(b))
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.sleep(0.3)
+        await b.close()
+    assert calls == ["echo"]
+    assert [r for r in caplog.records if r.levelno > logging.DEBUG] == []
+
+
+async def test_a_large_reply_arrives_whole(root: Path) -> None:
+    async def answer(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        return {"result": "x" * 3_000_000}
+
+    b = await Bridge.open(root, answer)
+    try:
+        reply = await ask(b, request(b))
+    finally:
+        await b.close()
+    assert len(reply["result"]) == 3_000_000
+
+
+async def test_non_ascii_round_trips(root: Path) -> None:
+    got: list[dict[str, Any]] = []
+
+    async def answer(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        got.append(args)
+        return {"result": "naïve"}
+
+    b = await Bridge.open(root, answer)
+    try:
+        reader, writer = await asyncio.open_unix_connection(b.path)
+        writer.write(request(b, args={"q": "café"}))
+        line = await reader.readline()
+        writer.close()
+    finally:
+        await b.close()
+    assert got == [{"q": "café"}]
+    assert "naïve" in line.decode()
+    assert json.loads(line) == {"result": "naïve"}
+
+
+async def test_open_raises_when_the_path_is_too_long(tmp_path: Path, seen: Seen) -> None:
+    root = tmp_path / ("d" * 120)
+    root.mkdir()
+    with pytest.raises(OSError):
+        await Bridge.open(root, seen)
+    assert list(root.iterdir()) == []
