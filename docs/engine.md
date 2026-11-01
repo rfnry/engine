@@ -1578,13 +1578,14 @@ start inherits, say, whose processes it signals.
 
 The folder in the shell. `Workspace(local, scope="acme", tree="/srv/agents")` says where the agent
 tree is mounted in the sandbox, as commands see it. The commands of a run then get `RFNRY_TREE`, the
-tree, and `RFNRY_AGENT`, the running agent's folder in it, and the `Shell` description tells the
-model that the folder is at `$RFNRY_AGENT`, read-only, with its files, skills and scripts to read
-and run, and that each folder the agent reads is at `$RFNRY_TREE/<name>`. A skill's script is run
-as `python "$RFNRY_AGENT/skills/plot/run.py"`. The sandbox mounts the tree read-only at the same
-path: `--ro-bind /srv/agents /srv/agents` for bubblewrap, `-v /srv/agents:/srv/agents:ro` for
-Docker, and for an unsandboxed `Local` the tree's own path. Commands started with `background=true`
-get the variables too; a `Shell` that code dispatches outside a run gets none. Cautions:
+tree as `posixpath.normpath` writes it, so `/srv/agents/` is `/srv/agents`, and `RFNRY_AGENT`, the
+running agent's folder in it, and the `Shell` description tells the model that the folder is at
+`$RFNRY_AGENT`, read-only, with its files, skills and scripts to read and run, and that each folder
+the agent reads is at `$RFNRY_TREE/<name>`. A skill's script is run as
+`python "$RFNRY_AGENT/skills/plot/run.py"`. The sandbox mounts the tree read-only at the same path:
+`--ro-bind /srv/agents /srv/agents` for bubblewrap, `-v /srv/agents:/srv/agents:ro` for Docker, and
+for an unsandboxed `Local` the tree's own path. Commands started with `background=true` get the
+variables too; a `Shell` that code dispatches outside a run gets none. Cautions:
 
 - the shell sees every file under the mount, hidden ones included, which the file tools refuse;
 - the fingerprint covers what the folder holds, not what a command reads;
@@ -1599,10 +1600,10 @@ UTF-8 per stream so a character split across two writes arrives whole. A fronten
 build as it runs instead of after it. The model's view is unchanged: it reads the same capped
 `stdout` and `stderr` in the `Shell` result, and a handler never slows the command. The events wait
 in a queue of 1 MiB per command; while a handler is busy past that, chunks are dropped from the
-events, and once a stream overflows its output is dropped until the handler catches up and takes
-what is queued; the next event of that stream starts with `[... <n> bytes not shown ...]`, counting
-all of it. Every event
-of a command comes before the `ToolResultReady` of its call, in order per stream — `stdout` and
+events, as is a single read of more than 1 MiB even while the handler is idle, and once a stream
+overflows its output is dropped until the handler catches up and takes what is queued; the next
+event of that stream starts with `[... <n> bytes not shown ...]`, counting all of it. Every event of
+a command comes before the `ToolResultReady` of its call, in order per stream — `stdout` and
 `stderr` are two pipes, with no order between them — and a handler that raises fails the run once
 the command has ended. A command started with `background=true` sends none.
 

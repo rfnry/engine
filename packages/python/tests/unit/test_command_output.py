@@ -69,6 +69,26 @@ async def go(
     return run
 
 
+class Backstop:
+    def __init__(self) -> None:
+        self.sender: asyncio.Task[Any] | None = None
+        self.timer: asyncio.TimerHandle | None = None
+        self.fired = False
+
+    def arm(self) -> None:
+        self.sender = asyncio.current_task()
+        self.timer = asyncio.get_running_loop().call_later(5, self.fire)
+
+    def fire(self) -> None:
+        self.fired = True
+        if self.sender is not None:
+            self.sender.cancel()
+
+    def disarm(self) -> None:
+        if self.timer is not None:
+            self.timer.cancel()
+
+
 def texts(events: list[Event], stream: str) -> str:
     return "".join(e.text for e in events if isinstance(e, CommandOutput) and e.stream == stream)
 
@@ -386,12 +406,14 @@ async def test_a_handler_still_running_is_awaited_before_the_shell_s_result(
     stop = Stop()
     cleaned = asyncio.Event()
     ready: list[bool] = []
+    senders: list[asyncio.Task[Any] | None] = []
 
     async def handler(event: Event) -> None:
         if isinstance(event, CommandOutput):
+            senders.append(asyncio.current_task())
             stop.now()
             try:
-                await asyncio.Event().wait()
+                await asyncio.sleep(5)
             except asyncio.CancelledError:
                 await asyncio.sleep(0.2)
                 cleaned.set()
@@ -402,6 +424,8 @@ async def test_a_handler_still_running_is_awaited_before_the_shell_s_result(
     run = await go(tmp_path, root, python(root, source), handler, stop=stop)
     assert [step.stopped for step in run.steps] == [True]
     assert ready == [True]
+    [sender] = senders
+    assert sender is not None and sender.done()
 
 
 async def test_a_further_cancel_cuts_a_command_output_handler_that_swallows_its_cancel(
@@ -409,21 +433,84 @@ async def test_a_further_cancel_cuts_a_command_output_handler_that_swallows_its_
 ) -> None:
     source = "import time\nprint('hi', flush=True)\ntime.sleep(5)\n"
     stop = Stop()
-    swallowed = asyncio.Event()
+    backstop = Backstop()
+    further: list[bool] = []
+    ready: list[bool] = []
+
+    def again() -> None:
+        further.append(True)
+        stop.now()
 
     async def handler(event: Event) -> None:
         if isinstance(event, CommandOutput):
             stop.now()
             try:
-                await asyncio.Event().wait()
+                await asyncio.sleep(5)
             except asyncio.CancelledError:
-                swallowed.set()
-                asyncio.get_running_loop().call_later(0.1, stop.now)
+                backstop.arm()
+                asyncio.get_running_loop().call_later(0.1, again)
+                await asyncio.sleep(5)
+        elif isinstance(event, ToolResultReady) and event.call_id == "1":
+            ready.append(bool(further))
 
-    async with asyncio.timeout(10):
-        run = await go(tmp_path, root, python(root, source), handler, stop=stop)
-    assert swallowed.is_set()
+    try:
+        async with asyncio.timeout(10):
+            run = await go(tmp_path, root, python(root, source), handler, stop=stop)
+    finally:
+        backstop.disarm()
     assert [step.stopped for step in run.steps] == [True]
+    assert ready == [True]
+    assert not backstop.fired
+    assert backstop.sender is not None and backstop.sender.done()
+
+
+async def test_a_cancelled_command_output_handler_that_returns_ends_the_sender(
+    tmp_path: Path, root: Path
+) -> None:
+    source = "import time\nprint('hi', flush=True)\ntime.sleep(5)\n"
+    stop = Stop()
+    backstop = Backstop()
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, CommandOutput):
+            stop.now()
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                backstop.arm()
+
+    try:
+        run = await go(tmp_path, root, python(root, source), handler, stop=stop)
+    finally:
+        backstop.disarm()
+    assert [step.stopped for step in run.steps] == [True]
+    assert not backstop.fired
+    assert backstop.sender is not None and backstop.sender.done()
+
+
+async def test_a_command_output_handler_that_raises_in_its_cancel_cleanup_ends_the_sender(
+    tmp_path: Path, root: Path
+) -> None:
+    source = "import time\nprint('hi', flush=True)\ntime.sleep(5)\n"
+    stop = Stop()
+    backstop = Backstop()
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, CommandOutput):
+            stop.now()
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                backstop.arm()
+                raise ValueError("cleanup failed") from None
+
+    try:
+        with pytest.raises(ValueError, match="cleanup failed"):
+            await go(tmp_path, root, python(root, source), handler, stop=stop)
+    finally:
+        backstop.disarm()
+    assert not backstop.fired
+    assert backstop.sender is not None and backstop.sender.done()
 
 
 async def test_bytes_a_decoder_held_at_a_gap_are_counted() -> None:
@@ -455,6 +542,32 @@ async def test_bytes_a_decoder_held_at_a_gap_are_counted() -> None:
         ("stdout", "a"),
         ("stderr", "1"),
         ("stdout", f"[... {written - shown} bytes not shown ...]\nb"),
+    ]
+
+
+async def test_bytes_a_decoder_holds_when_a_dropping_stream_ends_are_counted() -> None:
+    said: list[tuple[str, str]] = []
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def say(stream: Pipe, text: str) -> None:
+        said.append((stream, text))
+        if len(said) == 1:
+            entered.set()
+            await gate.wait()
+
+    told = _Told(say)
+    told.add("stdout", b"a\xc3")
+    await entered.wait()
+    told.add("stdout", b"\xa9" + b"x" * BACKLOG)
+    told.close()
+    gate.set()
+    await told.task
+    written = len(b"a\xc3") + 1 + BACKLOG
+    shown = len(b"a")
+    assert said == [
+        ("stdout", "a"),
+        ("stdout", f"[... {written - shown} bytes not shown ...]\n"),
     ]
 
 

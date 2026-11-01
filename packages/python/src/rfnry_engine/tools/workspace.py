@@ -21,7 +21,7 @@ from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.foreground import current
 from rfnry_engine.jail import Jail
 from rfnry_engine.records import Pipe
-from rfnry_engine.stop import cancel, join, wait
+from rfnry_engine.stop import join, wait
 from rfnry_engine.tools.bridge import CALLS, Answer, Bridge
 from rfnry_engine.tools.tools import Tool
 
@@ -366,6 +366,10 @@ class _Told:
         self.queued = 0
         self.missed: dict[Pipe, int] = {"stdout": 0, "stderr": 0}
         self.dropping: set[Pipe] = set()
+        self.decoders: dict[Pipe, codecs.IncrementalDecoder] = {
+            "stdout": codecs.getincrementaldecoder("utf-8")(errors="replace"),
+            "stderr": codecs.getincrementaldecoder("utf-8")(errors="replace"),
+        }
         self.task = asyncio.create_task(self._send())
 
     def add(self, stream: Pipe, data: bytes) -> None:
@@ -383,10 +387,6 @@ class _Told:
         self.queue.put_nowait(None)
 
     async def _send(self) -> None:
-        decoders: dict[Pipe, codecs.IncrementalDecoder] = {
-            "stdout": codecs.getincrementaldecoder("utf-8")(errors="replace"),
-            "stderr": codecs.getincrementaldecoder("utf-8")(errors="replace"),
-        }
         closing = False
         while not closing:
             taken = [await self.queue.get()]
@@ -408,18 +408,20 @@ class _Told:
                     last[stream] = bytearray(data)
                     events.append((stream, gap, last[stream]))
             for stream, gap, joined in events:
-                if gap:
-                    gap += len(decoders[stream].getstate()[0])
-                    decoders[stream].reset()
-                await self._say(stream, gap, decoders[stream].decode(bytes(joined)))
-        for stream, decoder in decoders.items():
-            await self._say(stream, 0, decoder.decode(b"", final=True))
+                await self._say(stream, gap, bytes(joined))
+                if self.task.cancelling():
+                    return
         for stream, gap in self.missed.items():
-            if gap:
-                await self._say(stream, gap, "")
+            await self._say(stream, gap, b"", final=True)
+            if self.task.cancelling():
+                return
 
-    async def _say(self, stream: Pipe, gap: int, text: str) -> None:
-        text = (f"[... {gap} bytes not shown ...]\n" if gap else "") + text
+    async def _say(self, stream: Pipe, gap: int, data: bytes, final: bool = False) -> None:
+        decoder = self.decoders[stream]
+        if gap:
+            gap += len(decoder.getstate()[0])
+            decoder.reset()
+        text = (f"[... {gap} bytes not shown ...]\n" if gap else "") + decoder.decode(data, final)
         if text:
             await self.said(stream, text)
 
@@ -699,7 +701,8 @@ class Workspace:
                 await wait([told.task], None)
         finally:
             if told is not None and not told.task.done():
-                await cancel([told.task])
+                told.task.cancel()
+                await wait([told.task], None)
         return {
             "exit_code": code,
             "stdout": out.take(),
