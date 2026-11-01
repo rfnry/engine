@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -66,6 +67,13 @@ def test_the_engines_models_read_as_given_and_cannot_be_changed(tmp_path: Path) 
     with pytest.raises(AttributeError):
         engine.models = {}  # type: ignore[misc]
     assert engine.models["strong"] is strong
+
+
+def test_the_engines_models_are_one_view_built_with_the_engine(tmp_path: Path) -> None:
+    strong, fast = Scripted(), Scripted()
+    engine = Engine(pair(tmp_path), models={"strong": strong, "fast": fast})
+    assert isinstance(engine.models, MappingProxyType)
+    assert engine.models is engine.models
 
 
 def test_a_model_no_agent_runs_on_is_refused(tmp_path: Path) -> None:

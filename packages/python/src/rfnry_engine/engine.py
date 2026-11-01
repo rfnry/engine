@@ -475,7 +475,7 @@ class Engine:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"engine: root is not a directory: {root}")
-        self._models = _models(models)
+        self._models = MappingProxyType(_models(models))
         self.refinery = refinery
         self.max_steps = max_steps
         self.max_depth = max_depth
@@ -509,7 +509,7 @@ class Engine:
 
     @property
     def models(self) -> Mapping[str, GenerationModel | DecisionModel]:
-        return MappingProxyType(self._models)
+        return self._models
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
