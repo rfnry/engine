@@ -543,3 +543,30 @@ def test_an_unreadable_folder_is_warned_about_once_per_loaded_tree(
     with caplog.at_level(logging.WARNING):
         load_tree(tmp_path)
     assert [m for m in caplog.messages if "cannot read" in m] == warned
+
+
+@pytest.mark.parametrize(
+    ("agent", "link"),
+    [(".", ".lib"), ("a", ".lib"), ("a", "lib")],
+)
+def test_an_agent_s_own_tools_linked_to_a_hidden_folder_inside_it_is_refused_at_load(
+    tmp_path: Path, agent: str, link: str
+) -> None:
+    folder = tmp_path / agent
+    if agent == ".":
+        (folder / "AGENT.md").write_text("---\nname: root\nkind: generation\nmodel: strong\n---\n")
+    else:
+        _agent(tmp_path, agent, "kind: generation\nmodel: strong\n")
+    (folder / ".lib").mkdir()
+    (folder / ".lib/notify.json").write_text(
+        '{"description": "Do it", "input_schema": {"type": "object"}}'
+    )
+    (folder / ".lib/notify.py").write_text("def run(args, call):\n    return {}\n")
+    if link == "lib":
+        (folder / "lib").symlink_to(".lib", target_is_directory=True)
+    (folder / "tools").symlink_to(link, target_is_directory=True)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {folder / 'tools'} links to {folder.resolve() / '.lib'}, a hidden folder the agent's fingerprint leaves out; move the folder to a visible name"
+    )
