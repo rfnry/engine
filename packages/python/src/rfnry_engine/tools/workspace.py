@@ -465,9 +465,14 @@ def _log(*errors: BaseException | None) -> None:
 async def _kill_all(
     *kills: Coroutine[Any, Any, None],
 ) -> tuple[list[BaseException | None], asyncio.CancelledError | None]:
-    killing = [asyncio.create_task(kill, eager_start=True) for kill in kills]
+    killing = [asyncio.ensure_future(kill) for kill in kills]
     caller = asyncio.current_task()
     cancelled: asyncio.CancelledError | None = None
+    if killing:
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
     hurried = False
     while True:
         if not hurried and caller is not None and caller.cancelling() > 1:

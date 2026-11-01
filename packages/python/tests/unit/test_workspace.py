@@ -1392,3 +1392,31 @@ async def test_a_kill_cancelled_as_it_is_made_still_runs_under_a_task_factory() 
         loop.set_task_factory(None)
     assert task in done and task.cancelled()
     assert ran.kills == 1
+
+
+def plain(loop: asyncio.AbstractEventLoop, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+    return asyncio.Task(coro, loop=loop)
+
+
+async def test_a_kill_runs_on_a_loop_whose_task_factory_refuses_eager_start() -> None:
+    loop = asyncio.get_running_loop()
+    loop.set_task_factory(plain)
+    try:
+        async with asyncio.timeout(5):
+            timed = Machine(lambda ran: ran.stdout.say(b"before\n"))
+            result = await shell(Workspace(timed, scope="acme", timeout=0.2), "x")
+            cut = Machine()
+            task = asyncio.create_task(shell(Workspace(cut, scope="acme"), "x"))
+            ran = await started(cut)
+            task.cancel()
+            task.cancel()
+            await asyncio.wait({task})
+            jobs = Machine()
+            ws = Workspace(jobs, scope="acme")
+            await background(ws, "serve")
+            await ws.close()
+    finally:
+        loop.set_task_factory(None)
+    assert result["timed_out"] and timed.commands[0].kills == 1
+    assert task.cancelled() and ran.kills == 1
+    assert jobs.commands[0].kills >= 1 and await tool(ws, "Jobs").call({}) == {"jobs": []}
