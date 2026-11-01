@@ -1598,17 +1598,18 @@ variables too; a `Shell` that code dispatches outside a run gets none. Cautions:
 
 Showing a command. With `on_event`, a foreground `Shell` command sends a `CommandOutput` for what it
 writes, as it arrives (chunks that queued while the handler was busy arrive joined, one event per
-stream, and one more at each gap, since an event never joins across one), with its `call_id`, the `stream` (`"stdout"` or `"stderr"`) and the `text`, decoded as
-UTF-8 per stream so a character split across two writes arrives whole. A frontend can show a long
-build as it runs instead of after it. The model's view is unchanged: it reads the same capped
-`stdout` and `stderr` in the `Shell` result, and a handler never slows the command. The events wait
-in a queue of 1 MiB per command; while a handler is busy past that, chunks are dropped from the
-events, as is a single read of more than 1 MiB even while the handler is idle, and once a stream
-overflows its output is dropped until the handler catches up and takes what is queued; the next
-event of that stream starts with `[... <n> bytes not shown ...]`, counting all of it. Every event of
-a command comes before the `ToolResultReady` of its call, in order per stream — `stdout` and
-`stderr` are two pipes, with no order between them — and a handler that raises fails the run once
-the command has ended. A command started with `background=true` sends none.
+stream, and one more at each gap, since an event never joins across one), with its `call_id`, the
+`stream` (`"stdout"` or `"stderr"`) and the `text`, decoded as UTF-8 per stream so a character split
+across two writes arrives whole. A frontend can show a long build as it runs instead of after it.
+The model's view is unchanged: it reads the same capped `stdout` and `stderr` in the `Shell` result,
+and a handler never slows the command. The events wait in a queue of 1 MiB per command; while a
+handler is busy past that, chunks are dropped from the events, as is a single read of more than 1
+MiB even while the handler is idle, and once a stream overflows its output is dropped until the
+handler catches up and takes what is queued; the next event of that stream starts with `[... <n>
+bytes not shown ...]`, counting all of it. Every event of a command comes before the
+`ToolResultReady` of its call, in order per stream — `stdout` and `stderr` are two pipes, with no
+order between them — and a handler that raises fails the run once the command has ended. A command
+started with `background=true` sends none.
 
 Calling tools from code. A command can call the run's tools itself, so a script that looks up fifty
 orders, or checks every row of a table against a rule, makes its calls in a loop, and the model reads
@@ -1756,20 +1757,20 @@ end, and the call that started it waits for it: a stop or a cancel of a `Shell` 
 `Job(stop=true)` or of `close()` returns once the kill has returned — `close()` once the jobs it
 stopped have ended too — however many cancels come meanwhile. A cancel that comes while `spawn` runs
 waits for it to return, then for the kill of what it started — with `background=true`, for its job
-to be listed, so `close()` stops it. So `spawn` and `kill()` must return promptly. A kill counts as the first stop, so a second ends a command at once:
-the next cancel after the one that started a kill — even one that comes while `spawn` still runs, or
-at the same moment — cancels that kill, once, and so does the second cancel during a kill the
-workspace started on its own, for a command past its timeout or that has ended, `Job(stop=true)` or
-`close()`. The call still waits for the kill: a cancelled `kill()` must still end the command and
-everything it started, at once, before it returns; `Local` sends SIGKILL in a `finally`, and a
-backend of yours must do the same. A `kill()` that raises is the call's error; when the
-call is already leaving with a cancellation, or with the error of a `wait()` that raised, it is
-logged as an error instead, `tools/workspace: could not stop the command: …`, and the kill that follows a
-job's end puts its error in the job's output. `read` refuses a file larger than `limit`; `write`
-creates parent directories. A path is the model's, relative to the workspace, and what it can reach
-is the backend's to decide; an error a backend raises reaches the model as the tool's error. A
-backend's `description`, if it has one, is ignored: the machine the model has is told in the
-agent's markdown, not by the workspace.
+to be listed, so `close()` stops it. So `spawn` and `kill()` must return promptly. A kill counts as
+the first stop, so a second ends a command at once: the next cancel after the one that started a
+kill — even one that comes while `spawn` still runs, or at the same moment — cancels that kill,
+once, and so does the second cancel during a kill the workspace started on its own, for a command
+past its timeout or that has ended, `Job(stop=true)` or `close()`. The call still waits for the
+kill: a cancelled `kill()` must still end the command and everything it started, at once, before it
+returns; `Local` sends SIGKILL in a `finally`, and a backend of yours must do the same. A `kill()`
+that raises is the call's error; when the call is already leaving with a cancellation, or with the
+error of a `wait()` that raised, it is logged as an error instead, `tools/workspace: could not stop
+the command: …`, and the kill that follows a job's end puts its error in the job's output. `read`
+refuses a file larger than `limit`; `write` creates parent directories. A path is the model's,
+relative to the workspace, and what it can reach is the backend's to decide; an error a backend
+raises reaches the model as the tool's error. A backend's `description`, if it has one, is ignored:
+the machine the model has is told in the agent's markdown, not by the workspace.
 
 The library has no notion of a secret. A key a user types is the run's input; a key you put in
 `Local(env=)` is the commands' environment, which a command can print. Either way the record keeps
@@ -2417,15 +2418,15 @@ into an agent already in the same chain of routes is refused.
 
 Called inside a run, a consult is part of that run's foreground, as a delegated run is: its run
 takes the caller's `stop` and `on_event`. The caller's `stop.now()` reaches the consult instead of
-cancelling its call, so the consult ends with its record, bar the one a script's call
-started, which the command's end cancels (see the bridge above), and whatever else the call was doing is
-cut once the consult has taken the stop — a stop that lands before a call returns cuts it, even when
-its consult had just finished, and that consult keeps its record — and the caller's step reads
-`stopped by the user`, as a stopped `Delegate` step does; `after_step()` ends it after its current
-step. A consult a tool of yours starts in a task of its own — two at once, say — is in the
-foreground too; one a script's call started through the workspace's tool bridge ends with the
-script's command instead, unless `stop.now()` ended the command, as "Calling tools from code" says.
-Its events reach the caller's handler, told apart by `agent` and `run_id`:
+cancelling its call, so the consult ends with its record — one a script's call started included, as
+"Calling tools from code" says — and whatever else the call was doing is cut once the consult has
+taken the stop — a stop that lands before a call returns cuts it, even when its consult had just
+finished, and that consult keeps its record — and the caller's step reads `stopped by the user`, as
+a stopped `Delegate` step does; `after_step()` ends it after its current step. A consult a tool of
+yours starts in a task of its own — two at once, say — is in the foreground too; one a script's call
+started through the workspace's tool bridge ends with the script's command instead, unless
+`stop.now()` ended the command, as "Calling tools from code" says. Its events reach the caller's
+handler, told apart by `agent` and `run_id`:
 
 ```python
 async def status(event):
