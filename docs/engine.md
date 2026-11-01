@@ -1598,7 +1598,7 @@ variables too; a `Shell` that code dispatches outside a run gets none. Cautions:
 
 Showing a command. With `on_event`, a foreground `Shell` command sends a `CommandOutput` for what it
 writes, as it arrives (chunks that queued while the handler was busy arrive joined, one event per
-stream), with its `call_id`, the `stream` (`"stdout"` or `"stderr"`) and the `text`, decoded as
+stream, and one more at each gap, since an event never joins across one), with its `call_id`, the `stream` (`"stdout"` or `"stderr"`) and the `text`, decoded as
 UTF-8 per stream so a character split across two writes arrives whole. A frontend can show a long
 build as it runs instead of after it. The model's view is unchanged: it reads the same capped
 `stdout` and `stderr` in the `Shell` result, and a handler never slows the command. The events wait
@@ -1624,7 +1624,7 @@ key of its own:
    │                             │◀── {"key":…,"tool":"search","args":{"query":"heat equation"}}   (connect, one line)
    │                             │ 3. the run's call path: events, approve, deadline, dispatch, record
    │                             │─── {"result":[ … ]} ─────────────────────────────────────▶│ (one line, close)
-   │◀── Shell result ────────────│ 4. command ended: socket closed and removed     │
+   │◀── Shell result ────────────│ 4. command ended: socket closed, removed if its path still holds it
 ```
 
 A client is a few lines in any language; in Python:
@@ -1664,8 +1664,8 @@ as they come, so calls a script makes at once — from threads, or with `asyncio
 reply's calls do, up to 64 at once per command: a connection that arrives while 64 are in flight is
 closed at once, unread, after an `{"error": "tools/bridge: at most 64 calls at once; wait for one to
 finish"}` line. The script may read that line or see a broken pipe or a connection reset instead, and
-should retry on any of them. A `Shell` command of a delegated or routed run calls that run's tools, under its
-own `run_id`.
+should retry on any of them. A `Shell` command of a delegated or routed run calls that run's tools,
+under its own `run_id`.
 
 Each call runs as the model's calls do — `ToolCallStarted`, `approve`, the deadline (`tool_timeout`,
 or a folder tool's own), the stop, `ToolResultReady` — and is recorded as a `Step` with `by`, the id
@@ -1721,7 +1721,7 @@ but where a deployment puts the workspace does not.
   engine's process, which a sandbox's limits don't cover. The workspace `timeout` bounds how long,
   and a command has at most 64 calls in flight at once, so it holds at most 64 file descriptors and
   64 requests of up to 1 MiB each, plus their parsed arguments, in the engine's process. A script
-  that opens more is closed on, and should retry.
+  that opens more finds its connection closed, and should retry.
 - The socket lives only while the command runs; something the command leaves running cannot call
   afterwards.
 
@@ -1749,14 +1749,14 @@ class Backend(Protocol):
     async def write(self, path: str, data: bytes) -> None: ...
 ```
 
-`spawn` starts a command in the workspace with no input, with `env` added to its environment, and returns at once a `Process`: its
-`stdout` and `stderr`, read until they end, `wait()` for its exit code, and `kill()` to end it and
-everything it started. Every kill the workspace starts runs to its end, and the call that started it
-waits for it: a stop or a cancel of a `Shell` call, of `Job(stop=true)` or of `close()` returns once
-the kill has returned — `close()` once the jobs it stopped have ended too — however many cancels come
-meanwhile, and one that comes while `spawn` runs waits for it to return, then for the kill of what
-it started — with `background=true`, for its job to be listed, so `close()` stops it. So `spawn` and
-`kill()` must return promptly. A kill counts as the first stop, so a second ends a command at once:
+`spawn` starts a command in the workspace with no input, with `env` added to its environment, and
+returns at once a `Process`: its `stdout` and `stderr`, read until they end, `wait()` for its exit
+code, and `kill()` to end it and everything it started. Every kill the workspace starts runs to its
+end, and the call that started it waits for it: a stop or a cancel of a `Shell` call, of
+`Job(stop=true)` or of `close()` returns once the kill has returned — `close()` once the jobs it
+stopped have ended too — however many cancels come meanwhile. A cancel that comes while `spawn` runs
+waits for it to return, then for the kill of what it started — with `background=true`, for its job
+to be listed, so `close()` stops it. So `spawn` and `kill()` must return promptly. A kill counts as the first stop, so a second ends a command at once:
 the next cancel after the one that started a kill — even one that comes while `spawn` still runs, or
 at the same moment — cancels that kill, once, and so does the second cancel during a kill the
 workspace started on its own, for a command past its timeout or that has ended, `Job(stop=true)` or
@@ -2417,7 +2417,8 @@ into an agent already in the same chain of routes is refused.
 
 Called inside a run, a consult is part of that run's foreground, as a delegated run is: its run
 takes the caller's `stop` and `on_event`. The caller's `stop.now()` reaches the consult instead of
-cancelling its call, so the consult ends with its record, and whatever else the call was doing is
+cancelling its call, so the consult ends with its record, bar the one a script's call
+started, which the command's end cancels (see the bridge above), and whatever else the call was doing is
 cut once the consult has taken the stop — a stop that lands before a call returns cuts it, even when
 its consult had just finished, and that consult keeps its record — and the caller's step reads
 `stopped by the user`, as a stopped `Delegate` step does; `after_step()` ends it after its current
