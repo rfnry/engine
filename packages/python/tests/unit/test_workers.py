@@ -1104,6 +1104,45 @@ async def test_closing_the_workers_closes_every_pool_before_it_raises_what_the_f
     ] == ["workers/pool: could not stop a worker: the third pool would not close"]
 
 
+async def test_a_cancel_of_closing_the_workers_from_another_thread_still_closes_every_pool(
+    tmp_path: Path,
+) -> None:
+    first = WorkerPool([script(tmp_path / "one", "nap", PID)])
+    second = WorkerPool([script(tmp_path / "two", "nap", PID)])
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        pids = [
+            pid(await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(call, loop)))
+            for call in (first.call("nap", {}, CALL, 5), second.call("nap", {}, CALL, 5))
+        ]
+        workers = Workers({}, None)
+        workers._pools = {None: first, "billing": second}
+        busy = threading.Event()
+
+        def block() -> None:
+            busy.set()
+            time.sleep(0.3)
+
+        loop.call_soon_threadsafe(block)
+        assert busy.wait(5)
+        closing = asyncio.ensure_future(workers.close())
+        await asyncio.sleep(0.05)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(5):
+                await closing
+        assert first._closed and second._closed
+        assert all(ended(value) for value in pids)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        first._drop(CLOSED)
+        second._drop(CLOSED)
+        loop.close()
+
+
 def test_a_worker_started_while_its_pool_closes_is_stopped(tmp_path: Path) -> None:
     pool = WorkerPool([script(tmp_path, "nap", PID)])
     _, children = held()

@@ -1790,6 +1790,9 @@ reason: `tools/workspace: no tool bridge for this command: AF_UNIX path too long
 
 Without a sandbox, the kill reaches every process the command started except one that leaves its
 process group with `setsid`; the process namespace of a container or of bubblewrap closes that gap.
+Such a process keeps running, but not on the command's pipes: once the command has exited and its
+output is no longer read, `Local` closes them, so it holds none of the engine's files and what it
+writes there after is lost.
 
 A backend is three methods; the library does the rest — the tools, the time limits, the output
 caps, stopping what a command leaves behind:
@@ -1820,8 +1823,10 @@ error of a `wait()` that raised, it is logged as an error instead, `tools/worksp
 the command: …`, and the kill that follows a job's end puts its error in the job's output. `read`
 refuses a file larger than `limit`; `write` creates parent directories. A path is the model's,
 relative to the workspace, and what it can reach is the backend's to decide; an error a backend
-raises reaches the model as the tool's error. A backend's `description`, if it has one, is ignored:
-the machine the model has is told in the agent's markdown, not by the workspace.
+raises reaches the model as the tool's error, a `TimeoutError` of its own as it is: only the
+workspace's `timeout` makes a `Shell` return `timed_out` or a `Write` or `Edit` fail with
+`tools/workspace: Write did not finish within 120s`. A backend's `description`, if it has one, is
+ignored: the machine the model has is told in the agent's markdown, not by the workspace.
 
 The library has no notion of a secret. A key a user types is the run's input; a key you put in
 `Local(env=)` is the commands' environment, which a command can print. Either way the record keeps
@@ -2265,7 +2270,8 @@ whose records keep naming what ran, while a data file a script opens when it is 
 from disk then. A worker starts at the first call that needs it, never when the engine is built,
 and again after a crash, and lives until you close the engine — `await engine.close()`, or leaving
 `async with Engine(...) as engine:` — which stops every worker and whatever it started, and raises
-the first error stopping one raised once all are stopped, logging the others. The engine watches
+the first error stopping one raised once all are stopped, logging the others; a cancel of `close()`
+reaches you only once every worker is stopped, or handed to the loop it serves. The engine watches
 each worker with one thread of its own, which waits on the worker's exit and ends with it, so a
 server counting its threads counts one more for each worker running. A closed
 engine stays closed: a run, a tool call or an `EngineTools` after `close()` is an `InputError`,

@@ -97,6 +97,7 @@ class _Pipes(asyncio.SubprocessProtocol):
         self.stderr = asyncio.StreamReader()
         self.exited: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self.open = {1, 2}
+        self.abandoned = False
         self.transport: asyncio.SubprocessTransport | None = None
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
@@ -119,9 +120,27 @@ class _Pipes(asyncio.SubprocessProtocol):
             self.exited.set_result(None)
         self._finish()
 
+    def abandon(self) -> None:
+        self.abandoned = True
+        self._finish()
+
     def _finish(self) -> None:
-        if self.exited.done() and not self.open and self.transport is not None:
+        done = self.abandoned or not self.open
+        if self.exited.done() and done and self.transport is not None:
             self.transport.close()
+
+
+class _Read:
+    def __init__(self, stream: asyncio.StreamReader, pipes: _Pipes) -> None:
+        self._stream = stream
+        self._pipes = pipes
+
+    async def read(self, n: int) -> bytes:
+        try:
+            return await self._stream.read(n)
+        except asyncio.CancelledError:
+            self._pipes.abandon()
+            raise
 
 
 def _signal(pid: int, sig: signal.Signals) -> None:
@@ -141,8 +160,8 @@ def _alive(pid: int) -> bool:
 
 class _Running:
     def __init__(self, transport: asyncio.SubprocessTransport, pipes: _Pipes) -> None:
-        self.stdout = pipes.stdout
-        self.stderr = pipes.stderr
+        self.stdout = _Read(pipes.stdout, pipes)
+        self.stderr = _Read(pipes.stderr, pipes)
         self._transport = transport
         self._exited = pipes.exited
         self._pid = transport.get_pid()
@@ -497,10 +516,13 @@ async def _see_through(*kills: Coroutine[Any, Any, None]) -> list[BaseException 
 
 
 async def _exit_code(process: Process) -> int | None:
+    deadline = asyncio.timeout(GRACE)
     try:
-        async with asyncio.timeout(GRACE):
+        async with deadline:
             return await process.wait()
     except TimeoutError:
+        if not deadline.expired():
+            raise
         return None
 
 
@@ -735,16 +757,17 @@ class Workspace:
             [err.add] if told is None else [err.add, partial(told.add, "stderr")],
         )
         code: int | None = None
+        deadline = asyncio.timeout(self.timeout)
         try:
-            async with asyncio.timeout(self.timeout):
+            async with deadline:
                 code = await process.wait()
             timed_out = False
-        except TimeoutError:
+        except BaseException as exc:
+            if not isinstance(exc, TimeoutError) or not deadline.expired():
+                _discard(reading)
+                _log(*await _see_through(process.kill()))
+                raise
             timed_out = True
-        except BaseException:
-            _discard(reading)
-            _log(*await _see_through(process.kill()))
-            raise
         try:
             [error] = await _see_through(process.kill())
             if error is not None:
@@ -854,10 +877,13 @@ class Workspace:
         return found.shown.show(final=found.ended.is_set())
 
     async def _bounded[T](self, name: str, work: Awaitable[T]) -> T:
+        deadline = asyncio.timeout(self.timeout)
         try:
-            async with asyncio.timeout(self.timeout):
+            async with deadline:
                 return await work
         except TimeoutError:
+            if not deadline.expired():
+                raise
             raise TimeoutError(
                 f"tools/workspace: {name} did not finish within {self.timeout:g}s"
             ) from None

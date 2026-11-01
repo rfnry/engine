@@ -282,8 +282,7 @@ class WorkerPool:
         self._closed = True
         loop = self._loop
         if loop is asyncio.get_running_loop():
-            async with self._lock:
-                self._drop(CLOSED)
+            self._drop(CLOSED)
         elif loop is not None and loop.is_running():
             handed: Future[None] = Future()
             soon = loop.call_soon_threadsafe(self._hand, handed)
@@ -396,10 +395,18 @@ class Workers:
         return self._pools[self._groups[agent]]
 
     async def close(self) -> None:
-        closed = await asyncio.gather(
-            *(pool.close() for pool in self._pools.values()), return_exceptions=True
-        )
-        failed = [result for result in closed if isinstance(result, BaseException)]
+        failed: list[BaseException] = []
+        cancelled: asyncio.CancelledError | None = None
+        for pool in self._pools.values():
+            try:
+                await pool.close()
+            except asyncio.CancelledError as exc:
+                cancelled = cancelled or exc
+            except Exception as exc:
+                failed.append(exc)
+        if cancelled is not None:
+            _log(*failed)
+            raise cancelled
         _log(*failed[1:])
         if failed:
             raise failed[0]

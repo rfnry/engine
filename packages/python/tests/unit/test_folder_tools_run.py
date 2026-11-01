@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import datetime
 import json
 import logging
@@ -554,6 +555,48 @@ async def test_workers_puts_a_folder_s_agents_on_its_own_processes(tmp_path: Pat
         helped = await pids("help", 1)
     assert len(support) == 2 and len(desk) == 1
     assert helped <= support and not support & desk
+
+
+@pytest.mark.parametrize("cut", ["while-a-worker-spawns", "as-it-starts"])
+async def test_a_cancelled_close_still_stops_every_worker_of_a_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut: str
+) -> None:
+    tool(tmp_path / "tools", "pid", body=PID)
+    write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
+    engine = Engine(tmp_path, models={}, workers={"support": 2})
+    surface = EngineTools(engine, agent="billing", scope="acme")
+    pool = engine._workers.pool("billing")
+    calls: list[asyncio.Future[Any]] = []
+    try:
+        async with asyncio.timeout(10):
+            first = pid(await surface.dispatch("pid", {}))
+            calls.append(asyncio.ensure_future(surface.dispatch("pid", {"sleep": 30})))
+            spawning, release = asyncio.Event(), asyncio.Event()
+            spawn = pool._spawn
+
+            async def held() -> Any:
+                spawning.set()
+                await release.wait()
+                return await spawn()
+
+            if cut == "while-a-worker-spawns":
+                monkeypatch.setattr(pool, "_spawn", held)
+                calls.append(asyncio.ensure_future(surface.dispatch("pid", {})))
+                await spawning.wait()
+            closing = asyncio.ensure_future(engine.close())
+            await asyncio.sleep(0 if cut == "as-it-starts" else 0.05)
+            closing.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await closing
+            release.set()
+            await asyncio.wait(calls)
+        assert await gone(first)
+        assert all(isinstance(call.exception(), WorkerError) for call in calls)
+    finally:
+        await engine.close()
+        for call in calls:
+            if not call.done():
+                call.cancel()
 
 
 async def test_workers_holds_a_script_once_per_pool_however_many_agents_see_it(

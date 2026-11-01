@@ -1,10 +1,14 @@
 import asyncio
+import contextlib
+import gc
 import os
 import re
+import signal
 import socket
 import sys
 import threading
 import time
+import warnings
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -523,6 +527,72 @@ async def test_a_background_process_does_not_hold_the_call(root: Path) -> None:
     pid, started = result["stdout"].split()
     assert started == "started"
     assert await gone(int(pid))
+
+
+def pipes(pid: int | str = "self") -> set[str]:
+    held = set()
+    for fd in Path(f"/proc/{pid}/fd").iterdir():
+        with contextlib.suppress(OSError):
+            if (target := os.readlink(fd)).startswith("pipe:"):
+                held.add(target)
+    return held
+
+
+def escape(pids: Path) -> str:
+    return f"setsid sh -c 'echo $$ >> {pids}; exec sleep 30' & sleep 0.3"
+
+
+def escaped(pids: Path) -> list[int]:
+    return [int(line) for line in pids.read_text().split()] if pids.exists() else []
+
+
+def kill_escaped(pids: Path) -> None:
+    for pid in escaped(pids):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pid, signal.SIGKILL)
+
+
+async def test_a_process_that_escapes_its_command_leaves_none_of_its_pipes_open(
+    root: Path, tmp_path: Path
+) -> None:
+    pids = tmp_path / "pids"
+    ws = workspace(root, timeout=10)
+    gc.collect()
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            for n in range(3):
+                result = await shell(ws, f"{escape(pids)}; echo started {n}")
+                assert result == {
+                    "exit_code": 0,
+                    "stdout": f"started {n}\n",
+                    "stderr": "",
+                    "timed_out": False,
+                }
+            gc.collect()
+            await asyncio.sleep(0.1)
+            held = [pipes(pid) for pid in escaped(pids)]
+            assert len(held) == 3 and all(held)
+            assert [pipes() & theirs for theirs in held] == [set(), set(), set()]
+        assert [w for w in caught if issubclass(w.category, ResourceWarning)] == []
+    finally:
+        kill_escaped(pids)
+
+
+async def test_a_cancelled_command_whose_escaped_process_holds_its_pipes_leaves_none_open(
+    root: Path, tmp_path: Path
+) -> None:
+    pids = tmp_path / "pids"
+    ws = workspace(root, timeout=10)
+    try:
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(1.0):
+                await shell(ws, f"{escape(pids)}; sleep 30")
+        await asyncio.sleep(0.1)
+        [theirs] = [pipes(pid) for pid in escaped(pids)]
+        assert theirs and pipes() & theirs == set()
+    finally:
+        kill_escaped(pids)
 
 
 async def test_parallel_shell_calls_run_independently(root: Path) -> None:
