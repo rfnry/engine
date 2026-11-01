@@ -638,14 +638,15 @@ async def test_a_failed_recording_is_logged_and_the_run_returned(
     assert f"refinery.record failed for run {run.run_id}" in caplog.text
 
 
-async def test_a_run_whose_args_nest_past_the_serializer_s_limit_is_returned_and_logged_unrecorded(
-    fixtures: Path, storage: Storage, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize("levels", [254, 255], ids=["254-records", "255-unrecorded"])
+async def test_a_run_whose_args_nest_past_254_levels_is_returned_and_logged_unrecorded(
+    fixtures: Path, storage: Storage, caplog: pytest.LogCaptureFixture, levels: int
 ) -> None:
     async def look(args: dict[str, Any]) -> str:
         return "seen"
 
     deep: list[Any] = []
-    for _ in range(299):
+    for _ in range(levels - 2):
         deep = [deep]
     call = ToolCall(id="c1", name="look", args={"x": deep})
     refinery = Refinery(storage)
@@ -658,17 +659,22 @@ async def test_a_run_whose_args_nest_past_the_serializer_s_limit_is_returned_and
     assert isinstance(run, Generation) and run.reply == "done"
     [step] = run.steps
     assert (step.tool, step.result, step.args == {"x": deep}) == ("look", "seen", True)
-    [logged] = [r for r in caplog.records if r.name == "rfnry_engine.engine"]
-    assert (logged.levelname, logged.getMessage()) == (
+    logged = [
+        (r.levelname, r.getMessage(), r.exc_info and (type(r.exc_info[1]), str(r.exc_info[1])))
+        for r in caplog.records
+        if r.name == "rfnry_engine.engine"
+    ]
+    failure = (
         "WARNING",
         f"refinery.record failed for run {run.run_id}",
+        (ValueError, "Circular reference detected (depth exceeded)"),
     )
-    assert logged.exc_info is not None
-    failed = logged.exc_info[1]
-    assert type(failed) is ValueError
-    assert str(failed) == "Circular reference detected (depth exceeded)"
-    with pytest.raises(NotFoundError):
-        await refinery.run("acme", run.run_id)
+    assert logged == ([] if levels == 254 else [failure])
+    try:
+        read: Run | None = await refinery.run("acme", run.run_id)
+    except NotFoundError:
+        read = None
+    assert (isinstance(read, Generation) and read.steps == run.steps) is (levels == 254)
 
 
 PNG = b"\x89PNG\r\n\x1a\n"

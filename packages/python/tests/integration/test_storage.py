@@ -902,6 +902,16 @@ async def test_put_runs_stores_nothing_when_the_database_refuses_a_row(storage: 
     assert await storage.get_run("a", "r1") is None
 
 
+async def test_put_runs_stores_nothing_when_a_body_is_not_json(storage: Storage) -> None:
+    bad = _run("a", "r2").model_copy(update={"body": {"on": datetime.now(UTC).date()}})
+    with pytest.raises(StorageError) as raised:
+        await storage.put_runs("a", [_run("a", "r1"), bad])
+    assert str(raised.value) == (
+        "refinery/postgres: storage rejected put_runs: Object of type date is not JSON serializable"
+    )
+    assert await storage.get_run("a", "r1") is None
+
+
 async def test_put_runs_with_no_rows_does_nothing(storage: Storage) -> None:
     await storage.put_runs("a", [])
     assert await storage.count_scope("a") == 0

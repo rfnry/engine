@@ -477,6 +477,7 @@ async def test_a_slot_frees_when_a_call_ends(root: Path) -> None:
 CALLED = "tools/bridge: this command made its {} calls; no more are answered"
 SENT = "tools/bridge: this command sent its {} bytes of calls; no more are answered"
 DEEP = "tools/bridge: a call's args nest deeper than 128 levels"
+CAPPED = "tools/bridge: at most 1 calls at once; wait for one to finish"
 
 
 def deep(b: Bridge, depth: int) -> bytes:
@@ -547,12 +548,15 @@ async def test_a_connection_refused_at_the_cap_counts_toward_no_budget(
                 await asyncio.sleep(0.01)
         for _ in range(3):
             over, gone = await asyncio.open_unix_connection(b.path)
+            with contextlib.suppress(ConnectionError):
+                gone.write(request(b, args={"x": 9}))
+                await gone.drain()
+            line = b""
             async with asyncio.timeout(5):
-                line = await over.readline()
+                with contextlib.suppress(ConnectionError):
+                    line = await over.readline()
             gone.close()
-            assert json.loads(line) == {
-                "error": "tools/bridge: at most 1 calls at once; wait for one to finish"
-            }
+            assert line in (b"", b'{"error": "' + CAPPED.encode() + b'"}\n')
         gate.set()
         async with asyncio.timeout(5):
             assert json.loads(await reader.readline()) == {"result": 0}

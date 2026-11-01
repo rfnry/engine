@@ -1671,10 +1671,14 @@ before it is parsed, one the bridge refuses included. Past either, every further
 `{"error": "tools/bridge: this command made its 10000 calls; no more are answered"}` or
 `{"error": "tools/bridge: this command sent its 2097152 bytes of calls; no more are answered"}`, so
 a script with more to do splits it over several commands, as the `Shell` description tells the
-model. A call whose `args` nest deeper than 128 levels of lists and objects, `args` itself the
-first, is answered `{"error": "tools/bridge: a call's args nest deeper than 128 levels"}`; the depth
-is read from the line before it is parsed, its strings aside, so any other field of the request
-nested as deep, or a malformed line that opens as many, gets the same error. None of these runs
+model. The budgets are each command's own: commands a run has going at once each get theirs, so
+what a run's commands send in all grows with how many it runs at once. A call whose `args` nest
+deeper than 128 levels of lists and objects, `args` itself the first, is answered
+`{"error": "tools/bridge: a call's args nest deeper than 128 levels"}`. The depth is read from the
+line before it is parsed, its strings aside and the request itself the first level, so a line
+nested past 129 levels gets this error whatever else is wrong with it: another field nested that
+deep, a key that is not the command's, or no JSON at all. The budgets are checked before the parse
+too, so a line past either gets the budget's error even when it is malformed. None of these runs
 anything or leaves a step or an event, and a connection closed at the cap of 64 below counts toward
 neither budget.
 
@@ -1752,7 +1756,11 @@ but where a deployment puts the workspace does not.
   `tools/bridge: a call's args nest deeper than 128 levels` — and leaves no step and no event. So
   one command adds at most 10,000 steps to the run's record, the engine parses at most 2 MiB of its
   requests however they are shaped, which bounds the arguments it holds and records, and every
-  argument it records nests well inside the depth the record's serializer takes.
+  argument it records nests well inside the depth the record's serializer takes. A line counts
+  toward the 2 MiB before its key is checked, so that a line without the key is never parsed; so a
+  process that can reach the socket file can spend a command's byte budget with junk lines, as it
+  can hold its 64 slots. Keeping the socket to the command is the sandbox's job, as it is for the
+  key.
 - The socket lives only while the command runs; something the command leaves running cannot call
   afterwards.
 
@@ -2266,21 +2274,21 @@ server, the model reads `WorkerError: workers/process: refund sent back 40000023
 limit of 33554432 bytes`, and the worker goes on. A result under the limit still costs your server
 about three times its size while it is read, for each worker with one in flight, and recording the
 run holds its body, which stores a result twice, in its step and in the conversation, at most twice
-over while it is written. A worker that exits
-— `os._exit()`, a signal, out of memory, a crash in a C extension — fails every call it had in
-flight, even while a process it forked still holds its pipes: `WorkerError: workers/pool: the worker
-for refund stopped: exited with code 3`, or `killed by signal 9` when a signal ended it, the run
-goes on, and the next call starts a new worker. A worker that sends back a line that is not a reply,
-as a process it forked writing to its pipe could, is stopped the same way, its calls failing with
-`workers/pool: the worker for refund stopped: it sent a line that is not a reply`. Past
-`tool_timeout` the model reads `TimeoutError: workers/pool: refund timed out after 30s`, a deadline
-that counts the wait for a worker too: an `async def run` is cancelled in the worker and holds none
-of its threads, unless it blocks the worker's event loop — `time.sleep` or blocking I/O inside it —
-so that its cancel is still unanswered when a call sent after it passes its deadline too, and then
-each of those calls holds a thread; a `def run` cannot be stopped, so its thread runs on and its
-result is discarded, and once every thread of a worker is held so, the next call stops that worker
-and starts a new one, and the calls the old one still had in flight fail with `WorkerError:
-workers/pool: the worker for refund stopped: every thread was held by a call past its deadline`.
+over while it is written. A worker that exits — `os._exit()`, a signal, out of memory, a crash in a
+C extension — fails every call it had in flight, even while a process it forked still holds its
+pipes: `WorkerError: workers/pool: the worker for refund stopped: exited with code 3`, or `killed by
+signal 9` when a signal ended it, the run goes on, and the next call starts a new worker. A worker
+that sends back a line that is not a reply, as a process it forked writing to its pipe could, is
+stopped the same way, its calls failing with `workers/pool: the worker for refund stopped: it sent a
+line that is not a reply`. Past `tool_timeout` the model reads `TimeoutError: workers/pool: refund
+timed out after 30s`, a deadline that counts the wait for a worker too: an `async def run` is
+cancelled in the worker and holds none of its threads, unless it blocks the worker's event loop —
+`time.sleep` or blocking I/O inside it — so that its cancel is still unanswered when a call sent
+after it passes its deadline too, and then each of those calls holds a thread; a `def run` cannot be
+stopped, so its thread runs on and its result is discarded, and once every thread of a worker is
+held so, the next call stops that worker and starts a new one, and the calls the old one still had
+in flight fail with `WorkerError: workers/pool: the worker for refund stopped: every thread was held
+by a call past its deadline`.
 
 An engine serves one event loop at a time, as a workspace's jobs live in one loop, and its workers
 follow the loop that calls them: a call from a loop other than the one that started them stops
