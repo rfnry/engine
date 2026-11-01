@@ -886,6 +886,65 @@ async def test_a_cancel_of_the_run_cuts_the_record_write_of_a_consult_a_script_s
     assert await storage.runs("acme") == []
 
 
+async def test_a_cancel_of_the_run_after_two_stops_cuts_the_record_write_of_a_consult_a_script_started(
+    tmp_path: Path, root: Path, pool: Any, storage: Storage
+) -> None:
+    writing = asyncio.Event()
+    released = asyncio.Event()
+    again = asyncio.Event()
+    cut: list[bool] = []
+
+    class Hanging(PostgresStorage):
+        async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
+            if rows[0].agent == "billing":
+                writing.set()
+                try:
+                    await released.wait()
+                except asyncio.CancelledError:
+                    cut.append(True)
+                    raise
+            await super().put_runs(scope, rows)
+
+    stop = Stop()
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, ToolResultReady) and event.step.tool == "halt":
+            stop.now()
+            again.set()
+
+    tree = billing(tmp_path, root)
+    llm = Scripted(use(shell()), text_reply("ok"))
+    async with (
+        asyncio.timeout(10),
+        Workspace(Local(root), scope="acme") as work,
+        Engine(
+            tree, models={"strong": llm, "slow": Waiting(root)}, refinery=Refinery(Hanging(pool))
+        ) as engine,
+    ):
+        task = asyncio.ensure_future(
+            engine.run(
+                "coder",
+                "acme",
+                "x",
+                workspace=work,
+                tools=Tools([engine.tool("billing", scope="acme"), halting(stop)]),
+                on_event=handler,
+                stop=stop,
+            )
+        )
+        try:
+            await again.wait()
+            held, _ = await asyncio.wait([task], timeout=0.2)
+            task.cancel()
+            ended, _ = await asyncio.wait([task], timeout=1)
+        finally:
+            released.set()
+            await asyncio.wait([task])
+    assert writing.is_set() and held == set() and ended == {task}
+    assert task.cancelled() and cut == [True]
+    assert await storage.runs("acme") == []
+
+
 ESCAPE = (
     UNTIL
     + """

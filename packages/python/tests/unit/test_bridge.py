@@ -174,6 +174,46 @@ async def test_close_cancels_a_request_in_flight(root: Path) -> None:
     writer.close()
 
 
+async def test_close_passes_each_further_cancel_on(root: Path) -> None:
+    started = asyncio.Event()
+    released = asyncio.Event()
+    cancels: list[int] = []
+
+    async def answer(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        started.set()
+        while not released.is_set():
+            try:
+                await released.wait()
+            except asyncio.CancelledError:
+                cancels.append(len(cancels) + 1)
+        return {}
+
+    async def seen(count: int) -> None:
+        while len(cancels) < count:
+            await asyncio.sleep(0)
+
+    b = await Bridge.open(root, answer)
+    _, writer = await asyncio.open_unix_connection(b.path)
+    writer.write(request(b))
+    async with asyncio.timeout(2):
+        await started.wait()
+        closing = asyncio.create_task(b.close())
+        try:
+            await seen(1)
+            closing.cancel()
+            await asyncio.sleep(0.05)
+            first = len(cancels)
+            closing.cancel()
+            await seen(2)
+            closing.cancel()
+            await seen(3)
+        finally:
+            released.set()
+            await asyncio.wait([closing])
+    writer.close()
+    assert first == 1 and cancels == [1, 2, 3] and closing.cancelled()
+
+
 async def test_a_silent_client_does_not_hold_close(
     root: Path, seen: Seen, caplog: pytest.LogCaptureFixture
 ) -> None:

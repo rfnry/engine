@@ -95,23 +95,6 @@ async def cancel(tasks: Sequence[asyncio.Future[Any]]) -> None:
     await wait(tasks, None, calm=1)
 
 
-async def complete(tasks: Sequence[asyncio.Future[Any]]) -> asyncio.CancelledError | None:
-    caller = asyncio.current_task()
-    cancelled: asyncio.CancelledError | None = None
-    hurried = False
-    while True:
-        if not hurried and caller is not None and caller.cancelling() > 1:
-            hurried = True
-            for task in tasks:
-                task.cancel()
-        if not (pending := [task for task in tasks if not task.done()]):
-            return cancelled
-        try:
-            await asyncio.wait(pending)
-        except asyncio.CancelledError as exc:
-            cancelled = cancelled or exc
-
-
 async def join(tasks: Sequence[asyncio.Future[Any]]) -> None:
     cancelled: asyncio.CancelledError | None = None
     while pending := [task for task in tasks if not task.done()]:
