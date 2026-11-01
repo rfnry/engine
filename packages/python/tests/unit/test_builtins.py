@@ -1095,3 +1095,40 @@ async def test_read_of_a_file_with_a_trailing_slash_is_not_a_folder(tmp_path: Pa
     assert await tools.dispatch("Grep", {"pattern": "notes", "path": "rules/"}) == (
         "no matches found"
     )
+
+
+async def test_a_link_inside_a_hidden_folder_that_leads_outside_reports_hidden(
+    tmp_path: Path,
+) -> None:
+    agent, books, elsewhere = tmp_path / "agent", tmp_path / "books", tmp_path / "elsewhere"
+    for folder in (agent / ".secret", books / ".cache", elsewhere / ".x", tmp_path / ".other"):
+        folder.mkdir(parents=True)
+    (elsewhere / "x.md").write_text("x", encoding="utf-8")
+    (tmp_path / ".other" / "x.md").write_text("x", encoding="utf-8")
+    (agent / ".secret" / "out.md").symlink_to(elsewhere / "x.md")
+    (agent / ".secret" / "outdir").symlink_to(elsewhere, target_is_directory=True)
+    (books / ".cache" / "out.md").symlink_to(elsewhere / "x.md")
+    (agent / "outdir").symlink_to(elsewhere, target_is_directory=True)
+    tools = Tools(builtins(agent, {"../books": books}))
+    load = Tools([load_tool(agent, reads=[books])])
+    for tool, name, args in [
+        (tools, "Read", {"path": ".secret/out.md"}),
+        (tools, "Read", {"path": str(agent / ".secret" / "out.md")}),
+        (load, "Load", {"path": ".secret/out.md"}),
+        (tools, "Grep", {"pattern": "x", "path": ".secret/out.md"}),
+        (tools, "LS", {"path": ".secret/outdir"}),
+        (tools, "Read", {"path": ".secret/outdir/x.md"}),
+        (tools, "Read", {"path": "outdir/../agent/.secret/out.md"}),
+        (tools, "Read", {"path": "../books/.cache/out.md"}),
+    ]:
+        with pytest.raises(InputError, match=r"^tools/builtins: .* is hidden"):
+            await tool.dispatch(name, args)
+    for path in [
+        "outdir/x.md",
+        "outdir/.x",
+        ".secret/../outdir/x.md",
+        "../.other/x.md",
+        str(tmp_path / ".other" / "x.md"),
+    ]:
+        with pytest.raises(InputError, match="^jail: path outside the agent directory: "):
+            await tools.dispatch("Read", {"path": path})

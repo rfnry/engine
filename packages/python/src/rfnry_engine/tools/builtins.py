@@ -94,6 +94,10 @@ def _hides(jail: Jail, path: str | Path) -> bool:
     named = jail.root / path
     place = _within(jail, named)
     if place is None:
+        for above in named.parents:
+            held = _within(jail, above)
+            if held is not None:
+                return _hidden(held[1] / named.relative_to(above).parts[0])
         return False
     root, seen = place
     if os.path.isdir(named):
