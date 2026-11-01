@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from rfnry_engine.engine import Approve, Engine
+from rfnry_engine.engine import Approve, Engine, _copied
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_engine.models import HistoryLike
 from rfnry_engine.records import READ_BACK, Decision, Fingerprint, Generation, Run
@@ -87,7 +87,7 @@ def children_of(rows: list[RunRow]) -> dict[str, list[RunRow]]:
 
 
 def unflatten(row: RunRow, under: dict[str, list[RunRow]]) -> dict[str, Any]:
-    body = dict(row.body)
+    body: dict[str, Any] = _copied(row.body)
     named = [step["child_run_id"] for step in body.get("steps", [])]
     order = {run_id: index for index, run_id in enumerate(named) if run_id is not None}
     children = sorted(
@@ -115,7 +115,7 @@ def printed(row: RunRow) -> Fingerprint:
 
 
 def label_of(row: LabelRow) -> Label:
-    return Label.model_validate(row.body)
+    return Label.model_validate(_copied(row.body))
 
 
 def as_label_id(label_id: str | None) -> str:

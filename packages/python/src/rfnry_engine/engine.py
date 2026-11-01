@@ -159,6 +159,7 @@ QUESTIONS = TypeAdapter(dict[str, Annotated[Question, Field(discriminator="type"
 PART_TYPES = ("text", "image", "audio", "document")
 SCALARS = (str, int)
 CONTAINERS = (dict, list)
+SENT = {"prefix": None, "usage": None, "model": None, "settings": None}
 _LEAVE = object()
 MAX_TAGS = 32
 MAX_TAG_KEY = 64
@@ -242,12 +243,13 @@ def _parts(value: object) -> list[Part] | None:
 
 def _history(value: Sequence[object] | None) -> list[Message]:
     try:
-        return HISTORY.validate_python(list(value or []), from_attributes=True)
+        given = HISTORY.validate_python(list(value or []), from_attributes=True)
     except ValidationError as exc:
         raise InputError(
             "engine: history does not fit the contract: "
             f"{exc.errors(include_url=False, include_input=False)}"
         ) from exc
+    return [_handed(message) for message in given]
 
 
 def _paired(history: list[Message], start: int) -> None:
@@ -363,8 +365,8 @@ def _assistant(
     return Message(
         role="assistant",
         content=reply.text,
-        tool_calls=reply.tool_calls,
-        reasoning=reply.reasoning,
+        tool_calls=[_call(call) for call in reply.tool_calls],
+        reasoning=_copied(reply.reasoning),
         prefix=prefix,
         usage=reply.usage,
         model=reply.model or model,
@@ -395,41 +397,62 @@ def _skilled(spec: AgentSpec, skill: str | None) -> str | None:
 
 
 def _copied(value: Any) -> Any:
-    if not isinstance(value, dict | list):
+    if not isinstance(value, CONTAINERS):
         return value
-    top: dict[Any, Any] | list[Any] = {} if isinstance(value, dict) else []
+    top = dict(value) if isinstance(value, dict) else list(value)
     made: dict[int, Any] = {id(value): top}
-    pending: list[tuple[Any, Any]] = [(value, top)]
+    pending: list[Any] = [top]
     while pending:
-        source, target = pending.pop()
-        for key, item in source.items() if isinstance(source, dict) else enumerate(source):
-            held = item
-            if isinstance(item, dict | list):
+        target = pending.pop()
+        for key, item in target.items() if isinstance(target, dict) else enumerate(target):
+            if isinstance(item, CONTAINERS):
                 held = made.get(id(item))
                 if held is None:
-                    held = made[id(item)] = {} if isinstance(item, dict) else []
-                    pending.append((item, held))
-            if isinstance(target, dict):
+                    held = made[id(item)] = dict(item) if isinstance(item, dict) else list(item)
+                    pending.append(held)
                 target[key] = held
-            else:
-                target.append(held)
     return top
+
+
+def _given(state: State) -> State:
+    held: State = _copied(state)
+    if isinstance(held, list):
+        for index, item in enumerate(held):
+            if isinstance(item, BaseModel):
+                held[index] = item.model_copy()
+    return held
+
+
+def _fresh[M: BaseModel](model: M) -> M:
+    return model.model_copy(
+        update={
+            name: _copied(value)
+            for name, value in vars(model).items()
+            if isinstance(value, CONTAINERS)
+        }
+    )
 
 
 def _own(content: Content) -> Content:
     return content if isinstance(content, str) else [part.model_copy() for part in content]
 
 
-def _handed(message: Message) -> Message:
-    return message.model_copy(
-        update={
-            "content": _own(message.content),
-            "tool_calls": [
-                call.model_copy(update={"args": _copied(call.args)}) for call in message.tool_calls
-            ],
-            "reasoning": _copied(message.reasoning),
-        }
-    )
+def _call(call: ToolCall) -> ToolCall:
+    return call.model_copy(update={"args": _copied(call.args)})
+
+
+def _handed(message: Message, sent: bool = False) -> Message:
+    update: dict[str, Any] = {
+        "content": _own(message.content),
+        "tool_calls": [_call(call) for call in message.tool_calls],
+    }
+    if message.reasoning is not None:
+        update["reasoning"] = _copied(message.reasoning)
+    if sent:
+        update.update(SENT)
+    elif message.settings is not None:
+        update["settings"] = _copied(message.settings)
+    return message.model_copy(update=update)
 
 
 def _failure(exc: BaseException) -> str:
@@ -709,6 +732,7 @@ class Engine:
             raise InputError(
                 f"engine: input must be a string, a JSON object or a list; got {unfit}"
             )
+        input = _given(input)
         spec = self._spec(agent)
         asked = _asked(spec, questions)
         invoked = _skilled(spec, skill)
@@ -871,7 +895,8 @@ class Engine:
             raise InputError(
                 f"engine: decision agent {spec.name!r} has no questions to ask; {hint}"
             )
-        questions = {**spec.questions, **options.questions}
+        own = {qid: _fresh(question) for qid, question in spec.questions.items()}
+        questions = {**own, **options.questions}
         state = _state(spec, input, getattr(model_, "media_types", None))
         run_id = uuid4().hex
         started = time.monotonic()
@@ -912,10 +937,16 @@ class Engine:
         try:
             if spec.scripted:
                 filled = await self._filled(spec, scope, run_id, state)
-                asked = dict(sorted({**spec.questions, **filled}.items()))
+                asked = dict(sorted({**own, **filled}.items()))
                 questions = {**asked, **options.questions}
-            decided = as_decided(await model_.decide(state, questions))
-            answers = settle(questions, decided.answers)
+            decided = as_decided(
+                await model_.decide(
+                    _given(state), {qid: _fresh(question) for qid, question in questions.items()}
+                )
+            )
+            answers = {
+                qid: _fresh(answer) for qid, answer in settle(questions, decided.answers).items()
+            }
             route = spec.route
             if route is not None:
                 answer = answers[route.by]
@@ -1039,7 +1070,7 @@ class Engine:
             if room is not None and room.tree is not None
             else {}
         )
-        specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
+        specs = [ToolSpec.model_validate(_copied(d)) for d in surface.definitions()]
         if room is not None:
             told = room._told(list(spec.reads), bridging)
             specs = [
@@ -1246,9 +1277,7 @@ class Engine:
             content: Content
             approved = None
             if options.approve is not None:
-                asking = asyncio.ensure_future(
-                    options.approve(spec.name, call.model_copy(update={"args": _copied(call.args)}))
-                )
+                asking = asyncio.ensure_future(options.approve(spec.name, _call(call)))
                 approving.add(id(call))
                 try:
                     halted = await wait([asking], stop)
@@ -1286,7 +1315,7 @@ class Engine:
                     try:
                         async with deadline:
                             result = await surface.dispatch(call.name, _copied(call.args))
-                        content, is_error = _content(result), False
+                        content, is_error = _own(_content(result)), False
                     except Exception as exc:
                         if deadline.expired():
                             content = (
@@ -1406,28 +1435,21 @@ class Engine:
         def drain() -> list[Message]:
             taken: list[Message] = []
             while inbox is not None and not inbox.empty():
-                taken.append(Message(role="user", content=_content(inbox.get_nowait())))
+                taken.append(Message(role="user", content=_own(_content(inbox.get_nowait()))))
                 inbox.task_done()
             messages.extend(taken)
             return taken
 
         async def ask() -> Reply:
-            sending = [
-                *(_handed(m) for m in preload),
-                *(
-                    _handed(m).model_copy(
-                        update={"prefix": None, "usage": None, "model": None, "settings": None}
-                    )
-                    for m in messages
-                ),
-            ]
+            sending = [_handed(message, sent=True) for message in (*preload, *messages)]
+            offered = [_fresh(tool) for tool in specs]
             if streaming:
                 return as_reply(
                     await cast(StreamingGenerationModel, model_).generate_stream(
-                        system, sending, specs, delta
+                        system, sending, offered, delta
                     )
                 )
-            return as_reply(await model_.generate(system, sending, specs))
+            return as_reply(await model_.generate(system, sending, offered))
 
         def finish(
             reply_text: str, stopped: Stopped | None = None, error: Exception | None = None
@@ -1449,7 +1471,7 @@ class Engine:
                 fingerprint=fingerprint,
                 input=input,
                 system=system,
-                preload=list(spec.preload),
+                preload=[part.model_copy() for part in spec.preload],
                 start=options.start,
                 messages=sent,
                 conversation=list(messages),
@@ -1500,16 +1522,17 @@ class Engine:
                     model = reply.model
                 settings = reply.settings if reply.settings is not None else _settings(model_)
                 prefix = await chained.stamp(messages) if reply.reasoning is not None else None
-                messages.append(_assistant(reply, prefix, _declared(model_), _settings(model_)))
-                asked = list(reply.tool_calls)
+                assistant = _assistant(reply, prefix, _declared(model_), _settings(model_))
+                messages.append(assistant)
+                asked = list(assistant.tool_calls)
                 ran.clear()
                 if not streaming and reply.text:
                     await delta(reply.text)
-                if reply.stop_reason != "tool_use" or not reply.tool_calls:
-                    for call in reply.tool_calls:
+                if reply.stop_reason != "tool_use" or not asked:
+                    for call in asked:
                         not_run(call, f"the reply ended with {reply.stop_reason}")
                     return finish(reply.text, "now" if requested(stop) == "now" else None)
-                rest = list(reply.tool_calls)
+                rest = list(asked)
                 while rest:
                     at_output = next(
                         (

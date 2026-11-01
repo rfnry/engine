@@ -700,7 +700,7 @@ class Workspace:
         a = ShellArgs.model_validate(args)
         here = current()
         lent = here.lent if here is not None else None
-        env = lent.env if lent is not None else {}
+        env = dict(lent.env) if lent is not None else {}
         if a.background:
             starting = asyncio.ensure_future(self._start(a.command, env))
             await join([starting])

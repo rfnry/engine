@@ -1,11 +1,31 @@
+import copy
+import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
-from unit.fakes import Desk, MemoryBucket, Scripted, delegate_triage, text_reply
+from unit.fakes import (
+    Desk,
+    MemoryBucket,
+    Scripted,
+    answer_to,
+    delegate_triage,
+    sorter,
+    text_reply,
+)
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import NotFoundError
-from rfnry_engine.models import Reply, ToolCall
+from rfnry_engine.models import (
+    Answer,
+    Choice,
+    Image,
+    QuestionLike,
+    Reply,
+    State,
+    Text,
+    ToolCall,
+)
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.labels import Outcome, Review
 from rfnry_engine.refinery.refinery import Refinery, flatten
@@ -145,3 +165,88 @@ async def test_erasing_a_run_by_id_leaves_the_consults_it_made(storage: Storage)
     [made] = [r for r in await storage.runs("acme") if r.run_id != outer.run_id]
     assert await refinery.delete_runs("acme", run_ids=[outer.run_id]) == 1
     assert [r.run_id for r in await storage.runs("acme")] == [made.run_id]
+
+
+PRELOADED = {
+    "g/AGENT.md": "---\nname: g\nkind: generation\nmodel: strong\ndescription: G\npreload: true\n---\nYou are g.\n",
+    "g/kb.md": "the preloaded knowledge\n",
+    "g/tools/look.json": json.dumps(
+        {
+            "description": "Look",
+            "input_schema": {
+                "type": "object",
+                "properties": {"q": {"type": "string", "description": "What to look for"}},
+            },
+        }
+    ),
+    "g/tools/look.py": "def run(args, call):\n    return 'looked'\n",
+}
+
+
+class Rewriting:
+    media_types = {"image/*"}
+
+    def __init__(self) -> None:
+        self.rewrite = True
+        self.seen: list[tuple[State, dict[str, QuestionLike]]] = []
+
+    async def decide(
+        self, state: State, questions: Mapping[str, QuestionLike]
+    ) -> dict[str, Answer]:
+        self.seen.append(
+            (copy.deepcopy(state), {qid: copy.deepcopy(q) for qid, q in questions.items()})
+        )
+        answers = {qid: answer_to(question) for qid, question in questions.items()}
+        if self.rewrite:
+            for part in state if isinstance(state, list) else []:
+                if isinstance(part, Text):
+                    part.text = "REWRITTEN"
+            team = questions["team"]
+            assert isinstance(team, Choice)
+            team.options["orders"] = "REWRITTEN"
+            team.instructions = "REWRITTEN"
+        return answers
+
+
+async def test_one_tenant_s_run_cannot_change_what_another_tenant_s_run_is_sent(
+    tmp_path: Path, storage: Storage
+) -> None:
+    for name, text in PRELOADED.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    sorter(tmp_path)
+    fresh = Engine(tmp_path, models={"strong": Scripted(), "judge": Rewriting()})._agents
+    preload, asked = fresh["g"].preload, fresh["sorter"].questions
+    state = [Text(text="the state"), Image(media_type="image/png", url="https://x/s.png")]
+    given = copy.deepcopy(state)
+    llm, judge, refinery = (
+        Scripted(text_reply("a"), text_reply("b")),
+        Rewriting(),
+        Refinery(storage),
+    )
+    async with Engine(
+        tmp_path, refinery=refinery, models={"strong": llm, "judge": judge}
+    ) as engine:
+        a = await engine.run("g", "tenant-a", "hi")
+        assert isinstance(a, Generation) and a.preload == preload
+        [part] = a.preload
+        assert isinstance(part, Text)
+        part.text = "TENANT-A"
+        [look] = [tool for tool in a.tools if tool.name == "look"]
+        look.input_schema["properties"]["q"]["description"] = "TENANT-A"
+        sorted_a = await engine.run("sorter", "tenant-a", given)
+        assert isinstance(sorted_a, Decision)
+        assert given == state and sorted_a.state == state and sorted_a.questions == asked
+        team = sorted_a.questions["team"]
+        assert isinstance(team, Choice)
+        team.options["other"] = "TENANT-A"
+        judge.rewrite = False
+        b = await engine.run("g", "tenant-b", "hi")
+        sorted_b = await engine.run("sorter", "tenant-b", copy.deepcopy(state))
+    [(_, sent_a, tools_a), (_, sent_b, tools_b)] = llm.calls
+    assert sent_b == sent_a and sent_b[0].content == preload and tools_b == tools_a
+    assert isinstance(b, Generation) and b.preload == preload and b.tools == tools_a
+    assert judge.seen[1] == judge.seen[0] == (state, asked)
+    assert isinstance(sorted_b, Decision) and sorted_b.questions == asked
+    assert await refinery.run("tenant-b", b.run_id) == b
+    assert await refinery.run("tenant-b", sorted_b.run_id) == sorted_b

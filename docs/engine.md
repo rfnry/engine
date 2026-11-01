@@ -695,6 +695,16 @@ or refuses, a call after an accepted `Output`, a call in a reply that was cut sh
 messages a `MessagesTaken` or the adapter is handed, holds copies of the parts, so one that changes
 what it is handed changes neither the record nor what the model is sent next.
 
+The same holds wherever the engine hands your code something. A generation model is handed, for each
+call, copies of the messages — their parts, their tool calls' `args`, their `reasoning` — and of the
+tool specs; a decision model, copies of the state and of the questions; a `Backend`, its own copy of
+a command's variables; a storage, rows made for the call. And a record holds objects of its own: it
+copies what it is given — the input, the history, what the inbox held, the tools' specs and results,
+each reply's tool calls and reasoning, each answer — and the preload and the questions it takes from
+the agent's folder. So no code of yours, and no tenant, reaches another run through what it was
+handed or what it returned: changing a record changes nothing the tree shares with every tenant,
+nothing of another record and nothing your code holds.
+
 A foreground `Shell` command of a run with a `Workspace` also sends a `CommandOutput` for what
 it writes, while it runs, and the calls it makes to the run's tools send their own
 `ToolCallStarted` and `ToolResultReady`, with `by` the `Shell` call's id. See the
@@ -2706,7 +2716,9 @@ first.
 `scope` is the tenant. It is required on every run and every refinery verb, it is the first column
 of every table, and no read accepts its absence. Tools pinned to a tenant are passed on the call.
 `refinery.delete_scope(scope)` removes everything; `refinery.verify_absent(scope)` proves it.
-The tree of agents is shared by every tenant and holds no tenant's data. So are the workers: a
+The tree of agents is shared by every tenant and holds no tenant's data; a run's record holds
+copies of what it takes from the tree, and a model adapter copies of those, so no tenant's code
+reaches another tenant's runs through them. The workers are shared too: a
 script's module state — a client it builds when it loads, a cache it fills, a global it sets — is
 shared by every tenant whose runs call it, and only `call` is the tenant's: its `scope` always, and
 the rest of what it carries — a tool call's `run_id`, `agent`, `tool`, `call_id` and `by` inside a run, a
