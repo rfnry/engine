@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import posixpath
 import time
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
@@ -10,7 +11,7 @@ from fnmatch import fnmatch
 from itertools import count, permutations
 from pathlib import Path
 from types import MappingProxyType
-from typing import Annotated, Any, Literal, NoReturn, Protocol, cast
+from typing import Annotated, Any, NoReturn, Protocol, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
@@ -70,6 +71,7 @@ from rfnry_engine.records import (
     Fingerprint,
     Generation,
     MessagesTaken,
+    Pipe,
     ReasoningDelta,
     Run,
     RunStarted,
@@ -155,14 +157,75 @@ HISTORY = TypeAdapter(list[Message])
 SETTINGS = TypeAdapter[dict[str, JsonValue] | None](dict[str, JsonValue] | None)
 QUESTIONS = TypeAdapter(dict[str, Annotated[Question, Field(discriminator="type")]])
 PART_TYPES = ("text", "image", "audio", "document")
+SCALARS = (str, int)
+CONTAINERS = (dict, list)
+SENT = {"prefix": None, "usage": None, "model": None, "settings": None}
+_LEAVE = object()
 MAX_TAGS = 32
 MAX_TAG_KEY = 64
 MAX_TAG_VALUE = 256
 
 
+def _looks_like_part(item: object) -> bool:
+    return isinstance(item, BaseModel) and getattr(item, "type", None) in PART_TYPES
+
+
 def _part(item: object) -> Part | None:
-    if isinstance(item, BaseModel) and getattr(item, "type", None) in PART_TYPES:
+    if _looks_like_part(item):
         return PART.validate_python(item, from_attributes=True)
+    return None
+
+
+def _at(steps: list[object]) -> str:
+    return "input" + "".join(f"[{step!r}]" for step in steps[1:])
+
+
+def _unfit(input: object) -> str | None:
+    if isinstance(input, str):
+        return None
+    if not isinstance(input, CONTAINERS):
+        return type(input).__name__
+    trail: list[object] = []
+    path: set[int] = set()
+    seen: set[int] = set()
+    pending: list[tuple[Any, object]] = [(input, None)]
+    while pending:
+        value, step = pending.pop()
+        if value is _LEAVE:
+            path.discard(cast(int, step))
+            trail.pop()
+            continue
+        if not isinstance(value, CONTAINERS):
+            return f"{type(value).__name__} at {_at([*trail, step])}"
+        held = id(value)
+        if held in seen:
+            if held in path:
+                return f"a cycle at {_at([*trail, step])}"
+            continue
+        seen.add(held)
+        inner: list[tuple[Any, object]] | None = None
+        pairs = value.items() if isinstance(value, dict) else enumerate(value)
+        keyed = isinstance(value, dict)
+        parts = value is input and not keyed
+        for key, item in pairs:
+            if keyed and not isinstance(key, str):
+                return f"the key {key!r} at {_at([*trail, step])}"
+            if item is None or isinstance(item, SCALARS):
+                continue
+            if isinstance(item, float):
+                if not math.isfinite(item):
+                    return f"{item!r} at {_at([*trail, step, key])}"
+                continue
+            if parts and _looks_like_part(item):
+                continue
+            if inner is None:
+                inner = []
+            inner.append((item, key))
+        if inner is not None:
+            path.add(held)
+            trail.append(step)
+            pending.append((_LEAVE, held))
+            pending.extend(inner)
     return None
 
 
@@ -180,12 +243,13 @@ def _parts(value: object) -> list[Part] | None:
 
 def _history(value: Sequence[object] | None) -> list[Message]:
     try:
-        return HISTORY.validate_python(list(value or []), from_attributes=True)
+        given = HISTORY.validate_python(list(value or []), from_attributes=True)
     except ValidationError as exc:
         raise InputError(
             "engine: history does not fit the contract: "
             f"{exc.errors(include_url=False, include_input=False)}"
         ) from exc
+    return [_handed(message) for message in given]
 
 
 def _paired(history: list[Message], start: int) -> None:
@@ -239,7 +303,7 @@ def _questions(value: Mapping[str, QuestionLike] | None) -> dict[str, Question]:
         ) from exc
     if not all(asked):
         raise InputError("engine: a question id must be a non-empty string")
-    return asked
+    return {qid: _fresh(question) for qid, question in asked.items()}
 
 
 def _asked(spec: AgentSpec, questions: Mapping[str, QuestionLike] | None) -> dict[str, Question]:
@@ -301,8 +365,8 @@ def _assistant(
     return Message(
         role="assistant",
         content=reply.text,
-        tool_calls=reply.tool_calls,
-        reasoning=reply.reasoning,
+        tool_calls=[_call(call) for call in reply.tool_calls],
+        reasoning=_copied(reply.reasoning),
         prefix=prefix,
         usage=reply.usage,
         model=reply.model or model,
@@ -330,6 +394,65 @@ def _skilled(spec: AgentSpec, skill: str | None) -> str | None:
         )
         raise NotFoundError(f"engine: agent {spec.name!r} has no skill {skill!r}; {have}")
     return skill
+
+
+def _copied(value: Any) -> Any:
+    if not isinstance(value, CONTAINERS):
+        return value
+    top = dict(value) if isinstance(value, dict) else list(value)
+    made: dict[int, Any] = {id(value): top}
+    pending: list[Any] = [top]
+    while pending:
+        target = pending.pop()
+        for key, item in target.items() if isinstance(target, dict) else enumerate(target):
+            if isinstance(item, CONTAINERS):
+                held = made.get(id(item))
+                if held is None:
+                    held = made[id(item)] = dict(item) if isinstance(item, dict) else list(item)
+                    pending.append(held)
+                target[key] = held
+    return top
+
+
+def _given(state: State) -> State:
+    held: State = _copied(state)
+    if isinstance(held, list):
+        for index, item in enumerate(held):
+            if isinstance(item, BaseModel):
+                held[index] = item.model_copy()
+    return held
+
+
+def _fresh[M: BaseModel](model: M) -> M:
+    return model.model_copy(
+        update={
+            name: _copied(value)
+            for name, value in vars(model).items()
+            if isinstance(value, CONTAINERS)
+        }
+    )
+
+
+def _own(content: Content) -> Content:
+    return content if isinstance(content, str) else [part.model_copy() for part in content]
+
+
+def _call(call: ToolCall) -> ToolCall:
+    return call.model_copy(update={"args": _copied(call.args)})
+
+
+def _handed(message: Message, sent: bool = False) -> Message:
+    update: dict[str, Any] = {
+        "content": _own(message.content),
+        "tool_calls": [_call(call) for call in message.tool_calls],
+    }
+    if message.reasoning is not None:
+        update["reasoning"] = _copied(message.reasoning)
+    if sent:
+        update.update(SENT)
+    elif message.settings is not None:
+        update["settings"] = _copied(message.settings)
+    return message.model_copy(update=update)
 
 
 def _failure(exc: BaseException) -> str:
@@ -474,7 +597,7 @@ class Engine:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"engine: root is not a directory: {root}")
-        self._models = _models(models)
+        self._models = MappingProxyType(_models(models))
         self.refinery = refinery
         self.max_steps = max_steps
         self.max_depth = max_depth
@@ -508,7 +631,7 @@ class Engine:
 
     @property
     def models(self) -> Mapping[str, GenerationModel | DecisionModel]:
-        return MappingProxyType(self._models)
+        return self._models
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
@@ -604,6 +727,12 @@ class Engine:
             raise InputError(
                 f"engine: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
             )
+        unfit = _unfit(input)
+        if unfit is not None:
+            raise InputError(
+                f"engine: input must be a string, a JSON object or a list; got {unfit}"
+            )
+        input = _given(input)
         spec = self._spec(agent)
         asked = _asked(spec, questions)
         invoked = _skilled(spec, skill)
@@ -649,7 +778,7 @@ class Engine:
         try:
             await self.refinery.record(run)
         except Exception:
-            logger.warning("refinery.record failed for run %s", run.run_id, exc_info=True)
+            logger.warning("engine: refinery.record failed for run %s", run.run_id, exc_info=True)
 
     def tool(
         self,
@@ -766,7 +895,8 @@ class Engine:
             raise InputError(
                 f"engine: decision agent {spec.name!r} has no questions to ask; {hint}"
             )
-        questions = {**spec.questions, **options.questions}
+        own = {qid: _fresh(question) for qid, question in spec.questions.items()}
+        questions = {**own, **options.questions}
         state = _state(spec, input, getattr(model_, "media_types", None))
         run_id = uuid4().hex
         started = time.monotonic()
@@ -807,10 +937,16 @@ class Engine:
         try:
             if spec.scripted:
                 filled = await self._filled(spec, scope, run_id, state)
-                asked = dict(sorted({**spec.questions, **filled}.items()))
+                asked = dict(sorted({**own, **filled}.items()))
                 questions = {**asked, **options.questions}
-            decided = as_decided(await model_.decide(state, questions))
-            answers = settle(questions, decided.answers)
+            decided = as_decided(
+                await model_.decide(
+                    _given(state), {qid: _fresh(question) for qid, question in questions.items()}
+                )
+            )
+            answers = {
+                qid: _fresh(answer) for qid, answer in settle(questions, decided.answers).items()
+            }
             route = spec.route
             if route is not None:
                 answer = answers[route.by]
@@ -819,7 +955,12 @@ class Engine:
                 if target is not None and (floor is None or answer.confidence >= floor):
                     forwarded = replace(options, task=target.task, questions={}, failed=routing)
                     routed = await self._run(
-                        self._agents[target.agent], scope, input, forwarded, run_id, routed=True
+                        self._agents[target.agent],
+                        scope,
+                        _given(input),
+                        forwarded,
+                        run_id,
+                        routed=True,
                     )
         except Exception as exc:
             options.failed.append(decision(exc))
@@ -920,9 +1061,9 @@ class Engine:
             start=options.start,
         )
         room = options.workspace if spec.workspace else None
-        barred = WORKSPACE_NAMES | ({DELEGATE_TOOL} if spec.agents else frozenset())
-        offered = [n for n in surface.names if n not in barred]
-        bridging = room is not None and room._bridging and bool(offered)
+        barred = WORKSPACE_NAMES | {DELEGATE_TOOL, OUTPUT_TOOL}
+        reachable = surface.without(*barred)
+        bridging = room is not None and room._bridging and bool(reachable)
         own_deadline = surface._in_workers | (WORKSPACE_TOOLS if room is not None else frozenset())
         variables = (
             {
@@ -934,7 +1075,7 @@ class Engine:
             if room is not None and room.tree is not None
             else {}
         )
-        specs = [ToolSpec.model_validate(d) for d in surface.definitions()]
+        specs = [ToolSpec.model_validate(_copied(d)) for d in surface.definitions()]
         if room is not None:
             told = room._told(list(spec.reads), bridging)
             specs = [
@@ -1002,9 +1143,7 @@ class Engine:
                 run_id=run_id, agent=spec.name, scope=scope, tool=call.name, call_id=call.id, by=by
             )
 
-        async def show(
-            call: ToolCall, here: Foreground, stream: Literal["stdout", "stderr"], text: str
-        ) -> None:
+        async def show(call: ToolCall, here: Foreground, stream: Pipe, text: str) -> None:
             if here.failed is not None:
                 return
             try:
@@ -1020,11 +1159,19 @@ class Engine:
             if runner is not None and runner.cancelling() > calm:
                 raise asyncio.CancelledError("engine: the run was cancelled")
             ran.append((call, step))
+            if on_event is None:
+                return step
             token = CALL.set(called(call, step.by))
             try:
                 await emit(
                     ToolResultReady(
-                        run_id=run_id, agent=spec.name, call_id=call.id, step=step, by=step.by
+                        run_id=run_id,
+                        agent=spec.name,
+                        call_id=call.id,
+                        step=step.model_copy(
+                            update={"args": _copied(step.args), "result": _own(step.result)}
+                        ),
+                        by=step.by,
                     )
                 )
             finally:
@@ -1075,7 +1222,7 @@ class Engine:
             name: str,
             args: dict[str, Any],
         ) -> dict[str, Any]:
-            if name in barred or name not in surface:
+            if name not in reachable:
                 return {"error": _failure(InputError(f"tools: unknown tool {name!r}"))}
             call = ToolCall(id=f"{shell.id}.{next(numbers)}", name=name, args=args)
             began = time.monotonic()
@@ -1084,9 +1231,14 @@ class Engine:
                 try:
                     await asyncio.wait([calling])
                 except asyncio.CancelledError:
-                    handed = any(done is call for done, _ in ran)
-                    if not handed or (runner is not None and runner.cancelling() > calm):
+                    own = foregrounds.get(id(call))
+                    if runner is not None and runner.cancelling() > calm:
                         calling.cancel()
+                    elif requested(stop) == "now" and own is not None and own.live > 0:
+                        own.pressed = True
+                    elif not any(done is call for done, _ in ran):
+                        calling.cancel()
+            foregrounds.pop(id(call), None)
             if calling.cancelled():
                 step = stopped(call, began, shell.id)
                 steps.append(step)
@@ -1111,25 +1263,26 @@ class Engine:
 
         async def call_tool(call: ToolCall, by: str | None = None) -> Step:
             CALL.set(called(call, by))
-            await emit(
-                ToolCallStarted(
-                    run_id=run_id,
-                    agent=spec.name,
-                    call_id=call.id,
-                    tool=call.name,
-                    args=call.args,
-                    by=by,
+            if on_event is not None:
+                await emit(
+                    ToolCallStarted(
+                        run_id=run_id,
+                        agent=spec.name,
+                        call_id=call.id,
+                        tool=call.name,
+                        args=_copied(call.args),
+                        by=by,
+                    )
                 )
-            )
             began = time.monotonic()
             if requested(stop) == "now":
                 return await cut(call, began, by)
             child_run_id: str | None = None
-            stopped = False
+            cut_short = False
             content: Content
             approved = None
             if options.approve is not None:
-                asking = asyncio.ensure_future(options.approve(spec.name, call))
+                asking = asyncio.ensure_future(options.approve(spec.name, _call(call)))
                 approving.add(id(call))
                 try:
                     halted = await wait([asking], stop)
@@ -1154,31 +1307,30 @@ class Engine:
                     if bridging
                     else None,
                 )
-            if by is None:
-                foregrounds[id(call)] = here
+            foregrounds[id(call)] = here
             FOREGROUND.set(here)
             try:
                 if approved is False:
                     content, is_error = f"NotApproved: {call.name} was not approved", True
                 elif call.name == DELEGATE_TOOL and spec.agents:
-                    content, is_error, child_run_id, stopped = await delegate(call)
+                    content, is_error, child_run_id, cut_short = await delegate(call)
                 else:
                     limit = None if call.name in own_deadline else self.tool_timeout
                     deadline = asyncio.timeout(limit)
                     try:
                         async with deadline:
-                            result = await surface.dispatch(call.name, call.args)
-                        content, is_error = _content(result), False
+                            result = await surface.dispatch(call.name, _copied(call.args))
+                        content, is_error = _own(_content(result)), False
                     except Exception as exc:
                         if deadline.expired():
                             content = (
                                 f"TimeoutError: engine: {call.name} timed out after {limit:g}s"
                             )
                         else:
-                            content = f"{type(exc).__name__}: {exc}"
+                            content = _failure(exc)
                         is_error = True
                     if here.stopped or here.pressed:
-                        content, is_error, stopped = STOPPED, True, True
+                        content, is_error, cut_short = STOPPED, True, True
             finally:
                 here.over = True
             step = Step(
@@ -1189,7 +1341,7 @@ class Engine:
                 at=_now(),
                 duration_ms=int((time.monotonic() - began) * 1000),
                 child_run_id=child_run_id,
-                stopped=stopped,
+                stopped=cut_short,
                 approved=approved,
                 by=by,
             )
@@ -1236,11 +1388,37 @@ class Engine:
         async def cut(call: ToolCall, began: float, by: str | None = None) -> Step:
             return await hand_over(call, stopped(call, began, by))
 
+        async def answer_all(
+            batch: list[ToolCall], tasks: Sequence[asyncio.Task[Step] | None], began: float
+        ) -> None:
+            raised: list[BaseException] = []
+            held: list[Exception] = []
+            for call, task in zip(batch, tasks, strict=True):
+                try:
+                    if task is None or task.cancelled():
+                        await cut(call, began)
+                    elif (failed := task.exception()) is not None:
+                        raised.append(failed)
+                except Exception as exc:
+                    raised.append(exc)
+                built = next((step for done, step in ran if done is call), None)
+                if built is not None:
+                    answer(call, built)
+                here = foregrounds.pop(id(call), None)
+                if here is not None and here.failed is not None and here.failed not in raised:
+                    held.append(here.failed)
+            failures = [*raised, *held]
+            for error in failures[1:]:
+                logger.error(
+                    "engine: a further call of the same batch failed: %s", error, exc_info=error
+                )
+            if failures:
+                raise failures[0]
+
         async def run_batch(batch: list[ToolCall]) -> bool:
             began = time.monotonic()
             if requested(stop) == "now":
-                for call in batch:
-                    answer(call, await cut(call, began))
+                await answer_all(batch, [None] * len(batch), began)
                 return True
             tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
 
@@ -1255,42 +1433,28 @@ class Engine:
                         kept.append(task)
                 return kept
 
-            stopped = await wait(tasks, stop, finishing)
-            failures: list[Exception] = []
-            for call, task in zip(batch, tasks, strict=True):
-                answer(call, await cut(call, began) if task.cancelled() else task.result())
-                here = foregrounds.pop(id(call), None)
-                if here is not None and here.failed is not None:
-                    failures.append(here.failed)
-            if failures:
-                raise failures[0]
-            return stopped
+            cut_short = await wait(tasks, stop, finishing)
+            await answer_all(batch, tasks, began)
+            return cut_short
 
         def drain() -> list[Message]:
             taken: list[Message] = []
             while inbox is not None and not inbox.empty():
-                taken.append(Message(role="user", content=_content(inbox.get_nowait())))
+                taken.append(Message(role="user", content=_own(_content(inbox.get_nowait()))))
                 inbox.task_done()
             messages.extend(taken)
             return taken
 
         async def ask() -> Reply:
-            sending = [
-                *preload,
-                *(
-                    m.model_copy(
-                        update={"prefix": None, "usage": None, "model": None, "settings": None}
-                    )
-                    for m in messages
-                ),
-            ]
+            sending = [_handed(message, sent=True) for message in (*preload, *messages)]
+            offered = [_fresh(tool) for tool in specs]
             if streaming:
                 return as_reply(
                     await cast(StreamingGenerationModel, model_).generate_stream(
-                        system, sending, specs, delta
+                        system, sending, offered, delta
                     )
                 )
-            return as_reply(await model_.generate(system, sending, specs))
+            return as_reply(await model_.generate(system, sending, offered))
 
         def finish(
             reply_text: str, stopped: Stopped | None = None, error: Exception | None = None
@@ -1312,7 +1476,7 @@ class Engine:
                 fingerprint=fingerprint,
                 input=input,
                 system=system,
-                preload=list(spec.preload),
+                preload=[part.model_copy() for part in spec.preload],
                 start=options.start,
                 messages=sent,
                 conversation=list(messages),
@@ -1336,7 +1500,12 @@ class Engine:
                 taken = drain() if turn else []
                 if taken:
                     await emit(
-                        MessagesTaken(run_id=run_id, agent=spec.name, turn=turn, messages=taken)
+                        MessagesTaken(
+                            run_id=run_id,
+                            agent=spec.name,
+                            turn=turn,
+                            messages=[_handed(message) for message in taken],
+                        )
                     )
                     mode = requested(stop)
                     if mode is not None:
@@ -1358,64 +1527,70 @@ class Engine:
                     model = reply.model
                 settings = reply.settings if reply.settings is not None else _settings(model_)
                 prefix = await chained.stamp(messages) if reply.reasoning is not None else None
-                messages.append(_assistant(reply, prefix, _declared(model_), _settings(model_)))
-                asked = list(reply.tool_calls)
+                assistant = _assistant(reply, prefix, _declared(model_), _settings(model_))
+                messages.append(assistant)
+                asked = list(assistant.tool_calls)
                 ran.clear()
                 if not streaming and reply.text:
                     await delta(reply.text)
-                if reply.stop_reason != "tool_use" or not reply.tool_calls:
-                    for call in reply.tool_calls:
+                if reply.stop_reason != "tool_use" or not asked:
+                    for call in asked:
                         not_run(call, f"the reply ended with {reply.stop_reason}")
                     return finish(reply.text, "now" if requested(stop) == "now" else None)
-                output = next(
-                    (c for c in reply.tool_calls if expect is not None and c.name == OUTPUT_TOOL),
-                    None,
-                )
-                before = (
-                    reply.tool_calls
-                    if output is None
-                    else reply.tool_calls[: reply.tool_calls.index(output)]
-                )
-                pressed = await run_batch(before)
-                if output is None or expect is None:
-                    continue
-                if pressed:
-                    for call in reply.tool_calls[reply.tool_calls.index(output) :]:
-                        answer(call, await cut(call, time.monotonic()))
-                    return finish(said, "now")
-                try:
-                    parsed = expect.model_validate(output.args)
-                except ValidationError as exc:
-                    errors = f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}"
+                rest = list(asked)
+                while rest:
+                    at_output = next(
+                        (
+                            n
+                            for n, c in enumerate(rest)
+                            if expect is not None and c.name == OUTPUT_TOOL
+                        ),
+                        len(rest),
+                    )
+                    pressed = await run_batch(rest[:at_output])
+                    rest = rest[at_output:]
+                    if not rest or expect is None:
+                        break
+                    if pressed:
+                        await answer_all(rest, [None] * len(rest), time.monotonic())
+                        return finish(said, "now")
+                    output, rest = rest[0], rest[1:]
+                    try:
+                        parsed = expect.model_validate(_copied(output.args))
+                    except ValidationError as exc:
+                        errors = f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}"
+                        messages.append(
+                            Message(
+                                role="tool", tool_call_id=output.id, content=errors, is_error=True
+                            )
+                        )
+                        steps.append(
+                            Step(
+                                tool=OUTPUT_TOOL,
+                                args=output.args,
+                                result=errors,
+                                is_error=True,
+                                at=_now(),
+                                duration_ms=0,
+                            )
+                        )
+                        continue
                     messages.append(
-                        Message(role="tool", tool_call_id=output.id, content=errors, is_error=True)
+                        Message(role="tool", tool_call_id=output.id, content="accepted")
                     )
                     steps.append(
                         Step(
                             tool=OUTPUT_TOOL,
                             args=output.args,
-                            result=errors,
-                            is_error=True,
+                            result="accepted",
+                            is_error=False,
                             at=_now(),
                             duration_ms=0,
                         )
                     )
-                    await run_batch(reply.tool_calls[reply.tool_calls.index(output) + 1 :])
-                    continue
-                messages.append(Message(role="tool", tool_call_id=output.id, content="accepted"))
-                steps.append(
-                    Step(
-                        tool=OUTPUT_TOOL,
-                        args=output.args,
-                        result="accepted",
-                        is_error=False,
-                        at=_now(),
-                        duration_ms=0,
-                    )
-                )
-                for call in reply.tool_calls[reply.tool_calls.index(output) + 1 :]:
-                    not_run(call, f"{OUTPUT_TOOL} ended the run")
-                return finish(parsed.model_dump_json())
+                    for call in rest:
+                        not_run(call, f"{OUTPUT_TOOL} ended the run")
+                    return finish(parsed.model_dump_json())
             mode = requested(stop)
             if mode is not None:
                 return finish(said, mode)
@@ -1425,6 +1600,6 @@ class Engine:
                 built = next((step for done, step in ran if done is call), None)
                 if built is not None and not any(built is kept for kept in steps):
                     answer(call, built)
-            children.extend(delegated.values())
+            children.extend(sorted(delegated.values(), key=lambda run: (run.at, run.run_id)))
             options.failed.append(finish("", error=exc))
             raise

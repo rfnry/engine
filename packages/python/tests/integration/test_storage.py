@@ -5,7 +5,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import asyncpg
 import pytest
+from database import SCHEMA, URL
 from unit.fakes import (
     PICK,
     Answering,
@@ -40,6 +42,7 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import Decision, Fingerprint, Generation
 from rfnry_engine.refinery.labels import Outcome, Review
+from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery, label_of
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 from rfnry_engine.stop import Stop
@@ -805,6 +808,55 @@ class Looking(Answering):
     media_types = {"image/*"}
 
 
+PHOTO: list[Part] = [
+    Text(text="What is this?"),
+    Image(media_type="image/png", data=bytes(range(256))),
+]
+SHAPED: list[Any] = [
+    {"type": "image", "media_type": "image/png", "url": "https://cdn.example/a.png", "sku": "A-1"},
+    {"type": "text", "text": "compare", "lang": "en"},
+]
+WRITTEN: list[Any] = [part.model_dump(mode="json") for part in PHOTO]
+
+
+@pytest.mark.parametrize(
+    ("given", "skill"),
+    [
+        (PHOTO, None),
+        (PHOTO, "escalate"),
+        ([Text(text="one"), Text(text="two")], None),
+        ([Text(text="one"), Text(text="two")], "escalate"),
+        (SHAPED, None),
+        (SHAPED, "escalate"),
+        (WRITTEN, None),
+        (WRITTEN, "escalate"),
+        ("plain", "escalate"),
+    ],
+    ids=[
+        "parts",
+        "parts-skill",
+        "text-parts",
+        "text-parts-skill",
+        "media-shaped-json",
+        "media-shaped-json-skill",
+        "json-as-a-part-dumps",
+        "json-as-a-part-dumps-skill",
+        "text-skill",
+    ],
+)
+async def test_a_generation_input_reads_back_as_it_was_given(
+    storage: Storage, given: Any, skill: str | None
+) -> None:
+    refinery = Refinery(storage)
+    engine = Engine(FIXTURES, refinery=refinery, models={"strong": Scripted(text_reply("Seen."))})
+    run = await engine.run("support", "a", given, skill=skill)
+    assert isinstance(run, Generation) and run.input == given
+    assert [type(item) for item in run.input] == [type(item) for item in given]
+    again = await refinery.run("a", run.run_id)
+    assert again == run and isinstance(again, Generation)
+    assert [type(item) for item in again.input] == [type(item) for item in given]
+
+
 async def test_a_state_of_parts_round_trips_as_parts_and_replays(
     storage: Storage, tmp_path: Path
 ) -> None:
@@ -825,6 +877,20 @@ async def test_a_state_of_parts_round_trips_as_parts_and_replays(
         async for p in refinery.replay("a", Engine(root, models={"judge": looking}), agent="grader")
     ]
     assert pair.error is None and looking.calls[0][0] == parts
+
+
+@pytest.mark.parametrize("given", [PHOTO, SHAPED], ids=["parts", "media-shaped-json"])
+async def test_a_decision_state_reads_back_as_it_was_given(
+    storage: Storage, tmp_path: Path, given: Any
+) -> None:
+    refinery = Refinery(storage)
+    engine = Engine(grader(tmp_path), refinery=refinery, models={"judge": Looking()})
+    run = await engine.run("grader", "a", given)
+    assert isinstance(run, Decision) and run.state == given
+    assert [type(item) for item in run.state] == [type(item) for item in given]
+    again = await refinery.run("a", run.run_id)
+    assert again == run and isinstance(again, Decision)
+    assert [type(item) for item in again.state] == [type(item) for item in given]
 
 
 async def test_start_prefix_and_usage_round_trip(
@@ -900,6 +966,95 @@ async def test_put_runs_stores_nothing_when_the_database_refuses_a_row(storage: 
     with pytest.raises(StorageError, match="^refinery/postgres: storage rejected put_runs: "):
         await storage.put_runs("a", [_run("a", "r1"), bad])
     assert await storage.get_run("a", "r1") is None
+
+
+async def test_put_runs_stores_nothing_when_a_body_is_not_json(storage: Storage) -> None:
+    bad = _run("a", "r2").model_copy(update={"body": {"on": datetime.now(UTC).date()}})
+    with pytest.raises(StorageError) as raised:
+        await storage.put_runs("a", [_run("a", "r1"), bad])
+    assert str(raised.value) == (
+        "refinery/postgres: storage rejected put_runs: Object of type date is not JSON serializable"
+    )
+    assert await storage.get_run("a", "r1") is None
+
+
+async def coded(**codec: Any) -> Any:
+    async def init(conn: Any) -> None:
+        await conn.set_type_codec("bytea", schema="pg_catalog", **codec)
+
+    return await asyncpg.create_pool(
+        URL, min_size=1, max_size=1, init=init, server_settings={"search_path": SCHEMA}
+    )
+
+
+async def test_a_pool_with_its_own_bytea_codec_still_records(storage: Storage) -> None:
+    given: list[str] = []
+
+    def encoder(value: Any) -> bytes:
+        given.append(type(value).__name__)
+        return bytes(value)
+
+    pool = await coded(encoder=encoder, decoder=bytes, format="binary")
+    try:
+        mine = PostgresStorage(pool)
+        row = _run("a", "r1").model_copy(update={"body": {"café": ["ok", 1, None]}})
+        await mine.put_runs("a", [row])
+        got = await mine.get_run("a", "r1")
+        assert got is not None and got.body == row.body
+        assert await pool.fetchval("SELECT $1::bytea", b"\x00\xff") == b"\x00\xff"
+    finally:
+        await pool.close()
+    assert given == ["_Encoded", "bytes"]
+
+
+async def test_a_pool_whose_bytea_codec_takes_only_bytes_cannot_record(storage: Storage) -> None:
+    pool = await coded(
+        encoder=lambda value: "\\x" + value.hex(),
+        decoder=lambda text: bytes.fromhex(text[2:]),
+        format="text",
+    )
+    try:
+        with pytest.raises(
+            StorageError,
+            match=r"^refinery/postgres: storage rejected put_runs: invalid input for query argument "
+            r"\$11: .*'_Encoded' object has no attribute 'hex'",
+        ):
+            await PostgresStorage(pool).put_runs("a", [_run("a", "r1")])
+    finally:
+        await pool.close()
+    assert await storage.get_run("a", "r1") is None
+
+
+async def test_a_pool_with_json_and_jsonb_codecs_records_and_reads_back(storage: Storage) -> None:
+    async def init(conn: Any) -> None:
+        for kind in ("json", "jsonb"):
+            await conn.set_type_codec(
+                kind, encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+            )
+
+    pool = await asyncpg.create_pool(
+        URL, min_size=1, max_size=1, init=init, server_settings={"search_path": SCHEMA}
+    )
+    try:
+        coded = PostgresStorage(pool)
+        at = datetime.now(UTC)
+        body = {"reply": "r1", "tags": {"team": "a", "env": "prod"}, "café": [1, None]}
+        run = _run("a", "r1", at=at).model_copy(update={"body": body})
+        child = _run("a", "c1", parent="r1", at=at - timedelta(seconds=1))
+        label = _label("a", "l1", "r1")
+        await coded.put_runs("a", [run, child])
+        assert await coded.put_label("a", label) == label
+        assert await coded.put_label("a", label.model_copy(update={"body": {"x": 1}})) == label
+        for mine in (coded, storage):
+            assert await mine.get_run("a", "r1") == run
+            assert await mine.runs("a") == [run, child]
+            assert await mine.run_tree("a", run_ids=["r1"]) == [child, run]
+            assert await mine.run_tree("a", tags={"team": "a"}) == [child, run]
+            assert await mine.labels("a", run_ids=["r1"]) == [label]
+        assert await coded.delete_runs("a", tags={"env": "prod"}) == 3
+        assert await storage.count_scope("a") == 0
+    finally:
+        await pool.close()
 
 
 async def test_put_runs_with_no_rows_does_nothing(storage: Storage) -> None:

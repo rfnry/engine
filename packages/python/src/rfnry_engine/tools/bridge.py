@@ -5,15 +5,31 @@ import json
 import os
 import secrets
 from collections.abc import Awaitable, Callable
+from itertools import accumulate
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 LINE = 1_048_576
 CALLS = 64
+COMMAND_CALLS = 10_000
+COMMAND_BYTES = 2_097_152
+DEPTH = 128
 
 Answer = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 _BAD = 'tools/bridge: a request is one JSON line: {"key": …, "tool": …, "args": {…}}'
+
+
+_SIGNS = bytes.maketrans(b"[{]}", b"\x01\x01\xff\xff")
+_UNSIGNED = bytes(range(256)).translate(None, b"[]{}")
+
+
+def _deeper(line: bytes) -> bool:
+    if line.count(b"[") + line.count(b"{") <= DEPTH + 1:
+        return False
+    outside = b"".join(line.replace(b"\\\\", b"").replace(b'\\"', b"").split(b'"')[::2])
+    signs = memoryview(outside.translate(_SIGNS, _UNSIGNED)).cast("b")
+    return any(map((DEPTH + 1).__lt__, accumulate(signs)))
 
 
 class Bridge:
@@ -27,6 +43,8 @@ class Bridge:
         self._handlers: set[asyncio.Task[Any]] = set()
         self._closed = False
         self._open = 0
+        self._calls = 0
+        self._sent = 0
 
     @classmethod
     async def open(cls, root: Path, answer: Answer) -> Bridge:
@@ -48,6 +66,17 @@ class Bridge:
     async def _reply(self, line: bytes | None) -> dict[str, Any]:
         if line is None:
             return {"error": f"tools/bridge: a request is at most {LINE} bytes"}
+        self._sent += len(line)
+        if self._calls >= COMMAND_CALLS:
+            return {
+                "error": f"tools/bridge: this command made its {COMMAND_CALLS} calls; no more are answered"
+            }
+        if self._sent > COMMAND_BYTES:
+            return {
+                "error": f"tools/bridge: this command sent its {COMMAND_BYTES} bytes of calls; no more are answered"
+            }
+        if _deeper(line):
+            return {"error": f"tools/bridge: a call's args nest deeper than {DEPTH} levels"}
         try:
             request = json.loads(line.decode())
         except ValueError, RecursionError:
@@ -62,12 +91,12 @@ class Bridge:
         tool, args = request.get("tool"), request.get("args")
         if not isinstance(tool, str) or not isinstance(args, dict):
             return {"error": _BAD}
+        self._calls += 1
         return await self._answer(tool, args)
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        task = asyncio.current_task()
-        if task is not None:
-            self._handlers.add(task)
+        task = cast(asyncio.Task[Any], asyncio.current_task())
+        self._handlers.add(task)
         counted = False
         try:
             if self._closed:
@@ -99,8 +128,7 @@ class Bridge:
             if counted:
                 self._open -= 1
             writer.close()
-            if task is not None:
-                self._handlers.discard(task)
+            self._handlers.discard(task)
 
     async def close(self) -> None:
         self._closed = True
@@ -110,10 +138,10 @@ class Bridge:
             task.cancel()
         caller = asyncio.current_task()
         cancelled: asyncio.CancelledError | None = None
-        hurried = False
+        passed = 0 if caller is None else caller.cancelling()
         while pending := [task for task in handlers if not task.done()]:
-            if not hurried and caller is not None and caller.cancelling() > 1:
-                hurried = True
+            if caller is not None and caller.cancelling() > passed:
+                passed = caller.cancelling()
                 for task in pending:
                     task.cancel()
             try:

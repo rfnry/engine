@@ -20,7 +20,16 @@ from pydantic import (
 from rfnry_engine.chain import preload_digest
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
-from rfnry_engine.folders import DECLARED, content, declares, entries, joined, leads_out
+from rfnry_engine.folders import (
+    DECLARED,
+    content,
+    declares,
+    entries,
+    joined,
+    leads_out,
+    unwarned,
+    warns_once,
+)
 from rfnry_engine.frontmatter import (
     body_of,
     description,
@@ -237,6 +246,10 @@ def _read(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise ConfigurationError(f"tree: {path} is not UTF-8 text; save it as UTF-8") from exc
+    except OSError as exc:
+        raise ConfigurationError(
+            f"tree: cannot read {path}: {exc.strerror or exc}; make it readable to the engine"
+        ) from exc
 
 
 def _object(path: Path) -> dict[str, JsonValue]:
@@ -307,22 +320,64 @@ def _skills(files: list[tuple[str, Path]], agent: str) -> dict[str, Skill]:
     return dict(sorted(found.items()))
 
 
+def _declared(folder: Path) -> list[Path]:
+    try:
+        with os.scandir(folder) as entries:
+            found = []
+            for entry in entries:
+                try:
+                    entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                found.append(Path(entry.path))
+    except OSError as exc:
+        raise ConfigurationError(
+            f"tree: cannot read {folder}: {exc.strerror or exc}; make it readable to the engine"
+        ) from exc
+    return sorted(found)
+
+
+def _opens(path: Path) -> None:
+    try:
+        os.close(os.open(path, os.O_RDONLY))
+    except OSError as exc:
+        raise ConfigurationError(
+            f"tree: cannot read {path}: {exc.strerror or exc}; make it readable to the engine"
+        ) from exc
+
+
+def _readable_skills(agent: Path) -> None:
+    folder = agent / "skills"
+    if folder.is_symlink() or not folder.is_dir():
+        return
+    for path in _declared(folder):
+        if path.name.startswith(("_", ".")):
+            continue
+        if path.suffix == ".md" and path.is_file():
+            if leads_out(path, agent) is None:
+                _opens(path)
+        elif path.is_dir() and not path.is_symlink() and not declares(path):
+            skill = path / "SKILL.md"
+            if skill in _declared(path) and skill.is_file() and leads_out(skill, agent) is None:
+                _opens(skill)
+
+
 def _markdown_files(directory: Path) -> list[Path]:
     if not directory.is_dir():
         return []
-    return sorted(
-        p for p in directory.iterdir() if p.suffix == ".md" and not p.name.startswith(("_", "."))
-    )
+    return [
+        p for p in _declared(directory) if p.suffix == ".md" and not p.name.startswith(("_", "."))
+    ]
 
 
 def _question_files(directory: Path) -> list[Path]:
     if not directory.is_dir():
         return []
-    return sorted(
+    return [
         p
-        for p in directory.iterdir()
+        for p in _declared(directory)
         if p.is_file() and not p.name.startswith(("_", ".")) and p.suffix in QUESTION_FILES
-    )
+    ]
 
 
 def _questions(
@@ -374,10 +429,6 @@ def from_agent[T](path: str, reads: Mapping[str, T]) -> dict[str, T]:
     return {posixpath.relpath(name, path): place for name, place in reads.items()}
 
 
-def _linked(path: Path) -> bool:
-    return path.is_symlink() or path.is_junction()
-
-
 def _is_folder(entry: os.DirEntry[str]) -> bool:
     try:
         return entry.is_dir()
@@ -385,13 +436,23 @@ def _is_folder(entry: os.DirEntry[str]) -> bool:
         return False
 
 
-def _subfolders(folder: Path) -> list[Path]:
+def _subfolders(folder: Path, quiet: bool = False) -> list[Path]:
     try:
         with os.scandir(folder) as entries:
             return sorted(Path(entry.path) for entry in entries if _is_folder(entry))
     except OSError as exc:
-        logger.warning("tree: cannot read %s: %s; it is left out", folder, exc)
+        if not quiet and unwarned(folder):
+            logger.warning("tree: cannot read %s: %s; it is left out", folder, exc)
         return []
+
+
+def _utf8(name: str, path: Path) -> None:
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ConfigurationError(
+            f"tree: the name of {str(path)!r} is not UTF-8; rename it"
+        ) from None
 
 
 def _loops(top: Path, found: Mapping[str, Path], key: str, target: Path) -> bool:
@@ -405,23 +466,24 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     found: dict[str, Path] = {}
     links: dict[str, Path] = {}
 
-    def walk(folder: Path, at: str) -> None:
+    def walk(folder: Path, at: str, skills: bool = False, skill: bool = False) -> None:
         holds = declares(folder)
-        for child in _subfolders(folder):
+        for child in _subfolders(folder, quiet=(skills or skill) and not folder.is_symlink()):
             if (
                 child.name.startswith(".")
                 or child.name == "__pycache__"
                 or (holds and child.name in DECLARED)
             ):
                 continue
+            _utf8(child.name, child)
             place = child.resolve()
             key = f"{at}/{child.name}" if at else child.name
-            if _linked(child):
+            if child.is_symlink():
                 links[key] = place
                 if place.is_relative_to(top) or _loops(top, found, key, place):
                     continue
             found[key] = place
-            walk(child, key)
+            walk(child, key, skills=holds and child.name == "skills", skill=skills)
 
     walk(root, "")
     return found, links
@@ -431,7 +493,7 @@ def _holds_agent(folder: Path) -> bool:
     return declares(folder) or any(
         _holds_agent(child)
         for child in _subfolders(folder)
-        if not child.name.startswith(".") and child.name != "tools" and not _linked(child)
+        if not child.name.startswith(".") and child.name != "tools" and not child.is_symlink()
     )
 
 
@@ -581,6 +643,16 @@ def _kept(agent: str, front: AgentFront, tools: Collection[str]) -> list[str] | 
     return list(front.tools)
 
 
+def _agent_front(directory: Path) -> tuple[AgentFront, str]:
+    _held(directory / "AGENT.md", directory)
+    return parse_frontmatter_doc(
+        _read(directory / "AGENT.md"),
+        model=AgentFront,
+        source=directory / "AGENT.md",
+        label="agent",
+    )
+
+
 def load_agent(
     directory: Path,
     media: Mapping[str, Collection[str] | None] | None = None,
@@ -590,13 +662,7 @@ def load_agent(
     tool_folders: Mapping[str, dict[str, ToolDef]] | None = None,
     script_folders: Collection[Path] = (),
 ) -> AgentSpec:
-    _held(directory / "AGENT.md", directory)
-    front, body = parse_frontmatter_doc(
-        _read(directory / "AGENT.md"),
-        model=AgentFront,
-        source=directory / "AGENT.md",
-        label="agent",
-    )
+    front, body = _agent_front(directory)
     agent = front.name
     if front.kind == "decision" and (directory / "tasks").is_dir():
         raise ConfigurationError(
@@ -610,6 +676,8 @@ def load_agent(
         directory / "questions", tree_root or directory, script_folders
     )
     loaded = {p.stem: _task(p, directory) for p in _markdown_files(directory / "tasks")}
+    if front.kind == "generation":
+        _readable_skills(directory.resolve())
     tasks = {name: said for name, (said, _) in loaded.items()}
     task_bodies = {name: body for name, (_, body) in loaded.items()}
     if front.kind == "decision" and front.tools is not None:
@@ -644,6 +712,8 @@ def load_agent(
     files = sorted(
         [*content(root, False, inner=True), *_under(reads, lambda folder: folder.files), *above]
     )
+    for rel, file in files:
+        _utf8(rel, file)
     try:
         preload, read = (
             preload_parts(
@@ -693,6 +763,7 @@ def load_agent(
     )
 
 
+@warns_once()
 def load_tree(
     root: Path, media: Mapping[str, Collection[str] | None] | None = None
 ) -> dict[str, AgentSpec]:
@@ -708,6 +779,9 @@ def load_tree(
         )
     for path in paths:
         _own(root / path)
+    for path in paths:
+        if _agent_front(root / path)[0].kind == "generation":
+            _readable_skills((root / path).resolve())
     project = project_of(root)
     prefixes = [
         prefix
@@ -720,6 +794,8 @@ def load_tree(
         for place in [*(root / prefix / "tools" for prefix in prefixes), *asking]
         if place.is_dir()
     )
+    for prefix in prefixes:
+        _declared(root / prefix / "tools")
     tool_folders = {
         prefix: load_tools(root / prefix / "tools", project, root, script_folders)
         for prefix in prefixes

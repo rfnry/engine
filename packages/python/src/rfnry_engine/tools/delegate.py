@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from rfnry_engine.errors import DelegationDepthError, DelegationLoopError, InputError
 from rfnry_engine.foreground import RECORDING, hooks, returned
@@ -63,6 +63,16 @@ class AgentArgs(BaseModel):
     input: str
     task: str | None = None
     questions: dict[str, Any] | None = None
+
+    @field_validator("questions")
+    @classmethod
+    def _whole(cls, questions: dict[str, Any] | None) -> dict[str, Any] | None:
+        if questions is None:
+            return None
+        return {
+            qid: question.model_dump() if isinstance(question, BaseModel) else question
+            for qid, question in questions.items()
+        }
 
 
 class DelegateArgs(AgentArgs):

@@ -23,6 +23,10 @@ ALLOWED: dict[tuple[str, str], str] = {
         "failed[0]",
     ): "a worker's stop() or a pool's close() error reaches the caller once every one has ended",
     (
+        "workers/pool.py",
+        "cancelled",
+    ): "a cancel that came while the pools closed goes on once every one has",
+    (
         "engine.py",
         "failed.exceptions[0]",
     ): "a question script's error ends its decision as the decision model's would",

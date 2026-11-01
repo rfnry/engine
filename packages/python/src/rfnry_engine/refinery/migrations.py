@@ -58,7 +58,7 @@ async def _fill_tags(conn: Any) -> None:
         if not rows:
             return
         await conn.executemany(
-            "UPDATE engine_runs SET tags = $3::jsonb WHERE scope = $1 AND run_id = $2",
+            "UPDATE engine_runs SET tags = $3::text::jsonb WHERE scope = $1 AND run_id = $2",
             [(r["scope"], r["run_id"], stored_tags(json.loads(r["body"]))) for r in rows],
         )
         after = (rows[-1]["scope"], rows[-1]["run_id"])
@@ -209,7 +209,7 @@ async def problems(conn: Any) -> list[str]:
     state = await conn.fetchrow(_STATE)
     schema, path, role = state["schema"], state["path"], state["role"]
     names = _names(path, role, schema)
-    first = names[0] if names else None
+    first = _first(path, role, schema)
     if first is not None and first != schema:
         held = await conn.fetchval(
             "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", first

@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from rfnry_engine.tools.workspace import Local, Workspace
 
 from .fakes import Scripted, text_reply
 from .test_engine_workspace import appears, make_tree, use
+from .test_workspace import Command, Machine, prints
 
 
 @pytest.fixture
@@ -151,3 +153,40 @@ def test_tree_must_be_absolute(root: Path) -> None:
         match="tools/workspace: tree must be an absolute path, as commands see it, such as /srv/agents; got 'agents'",
     ):
         Workspace(Local(root), scope="acme", tree="agents")
+
+
+class Seen(Machine):
+    def __init__(self) -> None:
+        super().__init__(prints())
+        self.envs: list[dict[str, str]] = []
+
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
+        self.envs.append(dict(env))
+        return await super().spawn(command, env)
+
+
+async def test_a_tree_with_a_trailing_slash_gives_clean_variables(tmp_path: Path) -> None:
+    machine = Seen()
+    work = Workspace(machine, scope="acme", tree="/srv/agents/")
+    llm = Scripted(use(shell("x")), text_reply("ok"))
+    await Engine(make_tree(tmp_path), models={"strong": llm}).run(
+        "coder", "acme", "x", workspace=work
+    )
+    assert work.tree == "/srv/agents"
+    [env] = machine.envs
+    assert env["RFNRY_TREE"] == "/srv/agents"
+    assert env["RFNRY_AGENT"] == "/srv/agents/coder"
+
+
+async def test_the_shell_and_background_paths_hand_lent_env_to_spawn(tmp_path: Path) -> None:
+    tree = make_tree(tmp_path)
+    machine = Seen()
+    work = Workspace(machine, scope="acme", tree=str(tree))
+    job = ToolCall(id="2", name="Shell", args={"command": "b", "background": True})
+    llm = Scripted(use(shell("a")), use(job), text_reply("ok"))
+    try:
+        await Engine(tree, models={"strong": llm}).run("coder", "acme", "x", workspace=work)
+    finally:
+        await work.close()
+    assert [ran.line for ran in machine.commands] == ["a", "b"]
+    assert machine.envs == [{"RFNRY_TREE": str(tree), "RFNRY_AGENT": f"{tree}/coder"}] * 2

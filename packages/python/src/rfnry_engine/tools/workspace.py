@@ -4,6 +4,7 @@ import contextlib
 import errno
 import logging
 import os
+import posixpath
 import shutil
 import signal
 import stat
@@ -12,15 +13,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Protocol, cast, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.foreground import current
 from rfnry_engine.jail import Jail
+from rfnry_engine.records import Pipe
 from rfnry_engine.stop import join, wait
-from rfnry_engine.tools.bridge import CALLS, Answer, Bridge
+from rfnry_engine.tools.bridge import CALLS, COMMAND_BYTES, COMMAND_CALLS, Answer, Bridge
 from rfnry_engine.tools.tools import Tool
 
 logger = logging.getLogger(__name__)
@@ -95,6 +97,7 @@ class _Pipes(asyncio.SubprocessProtocol):
         self.stderr = asyncio.StreamReader()
         self.exited: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self.open = {1, 2}
+        self.abandoned = False
         self.transport: asyncio.SubprocessTransport | None = None
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
@@ -117,9 +120,27 @@ class _Pipes(asyncio.SubprocessProtocol):
             self.exited.set_result(None)
         self._finish()
 
+    def abandon(self) -> None:
+        self.abandoned = True
+        self._finish()
+
     def _finish(self) -> None:
-        if self.exited.done() and not self.open and self.transport is not None:
+        done = self.abandoned or not self.open
+        if self.exited.done() and done and self.transport is not None:
             self.transport.close()
+
+
+class _Read:
+    def __init__(self, stream: asyncio.StreamReader, pipes: _Pipes) -> None:
+        self._stream = stream
+        self._pipes = pipes
+
+    async def read(self, n: int) -> bytes:
+        try:
+            return await self._stream.read(n)
+        except asyncio.CancelledError:
+            self._pipes.abandon()
+            raise
 
 
 def _signal(pid: int, sig: signal.Signals) -> None:
@@ -139,8 +160,8 @@ def _alive(pid: int) -> bool:
 
 class _Running:
     def __init__(self, transport: asyncio.SubprocessTransport, pipes: _Pipes) -> None:
-        self.stdout = pipes.stdout
-        self.stderr = pipes.stderr
+        self.stdout = _Read(pipes.stdout, pipes)
+        self.stderr = _Read(pipes.stderr, pipes)
         self._transport = transport
         self._exited = pipes.exited
         self._pid = transport.get_pid()
@@ -353,25 +374,29 @@ class _Kept:
         )
 
 
-Sink = Callable[[bytes], None]
-Said = Callable[[Literal["stdout", "stderr"], str], Awaitable[None]]
+_Sink = Callable[[bytes], None]
+_Said = Callable[[Pipe, str], Awaitable[None]]
 
 
 class _Told:
-    def __init__(self, said: Said) -> None:
+    def __init__(self, said: _Said) -> None:
         self.said = said
-        self.queue: asyncio.Queue[tuple[Literal["stdout", "stderr"], int, bytes] | None] = (
-            asyncio.Queue()
-        )
+        self.queue: asyncio.Queue[tuple[Pipe, int, bytes] | None] = asyncio.Queue()
         self.queued = 0
-        self.missed: dict[Literal["stdout", "stderr"], int] = {"stdout": 0, "stderr": 0}
-        self.dropping: set[Literal["stdout", "stderr"]] = set()
+        self.missed: dict[Pipe, int] = {"stdout": 0, "stderr": 0}
+        self.dropping: set[Pipe] = set()
+        self.decoders: dict[Pipe, codecs.IncrementalDecoder] = {
+            "stdout": codecs.getincrementaldecoder("utf-8")(errors="replace"),
+            "stderr": codecs.getincrementaldecoder("utf-8")(errors="replace"),
+        }
         self.task = asyncio.create_task(self._send())
 
-    def add(self, stream: Literal["stdout", "stderr"], data: bytes) -> None:
+    def add(self, stream: Pipe, data: bytes) -> None:
         if stream in self.dropping or self.queued + len(data) > BACKLOG:
             self.dropping.add(stream)
             self.missed[stream] += len(data)
+            if self.queue.empty():
+                self.queue.put_nowait((stream, 0, b""))
             return
         self.queued += len(data)
         self.queue.put_nowait((stream, self.missed[stream], data))
@@ -381,10 +406,6 @@ class _Told:
         self.queue.put_nowait(None)
 
     async def _send(self) -> None:
-        decoders: dict[Literal["stdout", "stderr"], codecs.IncrementalDecoder] = {
-            "stdout": codecs.getincrementaldecoder("utf-8")(errors="replace"),
-            "stderr": codecs.getincrementaldecoder("utf-8")(errors="replace"),
-        }
         closing = False
         while not closing:
             taken = [await self.queue.get()]
@@ -394,8 +415,8 @@ class _Told:
             if taken[-1] is None:
                 closing = True
                 taken.pop()
-            events: list[tuple[Literal["stdout", "stderr"], int, bytearray]] = []
-            last: dict[Literal["stdout", "stderr"], bytearray] = {}
+            events: list[tuple[Pipe, int, bytearray]] = []
+            last: dict[Pipe, bytearray] = {}
             for item in taken:
                 assert item is not None
                 stream, gap, data = item
@@ -406,29 +427,32 @@ class _Told:
                     last[stream] = bytearray(data)
                     events.append((stream, gap, last[stream]))
             for stream, gap, joined in events:
-                if gap:
-                    decoders[stream].reset()
-                await self._say(stream, gap, decoders[stream].decode(bytes(joined)))
-        for stream, decoder in decoders.items():
-            await self._say(stream, 0, decoder.decode(b"", final=True))
+                await self._say(stream, gap, bytes(joined))
+                if self.task.cancelling():
+                    return
         for stream, gap in self.missed.items():
-            if gap:
-                await self._say(stream, gap, "")
+            await self._say(stream, gap, b"", final=True)
+            if self.task.cancelling():
+                return
 
-    async def _say(self, stream: Literal["stdout", "stderr"], gap: int, text: str) -> None:
-        text = (f"[... {gap} bytes not shown ...]\n" if gap else "") + text
+    async def _say(self, stream: Pipe, gap: int, data: bytes, final: bool = False) -> None:
+        decoder = self.decoders[stream]
+        if gap:
+            gap += len(decoder.getstate()[0])
+            decoder.reset()
+        text = (f"[... {gap} bytes not shown ...]\n" if gap else "") + decoder.decode(data, final)
         if text:
             await self.said(stream, text)
 
 
-async def _drain(stream: Stream, *sinks: Sink) -> None:
+async def _drain(stream: Stream, *sinks: _Sink) -> None:
     while chunk := await stream.read(CHUNK):
         for sink in sinks:
             sink(chunk)
 
 
 def _reading(
-    process: Process, out: Sequence[Sink], err: Sequence[Sink]
+    process: Process, out: Sequence[_Sink], err: Sequence[_Sink]
 ) -> list[asyncio.Task[None]]:
     return [
         asyncio.create_task(_drain(process.stdout, *out)),
@@ -460,9 +484,14 @@ def _log(*errors: BaseException | None) -> None:
 async def _kill_all(
     *kills: Coroutine[Any, Any, None],
 ) -> tuple[list[BaseException | None], asyncio.CancelledError | None]:
-    killing = [asyncio.create_task(kill, eager_start=True) for kill in kills]
+    killing = [asyncio.ensure_future(kill) for kill in kills]
     caller = asyncio.current_task()
     cancelled: asyncio.CancelledError | None = None
+    if killing:
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
     hurried = False
     while True:
         if not hurried and caller is not None and caller.cancelling() > 1:
@@ -487,10 +516,13 @@ async def _see_through(*kills: Coroutine[Any, Any, None]) -> list[BaseException 
 
 
 async def _exit_code(process: Process) -> int | None:
+    deadline = asyncio.timeout(GRACE)
     try:
-        async with asyncio.timeout(GRACE):
+        async with deadline:
             return await process.wait()
     except TimeoutError:
+        if not deadline.expired():
+            raise
         return None
 
 
@@ -574,7 +606,7 @@ class Workspace:
         self.backend = backend
         self.scope = scope
         self.bridge = bridge
-        self.tree = tree
+        self.tree = None if tree is None else posixpath.normpath(tree)
         self.timeout = timeout
         self.output_bytes = output_bytes
         self._jobs: dict[str, _Job] = {}
@@ -668,7 +700,7 @@ class Workspace:
         a = ShellArgs.model_validate(args)
         here = current()
         lent = here.lent if here is not None else None
-        env = lent.env if lent is not None else {}
+        env = dict(lent.env) if lent is not None else {}
         if a.background:
             starting = asyncio.ensure_future(self._start(a.command, env))
             await join([starting])
@@ -680,46 +712,10 @@ class Workspace:
             bridge, missing = await _bridge(Path(root).absolute(), lent.call)
         if bridge is not None:
             env = {**env, **bridge.env}
-        told: _Told | None = None
+        told = None if lent is None or lent.said is None else _Told(lent.said)
         try:
             try:
-                spawning = asyncio.create_task(self.backend.spawn(a.command, env))
-                try:
-                    process = await asyncio.shield(spawning)
-                except asyncio.CancelledError:
-                    try:
-                        await join([spawning])
-                    finally:
-                        if not spawning.cancelled() and spawning.exception() is None:
-                            _log(*await _see_through(spawning.result().kill()))
-                    raise
-                out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
-                told = None if lent is None or lent.said is None else _Told(lent.said)
-                reading = _reading(
-                    process,
-                    [out.add] if told is None else [out.add, partial(told.add, "stdout")],
-                    [err.add] if told is None else [err.add, partial(told.add, "stderr")],
-                )
-                code: int | None = None
-                try:
-                    async with asyncio.timeout(self.timeout):
-                        code = await process.wait()
-                    timed_out = False
-                except TimeoutError:
-                    timed_out = True
-                except BaseException:
-                    _discard(reading)
-                    _log(*await _see_through(process.kill()))
-                    raise
-                try:
-                    [error] = await _see_through(process.kill())
-                    if error is not None:
-                        raise error
-                    if timed_out:
-                        code = await _exit_code(process)
-                    await _settle(reading)
-                finally:
-                    _discard(reading)
+                code, timed_out, out, err = await self._foreground(a.command, env, told)
             finally:
                 if bridge is not None:
                     await bridge.close()
@@ -733,12 +729,55 @@ class Workspace:
         finally:
             if told is not None and not told.task.done():
                 told.task.cancel()
+                await wait([told.task], None)
         return {
             "exit_code": code,
             "stdout": out.take(),
             "stderr": err.take(),
             "timed_out": timed_out,
         }
+
+    async def _foreground(
+        self, command: str, env: Mapping[str, str], told: _Told | None
+    ) -> tuple[int | None, bool, _Kept, _Kept]:
+        spawning = asyncio.create_task(self.backend.spawn(command, env))
+        try:
+            process = await asyncio.shield(spawning)
+        except asyncio.CancelledError:
+            try:
+                await join([spawning])
+            finally:
+                if not spawning.cancelled() and spawning.exception() is None:
+                    _log(*await _see_through(spawning.result().kill()))
+            raise
+        out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
+        reading = _reading(
+            process,
+            [out.add] if told is None else [out.add, partial(told.add, "stdout")],
+            [err.add] if told is None else [err.add, partial(told.add, "stderr")],
+        )
+        code: int | None = None
+        deadline = asyncio.timeout(self.timeout)
+        try:
+            async with deadline:
+                code = await process.wait()
+            timed_out = False
+        except BaseException as exc:
+            if not isinstance(exc, TimeoutError) or not deadline.expired():
+                _discard(reading)
+                _log(*await _see_through(process.kill()))
+                raise
+            timed_out = True
+        try:
+            [error] = await _see_through(process.kill())
+            if error is not None:
+                raise error
+            if timed_out:
+                code = await _exit_code(process)
+            await _settle(reading)
+        finally:
+            _discard(reading)
+        return code, timed_out, out, err
 
     async def _start(self, command: str, env: Mapping[str, str]) -> str:
         process = await self.backend.spawn(command, env)
@@ -776,9 +815,11 @@ class Workspace:
                 ' {"result": <what you would read for that call>} or {"error": <its error>}.'
                 f" Each connection makes one call; open several to make calls at once, up to {CALLS},"
                 " and a connection past that is closed at once, with the error line or a broken pipe or"
-                " a reset, so retry it later. Every tool"
-                " you have is there except the workspace's own (Shell, Job, Jobs, Write, Edit)"
-                " and, when you have them, Delegate and Output."
+                " a reset, so retry it later. A command makes at most"
+                f" {COMMAND_CALLS} calls in all, sending at most {COMMAND_BYTES // 1_048_576} MiB"
+                " of request lines; past either, each further call is answered with an error, so"
+                " spread larger work over several commands. Every tool you have is there except"
+                " the workspace's own (Shell, Job, Jobs, Write, Edit), Delegate and Output."
             )
         return told
 
@@ -836,10 +877,13 @@ class Workspace:
         return found.shown.show(final=found.ended.is_set())
 
     async def _bounded[T](self, name: str, work: Awaitable[T]) -> T:
+        deadline = asyncio.timeout(self.timeout)
         try:
-            async with asyncio.timeout(self.timeout):
+            async with deadline:
                 return await work
         except TimeoutError:
+            if not deadline.expired():
+                raise
             raise TimeoutError(
                 f"tools/workspace: {name} did not finish within {self.timeout:g}s"
             ) from None

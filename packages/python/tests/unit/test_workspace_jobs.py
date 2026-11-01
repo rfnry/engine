@@ -93,3 +93,13 @@ async def test_the_jobs_tool_lists_what_jobs_returns(root: Path) -> None:
             {**i.model_dump(), "started": i.started.isoformat(timespec="seconds")}
             for i in work.jobs()
         ]
+
+
+async def test_output_of_a_running_job_leaves_out_an_incomplete_character(root: Path) -> None:
+    async with Workspace(Local(root), scope="acme") as work:
+        tools = {t.name: t for t in work.tools()}
+        await call(tools["Shell"], {"command": "printf 'a\\303'; sleep 5", "background": True})
+        await until(lambda: work._jobs["j1"].shown.total == 2)
+        assert work.output("j1") == "a"
+        read = await call(tools["Job"], {"id": "j1"})
+        assert (read["output"], read["running"]) == ("a", True)

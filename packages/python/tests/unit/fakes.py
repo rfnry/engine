@@ -1,5 +1,7 @@
+import asyncio
 import hashlib
 import json
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,8 +25,10 @@ from rfnry_engine.models import (
     Usage,
 )
 from rfnry_engine.records import Decision, Fingerprint, Generation, Run, Step
+from rfnry_engine.refinery.postgres import PostgresStorage
+from rfnry_engine.refinery.storage import RunRow
 
-NO_QUESTIONS = "engine: decision agent 'blank' has no questions to ask; give it questions/, or ask it through Delegate"
+NO_QUESTIONS = "engine: decision agent 'questionless' has no questions to ask; give it questions/, or ask it through Delegate"
 
 
 class Scripted:
@@ -194,6 +198,31 @@ class MemoryBucket:
         self.objects[key] = data
 
 
+class Ledger(PostgresStorage):
+    def __init__(self, pool: Any, agent: str, hold: float | None = None) -> None:
+        super().__init__(pool)
+        self.agent = agent
+        self.hold = hold
+        self.writing = asyncio.Event()
+        self.written = asyncio.Event()
+        self.released = asyncio.Event()
+        self.cut: list[float] = []
+
+    async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
+        if rows[0].agent == self.agent:
+            self.writing.set()
+            try:
+                if self.hold is None:
+                    await self.released.wait()
+                else:
+                    await asyncio.sleep(self.hold)
+            except asyncio.CancelledError:
+                self.cut.append(time.monotonic())
+                raise
+            self.written.set()
+        await super().put_runs(scope, rows)
+
+
 class Desk:
     async def decide(
         self, state: State, questions: Mapping[str, QuestionLike]
@@ -277,13 +306,13 @@ PICK: dict[str, Any] = {
 LEAD = {
     "lead/AGENT.md": (
         "---\nname: lead\nkind: generation\nmodel: strong\ndescription: Leads the desk\n"
-        "agents: [grader, writer, blank]\n---\nLead the desk.\n"
+        "agents: [grader, writer, questionless]\n---\nLead the desk.\n"
     ),
     "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades replies\n---\n",
     "grader/questions/urgent.json": '{"type": "check", "instructions": "Urgent?"}',
     "writer/AGENT.md": "---\nname: writer\nkind: generation\nmodel: strong\ndescription: Writes replies\n---\nWrite.\n",
     "writer/tasks/apology.md": "Apologise first.\n",
-    "blank/AGENT.md": "---\nname: blank\nkind: decision\nmodel: judge\ndescription: Answers what it is asked\n---\n",
+    "questionless/AGENT.md": "---\nname: questionless\nkind: decision\nmodel: judge\ndescription: Answers what it is asked\n---\n",
 }
 
 

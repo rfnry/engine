@@ -18,6 +18,7 @@ from rfnry_engine.foreground import current_call
 from rfnry_engine.models import Message, Reply, ToolCall, ToolSpec
 from rfnry_engine.records import (
     CallInfo,
+    CommandOutput,
     Event,
     Generation,
     Step,
@@ -27,12 +28,13 @@ from rfnry_engine.records import (
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.stop import Stop
-from rfnry_engine.tools.bridge import CALLS
+from rfnry_engine.tools import bridge as bridging
+from rfnry_engine.tools.bridge import CALLS, Bridge
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Backend, Local, Process, Workspace
 
-from .fakes import Scripted, text_reply
+from .fakes import Ledger, Scripted, text_reply
 from .test_engine_workspace import make_tree, use
 
 CLIENT = """
@@ -55,10 +57,8 @@ def until(name):
 
 
 @pytest.fixture
-def root(tmp_path: Path) -> Path:
-    path = tmp_path / "work"
-    path.mkdir()
-    return path
+def root(short_root: Path) -> Path:
+    return short_root
 
 
 def script(root: Path, body: str) -> None:
@@ -195,6 +195,48 @@ async def test_three_calls_at_once_run_at_once(tmp_path: Path, root: Path) -> No
     assert len(starts) == 3 and max(starts) < min(ends)
 
 
+PAIR = """
+import json, os, socket, sys
+mine, other = sys.argv[1], sys.argv[2]
+with open(mine + ".tmp", "w") as f:
+    f.write(os.environ["RFNRY_TOOLS_KEY"])
+os.replace(mine + ".tmp", mine + ".key")
+until(other + ".key")
+with socket.socket(socket.AF_UNIX) as s, open(other + ".key") as f:
+    s.connect(os.environ["RFNRY_TOOLS"])
+    s.sendall(json.dumps({"key": f.read(), "tool": "lookup", "args": {}}).encode() + b"\\n")
+    refused = json.loads(s.makefile(encoding="utf-8").readline())
+print(json.dumps([refused, call("lookup")]))
+open(mine + ".done", "w").close()
+until(other + ".done")
+"""
+
+
+async def test_two_commands_at_once_refuse_each_other_s_key(tmp_path: Path, root: Path) -> None:
+    script(root, UNTIL + PAIR)
+    llm = Scripted(
+        use(shell(f"{PY} script.py a b", "1"), shell(f"{PY} script.py b a", "2")),
+        text_reply("ok"),
+    )
+    async with (
+        asyncio.timeout(30),
+        Workspace(Local(root), scope="acme") as work,
+        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+    ):
+        run = await engine.run(
+            "coder", "acme", "x", workspace=work, tools=Tools([Tool("lookup", "Look", body=found)])
+        )
+    assert isinstance(run, Generation)
+    shells = [s for s in run.steps if s.tool == "Shell"]
+    assert [json.loads(result(s)["stdout"]) for s in shells] == [
+        [{"error": "tools/bridge: the key is not this command's"}, {"result": "found"}]
+    ] * 2
+    assert sorted((s.tool, s.by) for s in run.steps if s.tool == "lookup") == [
+        ("lookup", "1"),
+        ("lookup", "2"),
+    ]
+
+
 async def test_approve_sees_a_script_s_call_and_can_refuse_it(tmp_path: Path, root: Path) -> None:
     asked: list[tuple[str, str | None]] = []
 
@@ -269,6 +311,31 @@ async def test_the_workspace_s_own_tools_and_delegate_are_not_offered(
     assert all(e.by is None for e in events if isinstance(e, ToolCallStarted | ToolResultReady))
 
 
+async def test_a_run_tool_named_output_is_the_model_s_but_not_a_script_s(
+    tmp_path: Path, root: Path
+) -> None:
+    names = ["Output", "Delegate"]
+    script(root, f"import json\nprint(json.dumps([call(name) for name in {names!r}]))\n")
+    llm = Scripted(use(ToolCall(id="o", name="Output", args={})), use(shell()), text_reply("ok"))
+    async with (
+        Workspace(Local(root), scope="acme") as work,
+        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+    ):
+        run = await engine.run(
+            "coder",
+            "acme",
+            "x",
+            workspace=work,
+            tools=Tools([Tool(name, "Emit", body=found) for name in names]),
+        )
+    assert isinstance(run, Generation)
+    called, shelled = run.steps
+    assert (called.tool, called.result, called.is_error) == ("Output", "found", False)
+    assert json.loads(result(shelled)["stdout"]) == [
+        {"error": f"InputError: tools: unknown tool {name!r}"} for name in names
+    ]
+
+
 class Rootless:
     def __init__(self, local: Local) -> None:
         self._local = local
@@ -290,7 +357,7 @@ class Relative(Rootless):
 async def test_a_backend_with_a_relative_root_gives_the_command_an_absolute_socket(
     tmp_path: Path, root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(root.parent)
     script(root, 'import os\nprint(os.environ["RFNRY_TOOLS"], call("lookup")["result"])\n')
     async with Workspace(Relative(Local(root)), scope="acme") as work:
         run, _, _ = await run_coder(tmp_path, work, tools=[Tool("lookup", "Look", body=found)])
@@ -308,7 +375,7 @@ class Linked(Rootless):
 async def test_a_backend_s_symlinked_root_keeps_the_socket_on_the_path_it_gave(
     tmp_path: Path, root: Path
 ) -> None:
-    link = tmp_path / "link"
+    link = root.parent / "link"
     link.symlink_to(root, target_is_directory=True)
     script(root, 'import os\nprint(os.environ["RFNRY_TOOLS"], call("lookup")["result"])\n')
     async with Workspace(Linked(Local(root), link), scope="acme") as work:
@@ -347,6 +414,41 @@ async def test_no_bridge_without_the_switch_a_root_or_a_run(
     assert out == "None []\n"
     assert "RFNRY_TOOLS" not in description
     assert list(root.glob(".rfnry-*")) == []
+
+
+async def test_a_shell_inside_another_tool_call_gets_no_variables_and_no_bridge(
+    tmp_path: Path, root: Path
+) -> None:
+    (root / "script.py").write_text(
+        "import glob, os\n"
+        "print(sorted(k for k in os.environ if k.startswith('RFNRY_')), len(glob.glob('.rfnry-*')))\n",
+        encoding="utf-8",
+    )
+    tree = make_tree(tmp_path)
+    llm = Scripted(use(ToolCall(id="n", name="nested", args={})), use(shell()), text_reply("ok"))
+    async with (
+        Workspace(Local(root), scope="acme", tree="/srv/agents") as work,
+        Engine(tree, models={"strong": llm}) as engine,
+    ):
+
+        async def nested(args: dict[str, Any]) -> Any:
+            surface = EngineTools(engine, agent="coder", scope="acme", workspace=work)
+            return await surface.dispatch("Shell", {"command": f"{PY} script.py"})
+
+        run = await engine.run(
+            "coder",
+            "acme",
+            "x",
+            workspace=work,
+            tools=Tools([Tool("nested", "Run a command from code", body=nested)]),
+        )
+    assert isinstance(run, Generation)
+    inner, outer = run.steps
+    assert inner.tool == "nested" and isinstance(inner.result, str)
+    assert json.loads(inner.result)["stdout"] == "[] 0\n"
+    assert result(outer)["stdout"] == (
+        "['RFNRY_AGENT', 'RFNRY_TOOLS', 'RFNRY_TOOLS_KEY', 'RFNRY_TREE'] 1\n"
+    )
 
 
 async def test_a_run_with_no_tool_to_offer_gets_no_bridge(tmp_path: Path, root: Path) -> None:
@@ -505,20 +607,6 @@ async def test_a_large_and_non_ascii_result_reaches_the_script_whole(
     async with Workspace(Local(root), scope="acme") as work:
         run, _, _ = await run_coder(tmp_path, work, tools=[Tool("big", "Big", body=big)])
     assert result(run.steps[-1])["stdout"] == "1500000 {'é'}\n"
-
-
-async def test_a_silent_connection_does_not_hold_the_shell(tmp_path: Path, root: Path) -> None:
-    script(
-        root,
-        "import os, socket\n"
-        "s = socket.socket(socket.AF_UNIX)\n"
-        "s.connect(os.environ['RFNRY_TOOLS'])\n",
-    )
-    async with Workspace(Local(root), scope="acme") as work:
-        run, _, _ = await run_coder(tmp_path, work, tools=[Tool("lookup", "Look", body=lookup)])
-    assert result(run.steps[-1])["exit_code"] == 0
-    assert [s.tool for s in run.steps] == ["Shell"]
-    assert run.steps[-1].duration_ms < 2000
 
 
 async def test_a_delegated_child_s_command_calls_the_child_s_tools(
@@ -730,6 +818,369 @@ async def test_a_consult_started_by_a_script_s_call_ends_with_the_command(
     assert [row.agent for row in await storage.runs("acme")] == ["coder"]
 
 
+TALK = """
+def talk():
+    while True:
+        print("tick", flush=True)
+        time.sleep(0.01)
+threading.Thread(target=talk, daemon=True).start()
+"""
+
+
+def billing(tmp_path: Path, root: Path, talk: bool = False) -> Path:
+    script(
+        root,
+        UNTIL
+        + (TALK if talk else "")
+        + 'threading.Thread(target=call, args=("billing",), kwargs={"input": "hi"}, daemon=True).start()\n'
+        'until("asked")\ncall("halt")\n',
+    )
+    return make_tree(
+        tmp_path, {"billing": "name: billing\nkind: generation\nmodel: slow\ndescription: Bills"}
+    )
+
+
+def consults(engine: Engine, stop: Stop) -> Tools:
+    async def halt(args: dict[str, Any]) -> str:
+        stop.now()
+        await asyncio.sleep(10)
+        return "late"
+
+    return Tools([engine.tool("billing", scope="acme"), Tool("halt", "Halt", body=halt)])
+
+
+async def test_a_consult_a_script_started_keeps_its_record_under_a_stop_with_slow_storage(
+    tmp_path: Path, root: Path, pool: Any, storage: Storage
+) -> None:
+    stop = Stop()
+    tree = billing(tmp_path, root)
+    llm = Scripted(use(shell()), text_reply("ok"))
+    waiting = Waiting(root)
+    refinery = Refinery(Ledger(pool, "billing", hold=0.3))
+    async with (
+        asyncio.timeout(10),
+        Workspace(Local(root), scope="acme") as work,
+        Engine(tree, models={"strong": llm, "slow": waiting}, refinery=refinery) as engine,
+    ):
+        run = await engine.run(
+            "coder", "acme", "x", workspace=work, tools=consults(engine, stop), stop=stop
+        )
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert waiting.cancelled is True
+    [billed] = [s for s in run.steps if s.tool == "billing"]
+    assert billed.stopped is True and billed.by == "1"
+    [row] = [row for row in await storage.runs("acme") if row.agent == "billing"]
+    kept = await refinery.run("acme", row.run_id)
+    assert isinstance(kept, Generation) and kept.stopped == "now"
+
+
+async def test_a_consult_a_script_started_keeps_its_record_through_a_second_stop(
+    tmp_path: Path, root: Path, pool: Any, storage: Storage
+) -> None:
+    stop = Stop()
+    ledger = Ledger(pool, "billing", hold=0.3)
+    pressed: list[bool] = []
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, ToolResultReady) and event.step.tool == "halt":
+            await ledger.writing.wait()
+            pressed.append(not ledger.written.is_set())
+            stop.now()
+
+    tree = billing(tmp_path, root)
+    llm = Scripted(use(shell()), text_reply("ok"))
+    refinery = Refinery(ledger)
+    async with (
+        asyncio.timeout(10),
+        Workspace(Local(root), scope="acme") as work,
+        Engine(tree, models={"strong": llm, "slow": Waiting(root)}, refinery=refinery) as engine,
+    ):
+        run = await engine.run(
+            "coder",
+            "acme",
+            "x",
+            workspace=work,
+            tools=consults(engine, stop),
+            on_event=handler,
+            stop=stop,
+        )
+    assert pressed == [True]
+    assert isinstance(run, Generation) and run.stopped == "now"
+    [billed] = [s for s in run.steps if s.tool == "billing"]
+    assert billed.stopped is True and billed.by == "1"
+    [row] = [row for row in await storage.runs("acme") if row.agent == "billing"]
+    kept = await refinery.run("acme", row.run_id)
+    assert isinstance(kept, Generation) and kept.stopped == "now"
+
+
+@pytest.mark.parametrize("stops", [1, 2], ids=["one-stop", "two-stops"])
+async def test_a_cancel_of_the_run_cuts_the_record_write_of_a_consult_a_script_started(
+    tmp_path: Path, root: Path, pool: Any, storage: Storage, stops: int
+) -> None:
+    stop = Stop()
+    ledger = Ledger(pool, "billing")
+    halted = asyncio.Event()
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, ToolResultReady) and event.step.tool == "halt":
+            await ledger.writing.wait()
+            if stops == 2:
+                stop.now()
+            halted.set()
+
+    tree = billing(tmp_path, root)
+    llm = Scripted(use(shell()), text_reply("ok"))
+    async with (
+        asyncio.timeout(10),
+        Workspace(Local(root), scope="acme") as work,
+        Engine(
+            tree, models={"strong": llm, "slow": Waiting(root)}, refinery=Refinery(ledger)
+        ) as engine,
+    ):
+        task = asyncio.ensure_future(
+            engine.run(
+                "coder",
+                "acme",
+                "x",
+                workspace=work,
+                tools=consults(engine, stop),
+                on_event=handler,
+                stop=stop,
+            )
+        )
+        try:
+            await halted.wait()
+            held, _ = await asyncio.wait([task], timeout=0.2)
+            task.cancel()
+            ended, _ = await asyncio.wait([task], timeout=1)
+        finally:
+            ledger.released.set()
+            await asyncio.wait([task])
+    assert held == set() and ended == {task}
+    assert task.cancelled() and len(ledger.cut) == 1
+    assert await storage.runs("acme") == []
+
+
+async def test_a_stop_during_a_bridged_consult_with_a_slow_output_handler_keeps_the_record(
+    tmp_path: Path, root: Path, pool: Any, storage: Storage
+) -> None:
+    stop = Stop()
+    events: list[Event] = []
+    halted: list[float] = []
+
+    async def handler(event: Event) -> None:
+        events.append(event)
+        if isinstance(event, ToolCallStarted) and event.tool == "halt":
+            halted.append(time.monotonic())
+        elif isinstance(event, CommandOutput):
+            await asyncio.sleep(0.3)
+
+    tree = billing(tmp_path, root, talk=True)
+    llm = Scripted(use(shell()), text_reply("ok"))
+    refinery = Refinery(Ledger(pool, "billing", hold=0.3))
+    async with (
+        asyncio.timeout(10),
+        Workspace(Local(root), scope="acme") as work,
+        Engine(tree, models={"strong": llm, "slow": Waiting(root)}, refinery=refinery) as engine,
+    ):
+        run = await engine.run(
+            "coder",
+            "acme",
+            "x",
+            workspace=work,
+            tools=consults(engine, stop),
+            on_event=handler,
+            stop=stop,
+        )
+        returned = time.monotonic()
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert returned - halted[0] < 3
+    [billed] = [s for s in run.steps if s.tool == "billing"]
+    assert billed.stopped is True and billed.by == "1"
+    [row] = [row for row in await storage.runs("acme") if row.agent == "billing"]
+    kept = await refinery.run("acme", row.run_id)
+    assert isinstance(kept, Generation) and kept.stopped == "now"
+    shown = [i for i, e in enumerate(events) if isinstance(e, CommandOutput) and e.call_id == "1"]
+    [ready] = [
+        i for i, e in enumerate(events) if isinstance(e, ToolResultReady) and e.call_id == "1"
+    ]
+    assert shown and max(shown) < ready
+
+
+async def test_a_cancel_of_the_run_during_a_bridged_consult_with_a_slow_output_handler_stores_nothing(
+    tmp_path: Path, root: Path, pool: Any, storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stop = Stop()
+    ledger = Ledger(pool, "billing")
+    talking = asyncio.Event()
+    entered = asyncio.Event()
+    halted = asyncio.Event()
+    close = Bridge.close
+
+    async def closing(self: Bridge) -> None:
+        entered.set()
+        await close(self)
+
+    monkeypatch.setattr(Bridge, "close", closing)
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, ToolResultReady) and event.step.tool == "halt":
+            halted.set()
+        elif isinstance(event, CommandOutput):
+            talking.set()
+            try:
+                await asyncio.sleep(0.3)
+            finally:
+                talking.clear()
+
+    tree = billing(tmp_path, root, talk=True)
+    llm = Scripted(use(shell()), text_reply("ok"))
+    async with (
+        asyncio.timeout(10),
+        Workspace(Local(root), scope="acme") as work,
+        Engine(
+            tree, models={"strong": llm, "slow": Waiting(root)}, refinery=Refinery(ledger)
+        ) as engine,
+    ):
+        task = asyncio.ensure_future(
+            engine.run(
+                "coder",
+                "acme",
+                "x",
+                workspace=work,
+                tools=consults(engine, stop),
+                on_event=handler,
+                stop=stop,
+            )
+        )
+        try:
+            await ledger.writing.wait()
+            await entered.wait()
+            await halted.wait()
+            await talking.wait()
+            task.cancel()
+            ended, _ = await asyncio.wait([task], timeout=1)
+        finally:
+            ledger.released.set()
+            await asyncio.wait([task])
+    assert ended == {task} and task.cancelled() and len(ledger.cut) == 1
+    assert await storage.runs("acme") == []
+
+
+async def test_a_tool_deadline_cuts_a_consult_a_script_started_whose_record_write_hangs_under_a_stop(
+    tmp_path: Path, root: Path, pool: Any, storage: Storage
+) -> None:
+    stop = Stop()
+    ledger = Ledger(pool, "billing")
+    halted: list[float] = []
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, ToolResultReady) and event.step.tool == "halt":
+            halted.append(time.monotonic())
+
+    tree = billing(tmp_path, root)
+    llm = Scripted(use(shell()), text_reply("ok"))
+    try:
+        async with (
+            asyncio.timeout(10),
+            Workspace(Local(root), scope="acme") as work,
+            Engine(
+                tree,
+                models={"strong": llm, "slow": Waiting(root)},
+                refinery=Refinery(ledger),
+                tool_timeout=0.2,
+            ) as engine,
+        ):
+            run = await engine.run(
+                "coder",
+                "acme",
+                "x",
+                workspace=work,
+                tools=consults(engine, stop),
+                on_event=handler,
+                stop=stop,
+            )
+            returned = time.monotonic()
+    finally:
+        ledger.released.set()
+    [cut] = ledger.cut
+    assert halted[0] < cut < returned < cut + 1
+    assert isinstance(run, Generation) and run.stopped == "now"
+    [billed] = [s for s in run.steps if s.tool == "billing"]
+    assert (billed.result, billed.is_error, billed.stopped, billed.by) == (
+        "stopped by the user",
+        True,
+        True,
+        "1",
+    )
+    assert [row.agent for row in await storage.runs("acme")] == ["coder"]
+
+
+async def test_a_cancel_of_the_run_reaches_a_bridged_call_waiting_on_its_handler_after_its_command_ended(
+    tmp_path: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    entered = asyncio.Event()
+    blocked = asyncio.Event()
+    released = asyncio.Event()
+    cut: list[bool] = []
+    close = Bridge.close
+
+    async def closing(self: Bridge) -> None:
+        order.append("close")
+        entered.set()
+        await close(self)
+
+    monkeypatch.setattr(Bridge, "close", closing)
+
+    async def look(args: dict[str, Any]) -> str:
+        (root / "looked").touch()
+        return "found"
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, ToolResultReady) and event.by == "1":
+            order.append("blocked")
+            blocked.set()
+            try:
+                await released.wait()
+            except asyncio.CancelledError:
+                cut.append(True)
+                raise
+
+    script(
+        root,
+        UNTIL
+        + 'threading.Thread(target=call, args=("look",), daemon=True).start()\nuntil("looked")\n',
+    )
+    llm = Scripted(use(shell()), text_reply("ok"))
+    async with (
+        asyncio.timeout(10),
+        Workspace(Local(root), scope="acme") as work,
+        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+    ):
+        task = asyncio.ensure_future(
+            engine.run(
+                "coder",
+                "acme",
+                "x",
+                workspace=work,
+                tools=Tools([Tool("look", "Look", body=look)]),
+                on_event=handler,
+            )
+        )
+        try:
+            await blocked.wait()
+            await entered.wait()
+            held, _ = await asyncio.wait([task], timeout=0.2)
+            task.cancel()
+            ended, _ = await asyncio.wait([task], timeout=1)
+        finally:
+            released.set()
+            await asyncio.wait([task])
+    assert order == ["blocked", "close"] and held == set()
+    assert ended == {task} and task.cancelled() and cut == [True]
+
+
 ESCAPE = (
     UNTIL
     + """
@@ -813,6 +1264,34 @@ async def test_a_reply_a_process_that_escaped_the_command_never_reads_does_not_h
     assert run.duration_ms < 5000
 
 
+STUCK = """
+import os, socket, time
+s = socket.socket(socket.AF_UNIX)
+s.connect(os.environ["RFNRY_TOOLS"])
+open("connected", "w").close()
+time.sleep(30)
+"""
+
+
+async def test_a_stuck_connection_is_cut_when_its_command_ends(tmp_path: Path, root: Path) -> None:
+    (root / "stuck.py").write_text(STUCK, encoding="utf-8")
+    script(root, ESCAPE + 'escape("stuck.py")\nuntil("connected")\n')
+    async with Workspace(Local(root), scope="acme") as work:
+        running = asyncio.ensure_future(
+            run_coder(tmp_path, work, tools=[Tool("lookup", "Look", body=lookup)])
+        )
+        try:
+            ended, _ = await asyncio.wait([running], timeout=10)
+        finally:
+            end_escaped(root, "stuck.py")
+        run, _, _ = await running
+    assert ended == {running}
+    assert (root / "connected").exists()
+    assert [s.tool for s in run.steps] == ["Shell"]
+    assert result(run.steps[-1])["exit_code"] == 0
+    assert run.steps[-1].duration_ms < 3000
+
+
 async def test_a_call_past_the_cap_is_refused_and_leaves_no_step(
     tmp_path: Path, root: Path
 ) -> None:
@@ -851,3 +1330,118 @@ async def test_a_call_past_the_cap_is_refused_and_leaves_no_step(
     bridged = [s for s in run.steps if s.tool == "wait"]
     assert len(bridged) == CALLS
     assert all(s.by == "1" for s in bridged)
+
+
+def bridged(run: Generation, events: list[Event]) -> tuple[list[Step], list[str]]:
+    started = [e.call_id for e in events if isinstance(e, ToolCallStarted | ToolResultReady)]
+    return [s for s in run.steps if s.by is not None], started
+
+
+async def test_a_command_past_its_call_budget_is_refused_and_leaves_no_step(
+    tmp_path: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bridging, "COMMAND_CALLS", 3)
+    script(root, "import json\nprint(json.dumps([call('lookup') for _ in range(5)]))\n")
+    async with asyncio.timeout(30), Workspace(Local(root), scope="acme", timeout=20) as work:
+        run, events, _ = await run_coder(
+            tmp_path, work, tools=[Tool("lookup", "Look", body=lookup)]
+        )
+    replies = json.loads(result(run.steps[-1])["stdout"])
+    assert [json.loads(r["result"]) for r in replies[:3]] == [{"value": 2}] * 3
+    refused = {"error": "tools/bridge: this command made its 3 calls; no more are answered"}
+    assert replies[3:] == [refused] * 2
+    steps, seen = bridged(run, events)
+    assert len(steps) == bridging.COMMAND_CALLS
+    assert [s.tool for s in run.steps] == ["lookup"] * 3 + ["Shell"]
+    assert sorted(seen) == sorted(["1", "1", "1.1", "1.1", "1.2", "1.2", "1.3", "1.3"])
+
+
+async def test_a_command_past_its_byte_budget_is_refused_and_leaves_no_step(
+    tmp_path: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bridging, "COMMAND_BYTES", 2_500)
+    script(
+        root,
+        "import json\n"
+        "print(json.dumps([call('lookup', pad='x' * 1000) for _ in range(3)] + [call('lookup')]))\n",
+    )
+    async with asyncio.timeout(30), Workspace(Local(root), scope="acme", timeout=20) as work:
+        run, events, _ = await run_coder(
+            tmp_path, work, tools=[Tool("lookup", "Look", body=lookup)]
+        )
+    replies = json.loads(result(run.steps[-1])["stdout"])
+    assert [json.loads(r["result"]) for r in replies[:2]] == [{"value": 2}] * 2
+    refused = "tools/bridge: this command sent its 2500 bytes of calls; no more are answered"
+    assert replies[2:] == [{"error": refused}] * 2
+    steps, seen = bridged(run, events)
+    assert [s.args for s in steps] == [{"pad": "x" * 1000}] * 2
+    assert sorted(seen) == sorted(["1", "1", "1.1", "1.1", "1.2", "1.2"])
+
+
+NEST = """
+def nest(levels):
+    value = []
+    for _ in range(levels - 1):
+        value = [value]
+    return value
+"""
+
+
+def nest(levels: int) -> list[Any]:
+    value: list[Any] = []
+    for _ in range(levels - 1):
+        value = [value]
+    return value
+
+
+async def test_a_call_whose_args_nest_past_the_depth_is_refused_and_leaves_no_step(
+    tmp_path: Path, root: Path, storage: Storage
+) -> None:
+    script(
+        root,
+        f"import json\n{NEST}"
+        "print(json.dumps([call('lookup', x=nest(127)), call('lookup', x=nest(128))]))\n",
+    )
+    events: list[Event] = []
+
+    async def handler(event: Event) -> None:
+        events.append(event)
+
+    refinery = Refinery(storage)
+    llm = Scripted(use(shell()), text_reply("ok"))
+    async with (
+        asyncio.timeout(30),
+        Workspace(Local(root), scope="acme", timeout=20) as work,
+        Engine(make_tree(tmp_path), models={"strong": llm}, refinery=refinery) as engine,
+    ):
+        run = await engine.run(
+            "coder",
+            "acme",
+            "x",
+            workspace=work,
+            tools=Tools([Tool("lookup", "Look", body=lookup)]),
+            on_event=handler,
+        )
+    assert isinstance(run, Generation)
+    kept, refused = json.loads(result(run.steps[-1])["stdout"])
+    assert json.loads(kept["result"]) == {"value": 2}
+    assert refused == {"error": "tools/bridge: a call's args nest deeper than 128 levels"}
+    steps, seen = bridged(run, events)
+    assert [s.args for s in steps] == [{"x": nest(127)}]
+    assert sorted(seen) == sorted(["1", "1", "1.1", "1.1"])
+    read = await refinery.run("acme", run.run_id)
+    assert isinstance(read, Generation) and read.steps == run.steps
+
+
+async def test_the_description_states_a_command_s_budgets(tmp_path: Path, root: Path) -> None:
+    llm = Scripted(text_reply("ok"))
+    async with (
+        Workspace(Local(root), scope="acme") as work,
+        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+    ):
+        await engine.run("coder", "acme", "x", workspace=work)
+    assert (
+        " A command makes at most 10000 calls in all, sending at most 2 MiB of request lines;"
+        " past either, each further call is answered with an error, so spread larger work over"
+        " several commands." in described(llm)
+    )

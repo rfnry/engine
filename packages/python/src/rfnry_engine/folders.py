@@ -1,6 +1,8 @@
 import logging
 import os
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from rfnry_engine.errors import InputError
@@ -12,13 +14,35 @@ logger = logging.getLogger(__name__)
 DECLARED = frozenset({"tools", "tasks", "questions"})
 DECLARATIONS = frozenset({"AGENT.md"})
 
+_warned: ContextVar[set[str] | None] = ContextVar("warned", default=None)
+
+
+@contextmanager
+def warns_once() -> Iterator[None]:
+    token = _warned.set(set())
+    try:
+        yield
+    finally:
+        _warned.reset(token)
+
+
+def unwarned(place: str | Path) -> bool:
+    seen = _warned.get()
+    if seen is None:
+        return True
+    real = os.path.realpath(place)
+    if real in seen:
+        return False
+    seen.add(real)
+    return True
+
 
 def declares(folder: Path) -> bool:
     return (folder / "AGENT.md").is_file()
 
 
 def _inside(jail: Jail, entry: Path) -> bool:
-    if not (entry.is_symlink() or entry.is_junction()):
+    if not entry.is_symlink():
         return True
     try:
         jail.resolve(entry)
@@ -39,7 +63,17 @@ def leads_out(path: Path, folder: Path) -> Path | None:
 
 
 def _unreadable(exc: OSError) -> None:
-    logger.warning("folders: cannot read %s: %s; it is left out", exc.filename, exc)
+    if unwarned(exc.filename):
+        logger.warning("folders: cannot read %s: %s; it is left out", exc.filename, exc)
+
+
+def _readable(path: Path) -> bool:
+    try:
+        os.close(os.open(path, os.O_RDONLY))
+    except OSError as exc:
+        _unreadable(exc)
+        return False
+    return True
 
 
 def _walk(
@@ -67,9 +101,13 @@ def _walk(
         dirs += [name if top else f"{at}/{name}" for name in names]
         for name in filenames:
             path = here / name
-            if name.startswith(".") or (declared and top and name in DECLARATIONS):
+            if (
+                name.startswith(".")
+                or name == "__pycache__"
+                or (declared and top and name in DECLARATIONS)
+            ):
                 continue
-            if path.is_file() and _inside(jail, path):
+            if path.is_file() and _inside(jail, path) and _readable(path):
                 files.append((name if top else f"{at}/{name}", path))
     return sorted(dirs), sorted(files)
 

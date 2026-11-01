@@ -150,6 +150,18 @@ async def test_a_bytecode_cache_is_not_part_of_the_folder(fixtures: Path, tmp_pa
     assert "__pycache__" not in after.system
 
 
+async def test_a_file_named_like_a_bytecode_cache_is_not_part_of_the_folder(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    before = await generation(root)
+    for cache in ("support/__pycache__", "support/knowledge/__pycache__"):
+        (root / cache).write_text("a file, not a folder")
+    after = await generation(root)
+    assert after.fingerprint == before.fingerprint
+    assert after.system == before.system
+
+
 async def test_a_link_out_of_the_folder_is_not_part_of_it(fixtures: Path, tmp_path: Path) -> None:
     root = tree(fixtures, tmp_path)
     outside = tmp_path / "secret.md"

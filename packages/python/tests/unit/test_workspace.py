@@ -328,6 +328,97 @@ async def test_write_and_edit_are_bounded_by_the_timeout() -> None:
         await write.call({"path": "a.txt", "content": "x"})
 
 
+async def test_a_backend_s_own_timeout_reaches_write_and_edit_as_it_is() -> None:
+    lost = TimeoutError("sandbox: the file server did not answer in 2s")
+
+    class Remote(Machine):
+        async def read(self, path: str, limit: int) -> bytes:
+            raise lost
+
+        async def write(self, path: str, data: bytes) -> None:
+            raise lost
+
+    ws = Workspace(Remote(), scope="acme", timeout=120)
+    for name, args in (
+        ("Write", {"path": "a.txt", "content": "x"}),
+        ("Edit", {"path": "a.txt", "old": "x", "new": "y"}),
+    ):
+        async with asyncio.timeout(5):
+            with pytest.raises(TimeoutError) as caught:
+                await tool(ws, name).call(args)
+        assert caught.value is lost
+
+
+async def test_a_backend_s_own_timeout_while_a_command_runs_reaches_shell_as_it_is() -> None:
+    lost = TimeoutError("sandbox: lost the connection to the container")
+
+    class Lost(Machine):
+        async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
+            ran = await super().spawn(command, {})
+
+            async def wait() -> int:
+                raise lost
+
+            ran.wait = wait  # type: ignore[method-assign]
+            return ran
+
+    machine = Lost()
+    ws = Workspace(machine, scope="acme", timeout=120)
+    async with asyncio.timeout(5):
+        with pytest.raises(TimeoutError) as caught:
+            await shell(ws, "make")
+    assert caught.value is lost
+    assert machine.commands[0].kills == 1
+
+
+async def test_a_command_past_the_timeout_is_timed_out_even_when_the_backend_waits_on() -> None:
+    class Waiting(Machine):
+        async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
+            ran = await super().spawn(command, {})
+            ran.stdout.close()
+            ran.stderr.close()
+            ran.stubborn = True
+
+            async def wait() -> int:
+                await asyncio.sleep(30)
+                raise AssertionError("the wait was never cut")
+
+            ran.wait = wait  # type: ignore[method-assign]
+            return ran
+
+    ws = Workspace(Waiting(), scope="acme", timeout=0.2)
+    async with asyncio.timeout(5):
+        result = await shell(ws, "sleep 30")
+    assert result == {"exit_code": None, "stdout": "", "stderr": "", "timed_out": True}
+
+
+async def test_a_backend_s_own_timeout_after_the_deadline_reaches_shell_as_it_is() -> None:
+    lost = TimeoutError("sandbox: lost the connection to the container")
+
+    class Lost(Machine):
+        async def spawn(self, command: str, env: Mapping[str, str]) -> Command:
+            ran = await super().spawn(command, {})
+            ran.stdout.close()
+            ran.stderr.close()
+            waits = 0
+
+            async def wait() -> int:
+                nonlocal waits
+                waits += 1
+                if waits == 1:
+                    await asyncio.sleep(30)
+                raise lost
+
+            ran.wait = wait  # type: ignore[method-assign]
+            return ran
+
+    ws = Workspace(Lost(), scope="acme", timeout=0.2)
+    async with asyncio.timeout(5):
+        with pytest.raises(TimeoutError) as caught:
+            await shell(ws, "sleep 30")
+    assert caught.value is lost
+
+
 def test_shell_tells_the_model_its_terms() -> None:
     ws = Workspace(Machine(), scope="acme", timeout=45, output_bytes=8000)
     description = tool(ws, "Shell").description
@@ -1392,3 +1483,31 @@ async def test_a_kill_cancelled_as_it_is_made_still_runs_under_a_task_factory() 
         loop.set_task_factory(None)
     assert task in done and task.cancelled()
     assert ran.kills == 1
+
+
+def plain(loop: asyncio.AbstractEventLoop, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+    return asyncio.Task(coro, loop=loop)
+
+
+async def test_a_kill_runs_on_a_loop_whose_task_factory_refuses_eager_start() -> None:
+    loop = asyncio.get_running_loop()
+    loop.set_task_factory(plain)
+    try:
+        async with asyncio.timeout(5):
+            timed = Machine(lambda ran: ran.stdout.say(b"before\n"))
+            result = await shell(Workspace(timed, scope="acme", timeout=0.2), "x")
+            cut = Machine()
+            task = asyncio.create_task(shell(Workspace(cut, scope="acme"), "x"))
+            ran = await started(cut)
+            task.cancel()
+            task.cancel()
+            await asyncio.wait({task})
+            jobs = Machine()
+            ws = Workspace(jobs, scope="acme")
+            await background(ws, "serve")
+            await ws.close()
+    finally:
+        loop.set_task_factory(None)
+    assert result["timed_out"] and timed.commands[0].kills == 1
+    assert task.cancelled() and ran.kills == 1
+    assert jobs.commands[0].kills >= 1 and await tool(ws, "Jobs").call({}) == {"jobs": []}

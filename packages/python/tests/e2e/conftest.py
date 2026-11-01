@@ -9,5 +9,7 @@ import pytest
 def adapters() -> Any:
     path = os.environ.get("RFNRY_LIVE_ADAPTERS")
     if not path:
-        pytest.skip("RFNRY_LIVE_ADAPTERS is not set")
+        pytest.fail(
+            "tests: the live tier needs RFNRY_LIVE_ADAPTERS, the module path of your live adapters"
+        )
     return importlib.import_module(path)

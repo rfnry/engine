@@ -98,6 +98,15 @@ def _load(
     return loaded
 
 
+def _threaded(modules: dict[str, ModuleType | str]) -> list[str]:
+    return [
+        key
+        for key, loaded in modules.items()
+        if isinstance(loaded, ModuleType)
+        and not inspect.iscoroutinefunction(getattr(loaded, "run", None))
+    ]
+
+
 def _write(fd: int, text: str) -> None:
     data = memoryview(f"{text}\n".encode())
     while data:
@@ -127,7 +136,9 @@ async def _serve(
             return await module.run(args, call)
         work = pool.submit(module.run, args, call)
         works[id] = work
-        return await asyncio.wrap_future(work)
+        result = await asyncio.wrap_future(work)
+        del works[id]
+        return await result if inspect.isawaitable(result) else result
 
     async def handle(id: int, key: str, args: Any, call: Any) -> None:
         name = key.rsplit("/", 1)[-1]
@@ -149,6 +160,7 @@ async def _serve(
         works.pop(id, None)
         _write(replies, text)
 
+    _write(replies, json.dumps({"threaded": _threaded(modules)}))
     lines: asyncio.Queue[bytes] = asyncio.Queue()
     threading.Thread(target=_read, args=(requests, loop, lines), daemon=True).start()
     while line := await lines.get():

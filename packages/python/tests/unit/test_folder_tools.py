@@ -407,24 +407,6 @@ def test_a_helper_needs_no_run_and_an_async_run_is_a_run(tmp_path: Path) -> None
     assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch"]
 
 
-@pytest.mark.parametrize(
-    ("body", "awaits"),
-    [
-        (RUN, False),
-        ("async def run(args, call):\n    return {}\n", True),
-        (RUN + "async def run(args, call):\n    return {}\n", True),
-        ("async def run(args, call):\n    return {}\n" + RUN, False),
-        ("class Tool:\n    async def run(self, args, call):\n        return {}\n" + RUN, False),
-    ],
-)
-def test_a_tool_awaits_when_its_last_run_at_the_top_level_is_async(
-    tmp_path: Path, body: str, awaits: bool
-) -> None:
-    write(tmp_path / "a/AGENT.md", agent_md("a"))
-    tool(tmp_path / "a/tools", "fetch", body=body)
-    assert load_tree(tmp_path)["a"].folder_tools["fetch"].awaits is awaits
-
-
 def test_an_installed_package_inside_the_project_passes(
     tmp_path: Path,
 ) -> None:
@@ -877,6 +859,28 @@ def test_a_tool_that_imports_a_sibling_tool_is_refused(tmp_path: Path) -> None:
     )
 
 
+def test_a_tool_that_imports_a_broken_link_beside_it_is_refused_by_the_link_s_module_name(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch", body="import b\n" + RUN)
+    (tmp_path / "a/tools/b.py").symlink_to("gone.py")
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tools/folder: {tmp_path / 'a/tools/fetch.py'} imports 'b', which sits in its tools/ folder but is not a helper; a tool reaches only the helpers of its folder, so move the shared code into a helper _b.py"
+    )
+
+
+def test_a_folder_named_like_a_script_beside_a_tool_is_not_taken_for_the_script(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch", body="import b\n" + RUN)
+    write(tmp_path / "a/tools/b.py/notes.txt", "a folder, not a script\n")
+    assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch"]
+
+
 def test_a_tool_that_imports_a_subfolder_package_is_refused(tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a"))
     write(tmp_path / "a/tools/pkg/__init__.py", "X = 1\n")
@@ -915,6 +919,36 @@ async def test_a_tool_named_time_that_imports_time_runs_on_the_standard_module(
     )
     async with Engine(tmp_path, models={}) as engine:
         assert await EngineTools(engine, agent="a", scope="acme").dispatch("time", {}) == "True"
+
+
+ONLY_BUILT_IN = sorted(
+    name
+    for name in sys.builtin_module_names
+    if name.startswith("_") and name not in sys.stdlib_module_names
+)[:1]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "_stat",
+        "_weakrefset",
+        "_strptime",
+        *(pytest.param(name, id="built-in-only") for name in ONLY_BUILT_IN),
+        pytest.param("__hello__", id="frozen-only"),
+    ],
+)
+def test_a_helper_named_like_a_standard_library_module_is_refused(
+    tmp_path: Path, name: str
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    write(tmp_path / f"a/tools/{name}.py", "X = 1\n")
+    tool(tmp_path / "a/tools", "fetch", body=f"import {name}\n" + RUN)
+    with pytest.raises(ConfigurationError) as raised:
+        load_tree(tmp_path)
+    assert str(raised.value) == (
+        f"tools/folder: {tmp_path / 'a/tools' / f'{name}.py'} is named like the standard-library module {name!r}, and the worker can't load both; rename it"
+    )
 
 
 def test_a_file_the_tools_folder_never_loads_may_link_out_of_it(tmp_path: Path) -> None:

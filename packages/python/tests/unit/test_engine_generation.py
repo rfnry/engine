@@ -1,6 +1,9 @@
 import asyncio
+import copy
+import json
 import re
 import shutil
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from enum import Enum
@@ -9,9 +12,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
-from rfnry_engine.engine import Engine
+from rfnry_engine.engine import Engine, _unfit
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
@@ -33,7 +36,15 @@ from rfnry_engine.models import (
     ToolSpec,
     Usage,
 )
-from rfnry_engine.records import Event, Generation, Run, TextDelta
+from rfnry_engine.records import (
+    Event,
+    Generation,
+    MessagesTaken,
+    Run,
+    TextDelta,
+    ToolCallStarted,
+    ToolResultReady,
+)
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.stop import Stop
@@ -264,6 +275,82 @@ async def test_calls_after_an_accepted_output_are_answered_but_never_run(
         ("l", True, "NotRun: lookup_order was not run; Output ended the run"),
     ]
     assert [(s.tool, s.is_error) for s in run.steps] == [("Output", False), ("lookup_order", True)]
+
+
+async def test_a_second_output_after_a_refused_one_is_not_run_as_a_tool(fixtures: Path) -> None:
+    looked: list[str] = []
+    asked: list[str] = []
+    shown: list[str] = []
+
+    async def lookup(args: dict[str, Any]) -> str:
+        looked.append(args["order_id"])
+        return "found"
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        asked.append(call.id)
+        return True
+
+    async def show(event: Event) -> None:
+        if isinstance(event, ToolCallStarted | ToolResultReady):
+            shown.append(event.call_id)
+
+    llm = Scripted(
+        _tool_use(
+            ToolCall(id="o1", name="Output", args={"refund": "maybe"}),
+            ToolCall(id="l1", name="lookup_order", args={"order_id": "A-1"}),
+            ToolCall(id="o2", name="Output", args={"refund": True, "reason": "dup"}),
+            ToolCall(id="o3", name="Output", args={"refund": False, "reason": "late"}),
+            ToolCall(id="l2", name="lookup_order", args={"order_id": "A-2"}),
+        )
+    )
+    tools = Tools([Tool("lookup_order", "Fetch an order", body=lookup)])
+    run = await engine_for(fixtures, llm).run(
+        "support", "acme", "x", expect=Verdict, tools=tools, approve=approve, on_event=show
+    )
+    assert isinstance(run, Generation) and run.calls == 1
+    assert Verdict.model_validate_json(run.reply) == Verdict(refund=True, reason="dup")
+    assert looked == ["A-1"] and asked == ["l1"] and shown == ["l1", "l1"]
+    assert [(s.tool, s.is_error) for s in run.steps] == [
+        ("Output", True),
+        ("lookup_order", False),
+        ("Output", False),
+        ("Output", True),
+        ("lookup_order", True),
+    ]
+    answered = [(m.tool_call_id, m.content) for m in run.conversation if m.role == "tool"]
+    assert [call_id for call_id, _ in answered] == ["o1", "l1", "o2", "o3", "l2"]
+    assert str(answered[0][1]).startswith("invalid; fix and call Output again: ")
+    assert answered[1:] == [
+        ("l1", "found"),
+        ("o2", "accepted"),
+        ("o3", "NotRun: Output was not run; Output ended the run"),
+        ("l2", "NotRun: lookup_order was not run; Output ended the run"),
+    ]
+
+
+async def test_outputs_that_do_not_fit_are_each_answered_with_what_is_wrong(
+    fixtures: Path,
+) -> None:
+    llm = Scripted(
+        _tool_use(
+            ToolCall(id="o1", name="Output", args={"refund": "maybe"}),
+            ToolCall(id="o2", name="Output", args={"refund": True}),
+        ),
+        _tool_use(ToolCall(id="o3", name="Output", args={"refund": True, "reason": "dup"})),
+    )
+    run = await engine_for(fixtures, llm).run("support", "acme", "x", expect=Verdict)
+    assert isinstance(run, Generation) and run.calls == 2
+    assert [(s.tool, s.is_error) for s in run.steps] == [
+        ("Output", True),
+        ("Output", True),
+        ("Output", False),
+    ]
+    retry = llm.calls[1][1]
+    assert [(m.tool_call_id, m.is_error) for m in retry[-2:]] == [("o1", True), ("o2", True)]
+    assert all(
+        str(m.content).startswith("invalid; fix and call Output again: ") for m in retry[-2:]
+    )
+    assert "bool_parsing" in str(retry[-2].content) and "bool_parsing" not in str(retry[-1].content)
 
 
 async def test_calls_in_a_reply_that_ran_out_of_room_are_answered_but_never_run(
@@ -635,7 +722,329 @@ async def test_a_failed_recording_is_logged_and_the_run_returned(
     with caplog.at_level("WARNING"):
         run = await engine.run("billing", "acme", "x")
     assert isinstance(run, Generation) and run.reply == "fine"
-    assert f"refinery.record failed for run {run.run_id}" in caplog.text
+    assert f"engine: refinery.record failed for run {run.run_id}" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "levels", [254, 255, 2000], ids=["254-records", "255-unrecorded", "2000-unrecorded"]
+)
+async def test_a_run_whose_args_nest_past_254_levels_is_returned_and_logged_unrecorded(
+    fixtures: Path, storage: Storage, caplog: pytest.LogCaptureFixture, levels: int
+) -> None:
+    async def look(args: dict[str, Any]) -> str:
+        return "seen"
+
+    deep: list[Any] = []
+    for _ in range(levels - 2):
+        deep = [deep]
+    call = ToolCall(id="c1", name="look", args={"x": deep})
+    refinery = Refinery(storage)
+    llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("done"))
+    engine = engine_for(fixtures, llm, refinery=refinery)
+    with caplog.at_level("WARNING"):
+        run = await engine.run(
+            "billing", "acme", "x", tools=Tools([Tool("look", "Look", body=look)])
+        )
+    assert isinstance(run, Generation) and run.reply == "done"
+    [step] = run.steps
+    assert (step.tool, step.result, step.args == {"x": deep}) == ("look", "seen", True)
+    logged = [
+        (r.levelname, r.getMessage(), r.exc_info and (type(r.exc_info[1]), str(r.exc_info[1])))
+        for r in caplog.records
+        if r.name == "rfnry_engine.engine"
+    ]
+    failure = (
+        "WARNING",
+        f"engine: refinery.record failed for run {run.run_id}",
+        (ValueError, "Circular reference detected (depth exceeded)"),
+    )
+    assert logged == ([] if levels == 254 else [failure])
+    try:
+        read: Run | None = await refinery.run("acme", run.run_id)
+    except NotFoundError:
+        read = None
+    assert (isinstance(read, Generation) and read.steps == run.steps) is (levels == 254)
+
+
+async def test_a_tool_that_changes_its_args_leaves_the_record_as_the_model_sent_it(
+    fixtures: Path, storage: Storage
+) -> None:
+    sent: dict[str, Any] = {"order": {"id": "A-1", "lines": [1]}}
+    seen: list[dict[str, Any]] = []
+
+    async def lookup(args: dict[str, Any]) -> str:
+        seen.append(copy.deepcopy(args))
+        args["order"]["id"] = "a-1"
+        args["order"]["lines"].append(2)
+        args["limit"] = 10
+        return "found"
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        call.args["order"]["approved"] = True
+        call.args["by"] = "approve"
+        return True
+
+    async def show(event: Event) -> None:
+        if isinstance(event, ToolCallStarted):
+            event.args["order"]["started"] = True
+        if isinstance(event, ToolResultReady):
+            event.step.args["order"]["ready"] = True
+
+    refinery = Refinery(storage)
+    call = ToolCall(id="c1", name="lookup", args=copy.deepcopy(sent))
+    llm = Scripted(_tool_use(call), text_reply("done"))
+    engine = engine_for(fixtures, llm, refinery=refinery)
+    run = await engine.run(
+        "billing",
+        "acme",
+        "x",
+        tools=Tools([Tool("lookup", "Look up an order", body=lookup)]),
+        approve=approve,
+        on_event=show,
+    )
+    assert isinstance(run, Generation) and run.reply == "done"
+    assert seen == [sent]
+    [step] = run.steps
+    assert step.args == sent and step.result == "found"
+    assert run.conversation[1].tool_calls[0].args == sent
+    assert llm.calls[1][1][1].tool_calls[0].args == sent
+    stored = await refinery.run("acme", run.run_id)
+    assert isinstance(stored, Generation)
+    assert stored.steps[0].args == sent and stored.conversation[1].tool_calls[0].args == sent
+
+
+async def test_an_expect_validator_that_changes_the_args_leaves_the_record_as_the_model_sent_it(
+    fixtures: Path,
+) -> None:
+    class Filled(BaseModel):
+        refund: bool
+        reason: str
+
+        @model_validator(mode="before")
+        @classmethod
+        def defaults(cls, data: Any) -> Any:
+            if isinstance(data, dict):
+                data.setdefault("reason", "unspecified")
+                data["normalized"] = True
+            return data
+
+    llm = Scripted(
+        _tool_use(ToolCall(id="o1", name="Output", args={"refund": "maybe"})),
+        _tool_use(ToolCall(id="o2", name="Output", args={"refund": True})),
+    )
+    run = await engine_for(fixtures, llm).run("support", "acme", "x", expect=Filled)
+    assert isinstance(run, Generation)
+    assert Filled.model_validate_json(run.reply) == Filled(refund=True, reason="unspecified")
+    assert [step.args for step in run.steps] == [{"refund": "maybe"}, {"refund": True}]
+    calls = [call.args for m in run.conversation if m.role == "assistant" for call in m.tool_calls]
+    assert calls == [{"refund": "maybe"}, {"refund": True}]
+    assert llm.calls[1][1][1].tool_calls[0].args == {"refund": "maybe"}
+
+
+class Unpicklable:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+
+    def __eq__(self, other: object) -> bool:
+        return other is self
+
+    __hash__ = object.__hash__
+
+
+@pytest.mark.parametrize("handled", [True, False], ids=["with-on-event", "without"])
+async def test_args_holding_a_value_that_cannot_be_copied_still_run(
+    fixtures: Path, handled: bool
+) -> None:
+    leaf = Unpicklable()
+    received: list[Any] = []
+
+    async def lookup(args: dict[str, Any]) -> str:
+        received.append(args["v"]["held"][0])
+        return "found"
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        received.append(call.args["v"]["held"][0])
+        return True
+
+    async def show(event: Event) -> None:
+        if isinstance(event, ToolCallStarted):
+            received.append(event.args["v"]["held"][0])
+        if isinstance(event, ToolResultReady):
+            received.append(event.step.args["v"]["held"][0])
+
+    call = ToolCall(id="c1", name="lookup", args={"v": {"held": [leaf]}})
+    llm = Scripted(_tool_use(call), text_reply("done"))
+    run = await engine_for(fixtures, llm).run(
+        "billing",
+        "acme",
+        "x",
+        tools=Tools([Tool("lookup", "Look up an order", body=lookup)]),
+        approve=approve,
+        on_event=show if handled else None,
+    )
+    assert isinstance(run, Generation) and run.reply == "done"
+    assert run.steps[0].result == "found" and run.steps[0].args["v"]["held"][0] is leaf
+    assert len(received) == (4 if handled else 2) and all(item is leaf for item in received)
+
+
+def test_the_input_check_takes_linear_time_however_deep_the_input() -> None:
+    deep: Any = "leaf"
+    for _ in range(50_000):
+        deep = [deep]
+    began = time.perf_counter()
+    assert _unfit(deep) is None
+    assert time.perf_counter() - began < 2.0
+    held: Any = {"n": {1, 2}}
+    for _ in range(3):
+        held = {"n": [held]}
+    assert _unfit(held) == "set at input['n'][0]['n'][0]['n'][0]['n']"
+
+
+def test_the_input_check_names_the_one_bad_value_of_a_wide_input() -> None:
+    wide: list[Any] = [{"a": [n, str(n), None]} for n in range(200_000)]
+    assert _unfit(wide) is None
+    wide[-1]["a"].append(float("nan"))
+    assert _unfit(wide) == "nan at input[199999]['a'][3]"
+
+
+class Meddling:
+    def __init__(self, *replies: Reply) -> None:
+        self.replies = list(replies)
+        self.seen: list[list[Message]] = []
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        self.seen.append([message.model_copy(deep=True) for message in messages])
+        for message in messages:
+            if isinstance(message.content, list):
+                for part in message.content:
+                    if isinstance(part, Text):
+                        part.text = "MEDDLED"
+            for call in message.tool_calls:
+                call.args["meddled"] = True
+        return self.replies.pop(0)
+
+
+async def test_what_a_handler_or_the_adapter_changes_leaves_the_record_and_the_next_call_alone(
+    fixtures: Path,
+) -> None:
+    returned: list[Part] = [
+        Text(text="the result"),
+        Image(media_type="image/png", url="https://x/a.png"),
+    ]
+
+    async def look(args: dict[str, Any]) -> list[Part]:
+        return [part.model_copy() for part in returned]
+
+    async def edit(event: Event) -> None:
+        if isinstance(event, ToolResultReady) and isinstance(event.step.result, list):
+            text, image = event.step.result
+            assert isinstance(text, Text) and isinstance(image, Image)
+            text.text = "EDITED"
+            image.url = "https://evil/b.png"
+        if isinstance(event, MessagesTaken):
+            [taken] = event.messages
+            assert isinstance(taken.content, list) and isinstance(taken.content[0], Text)
+            taken.content[0].text = "EDITED"
+
+    look_up = ToolCall(id="c1", name="look", args={"q": "x"})
+    llm = Meddling(
+        _tool_use(look_up), _tool_use(look_up.model_copy(update={"id": "c2"})), text_reply("done")
+    )
+    inbox: asyncio.Queue[Any] = asyncio.Queue()
+    inbox.put_nowait([Text(text="also this")])
+    run = await Engine(fixtures, models={"strong": llm}).run(
+        "billing",
+        "acme",
+        [Text(text="look it up")],
+        tools=Tools([Tool("look", "Look", body=look)]),
+        on_event=edit,
+        inbox=inbox,
+    )
+    assert isinstance(run, Generation) and run.reply == "done"
+    assert [step.result for step in run.steps] == [returned, returned]
+    assert [step.args for step in run.steps] == [{"q": "x"}, {"q": "x"}]
+    for conversation in (run.conversation, llm.seen[2]):
+        texts = [
+            part.text
+            for message in conversation
+            if isinstance(message.content, list)
+            for part in message.content
+            if isinstance(part, Text)
+        ]
+        assert texts == ["look it up", "the result", "also this", "the result"]
+        assert all(
+            call.args == {"q": "x"} for message in conversation for call in message.tool_calls
+        )
+
+
+def _cyclic() -> list[Any]:
+    held: list[Any] = [1]
+    held.append({"back": held})
+    return held
+
+
+@pytest.mark.parametrize(
+    ("given", "shown"),
+    [
+        (None, "NoneType"),
+        (42, "int"),
+        ((1, 2), "tuple"),
+        ({1: "a"}, "the key 1 at input"),
+        ({"a": {1, 2}}, "set at input['a']"),
+        ([object()], "object at input[0]"),
+        ({"a": [1, {"b": (2,)}]}, "tuple at input['a'][1]['b']"),
+        ({"a": Text(text="x")}, "Text at input['a']"),
+        (_cyclic(), "a cycle at input[1]['back']"),
+        ({"x": float("nan")}, "nan at input['x']"),
+        ([1, float("inf")], "inf at input[1]"),
+        ({"a": [{"b": float("-inf")}]}, "-inf at input['a'][0]['b']"),
+    ],
+    ids=[
+        "none",
+        "number",
+        "tuple",
+        "int-key",
+        "set",
+        "object",
+        "nested-tuple",
+        "part-in-object",
+        "cycle",
+        "nan",
+        "infinity",
+        "negative-infinity",
+    ],
+)
+@pytest.mark.parametrize("agent", ["billing", "triage"])
+async def test_an_input_that_is_not_a_state_is_refused_before_any_model_call(
+    fixtures: Path, agent: str, given: Any, shown: str
+) -> None:
+    class Kept:
+        def __init__(self) -> None:
+            self.runs: list[Run] = []
+
+        async def record(self, run: Run) -> None:
+            self.runs.append(run)
+
+    kept = Kept()
+    llm, judge = Scripted(), Fixed({})
+    engine = Engine(fixtures, refinery=kept, models={"strong": llm, "judge": judge})
+    with pytest.raises(InputError) as caught:
+        await engine.run(agent, "acme", given)
+    assert str(caught.value) == (
+        f"engine: input must be a string, a JSON object or a list; got {shown}"
+    )
+    assert llm.calls == [] and judge.calls == [] and kept.runs == []
+
+
+async def test_a_nested_input_of_json_values_runs_and_is_recorded_as_given(
+    fixtures: Path,
+) -> None:
+    shared = {"sku": "A-1"}
+    given = {"order": [1, 2.5, True, None, {"lines": [shared, shared]}], "note": "x"}
+    llm = Scripted(text_reply("ok"))
+    run = await engine_for(fixtures, llm).run("billing", "acme", given)
+    assert isinstance(run, Generation) and run.input == given
+    assert llm.calls[0][1][-1].content == json.dumps(given, ensure_ascii=False)
 
 
 PNG = b"\x89PNG\r\n\x1a\n"

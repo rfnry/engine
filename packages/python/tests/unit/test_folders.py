@@ -184,6 +184,14 @@ def test_a_folder_link_to_a_hidden_folder_is_not_mapped_and_adds_no_content(
     assert content(tmp_path, False, inner=True) == before
 
 
+def test_a_file_named___pycache___is_neither_mapped_nor_content(tmp_path: Path) -> None:
+    write(tmp_path / "notes/a.md", "A.\n")
+    write(tmp_path / "notes/__pycache__", "a file, not a folder\n")
+    write(tmp_path / "__pycache__", "a file, not a folder\n")
+    assert entries(tmp_path, False) == ["notes/", "  a.md"]
+    assert [rel for rel, _ in content(tmp_path, False, inner=True)] == ["notes/a.md"]
+
+
 def test_a_bad_description_stops_the_map_naming_the_file(tmp_path: Path) -> None:
     root = coding(tmp_path / "coding")
     write(root / "notes/broken.md", "---\ndescription: [x\n---\n")

@@ -3,8 +3,6 @@ from typing import Any, Protocol, runtime_checkable
 from rfnry_engine.refinery.labels import Label
 from rfnry_engine.refinery.storage import RunRow
 
-DATASETS = ("generation", "preference", "decision")
-
 
 @runtime_checkable
 class Bucket(Protocol):

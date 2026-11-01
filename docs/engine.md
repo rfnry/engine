@@ -292,7 +292,8 @@ file. A `name:` is plain text — not blank, not hidden, not padded, no slash �
 without renaming the agent; two agents with one name are a `ConfigurationError` naming both files.
 `model:` names a model, `strong` or `judge` for instance; what the name maps to is the engine's to
 say. An agent has the tools of its own `tools/` folder and of the `tools/` folder of every folder
-above it ([Tools](#tools)):
+above it, a tool of a folder nearer the agent replacing one of the same name above it
+([Tools](#tools)):
 
 ```markdown
 ---
@@ -348,14 +349,21 @@ covers it under, while `kb/../.env` is hidden, and so is `/elsewhere/git/config`
 `/elsewhere/git` links to the agent's `.git`. A folder that `LS` or `Grep` is given reads when the
 folder it leads to has no hidden name: a visible link to a hidden folder, `shown -> .secret`, is
 hidden, and so is every file read through it, for the fingerprint never follows a folder link, and
-`Glob`, `Grep`, `LS` and the map show nothing these rules hide. A file link that comes from outside
-those folders, or leads from one of them into another, is judged by the file it leads to as well as
-by its own name, since the fingerprint covers it only there, and a path that leads outside them is
-the jail's error (`jail: path outside the agent directory: <path>`). `Read` returns a text file as
-text. `Load` hands the model any other file as it is — an image, a PDF, a recording, a spreadsheet —
-so a price list, a diagram or a scanned form sits in the folder as it came, the model reads it with
-its own understanding of images and documents, there is no parser in between, and nothing is loaded
-until the model asks — unless the agent sets `preload: true`, below.
+`Glob`, `Grep`, `LS` and the map show nothing these rules hide, nor a link that leads outside those
+folders, while `LS` lists a broken or looping link inside them by its name, as it lists a file, and
+`Grep` given a file labels its matches with the path as given, a file link under its own name. A
+part written after a file names a folder that is not there, as POSIX has it, so `Read`, `Load`,
+`Grep` and `LS` of `notes.md/`, `notes.md/.`, `notes.md/..` or `notes.md/x` are `tools/builtins: not
+a folder: notes.md/`, the path as written. A file link that comes from outside those folders, or
+leads from one of them into another, is judged by the file it leads to as well as by its own name,
+since the fingerprint covers it only there, and a path that leads outside them is the jail's error
+(`jail: path outside the agent directory: <path>`), unless it leaves them through a hidden name: a
+link in a hidden folder that leads out, `.secret/notes -> /elsewhere`, is hidden, and so is every
+path through it. `Read` returns a text file as text. `Load` hands the model any other file as it is
+— an image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in
+the folder as it came, the model reads it with its own understanding of images and documents, there
+is no parser in between, and nothing is loaded until the model asks — unless the agent sets
+`preload: true`, below.
 
 `AGENT.md` makes a directory an agent, and its frontmatter names it. `Engine(root)` walks `root` and
 loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested
@@ -383,23 +391,41 @@ and a link that would reach an agent twice is a `ConfigurationError` naming the 
 leads: one to a folder of the root that holds an `AGENT.md`, in it or below it, or two links to one
 such folder elsewhere, the second link named being the one that leads to the other path; so is a
 link to a folder on the way to the link or one holding it, which would lead the walk into itself. A
-folder it cannot read is left out, with a warning that names it: on the `rfnry_engine.tree` logger
-when the root is walked for agents, on `rfnry_engine.folders` when an agent's folder or one it reads
-is walked for its map, preload and fingerprint. What the engine loads stays where the content
-fingerprint finds it, since the fingerprint leaves out a link that leads out of the folder it walks:
-a tool's `.json`, `.py` or helper that is a link to a place outside its `tools/` folder, which the
-fingerprint walks on its own for every agent that gets its tools, is a `ConfigurationError`
-(`tools/folder: <path> links to <target>, outside its folder; move the file into its folder, or link
-the agent's whole folder`, or `the whole tools/ folder` for the `tools/` folder of a folder without
-an `AGENT.md`), and so is a question's `.json`, `.py` or helper, a task or an `AGENT.md` that is a
-link to a place outside the agent's folder, and an agent's own `tools/`, `tasks/` or `questions/`
-folder that is a link to a folder outside the agent's (`tree: <path> links to <target>, outside the
-agent's folder; move the folder into the agent's folder, or link the agent's whole folder`) or to a
-hidden folder inside it, which the fingerprint leaves out as it leaves out every hidden name (`tree:
-<path> links to <target>, a hidden folder the agent's fingerprint leaves out; move the folder to a
-visible name`). Any other link that stays inside loads, and so do an agent's whole folder linked in
-and a `tools/` folder of a folder without an `AGENT.md` linked from elsewhere, which the agents
-below it walk where it leads.
+folder it cannot read is left out, with one warning that names it each time the tree loads, however
+many walks meet it: on the `rfnry_engine.tree` logger when the root's walk for agents meets it
+first, on `rfnry_engine.folders` when the walk of an agent's folder or one it reads for its map,
+preload and fingerprint does. A content file it cannot read is left out the same way, on
+`rfnry_engine.folders`: out of the map, the preload and the fingerprint, which is then the
+fingerprint of the folder without it. A file the agent is made of — its `AGENT.md`, a task, a
+skill's `skills/<name>.md` or `SKILL.md`, a question's `.json`, a tool's `.json` or `.py`, a helper
+or a question's script — is never left out: one it cannot read is a `ConfigurationError` naming it
+(`tree: cannot read <path>: Permission denied; make it readable to the engine`, or `tools/folder:`
+for a script or a tool's file), and any other file of a skill's folder is content. Nor is a folder
+that declares them left out: a `tasks/`, `tools/`, `questions/`, `skills/` or `skills/<name>/`
+folder it cannot read or search is a `ConfigurationError` naming that folder, with no warning before
+it — a decision agent's `skills/` is content, left out with the warning. A skill is read from what
+the agent's own walk loads: a file under `skills/` counts, a link to a hidden folder inside the
+agent's included, unless it is a link out of the agent's folder, while a folder link under
+`skills/`, or a `skills/` that is itself a link, is never entered, so no skill is read through it
+and nothing behind it is checked. A file removed while the engine lists its folder —
+an editor's swap file, an rsync temporary, a ConfigMap's `..data` swap — is left out as though it was
+never there; one that cannot be read for any other reason is refused as above. A file or folder whose
+name is not UTF-8 is a `ConfigurationError` naming it: `tree: the name of
+'/srv/agents/support/caf\udce9.md' is not UTF-8; rename it`. What the engine loads stays where the
+content fingerprint finds it, since the fingerprint leaves out a link that leads out of the folder
+it walks: a tool's `.json`, `.py` or helper that is a link to a place outside its `tools/` folder,
+which the fingerprint walks on its own for every agent that gets its tools, is a
+`ConfigurationError` (`tools/folder: <path> links to <target>, outside its folder; move the file
+into its folder, or link the agent's whole folder`, or `the whole tools/ folder` for the `tools/`
+folder of a folder without an `AGENT.md`), and so is a question's `.json`, `.py` or helper, a task
+or an `AGENT.md` that is a link to a place outside the agent's folder, and an agent's own `tools/`,
+`tasks/` or `questions/` folder that is a link to a folder outside the agent's (`tree: <path> links
+to <target>, outside the agent's folder; move the folder into the agent's folder, or link the
+agent's whole folder`) or to a hidden folder inside it, which the fingerprint leaves out as it
+leaves out every hidden name (`tree: <path> links to <target>, a hidden folder the agent's
+fingerprint leaves out; move the folder to a visible name`). Any other link that stays inside loads,
+and so do an agent's whole folder linked in and a `tools/` folder of a folder without an `AGENT.md`
+linked from elsewhere, which the agents below it walk where it leads.
 
 A root holds agents and folders without an `AGENT.md` side by side, and an agent reads other folders
 of its root by naming them in `reads:` — folders without an `AGENT.md`, or other agents' folders:
@@ -553,19 +579,19 @@ run.fingerprint.tools                                # "a02c77e1f4b9d305": the t
 its own directory, the `tools/` folder of each folder above it, whose tools it gets, under its path
 from the agent's folder, `../tools/`, and each folder it names in `reads:` with that folder's files
 under its path from the agent's folder, `../<name>/` (`../../shared/books/` for an agent two folders
-deep), as the map shows them — leaving out hidden files and folders and `__pycache__`, as `LS`,
-`Glob` and `Grep` do, and links that lead out of them. The engine takes it once, when it loads the
-tree, so an edit to the agent or to a folder it reads shows in the next `Engine` built from the
-folder. `fingerprint.tools` is one over `run.tools` — each tool's name, description and schema — so
-it covers the tools the agent gets from its folders, the `tools=` a run passes, `Output` when
-`expect=` asks for one, in `Delegate` the agents it may call — their names, descriptions, kinds
-and tasks — and a workspace's tools, whose `Shell` description says whether the workspace has
-`tree=` and whether its commands can call tools. Neither sees what varies per run and is not the agent — the input, the history,
-`context=`, `tags=` — so two runs of an unchanged folder share it and any edit changes it, a tool's
-script included. The model is `run.model`; the code behind a tool a run passes is yours to version.
-A decision run carries one too, its `tools` the fingerprint of no tools and its `questions` the
-questions it asked ([Decision agents](#decision-agents)), and each delegated or routed run carries
-its own.
+deep), as the map shows them — leaving out hidden files and folders and every file or folder named
+`__pycache__`, as `LS`, `Glob` and `Grep` do, links that lead out of them, and folder links to a
+hidden name. The engine takes it once, when it loads the tree, so an edit to the agent or to a
+folder it reads shows in the next `Engine` built from the folder. `fingerprint.tools` is one over
+`run.tools` — each tool's name, description and schema — so it covers the tools the agent gets from
+its folders, the `tools=` a run passes, `Output` when `expect=` asks for one, in `Delegate` the
+agents it may call — their names, descriptions, kinds and tasks — and a workspace's tools, whose
+`Shell` description says whether the workspace has `tree=` and whether its commands can call tools.
+Neither sees what varies per run and is not the agent — the input, the history, `context=`, `tags=`
+— so two runs of an unchanged folder share it and any edit changes it, a tool's script included. The
+model is `run.model`; the code behind a tool a run passes is yours to version. A decision run
+carries one too, its `tools` the fingerprint of no tools and its `questions` the questions it asked
+([Decision agents](#decision-agents)), and each delegated or routed run carries its own.
 
 Keep the conversation yourself and pass it back. `run.conversation` is the history the run was
 sent, the input, every assistant turn — its text in `content`, its calls in `tool_calls`, its
@@ -587,9 +613,9 @@ parts = [Text(text="Is this invoice charged twice?"), Image(media_type="image/pn
 run = await engine.run("support", scope="acme", input=parts)
 ```
 
-A list of parts becomes the first user message as it is; parts in `history` reach the model
-unchanged, and a later run continues from them. History, like input, is read by shape: a message or
-part from another library is read by its fields.
+A list of parts becomes the user message after the history as it is; parts in `history` reach the
+model unchanged, and a later run continues from them. History, like input, is read by shape: a
+message or part from another library is read by its fields.
 
 Pass `record=False` to run without the refinery recording it — a replay, an evaluation, a dry run.
 A consult it makes through an `engine.tool`, or a `Delegate` dispatched through an `EngineTools`,
@@ -601,16 +627,21 @@ A run that raises instead of returning — the vendor refused the call, the adap
 contract (`ModelError`), the loop passed `max_steps` (`RunawayError`) — returns no record; the
 exception is what you have, the same one the adapter or the engine raised. With a refinery
 attached, the run is recorded first, as far as it got: `error` says what ended it —
-`"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. Its conversation can
-hold a tool call with no result, when the run failed between the call and its result, and `run()`
-refuses such a history: go on from the history the run was given. A run refused before its
-first model call — a bad input, an agent, task or skill the tree does not have, a route loop — has
-nothing to record, and a run whose task you cancel is not recorded; `stop=` ends a run with its
-record. A generation run whose `on_event` raises on its `RunStarted` had started: it is recorded
-with that `error` and no model call. A delegated run that fails stays under its parent in
-`children`, its step the error the parent's model was given, and the parent goes on; a routed run
-that fails fails its router, which is recorded with its answers and the failed run in `routed_to`,
-or `None` when the routed run was refused before its first model call.
+`"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. When `on_event` raises
+on one call of a reply, the reply's other calls are still answered, run or cut by a stop, and their
+events still reach the handler; the run then raises the first failure and logs each further one as
+an error, `engine: a further call of the same batch failed: …`. Its conversation can hold a tool
+call with no result, when the run failed between the call and its result, and `run()` refuses such
+a history: go on from the history the run was given. A run refused before its first model call — a
+bad input, an agent, task or skill the tree does not have, a route loop — has nothing to record,
+and a run whose task you cancel is not recorded; `stop=` ends a run with its record. A generation
+run whose `on_event` raises on its `RunStarted` had started: it is recorded with that `error` and
+no model call. A delegated run that fails stays under its parent in `children`, its step the error
+the parent's model was given, and the parent goes on; a routed run that fails fails its router,
+which is recorded with its answers and the failed run in `routed_to`, or `None` when the routed run
+was refused before its first model call. A run that failed keeps the delegated runs that had
+returned in `children`: those its steps answered, in step order, then those it had not answered yet,
+in the order they started, as `refinery.run` reads them back.
 
 Pass `tags=` to mark a run with what you will group it by later — the commit of the tree, an
 experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64
@@ -640,7 +671,9 @@ verdict = Verdict.model_validate_json(run.reply)
 ```
 
 An accepted `Output` ends the run. A call the model made after it in the same turn is not run; it is
-answered with an error saying so, so every call in `run.conversation` has its result.
+answered with an error saying so, so every call in `run.conversation` has its result. Of a reply
+with more than one `Output`, the first that fits is taken: each before it is answered with what is
+wrong, each after it is not run, and the reply's other calls before it run as they would without it.
 
 Name a task to put `tasks/<task>.md` in front of the model, pass `context=` to add data about this
 run that does not belong in the tree — the contract under review, today's date, never instructions —
@@ -664,7 +697,21 @@ stop — so a step can be shown, in a conversation or anywhere, while the run go
 `stop.now()` cuts off sends its `ToolResultReady` whether or not it had started, an `Output`
 included; any other call the engine answers without running it sends neither: an `Output` it accepts
 or refuses, a call after an accepted `Output`, a call in a reply that was cut short. Its step is in
-`run.steps`.
+`run.steps`. Each handler, `approve`, tool and `expect=` model is handed its own copy of a call's
+`args` — every list and object copied, any other value as it is — and a handler's `step`, like the
+messages a `MessagesTaken` or the adapter is handed, holds copies of the parts, so one that changes
+what it is handed changes neither the record nor what the model is sent next.
+
+The same holds wherever the engine hands your code something. A generation model is handed, for each
+call, copies of the messages — their parts, their tool calls' `args`, their `reasoning` — and of the
+tool specs; a decision model, copies of the state and of the questions; a `Backend`, its own copy of
+a command's variables; a storage, rows made for the call; each attempt of a replay, a recorded run
+and labels of its own. And a record holds objects of its own: it copies what it is given — the
+input, the history, what the inbox held, the questions asked at run time, the tools' specs and
+results, each reply's tool calls and reasoning, each answer — and the preload and the questions it
+takes from the agent's folder, and a routed run's input is its own copy of its router's state. So no code of yours, and no tenant, reaches another run through what it was
+handed or what it returned: changing a record changes nothing the tree shares with every tenant,
+nothing of another record and nothing your code holds.
 
 A foreground `Shell` command of a run with a `Workspace` also sends a `CommandOutput` for what
 it writes, while it runs, and the calls it makes to the run's tools send their own
@@ -1084,9 +1131,11 @@ script. Otherwise the record keeps each question as it was asked, the filled opt
 with different options, under two question fingerprints and one agent fingerprint. A
 question's script imports what a tool's does — the standard library, installed packages and the
 helpers of its folder, `questions/_name.py`, at the top of the script — and is read when the tree
-loads, as a tool's is, so `fingerprint.agent` covers it; a `.py` without its `.json`, or one with
-no `run` at its top level, is a `ConfigurationError`. A route goes by a question whose options its
-JSON fixes, never by one a script fills ([Both kinds together](#both-kinds-together)).
+loads, as a tool's is, so `fingerprint.agent` covers it; a `.py` without its `.json`, one with no
+`run` at its top level, or a helper named like a standard-library module, `questions/_stat.py`, is a
+`ConfigurationError`, as it is for a tool's helper ([Tools](#tools)). A route goes by a question
+whose options its JSON fixes, never by one a script fills
+([Both kinds together](#both-kinds-together)).
 
 Some answer spaces are known only when the run starts: the children of the node a walk chose last,
 the candidates a search returned, the skills an agent has today. Those questions are composed when
@@ -1578,13 +1627,14 @@ start inherits, say, whose processes it signals.
 
 The folder in the shell. `Workspace(local, scope="acme", tree="/srv/agents")` says where the agent
 tree is mounted in the sandbox, as commands see it. The commands of a run then get `RFNRY_TREE`, the
-tree, and `RFNRY_AGENT`, the running agent's folder in it, and the `Shell` description tells the
-model that the folder is at `$RFNRY_AGENT`, read-only, with its files, skills and scripts to read
-and run, and that each folder the agent reads is at `$RFNRY_TREE/<name>`. A skill's script is run
-as `python "$RFNRY_AGENT/skills/plot/run.py"`. The sandbox mounts the tree read-only at the same
-path: `--ro-bind /srv/agents /srv/agents` for bubblewrap, `-v /srv/agents:/srv/agents:ro` for
-Docker, and for an unsandboxed `Local` the tree's own path. Commands started with `background=true`
-get the variables too; a `Shell` that code dispatches outside a run gets none. Cautions:
+tree as `posixpath.normpath` writes it, so `/srv/agents/` is `/srv/agents`, and `RFNRY_AGENT`, the
+running agent's folder in it. The `Shell` description tells the model that the folder is at
+`$RFNRY_AGENT`, read-only, with its files, skills and scripts to read and run, and that each folder
+the agent reads is at `$RFNRY_TREE/<name>`. A skill's script is run as
+`python "$RFNRY_AGENT/skills/plot/run.py"`. The sandbox mounts the tree read-only at the same path:
+`--ro-bind /srv/agents /srv/agents` for bubblewrap, `-v /srv/agents:/srv/agents:ro` for Docker, and
+for an unsandboxed `Local` the tree's own path. Commands started with `background=true` get the
+variables too; a `Shell` that code dispatches outside a run gets none. Cautions:
 
 - the shell sees every file under the mount, hidden ones included, which the file tools refuse;
 - the fingerprint covers what the folder holds, not what a command reads;
@@ -1594,17 +1644,18 @@ get the variables too; a `Shell` that code dispatches outside a run gets none. C
 
 Showing a command. With `on_event`, a foreground `Shell` command sends a `CommandOutput` for what it
 writes, as it arrives (chunks that queued while the handler was busy arrive joined, one event per
-stream), with its `call_id`, the `stream` (`"stdout"` or `"stderr"`) and the `text`, decoded as
-UTF-8 per stream so a character split across two writes arrives whole. A frontend can show a long
-build as it runs instead of after it. The model's view is unchanged: it reads the same capped
-`stdout` and `stderr` in the `Shell` result, and a handler never slows the command. The events wait
-in a queue of 1 MiB per command; while a handler is busy past that, chunks are dropped from the
-events, and once a stream overflows its output is dropped until the handler catches up and takes
-what is queued; the next event of that stream starts with `[... <n> bytes not shown ...]`, counting
-all of it. Every event
-of a command comes before the `ToolResultReady` of its call, in order per stream — `stdout` and
-`stderr` are two pipes, with no order between them — and a handler that raises fails the run once
-the command has ended. A command started with `background=true` sends none.
+stream, and one more at each gap, since an event never joins across one), with its `call_id`, the
+`stream` (`"stdout"` or `"stderr"`) and the `text`, decoded as UTF-8 per stream so a character split
+across two writes arrives whole. A frontend can show a long build as it runs instead of after it.
+The model's view is unchanged: it reads the same capped `stdout` and `stderr` in the `Shell` result,
+and a handler never slows the command. The events wait in a queue of 1 MiB per command; while a
+handler is busy past that, chunks are dropped from the events, as is a single read of more than 1
+MiB even while the handler is idle, and once a stream overflows its output is dropped until the
+handler catches up and takes what is queued; the next event of that stream starts with `[... <n>
+bytes not shown ...]`, counting all of it. Every event of a command comes before the
+`ToolResultReady` of its call, in order per stream — `stdout` and `stderr` are two pipes, with no
+order between them — and a handler that raises fails the run once the command has ended. A command
+started with `background=true` sends none.
 
 Calling tools from code. A command can call the run's tools itself, so a script that looks up fifty
 orders, or checks every row of a table against a rule, makes its calls in a loop, and the model reads
@@ -1620,7 +1671,7 @@ key of its own:
    │                             │◀── {"key":…,"tool":"search","args":{"query":"heat equation"}}   (connect, one line)
    │                             │ 3. the run's call path: events, approve, deadline, dispatch, record
    │                             │─── {"result":[ … ]} ─────────────────────────────────────▶│ (one line, close)
-   │◀── Shell result ────────────│ 4. command ended: socket closed and removed     │
+   │◀── Shell result ────────────│ 4. command ended: socket closed, removed if its path still holds it
 ```
 
 A client is a few lines in any language; in Python:
@@ -1649,18 +1700,40 @@ returns parts, their JSON list, media `data` in base64. `error` is the text the 
 `NotApproved: lookup_order was not approved`, `TimeoutError: engine: lookup_order timed out after
 30s`, a tool's own error. A line that is not one JSON object with a string `tool` and an object
 `args`, a line over 1 MiB, and a request without the command's key are answered with an `error` that
-starts with `tools/bridge:`, and run nothing.
+starts with `tools/bridge:`, and run nothing. A command makes at most 10,000 calls and sends at most
+2 MiB of request lines in all: every request that reaches the run's tools is a call, a name the
+socket does not carry included, and every line read whole counts toward the 2 MiB as it is read,
+before it is parsed, one the bridge refuses included. Past either, every further request is answered
+`{"error": "tools/bridge: this command made its 10000 calls; no more are answered"}` or
+`{"error": "tools/bridge: this command sent its 2097152 bytes of calls; no more are answered"}`, so
+a script with more to do splits it over several commands, as the `Shell` description tells the
+model. The budgets are each command's own: commands a run has going at once each get theirs, so
+what a run's commands send in all grows with how many it runs at once. A call whose `args` nest
+deeper than 128 levels of lists and objects, `args` itself the first, is answered
+`{"error": "tools/bridge: a call's args nest deeper than 128 levels"}`. The depth is read from the
+line before it is parsed, its strings aside and the request itself the first level, so any field
+nested past 129 levels gets this error, not only `args`. A request is checked in this order and
+answered with the error of the first check it fails: a line over 1 MiB, which is not read whole
+and counts toward neither budget; then, the line counted toward the 2 MiB, the 10,000 calls and
+then the 2 MiB; then the depth; then a line that is not one JSON object; then the command's key;
+then a string `tool` and an object `args`. So a line over 1 MiB gets the size error whatever else
+is wrong with it, a line past a budget gets the budget's error even when it is nested too deep or
+malformed, and a line nested past 129 levels gets the depth error even when its key is not the
+command's or it is no JSON at all. None of these runs anything or leaves a step or an event, and a
+connection closed at the cap of 64 below, refused before its line is read, counts toward neither
+budget.
 
 The socket carries every tool the run offers the model — the builtins, `History`, the folder tools,
-the run's `tools=` — except the workspace's own (`Shell`, `Job`, `Jobs`, `Write`, `Edit`), `Output`
-and the builtin `Delegate`; any other name gets the model's error for an unknown tool,
+the run's `tools=` — except the workspace's own (`Shell`, `Job`, `Jobs`, `Write`, `Edit`) and any
+tool named `Output` or `Delegate`, the engine's or one of the run's `tools=`, which the model still
+calls. A name the socket does not carry gets the model's error for an unknown tool,
 `InputError: tools: unknown tool 'Shell'`, and leaves no step and no event. Connections are answered
 as they come, so calls a script makes at once — from threads, or with `asyncio` — run at once, as a
 reply's calls do, up to 64 at once per command: a connection that arrives while 64 are in flight is
 closed at once, unread, after an `{"error": "tools/bridge: at most 64 calls at once; wait for one to
 finish"}` line. The script may read that line or see a broken pipe or a connection reset instead, and
-should retry on any of them. A `Shell` command of a delegated or routed run calls that run's tools, under its
-own `run_id`.
+should retry on any of them. A `Shell` command of a delegated or routed run calls that run's tools,
+under its own `run_id`.
 
 Each call runs as the model's calls do — `ToolCallStarted`, `approve`, the deadline (`tool_timeout`,
 or a folder tool's own), the stop, `ToolResultReady` — and is recorded as a `Step` with `by`, the id
@@ -1674,13 +1747,14 @@ A call ends with its command. When the command ends, for any reason — it exits
 workspace's `timeout` — a call still in flight is cut as a stopped call is: its step is recorded with
 `stopped` and `stopped by the user` as its result, its `ToolResultReady` is sent, and a script still
 connected reads `{"error": "stopped by the user"}`. A consult that a script's call started, an
-`engine.tool` passed in `tools=`, ends with the command: when the command exits or times out, the
-consult is cancelled and leaves no record of its own. Under `stop.now()` it takes the stop, but
-its own record is kept only when that record is written before the command is killed, and otherwise
-it leaves none, as no cancelled run does; the script's step is recorded stopped either way. A reply
-to a process that outlived the command, one that left its process group outside a sandbox, is
-written but not waited for, and may be cut off when the socket closes. An `on_event` that raises on
-a script's call fails the run once the command has ended.
+`engine.tool` passed in `tools=`, ends with the command: one still running when the command ends is
+cancelled and leaves no record of its own, as no cancelled run does. The exception is a command that
+`stop.now()` ended: its process is killed at once, while the consult takes the stop, as one the
+model's own call started does, and keeps its record, and the `Shell` call ends after it. A further
+`stop.now()` does not cut it; a cancel of the run, or its call's deadline, does. The script's step
+is recorded stopped either way. A reply to a process that outlived the command, one that left its
+process group outside a sandbox, is written but not waited for, and may be cut off when the socket
+closes. An `on_event` that raises on a script's call fails the run once the command has ended.
 
 The socket is the one file the engine creates itself, `<root>/.rfnry-<8 hex>.sock`, inside the
 workspace you passed, for the life of one command: made just before the command starts, closed once
@@ -1699,9 +1773,9 @@ variables, never in a path. Whether the bridge is on, and whether `tree=` is set
 description and so `fingerprint.tools` — rightly, since the model was offered something different —
 but where a deployment puts the workspace does not.
 
-- The bridge gives code exactly what the model has — the same tools, through the same `approve`,
-  scope and record — and nothing more. What is new is speed: a script can make many calls quickly;
-  `approve` still sees each one.
+- The bridge gives code nothing more than the model has: the model's tools but those named above,
+  through the same `approve`, scope and record. What is new is speed: a script can make many calls
+  quickly; `approve` still sees each one.
 - Only processes that see the socket's path can connect — with a sandbox per tenant, only this
   tenant's commands — and only a request with the command's key is answered.
 - The key is as private as the sandbox keeps a command's environment: a process of the same uid in
@@ -1714,8 +1788,23 @@ but where a deployment puts the workspace does not.
 - Until its command ends, each open connection holds a file descriptor and up to 1 MiB in the
   engine's process, which a sandbox's limits don't cover. The workspace `timeout` bounds how long,
   and a command has at most 64 calls in flight at once, so it holds at most 64 file descriptors and
-  64 requests of up to 1 MiB each, plus their parsed arguments, in the engine's process. A script
-  that opens more is closed on, and should retry.
+  64 requests of up to 1 MiB each in the engine's process. A script that opens more finds its
+  connection closed, and should retry.
+- A command makes at most 10,000 calls, sends at most 2 MiB of request lines and nests a call's
+  `args` at most 128 levels deep. Past each, a request is answered with its error before it is
+  parsed — `tools/bridge: this command made its 10000 calls; no more are answered`,
+  `tools/bridge: this command sent its 2097152 bytes of calls; no more are answered`,
+  `tools/bridge: a call's args nest deeper than 128 levels` — and leaves no step and no event. So
+  one command adds at most 10,000 steps to the run's record, the engine parses at most 2 MiB of its
+  requests however they are shaped, which bounds the arguments it holds and records, and every
+  argument it records nests well inside the depth the record's serializer takes. A line counts
+  toward the 2 MiB as it is read, and its key is checked only once it is parsed, so no line past
+  the budget is parsed, one without the key included, while one without the key inside the budget
+  is parsed and then refused. So a process that can reach the socket file can make the engine parse
+  at most 2 MiB of lines per command — about a 350 ms stall of the event loop at worst, as
+  measured — and with junk lines spend the rest of that command's budget, so the command's own
+  calls are refused from then on, as it can hold its 64 slots. Keeping the socket to the command is
+  the sandbox's job, as it is for the key.
 - The socket lives only while the command runs; something the command leaves running cannot call
   afterwards.
 
@@ -1732,6 +1821,9 @@ reason: `tools/workspace: no tool bridge for this command: AF_UNIX path too long
 
 Without a sandbox, the kill reaches every process the command started except one that leaves its
 process group with `setsid`; the process namespace of a container or of bubblewrap closes that gap.
+Such a process keeps running, but not on the command's pipes: once the command has exited and its
+output is no longer read, `Local` closes them, so it holds none of the engine's files and what it
+writes there after is lost.
 
 A backend is three methods; the library does the rest — the tools, the time limits, the output
 caps, stopping what a command leaves behind:
@@ -1743,27 +1835,29 @@ class Backend(Protocol):
     async def write(self, path: str, data: bytes) -> None: ...
 ```
 
-`spawn` starts a command in the workspace with no input, with `env` added to its environment, and returns at once a `Process`: its
-`stdout` and `stderr`, read until they end, `wait()` for its exit code, and `kill()` to end it and
-everything it started. Every kill the workspace starts runs to its end, and the call that started it
-waits for it: a stop or a cancel of a `Shell` call, of `Job(stop=true)` or of `close()` returns once
-the kill has returned — `close()` once the jobs it stopped have ended too — however many cancels come
-meanwhile, and one that comes while `spawn` runs waits for it to return, then for the kill of what
-it started — with `background=true`, for its job to be listed, so `close()` stops it. So `spawn` and
-`kill()` must return promptly. A kill counts as the first stop, so a second ends a command at once:
-the next cancel after the one that started a kill — even one that comes while `spawn` still runs, or
-at the same moment — cancels that kill, once, and so does the second cancel during a kill the
-workspace started on its own, for a command past its timeout or that has ended, `Job(stop=true)` or
-`close()`. The call still waits for the kill: a cancelled `kill()` must still end the command and
-everything it started, at once, before it returns; `Local` sends SIGKILL in a `finally`, and a
-backend of yours must do the same. A `kill()` that raises is the call's error; when the
-call is already leaving with a cancellation, or with the error of a `wait()` that raised, it is
-logged as an error instead, `tools/workspace: could not stop the command: …`, and the kill that follows a
-job's end puts its error in the job's output. `read` refuses a file larger than `limit`; `write`
-creates parent directories. A path is the model's, relative to the workspace, and what it can reach
-is the backend's to decide; an error a backend raises reaches the model as the tool's error. A
-backend's `description`, if it has one, is ignored: the machine the model has is told in the
-agent's markdown, not by the workspace.
+`spawn` starts a command in the workspace with no input, with `env` added to its environment, and
+returns at once a `Process`: its `stdout` and `stderr`, read until they end, `wait()` for its exit
+code, and `kill()` to end it and everything it started. Every kill the workspace starts runs to its
+end, and the call that started it waits for it: a stop or a cancel of a `Shell` call, of
+`Job(stop=true)` or of `close()` returns once the kill has returned — `close()` once the jobs it
+stopped have ended too — however many cancels come meanwhile. A cancel that comes while `spawn` runs
+waits for it to return, then for the kill of what it started — with `background=true`, for its job
+to be listed, so `close()` stops it. So `spawn` and `kill()` must return promptly. A kill counts as
+the first stop, so a second ends a command at once: the next cancel after the one that started a
+kill — even one that comes while `spawn` still runs, or at the same moment — cancels that kill,
+once, and so does the second cancel during a kill the workspace started on its own, for a command
+past its timeout or that has ended, `Job(stop=true)` or `close()`. The call still waits for the
+kill: a cancelled `kill()` must still end the command and everything it started, at once, before it
+returns; `Local` sends SIGKILL in a `finally`, and a backend of yours must do the same. A `kill()`
+that raises is the call's error; when the call is already leaving with a cancellation, or with the
+error of a `wait()` that raised, it is logged as an error instead, `tools/workspace: could not stop
+the command: …`, and the kill that follows a job's end puts its error in the job's output. `read`
+refuses a file larger than `limit`; `write` creates parent directories. A path is the model's,
+relative to the workspace, and what it can reach is the backend's to decide; an error a backend
+raises reaches the model as the tool's error, a `TimeoutError` of its own as it is: only the
+workspace's `timeout` makes a `Shell` return `timed_out` or a `Write` or `Edit` fail with
+`tools/workspace: Write did not finish within 120s`. A backend's `description`, if it has one, is
+ignored: the machine the model has is told in the agent's markdown, not by the workspace.
 
 The library has no notion of a secret. A key a user types is the run's input; a key you put in
 `Local(env=)` is the commands' environment, which a command can print. Either way the record keeps
@@ -1820,8 +1914,16 @@ label and what really happened, and the three levels of improvement they feed.
 
 Attach a refinery and every run is recorded when it ends — one that raises after its first model
 call too, as far as it got, with its error. A recording that fails is logged as a warning and
-never fails the run. `refinery.run(scope, run_id)` reads a recorded run back, its delegated and
-routed runs in place, to continue it anywhere — see [Running an agent](#running-an-agent).
+never fails the run, as one does when a model's tool call nests its `args` past 254 levels of lists
+and objects, `args` itself the first, or fewer in a delegated or routed run, deeper than the
+record's serializer goes (`ValueError: Circular reference detected (depth exceeded)`).
+`refinery.run(scope, run_id)` reads a recorded run back, its delegated and routed runs in place, to
+continue it anywhere — see [Running an agent](#running-an-agent). The record keeps a run's input as
+it was given, and reads it back so: a generation's list input is the parts carried by the user
+message the input became, the skill's part aside, when their JSON equals the stored input, and JSON
+otherwise — a part-shaped class of your own is stored as it dumps itself; a decision's list state
+holding media reads back as parts only when every item is written exactly as a part, all its fields
+and no other, and as JSON otherwise.
 
 ```python
 refinery = Refinery(PostgresStorage(pool))
@@ -1991,7 +2093,8 @@ started it: close the workspace when the replays are done, and the candidate, wh
 workers. The candidate delegates and routes as it does, so a run with children replays as one run.
 
 `repeat=3` replays each run three times: each attempt is a run of its own and a pair of its own,
-`pair.attempt` counts them from 0, and the three come one after another; `limit=` still counts
+with its own copy of the recorded run and its labels, so what you change in one pair reaches no
+other attempt; `pair.attempt` counts them from 0, and the three come one after another; `limit=` still counts
 recorded runs. A model samples, so the same candidate on the same input can answer differently, and
 the attempts show how much. `concurrency=4` keeps up to four replays going, attempts included, and
 while you read a pair at most three more run; with the default of one, a replay starts when you ask
@@ -2102,10 +2205,16 @@ A `tools/` folder on an agent's path from the root — the root's, a group folde
 own — is a declaration, as `tasks/` and `questions/` are: it stays out of every map and preload,
 since the model sees its tools as tools, stays readable to the tools of the agent whose folder
 holds it, and counts in the fingerprint of every agent that sees it; a folder named `tools`
-anywhere else is content like any other. A decision agent has no tools, and a `tools/` folder on
-its path is not offered to it. A `.json` without its `.py`, or a `.py` without its `.json`, is a
-`ConfigurationError` naming the file; a file whose name starts with `_` or `.` is not a tool, and
-`_name.py` is a helper the scripts of its folder import.
+anywhere else is content like any other. Two `tools/` folders on an agent's path may each hold a
+tool of one name: the agent gets the one nearer it, its own folder's before a group's and a group's
+before the root's, as a run's own `tools=` replace both. A decision agent has no tools, and a
+`tools/` folder on its path is not offered to it. A `.json` without its `.py`, or a `.py` without
+its `.json`, is a `ConfigurationError` naming the file; a file whose name starts with `_` or `.` is
+not a tool, and `_name.py` is a helper the scripts of its folder import. A helper named like a
+module of the standard library, `_stat.py`, `_weakrefset.py` or `_strptime.py`, is a
+`ConfigurationError` too, since the worker can't load both: `tools/folder: <path> is named like the
+standard-library module '_stat', and the worker can't load both; rename it`. A question's helper,
+`questions/_name.py`, is refused the same way.
 
 `<name>.json` takes three keys:
 
@@ -2200,33 +2309,46 @@ whose records keep naming what ran, while a data file a script opens when it is 
 from disk then. A worker starts at the first call that needs it, never when the engine is built,
 and again after a crash, and lives until you close the engine — `await engine.close()`, or leaving
 `async with Engine(...) as engine:` — which stops every worker and whatever it started, and raises
-the first error stopping one raised once all are stopped, logging the others. A closed
+the first error stopping one raised once all are stopped, logging the others; it waits for a worker
+a call is still starting, to stop it too, and a cancel of `close()` reaches you once the workers on
+your loop are stopped — one still starting is stopped as it comes up — and those on another loop are
+handed to it, without waiting for that loop. The engine watches each worker with one thread of its
+own, which waits on the worker's exit and ends with it, so a server counting its threads counts one
+more for each worker running. A closed
 engine stays closed: a run, a tool call or an `EngineTools` after `close()` is an `InputError`,
 `engine: this engine was closed; build a new Engine`, before any model is called, so nothing is
 recorded of it, and a run still in flight when it closed starts no other run — its `Delegate` call
 reads that error, its route fails with it. A plain `def run` runs on one of the worker's 32 threads,
-and calls past those wait; an `async def run` runs on its event loop, as many at once as come. What
-a script prints goes to the log, at DEBUG on the `rfnry_engine.workers.pool` logger, never into its
-result: a record per line, and 64 KiB at a time of a line whose end has not come; with DEBUG off it
-is dropped as it comes. A script that raises, `sys.exit()` included, is a tool error the model
+and calls past those wait; an `async def run` runs on its event loop, as many at once as come. The
+worker goes by the `run` it loaded, whatever its file spells: a `run` a decorator made a coroutine
+function runs on the event loop, any other on a thread, and what that one returns, if it can be
+awaited — a coroutine, from a plain decorator around an `async def` — is awaited on the event loop.
+What a script prints goes to the log, at DEBUG on the `rfnry_engine.workers.pool` logger, never into
+its result: a record per line, and 64 KiB at a time of a line whose end has not come; with DEBUG off
+it is dropped as it comes. A script that raises, `sys.exit()` included, is a tool error the model
 reads, `WorkerError: ValueError: no order A-1`, and the worker goes on. What a script returns or
 raises crosses back as JSON of at most `Engine(worker_result_bytes=)` bytes as the worker writes it,
 a non-ASCII character escaped to six, 32 MiB unless you set another number, `None` for no limit;
 past it the worker sends a short error in its place, so a result too large never reaches your
 server, the model reads `WorkerError: workers/process: refund sent back 40000023 bytes, over the
 limit of 33554432 bytes`, and the worker goes on. A result under the limit still costs your server
-about three times its size while it is read, for each worker with one in flight. A worker that exits
-— `os._exit()`, a signal, out of memory, a crash in a C extension — fails every call it had in
-flight, `WorkerError: workers/pool: the worker for refund stopped: exited with code 3`, or `killed
-by signal 9` when a signal ended it, the run goes on, and the next call starts a new worker. Past
-`tool_timeout` the model reads `TimeoutError: workers/pool: refund timed out after 30s`, a deadline
-that counts the wait for a worker too: an `async def run` is cancelled in the worker and holds none
-of its threads, unless it blocks the worker's event loop — `time.sleep` or blocking I/O inside it —
-so that its cancel is still unanswered when a call sent after it passes its deadline too, and then
-each of those calls holds a thread; a `def run` cannot be stopped, so its thread runs on and its
-result is discarded, and once every thread of a worker is held so, the next call stops that worker
-and starts a new one, and the calls the old one still had in flight fail with `WorkerError:
-workers/pool: the worker for refund stopped: every thread was held by a call past its deadline`.
+about three times its size while it is read, for each worker with one in flight, and recording the
+run holds its body, which stores a result twice, in its step and in the conversation, at most twice
+over while it is written. A worker that exits — `os._exit()`, a signal, out of memory, a crash in a
+C extension — fails every call it had in flight, even while a process it forked still holds its
+pipes: `WorkerError: workers/pool: the worker for refund stopped: exited with code 3`, or `killed by
+signal 9` when a signal ended it, the run goes on, and the next call starts a new worker. A worker
+that sends back a line that is not a reply, as a process it forked writing to its pipe could, is
+stopped the same way, its calls failing with `workers/pool: the worker for refund stopped: it sent a
+line that is not a reply`. Past `tool_timeout` the model reads `TimeoutError: workers/pool: refund
+timed out after 30s`, a deadline that counts the wait for a worker too: an `async def run` is
+cancelled in the worker and holds none of its threads, unless it blocks the worker's event loop —
+`time.sleep` or blocking I/O inside it — so that its cancel is still unanswered when a call sent
+after it passes its deadline too, and then each of those calls holds a thread; a `def run` cannot be
+stopped, so its thread runs on and its result is discarded, and once every thread of a worker is
+held so, the next call stops that worker and starts a new one, and the calls the old one still had
+in flight fail with `WorkerError: workers/pool: the worker for refund stopped: every thread was held
+by a call past its deadline`.
 
 An engine serves one event loop at a time, as a workspace's jobs live in one loop, and its workers
 follow the loop that calls them: a call from a loop other than the one that started them stops
@@ -2238,8 +2360,9 @@ each live loop its own engine. A worker that stops — for another loop, a retir
 `close()` — is reaped and its pipes closed then and there, so a thousand `asyncio.run` calls leave
 the engine holding no more files or processes than one does. `close()` from another loop stops the
 workers at once: while their loop runs in another thread, the stop runs on that loop — or in the
-caller, should that loop stop before it gets to it — and `close()` returns once it is done. Close
-the engine before its loop ends: closing it later from another loop still stops every worker, but
+caller, should that loop stop before it gets to it — and `close()` returns once it is done. A
+worker that loop was still starting when it stopped is killed and reaped in the caller, while its
+pipes wait for that loop: they close when it runs again. Close the engine before its loop ends: closing it later from another loop still stops every worker, but
 Python warns of the worker pipes left on the closed loop (`ResourceWarning`).
 
 By default every agent of the tree shares one worker. `Engine(root, models=...,
@@ -2411,14 +2534,15 @@ into an agent already in the same chain of routes is refused.
 
 Called inside a run, a consult is part of that run's foreground, as a delegated run is: its run
 takes the caller's `stop` and `on_event`. The caller's `stop.now()` reaches the consult instead of
-cancelling its call, so the consult ends with its record, and whatever else the call was doing is
-cut once the consult has taken the stop — a stop that lands before a call returns cuts it, even when
-its consult had just finished, and that consult keeps its record — and the caller's step reads
-`stopped by the user`, as a stopped `Delegate` step does; `after_step()` ends it after its current
-step. A consult a tool of yours starts in a task of its own — two at once, say — is in the
-foreground too; one a script's call started through the workspace's tool bridge ends with the
-script's command instead, as "Calling tools from code" says. Its events reach the caller's handler,
-told apart by `agent` and `run_id`:
+cancelling its call, so the consult ends with its record — one a script's call started included, as
+"Calling tools from code" says — and whatever else the call was doing is cut once the consult has
+taken the stop — a stop that lands before a call returns cuts it, even when its consult had just
+finished, and that consult keeps its record — and the caller's step reads `stopped by the user`, as
+a stopped `Delegate` step does; `after_step()` ends it after its current step. A consult a tool of
+yours starts in a task of its own — two at once, say — is in the foreground too; one a script's call
+started through the workspace's tool bridge ends with the script's command instead, unless
+`stop.now()` ended the command, as "Calling tools from code" says. Its events reach the caller's
+handler, told apart by `agent` and `run_id`:
 
 ```python
 async def status(event):
@@ -2458,8 +2582,16 @@ cancels any tool's. Outside a run, a stopped consult's `dispatch` returns what i
 ## Storage
 
 The refinery is the only part of the library that stores anything, and it stores in Postgres:
-`PostgresStorage(pool)`, over an asyncpg pool you built, in a schema of its own. A Postgres to try
-it on is one container, with engine's schema prepared by the command the package installs:
+`PostgresStorage(pool)`, over an asyncpg pool you built, in a schema of its own. It sends and
+reads every JSON value as text, cast in its SQL, so it works with any `json` or `jsonb` codec on
+that pool, such as `json.dumps` and `json.loads` set for both, which never sees what it stores.
+Each run's body reaches Postgres as a `bytea` argument, an object with the buffer protocol that
+hands its JSON over and keeps no copy, encoding it again from the body each further time it is
+asked, so the write holds it at most twice and a driver that asks twice sends the same JSON both
+times; a `bytea` codec of your own on that pool must take any such object, as `bytes(value)` does,
+and one that takes only `bytes`, such as a text codec calling `value.hex()`, fails every record
+write with `StorageError`. A Postgres to try it on is one container, with engine's schema prepared
+by the command the package installs:
 
 ```bash
 docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
@@ -2594,7 +2726,9 @@ first.
 `scope` is the tenant. It is required on every run and every refinery verb, it is the first column
 of every table, and no read accepts its absence. Tools pinned to a tenant are passed on the call.
 `refinery.delete_scope(scope)` removes everything; `refinery.verify_absent(scope)` proves it.
-The tree of agents is shared by every tenant and holds no tenant's data. So are the workers: a
+The tree of agents is shared by every tenant and holds no tenant's data; a run's record holds
+copies of what it takes from the tree, and a model adapter copies of those, so no tenant's code
+reaches another tenant's runs through them. The workers are shared too: a
 script's module state — a client it builds when it loads, a cache it fills, a global it sets — is
 shared by every tenant whose runs call it, and only `call` is the tenant's: its `scope` always, and
 the rest of what it carries — a tool call's `run_id`, `agent`, `tool`, `call_id` and `by` inside a run, a
@@ -2650,31 +2784,32 @@ Everything the package exports, by role.
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a tree with
 no `AGENT.md`, a link to a folder on the way to it or one holding it, one that would reach an agent
-twice, a tool's file that links out of its `tools/` folder, a question's file, a task or an
-`AGENT.md` that links out of the agent's folder, an agent's own `tools/`, `tasks/` or `questions/`
-folder that links out of it, an `AGENT.md` without a `name:` or a `model:` in plain text, or whose
-`kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names to
-adapters, a model no agent runs on, an agent whose model has not its kind's method, two agents with
-one name, an agent in `agents:` or `route:` the tree does not have, an unknown key in the
-frontmatter of an `AGENT.md` or a task (`frontmatter: unknown key 'route.min_confidance' in
-agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a `description:` that is not a
-string in a file the map would show, a decision agent with `preload: true`, `workspace: true` or
-`tools:`, a generation agent with `questions/` or `route:`, a `tools:` with no list, a `tools:`
-entry that is blank, padded or listed twice, a `tools:` that names `Output` or keeps a tool the
-agent does not see, a tool's `.json` without its `.py` or a script without its `.json`, a tool's
-JSON with an unknown key, no description, an `input_schema` that is not an object or a schema that
-does not compile, a script or helper that is not valid Python, imports the engine, the server's own
-code, a module relatively or a sibling script or subfolder of its folder, or imports a helper inside
-a function, a tool named like one the engine gives the agent, a `workers=` naming a folder that
-holds no agent or one inside another it names, a `reads:` that is not a path from the root, names no
-folder of the tree, a `tools/` folder on an agent's path or a folder inside one, leaves the root,
-names the agent's own folder, one that holds it or one inside it, or names two folders one inside
-the other, `reads:` on a decision agent or on an agent whose folder is a link to a folder elsewhere,
-a file `preload: true` would send that neither `Read` nor `Load` would hand over — over 20 MB, of a
-type the model's `media_types` does not name, or not the type its name says — one skill as both
-`skills/x.md` and `skills/x/SKILL.md`, a question in markdown, a question's JSON that is not an
-object, holds an unknown key, has no instructions or does not fit its type, a question's script
-without its `.json`, a decision agent with `tasks/`, a route not by a choice question of the
+twice, a tool's file that links out of its `tools/` folder, a file or folder whose name is not
+UTF-8, a file an agent is made of that cannot be read, a question's file, a task or an `AGENT.md`
+that links out of the agent's folder, an agent's own `tools/`, `tasks/` or `questions/` folder that
+links out of it, an `AGENT.md` without a `name:` or a `model:` in plain text, or whose `kind:` is
+neither `generation` nor `decision`, a `models` that is not a mapping of names to adapters, a model
+no agent runs on, an agent whose model has not its kind's method, two agents with one name, an agent
+in `agents:` or `route:` the tree does not have, an unknown key in the frontmatter of an `AGENT.md`
+or a task (`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`),
+frontmatter that is not valid YAML or a `description:` that is not a string in a file the map would
+show, a decision agent with `preload: true`, `workspace: true` or `tools:`, a generation agent with
+`questions/` or `route:`, a `tools:` with no list, a `tools:` entry that is blank, padded or listed
+twice, a `tools:` that names `Output` or keeps a tool the agent does not see, a tool's `.json`
+without its `.py` or a script without its `.json`, a tool's JSON with an unknown key, no
+description, an `input_schema` that is not an object or a schema that does not compile, a script or
+helper that is not valid Python, imports the engine, the server's own code, a module relatively or a
+sibling script or subfolder of its folder, or imports a helper inside a function, a helper named
+like a standard-library module, a tool named like one the engine gives the agent, a `workers=`
+naming a folder that holds no agent or one inside another it names, a `reads:` that is not a path
+from the root, names no folder of the tree, a `tools/` folder on an agent's path or a folder inside
+one, leaves the root, names the agent's own folder, one that holds it or one inside it, or names two
+folders one inside the other, `reads:` on a decision agent or on an agent whose folder is a link to
+a folder elsewhere, a file `preload: true` would send that neither `Read` nor `Load` would hand over
+— over 20 MB, of a type the model's `media_types` does not name, or not the type its name says — one
+skill as both `skills/x.md` and `skills/x/SKILL.md`, a question in markdown, a question's JSON that
+is not an object, holds an unknown key, has no instructions or does not fit its type, a question's
+script without its `.json`, a decision agent with `tasks/`, a route not by a choice question of the
 router's `questions/`, by one a script fills, or that maps an option the question does not have, a
 route entry that names a task its agent does not have, a task for a decision agent, or gives a
 decision agent nothing to ask, two tools of a run with one name or one named like a tool the engine
@@ -2688,12 +2823,13 @@ judge that is not a decision agent or a teacher that is not a generation agent. 
 an agent the tree does not have — a judge, a teacher or a replay's agent in the candidate included —
 a task the agent does not have (`engine: agent 'support' has no task 'ghost'`), found when the run
 starts, or a run the refinery does not. `InputError` for a call the library refuses: an empty scope,
-a workspace of another scope, a history that breaks a tool call from its result, a `start` outside
-the history or without one, tags outside their limits, runtime questions that do not fit, a runtime
-id the run already asks, questions for a generation agent, a task or a skill for a decision agent, a
-decision run with no question to ask, media the decision model does not declare, a media part with
-both or neither of `data` and `url`, a correction of the wrong shape or for a question the run was
-not asked, a `delete_runs` or `verify_absent` given both `run_ids` and `tags` or an empty one, a
+an input that is not a string, a JSON object or a list of JSON values and parts, a workspace of
+another scope, a history that breaks a tool call from its result, a `start` outside the history or
+without one, tags outside their limits, runtime questions that do not fit, a runtime id the run
+already asks, questions for a generation agent, a task or a skill for a decision agent, a decision
+run with no question to ask, media the decision model does not declare, a media part with both or
+neither of `data` and `url`, a correction of the wrong shape or for a question the run was not
+asked, a `delete_runs` or `verify_absent` given both `run_ids` and `tags` or an empty one, a
 `delete_runs` given neither, an `export` or a `replay` given a `holdout_percent` outside 0 to 100, a
 `replay` given empty `tags` or a `limit`, `concurrency` or `repeat` below 1, a tool called with bad
 arguments, arguments JSON cannot hold or a path outside its directory, and any use of an engine

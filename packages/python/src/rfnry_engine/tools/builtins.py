@@ -74,6 +74,13 @@ def _hidden(rel: Path) -> bool:
     )
 
 
+def _is_folder(entry: os.DirEntry[str]) -> bool:
+    try:
+        return entry.is_dir()
+    except OSError:
+        return False
+
+
 def _within(jail: Jail, path: Path) -> tuple[Path, Path] | None:
     try:
         real = Path(os.path.realpath(path))
@@ -87,6 +94,10 @@ def _hides(jail: Jail, path: str | Path) -> bool:
     named = jail.root / path
     place = _within(jail, named)
     if place is None:
+        for above in named.parents:
+            held = _within(jail, above)
+            if held is not None:
+                return _hidden(held[1] / named.relative_to(above).parts[0])
         return False
     root, seen = place
     if os.path.isdir(named):
@@ -95,6 +106,15 @@ def _hides(jail: Jail, path: str | Path) -> bool:
     if folder is not None and folder[0] == root:
         seen = folder[1] / named.name
     return _hidden(seen) or _hidden(Path(named.name))
+
+
+def _through_folders(jail: Jail, path: str) -> str:
+    parts = path.split("/")
+    for n in range(1, len(parts)):
+        held = _within(jail, Path(jail.root, "/".join(parts[:n])))
+        if held is not None and (held[0] / held[1]).is_file():
+            raise InputError(f"tools/builtins: not a folder: {path}")
+    return path
 
 
 def _named(jail: Jail, path: str) -> str:
@@ -179,7 +199,7 @@ def _name_of(fd: int, path: str, removed: bool) -> Path:
 
 def _contents(jail: Jail, path: str, limit: int, missing: str = "") -> tuple[Path, bytes]:
     try:
-        fd = jail.open(path)
+        fd = jail.open(_through_folders(jail, path))
         try:
             found = os.fstat(fd)
             if not stat.S_ISREG(found.st_mode):
@@ -300,7 +320,11 @@ class _Directory:
                     f"tools/builtins: pattern took longer than {budget:g}s; simplify it or narrow path and glob"
                 ) from exc
 
-        base = self.jail.resolve(_named(self.jail, a.path)) if a.path else self.root
+        base = (
+            self.jail.resolve(_through_folders(self.jail, _named(self.jail, a.path)))
+            if a.path
+            else self.root
+        )
         lines: list[str] = []
         scanned = 0
         exhausted = False
@@ -309,7 +333,7 @@ class _Directory:
         except ValueError as exc:
             raise InputError(f"tools/builtins: invalid glob {a.glob!r}: {exc}") from exc
         for path in paths:
-            rel = self._shown(path)
+            rel = a.path if a.path and path == base else self._shown(path)
             try:
                 fd = self.jail.open(path)
             except InputError, OSError:
@@ -378,7 +402,7 @@ class _Directory:
 
     def ls(self, args: dict[str, Any]) -> str:
         a = LSArgs.model_validate(args)
-        path = _named(self.jail, a.path or ".")
+        path = _through_folders(self.jail, _named(self.jail, a.path or "."))
         place = self.jail.resolve(path)
         try:
             fd = self.jail.open(path, os.O_RDONLY | os.O_DIRECTORY)
@@ -388,11 +412,13 @@ class _Directory:
                         (
                             e
                             for e in found
-                            if not _hidden(Path(e.name)) and not _hides(self.jail, place / e.name)
+                            if not _hidden(Path(e.name))
+                            and not _hides(self.jail, place / e.name)
+                            and self._inside(place / e.name)
                         ),
                         key=lambda e: e.name,
                     )
-                shown = [f"{e.name}/" if e.is_dir() else e.name for e in entries[: a.limit]]
+                shown = [f"{e.name}/" if _is_folder(e) else e.name for e in entries[: a.limit]]
             finally:
                 os.close(fd)
         except OSError as exc:
@@ -401,7 +427,7 @@ class _Directory:
                     f"tools/builtins: not a directory of your folder: {path}; Shell lists your workspace"
                 ) from None
             if exc.errno in (errno.ENOENT, errno.ENOTDIR):
-                raise InputError(f"tools/builtins: not a directory: {path}") from None
+                raise InputError(f"tools/builtins: not a folder: {path}") from None
             raise InputError(f"tools/builtins: cannot list {path}: {exc.strerror}") from None
         if not entries:
             return "(empty)"

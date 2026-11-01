@@ -7,6 +7,7 @@ import sys
 import sysconfig
 from collections.abc import Collection, Iterator
 from functools import cache
+from importlib.machinery import FrozenImporter
 from pathlib import Path
 
 import jsonschema_rs
@@ -31,7 +32,6 @@ class ToolDef(BaseModel):
     key: str
     source: str
     helpers: dict[str, str]
-    awaits: bool = False
 
 
 def script_key(root: Path, script: Path) -> str:
@@ -92,6 +92,10 @@ def _text(path: Path) -> str:
     except UnicodeDecodeError as exc:
         raise ConfigurationError(
             f"tools/folder: {path} is not UTF-8 text; save it as UTF-8"
+        ) from exc
+    except OSError as exc:
+        raise ConfigurationError(
+            f"tools/folder: cannot read {path}: {exc.strerror or exc}; make it readable to the engine"
         ) from exc
 
 
@@ -199,22 +203,31 @@ def _parsed(path: Path, source: str) -> ast.Module:
         ) from exc
 
 
-def _awaits(path: Path, module: ast.Module, what: str, given: str) -> bool:
-    runs = [
-        node
+def _check_run(path: Path, module: ast.Module, what: str, given: str) -> None:
+    if not any(
+        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "run"
         for node in module.body
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "run"
-    ]
-    if not runs:
+    ):
         raise ConfigurationError(
             f"tools/folder: {path} has no run at its top level; a {what} defines def run({given}, call) or async def run({given}, call)"
         )
-    return isinstance(runs[-1], ast.AsyncFunctionDef)
+
+
+def _check_name(path: Path) -> None:
+    name = path.stem
+    if (
+        name in sys.stdlib_module_names
+        or name in sys.builtin_module_names
+        or FrozenImporter.find_spec(name) is not None
+    ):
+        raise ConfigurationError(
+            f"tools/folder: {path} is named like the standard-library module {name!r}, and the worker can't load both; rename it"
+        )
 
 
 def _beside(folder: Path) -> frozenset[str]:
     return frozenset(
-        p.stem if p.is_file() else p.name
+        p.stem if p.suffix == ".py" and not p.is_dir() else p.name
         for p in folder.iterdir()
         if not p.name.startswith((".", "_")) and (p.is_dir() or p.suffix == ".py")
     )
@@ -289,6 +302,8 @@ def load_tools(
     whole = "the agent's whole folder" if declares(folder.parent) else "the whole tools/ folder"
     for path in sorted([*definitions.values(), *scripts.values(), *helpers]):
         _held(path, folder, "its folder", whole)
+    for path in helpers:
+        _check_name(path)
     for name in sorted({*definitions, *scripts}):
         if name not in scripts:
             raise ConfigurationError(
@@ -309,7 +324,7 @@ def load_tools(
         module = _parsed(path, source)
         _check_imports(path, module, project, folders, names, beside, "tool")
         if path in scripts.values():
-            tools[path.stem].awaits = _awaits(path, module, "tool", "args")
+            _check_run(path, module, "tool", "args")
     return tools
 
 
@@ -323,17 +338,18 @@ def load_scripts(
     scripts = {name: folder / f"{name}.py" for name in names}
     for path in [*scripts.values(), *helpers]:
         _held(path, folder.parent, "the agent's folder", "the agent's whole folder")
+    for path in helpers:
+        _check_name(path)
     sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
     shared = {p.stem: sources[p] for p in helpers}
     what = "question's script"
-    awaits = {}
     beside = _beside(folder)
     for path, source in sources.items():
         module = _parsed(path, source)
         _check_imports(path, module, project, folders, shared, beside, what)
         if path in scripts.values():
-            awaits[path] = _awaits(path, module, what, "input")
+            _check_run(path, module, what, "input")
     return {
-        name: Script(script_key(root, path), path, sources[path], shared, awaits[path])
+        name: Script(script_key(root, path), path, sources[path], shared)
         for name, path in scripts.items()
     }

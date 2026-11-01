@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from collections.abc import Collection, Mapping, Sequence
 from concurrent.futures import Future
 from functools import partial
@@ -26,7 +27,9 @@ PROGRAM = Path(__file__).with_name("process.py")
 CLOSED = "it was closed"
 RETIRED = "every thread was held by a call past its deadline"
 MOVED = "a call came from another event loop"
+GARBLED = "it sent a line that is not a reply"
 CAP = 64 * 1024
+DRAIN = 1024 * 1024
 POLL = 0.01
 
 
@@ -35,7 +38,6 @@ class Script(NamedTuple):
     path: Path
     source: str
     helpers: Mapping[str, str]
-    awaits: bool
 
 
 def _lines(pending: bytearray, data: bytes) -> list[bytes]:
@@ -47,6 +49,21 @@ def _lines(pending: bytearray, data: bytes) -> list[bytes]:
         start = end + 1
     pending += data[start:]
     return lines
+
+
+def _reply(line: bytes) -> dict[str, Any] | None:
+    try:
+        reply = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(reply, dict):
+        return None
+    match reply:
+        case {"threaded": [*keys]} if len(reply) == 1 and all(isinstance(k, str) for k in keys):
+            return reply
+        case {"id": int(), "result": _} | {"id": int(), "error": str()} if len(reply) == 2:
+            return reply
+    return None
 
 
 def _reason(code: int) -> str:
@@ -78,8 +95,10 @@ class _Worker:
         self.calls: dict[int, tuple[str, asyncio.Future[JsonValue], int]] = {}
         self.held: set[int] = set()
         self.cancelling: dict[int, int] = {}
+        self.threaded: frozenset[str] = frozenset()
         self.sent = 0
         self.ended = False
+        self.killed = False
         self._loop = loop
         self._stdin: asyncio.WriteTransport | None = None
         self._readers: list[asyncio.ReadTransport] = []
@@ -93,11 +112,35 @@ class _Worker:
         for fd, pipe in ((2, self.process.stderr), (1, self.process.stdout)):
             reader, _ = await self._loop.connect_read_pipe(partial(_Pipe, self, fd), pipe)
             self._readers.append(reader)
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    def _watch(self) -> None:
+        if hasattr(os, "waitid"):
+            with contextlib.suppress(ChildProcessError):
+                os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOWAIT)
+        else:
+            self.process.wait()
+        with contextlib.suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(self._exited)
+
+    def _exited(self) -> None:
+        if self.ended:
+            return
+        try:
+            left = os.read(cast(IO[bytes], self.process.stdout).fileno(), DRAIN)
+        except BlockingIOError:
+            left = b""
+        self.received(1, left)
+        self.stop()
 
     def received(self, fd: int, data: bytes) -> None:
         if fd == 1:
             for line in _lines(self._out, data):
-                self._answer(json.loads(line))
+                reply = _reply(line)
+                if reply is None:
+                    self.stop(GARBLED)
+                    return
+                self._answer(reply)
         elif logger.isEnabledFor(logging.DEBUG):
             for line in _lines(self._err, data):
                 self._log(line)
@@ -130,11 +173,16 @@ class _Worker:
             self.cancelling[id] = self.sent
         self.write(json.dumps({"id": id, "cancel": True}))
 
+    def kill(self) -> None:
+        if not self.killed:
+            self.killed = True
+            _kill(self.pid)
+
     def stop(self, reason: str | None = None) -> None:
         if self.ended:
             return
         self.ended = True
-        _kill(self.pid)
+        self.kill()
         if not self._loop.is_closed():
             for reader in self._readers:
                 if not reader.is_closing():
@@ -158,6 +206,9 @@ class _Worker:
         self.cancelling.clear()
 
     def _answer(self, reply: dict[str, Any]) -> None:
+        if "threaded" in reply:
+            self.threaded = frozenset(reply["threaded"])
+            return
         self.held.discard(reply["id"])
         self.cancelling.pop(reply["id"], None)
         entry = self.calls.pop(reply["id"], None)
@@ -178,6 +229,11 @@ def _log(*errors: BaseException) -> None:
         logger.error("workers/pool: could not stop a worker: %s", error, exc_info=error)
 
 
+def _logged(dropped: Future[None]) -> None:
+    if (error := dropped.exception()) is not None:
+        _log(error)
+
+
 def _load(worker: _Worker | None) -> int:
     return 0 if worker is None else len(worker.calls) + len(worker.held) + len(worker.cancelling)
 
@@ -194,19 +250,20 @@ class WorkerPool:
         self._scripts = {
             "scripts": [
                 {"key": key, "path": str(path), "source": source}
-                for key, path, source, _, _ in scripts
+                for key, path, source, _ in scripts
             ],
-            "helpers": {str(path.parent): dict(helpers) for _, path, _, helpers, _ in scripts},
+            "helpers": {str(path.parent): dict(helpers) for _, path, _, helpers in scripts},
             "threads": threads,
             "limit": limit,
         }
-        self._awaits = {script.key for script in scripts if script.awaits}
         self._threads = threads
         self._workers: list[_Worker | None] = [None] * processes
         self._ids = itertools.count()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = asyncio.Lock()
         self._closed = False
+        self._spawning: asyncio.Future[None] | None = None
+        self._starting: _Worker | None = None
 
     async def call(
         self, key: str, args: JsonValue, call: Mapping[str, str], timeout: float | None
@@ -232,37 +289,67 @@ class WorkerPool:
             raise TimeoutError(f"workers/pool: {name} timed out after {timeout:g}s") from None
         finally:
             if worker is not None:
-                worker.abandon(id, held=key not in self._awaits, expired=deadline.expired())
+                worker.abandon(id, held=key in worker.threaded, expired=deadline.expired())
 
     async def close(self) -> None:
+        try:
+            handing = self._shut()
+        except BaseException as exc:
+            try:
+                await self._started()
+            except asyncio.CancelledError:
+                _log(exc)
+                raise
+            raise
+        if handing is None:
+            await self._started()
+            return
+        loop, dropped, soon = handing
+        try:
+            while not (handed := dropped.done() and self._spawning is None) and loop.is_running():
+                await asyncio.sleep(POLL)
+        except asyncio.CancelledError:
+            dropped.add_done_callback(_logged)
+            raise
+        if not handed:
+            soon.cancel()
+            self._drop(CLOSED, starting=True)
+        if dropped.done():
+            dropped.result()
+
+    async def _started(self) -> None:
+        spawning = self._spawning
+        if spawning is not None and spawning.get_loop() is asyncio.get_running_loop():
+            await asyncio.wait([spawning])
+
+    def release(self) -> None:
+        handing = self._shut()
+        if handing is not None:
+            handing[1].add_done_callback(_logged)
+
+    def _shut(self) -> tuple[asyncio.AbstractEventLoop, Future[None], asyncio.Handle] | None:
         self._closed = True
         loop = self._loop
-        if loop is asyncio.get_running_loop():
-            async with self._lock:
-                self._drop(CLOSED)
-        elif loop is not None and loop.is_running():
-            handed: Future[None] = Future()
-            soon = loop.call_soon_threadsafe(self._hand, handed)
-            while not handed.done() and loop.is_running():
-                await asyncio.sleep(POLL)
-            if handed.done():
-                handed.result()
-            else:
-                soon.cancel()
-                self._drop(CLOSED)
-        else:
-            self._drop(CLOSED)
+        here = asyncio.get_running_loop()
+        if loop is not None and loop is not here and loop.is_running():
+            dropped: Future[None] = Future()
+            return loop, dropped, loop.call_soon_threadsafe(self._hand, dropped)
+        self._drop(CLOSED, starting=loop is not None and loop is not here)
+        return None
 
-    def _hand(self, handed: Future[None]) -> None:
+    def _hand(self, dropped: Future[None]) -> None:
         try:
             self._drop(CLOSED)
         except BaseException as exc:
-            handed.set_exception(exc)
+            dropped.set_exception(exc)
         else:
-            handed.set_result(None)
+            dropped.set_result(None)
 
-    def _drop(self, reason: str) -> None:
+    def _drop(self, reason: str, starting: bool = False) -> None:
         workers = [worker for worker in self._workers if worker is not None]
+        if starting and (held := self._starting) is not None:
+            held.kill()
+            held.process.wait()
         self._workers = [None] * len(self._workers)
         failed: list[BaseException] = []
         for worker in workers:
@@ -293,10 +380,17 @@ class WorkerPool:
             index = min(range(len(self._workers)), key=lambda i: _load(self._workers[i]))
             chosen = self._workers[index]
             if chosen is None:
-                chosen = await self._spawn()
-                if self._closed:
-                    chosen.stop(CLOSED)
-                    raise WorkerError(f"workers/pool: the worker for {name} stopped: {CLOSED}")
+                spawning = asyncio.get_running_loop().create_future()
+                self._spawning = spawning
+                try:
+                    chosen = await self._spawn()
+                    if self._closed:
+                        chosen.stop(CLOSED)
+                        raise WorkerError(f"workers/pool: the worker for {name} stopped: {CLOSED}")
+                finally:
+                    self._spawning = self._starting = None
+                    if not spawning.get_loop().is_closed():
+                        spawning.set_result(None)
                 self._workers[index] = chosen
             return chosen
 
@@ -309,7 +403,7 @@ class WorkerPool:
             bufsize=0,
             start_new_session=True,
         )
-        worker = _Worker(process, asyncio.get_running_loop())
+        worker = self._starting = _Worker(process, asyncio.get_running_loop())
         try:
             await worker.connect()
         except BaseException:
@@ -336,9 +430,7 @@ class Workers:
         for name, spec in agents.items():
             own = scripts[self._groups[name]]
             for tool in spec.folder_tools.values():
-                own[tool.key] = Script(
-                    tool.key, tool.script, tool.source, tool.helpers, tool.awaits
-                )
+                own[tool.key] = Script(tool.key, tool.script, tool.source, tool.helpers)
             for _, script in spec.scripted.values():
                 own[script.key] = script
         self._pools = {
@@ -354,10 +446,21 @@ class Workers:
         return self._pools[self._groups[agent]]
 
     async def close(self) -> None:
-        closed = await asyncio.gather(
-            *(pool.close() for pool in self._pools.values()), return_exceptions=True
-        )
-        failed = [result for result in closed if isinstance(result, BaseException)]
+        failed: list[BaseException] = []
+        cancelled: asyncio.CancelledError | None = None
+        for pool in self._pools.values():
+            try:
+                if cancelled is None:
+                    await pool.close()
+                else:
+                    pool.release()
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+            except Exception as exc:
+                failed.append(exc)
+        if cancelled is not None:
+            _log(*failed)
+            raise cancelled
         _log(*failed[1:])
         if failed:
             raise failed[0]

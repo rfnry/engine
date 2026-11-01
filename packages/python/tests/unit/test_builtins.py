@@ -7,6 +7,7 @@ import pytest
 
 from rfnry_engine import Local, Process
 from rfnry_engine.errors import InputError
+from rfnry_engine.folders import entries
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Audio, Document, Image, Text
 from rfnry_engine.tools import builtins as builtins_module
@@ -603,12 +604,12 @@ async def test_a_path_the_folder_lacks_says_how_to_reach_the_workspace(
             ),
         ):
             await both.dispatch(name, {"path": "task_folder/a.csv"})
-    with pytest.raises(InputError, match="^tools/builtins: not a directory: knowledge/notes.md$"):
+    with pytest.raises(InputError, match="^tools/builtins: not a folder: knowledge/notes.md$"):
         await both.dispatch("LS", {"path": "knowledge/notes.md"})
     with pytest.raises(InputError, match="^tools/builtins: not a file: knowledge$"):
         await both.dispatch("Read", {"path": "knowledge"})
     alone = Tools([*builtins(media), load_tool(media)])
-    with pytest.raises(InputError, match="^tools/builtins: not a directory: task_folder$"):
+    with pytest.raises(InputError, match="^tools/builtins: not a folder: task_folder$"):
         await alone.dispatch("LS", {"path": "task_folder"})
     for name in ["Read", "Load"]:
         with pytest.raises(InputError, match="^tools/builtins: not a file: task_folder/a.csv$"):
@@ -1010,3 +1011,161 @@ async def test_a_file_whose_own_name_is_hidden_is_refused_whatever_it_leads_to(
             await tool.dispatch(name, args)
     assert await tools.dispatch("Read", {"path": "y.md"}) == "y"
     assert await tools.dispatch("Read", {"path": "notes.md"}) == "TOKEN=1"
+
+
+async def test_ls_lists_a_symlink_loop_as_a_broken_link(tmp_path: Path) -> None:
+    (tmp_path / "a.md").write_text("a", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "gone.md").symlink_to("missing.md")
+    (tmp_path / "loop").symlink_to("loop")
+    (tmp_path / "docs" / "back").symlink_to("../docs/back")
+    tools = Tools(builtins(tmp_path))
+    assert await tools.dispatch("LS", {}) == "a.md\ndocs/\ngone.md\nloop"
+    assert await tools.dispatch("LS", {"path": "docs"}) == "back"
+
+
+async def test_ls_hides_a_link_that_leads_outside_every_folder_as_glob_and_the_map_do(
+    tmp_path: Path,
+) -> None:
+    agent, books, elsewhere = tmp_path / "agent", tmp_path / "books", tmp_path / "elsewhere"
+    for folder in (agent, books, elsewhere):
+        folder.mkdir()
+    (agent / "a.md").write_text("a", encoding="utf-8")
+    (books / "y.md").write_text("y", encoding="utf-8")
+    (elsewhere / "x.md").write_text("x", encoding="utf-8")
+    (agent / "out.md").symlink_to(elsewhere / "x.md")
+    (agent / "outdir").symlink_to(elsewhere, target_is_directory=True)
+    (agent / "gone").symlink_to(elsewhere / "missing.md")
+    (books / "out.md").symlink_to(elsewhere / "x.md")
+    tools = Tools(builtins(agent, {"../books": books}))
+    assert await tools.dispatch("Glob", {"pattern": "*"}) == "a.md"
+    assert await tools.dispatch("Glob", {"pattern": "../books/*"}) == "../books/y.md"
+    assert entries(agent, False) == ["a.md"] and entries(books, False) == ["y.md"]
+    assert await tools.dispatch("LS", {}) == "a.md"
+    assert await tools.dispatch("LS", {"path": "../books"}) == "y.md"
+    for path in ["out.md", "outdir/x.md", "../books/out.md"]:
+        with pytest.raises(InputError, match="^jail: path outside the agent directory: "):
+            await tools.dispatch("Read", {"path": path})
+
+
+async def test_grep_labels_a_file_link_s_matches_with_the_path_it_was_given(tmp_path: Path) -> None:
+    agent, books = tmp_path / "agent", tmp_path / "books"
+    (agent / "sub").mkdir(parents=True)
+    books.mkdir()
+    (agent / "real.md").write_text("needle\n", encoding="utf-8")
+    (agent / "alias.md").symlink_to("real.md")
+    (agent / "sub" / "deep.md").symlink_to("../real.md")
+    (books / "y.md").write_text("needle\n", encoding="utf-8")
+    (agent / "y.md").symlink_to(books / "y.md")
+    tools = Tools(builtins(agent, {"../books": books}))
+    for path in ["alias.md", "sub/deep.md", "y.md", "real.md", "../books/y.md"]:
+        assert await tools.dispatch("Grep", {"pattern": "needle", "path": path}) == path
+        assert await tools.dispatch(
+            "Grep", {"pattern": "needle", "path": path, "mode": "content"}
+        ) == (f"{path}:1:needle")
+    assert str(await tools.dispatch("Grep", {"pattern": "needle"})).splitlines() == [
+        "alias.md",
+        "real.md",
+        "sub/deep.md",
+        "y.md",
+    ]
+
+
+@pytest.mark.parametrize("after", ["/", "/.", "/..", "/./"])
+async def test_a_file_s_path_with_a_folder_part_after_it_is_not_a_folder(
+    tmp_path: Path, after: str
+) -> None:
+    (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
+    (tmp_path / "alias.md").symlink_to("notes.md")
+    (tmp_path / "rules").mkdir()
+    tools = Tools(builtins(tmp_path))
+    load = Tools([load_tool(tmp_path)])
+    for path in [
+        f"notes.md{after}",
+        f"alias.md{after}",
+        f"rules/../notes.md{after}",
+        f"{tmp_path}/notes.md{after}",
+        f"notes.md{after}/x",
+    ]:
+        for tool, name, args in [
+            (tools, "Read", {"path": path}),
+            (load, "Load", {"path": path}),
+            (tools, "Grep", {"pattern": "notes", "path": path}),
+            (tools, "LS", {"path": path}),
+        ]:
+            with pytest.raises(InputError) as raised:
+                await tool.dispatch(name, args)
+            assert str(raised.value) == f"tools/builtins: not a folder: {path}"
+
+
+async def test_a_folder_s_path_may_end_in_a_folder_part_and_a_file_s_reads_as_written(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
+    (tmp_path / "rules").mkdir()
+    tools = Tools(builtins(tmp_path))
+    with pytest.raises(InputError) as raised:
+        await tools.dispatch("Read", {"path": "rules/"})
+    assert str(raised.value) == "tools/builtins: not a file: rules/"
+    with pytest.raises(InputError) as raised:
+        await tools.dispatch("LS", {"path": "notes.md"})
+    assert str(raised.value) == "tools/builtins: not a folder: notes.md"
+    for path in ["rules/", "rules/.", "rules/./"]:
+        assert await tools.dispatch("LS", {"path": path}) == "(empty)"
+        assert await tools.dispatch("Grep", {"pattern": "notes", "path": path}) == (
+            "no matches found"
+        )
+    assert await tools.dispatch("LS", {"path": "rules/.."}) == "notes.md\nrules/"
+    assert await tools.dispatch("Read", {"path": "notes.md"}) == "notes"
+    assert await tools.dispatch("Read", {"path": "rules/../notes.md"}) == "notes"
+
+
+async def test_a_link_inside_a_hidden_folder_that_leads_outside_reports_hidden(
+    tmp_path: Path,
+) -> None:
+    agent, books, elsewhere = tmp_path / "agent", tmp_path / "books", tmp_path / "elsewhere"
+    for folder in (agent / ".secret", books / ".cache", elsewhere / ".x", tmp_path / ".other"):
+        folder.mkdir(parents=True)
+    (elsewhere / "x.md").write_text("x", encoding="utf-8")
+    (tmp_path / ".other" / "x.md").write_text("x", encoding="utf-8")
+    (agent / ".secret" / "out.md").symlink_to(elsewhere / "x.md")
+    (agent / ".secret" / "outdir").symlink_to(elsewhere, target_is_directory=True)
+    (books / ".cache" / "out.md").symlink_to(elsewhere / "x.md")
+    (agent / "outdir").symlink_to(elsewhere, target_is_directory=True)
+    tools = Tools(builtins(agent, {"../books": books}))
+    load = Tools([load_tool(agent, reads=[books])])
+    for tool, name, args in [
+        (tools, "Read", {"path": ".secret/out.md"}),
+        (tools, "Read", {"path": str(agent / ".secret" / "out.md")}),
+        (load, "Load", {"path": ".secret/out.md"}),
+        (tools, "Grep", {"pattern": "x", "path": ".secret/out.md"}),
+        (tools, "LS", {"path": ".secret/outdir"}),
+        (tools, "Read", {"path": ".secret/outdir/x.md"}),
+        (tools, "Read", {"path": "outdir/../agent/.secret/out.md"}),
+        (tools, "Read", {"path": "../books/.cache/out.md"}),
+    ]:
+        with pytest.raises(InputError, match=r"^tools/builtins: .* is hidden"):
+            await tool.dispatch(name, args)
+    for path in [
+        "outdir/x.md",
+        "outdir/.x",
+        ".secret/../outdir/x.md",
+        "../.other/x.md",
+        str(tmp_path / ".other" / "x.md"),
+    ]:
+        with pytest.raises(InputError, match="^jail: path outside the agent directory: "):
+            await tools.dispatch("Read", {"path": path})
+
+
+async def test_no_builtin_shows_a_file_named_like_a_bytecode_cache(tmp_path: Path) -> None:
+    (tmp_path / "rules").mkdir()
+    (tmp_path / "rules" / "refunds.md").write_text("refund in full\n", encoding="utf-8")
+    (tmp_path / "rules" / "__pycache__").write_text("refund\n", encoding="utf-8")
+    (tmp_path / "__pycache__").write_text("refund\n", encoding="utf-8")
+    tools = Tools(builtins(tmp_path))
+    assert await tools.dispatch("Glob", {"pattern": "**/*"}) == "rules/refunds.md"
+    assert await tools.dispatch("Grep", {"pattern": "refund"}) == "rules/refunds.md"
+    assert await tools.dispatch("LS", {}) == "rules/"
+    assert await tools.dispatch("LS", {"path": "rules"}) == "refunds.md"
+    with pytest.raises(InputError, match=r"^tools/builtins: rules/__pycache__ is hidden"):
+        await tools.dispatch("Read", {"path": "rules/__pycache__"})

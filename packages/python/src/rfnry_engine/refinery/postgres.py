@@ -12,10 +12,8 @@ _RUN_COLUMNS = (
     "scope, run_id, parent_run_id, agent, kind, task, at, recorded, duration_ms, model, body"
 )
 _LABEL_COLUMNS = "scope, label_id, run_id, source, at, body"
-
-
-def _json(value: Any) -> dict[str, Any]:
-    return json.loads(value) if isinstance(value, str) else dict(value)
+_RUN_READ = _RUN_COLUMNS.replace("body", "body::text AS body")
+_LABEL_READ = _LABEL_COLUMNS.replace("body", "body::text AS body")
 
 
 def _run(record: Any) -> RunRow:
@@ -30,7 +28,7 @@ def _run(record: Any) -> RunRow:
         recorded=record["recorded"],
         duration_ms=record["duration_ms"],
         model=record["model"],
-        body=_json(record["body"]),
+        body=json.loads(record["body"]),
     )
 
 
@@ -41,7 +39,7 @@ def _label(record: Any) -> LabelRow:
         run_id=record["run_id"],
         source=record["source"],
         at=record["at"],
-        body=_json(record["body"]),
+        body=json.loads(record["body"]),
     )
 
 
@@ -57,6 +55,16 @@ def _clean(value: Any) -> Any:
     if isinstance(value, list):
         return [_clean(item) for item in value]
     return value
+
+
+class _Encoded:
+    def __init__(self, body: dict[str, Any]) -> None:
+        self.body = body
+        self.data = json.dumps(body).encode()
+
+    def __buffer__(self, flags: int, /) -> memoryview:
+        data, self.data = self.data or json.dumps(self.body).encode(), b""
+        return memoryview(data)
 
 
 def stored_tags(body: Any) -> str:
@@ -76,7 +84,7 @@ def _tree(
         )
     if tags is not None:
         params.append(json.dumps(_clean(tags)))
-        conditions.append(f"tags @> ${len(params)}::jsonb")
+        conditions.append(f"tags @> ${len(params)}::text::jsonb")
     sql = (
         "WITH RECURSIVE tree(run_id) AS (SELECT run_id FROM engine_runs WHERE "
         + " AND ".join(conditions)
@@ -111,35 +119,31 @@ class PostgresStorage:
         if not rows:
             return
         async with self._guard("put_runs"), self._pool.acquire() as conn, conn.transaction():
-            await conn.executemany(
-                f"INSERT INTO engine_runs ({_RUN_COLUMNS}, tags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::json, "
-                "$12::jsonb) "
-                "ON CONFLICT (scope, run_id) DO UPDATE SET parent_run_id = EXCLUDED.parent_run_id, agent = EXCLUDED.agent, "
-                "kind = EXCLUDED.kind, task = EXCLUDED.task, at = EXCLUDED.at, recorded = EXCLUDED.recorded, "
-                "duration_ms = EXCLUDED.duration_ms, model = EXCLUDED.model, body = EXCLUDED.body, tags = EXCLUDED.tags",
-                [
-                    (
-                        row.scope,
-                        row.run_id,
-                        row.parent_run_id,
-                        row.agent,
-                        row.kind,
-                        row.task,
-                        row.at,
-                        row.recorded,
-                        row.duration_ms,
-                        row.model,
-                        json.dumps(row.body),
-                        stored_tags(row.body),
-                    )
-                    for row in rows
-                ],
-            )
+            for row in rows:
+                await conn.execute(
+                    f"INSERT INTO engine_runs ({_RUN_COLUMNS}, tags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, "
+                    "convert_from($11::bytea, 'UTF8')::json, $12::text::jsonb) "
+                    "ON CONFLICT (scope, run_id) DO UPDATE SET parent_run_id = EXCLUDED.parent_run_id, agent = EXCLUDED.agent, "
+                    "kind = EXCLUDED.kind, task = EXCLUDED.task, at = EXCLUDED.at, recorded = EXCLUDED.recorded, "
+                    "duration_ms = EXCLUDED.duration_ms, model = EXCLUDED.model, body = EXCLUDED.body, tags = EXCLUDED.tags",
+                    row.scope,
+                    row.run_id,
+                    row.parent_run_id,
+                    row.agent,
+                    row.kind,
+                    row.task,
+                    row.at,
+                    row.recorded,
+                    row.duration_ms,
+                    row.model,
+                    _Encoded(row.body),
+                    stored_tags(row.body),
+                )
 
     async def get_run(self, scope: str, run_id: str) -> RunRow | None:
         async with self._guard("get_run"), self._pool.acquire() as conn:
             record = await conn.fetchrow(
-                f"SELECT {_RUN_COLUMNS} FROM engine_runs WHERE scope = $1 AND run_id = $2",
+                f"SELECT {_RUN_READ} FROM engine_runs WHERE scope = $1 AND run_id = $2",
                 scope,
                 run_id,
             )
@@ -173,7 +177,7 @@ class PostgresStorage:
                 f"AND l.source = ${len(params)})"
             )
         sql = (
-            f"SELECT {', '.join('r.' + c for c in _RUN_COLUMNS.split(', '))} FROM engine_runs r WHERE "
+            f"SELECT {', '.join('r.' + c for c in _RUN_READ.split(', '))} FROM engine_runs r WHERE "
             + " AND ".join(conditions)
             + ' ORDER BY r.at DESC, r.run_id COLLATE "C" DESC'
         )
@@ -189,7 +193,7 @@ class PostgresStorage:
             raise StorageError("refinery/postgres: row scope does not match the call scope")
         async with self._guard("put_label"), self._pool.acquire() as conn:
             inserted = await conn.fetchval(
-                f"INSERT INTO engine_labels ({_LABEL_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6::json) "
+                f"INSERT INTO engine_labels ({_LABEL_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6::text::json) "
                 "ON CONFLICT (scope, label_id) DO NOTHING RETURNING true",
                 row.scope,
                 row.label_id,
@@ -201,7 +205,7 @@ class PostgresStorage:
             if inserted:
                 return row
             record = await conn.fetchrow(
-                f"SELECT {_LABEL_COLUMNS} FROM engine_labels WHERE scope = $1 AND label_id = $2",
+                f"SELECT {_LABEL_READ} FROM engine_labels WHERE scope = $1 AND label_id = $2",
                 scope,
                 row.label_id,
             )
@@ -227,7 +231,7 @@ class PostgresStorage:
             params.append(since)
             conditions.append(f"at > ${len(params)}")
         sql = (
-            f"SELECT {_LABEL_COLUMNS} FROM engine_labels WHERE "
+            f"SELECT {_LABEL_READ} FROM engine_labels WHERE "
             + " AND ".join(conditions)
             + ' ORDER BY at ASC, label_id COLLATE "C" ASC'
         )
@@ -244,7 +248,7 @@ class PostgresStorage:
     ) -> list[RunRow]:
         tree, params = _tree(scope, run_ids, tags)
         sql = (
-            tree + f"SELECT {_RUN_COLUMNS} FROM engine_runs WHERE scope = $1 "
+            tree + f"SELECT {_RUN_READ} FROM engine_runs WHERE scope = $1 "
             'AND run_id IN (SELECT run_id FROM tree) ORDER BY at ASC, run_id COLLATE "C" ASC'
         )
         async with self._guard("run_tree"), self._pool.acquire() as conn:
