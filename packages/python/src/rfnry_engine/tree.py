@@ -320,38 +320,60 @@ def _skills(files: list[tuple[str, Path]], agent: str) -> dict[str, Skill]:
     return dict(sorted(found.items()))
 
 
+def _declared(folder: Path) -> list[Path]:
+    try:
+        with os.scandir(folder) as entries:
+            found = []
+            for entry in entries:
+                entry.stat(follow_symlinks=False)
+                found.append(Path(entry.path))
+    except OSError as exc:
+        raise ConfigurationError(
+            f"tree: cannot read {folder}: {exc.strerror or exc}; make it readable to the engine"
+        ) from exc
+    return sorted(found)
+
+
+def _opens(path: Path) -> None:
+    try:
+        os.close(os.open(path, os.O_RDONLY))
+    except OSError as exc:
+        raise ConfigurationError(
+            f"tree: cannot read {path}: {exc.strerror or exc}; make it readable to the engine"
+        ) from exc
+
+
 def _readable_skills(agent: Path) -> None:
     folder = agent / "skills"
     if not folder.is_dir():
         return
-    for path in sorted([*folder.glob("*.md"), *folder.glob("*/SKILL.md")]):
-        name = path.stem if path.parent == folder else path.parent.name
-        if name.startswith(("_", ".")) or not path.is_file():
+    for path in _declared(folder):
+        if path.name.startswith(("_", ".")):
             continue
-        try:
-            os.close(os.open(path, os.O_RDONLY))
-        except OSError as exc:
-            raise ConfigurationError(
-                f"tree: cannot read {path}: {exc.strerror or exc}; make it readable to the engine"
-            ) from exc
+        if path.suffix == ".md" and path.is_file():
+            _opens(path)
+        elif path.is_dir():
+            skill = path / "SKILL.md"
+            if skill in _declared(path) and skill.is_file():
+                _opens(skill)
 
 
 def _markdown_files(directory: Path) -> list[Path]:
     if not directory.is_dir():
         return []
-    return sorted(
-        p for p in directory.iterdir() if p.suffix == ".md" and not p.name.startswith(("_", "."))
-    )
+    return [
+        p for p in _declared(directory) if p.suffix == ".md" and not p.name.startswith(("_", "."))
+    ]
 
 
 def _question_files(directory: Path) -> list[Path]:
     if not directory.is_dir():
         return []
-    return sorted(
+    return [
         p
-        for p in directory.iterdir()
+        for p in _declared(directory)
         if p.is_file() and not p.name.startswith(("_", ".")) and p.suffix in QUESTION_FILES
-    )
+    ]
 
 
 def _questions(
@@ -761,6 +783,8 @@ def load_tree(
         for place in [*(root / prefix / "tools" for prefix in prefixes), *asking]
         if place.is_dir()
     )
+    for prefix in prefixes:
+        _declared(root / prefix / "tools")
     tool_folders = {
         prefix: load_tools(root / prefix / "tools", project, root, script_folders)
         for prefix in prefixes

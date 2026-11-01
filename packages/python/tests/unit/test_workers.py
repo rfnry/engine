@@ -5,6 +5,7 @@ import gc
 import logging
 import os
 import signal
+import sys
 import threading
 import time
 from collections import Counter
@@ -1257,6 +1258,87 @@ async def test_close_returns_once_a_worker_a_call_was_still_starting_has_ended(
             calling.cancel()
         await asyncio.wait([calling])
         pool._drop(CLOSED)
+
+
+async def test_a_stop_error_of_close_is_raised_only_once_a_worker_still_starting_has_ended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)], processes=2)
+    first = pid(await pool.call("nap", {}, CALL, 5))
+    busy = asyncio.ensure_future(pool.call("nap", {"sleep": 2}, CALL, 5))
+    await asyncio.sleep(0.2)
+    [target] = [w for w in pool._workers if w is not None and w.pid == first]
+    connect, stop = _Worker.connect, _Worker.stop
+    started: list[int] = []
+    connected = asyncio.Event()
+
+    async def slow(worker: _Worker) -> None:
+        started.append(worker.pid)
+        await connect(worker)
+        connected.set()
+        await asyncio.sleep(0.5)
+
+    def failing(worker: _Worker, reason: str | None = None) -> None:
+        stop(worker, reason)
+        if worker is target:
+            raise OSError("the first worker would not stop")
+
+    monkeypatch.setattr(_Worker, "connect", slow)
+    monkeypatch.setattr(_Worker, "stop", failing)
+    starting = asyncio.ensure_future(pool.call("nap", {}, CALL, 5))
+    try:
+        async with asyncio.timeout(5):
+            await connected.wait()
+            with pytest.raises(OSError, match="^the first worker would not stop$"):
+                await pool.close()
+        [spawned] = started
+        assert reaped(spawned)
+    finally:
+        await asyncio.wait([busy, starting])
+        monkeypatch.undo()
+        pool._drop(CLOSED)
+
+
+async def test_close_from_another_loop_that_stops_mid_start_still_stops_that_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connect = _Worker.connect
+    started: list[int] = []
+    connected = threading.Event()
+
+    async def slow(worker: _Worker) -> None:
+        started.append(worker.pid)
+        await connect(worker)
+        connected.set()
+        await asyncio.sleep(30)
+
+    unraised: list[BaseException | None] = []
+    monkeypatch.setattr(sys, "unraisablehook", lambda hook: unraised.append(hook.exc_value))
+    monkeypatch.setattr(_Worker, "connect", slow)
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    calling: Any = None
+    try:
+        calling = asyncio.run_coroutine_threadsafe(pool.call("nap", {}, CALL, None), loop)
+        assert connected.wait(5)
+        closing = asyncio.ensure_future(pool.close())
+        await asyncio.sleep(0.3)
+        loop.call_soon_threadsafe(loop.stop)
+        async with asyncio.timeout(5):
+            await closing
+        [spawned] = started
+        assert reaped(spawned)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+        del calling
+        gc.collect()
+        monkeypatch.undo()
+        pool._drop(CLOSED)
+    assert [error for error in unraised if isinstance(error, RuntimeError)] == []
 
 
 def test_a_worker_started_while_its_pool_closes_is_stopped(tmp_path: Path) -> None:

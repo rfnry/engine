@@ -694,3 +694,30 @@ def test_an_unreadable_skill_is_refused_at_load_as_a_task_is(
     assert str(caught.value) == (
         f"tree: cannot read {path}: Permission denied; make it readable to the engine"
     )
+
+
+@pytest.mark.parametrize("mode", [0, 0o600], ids=["unreadable", "unsearchable"])
+@pytest.mark.parametrize(
+    "folder", ["a/tasks", "a/tools", "d/questions", "a/skills", "a/skills/deep"]
+)
+def test_a_declared_folder_that_cannot_be_read_or_searched_is_refused_naming_it(
+    tmp_path: Path, folder: str, mode: int
+) -> None:
+    for rel, text in {
+        **DECLARED_FILES,
+        "a/skills/brief.md": "---\ndescription: Brief\n---\nBe brief.\n",
+        "a/skills/deep/SKILL.md": "---\ndescription: Deep\n---\nGo deep.\n",
+    }.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    assert sorted(load_tree(tmp_path)["a"].skills) == ["brief", "deep"]
+    place = tmp_path / folder
+    place.chmod(mode)
+    try:
+        with pytest.raises(ConfigurationError) as caught:
+            load_tree(tmp_path)
+    finally:
+        place.chmod(0o755)
+    assert str(caught.value) == (
+        f"tree: cannot read {place}: Permission denied; make it readable to the engine"
+    )

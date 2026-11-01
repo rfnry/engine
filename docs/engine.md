@@ -400,8 +400,10 @@ fingerprint of the folder without it. A file the agent is made of — its `AGENT
 skill's `skills/<name>.md` or `SKILL.md`, a question's `.json`, a tool's `.json` or `.py`, a helper
 or a question's script — is never left out: one it cannot read is a `ConfigurationError` naming it
 (`tree: cannot read <path>: Permission denied; make it readable to the engine`, or `tools/folder:`
-for a script or a tool's file), and any other file of a skill's folder is content. A file or folder
-whose name is not UTF-8 is a `ConfigurationError` naming it: `tree: the name of
+for a script or a tool's file), and any other file of a skill's folder is content. Nor is a folder
+that declares them left out: a `tasks/`, `tools/`, `questions/`, `skills/` or `skills/<name>/`
+folder it cannot read or search is a `ConfigurationError` naming that folder. A file or folder whose
+name is not UTF-8 is a `ConfigurationError` naming it: `tree: the name of
 '/srv/agents/support/caf\udce9.md' is not UTF-8; rename it`. What the engine loads stays where the
 content fingerprint finds it, since the fingerprint leaves out a link that leads out of the folder
 it walks: a tool's `.json`, `.py` or helper that is a link to a place outside its `tools/` folder,

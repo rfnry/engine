@@ -257,6 +257,7 @@ class WorkerPool:
         self._lock = asyncio.Lock()
         self._closed = False
         self._spawning: asyncio.Future[None] | None = None
+        self._starting: _Worker | None = None
 
     async def call(
         self, key: str, args: JsonValue, call: Mapping[str, str], timeout: float | None
@@ -285,11 +286,17 @@ class WorkerPool:
                 worker.abandon(id, held=key in worker.threaded, expired=deadline.expired())
 
     async def close(self) -> None:
-        handing = self._shut()
+        try:
+            handing = self._shut()
+        except BaseException as exc:
+            try:
+                await self._started()
+            except asyncio.CancelledError:
+                _log(exc)
+                raise
+            raise
         if handing is None:
-            spawning = self._spawning
-            if spawning is not None and spawning.get_loop() is asyncio.get_running_loop():
-                await asyncio.wait([spawning])
+            await self._started()
             return
         loop, handed, soon = handing
         try:
@@ -302,7 +309,12 @@ class WorkerPool:
             handed.result()
         else:
             soon.cancel()
-            self._drop(CLOSED)
+            self._drop(CLOSED, starting=True)
+
+    async def _started(self) -> None:
+        spawning = self._spawning
+        if spawning is not None and spawning.get_loop() is asyncio.get_running_loop():
+            await asyncio.wait([spawning])
 
     def release(self) -> None:
         handing = self._shut()
@@ -312,26 +324,37 @@ class WorkerPool:
     def _shut(self) -> tuple[asyncio.AbstractEventLoop, Future[None], asyncio.Handle] | None:
         self._closed = True
         loop = self._loop
-        if loop is not None and loop is not asyncio.get_running_loop() and loop.is_running():
+        here = asyncio.get_running_loop()
+        if loop is not None and loop is not here and loop.is_running():
             handed: Future[None] = Future()
             return loop, handed, loop.call_soon_threadsafe(self._hand, handed)
-        self._drop(CLOSED)
+        self._drop(CLOSED, starting=loop is not None and loop is not here)
         return None
 
     def _hand(self, handed: Future[None]) -> None:
+        failed: BaseException | None = None
         try:
             self._drop(CLOSED)
         except BaseException as exc:
-            handed.set_exception(exc)
-            return
+            failed = exc
+
+        def settle(_: object = None) -> None:
+            if failed is None:
+                handed.set_result(None)
+            else:
+                handed.set_exception(failed)
+
         spawning = self._spawning
         if spawning is None:
-            handed.set_result(None)
+            settle()
         else:
-            spawning.add_done_callback(lambda _: handed.set_result(None))
+            spawning.add_done_callback(settle)
 
-    def _drop(self, reason: str) -> None:
+    def _drop(self, reason: str, starting: bool = False) -> None:
         workers = [worker for worker in self._workers if worker is not None]
+        if starting and self._starting is not None:
+            _kill(self._starting.pid)
+            self._starting.process.wait()
         self._workers = [None] * len(self._workers)
         failed: list[BaseException] = []
         for worker in workers:
@@ -370,8 +393,9 @@ class WorkerPool:
                         chosen.stop(CLOSED)
                         raise WorkerError(f"workers/pool: the worker for {name} stopped: {CLOSED}")
                 finally:
-                    self._spawning = None
-                    spawning.set_result(None)
+                    self._spawning = self._starting = None
+                    if not spawning.get_loop().is_closed():
+                        spawning.set_result(None)
                 self._workers[index] = chosen
             return chosen
 
@@ -384,7 +408,7 @@ class WorkerPool:
             bufsize=0,
             start_new_session=True,
         )
-        worker = _Worker(process, asyncio.get_running_loop())
+        worker = self._starting = _Worker(process, asyncio.get_running_loop())
         try:
             await worker.connect()
         except BaseException:
