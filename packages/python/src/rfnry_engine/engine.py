@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import logging
 import posixpath
@@ -333,6 +334,28 @@ def _skilled(spec: AgentSpec, skill: str | None) -> str | None:
     return skill
 
 
+def _copied(value: Any) -> Any:
+    if not isinstance(value, dict | list):
+        return copy.deepcopy(value)
+    top: dict[Any, Any] | list[Any] = {} if isinstance(value, dict) else []
+    made: dict[int, Any] = {id(value): top}
+    pending: list[tuple[Any, Any]] = [(value, top)]
+    while pending:
+        source, target = pending.pop()
+        for key, item in source.items() if isinstance(source, dict) else enumerate(source):
+            held = made.get(id(item))
+            if held is None and isinstance(item, dict | list):
+                held = made[id(item)] = {} if isinstance(item, dict) else []
+                pending.append((item, held))
+            elif held is None:
+                held = copy.deepcopy(item)
+            if isinstance(target, dict):
+                target[key] = held
+            else:
+                target.append(held)
+    return top
+
+
 def _failure(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
@@ -605,6 +628,11 @@ class Engine:
             raise InputError(
                 f"engine: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
             )
+        if not isinstance(input, str | dict | list):
+            raise InputError(
+                "engine: input must be a string, a JSON object or a list; "
+                f"got {type(input).__name__}"
+            )
         spec = self._spec(agent)
         asked = _asked(spec, questions)
         invoked = _skilled(spec, skill)
@@ -650,7 +678,7 @@ class Engine:
         try:
             await self.refinery.record(run)
         except Exception:
-            logger.warning("refinery.record failed for run %s", run.run_id, exc_info=True)
+            logger.warning("engine: refinery.record failed for run %s", run.run_id, exc_info=True)
 
     def tool(
         self,
@@ -1023,7 +1051,13 @@ class Engine:
             try:
                 await emit(
                     ToolResultReady(
-                        run_id=run_id, agent=spec.name, call_id=call.id, step=step, by=step.by
+                        run_id=run_id,
+                        agent=spec.name,
+                        call_id=call.id,
+                        step=step.model_copy(
+                            update={"args": _copied(step.args), "result": _copied(step.result)}
+                        ),
+                        by=step.by,
                     )
                 )
             finally:
@@ -1121,7 +1155,7 @@ class Engine:
                     agent=spec.name,
                     call_id=call.id,
                     tool=call.name,
-                    args=call.args,
+                    args=_copied(call.args),
                     by=by,
                 )
             )
@@ -1133,7 +1167,9 @@ class Engine:
             content: Content
             approved = None
             if options.approve is not None:
-                asking = asyncio.ensure_future(options.approve(spec.name, call))
+                asking = asyncio.ensure_future(
+                    options.approve(spec.name, call.model_copy(update={"args": _copied(call.args)}))
+                )
                 approving.add(id(call))
                 try:
                     halted = await wait([asking], stop)
@@ -1170,7 +1206,7 @@ class Engine:
                     deadline = asyncio.timeout(limit)
                     try:
                         async with deadline:
-                            result = await surface.dispatch(call.name, call.args)
+                            result = await surface.dispatch(call.name, _copied(call.args))
                         content, is_error = _content(result), False
                     except Exception as exc:
                         if deadline.expired():
@@ -1389,55 +1425,60 @@ class Engine:
                     for call in reply.tool_calls:
                         not_run(call, f"the reply ended with {reply.stop_reason}")
                     return finish(reply.text, "now" if requested(stop) == "now" else None)
-                output = next(
-                    (c for c in reply.tool_calls if expect is not None and c.name == OUTPUT_TOOL),
-                    None,
-                )
-                before = (
-                    reply.tool_calls
-                    if output is None
-                    else reply.tool_calls[: reply.tool_calls.index(output)]
-                )
-                pressed = await run_batch(before)
-                if output is None or expect is None:
-                    continue
-                if pressed:
-                    rest = reply.tool_calls[reply.tool_calls.index(output) :]
-                    await answer_all(rest, [None] * len(rest), time.monotonic())
-                    return finish(said, "now")
-                try:
-                    parsed = expect.model_validate(output.args)
-                except ValidationError as exc:
-                    errors = f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}"
+                rest = list(reply.tool_calls)
+                while rest:
+                    at_output = next(
+                        (
+                            n
+                            for n, c in enumerate(rest)
+                            if expect is not None and c.name == OUTPUT_TOOL
+                        ),
+                        len(rest),
+                    )
+                    pressed = await run_batch(rest[:at_output])
+                    rest = rest[at_output:]
+                    if not rest or expect is None:
+                        break
+                    if pressed:
+                        await answer_all(rest, [None] * len(rest), time.monotonic())
+                        return finish(said, "now")
+                    output, rest = rest[0], rest[1:]
+                    try:
+                        parsed = expect.model_validate(output.args)
+                    except ValidationError as exc:
+                        errors = f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}"
+                        messages.append(
+                            Message(
+                                role="tool", tool_call_id=output.id, content=errors, is_error=True
+                            )
+                        )
+                        steps.append(
+                            Step(
+                                tool=OUTPUT_TOOL,
+                                args=output.args,
+                                result=errors,
+                                is_error=True,
+                                at=_now(),
+                                duration_ms=0,
+                            )
+                        )
+                        continue
                     messages.append(
-                        Message(role="tool", tool_call_id=output.id, content=errors, is_error=True)
+                        Message(role="tool", tool_call_id=output.id, content="accepted")
                     )
                     steps.append(
                         Step(
                             tool=OUTPUT_TOOL,
                             args=output.args,
-                            result=errors,
-                            is_error=True,
+                            result="accepted",
+                            is_error=False,
                             at=_now(),
                             duration_ms=0,
                         )
                     )
-                    await run_batch(reply.tool_calls[reply.tool_calls.index(output) + 1 :])
-                    continue
-                messages.append(Message(role="tool", tool_call_id=output.id, content="accepted"))
-                steps.append(
-                    Step(
-                        tool=OUTPUT_TOOL,
-                        args=output.args,
-                        result="accepted",
-                        is_error=False,
-                        at=_now(),
-                        duration_ms=0,
-                    )
-                )
-                for call in reply.tool_calls[reply.tool_calls.index(output) + 1 :]:
-                    not_run(call, f"{OUTPUT_TOOL} ended the run")
-                return finish(parsed.model_dump_json())
+                    for call in rest:
+                        not_run(call, f"{OUTPUT_TOOL} ended the run")
+                    return finish(parsed.model_dump_json())
             mode = requested(stop)
             if mode is not None:
                 return finish(said, mode)
@@ -1447,6 +1488,6 @@ class Engine:
                 built = next((step for done, step in ran if done is call), None)
                 if built is not None and not any(built is kept for kept in steps):
                     answer(call, built)
-            children.extend(delegated.values())
+            children.extend(sorted(delegated.values(), key=lambda run: (run.at, run.run_id)))
             options.failed.append(finish("", error=exc))
             raise

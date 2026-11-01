@@ -35,7 +35,16 @@ from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Local, Workspace
 
-from .fakes import Answering, Desk, Ledger, Scripted, delegate_triage, lookup_order, text_reply
+from .fakes import (
+    Answering,
+    Desk,
+    Ledger,
+    Scripted,
+    delegate_triage,
+    delegating,
+    lookup_order,
+    text_reply,
+)
 from .test_engine_workspace import make_tree
 
 
@@ -627,3 +636,64 @@ async def test_a_failed_run_keeps_the_children_that_already_ran(fixtures: Path) 
     assert isinstance(child, Decision) and child.agent == "triage" and child.error is None
     [step] = run.steps
     assert step.child_run_id == child.run_id
+
+
+CHAIN = {
+    "lead": "agents: [middle]",
+    "middle": "agents: [leaf]",
+    "leaf": "",
+}
+
+
+class Chained:
+    def __init__(self) -> None:
+        self.fast = asyncio.Event()
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        last = messages[-1]
+        if "You are lead." in system:
+            if last.role == "tool":
+                return text_reply("The middle failed.")
+            return delegating("middle", "go", call_id="d1")
+        if "You are middle." in system:
+            return Reply(
+                tool_calls=[
+                    ToolCall(id="m1", name="Delegate", args={"agent": "leaf", "input": "slow"}),
+                    ToolCall(id="m2", name="Delegate", args={"agent": "leaf", "input": "fast"}),
+                ],
+                stop_reason="tool_use",
+            )
+        if last.content == "slow":
+            await asyncio.wait_for(self.fast.wait(), 5)
+            return text_reply("slow")
+        self.fast.set()
+        return text_reply("fast")
+
+
+async def test_a_failed_run_keeps_its_unanswered_children_in_the_order_they_started(
+    tmp_path: Path, storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unreadable(child: Run) -> str:
+        raise ValueError(f"the reply of {child.agent} could not be read")
+
+    monkeypatch.setattr("rfnry_engine.engine.child_result", unreadable)
+    root = tmp_path / "chain"
+    for name, front in CHAIN.items():
+        (root / name).mkdir(parents=True)
+        (root / name / "AGENT.md").write_text(
+            f"---\nname: {name}\nkind: generation\nmodel: strong\n"
+            f"description: The {name}\n{front}\n---\nYou are {name}.\n",
+            encoding="utf-8",
+        )
+    refinery = Refinery(storage)
+    async with Engine(root, refinery=refinery, models={"strong": Chained()}) as engine:
+        run = await engine.run("lead", "acme", "start")
+    assert isinstance(run, Generation) and run.error is None
+    assert await refinery.run("acme", run.run_id) == run
+    [middle] = run.children
+    assert isinstance(middle, Generation)
+    assert middle.error == "ValueError: the reply of leaf could not be read"
+    assert middle.steps == []
+    slow, fast = middle.children
+    assert isinstance(slow, Generation) and isinstance(fast, Generation)
+    assert (slow.reply, fast.reply) == ("slow", "fast") and slow.at < fast.at

@@ -621,7 +621,9 @@ run whose `on_event` raises on its `RunStarted` had started: it is recorded with
 no model call. A delegated run that fails stays under its parent in `children`, its step the error
 the parent's model was given, and the parent goes on; a routed run that fails fails its router,
 which is recorded with its answers and the failed run in `routed_to`, or `None` when the routed run
-was refused before its first model call.
+was refused before its first model call. A run that failed keeps the delegated runs that had
+returned in `children`: those its steps answered, in step order, then those it had not answered yet,
+in the order they started, as `refinery.run` reads them back.
 
 Pass `tags=` to mark a run with what you will group it by later — the commit of the tree, an
 experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64
@@ -651,7 +653,9 @@ verdict = Verdict.model_validate_json(run.reply)
 ```
 
 An accepted `Output` ends the run. A call the model made after it in the same turn is not run; it is
-answered with an error saying so, so every call in `run.conversation` has its result.
+answered with an error saying so, so every call in `run.conversation` has its result. Of a reply
+with more than one `Output`, the first that fits is taken: each before it is answered with what is
+wrong, each after it is not run, and the reply's other calls before it run as they would without it.
 
 Name a task to put `tasks/<task>.md` in front of the model, pass `context=` to add data about this
 run that does not belong in the tree — the contract under review, today's date, never instructions —
@@ -675,7 +679,8 @@ stop — so a step can be shown, in a conversation or anywhere, while the run go
 `stop.now()` cuts off sends its `ToolResultReady` whether or not it had started, an `Output`
 included; any other call the engine answers without running it sends neither: an `Output` it accepts
 or refuses, a call after an accepted `Output`, a call in a reply that was cut short. Its step is in
-`run.steps`.
+`run.steps`. Each handler, `approve` and tool is handed its own copy of a call's `args`, so one that
+changes them changes neither the record nor what the model is sent next.
 
 A foreground `Shell` command of a run with a `Workspace` also sends a `CommandOutput` for what
 it writes, while it runs, and the calls it makes to the run's tools send their own
@@ -2767,30 +2772,31 @@ that returns anything but `True` or `False`, a judge that is not a decision agen
 is not a generation agent. `NotFoundError` for an agent the tree does not have — a judge, a teacher
 or a replay's agent in the candidate included — a task the agent does not have (`engine: agent
 'support' has no task 'ghost'`), found when the run starts, or a run the refinery does not.
-`InputError` for a call the library refuses: an empty scope, a workspace of another scope, a history
-that breaks a tool call from its result, a `start` outside the history or without one, tags outside
-their limits, runtime questions that do not fit, a runtime id the run already asks, questions for a
-generation agent, a task or a skill for a decision agent, a decision run with no question to ask,
-media the decision model does not declare, a media part with both or neither of `data` and `url`, a
-correction of the wrong shape or for a question the run was not asked, a `delete_runs` or
-`verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an
-`export` or a `replay` given a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or
-a `limit`, `concurrency` or `repeat` below 1, a tool called with bad arguments, arguments JSON
-cannot hold or a path outside its directory, and any use of an engine after `close()` (`engine: this
-engine was closed; build a new Engine`). `ModelError` when an adapter breaks the contract — a result
-whose fields do not fit, a missing answer, probabilities that do not cover the options, lie outside
-0 and 1 or do not sum to 1, a score outside its levels — or a folder tool's result does not match
-its `output_schema`, or a question's script returns anything but an object, a key its JSON sets or
-one its type does not take, or a question that does not fit. `RunawayError` when a loop exceeds
-`max_steps` (default 200). `DelegationLoopError` for a route into an agent already in the same chain
-of routes; `DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool
-error through `Delegate` and raises through a route. `StorageError` for the database. `WorkerError`
-for a tool or a question's script that fails in its worker process: what its script raised,
-`sys.exit()` included, a result JSON cannot hold, a result or error over `worker_result_bytes`, a
-worker that stopped while the call was in flight (`workers/pool: the worker for lookup_order
-stopped: exited with code 3`) or a call in flight when `close()` stopped its worker. Inside a run, a
-tool's error is the model's to read, never raised. All under `EngineException` — the root takes the
-`Exception` suffix, every child ends in `Error`, the same shape as rfnry-memory's. Every message
-names the module that raised it, then says what went wrong in lowercase: `engine: agent 'ghost' was
-not found`, `tools/workspace: path outside the workspace: ../x`. A tool's error reaches the model
-with its type in front: `InputError: tools: unknown tool 'Ghost'`.
+`InputError` for a call the library refuses: an empty scope, an input that is not a string, a JSON
+object or a list, a workspace of another scope, a history that breaks a tool call from its result, a
+`start` outside the history or without one, tags outside their limits, runtime questions that do not
+fit, a runtime id the run already asks, questions for a generation agent, a task or a skill for a
+decision agent, a decision run with no question to ask, media the decision model does not declare, a
+media part with both or neither of `data` and `url`, a correction of the wrong shape or for a
+question the run was not asked, a `delete_runs` or `verify_absent` given both `run_ids` and `tags`
+or an empty one, a `delete_runs` given neither, an `export` or a `replay` given a `holdout_percent`
+outside 0 to 100, a `replay` given empty `tags` or a `limit`, `concurrency` or `repeat` below 1, a
+tool called with bad arguments, arguments JSON cannot hold or a path outside its directory, and any
+use of an engine after `close()` (`engine: this engine was closed; build a new Engine`).
+`ModelError` when an adapter breaks the contract — a result whose fields do not fit, a missing
+answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score
+outside its levels — or a folder tool's result does not match its `output_schema`, or a question's
+script returns anything but an object, a key its JSON sets or one its type does not take, or a
+question that does not fit. `RunawayError` when a loop exceeds `max_steps` (default 200).
+`DelegationLoopError` for a route into an agent already in the same chain of routes;
+`DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
+`Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool or
+a question's script that fails in its worker process: what its script raised, `sys.exit()` included,
+a result JSON cannot hold, a result or error over `worker_result_bytes`, a worker that stopped while
+the call was in flight (`workers/pool: the worker for lookup_order stopped: exited with code 3`) or
+a call in flight when `close()` stopped its worker. Inside a run, a tool's error is the model's to
+read, never raised. All under `EngineException` — the root takes the `Exception` suffix, every child
+ends in `Error`, the same shape as rfnry-memory's. Every message names the module that raised it,
+then says what went wrong in lowercase: `engine: agent 'ghost' was not found`, `tools/workspace:
+path outside the workspace: ../x`. A tool's error reaches the model with its type in front:
+`InputError: tools: unknown tool 'Ghost'`.

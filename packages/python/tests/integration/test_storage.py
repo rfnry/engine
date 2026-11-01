@@ -808,6 +808,20 @@ class Looking(Answering):
     media_types = {"image/*"}
 
 
+async def test_a_generation_input_of_parts_round_trips_as_parts(storage: Storage) -> None:
+    refinery = Refinery(storage)
+    parts: list[Part] = [
+        Text(text="What is this?"),
+        Image(media_type="image/png", data=bytes(range(256))),
+    ]
+    engine = Engine(FIXTURES, refinery=refinery, models={"strong": Scripted(text_reply("A cat."))})
+    run = await engine.run("billing", "a", parts)
+    assert isinstance(run, Generation) and run.input == parts
+    again = await refinery.run("a", run.run_id)
+    assert again == run and isinstance(again, Generation) and again.input == parts
+    assert [type(part) for part in again.input] == [Text, Image]
+
+
 async def test_a_state_of_parts_round_trips_as_parts_and_replays(
     storage: Storage, tmp_path: Path
 ) -> None:

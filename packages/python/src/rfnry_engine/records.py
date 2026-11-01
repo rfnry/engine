@@ -30,6 +30,16 @@ from rfnry_engine.stop import Stopped
 PARTS = TypeAdapter(list[Part])
 
 
+def _media_reads_back_as_parts(value: object) -> object:
+    if not isinstance(value, list) or not value:
+        return value
+    try:
+        parts = PARTS.validate_python(value, from_attributes=True)
+    except ValidationError, InputError:
+        return value
+    return parts if any(not isinstance(part, Text) for part in parts) else value
+
+
 class Step(BaseModel):
     tool: str
     args: dict[str, Any]
@@ -159,6 +169,8 @@ class Generation(BaseModel):
     stop_reason: StopReason | None = None
     error: str | None = None
 
+    _input_reads_back = field_validator("input", mode="before")(_media_reads_back_as_parts)
+
     @property
     def added(self) -> list[Message]:
         return self.conversation[max(len(self.messages) - 1, 0) :]
@@ -189,16 +201,7 @@ class Decision(BaseModel):
     def added(self) -> list[Message]:
         return [] if self.routed_to is None else self.routed_to.added
 
-    @field_validator("state", mode="before")
-    @classmethod
-    def _media_reads_back_as_parts(cls, value: object) -> object:
-        if not isinstance(value, list) or not value:
-            return value
-        try:
-            parts = PARTS.validate_python(value, from_attributes=True)
-        except ValidationError, InputError:
-            return value
-        return parts if any(not isinstance(part, Text) for part in parts) else value
+    _state_reads_back = field_validator("state", mode="before")(_media_reads_back_as_parts)
 
 
 Run = Generation | Decision

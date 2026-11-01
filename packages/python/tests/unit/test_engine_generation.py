@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import re
 import shutil
 import time
@@ -33,7 +34,14 @@ from rfnry_engine.models import (
     ToolSpec,
     Usage,
 )
-from rfnry_engine.records import Event, Generation, Run, TextDelta
+from rfnry_engine.records import (
+    Event,
+    Generation,
+    Run,
+    TextDelta,
+    ToolCallStarted,
+    ToolResultReady,
+)
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.stop import Stop
@@ -264,6 +272,82 @@ async def test_calls_after_an_accepted_output_are_answered_but_never_run(
         ("l", True, "NotRun: lookup_order was not run; Output ended the run"),
     ]
     assert [(s.tool, s.is_error) for s in run.steps] == [("Output", False), ("lookup_order", True)]
+
+
+async def test_a_second_output_after_a_refused_one_is_not_run_as_a_tool(fixtures: Path) -> None:
+    looked: list[str] = []
+    asked: list[str] = []
+    shown: list[str] = []
+
+    async def lookup(args: dict[str, Any]) -> str:
+        looked.append(args["order_id"])
+        return "found"
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        asked.append(call.id)
+        return True
+
+    async def show(event: Event) -> None:
+        if isinstance(event, ToolCallStarted | ToolResultReady):
+            shown.append(event.call_id)
+
+    llm = Scripted(
+        _tool_use(
+            ToolCall(id="o1", name="Output", args={"refund": "maybe"}),
+            ToolCall(id="l1", name="lookup_order", args={"order_id": "A-1"}),
+            ToolCall(id="o2", name="Output", args={"refund": True, "reason": "dup"}),
+            ToolCall(id="o3", name="Output", args={"refund": False, "reason": "late"}),
+            ToolCall(id="l2", name="lookup_order", args={"order_id": "A-2"}),
+        )
+    )
+    tools = Tools([Tool("lookup_order", "Fetch an order", body=lookup)])
+    run = await engine_for(fixtures, llm).run(
+        "support", "acme", "x", expect=Verdict, tools=tools, approve=approve, on_event=show
+    )
+    assert isinstance(run, Generation) and run.calls == 1
+    assert Verdict.model_validate_json(run.reply) == Verdict(refund=True, reason="dup")
+    assert looked == ["A-1"] and asked == ["l1"] and shown == ["l1", "l1"]
+    assert [(s.tool, s.is_error) for s in run.steps] == [
+        ("Output", True),
+        ("lookup_order", False),
+        ("Output", False),
+        ("Output", True),
+        ("lookup_order", True),
+    ]
+    answered = [(m.tool_call_id, m.content) for m in run.conversation if m.role == "tool"]
+    assert [call_id for call_id, _ in answered] == ["o1", "l1", "o2", "o3", "l2"]
+    assert str(answered[0][1]).startswith("invalid; fix and call Output again: ")
+    assert answered[1:] == [
+        ("l1", "found"),
+        ("o2", "accepted"),
+        ("o3", "NotRun: Output was not run; Output ended the run"),
+        ("l2", "NotRun: lookup_order was not run; Output ended the run"),
+    ]
+
+
+async def test_outputs_that_do_not_fit_are_each_answered_with_what_is_wrong(
+    fixtures: Path,
+) -> None:
+    llm = Scripted(
+        _tool_use(
+            ToolCall(id="o1", name="Output", args={"refund": "maybe"}),
+            ToolCall(id="o2", name="Output", args={"refund": True}),
+        ),
+        _tool_use(ToolCall(id="o3", name="Output", args={"refund": True, "reason": "dup"})),
+    )
+    run = await engine_for(fixtures, llm).run("support", "acme", "x", expect=Verdict)
+    assert isinstance(run, Generation) and run.calls == 2
+    assert [(s.tool, s.is_error) for s in run.steps] == [
+        ("Output", True),
+        ("Output", True),
+        ("Output", False),
+    ]
+    retry = llm.calls[1][1]
+    assert [(m.tool_call_id, m.is_error) for m in retry[-2:]] == [("o1", True), ("o2", True)]
+    assert all(
+        str(m.content).startswith("invalid; fix and call Output again: ") for m in retry[-2:]
+    )
+    assert "bool_parsing" in str(retry[-2].content) and "bool_parsing" not in str(retry[-1].content)
 
 
 async def test_calls_in_a_reply_that_ran_out_of_room_are_answered_but_never_run(
@@ -635,10 +719,12 @@ async def test_a_failed_recording_is_logged_and_the_run_returned(
     with caplog.at_level("WARNING"):
         run = await engine.run("billing", "acme", "x")
     assert isinstance(run, Generation) and run.reply == "fine"
-    assert f"refinery.record failed for run {run.run_id}" in caplog.text
+    assert f"engine: refinery.record failed for run {run.run_id}" in caplog.text
 
 
-@pytest.mark.parametrize("levels", [254, 255], ids=["254-records", "255-unrecorded"])
+@pytest.mark.parametrize(
+    "levels", [254, 255, 2000], ids=["254-records", "255-unrecorded", "2000-unrecorded"]
+)
 async def test_a_run_whose_args_nest_past_254_levels_is_returned_and_logged_unrecorded(
     fixtures: Path, storage: Storage, caplog: pytest.LogCaptureFixture, levels: int
 ) -> None:
@@ -666,7 +752,7 @@ async def test_a_run_whose_args_nest_past_254_levels_is_returned_and_logged_unre
     ]
     failure = (
         "WARNING",
-        f"refinery.record failed for run {run.run_id}",
+        f"engine: refinery.record failed for run {run.run_id}",
         (ValueError, "Circular reference detected (depth exceeded)"),
     )
     assert logged == ([] if levels == 254 else [failure])
@@ -675,6 +761,77 @@ async def test_a_run_whose_args_nest_past_254_levels_is_returned_and_logged_unre
     except NotFoundError:
         read = None
     assert (isinstance(read, Generation) and read.steps == run.steps) is (levels == 254)
+
+
+async def test_a_tool_that_changes_its_args_leaves_the_record_as_the_model_sent_it(
+    fixtures: Path, storage: Storage
+) -> None:
+    sent: dict[str, Any] = {"order": {"id": "A-1", "lines": [1]}}
+    seen: list[dict[str, Any]] = []
+
+    async def lookup(args: dict[str, Any]) -> str:
+        seen.append(copy.deepcopy(args))
+        args["order"]["id"] = "a-1"
+        args["order"]["lines"].append(2)
+        args["limit"] = 10
+        return "found"
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        call.args["order"]["approved"] = True
+        call.args["by"] = "approve"
+        return True
+
+    async def show(event: Event) -> None:
+        if isinstance(event, ToolCallStarted):
+            event.args["order"]["started"] = True
+        if isinstance(event, ToolResultReady):
+            event.step.args["order"]["ready"] = True
+
+    refinery = Refinery(storage)
+    call = ToolCall(id="c1", name="lookup", args=copy.deepcopy(sent))
+    llm = Scripted(_tool_use(call), text_reply("done"))
+    engine = engine_for(fixtures, llm, refinery=refinery)
+    run = await engine.run(
+        "billing",
+        "acme",
+        "x",
+        tools=Tools([Tool("lookup", "Look up an order", body=lookup)]),
+        approve=approve,
+        on_event=show,
+    )
+    assert isinstance(run, Generation) and run.reply == "done"
+    assert seen == [sent]
+    [step] = run.steps
+    assert step.args == sent and step.result == "found"
+    assert run.conversation[1].tool_calls[0].args == sent
+    assert llm.calls[1][1][1].tool_calls[0].args == sent
+    stored = await refinery.run("acme", run.run_id)
+    assert isinstance(stored, Generation)
+    assert stored.steps[0].args == sent and stored.conversation[1].tool_calls[0].args == sent
+
+
+@pytest.mark.parametrize("given", [None, 42], ids=["none", "number"])
+@pytest.mark.parametrize("agent", ["billing", "triage"])
+async def test_an_input_that_is_not_a_state_is_refused_before_any_model_call(
+    fixtures: Path, agent: str, given: Any
+) -> None:
+    class Kept:
+        def __init__(self) -> None:
+            self.runs: list[Run] = []
+
+        async def record(self, run: Run) -> None:
+            self.runs.append(run)
+
+    kept = Kept()
+    llm, judge = Scripted(), Fixed({})
+    engine = Engine(fixtures, refinery=kept, models={"strong": llm, "judge": judge})
+    shown = type(given).__name__
+    with pytest.raises(
+        InputError,
+        match=f"^engine: input must be a string, a JSON object or a list; got {shown}$",
+    ):
+        await engine.run(agent, "acme", given)
+    assert llm.calls == [] and judge.calls == [] and kept.runs == []
 
 
 PNG = b"\x89PNG\r\n\x1a\n"
