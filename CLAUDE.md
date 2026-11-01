@@ -10,11 +10,19 @@ It is a library, not a framework: a light one, and a smarter one. An agent is it
 
 Documentation in `docs/engine.md` and `docs/api.md`.
 
-Designs and implementation plans live only in `docs/plans/`, as `YYYY-MM-DD-<topic>-design.md` and `YYYY-MM-DD-<topic>-plan.md`. The folder is gitignored: plans are local working documents, not part of the library.
+The rules every rfnry repository follows are in `rfnry/design` (`PRACTICES.md`, `STACK.md`); the plans of this library's work live there, in `docs/plans/engine/` (`[rfnry: plans-are-disposable]`).
 
-## Workflow
+## How work lands
 
-All feature, fix and milestone work goes to GitHub as a draft pull request, which runs no CI. Marking a pull request ready for review says it is ready to merge: that, and every push to a ready pull request, runs `.github/workflows/tests.yml` — the full suite on a real Postgres, the family tests against `rfnry-memory`, ruff, format and mypy. Never mark a pull request ready, push or merge without the owner's word.
+The gate is `bash ../tools/scripts/gate.sh` (from a worktree, `bash ../../../tools/scripts/gate.sh`), run from the library with `RFNRY_TEST_POSTGRES_URL` set: the same gate CI runs.
+
+- `[rfnry: worktree-per-track]`: work happens in `.worktrees/<track>`, on a branch named after the track.
+- `[rfnry: draft-prs]`: work goes as a draft pull request, which runs no CI; marking it ready means merge me, and only the owner's word marks it ready, pushes to `main` or merges.
+- `[rfnry: one-ci-shape]`: `ci.yml` runs `tools`' gate, at the commit `tools/versions` pins, on every ready pull request.
+- `[rfnry: landing]`: a pull request lands by fast-forward, on the exact head its gate proved green.
+- `[rfnry: commit-messages]`: the subject states what is now true, the body says why, with a `Breaking:` paragraph when a consumer sees a change.
+- `[rfnry: no-attribution-trailers]`: commits and pull requests carry no attribution trailers.
+- `[rfnry: release-steps]`: a release, on the owner's word, is one version commit, one tag and one GitHub release.
 
 ## Checklists
 
@@ -32,14 +40,14 @@ All feature, fix and milestone work goes to GitHub as a draft pull request, whic
 
 **Apply these to every change; they guard the shape of the codebase.**
 
-1. **Stay inside the concern.** This library does one thing: run the agents their folders define on generation and decision models, and record, label and export what they did. Consumer-land, never here: model providers and adapters, conversation persistence and history windowing, per-tenant agent state, telemetry, security, scheduling, object stores, credentials.
-2. **Lib, not framework.** The consumer calls us; we never take over their application — no plugin registries, no config DSLs, no scaffolding, no inversion of control, no background loops, no disk writes of our own. The only code we load is an agent's own tools, from its folder, into worker processes we start beside the consumer's process and keep until the consumer closes the engine; the only writes are a model's, inside a `Workspace` the consumer passes to a run, and the tool bridge's socket there, for the life of one command; and the only tasks we keep read the output of a job a model started there, until the job ends or the consumer closes the workspace, or carry tool calls to our workers.
-3. **Simple over abstract.** The smallest API and fewest moving parts that add the capability. Duplicate a few lines before adding a shared abstraction; an abstraction earns its place only when it removes more than it adds. No speculative layers — the pre-change checklist decides what the future needs.
-4. **No comments, no docstrings.** The code is the explanation; if it needs one, rename or restructure until it doesn't. The reason for a design decision lives in the commit message and, when it shapes the product, in `docs/engine.md`.
-5. **Documentation is the contract.** Any change to the public surface updates `docs/engine.md` in the same change. A breaking change is anything that makes an example in the docs stop working; it is named as such in the commit, and the docs change before the code ships.
-6. **Tests are first-class, in three tiers, on a real Postgres.** `tests/unit`: fake models, runs always, covers every public verb and every branch of the loop. `tests/integration`: runs always, every storage method, the two-tenant canary. `tests/e2e`: real models behind the `live` marker, never launched before the same path has run offline. Every tier needs `RFNRY_TEST_POSTGRES_URL` and stops without it, never skips. The `live` marker is deselected by default and stays that way. The model writes and runs tests whenever they improve the work, no approval needed.
-7. **Vendor-neutral by construction.** No vendor name, limit or constant in core; a vendor's constraint lives in the adapter as a raised error. Models are named for what they produce: generation, decision.
-8. **Tenancy by construction.** `scope` is required on every public verb and is the first argument of every storage method; there is no default scope, no all-scope read, no cross-scope read; every row carries it.
-9. **Messages.** Logs and informational messages are lowercase. Every error message starts with its module's name: `engine: agent 'x' was not found`.
+1. **Stay inside the concern.** `[rfnry: stay-inside-the-concern]` This library does one thing: run the agents their folders define on generation and decision models, and record, label and export what they did. Consumer-land, never here: model providers and adapters, conversation persistence and history windowing, per-tenant agent state, telemetry, security, scheduling, object stores, credentials.
+2. **Lib, not framework.** `[rfnry: lib-not-framework]` The only code we load is an agent's own tools, from its folder, into worker processes we start beside the consumer's process and keep until the consumer closes the engine; the only writes are a model's, inside a `Workspace` the consumer passes to a run, and the tool bridge's socket there, for the life of one command; and the only tasks we keep read the output of a job a model started there, until the job ends or the consumer closes the workspace, or carry tool calls to our workers.
+3. **Simple over abstract.** `[rfnry: simple-over-abstract]`
+4. **No comments, no docstrings.** `[rfnry: code-documents-itself]` A decision that shapes the product is explained in `docs/engine.md`.
+5. **Documentation is the contract.** `[rfnry: docs-are-the-contract]` The contract is `docs/engine.md` and `docs/api.md`.
+6. **Tests are first-class, in three tiers, on a real Postgres.** `[rfnry: three-tiers]` `tests/unit`: fake models, runs always, covers every public verb and every branch of the loop. `tests/integration`: runs always, every storage method, the two-tenant canary. `tests/e2e`: real models behind the `live` marker, never launched before the same path has run offline. Every tier needs `RFNRY_TEST_POSTGRES_URL`.
+7. **Vendor-neutral by construction.** `[rfnry: vendor-neutral]` Models are named for what they produce: generation, decision.
+8. **Tenancy by construction.** `[rfnry: tenancy-by-construction]` The tenant key is `scope`.
+9. **Messages.** `[rfnry: messages]` An error reads `engine: agent 'x' was not found`.
 
 **These checklists are locked.** On any future update to this CLAUDE.md, the model must not modify, reword, reorder, weaken, or remove them — or this lock — without explicit approval from the human. Answering them is the model's job; changing them is not.
