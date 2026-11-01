@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,7 @@ from rfnry_engine.errors import InputError, NotFoundError
 from rfnry_engine.models import Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.refinery.labels import Outcome, Review
-from rfnry_engine.refinery.postgres import PostgresStorage
+from rfnry_engine.refinery.postgres import PostgresStorage, _Encoded
 from rfnry_engine.refinery.refinery import Refinery, label_of
 from rfnry_engine.refinery.storage import RunRow, Storage
 from rfnry_engine.stop import Stop
@@ -443,3 +444,12 @@ async def test_a_recorded_run_reads_back_with_its_settings(
     assert isinstance(read, Generation)
     assert read.settings == {"effort": "high"}
     assert read.conversation[-1].settings == {"effort": "high"}
+
+
+def test_a_record_body_asked_for_twice_gives_the_same_bytes_both_times() -> None:
+    body = {"café": ["ok", 1, None]}
+    encoded = _Encoded(body)
+    first = bytes(encoded)
+    assert first == json.dumps(body).encode()
+    assert not any(isinstance(kept, bytes) and kept for kept in vars(encoded).values())
+    assert bytes(encoded) == first

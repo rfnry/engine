@@ -18,6 +18,7 @@ from rfnry_engine.foreground import current_call
 from rfnry_engine.models import Message, Reply, ToolCall, ToolSpec
 from rfnry_engine.records import (
     CallInfo,
+    CommandOutput,
     Event,
     Generation,
     Step,
@@ -817,10 +818,20 @@ async def test_a_consult_started_by_a_script_s_call_ends_with_the_command(
     assert [row.agent for row in await storage.runs("acme")] == ["coder"]
 
 
-def billing(tmp_path: Path, root: Path) -> Path:
+TALK = """
+def talk():
+    while True:
+        print("tick", flush=True)
+        time.sleep(0.01)
+threading.Thread(target=talk, daemon=True).start()
+"""
+
+
+def billing(tmp_path: Path, root: Path, talk: bool = False) -> Path:
     script(
         root,
         UNTIL
+        + (TALK if talk else "")
         + 'threading.Thread(target=call, args=("billing",), kwargs={"input": "hi"}, daemon=True).start()\n'
         'until("asked")\ncall("halt")\n',
     )
@@ -947,6 +958,112 @@ async def test_a_cancel_of_the_run_cuts_the_record_write_of_a_consult_a_script_s
             await asyncio.wait([task])
     assert held == set() and ended == {task}
     assert task.cancelled() and len(ledger.cut) == 1
+    assert await storage.runs("acme") == []
+
+
+async def test_a_stop_during_a_bridged_consult_with_a_slow_output_handler_keeps_the_record(
+    tmp_path: Path, root: Path, pool: Any, storage: Storage
+) -> None:
+    stop = Stop()
+    events: list[Event] = []
+    halted: list[float] = []
+
+    async def handler(event: Event) -> None:
+        events.append(event)
+        if isinstance(event, ToolCallStarted) and event.tool == "halt":
+            halted.append(time.monotonic())
+        elif isinstance(event, CommandOutput):
+            await asyncio.sleep(0.3)
+
+    tree = billing(tmp_path, root, talk=True)
+    llm = Scripted(use(shell()), text_reply("ok"))
+    refinery = Refinery(Ledger(pool, "billing", hold=0.3))
+    async with (
+        asyncio.timeout(10),
+        Workspace(Local(root), scope="acme") as work,
+        Engine(tree, models={"strong": llm, "slow": Waiting(root)}, refinery=refinery) as engine,
+    ):
+        run = await engine.run(
+            "coder",
+            "acme",
+            "x",
+            workspace=work,
+            tools=consults(engine, stop),
+            on_event=handler,
+            stop=stop,
+        )
+        returned = time.monotonic()
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert returned - halted[0] < 3
+    [billed] = [s for s in run.steps if s.tool == "billing"]
+    assert billed.stopped is True and billed.by == "1"
+    [row] = [row for row in await storage.runs("acme") if row.agent == "billing"]
+    kept = await refinery.run("acme", row.run_id)
+    assert isinstance(kept, Generation) and kept.stopped == "now"
+    shown = [i for i, e in enumerate(events) if isinstance(e, CommandOutput) and e.call_id == "1"]
+    [ready] = [
+        i for i, e in enumerate(events) if isinstance(e, ToolResultReady) and e.call_id == "1"
+    ]
+    assert shown and max(shown) < ready
+
+
+async def test_a_cancel_of_the_run_during_a_bridged_consult_with_a_slow_output_handler_stores_nothing(
+    tmp_path: Path, root: Path, pool: Any, storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stop = Stop()
+    ledger = Ledger(pool, "billing")
+    talking = asyncio.Event()
+    entered = asyncio.Event()
+    halted = asyncio.Event()
+    close = Bridge.close
+
+    async def closing(self: Bridge) -> None:
+        entered.set()
+        await close(self)
+
+    monkeypatch.setattr(Bridge, "close", closing)
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, ToolResultReady) and event.step.tool == "halt":
+            halted.set()
+        elif isinstance(event, CommandOutput):
+            talking.set()
+            try:
+                await asyncio.sleep(0.3)
+            finally:
+                talking.clear()
+
+    tree = billing(tmp_path, root, talk=True)
+    llm = Scripted(use(shell()), text_reply("ok"))
+    async with (
+        asyncio.timeout(10),
+        Workspace(Local(root), scope="acme") as work,
+        Engine(
+            tree, models={"strong": llm, "slow": Waiting(root)}, refinery=Refinery(ledger)
+        ) as engine,
+    ):
+        task = asyncio.ensure_future(
+            engine.run(
+                "coder",
+                "acme",
+                "x",
+                workspace=work,
+                tools=consults(engine, stop),
+                on_event=handler,
+                stop=stop,
+            )
+        )
+        try:
+            await ledger.writing.wait()
+            await entered.wait()
+            await halted.wait()
+            await talking.wait()
+            task.cancel()
+            ended, _ = await asyncio.wait([task], timeout=1)
+        finally:
+            ledger.released.set()
+            await asyncio.wait([task])
+    assert ended == {task} and task.cancelled() and len(ledger.cut) == 1
     assert await storage.runs("acme") == []
 
 

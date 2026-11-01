@@ -59,10 +59,11 @@ def _clean(value: Any) -> Any:
 
 class _Encoded:
     def __init__(self, body: dict[str, Any]) -> None:
+        self.body = body
         self.data = json.dumps(body).encode()
 
     def __buffer__(self, flags: int, /) -> memoryview:
-        data, self.data = self.data, b""
+        data, self.data = self.data or json.dumps(self.body).encode(), b""
         return memoryview(data)
 
 

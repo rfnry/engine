@@ -1675,12 +1675,17 @@ model. The budgets are each command's own: commands a run has going at once each
 what a run's commands send in all grows with how many it runs at once. A call whose `args` nest
 deeper than 128 levels of lists and objects, `args` itself the first, is answered
 `{"error": "tools/bridge: a call's args nest deeper than 128 levels"}`. The depth is read from the
-line before it is parsed, its strings aside and the request itself the first level, so a line
-nested past 129 levels gets this error whatever else is wrong with it: another field nested that
-deep, a key that is not the command's, or no JSON at all. The budgets are checked before the parse
-too, so a line past either gets the budget's error even when it is malformed. None of these runs
-anything or leaves a step or an event, and a connection closed at the cap of 64 below counts toward
-neither budget.
+line before it is parsed, its strings aside and the request itself the first level, so any field
+nested past 129 levels gets this error, not only `args`. A request is checked in this order and
+answered with the error of the first check it fails: a line over 1 MiB, which is not read whole
+and counts toward neither budget; then, the line counted toward the 2 MiB, the 10,000 calls and
+then the 2 MiB; then the depth; then a line that is not one JSON object; then the command's key;
+then a string `tool` and an object `args`. So a line over 1 MiB gets the size error whatever else
+is wrong with it, a line past a budget gets the budget's error even when it is nested too deep or
+malformed, and a line nested past 129 levels gets the depth error even when its key is not the
+command's or it is no JSON at all. None of these runs anything or leaves a step or an event, and a
+connection closed at the cap of 64 below, refused before its line is read, counts toward neither
+budget.
 
 The socket carries every tool the run offers the model — the builtins, `History`, the folder tools,
 the run's `tools=` — except the workspace's own (`Shell`, `Job`, `Jobs`, `Write`, `Edit`) and any
@@ -1732,9 +1737,9 @@ variables, never in a path. Whether the bridge is on, and whether `tree=` is set
 description and so `fingerprint.tools` — rightly, since the model was offered something different —
 but where a deployment puts the workspace does not.
 
-- The bridge gives code exactly what the model has — the same tools, through the same `approve`,
-  scope and record — and nothing more. What is new is speed: a script can make many calls quickly;
-  `approve` still sees each one.
+- The bridge gives code nothing more than the model has: the model's tools but those named above,
+  through the same `approve`, scope and record. What is new is speed: a script can make many calls
+  quickly; `approve` still sees each one.
 - Only processes that see the socket's path can connect — with a sandbox per tenant, only this
   tenant's commands — and only a request with the command's key is answered.
 - The key is as private as the sandbox keeps a command's environment: a process of the same uid in
@@ -1757,10 +1762,13 @@ but where a deployment puts the workspace does not.
   one command adds at most 10,000 steps to the run's record, the engine parses at most 2 MiB of its
   requests however they are shaped, which bounds the arguments it holds and records, and every
   argument it records nests well inside the depth the record's serializer takes. A line counts
-  toward the 2 MiB before its key is checked, so that a line without the key is never parsed; so a
-  process that can reach the socket file can spend a command's byte budget with junk lines, as it
-  can hold its 64 slots. Keeping the socket to the command is the sandbox's job, as it is for the
-  key.
+  toward the 2 MiB as it is read, and its key is checked only once it is parsed, so no line past
+  the budget is parsed, one without the key included, while one without the key inside the budget
+  is parsed and then refused. So a process that can reach the socket file can make the engine parse
+  at most 2 MiB of lines per command — about a 350 ms stall of the event loop at worst, as
+  measured — and with junk lines spend the rest of that command's budget, so the command's own
+  calls are refused from then on, as it can hold its 64 slots. Keeping the socket to the command is
+  the sandbox's job, as it is for the key.
 - The socket lives only while the command runs; something the command leaves running cannot call
   afterwards.
 
@@ -2525,10 +2533,12 @@ The refinery is the only part of the library that stores anything, and it stores
 reads every JSON value as text, cast in its SQL, so it works with any `json` or `jsonb` codec on
 that pool, such as `json.dumps` and `json.loads` set for both, which never sees what it stores.
 Each run's body reaches Postgres as a `bytea` argument, an object with the buffer protocol that
-hands its JSON over once, so the write holds it at most twice; a `bytea` codec of your own on that
-pool must take any such object, as `bytes(value)` does, and one that takes only `bytes`, such as a
-text codec calling `value.hex()`, fails every record write with `StorageError`. A Postgres to try
-it on is one container, with engine's schema prepared by the command the package installs:
+hands its JSON over and keeps no copy, encoding it again from the body each further time it is
+asked, so the write holds it at most twice and a driver that asks twice sends the same JSON both
+times; a `bytea` codec of your own on that pool must take any such object, as `bytes(value)` does,
+and one that takes only `bytes`, such as a text codec calling `value.hex()`, fails every record
+write with `StorageError`. A Postgres to try it on is one container, with engine's schema prepared
+by the command the package installs:
 
 ```bash
 docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
