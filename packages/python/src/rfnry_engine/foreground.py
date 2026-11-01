@@ -3,16 +3,16 @@ import contextvars
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
-from rfnry_engine.records import CallInfo, Decision, EventHandler, Generation, Run
+from rfnry_engine.records import CallInfo, Decision, EventHandler, Generation, Pipe, Run
 from rfnry_engine.stop import Stop
 
 
 @dataclass(frozen=True)
 class Lent:
     env: dict[str, str]
-    said: Callable[[Literal["stdout", "stderr"], str], Awaitable[None]] | None = None
+    said: Callable[[Pipe, str], Awaitable[None]] | None = None
     call: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
 
 

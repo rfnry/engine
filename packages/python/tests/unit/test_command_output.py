@@ -3,14 +3,22 @@ import json
 import re
 import sys
 import time
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import pytest
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.models import ToolCall
-from rfnry_engine.records import CommandOutput, Event, EventHandler, Generation, ToolResultReady
+from rfnry_engine.records import (
+    CommandOutput,
+    Event,
+    EventHandler,
+    Generation,
+    Pipe,
+    ToolResultReady,
+)
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.workspace import BACKLOG, Local, Workspace, _Told
 
@@ -257,7 +265,7 @@ async def test_a_stream_that_missed_bytes_drops_until_the_next_batch_and_a_batch
     busy = asyncio.Event()
     free = asyncio.Event()
 
-    async def say(stream: Literal["stdout", "stderr"], text: str) -> None:
+    async def say(stream: Pipe, text: str) -> None:
         said.append((stream, text))
         busy.set()
         await free.wait()
@@ -286,7 +294,7 @@ async def test_a_chunk_after_the_next_batch_starts_its_own_event_with_the_note()
     gates = [asyncio.Event(), asyncio.Event()]
     entered = [asyncio.Event(), asyncio.Event()]
 
-    async def say(stream: Literal["stdout", "stderr"], text: str) -> None:
+    async def say(stream: Pipe, text: str) -> None:
         said.append((stream, text))
         n = len(said) - 1
         if n < 2:
@@ -349,13 +357,167 @@ async def test_a_crafted_overflow_pattern_cannot_hold_the_shell(tmp_path: Path, 
 
 
 async def test_a_background_job_sends_no_command_output(tmp_path: Path, root: Path) -> None:
-    call = ToolCall(
-        id="1", name="Shell", args={"command": "echo hi; sleep 0.3", "background": True}
-    )
+    job = ToolCall(id="1", name="Shell", args={"command": "echo hi; sleep 5", "background": True})
+    wait = ToolCall(id="2", name="Shell", args={"command": "sleep 0.5"})
     events: list[Event] = []
+    read: list[str] = []
+    work = Workspace(Local(root), scope="acme")
 
     async def handler(event: Event) -> None:
         events.append(event)
+        if isinstance(event, ToolResultReady) and event.call_id == "2":
+            read.append(work.output("j1"))
 
-    await go(tmp_path, root, call, handler)
+    llm = Scripted(use(job), use(wait), text_reply("ok"))
+    try:
+        await Engine(make_tree(tmp_path), models={"strong": llm}).run(
+            "coder", "acme", "x", workspace=work, on_event=handler
+        )
+    finally:
+        await work.close()
+    assert read == ["hi\n"]
     assert not any(isinstance(e, CommandOutput) for e in events)
+
+
+async def test_a_handler_still_running_is_awaited_before_the_shell_s_result(
+    tmp_path: Path, root: Path
+) -> None:
+    source = "import time\nprint('hi', flush=True)\ntime.sleep(5)\n"
+    stop = Stop()
+    cleaned = asyncio.Event()
+    ready: list[bool] = []
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, CommandOutput):
+            stop.now()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.2)
+                cleaned.set()
+                raise
+        elif isinstance(event, ToolResultReady) and event.call_id == "1":
+            ready.append(cleaned.is_set())
+
+    run = await go(tmp_path, root, python(root, source), handler, stop=stop)
+    assert [step.stopped for step in run.steps] == [True]
+    assert ready == [True]
+
+
+async def test_a_further_cancel_cuts_a_command_output_handler_that_swallows_its_cancel(
+    tmp_path: Path, root: Path
+) -> None:
+    source = "import time\nprint('hi', flush=True)\ntime.sleep(5)\n"
+    stop = Stop()
+    swallowed = asyncio.Event()
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, CommandOutput):
+            stop.now()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                swallowed.set()
+                asyncio.get_running_loop().call_later(0.1, stop.now)
+
+    async with asyncio.timeout(10):
+        run = await go(tmp_path, root, python(root, source), handler, stop=stop)
+    assert swallowed.is_set()
+    assert [step.stopped for step in run.steps] == [True]
+
+
+async def test_bytes_a_decoder_held_at_a_gap_are_counted() -> None:
+    said: list[tuple[str, str]] = []
+    gates = [asyncio.Event(), asyncio.Event()]
+    entered = [asyncio.Event(), asyncio.Event()]
+
+    async def say(stream: Pipe, text: str) -> None:
+        said.append((stream, text))
+        n = len(said) - 1
+        if n < 2:
+            entered[n].set()
+            await gates[n].wait()
+
+    told = _Told(say)
+    told.add("stdout", b"a\xc3")
+    await entered[0].wait()
+    told.add("stdout", b"\xa9" + b"x" * BACKLOG)
+    told.add("stderr", b"1")
+    gates[0].set()
+    await entered[1].wait()
+    told.add("stdout", b"b")
+    gates[1].set()
+    told.close()
+    await told.task
+    written = len(b"a\xc3") + 1 + BACKLOG + len(b"b")
+    shown = len(b"a") + len(b"b")
+    assert said == [
+        ("stdout", "a"),
+        ("stderr", "1"),
+        ("stdout", f"[... {written - shown} bytes not shown ...]\nb"),
+    ]
+
+
+class Reads:
+    def __init__(self, *steps: Callable[[], Awaitable[bytes]]) -> None:
+        self.steps = list(steps)
+
+    async def read(self, n: int) -> bytes:
+        return await self.steps.pop(0)() if self.steps else b""
+
+
+class Once:
+    def __init__(self, stdout: Reads, stderr: Reads) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+
+    async def spawn(self, command: str, env: Mapping[str, str]) -> Once:
+        return self
+
+    async def wait(self) -> int:
+        return 0
+
+    async def kill(self) -> None:
+        return None
+
+    async def read(self, path: str, limit: int) -> bytes:
+        return b""
+
+    async def write(self, path: str, data: bytes) -> None:
+        return None
+
+
+async def test_a_read_larger_than_the_backlog_still_drops_until_the_next_batch(
+    tmp_path: Path, root: Path
+) -> None:
+    busy, free, back = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def big() -> bytes:
+        await busy.wait()
+        return b"x" * (2 * BACKLOG)
+
+    async def after() -> bytes:
+        free.set()
+        await back.wait()
+        return b"b"
+
+    async def warn() -> bytes:
+        return b"e"
+
+    events: list[CommandOutput] = []
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, CommandOutput):
+            events.append(event)
+            if event.stream == "stderr":
+                busy.set()
+                await free.wait()
+                back.set()
+
+    work = Workspace(Once(Reads(big, after), Reads(warn)), scope="acme")
+    call = ToolCall(id="1", name="Shell", args={"command": "x"})
+    await go(tmp_path, root, call, handler, work)
+    assert [(e.stream, e.text) for e in events] == [
+        ("stderr", "e"),
+        ("stdout", f"[... {2 * BACKLOG} bytes not shown ...]\nb"),
+    ]

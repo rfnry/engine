@@ -10,7 +10,7 @@ from fnmatch import fnmatch
 from itertools import count, permutations
 from pathlib import Path
 from types import MappingProxyType
-from typing import Annotated, Any, Literal, NoReturn, Protocol, cast
+from typing import Annotated, Any, NoReturn, Protocol, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
@@ -70,6 +70,7 @@ from rfnry_engine.records import (
     Fingerprint,
     Generation,
     MessagesTaken,
+    Pipe,
     ReasoningDelta,
     Run,
     RunStarted,
@@ -1002,9 +1003,7 @@ class Engine:
                 run_id=run_id, agent=spec.name, scope=scope, tool=call.name, call_id=call.id, by=by
             )
 
-        async def show(
-            call: ToolCall, here: Foreground, stream: Literal["stdout", "stderr"], text: str
-        ) -> None:
+        async def show(call: ToolCall, here: Foreground, stream: Pipe, text: str) -> None:
             if here.failed is not None:
                 return
             try:

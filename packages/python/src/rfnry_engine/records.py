@@ -98,11 +98,14 @@ class ToolResultReady(BaseModel):
     by: str | None = None
 
 
+Pipe = Literal["stdout", "stderr"]
+
+
 class CommandOutput(BaseModel):
     run_id: str
     agent: str
     call_id: str
-    stream: Literal["stdout", "stderr"]
+    stream: Pipe
     text: str
 
 

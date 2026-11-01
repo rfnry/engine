@@ -4,6 +4,7 @@ import contextlib
 import errno
 import logging
 import os
+import posixpath
 import shutil
 import signal
 import stat
@@ -12,14 +13,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Protocol, cast, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel
 
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.foreground import current
 from rfnry_engine.jail import Jail
-from rfnry_engine.stop import join, wait
+from rfnry_engine.records import Pipe
+from rfnry_engine.stop import cancel, join, wait
 from rfnry_engine.tools.bridge import CALLS, Answer, Bridge
 from rfnry_engine.tools.tools import Tool
 
@@ -353,25 +355,25 @@ class _Kept:
         )
 
 
-Sink = Callable[[bytes], None]
-Said = Callable[[Literal["stdout", "stderr"], str], Awaitable[None]]
+_Sink = Callable[[bytes], None]
+_Said = Callable[[Pipe, str], Awaitable[None]]
 
 
 class _Told:
-    def __init__(self, said: Said) -> None:
+    def __init__(self, said: _Said) -> None:
         self.said = said
-        self.queue: asyncio.Queue[tuple[Literal["stdout", "stderr"], int, bytes] | None] = (
-            asyncio.Queue()
-        )
+        self.queue: asyncio.Queue[tuple[Pipe, int, bytes] | None] = asyncio.Queue()
         self.queued = 0
-        self.missed: dict[Literal["stdout", "stderr"], int] = {"stdout": 0, "stderr": 0}
-        self.dropping: set[Literal["stdout", "stderr"]] = set()
+        self.missed: dict[Pipe, int] = {"stdout": 0, "stderr": 0}
+        self.dropping: set[Pipe] = set()
         self.task = asyncio.create_task(self._send())
 
-    def add(self, stream: Literal["stdout", "stderr"], data: bytes) -> None:
+    def add(self, stream: Pipe, data: bytes) -> None:
         if stream in self.dropping or self.queued + len(data) > BACKLOG:
             self.dropping.add(stream)
             self.missed[stream] += len(data)
+            if self.queue.empty():
+                self.queue.put_nowait((stream, 0, b""))
             return
         self.queued += len(data)
         self.queue.put_nowait((stream, self.missed[stream], data))
@@ -381,7 +383,7 @@ class _Told:
         self.queue.put_nowait(None)
 
     async def _send(self) -> None:
-        decoders: dict[Literal["stdout", "stderr"], codecs.IncrementalDecoder] = {
+        decoders: dict[Pipe, codecs.IncrementalDecoder] = {
             "stdout": codecs.getincrementaldecoder("utf-8")(errors="replace"),
             "stderr": codecs.getincrementaldecoder("utf-8")(errors="replace"),
         }
@@ -394,8 +396,8 @@ class _Told:
             if taken[-1] is None:
                 closing = True
                 taken.pop()
-            events: list[tuple[Literal["stdout", "stderr"], int, bytearray]] = []
-            last: dict[Literal["stdout", "stderr"], bytearray] = {}
+            events: list[tuple[Pipe, int, bytearray]] = []
+            last: dict[Pipe, bytearray] = {}
             for item in taken:
                 assert item is not None
                 stream, gap, data = item
@@ -407,6 +409,7 @@ class _Told:
                     events.append((stream, gap, last[stream]))
             for stream, gap, joined in events:
                 if gap:
+                    gap += len(decoders[stream].getstate()[0])
                     decoders[stream].reset()
                 await self._say(stream, gap, decoders[stream].decode(bytes(joined)))
         for stream, decoder in decoders.items():
@@ -415,20 +418,20 @@ class _Told:
             if gap:
                 await self._say(stream, gap, "")
 
-    async def _say(self, stream: Literal["stdout", "stderr"], gap: int, text: str) -> None:
+    async def _say(self, stream: Pipe, gap: int, text: str) -> None:
         text = (f"[... {gap} bytes not shown ...]\n" if gap else "") + text
         if text:
             await self.said(stream, text)
 
 
-async def _drain(stream: Stream, *sinks: Sink) -> None:
+async def _drain(stream: Stream, *sinks: _Sink) -> None:
     while chunk := await stream.read(CHUNK):
         for sink in sinks:
             sink(chunk)
 
 
 def _reading(
-    process: Process, out: Sequence[Sink], err: Sequence[Sink]
+    process: Process, out: Sequence[_Sink], err: Sequence[_Sink]
 ) -> list[asyncio.Task[None]]:
     return [
         asyncio.create_task(_drain(process.stdout, *out)),
@@ -574,7 +577,7 @@ class Workspace:
         self.backend = backend
         self.scope = scope
         self.bridge = bridge
-        self.tree = tree
+        self.tree = None if tree is None else posixpath.normpath(tree)
         self.timeout = timeout
         self.output_bytes = output_bytes
         self._jobs: dict[str, _Job] = {}
@@ -680,46 +683,10 @@ class Workspace:
             bridge, missing = await _bridge(Path(root).absolute(), lent.call)
         if bridge is not None:
             env = {**env, **bridge.env}
-        told: _Told | None = None
+        told = None if lent is None or lent.said is None else _Told(lent.said)
         try:
             try:
-                spawning = asyncio.create_task(self.backend.spawn(a.command, env))
-                try:
-                    process = await asyncio.shield(spawning)
-                except asyncio.CancelledError:
-                    try:
-                        await join([spawning])
-                    finally:
-                        if not spawning.cancelled() and spawning.exception() is None:
-                            _log(*await _see_through(spawning.result().kill()))
-                    raise
-                out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
-                told = None if lent is None or lent.said is None else _Told(lent.said)
-                reading = _reading(
-                    process,
-                    [out.add] if told is None else [out.add, partial(told.add, "stdout")],
-                    [err.add] if told is None else [err.add, partial(told.add, "stderr")],
-                )
-                code: int | None = None
-                try:
-                    async with asyncio.timeout(self.timeout):
-                        code = await process.wait()
-                    timed_out = False
-                except TimeoutError:
-                    timed_out = True
-                except BaseException:
-                    _discard(reading)
-                    _log(*await _see_through(process.kill()))
-                    raise
-                try:
-                    [error] = await _see_through(process.kill())
-                    if error is not None:
-                        raise error
-                    if timed_out:
-                        code = await _exit_code(process)
-                    await _settle(reading)
-                finally:
-                    _discard(reading)
+                code, timed_out, out, err = await self._foreground(a.command, env, told)
             finally:
                 if bridge is not None:
                     await bridge.close()
@@ -732,13 +699,54 @@ class Workspace:
                 await wait([told.task], None)
         finally:
             if told is not None and not told.task.done():
-                told.task.cancel()
+                await cancel([told.task])
         return {
             "exit_code": code,
             "stdout": out.take(),
             "stderr": err.take(),
             "timed_out": timed_out,
         }
+
+    async def _foreground(
+        self, command: str, env: Mapping[str, str], told: _Told | None
+    ) -> tuple[int | None, bool, _Kept, _Kept]:
+        spawning = asyncio.create_task(self.backend.spawn(command, env))
+        try:
+            process = await asyncio.shield(spawning)
+        except asyncio.CancelledError:
+            try:
+                await join([spawning])
+            finally:
+                if not spawning.cancelled() and spawning.exception() is None:
+                    _log(*await _see_through(spawning.result().kill()))
+            raise
+        out, err = _Kept(self.output_bytes), _Kept(self.output_bytes)
+        reading = _reading(
+            process,
+            [out.add] if told is None else [out.add, partial(told.add, "stdout")],
+            [err.add] if told is None else [err.add, partial(told.add, "stderr")],
+        )
+        code: int | None = None
+        try:
+            async with asyncio.timeout(self.timeout):
+                code = await process.wait()
+            timed_out = False
+        except TimeoutError:
+            timed_out = True
+        except BaseException:
+            _discard(reading)
+            _log(*await _see_through(process.kill()))
+            raise
+        try:
+            [error] = await _see_through(process.kill())
+            if error is not None:
+                raise error
+            if timed_out:
+                code = await _exit_code(process)
+            await _settle(reading)
+        finally:
+            _discard(reading)
+        return code, timed_out, out, err
 
     async def _start(self, command: str, env: Mapping[str, str]) -> str:
         process = await self.backend.spawn(command, env)
