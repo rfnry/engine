@@ -348,14 +348,16 @@ covers it under, while `kb/../.env` is hidden, and so is `/elsewhere/git/config`
 `/elsewhere/git` links to the agent's `.git`. A folder that `LS` or `Grep` is given reads when the
 folder it leads to has no hidden name: a visible link to a hidden folder, `shown -> .secret`, is
 hidden, and so is every file read through it, for the fingerprint never follows a folder link, and
-`Glob`, `Grep`, `LS` and the map show nothing these rules hide. A file link that comes from outside
-those folders, or leads from one of them into another, is judged by the file it leads to as well as
-by its own name, since the fingerprint covers it only there, and a path that leads outside them is
-the jail's error (`jail: path outside the agent directory: <path>`). `Read` returns a text file as
-text. `Load` hands the model any other file as it is — an image, a PDF, a recording, a spreadsheet —
-so a price list, a diagram or a scanned form sits in the folder as it came, the model reads it with
-its own understanding of images and documents, there is no parser in between, and nothing is loaded
-until the model asks — unless the agent sets `preload: true`, below.
+`Glob`, `Grep`, `LS` and the map show nothing these rules hide, nor a link that leads outside those
+folders, while `LS` lists a broken or looping link inside them by its name, as it lists a file. A
+file link that comes from outside those folders, or leads from one of them into another, is judged
+by the file it leads to as well as by its own name, since the fingerprint covers it only there, and
+a path that leads outside them is the jail's error (`jail: path outside the agent directory:
+<path>`). `Read` returns a text file as text. `Load` hands the model any other file as it is — an
+image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in the
+folder as it came, the model reads it with its own understanding of images and documents, there is
+no parser in between, and nothing is loaded until the model asks — unless the agent sets `preload:
+true`, below.
 
 `AGENT.md` makes a directory an agent, and its frontmatter names it. `Engine(root)` walks `root` and
 loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested

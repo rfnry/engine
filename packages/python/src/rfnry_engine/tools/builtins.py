@@ -74,6 +74,13 @@ def _hidden(rel: Path) -> bool:
     )
 
 
+def _is_folder(entry: os.DirEntry[str]) -> bool:
+    try:
+        return entry.is_dir()
+    except OSError:
+        return False
+
+
 def _within(jail: Jail, path: Path) -> tuple[Path, Path] | None:
     try:
         real = Path(os.path.realpath(path))
@@ -388,11 +395,13 @@ class _Directory:
                         (
                             e
                             for e in found
-                            if not _hidden(Path(e.name)) and not _hides(self.jail, place / e.name)
+                            if not _hidden(Path(e.name))
+                            and not _hides(self.jail, place / e.name)
+                            and self._inside(place / e.name)
                         ),
                         key=lambda e: e.name,
                     )
-                shown = [f"{e.name}/" if e.is_dir() else e.name for e in entries[: a.limit]]
+                shown = [f"{e.name}/" if _is_folder(e) else e.name for e in entries[: a.limit]]
             finally:
                 os.close(fd)
         except OSError as exc:

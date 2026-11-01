@@ -7,6 +7,7 @@ import pytest
 
 from rfnry_engine import Local, Process
 from rfnry_engine.errors import InputError
+from rfnry_engine.folders import entries
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Audio, Document, Image, Text
 from rfnry_engine.tools import builtins as builtins_module
@@ -1010,3 +1011,38 @@ async def test_a_file_whose_own_name_is_hidden_is_refused_whatever_it_leads_to(
             await tool.dispatch(name, args)
     assert await tools.dispatch("Read", {"path": "y.md"}) == "y"
     assert await tools.dispatch("Read", {"path": "notes.md"}) == "TOKEN=1"
+
+
+async def test_ls_lists_a_symlink_loop_as_a_broken_link(tmp_path: Path) -> None:
+    (tmp_path / "a.md").write_text("a", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "gone.md").symlink_to("missing.md")
+    (tmp_path / "loop").symlink_to("loop")
+    (tmp_path / "docs" / "back").symlink_to("../docs/back")
+    tools = Tools(builtins(tmp_path))
+    assert await tools.dispatch("LS", {}) == "a.md\ndocs/\ngone.md\nloop"
+    assert await tools.dispatch("LS", {"path": "docs"}) == "back"
+
+
+async def test_ls_hides_a_link_that_leads_outside_every_folder_as_glob_and_the_map_do(
+    tmp_path: Path,
+) -> None:
+    agent, books, elsewhere = tmp_path / "agent", tmp_path / "books", tmp_path / "elsewhere"
+    for folder in (agent, books, elsewhere):
+        folder.mkdir()
+    (agent / "a.md").write_text("a", encoding="utf-8")
+    (books / "y.md").write_text("y", encoding="utf-8")
+    (elsewhere / "x.md").write_text("x", encoding="utf-8")
+    (agent / "out.md").symlink_to(elsewhere / "x.md")
+    (agent / "outdir").symlink_to(elsewhere, target_is_directory=True)
+    (agent / "gone").symlink_to(elsewhere / "missing.md")
+    (books / "out.md").symlink_to(elsewhere / "x.md")
+    tools = Tools(builtins(agent, {"../books": books}))
+    assert await tools.dispatch("Glob", {"pattern": "*"}) == "a.md"
+    assert await tools.dispatch("Glob", {"pattern": "../books/*"}) == "../books/y.md"
+    assert entries(agent, False) == ["a.md"] and entries(books, False) == ["y.md"]
+    assert await tools.dispatch("LS", {}) == "a.md"
+    assert await tools.dispatch("LS", {"path": "../books"}) == "y.md"
+    for path in ["out.md", "outdir/x.md", "../books/out.md"]:
+        with pytest.raises(InputError, match="^jail: path outside the agent directory: "):
+            await tools.dispatch("Read", {"path": path})
