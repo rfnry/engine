@@ -1241,11 +1241,37 @@ class Engine:
         async def cut(call: ToolCall, began: float, by: str | None = None) -> Step:
             return await hand_over(call, stopped(call, began, by))
 
+        async def answer_all(
+            batch: list[ToolCall], tasks: Sequence[asyncio.Task[Step] | None], began: float
+        ) -> None:
+            raised: list[BaseException] = []
+            held: list[Exception] = []
+            for call, task in zip(batch, tasks, strict=True):
+                try:
+                    if task is None or task.cancelled():
+                        await cut(call, began)
+                    elif (failed := task.exception()) is not None:
+                        raised.append(failed)
+                except Exception as exc:
+                    raised.append(exc)
+                built = next((step for done, step in ran if done is call), None)
+                if built is not None:
+                    answer(call, built)
+                here = foregrounds.pop(id(call), None)
+                if here is not None and here.failed is not None and here.failed not in raised:
+                    held.append(here.failed)
+            failures = [*raised, *held]
+            for error in failures[1:]:
+                logger.error(
+                    "engine: a further call of the same batch failed: %s", error, exc_info=error
+                )
+            if failures:
+                raise failures[0]
+
         async def run_batch(batch: list[ToolCall]) -> bool:
             began = time.monotonic()
             if requested(stop) == "now":
-                for call in batch:
-                    answer(call, await cut(call, began))
+                await answer_all(batch, [None] * len(batch), began)
                 return True
             tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
 
@@ -1261,25 +1287,7 @@ class Engine:
                 return kept
 
             cut_short = await wait(tasks, stop, finishing)
-            raised: list[BaseException] = []
-            held: list[Exception] = []
-            for call, task in zip(batch, tasks, strict=True):
-                try:
-                    if task.cancelled():
-                        await cut(call, began)
-                    elif (failed := task.exception()) is not None:
-                        raised.append(failed)
-                except Exception as exc:
-                    raised.append(exc)
-                built = next((step for done, step in ran if done is call), None)
-                if built is not None:
-                    answer(call, built)
-                here = foregrounds.pop(id(call), None)
-                if here is not None and here.failed is not None:
-                    held.append(here.failed)
-            failures = [*raised, *held]
-            if failures:
-                raise failures[0]
+            await answer_all(batch, tasks, began)
             return cut_short
 
         def drain() -> list[Message]:
@@ -1396,8 +1404,8 @@ class Engine:
                 if output is None or expect is None:
                     continue
                 if pressed:
-                    for call in reply.tool_calls[reply.tool_calls.index(output) :]:
-                        answer(call, await cut(call, time.monotonic()))
+                    rest = reply.tool_calls[reply.tool_calls.index(output) :]
+                    await answer_all(rest, [None] * len(rest), time.monotonic())
                     return finish(said, "now")
                 try:
                     parsed = expect.model_validate(output.args)

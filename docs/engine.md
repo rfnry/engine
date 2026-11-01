@@ -601,16 +601,19 @@ A run that raises instead of returning — the vendor refused the call, the adap
 contract (`ModelError`), the loop passed `max_steps` (`RunawayError`) — returns no record; the
 exception is what you have, the same one the adapter or the engine raised. With a refinery
 attached, the run is recorded first, as far as it got: `error` says what ended it —
-`"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. Its conversation can
-hold a tool call with no result, when the run failed between the call and its result, and `run()`
-refuses such a history: go on from the history the run was given. A run refused before its
-first model call — a bad input, an agent, task or skill the tree does not have, a route loop — has
-nothing to record, and a run whose task you cancel is not recorded; `stop=` ends a run with its
-record. A generation run whose `on_event` raises on its `RunStarted` had started: it is recorded
-with that `error` and no model call. A delegated run that fails stays under its parent in
-`children`, its step the error the parent's model was given, and the parent goes on; a routed run
-that fails fails its router, which is recorded with its answers and the failed run in `routed_to`,
-or `None` when the routed run was refused before its first model call.
+`"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. When `on_event` raises
+on one call of a reply, the reply's other calls are still answered, run or cut by a stop, and their
+events still reach the handler; the run then raises the first failure and logs each further one as
+an error, `engine: a further call of the same batch failed: …`. Its conversation can hold a tool
+call with no result, when the run failed between the call and its result, and `run()` refuses such
+a history: go on from the history the run was given. A run refused before its first model call — a
+bad input, an agent, task or skill the tree does not have, a route loop — has nothing to record,
+and a run whose task you cancel is not recorded; `stop=` ends a run with its record. A generation
+run whose `on_event` raises on its `RunStarted` had started: it is recorded with that `error` and
+no model call. A delegated run that fails stays under its parent in `children`, its step the error
+the parent's model was given, and the parent goes on; a routed run that fails fails its router,
+which is recorded with its answers and the failed run in `routed_to`, or `None` when the routed run
+was refused before its first model call.
 
 Pass `tags=` to mark a run with what you will group it by later — the commit of the tree, an
 experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64

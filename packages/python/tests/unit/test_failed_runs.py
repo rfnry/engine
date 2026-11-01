@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -339,13 +340,14 @@ async def test_a_failed_batch_keeps_every_step_that_ran_in_the_order_asked(
     assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "c2"]
 
 
+@pytest.mark.parametrize("slow", ["A-1", "A-2"], ids=["first-slow", "second-slow"])
 async def test_a_call_cut_by_a_stop_is_recorded_once_when_its_handler_raises(
-    fixtures: Path,
+    fixtures: Path, slow: str
 ) -> None:
     stop = Stop()
 
-    async def slow_second(args: dict[str, Any]) -> Any:
-        if args["order_id"] == "A-2":
+    async def slowed(args: dict[str, Any]) -> Any:
+        if args["order_id"] == slow:
             await asyncio.sleep(60)
         return await lookup_order(args)
 
@@ -360,7 +362,7 @@ async def test_a_call_cut_by_a_stop_is_recorded_once_when_its_handler_raises(
         ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"}),
         ToolCall(id="c2", name="lookup_order", args={"order_id": "A-2"}),
     ]
-    tools = Tools([Tool("lookup_order", "Fetch an order", body=slow_second)])
+    tools = Tools([Tool("lookup_order", "Fetch an order", body=slowed)])
     kept = Kept()
     engine = Engine(
         fixtures,
@@ -368,10 +370,13 @@ async def test_a_call_cut_by_a_stop_is_recorded_once_when_its_handler_raises(
         models={"strong": Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))},
     )
     with pytest.raises(ConnectionResetError):
-        await engine.run("support", "acme", "x", on_event=closed, tools=tools, stop=stop)
+        async with asyncio.timeout(10):
+            await engine.run("support", "acme", "x", on_event=closed, tools=tools, stop=stop)
     [run] = kept.runs
     assert isinstance(run, Generation)
-    assert [(s.args["order_id"], s.stopped) for s in run.steps] == [("A-1", False), ("A-2", True)]
+    assert [(s.args["order_id"], s.stopped) for s in run.steps] == [
+        (order, order == slow) for order in ("A-1", "A-2")
+    ]
     assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "c2"]
 
 
@@ -411,38 +416,100 @@ async def test_every_call_of_a_batch_is_answered_before_a_failure_is_raised(
     assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "c2"]
 
 
-async def test_a_cut_whose_handler_raises_keeps_its_place_in_the_batch(fixtures: Path) -> None:
+TWO = [
+    ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"}),
+    ToolCall(id="c2", name="lookup_order", args={"order_id": "A-2"}),
+]
+LOOKUP = Tools([Tool("lookup_order", "Fetch an order", body=lookup_order)])
+
+
+async def test_a_stop_before_a_batch_answers_every_call_when_a_handler_raises(
+    fixtures: Path,
+) -> None:
     stop = Stop()
 
-    async def slow_first(args: dict[str, Any]) -> Any:
-        if args["order_id"] == "A-1":
-            await asyncio.sleep(60)
-        return await lookup_order(args)
+    async def closed(event: Event) -> None:
+        if isinstance(event, TextDelta):
+            stop.now()
+        if isinstance(event, ToolResultReady):
+            raise ConnectionResetError(event.call_id)
+
+    kept = Kept()
+    reply = Reply(text="working", tool_calls=TWO, stop_reason="tool_use")
+    engine = Engine(fixtures, refinery=kept, models={"strong": Scripted(reply)})
+    with pytest.raises(ConnectionResetError, match="^c1$"):
+        async with asyncio.timeout(10):
+            await engine.run("support", "acme", "x", on_event=closed, tools=LOOKUP, stop=stop)
+    [run] = kept.runs
+    assert isinstance(run, Generation)
+    assert [(s.args["order_id"], s.stopped) for s in run.steps] == [("A-1", True), ("A-2", True)]
+    assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "c2"]
+
+
+async def test_an_output_cut_answers_every_later_call_when_a_handler_raises(
+    fixtures: Path,
+) -> None:
+    stop = Stop()
+
+    class Verdict(BaseModel):
+        ok: bool
 
     async def closed(event: Event) -> None:
         if isinstance(event, ToolResultReady):
             if event.step.stopped:
-                raise ConnectionResetError("the socket closed")
+                raise ConnectionResetError(event.call_id)
             stop.now()
             await asyncio.sleep(0.01)
 
-    calls = [
-        ToolCall(id="c1", name="lookup_order", args={"order_id": "A-1"}),
-        ToolCall(id="c2", name="lookup_order", args={"order_id": "A-2"}),
+    first, second = TWO
+    output = ToolCall(id="o", name="Output", args={"ok": True})
+    reply = Reply(tool_calls=[first, output, second], stop_reason="tool_use")
+    kept = Kept()
+    engine = Engine(fixtures, refinery=kept, models={"strong": Scripted(reply)})
+    with pytest.raises(ConnectionResetError, match="^o$"):
+        async with asyncio.timeout(10):
+            await engine.run(
+                "support", "acme", "x", on_event=closed, tools=LOOKUP, stop=stop, expect=Verdict
+            )
+    [run] = kept.runs
+    assert isinstance(run, Generation)
+    assert [(s.tool, s.stopped) for s in run.steps] == [
+        ("lookup_order", False),
+        ("Output", True),
+        ("lookup_order", True),
     ]
-    tools = Tools([Tool("lookup_order", "Fetch an order", body=slow_first)])
+    assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "o", "c2"]
+
+
+async def test_a_further_failure_of_a_batch_is_logged_and_the_first_is_raised(
+    fixtures: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    raised: dict[str, ConnectionResetError] = {}
+
+    async def closed(event: Event) -> None:
+        if isinstance(event, ToolResultReady):
+            raised[event.call_id] = ConnectionResetError(event.call_id)
+            raise raised[event.call_id]
+
     kept = Kept()
     engine = Engine(
         fixtures,
         refinery=kept,
-        models={"strong": Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))},
+        models={"strong": Scripted(Reply(tool_calls=TWO, stop_reason="tool_use"))},
     )
-    with pytest.raises(ConnectionResetError):
+    with (
+        caplog.at_level(logging.ERROR, logger="rfnry_engine.engine"),
+        pytest.raises(ConnectionResetError) as first,
+    ):
         async with asyncio.timeout(10):
-            await engine.run("support", "acme", "x", on_event=closed, tools=tools, stop=stop)
+            await engine.run("support", "acme", "x", on_event=closed, tools=LOOKUP)
+    assert first.value is raised["c1"]
+    [record] = [r for r in caplog.records if r.name == "rfnry_engine.engine"]
+    assert record.levelno == logging.ERROR
+    assert record.getMessage() == "engine: a further call of the same batch failed: c2"
+    assert record.exc_info is not None and record.exc_info[1] is raised["c2"]
     [run] = kept.runs
-    assert isinstance(run, Generation)
-    assert [(s.args["order_id"], s.stopped) for s in run.steps] == [("A-1", True), ("A-2", False)]
+    assert isinstance(run, Generation) and run.error == "ConnectionResetError: c1"
     assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "c2"]
 
 
