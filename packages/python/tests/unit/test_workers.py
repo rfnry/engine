@@ -10,7 +10,7 @@ import time
 from collections import Counter
 from collections.abc import Awaitable, Coroutine, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import JsonValue
@@ -29,7 +29,7 @@ def script(tmp_path: Path, name: str, body: str) -> Script:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
     helpers = {p.stem: p.read_text(encoding="utf-8") for p in path.parent.glob("_*.py")}
-    return Script(name, path, body, helpers, "async def run" in body)
+    return Script(name, path, body, helpers)
 
 
 def pid(value: JsonValue) -> int:
@@ -326,6 +326,82 @@ async def test_a_result_that_is_not_json_is_an_error_naming_its_type(tmp_path: P
         await pool.close()
 
 
+LATER = (
+    "import asyncio, os\n"
+    "def later(f):\n"
+    "    def wrapper(args, call):\n"
+    "        async def go():\n"
+    "            await asyncio.sleep(args.get('sleep', 0))\n"
+    "            return f(args, call)\n"
+    "        return go()\n"
+    "    return wrapper\n"
+    "@later\n"
+    "def run(args, call):\n"
+    "    return [os.getpid(), 'later']\n"
+)
+LOGGED = (
+    "import asyncio, os\n"
+    "def logged(f):\n"
+    "    def wrapper(args, call):\n"
+    "        return f(args, call)\n"
+    "    return wrapper\n"
+    "@logged\n"
+    "async def run(args, call):\n"
+    "    await asyncio.sleep(args.get('sleep', 0))\n"
+    "    return [os.getpid(), 'logged']\n"
+)
+BLOCKING = (
+    "import asyncio, os\n"
+    "def blocking(f):\n"
+    "    def wrapper(args, call):\n"
+    "        return asyncio.run(f(args, call))\n"
+    "    return wrapper\n"
+    "@blocking\n"
+    "async def run(args, call):\n"
+    "    await asyncio.sleep(args.get('sleep', 0))\n"
+    "    return [os.getpid(), 'blocking']\n"
+)
+EAGER = (
+    "import asyncio, os\n"
+    "def eager(f):\n"
+    "    async def wrapper(args, call):\n"
+    "        await asyncio.sleep(args.get('sleep', 0))\n"
+    "        return f(args, call)\n"
+    "    return wrapper\n"
+    "@eager\n"
+    "def run(args, call):\n"
+    "    return [os.getpid(), 'eager']\n"
+)
+
+
+DECORATED = {"later": LATER, "logged": LOGGED, "blocking": BLOCKING, "eager": EAGER}
+
+
+@pytest.mark.parametrize("said", list(DECORATED))
+async def test_a_decorated_run_is_called_as_it_really_is(tmp_path: Path, said: str) -> None:
+    pool = WorkerPool([script(tmp_path, "decorated", DECORATED[said])])
+    try:
+        result = await pool.call("decorated", {}, CALL, 5)
+        assert isinstance(result, list) and result[1] == said
+    finally:
+        await pool.close()
+
+
+@pytest.mark.parametrize(("said", "kept"), [("blocking", False), ("eager", True)])
+async def test_a_decorated_run_holds_a_thread_only_when_it_takes_one(
+    tmp_path: Path, said: str, kept: bool
+) -> None:
+    pool = WorkerPool([script(tmp_path, "decorated", DECORATED[said])], threads=1)
+    try:
+        first = cast(list[int], await pool.call("decorated", {}, CALL, 5))[0]
+        with pytest.raises(TimeoutError):
+            await pool.call("decorated", {"sleep": 30}, CALL, 0.2)
+        after = cast(list[int], await pool.call("decorated", {}, CALL, 2))[0]
+        assert (after == first) is kept
+    finally:
+        await pool.close()
+
+
 async def test_two_folders_with_a_helper_of_one_name_each_import_their_own(
     tmp_path: Path,
 ) -> None:
@@ -357,7 +433,7 @@ async def test_a_worker_runs_the_source_it_was_given_under_the_script_s_path(
         "def run(args, call):\n"
         "    return [_client.NAME, __file__, run.__code__.co_filename, _client.__file__]\n"
     )
-    pool = WorkerPool([Script("tools/given", path, body, {"_client": "NAME = 'given'\n"}, False)])
+    pool = WorkerPool([Script("tools/given", path, body, {"_client": "NAME = 'given'\n"})])
     try:
         assert await pool.call("tools/given", {}, CALL, 5) == [
             "given",

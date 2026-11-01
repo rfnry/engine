@@ -32,7 +32,6 @@ class ToolDef(BaseModel):
     key: str
     source: str
     helpers: dict[str, str]
-    awaits: bool = False
 
 
 def script_key(root: Path, script: Path) -> str:
@@ -200,17 +199,14 @@ def _parsed(path: Path, source: str) -> ast.Module:
         ) from exc
 
 
-def _awaits(path: Path, module: ast.Module, what: str, given: str) -> bool:
-    runs = [
-        node
+def _check_run(path: Path, module: ast.Module, what: str, given: str) -> None:
+    if not any(
+        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "run"
         for node in module.body
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "run"
-    ]
-    if not runs:
+    ):
         raise ConfigurationError(
             f"tools/folder: {path} has no run at its top level; a {what} defines def run({given}, call) or async def run({given}, call)"
         )
-    return isinstance(runs[-1], ast.AsyncFunctionDef)
 
 
 def _check_name(path: Path) -> None:
@@ -320,7 +316,7 @@ def load_tools(
         module = _parsed(path, source)
         _check_imports(path, module, project, folders, names, beside, "tool")
         if path in scripts.values():
-            tools[path.stem].awaits = _awaits(path, module, "tool", "args")
+            _check_run(path, module, "tool", "args")
     return tools
 
 
@@ -339,14 +335,13 @@ def load_scripts(
     sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
     shared = {p.stem: sources[p] for p in helpers}
     what = "question's script"
-    awaits = {}
     beside = _beside(folder)
     for path, source in sources.items():
         module = _parsed(path, source)
         _check_imports(path, module, project, folders, shared, beside, what)
         if path in scripts.values():
-            awaits[path] = _awaits(path, module, what, "input")
+            _check_run(path, module, what, "input")
     return {
-        name: Script(script_key(root, path), path, sources[path], shared, awaits[path])
+        name: Script(script_key(root, path), path, sources[path], shared)
         for name, path in scripts.items()
     }

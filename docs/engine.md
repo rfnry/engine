@@ -2216,10 +2216,13 @@ engine stays closed: a run, a tool call or an `EngineTools` after `close()` is a
 `engine: this engine was closed; build a new Engine`, before any model is called, so nothing is
 recorded of it, and a run still in flight when it closed starts no other run — its `Delegate` call
 reads that error, its route fails with it. A plain `def run` runs on one of the worker's 32 threads,
-and calls past those wait; an `async def run` runs on its event loop, as many at once as come. What
-a script prints goes to the log, at DEBUG on the `rfnry_engine.workers.pool` logger, never into its
-result: a record per line, and 64 KiB at a time of a line whose end has not come; with DEBUG off it
-is dropped as it comes. A script that raises, `sys.exit()` included, is a tool error the model
+and calls past those wait; an `async def run` runs on its event loop, as many at once as come. The
+worker goes by the `run` it loaded, whatever its file spells: a `run` a decorator made a coroutine
+function runs on the event loop, any other on a thread, and what that one returns, if it can be
+awaited — a coroutine, from a plain decorator around an `async def` — is awaited on the event loop.
+What a script prints goes to the log, at DEBUG on the `rfnry_engine.workers.pool` logger, never into
+its result: a record per line, and 64 KiB at a time of a line whose end has not come; with DEBUG off
+it is dropped as it comes. A script that raises, `sys.exit()` included, is a tool error the model
 reads, `WorkerError: ValueError: no order A-1`, and the worker goes on. What a script returns or
 raises crosses back as JSON of at most `Engine(worker_result_bytes=)` bytes as the worker writes it,
 a non-ASCII character escaped to six, 32 MiB unless you set another number, `None` for no limit;

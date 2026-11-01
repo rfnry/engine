@@ -593,18 +593,21 @@ async def test_two_tools_folders_of_one_worker_group_hold_a_tool_of_one_name_eac
     ]
 
 
-async def test_workers_tells_its_pool_which_scripts_are_async(tmp_path: Path) -> None:
+async def test_a_worker_tells_its_pool_which_scripts_take_a_thread(tmp_path: Path) -> None:
     tool(tmp_path / "tools", "pid", body=PID)
     tool(tmp_path / "tools", "wait", body="async def run(args, call):\n    return 1\n")
     write(tmp_path / "shop/AGENT.md", agent_md("shop"))
     write(tmp_path / "desk/AGENT.md", agent_md("desk", kind="decision", model="judge"))
-    write(tmp_path / "desk/questions/order.json", '{"type": "choice", "instructions": "Which?"}')
-    write(
-        tmp_path / "desk/questions/order.py",
-        "async def run(input, call):\n    return {'options': {'a': 'A', 'b': 'B'}}\n",
-    )
+    for name, kind in (("order", "async def"), ("size", "def")):
+        write(tmp_path / f"desk/questions/{name}.json", '{"type": "choice", "instructions": "?"}')
+        write(
+            tmp_path / f"desk/questions/{name}.py",
+            f"{kind} run(input, call):\n    return {{'options': {{'a': 'A', 'b': 'B'}}}}\n",
+        )
     async with Engine(tmp_path, models={}) as engine:
-        assert engine._workers.pool("shop")._awaits == {"tools/wait", "desk/questions/order"}
+        assert pid(await EngineTools(engine, agent="shop", scope="acme").dispatch("wait", {})) == 1
+        [worker] = engine._workers.pool("shop")._workers
+        assert worker is not None and worker.threaded == {"tools/pid", "desk/questions/size"}
 
 
 @pytest.mark.parametrize(

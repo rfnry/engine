@@ -35,7 +35,6 @@ class Script(NamedTuple):
     path: Path
     source: str
     helpers: Mapping[str, str]
-    awaits: bool
 
 
 def _lines(pending: bytearray, data: bytes) -> list[bytes]:
@@ -78,6 +77,7 @@ class _Worker:
         self.calls: dict[int, tuple[str, asyncio.Future[JsonValue], int]] = {}
         self.held: set[int] = set()
         self.cancelling: dict[int, int] = {}
+        self.threaded: frozenset[str] = frozenset()
         self.sent = 0
         self.ended = False
         self._loop = loop
@@ -158,6 +158,9 @@ class _Worker:
         self.cancelling.clear()
 
     def _answer(self, reply: dict[str, Any]) -> None:
+        if "threaded" in reply:
+            self.threaded = frozenset(reply["threaded"])
+            return
         self.held.discard(reply["id"])
         self.cancelling.pop(reply["id"], None)
         entry = self.calls.pop(reply["id"], None)
@@ -194,13 +197,12 @@ class WorkerPool:
         self._scripts = {
             "scripts": [
                 {"key": key, "path": str(path), "source": source}
-                for key, path, source, _, _ in scripts
+                for key, path, source, _ in scripts
             ],
-            "helpers": {str(path.parent): dict(helpers) for _, path, _, helpers, _ in scripts},
+            "helpers": {str(path.parent): dict(helpers) for _, path, _, helpers in scripts},
             "threads": threads,
             "limit": limit,
         }
-        self._awaits = {script.key for script in scripts if script.awaits}
         self._threads = threads
         self._workers: list[_Worker | None] = [None] * processes
         self._ids = itertools.count()
@@ -232,7 +234,7 @@ class WorkerPool:
             raise TimeoutError(f"workers/pool: {name} timed out after {timeout:g}s") from None
         finally:
             if worker is not None:
-                worker.abandon(id, held=key not in self._awaits, expired=deadline.expired())
+                worker.abandon(id, held=key in worker.threaded, expired=deadline.expired())
 
     async def close(self) -> None:
         self._closed = True
@@ -336,9 +338,7 @@ class Workers:
         for name, spec in agents.items():
             own = scripts[self._groups[name]]
             for tool in spec.folder_tools.values():
-                own[tool.key] = Script(
-                    tool.key, tool.script, tool.source, tool.helpers, tool.awaits
-                )
+                own[tool.key] = Script(tool.key, tool.script, tool.source, tool.helpers)
             for _, script in spec.scripted.values():
                 own[script.key] = script
         self._pools = {
