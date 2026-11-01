@@ -14,7 +14,7 @@ from typing import Any, cast
 import pytest
 from pydantic import BaseModel, model_validator
 
-from rfnry_engine.engine import Engine
+from rfnry_engine.engine import Engine, _unfit
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
@@ -39,6 +39,7 @@ from rfnry_engine.models import (
 from rfnry_engine.records import (
     Event,
     Generation,
+    MessagesTaken,
     Run,
     TextDelta,
     ToolCallStarted,
@@ -886,6 +887,94 @@ async def test_args_holding_a_value_that_cannot_be_copied_still_run(
     assert len(received) == (4 if handled else 2) and all(item is leaf for item in received)
 
 
+def test_the_input_check_takes_linear_time_however_deep_or_wide_the_input() -> None:
+    for depth in (10_000, 20_000, 50_000):
+        deep: Any = "leaf"
+        for _ in range(depth):
+            deep = [deep]
+        began = time.perf_counter()
+        assert _unfit(deep) is None
+        assert time.perf_counter() - began < 0.5, depth
+    wide = [{"i": n, "s": "x"} for n in range(200_000)]
+    began = time.perf_counter()
+    assert _unfit(wide) is None
+    assert time.perf_counter() - began < 0.5
+    held: Any = {"n": {1, 2}}
+    for _ in range(3):
+        held = {"n": [held]}
+    assert _unfit(held) == "set at input['n'][0]['n'][0]['n'][0]['n']"
+
+
+class Meddling:
+    def __init__(self, *replies: Reply) -> None:
+        self.replies = list(replies)
+        self.seen: list[list[Message]] = []
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        self.seen.append([message.model_copy(deep=True) for message in messages])
+        for message in messages:
+            if isinstance(message.content, list):
+                for part in message.content:
+                    if isinstance(part, Text):
+                        part.text = "MEDDLED"
+            for call in message.tool_calls:
+                call.args["meddled"] = True
+        return self.replies.pop(0)
+
+
+async def test_what_a_handler_or_the_adapter_changes_leaves_the_record_and_the_next_call_alone(
+    fixtures: Path,
+) -> None:
+    returned: list[Part] = [
+        Text(text="the result"),
+        Image(media_type="image/png", url="https://x/a.png"),
+    ]
+
+    async def look(args: dict[str, Any]) -> list[Part]:
+        return [part.model_copy() for part in returned]
+
+    async def edit(event: Event) -> None:
+        if isinstance(event, ToolResultReady) and isinstance(event.step.result, list):
+            text, image = event.step.result
+            assert isinstance(text, Text) and isinstance(image, Image)
+            text.text = "EDITED"
+            image.url = "https://evil/b.png"
+        if isinstance(event, MessagesTaken):
+            [taken] = event.messages
+            assert isinstance(taken.content, list) and isinstance(taken.content[0], Text)
+            taken.content[0].text = "EDITED"
+
+    look_up = ToolCall(id="c1", name="look", args={"q": "x"})
+    llm = Meddling(
+        _tool_use(look_up), _tool_use(look_up.model_copy(update={"id": "c2"})), text_reply("done")
+    )
+    inbox: asyncio.Queue[Any] = asyncio.Queue()
+    inbox.put_nowait([Text(text="also this")])
+    run = await Engine(fixtures, models={"strong": llm}).run(
+        "billing",
+        "acme",
+        [Text(text="look it up")],
+        tools=Tools([Tool("look", "Look", body=look)]),
+        on_event=edit,
+        inbox=inbox,
+    )
+    assert isinstance(run, Generation) and run.reply == "done"
+    assert [step.result for step in run.steps] == [returned, returned]
+    assert [step.args for step in run.steps] == [{"q": "x"}, {"q": "x"}]
+    for conversation in (run.conversation, llm.seen[2]):
+        texts = [
+            part.text
+            for message in conversation
+            if isinstance(message.content, list)
+            for part in message.content
+            if isinstance(part, Text)
+        ]
+        assert texts == ["look it up", "the result", "also this", "the result"]
+        assert all(
+            call.args == {"q": "x"} for message in conversation for call in message.tool_calls
+        )
+
+
 def _cyclic() -> list[Any]:
     held: list[Any] = [1]
     held.append({"back": held})
@@ -904,6 +993,9 @@ def _cyclic() -> list[Any]:
         ({"a": [1, {"b": (2,)}]}, "tuple at input['a'][1]['b']"),
         ({"a": Text(text="x")}, "Text at input['a']"),
         (_cyclic(), "a cycle at input[1]['back']"),
+        ({"x": float("nan")}, "nan at input['x']"),
+        ([1, float("inf")], "inf at input[1]"),
+        ({"a": [{"b": float("-inf")}]}, "-inf at input['a'][0]['b']"),
     ],
     ids=[
         "none",
@@ -915,6 +1007,9 @@ def _cyclic() -> list[Any]:
         "nested-tuple",
         "part-in-object",
         "cycle",
+        "nan",
+        "infinity",
+        "negative-infinity",
     ],
 )
 @pytest.mark.parametrize("agent", ["billing", "triage"])

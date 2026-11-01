@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import posixpath
 import time
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
@@ -156,6 +157,9 @@ HISTORY = TypeAdapter(list[Message])
 SETTINGS = TypeAdapter[dict[str, JsonValue] | None](dict[str, JsonValue] | None)
 QUESTIONS = TypeAdapter(dict[str, Annotated[Question, Field(discriminator="type")]])
 PART_TYPES = ("text", "image", "audio", "document")
+SCALARS = (str, int)
+CONTAINERS = (dict, list)
+_LEAVE = object()
 MAX_TAGS = 32
 MAX_TAG_KEY = 64
 MAX_TAG_VALUE = 256
@@ -171,40 +175,56 @@ def _part(item: object) -> Part | None:
     return None
 
 
+def _at(steps: list[object]) -> str:
+    return "input" + "".join(f"[{step!r}]" for step in steps[1:])
+
+
 def _unfit(input: object) -> str | None:
-    if not isinstance(input, str | dict | list):
+    if isinstance(input, str):
+        return None
+    if not isinstance(input, CONTAINERS):
         return type(input).__name__
+    trail: list[object] = []
     path: set[int] = set()
     seen: set[int] = set()
-    pending: list[tuple[bool, Any, str, object]] = [(True, input, "input", None)]
+    pending: list[tuple[Any, object]] = [(input, None)]
     while pending:
-        entering, value, parent, step = pending.pop()
-        if not entering:
-            path.discard(id(value))
+        value, step = pending.pop()
+        if value is _LEAVE:
+            path.discard(cast(int, step))
+            trail.pop()
             continue
-        if value is None or isinstance(value, str | int | float):
+        if not isinstance(value, CONTAINERS):
+            return f"{type(value).__name__} at {_at([*trail, step])}"
+        held = id(value)
+        if held in seen:
+            if held in path:
+                return f"a cycle at {_at([*trail, step])}"
             continue
-        where = parent if step is None else f"{parent}[{step!r}]"
-        if not isinstance(value, dict | list):
-            return f"{type(value).__name__} at {where}"
-        if id(value) in path:
-            return f"a cycle at {where}"
-        if id(value) in seen:
-            continue
-        seen.add(id(value))
-        path.add(id(value))
-        pending.append((False, value, where, None))
-        if isinstance(value, dict):
-            for key, item in value.items():
-                if not isinstance(key, str):
-                    return f"the key {key!r} at {where}"
-                pending.append((True, item, where, key))
-        else:
-            pending.extend(
-                (True, item, where, n)
-                for n, item in enumerate(value)
-                if value is not input or not _looks_like_part(item)
-            )
+        seen.add(held)
+        inner: list[tuple[Any, object]] | None = None
+        pairs = value.items() if isinstance(value, dict) else enumerate(value)
+        keyed = isinstance(value, dict)
+        parts = value is input and not keyed
+        for key, item in pairs:
+            if keyed and not isinstance(key, str):
+                return f"the key {key!r} at {_at([*trail, step])}"
+            if item is None or isinstance(item, SCALARS):
+                continue
+            if isinstance(item, float):
+                if not math.isfinite(item):
+                    return f"{item!r} at {_at([*trail, step, key])}"
+                continue
+            if parts and _looks_like_part(item):
+                continue
+            if inner is None:
+                inner = []
+            inner.append((item, key))
+        if inner is not None:
+            path.add(held)
+            trail.append(step)
+            pending.append((_LEAVE, held))
+            pending.extend(inner)
     return None
 
 
@@ -394,6 +414,22 @@ def _copied(value: Any) -> Any:
             else:
                 target.append(held)
     return top
+
+
+def _own(content: Content) -> Content:
+    return content if isinstance(content, str) else [part.model_copy() for part in content]
+
+
+def _handed(message: Message) -> Message:
+    return message.model_copy(
+        update={
+            "content": _own(message.content),
+            "tool_calls": [
+                call.model_copy(update={"args": _copied(call.args)}) for call in message.tool_calls
+            ],
+            "reasoning": _copied(message.reasoning),
+        }
+    )
 
 
 def _failure(exc: BaseException) -> str:
@@ -1097,7 +1133,7 @@ class Engine:
                         agent=spec.name,
                         call_id=call.id,
                         step=step.model_copy(
-                            update={"args": _copied(step.args), "result": _copied(step.result)}
+                            update={"args": _copied(step.args), "result": _own(step.result)}
                         ),
                         by=step.by,
                     )
@@ -1377,9 +1413,9 @@ class Engine:
 
         async def ask() -> Reply:
             sending = [
-                *preload,
+                *(_handed(m) for m in preload),
                 *(
-                    m.model_copy(
+                    _handed(m).model_copy(
                         update={"prefix": None, "usage": None, "model": None, "settings": None}
                     )
                     for m in messages
@@ -1437,7 +1473,12 @@ class Engine:
                 taken = drain() if turn else []
                 if taken:
                     await emit(
-                        MessagesTaken(run_id=run_id, agent=spec.name, turn=turn, messages=taken)
+                        MessagesTaken(
+                            run_id=run_id,
+                            agent=spec.name,
+                            turn=turn,
+                            messages=[_handed(message) for message in taken],
+                        )
                     )
                     mode = requested(stop)
                     if mode is not None:

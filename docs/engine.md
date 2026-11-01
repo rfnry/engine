@@ -604,9 +604,9 @@ parts = [Text(text="Is this invoice charged twice?"), Image(media_type="image/pn
 run = await engine.run("support", scope="acme", input=parts)
 ```
 
-A list of parts becomes the first user message as it is; parts in `history` reach the model
-unchanged, and a later run continues from them. History, like input, is read by shape: a message or
-part from another library is read by its fields.
+A list of parts becomes the user message after the history as it is; parts in `history` reach the
+model unchanged, and a later run continues from them. History, like input, is read by shape: a
+message or part from another library is read by its fields.
 
 Pass `record=False` to run without the refinery recording it — a replay, an evaluation, a dry run.
 A consult it makes through an `engine.tool`, or a `Delegate` dispatched through an `EngineTools`,
@@ -689,8 +689,9 @@ stop — so a step can be shown, in a conversation or anywhere, while the run go
 included; any other call the engine answers without running it sends neither: an `Output` it accepts
 or refuses, a call after an accepted `Output`, a call in a reply that was cut short. Its step is in
 `run.steps`. Each handler, `approve`, tool and `expect=` model is handed its own copy of a call's
-`args` — every list and object copied, any other value as it is — so one that changes them changes
-neither the record nor what the model is sent next.
+`args` — every list and object copied, any other value as it is — and a handler's `step`, like the
+messages a `MessagesTaken` or the adapter is handed, holds copies of the parts, so one that changes
+what it is handed changes neither the record nor what the model is sent next.
 
 A foreground `Shell` command of a run with a `Workspace` also sends a `CommandOutput` for what
 it writes, while it runs, and the calls it makes to the run's tools send their own
@@ -1898,10 +1899,11 @@ and objects, `args` itself the first, or fewer in a delegated or routed run, dee
 record's serializer goes (`ValueError: Circular reference detected (depth exceeded)`).
 `refinery.run(scope, run_id)` reads a recorded run back, its delegated and routed runs in place, to
 continue it anywhere — see [Running an agent](#running-an-agent). The record keeps a run's input as
-it was given, and reads it back so: a generation's list input is parts when its first user message
-carried it as parts, the skill's part aside, and JSON otherwise; a decision's list state holding
-media is parts when every item is a part exactly as the record writes one, all its fields and no
-other, and JSON otherwise.
+it was given, and reads it back so: a generation's list input is the parts carried by the user
+message the input became, the skill's part aside, when their JSON equals the stored input, and JSON
+otherwise — a part-shaped class of your own is stored as it dumps itself; a decision's list state
+holding media reads back as parts only when every item is written exactly as a part, all its fields
+and no other, and as JSON otherwise.
 
 ```python
 refinery = Refinery(PostgresStorage(pool))
