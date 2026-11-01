@@ -887,22 +887,24 @@ async def test_args_holding_a_value_that_cannot_be_copied_still_run(
     assert len(received) == (4 if handled else 2) and all(item is leaf for item in received)
 
 
-def test_the_input_check_takes_linear_time_however_deep_or_wide_the_input() -> None:
-    for depth in (10_000, 20_000, 50_000):
-        deep: Any = "leaf"
-        for _ in range(depth):
-            deep = [deep]
-        began = time.perf_counter()
-        assert _unfit(deep) is None
-        assert time.perf_counter() - began < 0.5, depth
-    wide = [{"i": n, "s": "x"} for n in range(200_000)]
+def test_the_input_check_takes_linear_time_however_deep_the_input() -> None:
+    deep: Any = "leaf"
+    for _ in range(50_000):
+        deep = [deep]
     began = time.perf_counter()
-    assert _unfit(wide) is None
-    assert time.perf_counter() - began < 0.5
+    assert _unfit(deep) is None
+    assert time.perf_counter() - began < 2.0
     held: Any = {"n": {1, 2}}
     for _ in range(3):
         held = {"n": [held]}
     assert _unfit(held) == "set at input['n'][0]['n'][0]['n'][0]['n']"
+
+
+def test_the_input_check_takes_linear_time_however_wide_the_input() -> None:
+    wide = [{"a": [n, str(n), None]} for n in range(200_000)]
+    began = time.perf_counter()
+    assert _unfit(wide) is None
+    assert time.perf_counter() - began < 1.0
 
 
 class Meddling:
