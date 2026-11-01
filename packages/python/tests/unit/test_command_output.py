@@ -27,10 +27,8 @@ from .test_engine_workspace import make_tree, use
 
 
 @pytest.fixture
-def root(tmp_path: Path) -> Path:
-    path = tmp_path / "work"
-    path.mkdir()
-    return path
+def root(short_root: Path) -> Path:
+    return short_root
 
 
 class Kept:
@@ -278,9 +276,7 @@ async def test_alternating_streams_with_a_slow_handler_do_not_hold_the_shell(
     assert shown - float((root / "ended").read_text(encoding="utf-8")) < 1.0
 
 
-async def test_a_stream_that_missed_bytes_drops_until_the_next_batch_and_a_batch_joins_per_stream() -> (
-    None
-):
+async def test_an_overflow_drops_until_the_next_batch_and_a_batch_joins_per_stream() -> None:
     said: list[tuple[str, str]] = []
     busy = asyncio.Event()
     free = asyncio.Event()

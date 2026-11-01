@@ -27,14 +27,12 @@ class Seen:
 
 
 @pytest.fixture
-def root(tmp_path: Path) -> Path:
-    path = tmp_path / "work"
-    path.mkdir()
-    return path
+def root(short_root: Path) -> Path:
+    return short_root
 
 
 @pytest.fixture
-async def seen() -> Seen:
+def seen() -> Seen:
     return Seen()
 
 
@@ -196,15 +194,23 @@ async def test_close_passes_each_further_cancel_on(root: Path, cancelled: bool) 
             await asyncio.sleep(0)
 
     b = await Bridge.open(root, answer)
+    raised: list[bool] = []
+
+    async def close() -> None:
+        try:
+            await b.close()
+        except asyncio.CancelledError:
+            raised.append(True)
+            raise
 
     async def closer() -> None:
         if cancelled:
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
-                await b.close()
+                await close()
                 raise
-        await b.close()
+        await close()
 
     _, writer = await asyncio.open_unix_connection(b.path)
     writer.write(request(b))
@@ -226,7 +232,7 @@ async def test_close_passes_each_further_cancel_on(root: Path, cancelled: bool) 
             released.set()
             await asyncio.wait([closing])
     writer.close()
-    assert first == 1 and cancels == [1, 2, 3] and closing.cancelled()
+    assert first == 1 and cancels == [1, 2, 3] and closing.cancelled() and raised == [True]
 
 
 async def test_a_silent_client_does_not_hold_close(
@@ -234,7 +240,9 @@ async def test_a_silent_client_does_not_hold_close(
 ) -> None:
     b = await Bridge.open(root, seen)
     _, writer = await asyncio.open_unix_connection(b.path)
-    await asyncio.sleep(0)
+    async with asyncio.timeout(1):
+        while b._open == 0:
+            await asyncio.sleep(0)
     with caplog.at_level(logging.DEBUG):
         async with asyncio.timeout(1):
             await b.close()
@@ -245,11 +253,12 @@ async def test_a_silent_client_does_not_hold_close(
 async def test_a_client_gone_before_the_reply_is_harmless(
     root: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    calls: list[str] = []
+    entered = asyncio.Event()
+    gone = asyncio.Event()
 
     async def answer(tool: str, args: dict[str, Any]) -> dict[str, Any]:
-        calls.append(tool)
-        await asyncio.sleep(0.1)
+        entered.set()
+        await gone.wait()
         return {"result": "x" * 1_000_000}
 
     b = await Bridge.open(root, answer)
@@ -257,11 +266,14 @@ async def test_a_client_gone_before_the_reply_is_harmless(
         _, writer = await asyncio.open_unix_connection(b.path)
         writer.write(request(b))
         await writer.drain()
-        writer.close()
-        await writer.wait_closed()
-        await asyncio.sleep(0.3)
+        async with asyncio.timeout(5):
+            await entered.wait()
+            writer.close()
+            await writer.wait_closed()
+            gone.set()
+            while b._handlers:
+                await asyncio.sleep(0.01)
         await b.close()
-    assert calls == ["echo"]
     assert [r for r in caplog.records if r.levelno > logging.DEBUG] == []
 
 
@@ -288,7 +300,8 @@ async def test_non_ascii_round_trips(root: Path) -> None:
     try:
         reader, writer = await asyncio.open_unix_connection(b.path)
         writer.write(request(b, args={"q": "café"}))
-        line = await reader.readline()
+        async with asyncio.timeout(5):
+            line = await reader.readline()
         writer.close()
     finally:
         await b.close()
@@ -444,6 +457,9 @@ async def test_a_slot_frees_when_a_call_ends(root: Path) -> None:
         held.release(0)
         async with asyncio.timeout(10):
             assert json.loads(await connections[0][0].readline()) == {"result": 0}
+        async with asyncio.timeout(1):
+            while b._open >= CALLS:
+                await asyncio.sleep(0.01)
         assert await ask(b, request(b, args={"x": CALLS})) == {"result": CALLS}
         assert held.calls == CALLS + 1
         assert all(not reader.at_eof() for reader, _ in connections[1:])

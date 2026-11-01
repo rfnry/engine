@@ -1653,8 +1653,9 @@ returns parts, their JSON list, media `data` in base64. `error` is the text the 
 starts with `tools/bridge:`, and run nothing.
 
 The socket carries every tool the run offers the model — the builtins, `History`, the folder tools,
-the run's `tools=` — except the workspace's own (`Shell`, `Job`, `Jobs`, `Write`, `Edit`), `Output`
-and the builtin `Delegate`; any other name gets the model's error for an unknown tool,
+the run's `tools=` — except the workspace's own (`Shell`, `Job`, `Jobs`, `Write`, `Edit`) and any
+tool named `Output` or `Delegate`, the engine's or one of the run's `tools=`, which the model still
+calls. A name the socket does not carry gets the model's error for an unknown tool,
 `InputError: tools: unknown tool 'Shell'`, and leaves no step and no event. Connections are answered
 as they come, so calls a script makes at once — from threads, or with `asyncio` — run at once, as a
 reply's calls do, up to 64 at once per command: a connection that arrives while 64 are in flight is

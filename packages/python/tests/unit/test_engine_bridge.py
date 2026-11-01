@@ -55,10 +55,8 @@ def until(name):
 
 
 @pytest.fixture
-def root(tmp_path: Path) -> Path:
-    path = tmp_path / "work"
-    path.mkdir()
-    return path
+def root(short_root: Path) -> Path:
+    return short_root
 
 
 def script(root: Path, body: str) -> None:
@@ -195,6 +193,48 @@ async def test_three_calls_at_once_run_at_once(tmp_path: Path, root: Path) -> No
     assert len(starts) == 3 and max(starts) < min(ends)
 
 
+PAIR = """
+import json, os, socket, sys
+mine, other = sys.argv[1], sys.argv[2]
+with open(mine + ".tmp", "w") as f:
+    f.write(os.environ["RFNRY_TOOLS_KEY"])
+os.replace(mine + ".tmp", mine + ".key")
+until(other + ".key")
+with socket.socket(socket.AF_UNIX) as s, open(other + ".key") as f:
+    s.connect(os.environ["RFNRY_TOOLS"])
+    s.sendall(json.dumps({"key": f.read(), "tool": "lookup", "args": {}}).encode() + b"\\n")
+    refused = json.loads(s.makefile(encoding="utf-8").readline())
+print(json.dumps([refused, call("lookup")]))
+open(mine + ".done", "w").close()
+until(other + ".done")
+"""
+
+
+async def test_two_commands_at_once_refuse_each_other_s_key(tmp_path: Path, root: Path) -> None:
+    script(root, UNTIL + PAIR)
+    llm = Scripted(
+        use(shell(f"{PY} script.py a b", "1"), shell(f"{PY} script.py b a", "2")),
+        text_reply("ok"),
+    )
+    async with (
+        asyncio.timeout(30),
+        Workspace(Local(root), scope="acme") as work,
+        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+    ):
+        run = await engine.run(
+            "coder", "acme", "x", workspace=work, tools=Tools([Tool("lookup", "Look", body=found)])
+        )
+    assert isinstance(run, Generation)
+    shells = [s for s in run.steps if s.tool == "Shell"]
+    assert [json.loads(result(s)["stdout"]) for s in shells] == [
+        [{"error": "tools/bridge: the key is not this command's"}, {"result": "found"}]
+    ] * 2
+    assert sorted((s.tool, s.by) for s in run.steps if s.tool == "lookup") == [
+        ("lookup", "1"),
+        ("lookup", "2"),
+    ]
+
+
 async def test_approve_sees_a_script_s_call_and_can_refuse_it(tmp_path: Path, root: Path) -> None:
     asked: list[tuple[str, str | None]] = []
 
@@ -269,6 +309,31 @@ async def test_the_workspace_s_own_tools_and_delegate_are_not_offered(
     assert all(e.by is None for e in events if isinstance(e, ToolCallStarted | ToolResultReady))
 
 
+async def test_a_run_tool_named_output_is_the_model_s_but_not_a_script_s(
+    tmp_path: Path, root: Path
+) -> None:
+    names = ["Output", "Delegate"]
+    script(root, f"import json\nprint(json.dumps([call(name) for name in {names!r}]))\n")
+    llm = Scripted(use(ToolCall(id="o", name="Output", args={})), use(shell()), text_reply("ok"))
+    async with (
+        Workspace(Local(root), scope="acme") as work,
+        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+    ):
+        run = await engine.run(
+            "coder",
+            "acme",
+            "x",
+            workspace=work,
+            tools=Tools([Tool(name, "Emit", body=found) for name in names]),
+        )
+    assert isinstance(run, Generation)
+    called, shelled = run.steps
+    assert (called.tool, called.result, called.is_error) == ("Output", "found", False)
+    assert json.loads(result(shelled)["stdout"]) == [
+        {"error": f"InputError: tools: unknown tool {name!r}"} for name in names
+    ]
+
+
 class Rootless:
     def __init__(self, local: Local) -> None:
         self._local = local
@@ -290,7 +355,7 @@ class Relative(Rootless):
 async def test_a_backend_with_a_relative_root_gives_the_command_an_absolute_socket(
     tmp_path: Path, root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(root.parent)
     script(root, 'import os\nprint(os.environ["RFNRY_TOOLS"], call("lookup")["result"])\n')
     async with Workspace(Relative(Local(root)), scope="acme") as work:
         run, _, _ = await run_coder(tmp_path, work, tools=[Tool("lookup", "Look", body=found)])
@@ -308,7 +373,7 @@ class Linked(Rootless):
 async def test_a_backend_s_symlinked_root_keeps_the_socket_on_the_path_it_gave(
     tmp_path: Path, root: Path
 ) -> None:
-    link = tmp_path / "link"
+    link = root.parent / "link"
     link.symlink_to(root, target_is_directory=True)
     script(root, 'import os\nprint(os.environ["RFNRY_TOOLS"], call("lookup")["result"])\n')
     async with Workspace(Linked(Local(root), link), scope="acme") as work:
@@ -347,6 +412,41 @@ async def test_no_bridge_without_the_switch_a_root_or_a_run(
     assert out == "None []\n"
     assert "RFNRY_TOOLS" not in description
     assert list(root.glob(".rfnry-*")) == []
+
+
+async def test_a_shell_inside_another_tool_call_gets_no_variables_and_no_bridge(
+    tmp_path: Path, root: Path
+) -> None:
+    (root / "script.py").write_text(
+        "import glob, os\n"
+        "print(sorted(k for k in os.environ if k.startswith('RFNRY_')), len(glob.glob('.rfnry-*')))\n",
+        encoding="utf-8",
+    )
+    tree = make_tree(tmp_path)
+    llm = Scripted(use(ToolCall(id="n", name="nested", args={})), use(shell()), text_reply("ok"))
+    async with (
+        Workspace(Local(root), scope="acme", tree="/srv/agents") as work,
+        Engine(tree, models={"strong": llm}) as engine,
+    ):
+
+        async def nested(args: dict[str, Any]) -> Any:
+            surface = EngineTools(engine, agent="coder", scope="acme", workspace=work)
+            return await surface.dispatch("Shell", {"command": f"{PY} script.py"})
+
+        run = await engine.run(
+            "coder",
+            "acme",
+            "x",
+            workspace=work,
+            tools=Tools([Tool("nested", "Run a command from code", body=nested)]),
+        )
+    assert isinstance(run, Generation)
+    inner, outer = run.steps
+    assert inner.tool == "nested" and isinstance(inner.result, str)
+    assert json.loads(inner.result)["stdout"] == "[] 0\n"
+    assert result(outer)["stdout"] == (
+        "['RFNRY_AGENT', 'RFNRY_TOOLS', 'RFNRY_TOOLS_KEY', 'RFNRY_TREE'] 1\n"
+    )
 
 
 async def test_a_run_with_no_tool_to_offer_gets_no_bridge(tmp_path: Path, root: Path) -> None:
@@ -505,20 +605,6 @@ async def test_a_large_and_non_ascii_result_reaches_the_script_whole(
     async with Workspace(Local(root), scope="acme") as work:
         run, _, _ = await run_coder(tmp_path, work, tools=[Tool("big", "Big", body=big)])
     assert result(run.steps[-1])["stdout"] == "1500000 {'é'}\n"
-
-
-async def test_a_silent_connection_does_not_hold_the_shell(tmp_path: Path, root: Path) -> None:
-    script(
-        root,
-        "import os, socket\n"
-        "s = socket.socket(socket.AF_UNIX)\n"
-        "s.connect(os.environ['RFNRY_TOOLS'])\n",
-    )
-    async with Workspace(Local(root), scope="acme") as work:
-        run, _, _ = await run_coder(tmp_path, work, tools=[Tool("lookup", "Look", body=lookup)])
-    assert result(run.steps[-1])["exit_code"] == 0
-    assert [s.tool for s in run.steps] == ["Shell"]
-    assert run.steps[-1].duration_ms < 2000
 
 
 async def test_a_delegated_child_s_command_calls_the_child_s_tools(
@@ -1058,6 +1144,34 @@ async def test_a_reply_a_process_that_escaped_the_command_never_reads_does_not_h
     assert [s.tool for s in run.steps] == ["stubborn", "Shell"]
     assert result(run.steps[-1])["exit_code"] == 0
     assert run.duration_ms < 5000
+
+
+STUCK = """
+import os, socket, time
+s = socket.socket(socket.AF_UNIX)
+s.connect(os.environ["RFNRY_TOOLS"])
+open("connected", "w").close()
+time.sleep(30)
+"""
+
+
+async def test_a_stuck_connection_is_cut_when_its_command_ends(tmp_path: Path, root: Path) -> None:
+    (root / "stuck.py").write_text(STUCK, encoding="utf-8")
+    script(root, ESCAPE + 'escape("stuck.py")\nuntil("connected")\n')
+    async with Workspace(Local(root), scope="acme") as work:
+        running = asyncio.ensure_future(
+            run_coder(tmp_path, work, tools=[Tool("lookup", "Look", body=lookup)])
+        )
+        try:
+            ended, _ = await asyncio.wait([running], timeout=10)
+        finally:
+            end_escaped(root, "stuck.py")
+        run, _, _ = await running
+    assert ended == {running}
+    assert (root / "connected").exists()
+    assert [s.tool for s in run.steps] == ["Shell"]
+    assert result(run.steps[-1])["exit_code"] == 0
+    assert run.steps[-1].duration_ms < 3000
 
 
 async def test_a_call_past_the_cap_is_refused_and_leaves_no_step(

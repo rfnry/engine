@@ -113,7 +113,8 @@ async def test_a_coder_calls_a_tool_from_its_script(adapters: Any, tmp_path: Pat
             tools=Tools([tool]),
         )
     assert isinstance(run, Generation)
-    assert str(sum(values.values())) in run.reply
+    total = sum(values.values())
+    assert str(total) in run.reply.replace(",", "").replace(" ", "")
     calls = [s for s in run.steps if s.tool == "constant"]
     assert calls
     assert all(s.by for s in calls)

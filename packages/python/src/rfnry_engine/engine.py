@@ -921,9 +921,9 @@ class Engine:
             start=options.start,
         )
         room = options.workspace if spec.workspace else None
-        barred = WORKSPACE_NAMES | ({DELEGATE_TOOL} if spec.agents else frozenset())
-        offered = [n for n in surface.names if n not in barred]
-        bridging = room is not None and room._bridging and bool(offered)
+        barred = WORKSPACE_NAMES | {DELEGATE_TOOL, OUTPUT_TOOL}
+        reachable = surface.without(*barred)
+        bridging = room is not None and room._bridging and bool(reachable)
         own_deadline = surface._in_workers | (WORKSPACE_TOOLS if room is not None else frozenset())
         variables = (
             {
@@ -1074,8 +1074,10 @@ class Engine:
             name: str,
             args: dict[str, Any],
         ) -> dict[str, Any]:
-            if name in barred or name not in surface:
-                return {"error": _failure(InputError(f"tools: unknown tool {name!r}"))}
+            try:
+                reachable._find(name)
+            except InputError as exc:
+                return {"error": _failure(exc)}
             call = ToolCall(id=f"{shell.id}.{next(numbers)}", name=name, args=args)
             began = time.monotonic()
             calling = asyncio.ensure_future(call_tool(call, shell.id))
@@ -1129,7 +1131,7 @@ class Engine:
             if requested(stop) == "now":
                 return await cut(call, began, by)
             child_run_id: str | None = None
-            stopped = False
+            cut_short = False
             content: Content
             approved = None
             if options.approve is not None:
@@ -1164,7 +1166,7 @@ class Engine:
                 if approved is False:
                     content, is_error = f"NotApproved: {call.name} was not approved", True
                 elif call.name == DELEGATE_TOOL and spec.agents:
-                    content, is_error, child_run_id, stopped = await delegate(call)
+                    content, is_error, child_run_id, cut_short = await delegate(call)
                 else:
                     limit = None if call.name in own_deadline else self.tool_timeout
                     deadline = asyncio.timeout(limit)
@@ -1178,10 +1180,10 @@ class Engine:
                                 f"TimeoutError: engine: {call.name} timed out after {limit:g}s"
                             )
                         else:
-                            content = f"{type(exc).__name__}: {exc}"
+                            content = _failure(exc)
                         is_error = True
                     if here.stopped or here.pressed:
-                        content, is_error, stopped = STOPPED, True, True
+                        content, is_error, cut_short = STOPPED, True, True
             finally:
                 here.over = True
             step = Step(
@@ -1192,7 +1194,7 @@ class Engine:
                 at=_now(),
                 duration_ms=int((time.monotonic() - began) * 1000),
                 child_run_id=child_run_id,
-                stopped=stopped,
+                stopped=cut_short,
                 approved=approved,
                 by=by,
             )
@@ -1258,16 +1260,27 @@ class Engine:
                         kept.append(task)
                 return kept
 
-            stopped = await wait(tasks, stop, finishing)
-            failures: list[Exception] = []
+            cut_short = await wait(tasks, stop, finishing)
+            raised: list[BaseException] = []
+            held: list[Exception] = []
             for call, task in zip(batch, tasks, strict=True):
-                answer(call, await cut(call, began) if task.cancelled() else task.result())
+                try:
+                    if task.cancelled():
+                        await cut(call, began)
+                    elif (failed := task.exception()) is not None:
+                        raised.append(failed)
+                except Exception as exc:
+                    raised.append(exc)
+                built = next((step for done, step in ran if done is call), None)
+                if built is not None:
+                    answer(call, built)
                 here = foregrounds.pop(id(call), None)
                 if here is not None and here.failed is not None:
-                    failures.append(here.failed)
+                    held.append(here.failed)
+            failures = [*raised, *held]
             if failures:
                 raise failures[0]
-            return stopped
+            return cut_short
 
         def drain() -> list[Message]:
             taken: list[Message] = []

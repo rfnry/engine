@@ -480,12 +480,11 @@ async def test_the_tool_of_getting_started_runs_in_its_worker_as_written(
 
 
 async def test_the_bridge_client_of_the_docs_calls_a_tool_from_a_command_as_written(
-    tmp_path: Path,
+    tmp_path: Path, short_root: Path
 ) -> None:
     root = tmp_path / "agents"
     tree(root)
-    work = tmp_path / "work"
-    work.mkdir()
+    work = short_root
     write(work / "solve.py", CLIENT)
 
     async def lookup_order(args: dict[str, Any]) -> dict[str, Any]:

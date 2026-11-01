@@ -6,7 +6,7 @@ import os
 import secrets
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 LINE = 1_048_576
 CALLS = 64
@@ -65,9 +65,8 @@ class Bridge:
         return await self._answer(tool, args)
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        task = asyncio.current_task()
-        if task is not None:
-            self._handlers.add(task)
+        task = cast(asyncio.Task[Any], asyncio.current_task())
+        self._handlers.add(task)
         counted = False
         try:
             if self._closed:
@@ -99,8 +98,7 @@ class Bridge:
             if counted:
                 self._open -= 1
             writer.close()
-            if task is not None:
-                self._handlers.discard(task)
+            self._handlers.discard(task)
 
     async def close(self) -> None:
         self._closed = True
