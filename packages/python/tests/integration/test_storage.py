@@ -5,7 +5,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import asyncpg
 import pytest
+from database import SCHEMA, URL
 from unit.fakes import (
     PICK,
     Answering,
@@ -40,6 +42,7 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import Decision, Fingerprint, Generation
 from rfnry_engine.refinery.labels import Outcome, Review
+from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery, label_of
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 from rfnry_engine.stop import Stop
@@ -909,6 +912,53 @@ async def test_put_runs_stores_nothing_when_a_body_is_not_json(storage: Storage)
     assert str(raised.value) == (
         "refinery/postgres: storage rejected put_runs: Object of type date is not JSON serializable"
     )
+    assert await storage.get_run("a", "r1") is None
+
+
+async def coded(**codec: Any) -> Any:
+    async def init(conn: Any) -> None:
+        await conn.set_type_codec("bytea", schema="pg_catalog", **codec)
+
+    return await asyncpg.create_pool(
+        URL, min_size=1, max_size=1, init=init, server_settings={"search_path": SCHEMA}
+    )
+
+
+async def test_a_pool_with_its_own_bytea_codec_still_records(storage: Storage) -> None:
+    given: list[str] = []
+
+    def encoder(value: Any) -> bytes:
+        given.append(type(value).__name__)
+        return bytes(value)
+
+    pool = await coded(encoder=encoder, decoder=bytes, format="binary")
+    try:
+        mine = PostgresStorage(pool)
+        row = _run("a", "r1").model_copy(update={"body": {"café": ["ok", 1, None]}})
+        await mine.put_runs("a", [row])
+        got = await mine.get_run("a", "r1")
+        assert got is not None and got.body == row.body
+        assert await pool.fetchval("SELECT $1::bytea", b"\x00\xff") == b"\x00\xff"
+    finally:
+        await pool.close()
+    assert given == ["_Encoded", "bytes"]
+
+
+async def test_a_pool_whose_bytea_codec_takes_only_bytes_cannot_record(storage: Storage) -> None:
+    pool = await coded(
+        encoder=lambda value: "\\x" + value.hex(),
+        decoder=lambda text: bytes.fromhex(text[2:]),
+        format="text",
+    )
+    try:
+        with pytest.raises(
+            StorageError,
+            match=r"^refinery/postgres: storage rejected put_runs: invalid input for query argument "
+            r"\$11: .*'_Encoded' object has no attribute 'hex'",
+        ):
+            await PostgresStorage(pool).put_runs("a", [_run("a", "r1")])
+    finally:
+        await pool.close()
     assert await storage.get_run("a", "r1") is None
 
 
