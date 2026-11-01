@@ -1074,10 +1074,8 @@ class Engine:
             name: str,
             args: dict[str, Any],
         ) -> dict[str, Any]:
-            try:
-                reachable._find(name)
-            except InputError as exc:
-                return {"error": _failure(exc)}
+            if name not in reachable:
+                return {"error": _failure(InputError(f"tools: unknown tool {name!r}"))}
             call = ToolCall(id=f"{shell.id}.{next(numbers)}", name=name, args=args)
             began = time.monotonic()
             calling = asyncio.ensure_future(call_tool(call, shell.id))

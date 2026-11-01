@@ -88,14 +88,11 @@ class Tools:
     def definitions(self) -> list[dict[str, Any]]:
         return [dict(definition) for definition, _ in self._entries.values()]
 
-    def _find(self, name: str) -> Dispatcher:
+    async def dispatch(self, name: str, args: dict[str, Any]) -> Result:
         entry = self._entries.get(name)
         if entry is None:
             raise InputError(f"tools: unknown tool {name!r}")
-        return entry[1]
-
-    async def dispatch(self, name: str, args: dict[str, Any]) -> Result:
-        return await self._find(name)(args)
+        return await entry[1](args)
 
     def __add__(self, other: Tools | ToolsLike) -> Tools:
         return Tools([self, other])
