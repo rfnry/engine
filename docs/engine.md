@@ -2264,7 +2264,9 @@ a non-ASCII character escaped to six, 32 MiB unless you set another number, `Non
 past it the worker sends a short error in its place, so a result too large never reaches your
 server, the model reads `WorkerError: workers/process: refund sent back 40000023 bytes, over the
 limit of 33554432 bytes`, and the worker goes on. A result under the limit still costs your server
-about three times its size while it is read, for each worker with one in flight. A worker that exits
+about three times its size while it is read, for each worker with one in flight, and recording the
+run holds its body, which stores a result twice, in its step and in the conversation, at most twice
+over while it is written. A worker that exits
 — `os._exit()`, a signal, out of memory, a crash in a C extension — fails every call it had in
 flight, even while a process it forked still holds its pipes: `WorkerError: workers/pool: the worker
 for refund stopped: exited with code 3`, or `killed by signal 9` when a signal ended it, the run

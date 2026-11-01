@@ -59,6 +59,14 @@ def _clean(value: Any) -> Any:
     return value
 
 
+class _Encoded:
+    def __init__(self, body: dict[str, Any]) -> None:
+        self.body = body
+
+    def __buffer__(self, flags: int, /) -> memoryview:
+        return memoryview(json.dumps(self.body).encode())
+
+
 def stored_tags(body: Any) -> str:
     tags = body.get("tags") if isinstance(body, dict) else None
     return json.dumps(_clean(tags or {}))
@@ -111,30 +119,26 @@ class PostgresStorage:
         if not rows:
             return
         async with self._guard("put_runs"), self._pool.acquire() as conn, conn.transaction():
-            await conn.executemany(
-                f"INSERT INTO engine_runs ({_RUN_COLUMNS}, tags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::json, "
-                "$12::jsonb) "
-                "ON CONFLICT (scope, run_id) DO UPDATE SET parent_run_id = EXCLUDED.parent_run_id, agent = EXCLUDED.agent, "
-                "kind = EXCLUDED.kind, task = EXCLUDED.task, at = EXCLUDED.at, recorded = EXCLUDED.recorded, "
-                "duration_ms = EXCLUDED.duration_ms, model = EXCLUDED.model, body = EXCLUDED.body, tags = EXCLUDED.tags",
-                [
-                    (
-                        row.scope,
-                        row.run_id,
-                        row.parent_run_id,
-                        row.agent,
-                        row.kind,
-                        row.task,
-                        row.at,
-                        row.recorded,
-                        row.duration_ms,
-                        row.model,
-                        json.dumps(row.body),
-                        stored_tags(row.body),
-                    )
-                    for row in rows
-                ],
-            )
+            for row in rows:
+                await conn.execute(
+                    f"INSERT INTO engine_runs ({_RUN_COLUMNS}, tags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, "
+                    "convert_from($11::bytea, 'UTF8')::json, $12::jsonb) "
+                    "ON CONFLICT (scope, run_id) DO UPDATE SET parent_run_id = EXCLUDED.parent_run_id, agent = EXCLUDED.agent, "
+                    "kind = EXCLUDED.kind, task = EXCLUDED.task, at = EXCLUDED.at, recorded = EXCLUDED.recorded, "
+                    "duration_ms = EXCLUDED.duration_ms, model = EXCLUDED.model, body = EXCLUDED.body, tags = EXCLUDED.tags",
+                    row.scope,
+                    row.run_id,
+                    row.parent_run_id,
+                    row.agent,
+                    row.kind,
+                    row.task,
+                    row.at,
+                    row.recorded,
+                    row.duration_ms,
+                    row.model,
+                    _Encoded(row.body),
+                    stored_tags(row.body),
+                )
 
     async def get_run(self, scope: str, run_id: str) -> RunRow | None:
         async with self._guard("get_run"), self._pool.acquire() as conn:
