@@ -249,12 +249,12 @@ async def test_dispatch_delegate_asks_a_decision_agent_the_questions_it_is_given
     engine = Engine(lead(tmp_path), refinery=recorder, models={"strong": Scripted(), "judge": dm})
     tools = EngineTools(engine, agent="lead", scope="acme")
     result = await tools.dispatch(
-        "Delegate", {"agent": "blank", "input": "x", "questions": {"area": PICK}}
+        "Delegate", {"agent": "questionless", "input": "x", "questions": {"area": PICK}}
     )
     assert json.loads(str(result))["answers"]["area"]["choice"] == "orders"
     assert dm.calls == [("x", {"area": Choice.model_validate(PICK)})]
     [run] = recorder.runs
-    assert isinstance(run, Decision) and run.agent == "blank" and run.runtime == ["area"]
+    assert isinstance(run, Decision) and run.agent == "questionless" and run.runtime == ["area"]
 
 
 async def test_dispatch_delegate_gives_the_child_the_tenant_tools(tmp_path: Path) -> None:
@@ -309,12 +309,16 @@ BAD_DELEGATIONS: list[tuple[dict[str, Any], type[Exception], str]] = [
         "engine: generation agent 'writer' takes no questions",
     ),
     (
-        {"agent": "blank", "input": "x", "questions": {"area": {**PICK, "options": {"a": None}}}},
+        {
+            "agent": "questionless",
+            "input": "x",
+            "questions": {"area": {**PICK, "options": {"a": None}}},
+        },
         InputError,
         "engine: questions do not fit the contract: ",
     ),
     (
-        {"agent": "blank", "input": "x", "questions": {"area": {"type": "check"}}},
+        {"agent": "questionless", "input": "x", "questions": {"area": {"type": "check"}}},
         InputError,
         "engine: questions do not fit the contract: ",
     ),
@@ -324,12 +328,12 @@ BAD_DELEGATIONS: list[tuple[dict[str, Any], type[Exception], str]] = [
         "engine: decision agent 'grader' already asks 'urgent' from its folder",
     ),
     (
-        {"agent": "blank", "input": "x"},
+        {"agent": "questionless", "input": "x"},
         InputError,
         NO_QUESTIONS,
     ),
     (
-        {"agent": "blank", "input": "x", "questions": "Which area?"},
+        {"agent": "questionless", "input": "x", "questions": "Which area?"},
         InputError,
         "tools/delegate: invalid arguments: ",
     ),
@@ -338,7 +342,7 @@ BAD_DELEGATIONS: list[tuple[dict[str, Any], type[Exception], str]] = [
         InputError,
         "tools/delegate: agent 'lead' may not delegate to 'support'",
     ),
-    ({"agent": "blank"}, InputError, "tools/delegate: invalid arguments: "),
+    ({"agent": "questionless"}, InputError, "tools/delegate: invalid arguments: "),
 ]
 
 
@@ -386,7 +390,7 @@ async def test_delegate_offers_a_task_and_questions_only_when_a_target_takes_the
         "Hand an input to another agent and get its reply.\n"
         "- grader (decision agent): Grades replies\n"
         "- writer (tasks: apology): Writes replies\n"
-        "- blank (decision agent): Answers what it is asked"
+        "- questionless (decision agent): Answers what it is asked"
     )
     [plain] = EngineTools(engine, agent="plain", scope="acme").only("Delegate").definitions()
     assert list(plain["input_schema"]["properties"]) == ["agent", "input", "task"]
@@ -409,12 +413,16 @@ async def test_an_adapter_that_edits_the_offered_schema_changes_no_later_run(
 async def test_a_generation_agent_asks_a_decision_agent_a_question_it_composed(
     tmp_path: Path,
 ) -> None:
-    llm = Scripted(delegating("blank", "Charged twice", questions={"area": PICK}), text_reply("ok"))
+    llm = Scripted(
+        delegating("questionless", "Charged twice", questions={"area": PICK}), text_reply("ok")
+    )
     dm = Answering()
     run = await Engine(lead(tmp_path), models={"strong": llm, "judge": dm}).run("lead", "acme", "x")
     assert isinstance(run, Generation) and not run.steps[0].is_error
     [child] = run.children
-    assert isinstance(child, Decision) and child.agent == "blank" and child.runtime == ["area"]
+    assert (
+        isinstance(child, Decision) and child.agent == "questionless" and child.runtime == ["area"]
+    )
     assert child.questions == {"area": Choice.model_validate(PICK)}
     assert json.loads(str(run.steps[0].result))["answers"]["area"]["choice"] == "orders"
     assert run.steps[0].args["questions"] == {"area": PICK}

@@ -43,7 +43,10 @@ def grader(root: Path) -> Path:
     write(
         root / "grader/questions/urgent.json", '{"type": "check", "instructions": "Is it urgent?"}'
     )
-    write(root / "blank/AGENT.md", "---\nname: blank\nkind: decision\nmodel: judge\n---\n")
+    write(
+        root / "questionless/AGENT.md",
+        "---\nname: questionless\nkind: decision\nmodel: judge\n---\n",
+    )
     return root
 
 
@@ -96,7 +99,9 @@ async def test_a_decision_agent_with_no_questions_of_its_own_runs_on_runtime_one
     root = grader(tmp_path)
     dm = Answering()
     engine = Engine(root, models={"judge": dm})
-    run = await ask(engine, "blank", "acme", {"message": "Where is it?"}, questions={"area": AREA})
+    run = await ask(
+        engine, "questionless", "acme", {"message": "Where is it?"}, questions={"area": AREA}
+    )
     assert isinstance(run, Decision) and run.questions == {"area": AREA}
     assert run.runtime == ["area"] and run.answers["area"].type == "choice"
     nothing: list[dict[str, Question] | None] = [None, {}]
@@ -105,7 +110,7 @@ async def test_a_decision_agent_with_no_questions_of_its_own_runs_on_runtime_one
             InputError,
             match=f"^{NO_QUESTIONS}$",
         ):
-            await ask(engine, "blank", "acme", "x", questions=given)
+            await ask(engine, "questionless", "acme", "x", questions=given)
     assert len(dm.calls) == 1
 
 
@@ -230,8 +235,8 @@ async def test_a_task_is_refused_for_a_decision_agent_whatever_it_asks(tmp_path:
     engine = Engine(root, models={"judge": dm})
     with pytest.raises(InputError, match="^engine: decision agent 'grader' takes no task; "):
         await engine.run("grader", "acme", "x", task="tone")
-    with pytest.raises(InputError, match="^engine: decision agent 'blank' takes no task; "):
-        await ask(engine, "blank", "acme", "x", task="tone", questions=RUNTIME)
+    with pytest.raises(InputError, match="^engine: decision agent 'questionless' takes no task; "):
+        await ask(engine, "questionless", "acme", "x", task="tone", questions=RUNTIME)
     assert dm.calls == []
 
 

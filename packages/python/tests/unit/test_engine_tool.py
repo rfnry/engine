@@ -157,17 +157,22 @@ async def test_a_decision_agent_as_a_tool_takes_questions_of_the_caller(
     assert run.questions["area"] == Choice.model_validate(PICK)
     with pytest.raises(InputError, match="^engine: decision agent 'grader' takes no task; "):
         await grader.dispatch("grader", {"input": "Thanks!", "task": "tone"})
-    blank = engine.tool("blank", scope="acme")
-    assert list(blank.definitions()[0]["input_schema"]["properties"]) == ["input", "questions"]
-    asked = await blank.dispatch("blank", {"input": "x", "questions": {"area": PICK}})
+    questionless = engine.tool("questionless", scope="acme")
+    assert list(questionless.definitions()[0]["input_schema"]["properties"]) == [
+        "input",
+        "questions",
+    ]
+    asked = await questionless.dispatch("questionless", {"input": "x", "questions": {"area": PICK}})
     assert isinstance(asked, dict) and set(asked["answers"]) == {"area"}
     with pytest.raises(InputError, match="^engine: questions do not fit the contract: "):
-        await blank.dispatch("blank", {"input": "x", "questions": {"area": {"type": "score"}}})
+        await questionless.dispatch(
+            "questionless", {"input": "x", "questions": {"area": {"type": "score"}}}
+        )
     with pytest.raises(
         InputError,
         match=f"^{NO_QUESTIONS}$",
     ):
-        await blank.dispatch("blank", {"input": "x"})
+        await questionless.dispatch("questionless", {"input": "x"})
 
 
 async def test_a_generation_agent_as_a_tool_takes_a_task_it_has(tmp_path: Path) -> None:

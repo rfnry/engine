@@ -161,19 +161,28 @@ def test_a_route_by_a_scripted_question_is_refused(tmp_path: Path) -> None:
     [
         (
             '{"type": "check", "instructions": "Urgent?", "option": "x"}',
-            "has the unknown key 'option'; a question takes type, instructions, options, levels, yes and no",
+            "tree: {path} has the unknown key 'option'; a question takes type, instructions, options, levels, yes and no",
         ),
-        ('{"type": "check", "instructions": "Urgent?",}', "is not valid JSON: "),
-        ('["check"]', "is not a JSON object; "),
-        ('{"type": "choice", "instructions": "Who?"}', "options: field required"),
+        (
+            '{"type": "check", "instructions": "Urgent?",}',
+            "tree: {path} is not valid JSON: Illegal trailing comma before end of object: line 1 column 44 (char 43); fix it in that file",
+        ),
+        (
+            '["check"]',
+            "tree: {path} is not a JSON object; a question is an object with type, instructions and its options, levels or yes and no",
+        ),
+        (
+            '{"type": "choice", "instructions": "Who?"}',
+            "tree: invalid question {path}; options: field required",
+        ),
         (
             '{"type": "choice", "instructions": "Who?", "options": {"a": "A"}}',
-            "a choice needs at least two options",
+            "tree: invalid question {path}; the file: models: a choice needs at least two options",
         ),
-        ('{"type": "check"}', "instructions: field required"),
+        ('{"type": "check"}', "tree: invalid question {path}; instructions: field required"),
         (
             '{"type": "vote", "instructions": "Who?"}',
-            "type: input should be 'choice', 'score' or 'check'",
+            "tree: invalid question {path}; type: input should be 'choice', 'score' or 'check'",
         ),
     ],
 )
@@ -185,9 +194,7 @@ def test_a_fixed_question_that_does_not_fit_is_refused_when_the_tree_loads(
     write(path, text)
     with pytest.raises(ConfigurationError) as raised:
         load_tree(tmp_path)
-    said = str(raised.value)
-    assert said.startswith(f"tree: {path} ") or said.startswith(f"tree: invalid question {path}; ")
-    assert message in said
+    assert str(raised.value) == message.format(path=path)
 
 
 async def test_a_script_that_raises_fails_the_run_before_the_decision_model_is_called(
@@ -616,10 +623,16 @@ def test_a_question_holding_a_field_of_another_type_is_refused_naming_its_file(
     [
         (
             '{"type": "choice", "instructions": "Which?", "option": "x"}',
-            "has the unknown key 'option'; a question takes type, instructions, options, levels, yes and no",
+            "tree: {path} has the unknown key 'option'; a question takes type, instructions, options, levels, yes and no",
         ),
-        ('{"type": "choice", "instructions": "Which?",}', "is not valid JSON: "),
-        ('{"type": "choice", "instructions": " "}', "instructions must say something"),
+        (
+            '{"type": "choice", "instructions": "Which?",}',
+            "tree: {path} is not valid JSON: Illegal trailing comma before end of object: line 1 column 44 (char 43); fix it in that file",
+        ),
+        (
+            '{"type": "choice", "instructions": " "}',
+            "tree: invalid question {path}; instructions: instructions must say something; write the question",
+        ),
     ],
 )
 def test_a_scripted_question_s_json_that_does_not_fit_is_refused_beside_its_script(
@@ -631,9 +644,7 @@ def test_a_scripted_question_s_json_that_does_not_fit_is_refused_beside_its_scri
     write(tmp_path / "triage/questions/q.py", ORDER)
     with pytest.raises(ConfigurationError) as raised:
         load_tree(tmp_path)
-    said = str(raised.value)
-    assert said.startswith(f"tree: {path} ") or said.startswith(f"tree: invalid question {path}; ")
-    assert message in said
+    assert str(raised.value) == message.format(path=path)
 
 
 @pytest.mark.parametrize(

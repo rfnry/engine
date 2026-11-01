@@ -28,7 +28,7 @@ from rfnry_engine.records import Decision, Fingerprint, Generation, Run, Step
 from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.storage import RunRow
 
-NO_QUESTIONS = "engine: decision agent 'blank' has no questions to ask; give it questions/, or ask it through Delegate"
+NO_QUESTIONS = "engine: decision agent 'questionless' has no questions to ask; give it questions/, or ask it through Delegate"
 
 
 class Scripted:
@@ -306,13 +306,13 @@ PICK: dict[str, Any] = {
 LEAD = {
     "lead/AGENT.md": (
         "---\nname: lead\nkind: generation\nmodel: strong\ndescription: Leads the desk\n"
-        "agents: [grader, writer, blank]\n---\nLead the desk.\n"
+        "agents: [grader, writer, questionless]\n---\nLead the desk.\n"
     ),
     "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades replies\n---\n",
     "grader/questions/urgent.json": '{"type": "check", "instructions": "Urgent?"}',
     "writer/AGENT.md": "---\nname: writer\nkind: generation\nmodel: strong\ndescription: Writes replies\n---\nWrite.\n",
     "writer/tasks/apology.md": "Apologise first.\n",
-    "blank/AGENT.md": "---\nname: blank\nkind: decision\nmodel: judge\ndescription: Answers what it is asked\n---\n",
+    "questionless/AGENT.md": "---\nname: questionless\nkind: decision\nmodel: judge\ndescription: Answers what it is asked\n---\n",
 }
 
 
