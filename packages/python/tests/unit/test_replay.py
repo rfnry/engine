@@ -1322,3 +1322,50 @@ async def test_a_workspace_of_another_scope_is_refused_by_replay(
         InputError, match="^refinery: workspace belongs to scope 'acme', not 'globex'$"
     ):
         Refinery(storage).replay("globex", candidate(fixtures), agent="support", workspace=work)
+
+
+async def test_each_attempt_is_a_pair_of_its_own_that_no_other_attempt_reaches(
+    fixtures: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    recorder = Engine(
+        fixtures,
+        refinery=refinery,
+        models={"strong": Scripted(text_reply("a")), "judge": Answering()},
+    )
+    asked = {"area": PICK}
+    generation = await recorder.run("support", "acme", {"ask": {"why": ["charged"]}})
+    decision = await recorder.tool("triage", scope="acme").dispatch(
+        "triage", {"input": "It is down", "questions": asked}
+    )
+    assert isinstance(generation, Generation) and isinstance(decision, dict)
+    await refinery.review("acme", generation.run_id, Review(comment="kept"))
+    llm, dm = Echo(), Answering()
+    engine = Engine(fixtures, models={"strong": llm, "judge": dm})
+    seen: list[Replay] = []
+    for agent in ("support", "triage"):
+        async with aclosing(refinery.replay("acme", engine, agent=agent, repeat=2)) as pairs:
+            async for pair in pairs:
+                seen.append(pair)
+                if pair.attempt == 0:
+                    recorded = pair.recorded
+                    if isinstance(recorded, Generation):
+                        assert isinstance(recorded.input, dict)
+                        recorded.input["ask"]["why"].append("CONSUMER")
+                        assert pair.labels[0].review is not None
+                        pair.labels[0].review.comment = "CONSUMER"
+                    else:
+                        assert isinstance(recorded, Decision)
+                        area = recorded.questions["area"]
+                        assert isinstance(area, Choice) and isinstance(pair.candidate, Decision)
+                        area.options["CONSUMER"] = "added to the recorded run"
+                        held = pair.candidate.questions["area"]
+                        assert isinstance(held, Choice)
+                        held.options["CONSUMER"] = "added to the candidate"
+    [first, second] = [call[1] for call in llm.calls]
+    assert said(second) == said(first)
+    assert seen[1].labels[0].review is not None and seen[1].labels[0].review.comment == "kept"
+    [(_, one), (_, two)] = [call for call in dm.calls if "area" in call[1]]
+    offered = two["area"]
+    assert one == two and isinstance(offered, Choice)
+    assert list(offered.options) == ["billing", "orders"]

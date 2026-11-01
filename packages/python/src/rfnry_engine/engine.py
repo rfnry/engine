@@ -303,7 +303,7 @@ def _questions(value: Mapping[str, QuestionLike] | None) -> dict[str, Question]:
         ) from exc
     if not all(asked):
         raise InputError("engine: a question id must be a non-empty string")
-    return asked
+    return {qid: _fresh(question) for qid, question in asked.items()}
 
 
 def _asked(spec: AgentSpec, questions: Mapping[str, QuestionLike] | None) -> dict[str, Question]:
@@ -955,7 +955,12 @@ class Engine:
                 if target is not None and (floor is None or answer.confidence >= floor):
                     forwarded = replace(options, task=target.task, questions={}, failed=routing)
                     routed = await self._run(
-                        self._agents[target.agent], scope, input, forwarded, run_id, routed=True
+                        self._agents[target.agent],
+                        scope,
+                        _given(input),
+                        forwarded,
+                        run_id,
+                        routed=True,
                     )
         except Exception as exc:
             options.failed.append(decision(exc))

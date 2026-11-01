@@ -58,10 +58,6 @@ def _shown(folder: Path, entry: Path) -> bool:
     return not any(part.startswith(".") or part == "__pycache__" for part in parts)
 
 
-def reached(folder: Path, entry: Path) -> bool:
-    return _inside(Jail(folder), entry) and _shown(folder, entry)
-
-
 def leads_out(path: Path, folder: Path) -> Path | None:
     return None if _inside(Jail(folder), path) else path.resolve()
 

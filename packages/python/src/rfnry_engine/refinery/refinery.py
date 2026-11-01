@@ -487,7 +487,9 @@ class Refinery:
                 record=False,
             )
 
-        async def pair(recorded: Run, labels: list[Label], attempt: int) -> Replay:
+        async def pair(kept: Run, held: list[Label], attempt: int) -> Replay:
+            recorded = kept.model_copy(deep=True)
+            labels = [label.model_copy(deep=True) for label in held]
             try:
                 run = await rerun(recorded)
             except Exception as exc:

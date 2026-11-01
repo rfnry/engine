@@ -403,9 +403,11 @@ or a question's script — is never left out: one it cannot read is a `Configura
 for a script or a tool's file), and any other file of a skill's folder is content. Nor is a folder
 that declares them left out: a `tasks/`, `tools/`, `questions/`, `skills/` or `skills/<name>/`
 folder it cannot read or search is a `ConfigurationError` naming that folder, with no warning before
-it — a decision agent's `skills/` is content, left out with the warning. What a skill is read from
-is what its agent's map holds, so a link under `skills/` that leads out of the agent's folder or to a
-hidden one is never read, whatever it leads to. A file removed while the engine lists its folder —
+it — a decision agent's `skills/` is content, left out with the warning. A skill is read from what
+the agent's own walk loads: a file under `skills/` counts, a link to a hidden folder inside the
+agent's included, unless it is a link out of the agent's folder, while a folder link under
+`skills/`, or a `skills/` that is itself a link, is never entered, so no skill is read through it
+and nothing behind it is checked. A file removed while the engine lists its folder —
 an editor's swap file, an rsync temporary, a ConfigMap's `..data` swap — is left out as though it was
 never there; one that cannot be read for any other reason is refused as above. A file or folder whose
 name is not UTF-8 is a `ConfigurationError` naming it: `tree: the name of
@@ -703,10 +705,11 @@ what it is handed changes neither the record nor what the model is sent next.
 The same holds wherever the engine hands your code something. A generation model is handed, for each
 call, copies of the messages — their parts, their tool calls' `args`, their `reasoning` — and of the
 tool specs; a decision model, copies of the state and of the questions; a `Backend`, its own copy of
-a command's variables; a storage, rows made for the call. And a record holds objects of its own: it
-copies what it is given — the input, the history, what the inbox held, the tools' specs and results,
-each reply's tool calls and reasoning, each answer — and the preload and the questions it takes from
-the agent's folder. So no code of yours, and no tenant, reaches another run through what it was
+a command's variables; a storage, rows made for the call; each attempt of a replay, a recorded run
+and labels of its own. And a record holds objects of its own: it copies what it is given — the
+input, the history, what the inbox held, the questions asked at run time, the tools' specs and
+results, each reply's tool calls and reasoning, each answer — and the preload and the questions it
+takes from the agent's folder, and a routed run's input is its own copy of its router's state. So no code of yours, and no tenant, reaches another run through what it was
 handed or what it returned: changing a record changes nothing the tree shares with every tenant,
 nothing of another record and nothing your code holds.
 
@@ -2090,7 +2093,8 @@ started it: close the workspace when the replays are done, and the candidate, wh
 workers. The candidate delegates and routes as it does, so a run with children replays as one run.
 
 `repeat=3` replays each run three times: each attempt is a run of its own and a pair of its own,
-`pair.attempt` counts them from 0, and the three come one after another; `limit=` still counts
+with its own copy of the recorded run and its labels, so what you change in one pair reaches no
+other attempt; `pair.attempt` counts them from 0, and the three come one after another; `limit=` still counts
 recorded runs. A model samples, so the same candidate on the same input can answer differently, and
 the attempts show how much. `concurrency=4` keeps up to four replays going, attempts included, and
 while you read a pair at most three more run; with the default of one, a replay starts when you ask

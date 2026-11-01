@@ -12,11 +12,14 @@ from rfnry_engine.engine import Engine
 from rfnry_engine.models import (
     Answer,
     Check,
+    Choice,
     Image,
     Message,
     Part,
+    Question,
     QuestionLike,
     Reply,
+    Score,
     State,
     Text,
     ToolCall,
@@ -31,7 +34,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Local, Process, Workspace
 
-from .fakes import Answering, Desk, Scripted, answer_to, delegating, lead, sorter, text_reply
+from .fakes import Answering, Desk, Scripted, answer_to, ask, delegating, lead, sorter, text_reply
 from .test_engine_workspace import make_tree, use
 
 GENERATION = {
@@ -464,3 +467,97 @@ async def test_what_the_refinery_reads_back_shares_nothing_with_the_rows_its_sto
     _scribble(label.review.correction)
     assert [row.body for row in keeping.kept.values()] == held
     assert await refinery.run("acme", run.run_id) == run
+
+
+GRADER = {
+    "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades\n---\n",
+    "grader/questions/urgent.json": '{"type": "check", "instructions": "Urgent?"}',
+    "lead/AGENT.md": "---\nname: lead\nkind: generation\nmodel: strong\ndescription: L\nagents: [grader]\n---\nLead.\n",
+}
+
+
+async def test_a_question_asked_at_run_time_is_the_record_s_own(tmp_path: Path) -> None:
+    class Kept:
+        def __init__(self) -> None:
+            self.runs: list[Any] = []
+
+        async def record(self, run: Any) -> None:
+            self.runs.append(run)
+
+    area = Choice(
+        instructions="Which area?", options={"returns": None, "delivery": {"what": ["Parcels"]}}
+    )
+    kept = Kept()
+    engine = Engine(
+        _tree(tmp_path, GRADER), refinery=kept, models={"judge": Answering(), "strong": Scripted()}
+    )
+    await EngineTools(engine, agent="lead", scope="acme").dispatch(
+        "Delegate", {"agent": "grader", "input": "x", "questions": {"area": area}}
+    )
+    await ask(engine, "grader", "acme", "x", questions={"area": area})
+    assert len(kept.runs) == 2
+    held = [run.model_dump() for run in kept.runs]
+    assert all(isinstance(run, Decision) and run.runtime == ["area"] for run in kept.runs)
+    _scribble(area.options)
+    area.instructions = "MEDDLED"
+    assert [run.model_dump() for run in kept.runs] == held
+
+
+@pytest.mark.parametrize(
+    "asked",
+    [
+        Choice(instructions="Which area?", options={"returns": None, "delivery": ["Parcels"]}),
+        Score(instructions="How bad?", levels=["mild", {"severe": ["down"]}]),
+        Check(instructions="Is it down?", yes="It is"),
+    ],
+    ids=["choice", "score", "check"],
+)
+async def test_an_agent_used_as_a_tool_takes_a_question_object_as_it_takes_its_dict(
+    tmp_path: Path, asked: Question
+) -> None:
+    root = _tree(tmp_path, GRADER)
+    judge = Answering()
+    consult = Engine(root, models={"judge": judge, "strong": Scripted()}).tool(
+        "grader", scope="acme"
+    )
+    by_object = await consult.dispatch("grader", {"input": "x", "questions": {"asked": asked}})
+    by_dict = await consult.dispatch(
+        "grader", {"input": "x", "questions": {"asked": asked.model_dump()}}
+    )
+    assert by_object == by_dict and isinstance(by_object, dict)
+    assert set(by_object["answers"]) == {"asked", "urgent"}
+    assert [questions["asked"] for _, questions in judge.calls] == [asked, asked]
+
+
+class Seeing(Answering):
+    media_types = {"image/*"}
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        {"ticket": {"lines": ["charged twice"]}},
+        [Text(text="charged twice"), Image(media_type="image/png", url="https://x/t.png")],
+    ],
+    ids=["json", "parts"],
+)
+async def test_a_routed_run_s_input_is_its_own_and_not_its_router_s_state(
+    tmp_path: Path, given: State
+) -> None:
+    root = _tree(
+        tmp_path,
+        {
+            "desk/AGENT.md": "---\nname: desk\nkind: decision\nmodel: judge\nroute: {by: team, to: {b: writer}}\n---\n",
+            "desk/questions/team.json": '{"type": "choice", "instructions": "Which?", "options": {"a": null, "b": null}}',
+            "writer/AGENT.md": "---\nname: writer\nkind: generation\nmodel: strong\ndescription: W\n---\nWrite.\n",
+        },
+    )
+    engine = Engine(root, models={"judge": Seeing(), "strong": Scripted(text_reply("w"))})
+    run = await engine.run("desk", "acme", copy.deepcopy(given))
+    assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
+    child = run.routed_to
+    assert run.state == given and child.input == given
+    for held in (child.input, run.state):
+        _deface(held)
+        _scribble(held)
+        assert (run.state == given) is (held is child.input)

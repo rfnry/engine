@@ -814,6 +814,85 @@ def test_a_skills_folder_linked_out_of_the_agent_s_folder_is_never_read(tmp_path
         (out / "deep").chmod(0o755)
 
 
+SKILLED = "---\nname: a\nkind: generation\nmodel: strong\n---\nbody\n"
+SKILL = "---\ndescription: S\n---\nskill\n"
+
+
+@pytest.mark.parametrize(
+    ("link", "target", "skill"),
+    [
+        ("skills/x.md", ".hidden/x.md", "x"),
+        ("skills/deep/SKILL.md", ".hidden/SKILL.md", "deep"),
+        ("skills/x.md", "__pycache__/x.md", "x"),
+    ],
+)
+def test_a_skill_file_linked_inside_the_agent_s_folder_is_loaded_and_so_must_be_readable(
+    tmp_path: Path, link: str, target: str, skill: str
+) -> None:
+    agent = tmp_path / "a"
+    (agent / target).parent.mkdir(parents=True)
+    (agent / "AGENT.md").write_text(SKILLED)
+    (agent / target).write_text(SKILL)
+    (agent / link).parent.mkdir(parents=True, exist_ok=True)
+    (agent / link).symlink_to(agent / target)
+    assert sorted(load_tree(tmp_path)["a"].skills) == [skill]
+    (agent / target).chmod(0)
+    try:
+        with pytest.raises(ConfigurationError) as caught:
+            load_tree(tmp_path)
+    finally:
+        (agent / target).chmod(0o644)
+    shown = tmp_path.resolve() / "a" / link
+    assert str(caught.value) == (
+        f"tree: cannot read {shown}: Permission denied; make it readable to the engine"
+    )
+
+
+@pytest.mark.parametrize(
+    ("link", "target", "made", "locked"),
+    [
+        ("skills/deep", "lib/deep", "lib/deep/SKILL.md", "lib/deep/SKILL.md"),
+        ("skills/deep", "lib/deep", "lib/deep/SKILL.md", "lib/deep"),
+        ("skills", "lib/sk", "lib/sk/x.md", "lib/sk/x.md"),
+    ],
+    ids=["folder-link-skill-locked", "folder-link-locked", "skills-link-skill-locked"],
+)
+def test_a_folder_link_under_skills_is_never_entered_so_no_skill_is_read_through_it(
+    tmp_path: Path, link: str, target: str, made: str, locked: str
+) -> None:
+    agent = tmp_path / "a"
+    (agent / made).parent.mkdir(parents=True)
+    (agent / "AGENT.md").write_text(SKILLED)
+    (agent / made).write_text(SKILL)
+    (agent / link).parent.mkdir(parents=True, exist_ok=True)
+    (agent / link).symlink_to(agent / target)
+    assert load_tree(tmp_path)["a"].skills == {}
+    (agent / locked).chmod(0)
+    try:
+        assert load_tree(tmp_path)["a"].skills == {}
+    finally:
+        (agent / locked).chmod(0o755)
+
+
+def test_an_agent_inside_skills_is_not_a_skill_of_the_agent_above_it(tmp_path: Path) -> None:
+    for rel, text in {
+        "a/AGENT.md": SKILLED,
+        "a/skills/brief.md": SKILL,
+        "a/skills/sub/AGENT.md": "---\nname: sub\nkind: generation\nmodel: strong\n---\nbody\n",
+        "a/skills/sub/SKILL.md": SKILL,
+    }.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    assert sorted(load_tree(tmp_path)["a"].skills) == ["brief"]
+    locked = tmp_path / "a/skills/sub/SKILL.md"
+    locked.chmod(0)
+    try:
+        agents = load_tree(tmp_path)
+    finally:
+        locked.chmod(0o644)
+    assert sorted(agents) == ["a", "sub"] and sorted(agents["a"].skills) == ["brief"]
+
+
 class _Vanishing:
     def __init__(self, folder: str, name: str) -> None:
         self.entries = SCANDIR(folder)

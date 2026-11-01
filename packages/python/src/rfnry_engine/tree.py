@@ -27,7 +27,6 @@ from rfnry_engine.folders import (
     entries,
     joined,
     leads_out,
-    reached,
     unwarned,
     warns_once,
 )
@@ -349,16 +348,17 @@ def _opens(path: Path) -> None:
 
 def _readable_skills(agent: Path) -> None:
     folder = agent / "skills"
-    if not folder.is_dir() or not reached(agent, folder):
+    if folder.is_symlink() or not folder.is_dir():
         return
     for path in _declared(folder):
-        if path.name.startswith(("_", ".")) or not reached(agent, path):
+        if path.name.startswith(("_", ".")):
             continue
         if path.suffix == ".md" and path.is_file():
-            _opens(path)
-        elif path.is_dir() and not declares(path):
+            if leads_out(path, agent) is None:
+                _opens(path)
+        elif path.is_dir() and not path.is_symlink() and not declares(path):
             skill = path / "SKILL.md"
-            if skill in _declared(path) and skill.is_file() and reached(agent, skill):
+            if skill in _declared(path) and skill.is_file() and leads_out(skill, agent) is None:
                 _opens(skill)
 
 
