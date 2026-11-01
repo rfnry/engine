@@ -660,3 +660,37 @@ def test_a_declared_file_that_cannot_be_read_is_refused_naming_it(
         str(caught.value)
         == f"{module}: cannot read {path.resolve()}: Permission denied; make it readable to the engine"
     )
+
+
+@pytest.mark.parametrize("locked", ["a/skills/brief.md", "a/skills/deep/SKILL.md"])
+def test_an_unreadable_skill_is_refused_at_load_as_a_task_is(
+    tmp_path: Path, locked: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    for rel, text in {
+        "a/AGENT.md": "---\nname: a\nkind: generation\nmodel: strong\n---\nbody\n",
+        "a/skills/brief.md": "---\ndescription: Brief\n---\nBe brief.\n",
+        "a/skills/deep/SKILL.md": "---\ndescription: Deep\n---\nGo deep.\n",
+        "a/skills/deep/notes.md": "Notes.\n",
+    }.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    notes = (tmp_path / "a/skills/deep/notes.md").resolve()
+    path = (tmp_path / locked).resolve()
+    notes.chmod(0)
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert sorted(load_tree(tmp_path)["a"].skills) == ["brief", "deep"]
+        assert [m for m in caplog.messages if "cannot read" in m] == [
+            f"folders: cannot read {notes}: [Errno 13] Permission denied: '{notes}'; it is left out"
+        ]
+        path.chmod(0)
+        try:
+            with pytest.raises(ConfigurationError) as caught:
+                load_tree(tmp_path)
+        finally:
+            path.chmod(0o644)
+    finally:
+        notes.chmod(0o644)
+    assert str(caught.value) == (
+        f"tree: cannot read {path}: Permission denied; make it readable to the engine"
+    )

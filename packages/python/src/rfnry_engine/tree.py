@@ -320,6 +320,22 @@ def _skills(files: list[tuple[str, Path]], agent: str) -> dict[str, Skill]:
     return dict(sorted(found.items()))
 
 
+def _readable_skills(agent: Path) -> None:
+    folder = agent / "skills"
+    if not folder.is_dir():
+        return
+    for path in sorted([*folder.glob("*.md"), *folder.glob("*/SKILL.md")]):
+        name = path.stem if path.parent == folder else path.parent.name
+        if name.startswith(("_", ".")) or not path.is_file():
+            continue
+        try:
+            os.close(os.open(path, os.O_RDONLY))
+        except OSError as exc:
+            raise ConfigurationError(
+                f"tree: cannot read {path}: {exc.strerror or exc}; make it readable to the engine"
+            ) from exc
+
+
 def _markdown_files(directory: Path) -> list[Path]:
     if not directory.is_dir():
         return []
@@ -630,6 +646,8 @@ def load_agent(
         directory / "questions", tree_root or directory, script_folders
     )
     loaded = {p.stem: _task(p, directory) for p in _markdown_files(directory / "tasks")}
+    if front.kind == "generation":
+        _readable_skills(directory.resolve())
     tasks = {name: said for name, (said, _) in loaded.items()}
     task_bodies = {name: body for name, (_, body) in loaded.items()}
     if front.kind == "decision" and front.tools is not None:
