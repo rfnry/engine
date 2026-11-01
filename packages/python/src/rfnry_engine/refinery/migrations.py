@@ -58,7 +58,7 @@ async def _fill_tags(conn: Any) -> None:
         if not rows:
             return
         await conn.executemany(
-            "UPDATE engine_runs SET tags = $3::jsonb WHERE scope = $1 AND run_id = $2",
+            "UPDATE engine_runs SET tags = $3::text::jsonb WHERE scope = $1 AND run_id = $2",
             [(r["scope"], r["run_id"], stored_tags(json.loads(r["body"]))) for r in rows],
         )
         after = (rows[-1]["scope"], rows[-1]["run_id"])

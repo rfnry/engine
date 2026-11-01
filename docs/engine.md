@@ -2521,12 +2521,14 @@ cancels any tool's. Outside a run, a stopped consult's `dispatch` returns what i
 ## Storage
 
 The refinery is the only part of the library that stores anything, and it stores in Postgres:
-`PostgresStorage(pool)`, over an asyncpg pool you built, in a schema of its own. Each run's body
-reaches Postgres as a `bytea` argument, an object with the buffer protocol that hands its JSON over
-once, so the write holds it at most twice; a `bytea` codec of your own on that pool must take any
-such object, as `bytes(value)` does, and one that takes only `bytes`, such as a text codec calling
-`value.hex()`, fails every record write with `StorageError`. A Postgres to try it on is one
-container, with engine's schema prepared by the command the package installs:
+`PostgresStorage(pool)`, over an asyncpg pool you built, in a schema of its own. It sends and
+reads every JSON value as text, cast in its SQL, so it works with any `json` or `jsonb` codec on
+that pool, such as `json.dumps` and `json.loads` set for both, which never sees what it stores.
+Each run's body reaches Postgres as a `bytea` argument, an object with the buffer protocol that
+hands its JSON over once, so the write holds it at most twice; a `bytea` codec of your own on that
+pool must take any such object, as `bytes(value)` does, and one that takes only `bytes`, such as a
+text codec calling `value.hex()`, fails every record write with `StorageError`. A Postgres to try
+it on is one container, with engine's schema prepared by the command the package installs:
 
 ```bash
 docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine

@@ -962,6 +962,38 @@ async def test_a_pool_whose_bytea_codec_takes_only_bytes_cannot_record(storage: 
     assert await storage.get_run("a", "r1") is None
 
 
+async def test_a_pool_with_json_and_jsonb_codecs_records_and_reads_back(storage: Storage) -> None:
+    async def init(conn: Any) -> None:
+        for kind in ("json", "jsonb"):
+            await conn.set_type_codec(
+                kind, encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+            )
+
+    pool = await asyncpg.create_pool(
+        URL, min_size=1, max_size=1, init=init, server_settings={"search_path": SCHEMA}
+    )
+    try:
+        coded = PostgresStorage(pool)
+        at = datetime.now(UTC)
+        body = {"reply": "r1", "tags": {"team": "a", "env": "prod"}, "café": [1, None]}
+        run = _run("a", "r1", at=at).model_copy(update={"body": body})
+        child = _run("a", "c1", parent="r1", at=at - timedelta(seconds=1))
+        label = _label("a", "l1", "r1")
+        await coded.put_runs("a", [run, child])
+        assert await coded.put_label("a", label) == label
+        assert await coded.put_label("a", label.model_copy(update={"body": {"x": 1}})) == label
+        for mine in (coded, storage):
+            assert await mine.get_run("a", "r1") == run
+            assert await mine.runs("a") == [run, child]
+            assert await mine.run_tree("a", run_ids=["r1"]) == [child, run]
+            assert await mine.run_tree("a", tags={"team": "a"}) == [child, run]
+            assert await mine.labels("a", run_ids=["r1"]) == [label]
+        assert await coded.delete_runs("a", tags={"env": "prod"}) == 3
+        assert await storage.count_scope("a") == 0
+    finally:
+        await pool.close()
+
+
 async def test_put_runs_with_no_rows_does_nothing(storage: Storage) -> None:
     await storage.put_runs("a", [])
     assert await storage.count_scope("a") == 0
