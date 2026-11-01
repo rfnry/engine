@@ -189,6 +189,8 @@ def _contents(jail: Jail, path: str, limit: int, missing: str = "") -> tuple[Pat
         fd = jail.open(path)
         try:
             found = os.fstat(fd)
+            if path.endswith("/") and not stat.S_ISDIR(found.st_mode):
+                raise InputError(f"tools/builtins: not a folder: {path}")
             if not stat.S_ISREG(found.st_mode):
                 raise InputError(f"tools/builtins: not a file: {path}")
             if found.st_size > limit:
@@ -308,6 +310,8 @@ class _Directory:
                 ) from exc
 
         base = self.jail.resolve(_named(self.jail, a.path)) if a.path else self.root
+        if a.path and a.path.endswith("/") and base.is_file():
+            raise InputError(f"tools/builtins: not a folder: {a.path}")
         lines: list[str] = []
         scanned = 0
         exhausted = False

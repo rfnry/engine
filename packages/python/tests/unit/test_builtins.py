@@ -1069,3 +1069,29 @@ async def test_grep_labels_a_file_link_s_matches_with_the_path_it_was_given(tmp_
         "sub/deep.md",
         "y.md",
     ]
+
+
+async def test_read_of_a_file_with_a_trailing_slash_is_not_a_folder(tmp_path: Path) -> None:
+    (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
+    (tmp_path / "alias.md").symlink_to("notes.md")
+    (tmp_path / "rules").mkdir()
+    tools = Tools(builtins(tmp_path))
+    load = Tools([load_tool(tmp_path)])
+    for tool, name, args in [
+        (tools, "Read", {"path": "notes.md/"}),
+        (tools, "Read", {"path": "alias.md/"}),
+        (tools, "Read", {"path": "notes.md//"}),
+        (tools, "Read", {"path": f"{tmp_path}/notes.md/"}),
+        (load, "Load", {"path": "notes.md/"}),
+        (tools, "Grep", {"pattern": "notes", "path": "notes.md/"}),
+    ]:
+        with pytest.raises(InputError) as raised:
+            await tool.dispatch(name, args)
+        assert str(raised.value) == f"tools/builtins: not a folder: {args['path']}"
+    with pytest.raises(InputError) as raised:
+        await tools.dispatch("Read", {"path": "rules/"})
+    assert str(raised.value) == "tools/builtins: not a file: rules/"
+    assert await tools.dispatch("Read", {"path": "notes.md"}) == "notes"
+    assert await tools.dispatch("Grep", {"pattern": "notes", "path": "rules/"}) == (
+        "no matches found"
+    )
