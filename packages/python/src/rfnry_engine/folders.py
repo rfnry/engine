@@ -28,7 +28,7 @@ def _inside(jail: Jail, entry: Path) -> bool:
 
 
 def _shown(folder: Path, entry: Path) -> bool:
-    if not entry.is_symlink():
+    if not (entry.is_symlink() or entry.is_junction()):
         return True
     parts = entry.resolve().relative_to(folder).parts
     return not any(part.startswith(".") or part == "__pycache__" for part in parts)
@@ -67,7 +67,11 @@ def _walk(
         dirs += [name if top else f"{at}/{name}" for name in names]
         for name in filenames:
             path = here / name
-            if name.startswith(".") or (declared and top and name in DECLARATIONS):
+            if (
+                name.startswith(".")
+                or name == "__pycache__"
+                or (declared and top and name in DECLARATIONS)
+            ):
                 continue
             if path.is_file() and _inside(jail, path):
                 files.append((name if top else f"{at}/{name}", path))

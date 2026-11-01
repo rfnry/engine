@@ -1132,3 +1132,17 @@ async def test_a_link_inside_a_hidden_folder_that_leads_outside_reports_hidden(
     ]:
         with pytest.raises(InputError, match="^jail: path outside the agent directory: "):
             await tools.dispatch("Read", {"path": path})
+
+
+async def test_no_builtin_shows_a_file_named_like_a_bytecode_cache(tmp_path: Path) -> None:
+    (tmp_path / "rules").mkdir()
+    (tmp_path / "rules" / "refunds.md").write_text("refund in full\n", encoding="utf-8")
+    (tmp_path / "rules" / "__pycache__").write_text("refund\n", encoding="utf-8")
+    (tmp_path / "__pycache__").write_text("refund\n", encoding="utf-8")
+    tools = Tools(builtins(tmp_path))
+    assert await tools.dispatch("Glob", {"pattern": "**/*"}) == "rules/refunds.md"
+    assert await tools.dispatch("Grep", {"pattern": "refund"}) == "rules/refunds.md"
+    assert await tools.dispatch("LS", {}) == "rules/"
+    assert await tools.dispatch("LS", {"path": "rules"}) == "refunds.md"
+    with pytest.raises(InputError, match=r"^tools/builtins: rules/__pycache__ is hidden"):
+        await tools.dispatch("Read", {"path": "rules/__pycache__"})
