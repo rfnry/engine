@@ -899,7 +899,23 @@ async def test_a_tool_named_time_that_imports_time_runs_on_the_standard_module(
         assert await EngineTools(engine, agent="a", scope="acme").dispatch("time", {}) == "True"
 
 
-@pytest.mark.parametrize("name", ["_stat", "_weakrefset", "_strptime"])
+ONLY_BUILT_IN = sorted(
+    name
+    for name in sys.builtin_module_names
+    if name.startswith("_") and name not in sys.stdlib_module_names
+)[:1]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "_stat",
+        "_weakrefset",
+        "_strptime",
+        *(pytest.param(name, id="built-in-only") for name in ONLY_BUILT_IN),
+        pytest.param("__hello__", id="frozen-only"),
+    ],
+)
 def test_a_helper_named_like_a_standard_library_module_is_refused(
     tmp_path: Path, name: str
 ) -> None:

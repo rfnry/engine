@@ -2116,10 +2116,9 @@ its path is not offered to it. A `.json` without its `.py`, or a `.py` without i
 `ConfigurationError` naming the file; a file whose name starts with `_` or `.` is not a tool, and
 `_name.py` is a helper the scripts of its folder import. A helper named like a module of the
 standard library, `_stat.py`, `_weakrefset.py` or `_strptime.py`, is a `ConfigurationError` too,
-since in the worker it would either lose to the module of that name or stand in for it for every
-library there: `tools/folder: <path> is named like the standard-library module '_stat', and the
-worker can't load both; rename it`. A question's helper, `questions/_name.py`, is refused the same
-way.
+since the worker can't load both: `tools/folder: <path> is named like the standard-library module
+'_stat', and the worker can't load both; rename it`. A question's helper, `questions/_name.py`, is
+refused the same way.
 
 `<name>.json` takes three keys:
 

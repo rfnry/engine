@@ -624,36 +624,12 @@ async def test_a_worker_that_exits_fails_every_call_in_flight_and_the_next_call_
         await pool.close()
 
 
-async def test_a_worker_that_exits_past_a_child_it_forked_fails_its_call_with_its_exit_code(
-    tmp_path: Path,
-) -> None:
-    body = (
-        "import os, time\n"
-        "from pathlib import Path\n"
-        "def run(args, call):\n"
-        "    child = os.fork()\n"
-        "    if child == 0:\n"
-        "        time.sleep(30)\n"
-        "        os._exit(0)\n"
-        "    Path(args['file']).write_text(str(child))\n"
-        "    os._exit(3)\n"
-    )
-    pool = WorkerPool([script(tmp_path, "forks", body)])
-    held = tmp_path / "child.txt"
-    try:
-        started = time.monotonic()
-        with pytest.raises(WorkerError) as raised:
-            await pool.call("forks", {"file": str(held)}, CALL, 10)
-        assert time.monotonic() - started < 5
-        assert str(raised.value) == "workers/pool: the worker for forks stopped: exited with code 3"
-    finally:
-        await pool.close()
-    assert await gone(int(held.read_text()))
-
-
 @pytest.mark.parametrize("watch", ["waitid", "wait"])
-async def test_a_worker_that_dies_with_its_pipe_held_reports_its_exit_code(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, watch: str
+@pytest.mark.parametrize(
+    "fork", ["os.fork()", "ctypes.CDLL(None).fork()"], ids=["python", "c-pipe-held"]
+)
+async def test_a_worker_that_exits_past_a_child_it_forked_fails_its_call_with_its_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fork: str, watch: str
 ) -> None:
     if watch == "wait":
         monkeypatch.delattr(os, "waitid")
@@ -661,7 +637,7 @@ async def test_a_worker_that_dies_with_its_pipe_held_reports_its_exit_code(
         "import ctypes, os, time\n"
         "from pathlib import Path\n"
         "def run(args, call):\n"
-        "    child = ctypes.CDLL(None).fork()\n"
+        f"    child = {fork}\n"
         "    if child == 0:\n"
         "        time.sleep(30)\n"
         "        os._exit(0)\n"
@@ -756,7 +732,8 @@ async def test_stopping_a_worker_whose_process_group_is_gone_raises_nothing(
             os.killpg(first, 0)
         worker.stop()
         with pytest.raises(WorkerError) as raised:
-            await flight
+            async with asyncio.timeout(5):
+                await flight
         assert str(raised.value) == "workers/pool: the worker for nap stopped: killed by signal 9"
     finally:
         await pool.close()
@@ -841,7 +818,8 @@ async def test_close_fails_the_calls_in_flight_and_refuses_new_ones(tmp_path: Pa
         await pool.close()
     closed = "workers/pool: the worker for wait stopped: it was closed"
     with pytest.raises(WorkerError, match=closed):
-        await flight
+        async with asyncio.timeout(5):
+            await flight
     with pytest.raises(WorkerError, match=closed):
         await pool.call("wait", {}, CALL, 5)
 
@@ -858,7 +836,8 @@ async def test_retiring_a_worker_fails_its_other_calls_in_flight_saying_why(
             await pool.call("nap", {"sleep": 30}, CALL, 0.2)
         assert pid(await pool.call("nap", {}, CALL, 5)) != first
         with pytest.raises(WorkerError) as raised:
-            await flight
+            async with asyncio.timeout(5):
+                await flight
         assert str(raised.value) == (
             "workers/pool: the worker for wait stopped: every thread was held by a call past its deadline"
         )
