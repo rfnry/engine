@@ -42,7 +42,7 @@ def declares(folder: Path) -> bool:
 
 
 def _inside(jail: Jail, entry: Path) -> bool:
-    if not (entry.is_symlink() or entry.is_junction()):
+    if not entry.is_symlink():
         return True
     try:
         jail.resolve(entry)
@@ -52,7 +52,7 @@ def _inside(jail: Jail, entry: Path) -> bool:
 
 
 def _shown(folder: Path, entry: Path) -> bool:
-    if not (entry.is_symlink() or entry.is_junction()):
+    if not entry.is_symlink():
         return True
     parts = entry.resolve().relative_to(folder).parts
     return not any(part.startswith(".") or part == "__pycache__" for part in parts)

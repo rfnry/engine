@@ -383,10 +383,6 @@ def from_agent[T](path: str, reads: Mapping[str, T]) -> dict[str, T]:
     return {posixpath.relpath(name, path): place for name, place in reads.items()}
 
 
-def _linked(path: Path) -> bool:
-    return path.is_symlink() or path.is_junction()
-
-
 def _is_folder(entry: os.DirEntry[str]) -> bool:
     try:
         return entry.is_dir()
@@ -426,7 +422,7 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
                 continue
             place = child.resolve()
             key = f"{at}/{child.name}" if at else child.name
-            if _linked(child):
+            if child.is_symlink():
                 links[key] = place
                 if place.is_relative_to(top) or _loops(top, found, key, place):
                     continue
@@ -441,7 +437,7 @@ def _holds_agent(folder: Path) -> bool:
     return declares(folder) or any(
         _holds_agent(child)
         for child in _subfolders(folder)
-        if not child.name.startswith(".") and child.name != "tools" and not _linked(child)
+        if not child.name.startswith(".") and child.name != "tools" and not child.is_symlink()
     )
 
 

@@ -562,18 +562,17 @@ from the agent's folder, `../tools/`, and each folder it names in `reads:` with 
 under its path from the agent's folder, `../<name>/` (`../../shared/books/` for an agent two folders
 deep), as the map shows them — leaving out hidden files and folders and every file or folder named
 `__pycache__`, as `LS`, `Glob` and `Grep` do, links that lead out of them, and folder links to a
-hidden name, a Windows junction counted as a link. The engine takes it once, when it loads the tree,
-so an edit to the agent or to a folder it reads shows in the next `Engine` built from the folder.
-`fingerprint.tools` is one over `run.tools` — each tool's name, description and schema — so it
-covers the tools the agent gets from its folders, the `tools=` a run passes, `Output` when `expect=`
-asks for one, in `Delegate` the agents it may call — their names, descriptions, kinds and tasks —
-and a workspace's tools, whose `Shell` description says whether the workspace has `tree=` and
-whether its commands can call tools. Neither sees what varies per run and is not the agent — the
-input, the history, `context=`, `tags=` — so two runs of an unchanged folder share it and any edit
-changes it, a tool's script included. The model is `run.model`; the code behind a tool a run passes
-is yours to version. A decision run carries one too, its `tools` the fingerprint of no tools and its
-`questions` the questions it asked ([Decision agents](#decision-agents)), and each delegated or
-routed run carries its own.
+hidden name. The engine takes it once, when it loads the tree, so an edit to the agent or to a
+folder it reads shows in the next `Engine` built from the folder. `fingerprint.tools` is one over
+`run.tools` — each tool's name, description and schema — so it covers the tools the agent gets from
+its folders, the `tools=` a run passes, `Output` when `expect=` asks for one, in `Delegate` the
+agents it may call — their names, descriptions, kinds and tasks — and a workspace's tools, whose
+`Shell` description says whether the workspace has `tree=` and whether its commands can call tools.
+Neither sees what varies per run and is not the agent — the input, the history, `context=`, `tags=`
+— so two runs of an unchanged folder share it and any edit changes it, a tool's script included. The
+model is `run.model`; the code behind a tool a run passes is yours to version. A decision run
+carries one too, its `tools` the fingerprint of no tools and its `questions` the questions it asked
+([Decision agents](#decision-agents)), and each delegated or routed run carries its own.
 
 Keep the conversation yourself and pass it back. `run.conversation` is the history the run was
 sent, the input, every assistant turn — its text in `content`, its calls in `tool_calls`, its

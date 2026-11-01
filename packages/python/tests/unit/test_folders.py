@@ -184,21 +184,6 @@ def test_a_folder_link_to_a_hidden_folder_is_not_mapped_and_adds_no_content(
     assert content(tmp_path, False, inner=True) == before
 
 
-def test_a_junction_to_a_hidden_folder_is_not_mapped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    write(tmp_path / ".secret/k.md", "k\n")
-    write(tmp_path / "docs/d.md", "d\n")
-    junction = tmp_path.resolve() / "shown"
-    junction.symlink_to(".secret", target_is_directory=True)
-    linked = Path.is_symlink
-    monkeypatch.setattr(Path, "is_symlink", lambda path: path != junction and linked(path))
-    monkeypatch.setattr(Path, "is_junction", lambda path: path == junction)
-    assert junction.is_junction() and not junction.is_symlink()
-    assert entries(tmp_path, False) == ["docs/", "  d.md"]
-    assert content(tmp_path, False, inner=True) == [("docs/d.md", junction.parent / "docs/d.md")]
-
-
 def test_a_file_named___pycache___is_neither_mapped_nor_content(tmp_path: Path) -> None:
     write(tmp_path / "notes/a.md", "A.\n")
     write(tmp_path / "notes/__pycache__", "a file, not a folder\n")
