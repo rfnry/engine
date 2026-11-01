@@ -7,6 +7,7 @@ import sys
 import sysconfig
 from collections.abc import Collection, Iterator
 from functools import cache
+from importlib.machinery import FrozenImporter
 from pathlib import Path
 
 import jsonschema_rs
@@ -212,6 +213,14 @@ def _awaits(path: Path, module: ast.Module, what: str, given: str) -> bool:
     return isinstance(runs[-1], ast.AsyncFunctionDef)
 
 
+def _check_name(path: Path) -> None:
+    name = path.stem
+    if name in sys.builtin_module_names or FrozenImporter.find_spec(name) is not None:
+        raise ConfigurationError(
+            f"tools/folder: {path} is named like the built-in module {name!r}, which the worker imports instead; rename it"
+        )
+
+
 def _beside(folder: Path) -> frozenset[str]:
     return frozenset(
         p.stem if p.is_file() else p.name
@@ -289,6 +298,8 @@ def load_tools(
     whole = "the agent's whole folder" if declares(folder.parent) else "the whole tools/ folder"
     for path in sorted([*definitions.values(), *scripts.values(), *helpers]):
         _held(path, folder, "its folder", whole)
+    for path in helpers:
+        _check_name(path)
     for name in sorted({*definitions, *scripts}):
         if name not in scripts:
             raise ConfigurationError(
@@ -323,6 +334,8 @@ def load_scripts(
     scripts = {name: folder / f"{name}.py" for name in names}
     for path in [*scripts.values(), *helpers]:
         _held(path, folder.parent, "the agent's folder", "the agent's whole folder")
+    for path in helpers:
+        _check_name(path)
     sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
     shared = {p.stem: sources[p] for p in helpers}
     what = "question's script"

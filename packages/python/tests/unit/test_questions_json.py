@@ -705,6 +705,16 @@ def test_a_question_script_named_like_a_built_in_standard_module_beside_one_that
     assert sorted(load_tree(tmp_path)["matcher"].scripted) == sorted(["order", name])
 
 
+def test_a_question_helper_named_like_a_built_in_module_is_refused(tmp_path: Path) -> None:
+    matcher(tmp_path, "import _stat\n" + ORDER)
+    write(tmp_path / "matcher/questions/_stat.py", "X = 1\n")
+    with pytest.raises(ConfigurationError) as raised:
+        load_tree(tmp_path)
+    assert str(raised.value) == (
+        f"tools/folder: {tmp_path / 'matcher/questions/_stat.py'} is named like the built-in module '_stat', which the worker imports instead; rename it"
+    )
+
+
 @pytest.mark.parametrize("suffix", [".json", ".py"])
 def test_a_question_file_that_links_elsewhere_in_the_agent_s_folder_loads(
     tmp_path: Path, suffix: str

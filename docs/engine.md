@@ -1087,9 +1087,10 @@ script. Otherwise the record keeps each question as it was asked, the filled opt
 with different options, under two question fingerprints and one agent fingerprint. A
 question's script imports what a tool's does — the standard library, installed packages and the
 helpers of its folder, `questions/_name.py`, at the top of the script — and is read when the tree
-loads, as a tool's is, so `fingerprint.agent` covers it; a `.py` without its `.json`, or one with
-no `run` at its top level, is a `ConfigurationError`. A route goes by a question whose options its
-JSON fixes, never by one a script fills ([Both kinds together](#both-kinds-together)).
+loads, as a tool's is, so `fingerprint.agent` covers it; a `.py` without its `.json`, one with no
+`run` at its top level, or a helper named like a built-in module, as a tool's is, is a
+`ConfigurationError`. A route goes by a question whose options its JSON fixes, never by one a script
+fills ([Both kinds together](#both-kinds-together)).
 
 Some answer spaces are known only when the run starts: the children of the node a walk chose last,
 the candidates a search returned, the skills an agent has today. Those questions are composed when
@@ -2112,7 +2113,10 @@ holds it, and counts in the fingerprint of every agent that sees it; a folder na
 anywhere else is content like any other. A decision agent has no tools, and a `tools/` folder on
 its path is not offered to it. A `.json` without its `.py`, or a `.py` without its `.json`, is a
 `ConfigurationError` naming the file; a file whose name starts with `_` or `.` is not a tool, and
-`_name.py` is a helper the scripts of its folder import.
+`_name.py` is a helper the scripts of its folder import. A helper named like a module built into the
+interpreter, `_stat.py` or `_io.py`, is a `ConfigurationError` too, since the worker would import
+the built-in in its place: `tools/folder: <path> is named like the built-in module '_stat', which
+the worker imports instead; rename it`.
 
 `<name>.json` takes three keys:
 
@@ -2673,7 +2677,8 @@ agent does not see, a tool's `.json` without its `.py` or a script without its `
 JSON with an unknown key, no description, an `input_schema` that is not an object or a schema that
 does not compile, a script or helper that is not valid Python, imports the engine, the server's own
 code, a module relatively or a sibling script or subfolder of its folder, or imports a helper inside
-a function, a tool named like one the engine gives the agent, a `workers=` naming a folder that
+a function, a helper named like a built-in module, a tool named like one the engine gives the
+agent, a `workers=` naming a folder that
 holds no agent or one inside another it names, a `reads:` that is not a path from the root, names no
 folder of the tree, a `tools/` folder on an agent's path or a folder inside one, leaves the root,
 names the agent's own folder, one that holds it or one inside it, or names two folders one inside
