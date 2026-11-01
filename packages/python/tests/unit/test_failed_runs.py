@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -19,13 +20,23 @@ from rfnry_engine.models import (
     ToolSpec,
     Usage,
 )
-from rfnry_engine.records import Decision, Event, Generation, Run, TextDelta, ToolResultReady
+from rfnry_engine.records import (
+    CommandOutput,
+    Decision,
+    Event,
+    Generation,
+    Run,
+    TextDelta,
+    ToolResultReady,
+)
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, Tools
+from rfnry_engine.tools.workspace import Local, Workspace
 
 from .fakes import Answering, Desk, Ledger, Scripted, delegate_triage, lookup_order, text_reply
+from .test_engine_workspace import make_tree
 
 
 class Kept:
@@ -510,6 +521,68 @@ async def test_a_further_failure_of_a_batch_is_logged_and_the_first_is_raised(
     assert record.exc_info is not None and record.exc_info[1] is raised["c2"]
     [run] = kept.runs
     assert isinstance(run, Generation) and run.error == "ConnectionResetError: c1"
+    assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "c2"]
+
+
+async def test_a_raised_call_s_failure_wins_over_a_held_one_in_the_same_batch(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    stop = Stop()
+    printed = asyncio.Event()
+    held = ConnectionResetError("the output socket closed")
+    raised = ConnectionResetError("the result socket closed")
+
+    async def look(args: dict[str, Any]) -> str:
+        await printed.wait()
+        return "found"
+
+    async def closed(event: Event) -> None:
+        if isinstance(event, CommandOutput):
+            printed.set()
+            raise held
+        if isinstance(event, ToolResultReady) and event.call_id == "c2":
+            stop.now()
+            raise raised
+
+    command = f"{sys.executable} -c \"import time; print('hi', flush=True); time.sleep(30)\""
+    calls = [
+        ToolCall(id="c1", name="Shell", args={"command": command}),
+        ToolCall(id="c2", name="look", args={}),
+    ]
+    root = tmp_path / "work"
+    root.mkdir()
+    kept = Kept()
+    llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
+    with (
+        caplog.at_level(logging.ERROR, logger="rfnry_engine.engine"),
+        pytest.raises(ConnectionResetError) as first,
+    ):
+        async with (
+            asyncio.timeout(10),
+            Workspace(Local(root), scope="acme", bridge=False) as work,
+            Engine(make_tree(tmp_path), refinery=kept, models={"strong": llm}) as engine,
+        ):
+            await engine.run(
+                "coder",
+                "acme",
+                "x",
+                workspace=work,
+                tools=Tools([Tool("look", "Look", body=look)]),
+                on_event=closed,
+                stop=stop,
+            )
+    assert first.value is raised
+    [record] = [r for r in caplog.records if r.name == "rfnry_engine.engine"]
+    assert record.getMessage() == (
+        "engine: a further call of the same batch failed: the output socket closed"
+    )
+    assert record.exc_info is not None and record.exc_info[1] is held
+    [run] = kept.runs
+    assert (
+        isinstance(run, Generation)
+        and run.error == "ConnectionResetError: the result socket closed"
+    )
+    assert [(s.tool, s.stopped) for s in run.steps] == [("Shell", True), ("look", False)]
     assert [m.tool_call_id for m in run.conversation if m.role == "tool"] == ["c1", "c2"]
 
 
