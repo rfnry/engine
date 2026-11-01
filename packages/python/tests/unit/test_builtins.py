@@ -1046,3 +1046,26 @@ async def test_ls_hides_a_link_that_leads_outside_every_folder_as_glob_and_the_m
     for path in ["out.md", "outdir/x.md", "../books/out.md"]:
         with pytest.raises(InputError, match="^jail: path outside the agent directory: "):
             await tools.dispatch("Read", {"path": path})
+
+
+async def test_grep_labels_a_file_link_s_matches_with_the_path_it_was_given(tmp_path: Path) -> None:
+    agent, books = tmp_path / "agent", tmp_path / "books"
+    (agent / "sub").mkdir(parents=True)
+    books.mkdir()
+    (agent / "real.md").write_text("needle\n", encoding="utf-8")
+    (agent / "alias.md").symlink_to("real.md")
+    (agent / "sub" / "deep.md").symlink_to("../real.md")
+    (books / "y.md").write_text("needle\n", encoding="utf-8")
+    (agent / "y.md").symlink_to(books / "y.md")
+    tools = Tools(builtins(agent, {"../books": books}))
+    for path in ["alias.md", "sub/deep.md", "y.md", "real.md", "../books/y.md"]:
+        assert await tools.dispatch("Grep", {"pattern": "needle", "path": path}) == path
+        assert await tools.dispatch(
+            "Grep", {"pattern": "needle", "path": path, "mode": "content"}
+        ) == (f"{path}:1:needle")
+    assert str(await tools.dispatch("Grep", {"pattern": "needle"})).splitlines() == [
+        "alias.md",
+        "real.md",
+        "sub/deep.md",
+        "y.md",
+    ]

@@ -349,7 +349,8 @@ covers it under, while `kb/../.env` is hidden, and so is `/elsewhere/git/config`
 folder it leads to has no hidden name: a visible link to a hidden folder, `shown -> .secret`, is
 hidden, and so is every file read through it, for the fingerprint never follows a folder link, and
 `Glob`, `Grep`, `LS` and the map show nothing these rules hide, nor a link that leads outside those
-folders, while `LS` lists a broken or looping link inside them by its name, as it lists a file. A
+folders, while `LS` lists a broken or looping link inside them by its name, as it lists a file, and
+`Grep` given a file labels its matches with the path as given, a file link under its own name. A
 file link that comes from outside those folders, or leads from one of them into another, is judged
 by the file it leads to as well as by its own name, since the fingerprint covers it only there, and
 a path that leads outside them is the jail's error (`jail: path outside the agent directory:

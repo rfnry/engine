@@ -316,7 +316,7 @@ class _Directory:
         except ValueError as exc:
             raise InputError(f"tools/builtins: invalid glob {a.glob!r}: {exc}") from exc
         for path in paths:
-            rel = self._shown(path)
+            rel = a.path if a.path and path == base else self._shown(path)
             try:
                 fd = self.jail.open(path)
             except InputError, OSError:
