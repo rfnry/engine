@@ -615,3 +615,48 @@ def test_a_name_that_is_not_utf8_is_refused_naming_its_path(tmp_path: Path, kind
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == f"tree: the name of {shown} is not UTF-8; rename it"
+
+
+DECLARED_FILES = {
+    "a/AGENT.md": "---\nname: a\nkind: generation\nmodel: strong\n---\nbody\n",
+    "a/tasks/t.md": "---\ndescription: T\n---\ndo it\n",
+    "a/tools/x.json": '{"description": "X", "input_schema": {"type": "object"}}',
+    "a/tools/x.py": "def run(args, call):\n    return 'x'\n",
+    "a/tools/_shared.py": "VALUE = 1\n",
+    "d/AGENT.md": "---\nname: d\nkind: decision\nmodel: judge\n---\n",
+    "d/questions/ok.json": '{"type": "check", "instructions": "ok?"}',
+    "d/questions/filled.json": '{"type": "check"}',
+    "d/questions/filled.py": "def run(input, call):\n    return {'instructions': 'q?'}\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("locked", "module"),
+    [
+        ("a/AGENT.md", "tree"),
+        ("a/tasks/t.md", "tree"),
+        ("d/questions/ok.json", "tree"),
+        ("a/tools/x.json", "tools/folder"),
+        ("a/tools/x.py", "tools/folder"),
+        ("a/tools/_shared.py", "tools/folder"),
+        ("d/questions/filled.py", "tools/folder"),
+    ],
+)
+def test_a_declared_file_that_cannot_be_read_is_refused_naming_it(
+    tmp_path: Path, locked: str, module: str
+) -> None:
+    for rel, text in DECLARED_FILES.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    assert sorted(load_tree(tmp_path)) == ["a", "d"]
+    path = tmp_path / locked
+    path.chmod(0)
+    try:
+        with pytest.raises(ConfigurationError) as caught:
+            load_tree(tmp_path)
+    finally:
+        path.chmod(0o644)
+    assert (
+        str(caught.value)
+        == f"{module}: cannot read {path.resolve()}: Permission denied; make it readable to the engine"
+    )

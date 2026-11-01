@@ -93,6 +93,10 @@ def _text(path: Path) -> str:
         raise ConfigurationError(
             f"tools/folder: {path} is not UTF-8 text; save it as UTF-8"
         ) from exc
+    except OSError as exc:
+        raise ConfigurationError(
+            f"tools/folder: cannot read {path}: {exc.strerror or exc}; make it readable to the engine"
+        ) from exc
 
 
 def reason(exc: jsonschema_rs.ValidationError) -> str:

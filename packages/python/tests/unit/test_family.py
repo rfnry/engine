@@ -7,17 +7,18 @@ ROOT = Path(__file__).parents[4]
 SRC = "packages/python/src"
 
 
-def _checkout() -> Path:
-    found = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout.strip()
-    return Path(found).parent if found else ROOT
+def sibling() -> Path:
+    try:
+        found = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+    except OSError:
+        found = ""
+    return (Path(found).parent if found else ROOT).parent / "memory"
 
-
-SIBLING = _checkout().parent / "memory"
 
 BLOCKS = {
     "parts and messages": (
@@ -57,8 +58,9 @@ def cut(path: Path, start: str, end: str) -> str:
 @pytest.mark.parametrize("name", BLOCKS)
 def test_the_shared_block_is_byte_identical_with_the_sibling_library(name: str) -> None:
     own, theirs, start, end = BLOCKS[name]
-    if not SIBLING.is_dir():
+    memory = sibling()
+    if not memory.is_dir():
         pytest.fail(
-            f"tests: no rfnry-memory checkout at {SIBLING}; clone it beside the engine's checkout"
+            f"tests: no rfnry-memory checkout at {memory}; clone it beside the engine's checkout"
         )
-    assert cut(ROOT / SRC / own, start, end) == cut(SIBLING / SRC / theirs, start, end)
+    assert cut(ROOT / SRC / own, start, end) == cut(memory / SRC / theirs, start, end)

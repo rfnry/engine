@@ -246,6 +246,10 @@ def _read(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise ConfigurationError(f"tree: {path} is not UTF-8 text; save it as UTF-8") from exc
+    except OSError as exc:
+        raise ConfigurationError(
+            f"tree: cannot read {path}: {exc.strerror or exc}; make it readable to the engine"
+        ) from exc
 
 
 def _object(path: Path) -> dict[str, JsonValue]:

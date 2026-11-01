@@ -1143,6 +1143,122 @@ async def test_a_cancel_of_closing_the_workers_from_another_thread_still_closes_
         loop.close()
 
 
+def blocking(loop: asyncio.AbstractEventLoop, seconds: float) -> None:
+    busy = threading.Event()
+
+    def block() -> None:
+        busy.set()
+        time.sleep(seconds)
+
+    loop.call_soon_threadsafe(block)
+    assert busy.wait(5)
+
+
+async def test_a_cancel_of_closing_the_workers_does_not_wait_for_a_blocked_loop(
+    tmp_path: Path,
+) -> None:
+    first = WorkerPool([script(tmp_path / "one", "nap", PID)])
+    second = WorkerPool([script(tmp_path / "two", "nap", PID)])
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        pids = [
+            pid(await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(call, loop)))
+            for call in (first.call("nap", {}, CALL, 5), second.call("nap", {}, CALL, 5))
+        ]
+        workers = Workers({}, None)
+        workers._pools = {None: first, "billing": second}
+        blocking(loop, 2.0)
+        began = time.monotonic()
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.3):
+                await workers.close()
+        assert time.monotonic() - began < 1.5
+        assert first._closed and second._closed
+        assert all(ended(value) for value in pids)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        first._drop(CLOSED)
+        second._drop(CLOSED)
+        loop.close()
+
+
+async def test_a_cancelled_close_from_another_thread_still_logs_a_stop_that_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.ERROR, logger="rfnry_engine.workers.pool")
+    stop = _Worker.stop
+
+    def failing(worker: _Worker, reason: str | None = None) -> None:
+        stop(worker, reason)
+        raise OSError("the pipe would not close")
+
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        first = asyncio.run_coroutine_threadsafe(pool.call("nap", {}, CALL, 5), loop)
+        worker = pid(await asyncio.wrap_future(first))
+        monkeypatch.setattr(_Worker, "stop", failing)
+        blocking(loop, 0.3)
+        closing = asyncio.ensure_future(pool.close())
+        await asyncio.sleep(0.05)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(5):
+                await closing
+
+        def logged() -> list[str]:
+            return [r.getMessage() for r in caplog.records if r.name == "rfnry_engine.workers.pool"]
+
+        for _ in range(100):
+            if logged():
+                break
+            await asyncio.sleep(0.02)
+        assert logged() == ["workers/pool: could not stop a worker: the pipe would not close"]
+        assert reaped(worker)
+    finally:
+        monkeypatch.undo()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        pool._drop(CLOSED)
+        loop.close()
+
+
+async def test_close_returns_once_a_worker_a_call_was_still_starting_has_ended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connect = _Worker.connect
+    started: list[int] = []
+    connected = asyncio.Event()
+
+    async def slow(worker: _Worker) -> None:
+        started.append(worker.pid)
+        await connect(worker)
+        connected.set()
+        await asyncio.sleep(0.5)
+
+    monkeypatch.setattr(_Worker, "connect", slow)
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    calling = asyncio.ensure_future(pool.call("nap", {}, CALL, 5))
+    try:
+        async with asyncio.timeout(5):
+            await connected.wait()
+            await pool.close()
+        [spawned] = started
+        assert reaped(spawned)
+        with pytest.raises(WorkerError, match="the worker for nap stopped: it was closed"):
+            await calling
+    finally:
+        if not calling.done():
+            calling.cancel()
+        await asyncio.wait([calling])
+        pool._drop(CLOSED)
+
+
 def test_a_worker_started_while_its_pool_closes_is_stopped(tmp_path: Path) -> None:
     pool = WorkerPool([script(tmp_path, "nap", PID)])
     _, children = held()

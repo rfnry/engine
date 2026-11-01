@@ -223,6 +223,11 @@ def _log(*errors: BaseException) -> None:
         logger.error("workers/pool: could not stop a worker: %s", error, exc_info=error)
 
 
+def _logged(handed: Future[None]) -> None:
+    if not handed.cancelled() and (error := handed.exception()) is not None:
+        _log(error)
+
+
 def _load(worker: _Worker | None) -> int:
     return 0 if worker is None else len(worker.calls) + len(worker.held) + len(worker.cancelling)
 
@@ -251,6 +256,7 @@ class WorkerPool:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = asyncio.Lock()
         self._closed = False
+        self._spawning: asyncio.Future[None] | None = None
 
     async def call(
         self, key: str, args: JsonValue, call: Mapping[str, str], timeout: float | None
@@ -279,30 +285,50 @@ class WorkerPool:
                 worker.abandon(id, held=key in worker.threaded, expired=deadline.expired())
 
     async def close(self) -> None:
-        self._closed = True
-        loop = self._loop
-        if loop is asyncio.get_running_loop():
-            self._drop(CLOSED)
-        elif loop is not None and loop.is_running():
-            handed: Future[None] = Future()
-            soon = loop.call_soon_threadsafe(self._hand, handed)
+        handing = self._shut()
+        if handing is None:
+            spawning = self._spawning
+            if spawning is not None and spawning.get_loop() is asyncio.get_running_loop():
+                await asyncio.wait([spawning])
+            return
+        loop, handed, soon = handing
+        try:
             while not handed.done() and loop.is_running():
                 await asyncio.sleep(POLL)
-            if handed.done():
-                handed.result()
-            else:
-                soon.cancel()
-                self._drop(CLOSED)
+        except asyncio.CancelledError:
+            handed.add_done_callback(_logged)
+            raise
+        if handed.done():
+            handed.result()
         else:
+            soon.cancel()
             self._drop(CLOSED)
+
+    def release(self) -> None:
+        handing = self._shut()
+        if handing is not None:
+            handing[1].add_done_callback(_logged)
+
+    def _shut(self) -> tuple[asyncio.AbstractEventLoop, Future[None], asyncio.Handle] | None:
+        self._closed = True
+        loop = self._loop
+        if loop is not None and loop is not asyncio.get_running_loop() and loop.is_running():
+            handed: Future[None] = Future()
+            return loop, handed, loop.call_soon_threadsafe(self._hand, handed)
+        self._drop(CLOSED)
+        return None
 
     def _hand(self, handed: Future[None]) -> None:
         try:
             self._drop(CLOSED)
         except BaseException as exc:
             handed.set_exception(exc)
-        else:
+            return
+        spawning = self._spawning
+        if spawning is None:
             handed.set_result(None)
+        else:
+            spawning.add_done_callback(lambda _: handed.set_result(None))
 
     def _drop(self, reason: str) -> None:
         workers = [worker for worker in self._workers if worker is not None]
@@ -336,10 +362,16 @@ class WorkerPool:
             index = min(range(len(self._workers)), key=lambda i: _load(self._workers[i]))
             chosen = self._workers[index]
             if chosen is None:
-                chosen = await self._spawn()
-                if self._closed:
-                    chosen.stop(CLOSED)
-                    raise WorkerError(f"workers/pool: the worker for {name} stopped: {CLOSED}")
+                spawning = asyncio.get_running_loop().create_future()
+                self._spawning = spawning
+                try:
+                    chosen = await self._spawn()
+                    if self._closed:
+                        chosen.stop(CLOSED)
+                        raise WorkerError(f"workers/pool: the worker for {name} stopped: {CLOSED}")
+                finally:
+                    self._spawning = None
+                    spawning.set_result(None)
                 self._workers[index] = chosen
             return chosen
 
@@ -399,9 +431,12 @@ class Workers:
         cancelled: asyncio.CancelledError | None = None
         for pool in self._pools.values():
             try:
-                await pool.close()
+                if cancelled is None:
+                    await pool.close()
+                else:
+                    pool.release()
             except asyncio.CancelledError as exc:
-                cancelled = cancelled or exc
+                cancelled = exc
             except Exception as exc:
                 failed.append(exc)
         if cancelled is not None:
