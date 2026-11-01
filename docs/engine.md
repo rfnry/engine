@@ -1674,13 +1674,14 @@ A call ends with its command. When the command ends, for any reason — it exits
 workspace's `timeout` — a call still in flight is cut as a stopped call is: its step is recorded with
 `stopped` and `stopped by the user` as its result, its `ToolResultReady` is sent, and a script still
 connected reads `{"error": "stopped by the user"}`. A consult that a script's call started, an
-`engine.tool` passed in `tools=`, ends with the command: when the command exits or times out, the
-consult is cancelled and leaves no record of its own. Under `stop.now()` it takes the stop, but
-its own record is kept only when that record is written before the command is killed, and otherwise
-it leaves none, as no cancelled run does; the script's step is recorded stopped either way. A reply
-to a process that outlived the command, one that left its process group outside a sandbox, is
-written but not waited for, and may be cut off when the socket closes. An `on_event` that raises on
-a script's call fails the run once the command has ended.
+`engine.tool` passed in `tools=`, ends with the command: one still running when the command ends is
+cancelled and leaves no record of its own, as no cancelled run does. The exception is a command that
+`stop.now()` ended: the consult takes the stop, as one the model's own call started does, and keeps
+its record, and the command's end waits for it, through any further `stop.now()`; a cancel of the
+run, or its call's deadline, cuts it. The script's step is recorded stopped either way. A reply to a
+process that outlived the command, one that left its process group outside a sandbox, is written but
+not waited for, and may be cut off when the socket closes. An `on_event` that raises on a script's
+call fails the run once the command has ended.
 
 The socket is the one file the engine creates itself, `<root>/.rfnry-<8 hex>.sock`, inside the
 workspace you passed, for the life of one command: made just before the command starts, closed once
@@ -2417,8 +2418,8 @@ its consult had just finished, and that consult keeps its record — and the cal
 `stopped by the user`, as a stopped `Delegate` step does; `after_step()` ends it after its current
 step. A consult a tool of yours starts in a task of its own — two at once, say — is in the
 foreground too; one a script's call started through the workspace's tool bridge ends with the
-script's command instead, as "Calling tools from code" says. Its events reach the caller's handler,
-told apart by `agent` and `run_id`:
+script's command instead, unless `stop.now()` ended the command, as "Calling tools from code" says.
+Its events reach the caller's handler, told apart by `agent` and `run_id`:
 
 ```python
 async def status(event):

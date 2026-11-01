@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.foreground import current
 from rfnry_engine.jail import Jail
-from rfnry_engine.stop import join, wait
+from rfnry_engine.stop import complete, join, wait
 from rfnry_engine.tools.bridge import CALLS, Answer, Bridge
 from rfnry_engine.tools.tools import Tool
 
@@ -461,20 +461,7 @@ async def _kill_all(
     *kills: Coroutine[Any, Any, None],
 ) -> tuple[list[BaseException | None], asyncio.CancelledError | None]:
     killing = [asyncio.create_task(kill, eager_start=True) for kill in kills]
-    caller = asyncio.current_task()
-    cancelled: asyncio.CancelledError | None = None
-    hurried = False
-    while True:
-        if not hurried and caller is not None and caller.cancelling() > 1:
-            hurried = True
-            for task in killing:
-                task.cancel()
-        if not (pending := [task for task in killing if not task.done()]):
-            break
-        try:
-            await asyncio.wait(pending)
-        except asyncio.CancelledError as exc:
-            cancelled = cancelled or exc
+    cancelled = await complete(killing)
     return [None if task.cancelled() else task.exception() for task in killing], cancelled
 
 

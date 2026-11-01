@@ -19,6 +19,9 @@ from rfnry_engine.models import (
     Usage,
 )
 from rfnry_engine.records import Decision, Event, Generation, Run, TextDelta, ToolResultReady
+from rfnry_engine.refinery.postgres import PostgresStorage
+from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import RunRow, Storage
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, Tools
 
@@ -204,6 +207,63 @@ async def test_a_run_whose_task_is_cancelled_is_not_recorded(fixtures: Path) -> 
     with pytest.raises(asyncio.CancelledError):
         await task
     assert kept.runs == []
+
+
+async def test_a_cancelled_run_is_still_not_recorded(fixtures: Path, storage: Storage) -> None:
+    asked = asyncio.Event()
+
+    class Waiting:
+        async def generate(
+            self, system: str, messages: list[Message], tools: list[ToolSpec]
+        ) -> Reply:
+            asked.set()
+            await asyncio.Event().wait()
+            raise AssertionError("Waiting was answered")
+
+    async with (
+        asyncio.timeout(5),
+        Engine(fixtures, refinery=Refinery(storage), models={"strong": Waiting()}) as engine,
+    ):
+        task = asyncio.ensure_future(engine.run("support", "acme", "x"))
+        await asked.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert await storage.runs("acme") == []
+
+
+async def test_a_cancel_cuts_a_record_write_that_hangs(
+    fixtures: Path, pool: Any, storage: Storage
+) -> None:
+    writing = asyncio.Event()
+    released = asyncio.Event()
+    cut: list[bool] = []
+
+    class Hanging(PostgresStorage):
+        async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
+            writing.set()
+            try:
+                await released.wait()
+            except asyncio.CancelledError:
+                cut.append(True)
+                raise
+            await super().put_runs(scope, rows)
+
+    llm = Scripted(text_reply("done"))
+    async with (
+        asyncio.timeout(2),
+        Engine(fixtures, refinery=Refinery(Hanging(pool)), models={"strong": llm}) as engine,
+    ):
+        task = asyncio.ensure_future(engine.run("support", "acme", "x"))
+        try:
+            await writing.wait()
+            task.cancel()
+            ended, _ = await asyncio.wait([task], timeout=1)
+        finally:
+            released.set()
+            await asyncio.wait([task])
+    assert ended == {task} and task.cancelled() and cut == [True]
+    assert await storage.runs("acme") == []
 
 
 async def test_a_run_refused_before_its_first_model_call_is_not_recorded(

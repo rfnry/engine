@@ -1084,9 +1084,14 @@ class Engine:
                 try:
                     await asyncio.wait([calling])
                 except asyncio.CancelledError:
-                    handed = any(done is call for done, _ in ran)
-                    if not handed or (runner is not None and runner.cancelling() > calm):
+                    own = foregrounds.get(id(call))
+                    if runner is not None and runner.cancelling() > calm:
                         calling.cancel()
+                    elif requested(stop) == "now" and own is not None and own.live > 0:
+                        own.pressed = True
+                    elif not any(done is call for done, _ in ran):
+                        calling.cancel()
+            foregrounds.pop(id(call), None)
             if calling.cancelled():
                 step = stopped(call, began, shell.id)
                 steps.append(step)
@@ -1154,8 +1159,7 @@ class Engine:
                     if bridging
                     else None,
                 )
-            if by is None:
-                foregrounds[id(call)] = here
+            foregrounds[id(call)] = here
             FOREGROUND.set(here)
             try:
                 if approved is False:

@@ -8,6 +8,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from rfnry_engine.stop import complete
+
 LINE = 1_048_576
 CALLS = 64
 
@@ -108,18 +110,7 @@ class Bridge:
         handlers = list(self._handlers)
         for task in handlers:
             task.cancel()
-        caller = asyncio.current_task()
-        cancelled: asyncio.CancelledError | None = None
-        hurried = False
-        while pending := [task for task in handlers if not task.done()]:
-            if not hurried and caller is not None and caller.cancelling() > 1:
-                hurried = True
-                for task in pending:
-                    task.cancel()
-            try:
-                await asyncio.wait(pending)
-            except asyncio.CancelledError as exc:
-                cancelled = cancelled or exc
+        cancelled = await complete(handlers)
         self._server.abort_clients()
         try:
             await self._server.wait_closed()
