@@ -1,6 +1,6 @@
 from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -9,7 +9,8 @@ from pydantic import (
     JsonValue,
     TypeAdapter,
     ValidationError,
-    field_validator,
+    ValidationInfo,
+    model_validator,
 )
 
 from rfnry_engine.errors import InputError
@@ -28,16 +29,21 @@ from rfnry_engine.models import (
 from rfnry_engine.stop import Stopped
 
 PARTS = TypeAdapter(list[Part])
+READ_BACK = {"read_back": True}
 
 
-def _media_reads_back_as_parts(value: object) -> object:
-    if not isinstance(value, list) or not value:
-        return value
+def _reading_back(info: ValidationInfo) -> bool:
+    return isinstance(info.context, dict) and info.context.get("read_back") is True
+
+
+def _written(value: object) -> list[Part] | None:
+    if not isinstance(value, list):
+        return None
     try:
-        parts = PARTS.validate_python(value, from_attributes=True)
+        parts = PARTS.validate_python(value)
     except ValidationError, InputError:
-        return value
-    return parts if any(not isinstance(part, Text) for part in parts) else value
+        return None
+    return parts if PARTS.dump_python(parts, mode="json") == value else None
 
 
 class Step(BaseModel):
@@ -169,7 +175,16 @@ class Generation(BaseModel):
     stop_reason: StopReason | None = None
     error: str | None = None
 
-    _input_reads_back = field_validator("input", mode="before")(_media_reads_back_as_parts)
+    @model_validator(mode="after")
+    def _input_reads_back(self, info: ValidationInfo) -> Self:
+        if not _reading_back(info) or not isinstance(self.input, list) or not self.messages:
+            return self
+        sent = self.messages[-1].content
+        if self.skill is not None and isinstance(sent, list):
+            sent = sent[1:]
+        if isinstance(sent, list) and PARTS.dump_python(sent, mode="json") == self.input:
+            self.input = list(sent)
+        return self
 
     @property
     def added(self) -> list[Message]:
@@ -201,7 +216,14 @@ class Decision(BaseModel):
     def added(self) -> list[Message]:
         return [] if self.routed_to is None else self.routed_to.added
 
-    _state_reads_back = field_validator("state", mode="before")(_media_reads_back_as_parts)
+    @model_validator(mode="after")
+    def _state_reads_back(self, info: ValidationInfo) -> Self:
+        if not _reading_back(info):
+            return self
+        parts = _written(self.state)
+        if parts is not None and any(not isinstance(part, Text) for part in parts):
+            self.state = parts
+        return self
 
 
 Run = Generation | Decision

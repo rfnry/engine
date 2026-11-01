@@ -1,7 +1,9 @@
 import asyncio
 import copy
+import json
 import re
 import shutil
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from enum import Enum
@@ -10,7 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import (
@@ -810,10 +812,114 @@ async def test_a_tool_that_changes_its_args_leaves_the_record_as_the_model_sent_
     assert stored.steps[0].args == sent and stored.conversation[1].tool_calls[0].args == sent
 
 
-@pytest.mark.parametrize("given", [None, 42], ids=["none", "number"])
+async def test_an_expect_validator_that_changes_the_args_leaves_the_record_as_the_model_sent_it(
+    fixtures: Path,
+) -> None:
+    class Filled(BaseModel):
+        refund: bool
+        reason: str
+
+        @model_validator(mode="before")
+        @classmethod
+        def defaults(cls, data: Any) -> Any:
+            if isinstance(data, dict):
+                data.setdefault("reason", "unspecified")
+                data["normalized"] = True
+            return data
+
+    llm = Scripted(
+        _tool_use(ToolCall(id="o1", name="Output", args={"refund": "maybe"})),
+        _tool_use(ToolCall(id="o2", name="Output", args={"refund": True})),
+    )
+    run = await engine_for(fixtures, llm).run("support", "acme", "x", expect=Filled)
+    assert isinstance(run, Generation)
+    assert Filled.model_validate_json(run.reply) == Filled(refund=True, reason="unspecified")
+    assert [step.args for step in run.steps] == [{"refund": "maybe"}, {"refund": True}]
+    calls = [call.args for m in run.conversation if m.role == "assistant" for call in m.tool_calls]
+    assert calls == [{"refund": "maybe"}, {"refund": True}]
+    assert llm.calls[1][1][1].tool_calls[0].args == {"refund": "maybe"}
+
+
+class Unpicklable:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+
+    def __eq__(self, other: object) -> bool:
+        return other is self
+
+    __hash__ = object.__hash__
+
+
+@pytest.mark.parametrize("handled", [True, False], ids=["with-on-event", "without"])
+async def test_args_holding_a_value_that_cannot_be_copied_still_run(
+    fixtures: Path, handled: bool
+) -> None:
+    leaf = Unpicklable()
+    received: list[Any] = []
+
+    async def lookup(args: dict[str, Any]) -> str:
+        received.append(args["v"]["held"][0])
+        return "found"
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        received.append(call.args["v"]["held"][0])
+        return True
+
+    async def show(event: Event) -> None:
+        if isinstance(event, ToolCallStarted):
+            received.append(event.args["v"]["held"][0])
+        if isinstance(event, ToolResultReady):
+            received.append(event.step.args["v"]["held"][0])
+
+    call = ToolCall(id="c1", name="lookup", args={"v": {"held": [leaf]}})
+    llm = Scripted(_tool_use(call), text_reply("done"))
+    run = await engine_for(fixtures, llm).run(
+        "billing",
+        "acme",
+        "x",
+        tools=Tools([Tool("lookup", "Look up an order", body=lookup)]),
+        approve=approve,
+        on_event=show if handled else None,
+    )
+    assert isinstance(run, Generation) and run.reply == "done"
+    assert run.steps[0].result == "found" and run.steps[0].args["v"]["held"][0] is leaf
+    assert len(received) == (4 if handled else 2) and all(item is leaf for item in received)
+
+
+def _cyclic() -> list[Any]:
+    held: list[Any] = [1]
+    held.append({"back": held})
+    return held
+
+
+@pytest.mark.parametrize(
+    ("given", "shown"),
+    [
+        (None, "NoneType"),
+        (42, "int"),
+        ((1, 2), "tuple"),
+        ({1: "a"}, "the key 1 at input"),
+        ({"a": {1, 2}}, "set at input['a']"),
+        ([object()], "object at input[0]"),
+        ({"a": [1, {"b": (2,)}]}, "tuple at input['a'][1]['b']"),
+        ({"a": Text(text="x")}, "Text at input['a']"),
+        (_cyclic(), "a cycle at input[1]['back']"),
+    ],
+    ids=[
+        "none",
+        "number",
+        "tuple",
+        "int-key",
+        "set",
+        "object",
+        "nested-tuple",
+        "part-in-object",
+        "cycle",
+    ],
+)
 @pytest.mark.parametrize("agent", ["billing", "triage"])
 async def test_an_input_that_is_not_a_state_is_refused_before_any_model_call(
-    fixtures: Path, agent: str, given: Any
+    fixtures: Path, agent: str, given: Any, shown: str
 ) -> None:
     class Kept:
         def __init__(self) -> None:
@@ -825,13 +931,23 @@ async def test_an_input_that_is_not_a_state_is_refused_before_any_model_call(
     kept = Kept()
     llm, judge = Scripted(), Fixed({})
     engine = Engine(fixtures, refinery=kept, models={"strong": llm, "judge": judge})
-    shown = type(given).__name__
-    with pytest.raises(
-        InputError,
-        match=f"^engine: input must be a string, a JSON object or a list; got {shown}$",
-    ):
+    with pytest.raises(InputError) as caught:
         await engine.run(agent, "acme", given)
+    assert str(caught.value) == (
+        f"engine: input must be a string, a JSON object or a list; got {shown}"
+    )
     assert llm.calls == [] and judge.calls == [] and kept.runs == []
+
+
+async def test_a_nested_input_of_json_values_runs_and_is_recorded_as_given(
+    fixtures: Path,
+) -> None:
+    shared = {"sku": "A-1"}
+    given = {"order": [1, 2.5, True, None, {"lines": [shared, shared]}], "note": "x"}
+    llm = Scripted(text_reply("ok"))
+    run = await engine_for(fixtures, llm).run("billing", "acme", given)
+    assert isinstance(run, Generation) and run.input == given
+    assert llm.calls[0][1][-1].content == json.dumps(given, ensure_ascii=False)
 
 
 PNG = b"\x89PNG\r\n\x1a\n"

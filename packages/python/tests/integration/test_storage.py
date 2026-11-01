@@ -808,18 +808,53 @@ class Looking(Answering):
     media_types = {"image/*"}
 
 
-async def test_a_generation_input_of_parts_round_trips_as_parts(storage: Storage) -> None:
+PHOTO: list[Part] = [
+    Text(text="What is this?"),
+    Image(media_type="image/png", data=bytes(range(256))),
+]
+SHAPED: list[Any] = [
+    {"type": "image", "media_type": "image/png", "url": "https://cdn.example/a.png", "sku": "A-1"},
+    {"type": "text", "text": "compare", "lang": "en"},
+]
+WRITTEN: list[Any] = [part.model_dump(mode="json") for part in PHOTO]
+
+
+@pytest.mark.parametrize(
+    ("given", "skill"),
+    [
+        (PHOTO, None),
+        (PHOTO, "escalate"),
+        ([Text(text="one"), Text(text="two")], None),
+        ([Text(text="one"), Text(text="two")], "escalate"),
+        (SHAPED, None),
+        (SHAPED, "escalate"),
+        (WRITTEN, None),
+        (WRITTEN, "escalate"),
+        ("plain", "escalate"),
+    ],
+    ids=[
+        "parts",
+        "parts-skill",
+        "text-parts",
+        "text-parts-skill",
+        "media-shaped-json",
+        "media-shaped-json-skill",
+        "json-as-a-part-dumps",
+        "json-as-a-part-dumps-skill",
+        "text-skill",
+    ],
+)
+async def test_a_generation_input_reads_back_as_it_was_given(
+    storage: Storage, given: Any, skill: str | None
+) -> None:
     refinery = Refinery(storage)
-    parts: list[Part] = [
-        Text(text="What is this?"),
-        Image(media_type="image/png", data=bytes(range(256))),
-    ]
-    engine = Engine(FIXTURES, refinery=refinery, models={"strong": Scripted(text_reply("A cat."))})
-    run = await engine.run("billing", "a", parts)
-    assert isinstance(run, Generation) and run.input == parts
+    engine = Engine(FIXTURES, refinery=refinery, models={"strong": Scripted(text_reply("Seen."))})
+    run = await engine.run("support", "a", given, skill=skill)
+    assert isinstance(run, Generation) and run.input == given
+    assert [type(item) for item in run.input] == [type(item) for item in given]
     again = await refinery.run("a", run.run_id)
-    assert again == run and isinstance(again, Generation) and again.input == parts
-    assert [type(part) for part in again.input] == [Text, Image]
+    assert again == run and isinstance(again, Generation)
+    assert [type(item) for item in again.input] == [type(item) for item in given]
 
 
 async def test_a_state_of_parts_round_trips_as_parts_and_replays(
@@ -842,6 +877,20 @@ async def test_a_state_of_parts_round_trips_as_parts_and_replays(
         async for p in refinery.replay("a", Engine(root, models={"judge": looking}), agent="grader")
     ]
     assert pair.error is None and looking.calls[0][0] == parts
+
+
+@pytest.mark.parametrize("given", [PHOTO, SHAPED], ids=["parts", "media-shaped-json"])
+async def test_a_decision_state_reads_back_as_it_was_given(
+    storage: Storage, tmp_path: Path, given: Any
+) -> None:
+    refinery = Refinery(storage)
+    engine = Engine(grader(tmp_path), refinery=refinery, models={"judge": Looking()})
+    run = await engine.run("grader", "a", given)
+    assert isinstance(run, Decision) and run.state == given
+    assert [type(item) for item in run.state] == [type(item) for item in given]
+    again = await refinery.run("a", run.run_id)
+    assert again == run and isinstance(again, Decision)
+    assert [type(item) for item in again.state] == [type(item) for item in given]
 
 
 async def test_start_prefix_and_usage_round_trip(

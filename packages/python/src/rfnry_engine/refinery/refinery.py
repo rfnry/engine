@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from rfnry_engine.engine import Approve, Engine
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_engine.models import HistoryLike
-from rfnry_engine.records import Decision, Fingerprint, Generation, Run
+from rfnry_engine.records import READ_BACK, Decision, Fingerprint, Generation, Run
 from rfnry_engine.refinery.conflicts import find_conflicts
 from rfnry_engine.refinery.export import (
     Bucket,
@@ -106,8 +106,8 @@ def unflatten(row: RunRow, under: dict[str, list[RunRow]]) -> dict[str, Any]:
 def read_back(row: RunRow, under: dict[str, list[RunRow]]) -> Run:
     body = unflatten(row, under)
     if row.kind == "generation":
-        return Generation.model_validate(body)
-    return Decision.model_validate(body)
+        return Generation.model_validate(body, context=READ_BACK)
+    return Decision.model_validate(body, context=READ_BACK)
 
 
 def printed(row: RunRow) -> Fingerprint:

@@ -1,5 +1,4 @@
 import asyncio
-import copy
 import json
 import logging
 import posixpath
@@ -162,9 +161,50 @@ MAX_TAG_KEY = 64
 MAX_TAG_VALUE = 256
 
 
+def _looks_like_part(item: object) -> bool:
+    return isinstance(item, BaseModel) and getattr(item, "type", None) in PART_TYPES
+
+
 def _part(item: object) -> Part | None:
-    if isinstance(item, BaseModel) and getattr(item, "type", None) in PART_TYPES:
+    if _looks_like_part(item):
         return PART.validate_python(item, from_attributes=True)
+    return None
+
+
+def _unfit(input: object) -> str | None:
+    if not isinstance(input, str | dict | list):
+        return type(input).__name__
+    path: set[int] = set()
+    seen: set[int] = set()
+    pending: list[tuple[bool, Any, str, object]] = [(True, input, "input", None)]
+    while pending:
+        entering, value, parent, step = pending.pop()
+        if not entering:
+            path.discard(id(value))
+            continue
+        if value is None or isinstance(value, str | int | float):
+            continue
+        where = parent if step is None else f"{parent}[{step!r}]"
+        if not isinstance(value, dict | list):
+            return f"{type(value).__name__} at {where}"
+        if id(value) in path:
+            return f"a cycle at {where}"
+        if id(value) in seen:
+            continue
+        seen.add(id(value))
+        path.add(id(value))
+        pending.append((False, value, where, None))
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    return f"the key {key!r} at {where}"
+                pending.append((True, item, where, key))
+        else:
+            pending.extend(
+                (True, item, where, n)
+                for n, item in enumerate(value)
+                if value is not input or not _looks_like_part(item)
+            )
     return None
 
 
@@ -336,19 +376,19 @@ def _skilled(spec: AgentSpec, skill: str | None) -> str | None:
 
 def _copied(value: Any) -> Any:
     if not isinstance(value, dict | list):
-        return copy.deepcopy(value)
+        return value
     top: dict[Any, Any] | list[Any] = {} if isinstance(value, dict) else []
     made: dict[int, Any] = {id(value): top}
     pending: list[tuple[Any, Any]] = [(value, top)]
     while pending:
         source, target = pending.pop()
         for key, item in source.items() if isinstance(source, dict) else enumerate(source):
-            held = made.get(id(item))
-            if held is None and isinstance(item, dict | list):
-                held = made[id(item)] = {} if isinstance(item, dict) else []
-                pending.append((item, held))
-            elif held is None:
-                held = copy.deepcopy(item)
+            held = item
+            if isinstance(item, dict | list):
+                held = made.get(id(item))
+                if held is None:
+                    held = made[id(item)] = {} if isinstance(item, dict) else []
+                    pending.append((item, held))
             if isinstance(target, dict):
                 target[key] = held
             else:
@@ -628,10 +668,10 @@ class Engine:
             raise InputError(
                 f"engine: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
             )
-        if not isinstance(input, str | dict | list):
+        unfit = _unfit(input)
+        if unfit is not None:
             raise InputError(
-                "engine: input must be a string, a JSON object or a list; "
-                f"got {type(input).__name__}"
+                f"engine: input must be a string, a JSON object or a list; got {unfit}"
             )
         spec = self._spec(agent)
         asked = _asked(spec, questions)
@@ -1047,6 +1087,8 @@ class Engine:
             if runner is not None and runner.cancelling() > calm:
                 raise asyncio.CancelledError("engine: the run was cancelled")
             ran.append((call, step))
+            if on_event is None:
+                return step
             token = CALL.set(called(call, step.by))
             try:
                 await emit(
@@ -1149,16 +1191,17 @@ class Engine:
 
         async def call_tool(call: ToolCall, by: str | None = None) -> Step:
             CALL.set(called(call, by))
-            await emit(
-                ToolCallStarted(
-                    run_id=run_id,
-                    agent=spec.name,
-                    call_id=call.id,
-                    tool=call.name,
-                    args=_copied(call.args),
-                    by=by,
+            if on_event is not None:
+                await emit(
+                    ToolCallStarted(
+                        run_id=run_id,
+                        agent=spec.name,
+                        call_id=call.id,
+                        tool=call.name,
+                        args=_copied(call.args),
+                        by=by,
+                    )
                 )
-            )
             began = time.monotonic()
             if requested(stop) == "now":
                 return await cut(call, began, by)
@@ -1444,7 +1487,7 @@ class Engine:
                         return finish(said, "now")
                     output, rest = rest[0], rest[1:]
                     try:
-                        parsed = expect.model_validate(output.args)
+                        parsed = expect.model_validate(_copied(output.args))
                     except ValidationError as exc:
                         errors = f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}"
                         messages.append(
