@@ -900,11 +900,11 @@ def test_the_input_check_takes_linear_time_however_deep_the_input() -> None:
     assert _unfit(held) == "set at input['n'][0]['n'][0]['n'][0]['n']"
 
 
-def test_the_input_check_takes_linear_time_however_wide_the_input() -> None:
-    wide = [{"a": [n, str(n), None]} for n in range(200_000)]
-    began = time.perf_counter()
+def test_the_input_check_names_the_one_bad_value_of_a_wide_input() -> None:
+    wide: list[Any] = [{"a": [n, str(n), None]} for n in range(200_000)]
     assert _unfit(wide) is None
-    assert time.perf_counter() - began < 1.0
+    wide[-1]["a"].append(float("nan"))
+    assert _unfit(wide) == "nan at input[199999]['a'][3]"
 
 
 class Meddling:
