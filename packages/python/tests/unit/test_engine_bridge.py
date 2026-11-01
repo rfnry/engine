@@ -24,16 +24,15 @@ from rfnry_engine.records import (
     ToolCallStarted,
     ToolResultReady,
 )
-from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery
-from rfnry_engine.refinery.storage import RunRow, Storage
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.stop import Stop
-from rfnry_engine.tools.bridge import CALLS
+from rfnry_engine.tools.bridge import CALLS, Bridge
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Backend, Local, Process, Workspace
 
-from .fakes import Scripted, text_reply
+from .fakes import Ledger, Scripted, text_reply
 from .test_engine_workspace import make_tree, use
 
 CLIENT = """
@@ -743,40 +742,30 @@ def billing(tmp_path: Path, root: Path) -> Path:
     )
 
 
-def halting(stop: Stop) -> Tool:
+def consults(engine: Engine, stop: Stop) -> Tools:
     async def halt(args: dict[str, Any]) -> str:
         stop.now()
         await asyncio.sleep(10)
         return "late"
 
-    return Tool("halt", "Halt", body=halt)
+    return Tools([engine.tool("billing", scope="acme"), Tool("halt", "Halt", body=halt)])
 
 
 async def test_a_consult_a_script_started_keeps_its_record_under_a_stop_with_slow_storage(
     tmp_path: Path, root: Path, pool: Any, storage: Storage
 ) -> None:
-    class Slowed(PostgresStorage):
-        async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
-            await asyncio.sleep(0.3)
-            await super().put_runs(scope, rows)
-
     stop = Stop()
     tree = billing(tmp_path, root)
     llm = Scripted(use(shell()), text_reply("ok"))
     waiting = Waiting(root)
-    refinery = Refinery(Slowed(pool))
+    refinery = Refinery(Ledger(pool, "billing", hold=0.3))
     async with (
         asyncio.timeout(10),
         Workspace(Local(root), scope="acme") as work,
         Engine(tree, models={"strong": llm, "slow": waiting}, refinery=refinery) as engine,
     ):
         run = await engine.run(
-            "coder",
-            "acme",
-            "x",
-            workspace=work,
-            tools=Tools([engine.tool("billing", scope="acme"), halting(stop)]),
-            stop=stop,
+            "coder", "acme", "x", workspace=work, tools=consults(engine, stop), stop=stop
         )
     assert isinstance(run, Generation) and run.stopped == "now"
     assert waiting.cancelled is True
@@ -790,28 +779,19 @@ async def test_a_consult_a_script_started_keeps_its_record_under_a_stop_with_slo
 async def test_a_consult_a_script_started_keeps_its_record_through_a_second_stop(
     tmp_path: Path, root: Path, pool: Any, storage: Storage
 ) -> None:
-    writing = asyncio.Event()
-    written = asyncio.Event()
-    pressed: list[bool] = []
-
-    class Slowed(PostgresStorage):
-        async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
-            if rows[0].agent == "billing":
-                writing.set()
-                await asyncio.sleep(0.3)
-                written.set()
-            await super().put_runs(scope, rows)
-
     stop = Stop()
+    ledger = Ledger(pool, "billing", hold=0.3)
+    pressed: list[bool] = []
 
     async def handler(event: Event) -> None:
         if isinstance(event, ToolResultReady) and event.step.tool == "halt":
-            pressed.append(writing.is_set() and not written.is_set())
+            await ledger.writing.wait()
+            pressed.append(not ledger.written.is_set())
             stop.now()
 
     tree = billing(tmp_path, root)
     llm = Scripted(use(shell()), text_reply("ok"))
-    refinery = Refinery(Slowed(pool))
+    refinery = Refinery(ledger)
     async with (
         asyncio.timeout(10),
         Workspace(Local(root), scope="acme") as work,
@@ -822,7 +802,7 @@ async def test_a_consult_a_script_started_keeps_its_record_through_a_second_stop
             "acme",
             "x",
             workspace=work,
-            tools=Tools([engine.tool("billing", scope="acme"), halting(stop)]),
+            tools=consults(engine, stop),
             on_event=handler,
             stop=stop,
         )
@@ -835,82 +815,20 @@ async def test_a_consult_a_script_started_keeps_its_record_through_a_second_stop
     assert isinstance(kept, Generation) and kept.stopped == "now"
 
 
+@pytest.mark.parametrize("stops", [1, 2], ids=["one-stop", "two-stops"])
 async def test_a_cancel_of_the_run_cuts_the_record_write_of_a_consult_a_script_started(
-    tmp_path: Path, root: Path, pool: Any, storage: Storage
+    tmp_path: Path, root: Path, pool: Any, storage: Storage, stops: int
 ) -> None:
-    writing = asyncio.Event()
-    released = asyncio.Event()
-    cut: list[bool] = []
-
-    class Hanging(PostgresStorage):
-        async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
-            if rows[0].agent == "billing":
-                writing.set()
-                try:
-                    await released.wait()
-                except asyncio.CancelledError:
-                    cut.append(True)
-                    raise
-            await super().put_runs(scope, rows)
-
     stop = Stop()
-    tree = billing(tmp_path, root)
-    llm = Scripted(use(shell()), text_reply("ok"))
-    async with (
-        asyncio.timeout(10),
-        Workspace(Local(root), scope="acme") as work,
-        Engine(
-            tree, models={"strong": llm, "slow": Waiting(root)}, refinery=Refinery(Hanging(pool))
-        ) as engine,
-    ):
-        task = asyncio.ensure_future(
-            engine.run(
-                "coder",
-                "acme",
-                "x",
-                workspace=work,
-                tools=Tools([engine.tool("billing", scope="acme"), halting(stop)]),
-                stop=stop,
-            )
-        )
-        try:
-            await writing.wait()
-            held, _ = await asyncio.wait([task], timeout=0.2)
-            task.cancel()
-            ended, _ = await asyncio.wait([task], timeout=1)
-        finally:
-            released.set()
-            await asyncio.wait([task])
-    assert held == set() and ended == {task}
-    assert task.cancelled() and cut == [True]
-    assert await storage.runs("acme") == []
-
-
-async def test_a_cancel_of_the_run_after_two_stops_cuts_the_record_write_of_a_consult_a_script_started(
-    tmp_path: Path, root: Path, pool: Any, storage: Storage
-) -> None:
-    writing = asyncio.Event()
-    released = asyncio.Event()
-    again = asyncio.Event()
-    cut: list[bool] = []
-
-    class Hanging(PostgresStorage):
-        async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
-            if rows[0].agent == "billing":
-                writing.set()
-                try:
-                    await released.wait()
-                except asyncio.CancelledError:
-                    cut.append(True)
-                    raise
-            await super().put_runs(scope, rows)
-
-    stop = Stop()
+    ledger = Ledger(pool, "billing")
+    halted = asyncio.Event()
 
     async def handler(event: Event) -> None:
         if isinstance(event, ToolResultReady) and event.step.tool == "halt":
-            stop.now()
-            again.set()
+            await ledger.writing.wait()
+            if stops == 2:
+                stop.now()
+            halted.set()
 
     tree = billing(tmp_path, root)
     llm = Scripted(use(shell()), text_reply("ok"))
@@ -918,7 +836,7 @@ async def test_a_cancel_of_the_run_after_two_stops_cuts_the_record_write_of_a_co
         asyncio.timeout(10),
         Workspace(Local(root), scope="acme") as work,
         Engine(
-            tree, models={"strong": llm, "slow": Waiting(root)}, refinery=Refinery(Hanging(pool))
+            tree, models={"strong": llm, "slow": Waiting(root)}, refinery=Refinery(ledger)
         ) as engine,
     ):
         task = asyncio.ensure_future(
@@ -927,22 +845,136 @@ async def test_a_cancel_of_the_run_after_two_stops_cuts_the_record_write_of_a_co
                 "acme",
                 "x",
                 workspace=work,
-                tools=Tools([engine.tool("billing", scope="acme"), halting(stop)]),
+                tools=consults(engine, stop),
                 on_event=handler,
                 stop=stop,
             )
         )
         try:
-            await again.wait()
+            await halted.wait()
+            held, _ = await asyncio.wait([task], timeout=0.2)
+            task.cancel()
+            ended, _ = await asyncio.wait([task], timeout=1)
+        finally:
+            ledger.released.set()
+            await asyncio.wait([task])
+    assert held == set() and ended == {task}
+    assert task.cancelled() and len(ledger.cut) == 1
+    assert await storage.runs("acme") == []
+
+
+async def test_a_tool_deadline_cuts_a_consult_a_script_started_whose_record_write_hangs_under_a_stop(
+    tmp_path: Path, root: Path, pool: Any, storage: Storage
+) -> None:
+    stop = Stop()
+    ledger = Ledger(pool, "billing")
+    halted: list[float] = []
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, ToolResultReady) and event.step.tool == "halt":
+            halted.append(time.monotonic())
+
+    tree = billing(tmp_path, root)
+    llm = Scripted(use(shell()), text_reply("ok"))
+    try:
+        async with (
+            asyncio.timeout(10),
+            Workspace(Local(root), scope="acme") as work,
+            Engine(
+                tree,
+                models={"strong": llm, "slow": Waiting(root)},
+                refinery=Refinery(ledger),
+                tool_timeout=0.2,
+            ) as engine,
+        ):
+            run = await engine.run(
+                "coder",
+                "acme",
+                "x",
+                workspace=work,
+                tools=consults(engine, stop),
+                on_event=handler,
+                stop=stop,
+            )
+            returned = time.monotonic()
+    finally:
+        ledger.released.set()
+    [cut] = ledger.cut
+    assert halted[0] < cut < returned < cut + 1
+    assert isinstance(run, Generation) and run.stopped == "now"
+    [billed] = [s for s in run.steps if s.tool == "billing"]
+    assert (billed.result, billed.is_error, billed.stopped, billed.by) == (
+        "stopped by the user",
+        True,
+        True,
+        "1",
+    )
+    assert [row.agent for row in await storage.runs("acme")] == ["coder"]
+
+
+async def test_a_cancel_of_the_run_reaches_a_bridged_call_waiting_on_its_handler_after_its_command_ended(
+    tmp_path: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    entered = asyncio.Event()
+    blocked = asyncio.Event()
+    released = asyncio.Event()
+    cut: list[bool] = []
+    close = Bridge.close
+
+    async def closing(self: Bridge) -> None:
+        order.append("close")
+        entered.set()
+        await close(self)
+
+    monkeypatch.setattr(Bridge, "close", closing)
+
+    async def look(args: dict[str, Any]) -> str:
+        (root / "looked").touch()
+        return "found"
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, ToolResultReady) and event.by == "1":
+            order.append("blocked")
+            blocked.set()
+            try:
+                await released.wait()
+            except asyncio.CancelledError:
+                cut.append(True)
+                raise
+
+    script(
+        root,
+        UNTIL
+        + 'threading.Thread(target=call, args=("look",), daemon=True).start()\nuntil("looked")\n',
+    )
+    llm = Scripted(use(shell()), text_reply("ok"))
+    async with (
+        asyncio.timeout(10),
+        Workspace(Local(root), scope="acme") as work,
+        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+    ):
+        task = asyncio.ensure_future(
+            engine.run(
+                "coder",
+                "acme",
+                "x",
+                workspace=work,
+                tools=Tools([Tool("look", "Look", body=look)]),
+                on_event=handler,
+            )
+        )
+        try:
+            await blocked.wait()
+            await entered.wait()
             held, _ = await asyncio.wait([task], timeout=0.2)
             task.cancel()
             ended, _ = await asyncio.wait([task], timeout=1)
         finally:
             released.set()
             await asyncio.wait([task])
-    assert writing.is_set() and held == set() and ended == {task}
-    assert task.cancelled() and cut == [True]
-    assert await storage.runs("acme") == []
+    assert order == ["blocked", "close"] and held == set()
+    assert ended == {task} and task.cancelled() and cut == [True]
 
 
 ESCAPE = (

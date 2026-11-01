@@ -110,7 +110,7 @@ class Bridge:
             task.cancel()
         caller = asyncio.current_task()
         cancelled: asyncio.CancelledError | None = None
-        passed = 1
+        passed = 0 if caller is None else caller.cancelling()
         while pending := [task for task in handlers if not task.done()]:
             if caller is not None and caller.cancelling() > passed:
                 passed = caller.cancelling()

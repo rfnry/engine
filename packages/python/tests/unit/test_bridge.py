@@ -174,7 +174,10 @@ async def test_close_cancels_a_request_in_flight(root: Path) -> None:
     writer.close()
 
 
-async def test_close_passes_each_further_cancel_on(root: Path) -> None:
+@pytest.mark.parametrize(
+    "cancelled", [False, True], ids=["entered-uncancelled", "entered-cancelled"]
+)
+async def test_close_passes_each_further_cancel_on(root: Path, cancelled: bool) -> None:
     started = asyncio.Event()
     released = asyncio.Event()
     cancels: list[int] = []
@@ -193,14 +196,26 @@ async def test_close_passes_each_further_cancel_on(root: Path) -> None:
             await asyncio.sleep(0)
 
     b = await Bridge.open(root, answer)
+
+    async def closer() -> None:
+        if cancelled:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await b.close()
+                raise
+        await b.close()
+
     _, writer = await asyncio.open_unix_connection(b.path)
     writer.write(request(b))
     async with asyncio.timeout(2):
         await started.wait()
-        closing = asyncio.create_task(b.close())
+        closing = asyncio.create_task(closer())
         try:
+            if cancelled:
+                await asyncio.sleep(0)
+                closing.cancel()
             await seen(1)
-            closing.cancel()
             await asyncio.sleep(0.05)
             first = len(cancels)
             closing.cancel()

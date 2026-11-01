@@ -1676,12 +1676,12 @@ workspace's `timeout` — a call still in flight is cut as a stopped call is: it
 connected reads `{"error": "stopped by the user"}`. A consult that a script's call started, an
 `engine.tool` passed in `tools=`, ends with the command: one still running when the command ends is
 cancelled and leaves no record of its own, as no cancelled run does. The exception is a command that
-`stop.now()` ended: the consult takes the stop, as one the model's own call started does, and keeps
-its record, and the command's end waits for it, through any further `stop.now()`; a cancel of the
-run, or its call's deadline, cuts it. The script's step is recorded stopped either way. A reply to a
-process that outlived the command, one that left its process group outside a sandbox, is written but
-not waited for, and may be cut off when the socket closes. An `on_event` that raises on a script's
-call fails the run once the command has ended.
+`stop.now()` ended: its process is killed at once, while the consult takes the stop, as one the
+model's own call started does, and keeps its record, and the `Shell` call ends after it. A further
+`stop.now()` does not cut it; a cancel of the run, or its call's deadline, does. The script's step
+is recorded stopped either way. A reply to a process that outlived the command, one that left its
+process group outside a sandbox, is written but not waited for, and may be cut off when the socket
+closes. An `on_event` that raises on a script's call fails the run once the command has ended.
 
 The socket is the one file the engine creates itself, `<root>/.rfnry-<8 hex>.sock`, inside the
 workspace you passed, for the life of one command: made just before the command starts, closed once

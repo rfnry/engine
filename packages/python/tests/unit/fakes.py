@@ -1,5 +1,7 @@
+import asyncio
 import hashlib
 import json
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +25,8 @@ from rfnry_engine.models import (
     Usage,
 )
 from rfnry_engine.records import Decision, Fingerprint, Generation, Run, Step
+from rfnry_engine.refinery.postgres import PostgresStorage
+from rfnry_engine.refinery.storage import RunRow
 
 NO_QUESTIONS = "engine: decision agent 'blank' has no questions to ask; give it questions/, or ask it through Delegate"
 
@@ -192,6 +196,31 @@ class MemoryBucket:
 
     async def put(self, key: str, data: bytes) -> None:
         self.objects[key] = data
+
+
+class Ledger(PostgresStorage):
+    def __init__(self, pool: Any, agent: str, hold: float | None = None) -> None:
+        super().__init__(pool)
+        self.agent = agent
+        self.hold = hold
+        self.writing = asyncio.Event()
+        self.written = asyncio.Event()
+        self.released = asyncio.Event()
+        self.cut: list[float] = []
+
+    async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
+        if rows[0].agent == self.agent:
+            self.writing.set()
+            try:
+                if self.hold is None:
+                    await self.released.wait()
+                else:
+                    await asyncio.sleep(self.hold)
+            except asyncio.CancelledError:
+                self.cut.append(time.monotonic())
+                raise
+            self.written.set()
+        await super().put_runs(scope, rows)
 
 
 class Desk:
