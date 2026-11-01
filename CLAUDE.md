@@ -12,6 +12,10 @@ Documentation in `docs/engine.md` and `docs/api.md`.
 
 Designs and implementation plans live only in `docs/plans/`, as `YYYY-MM-DD-<topic>-design.md` and `YYYY-MM-DD-<topic>-plan.md`. The folder is gitignored: plans are local working documents, not part of the library.
 
+## Workflow
+
+All feature, fix and milestone work goes to GitHub as a draft pull request, which runs no CI. Marking a pull request ready for review says it is ready to merge: that, and every push to a ready pull request, runs `.github/workflows/tests.yml` — the full suite on a real Postgres, the family tests against `rfnry-memory`, ruff, format and mypy. Never mark a pull request ready, push or merge without the owner's word.
+
 ## Checklists
 
 ### Pre-change checklist
