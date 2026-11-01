@@ -1341,6 +1341,122 @@ async def test_close_from_another_loop_that_stops_mid_start_still_stops_that_wor
     assert [error for error in unraised if isinstance(error, RuntimeError)] == []
 
 
+@pytest.mark.parametrize("how", ["closed", "cancelled", "released"])
+async def test_a_stop_that_fails_on_a_loop_that_stops_mid_start_reaches_the_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, how: str
+) -> None:
+    caplog.set_level(logging.ERROR, logger="rfnry_engine.workers.pool")
+    connect, stop = _Worker.connect, _Worker.stop
+    started: list[int] = []
+    connected, refused = threading.Event(), threading.Event()
+
+    async def slow(worker: _Worker) -> None:
+        started.append(worker.pid)
+        await connect(worker)
+        connected.set()
+        await asyncio.sleep(30)
+
+    pool = WorkerPool([script(tmp_path, "nap", PID)], processes=2)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    calls: list[Any] = []
+    try:
+        first = asyncio.run_coroutine_threadsafe(pool.call("nap", {}, CALL, 5), loop)
+        worker = pid(await asyncio.wrap_future(first))
+        [target] = [held for held in pool._workers if held is not None]
+
+        def failing(held: _Worker, reason: str | None = None) -> None:
+            stop(held, reason)
+            if held is target:
+                refused.set()
+                raise OSError("the first worker would not stop")
+
+        monkeypatch.setattr(_Worker, "connect", slow)
+        monkeypatch.setattr(_Worker, "stop", failing)
+        sleeps: list[JsonValue] = [{"sleep": 5}, {}]
+        for args in sleeps:
+            calls.append(asyncio.run_coroutine_threadsafe(pool.call("nap", args, CALL, None), loop))
+        assert connected.wait(5)
+        closing = asyncio.ensure_future(pool.close()) if how != "released" else None
+        if closing is None:
+            pool.release()
+        assert await asyncio.to_thread(refused.wait, 5)
+        if closing is not None and how == "cancelled":
+            closing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(5)
+        if closing is not None and how == "closed":
+            with pytest.raises(OSError, match="^the first worker would not stop$"):
+                async with asyncio.timeout(5):
+                    await closing
+        logged = [r.getMessage() for r in caplog.records if r.name == "rfnry_engine.workers.pool"]
+        assert logged == (
+            []
+            if how == "closed"
+            else ["workers/pool: could not stop a worker: the first worker would not stop"]
+        )
+        [spawned] = started
+        assert reaped(worker) and (how != "closed" or reaped(spawned))
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        monkeypatch.undo()
+        pool._drop(CLOSED, starting=True)
+        loop.close()
+        del calls
+        gc.collect()
+
+
+async def test_a_worker_close_reaped_while_its_loop_was_stopped_is_never_signalled_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connect, killpg = _Worker.connect, os.killpg
+    started: list[int] = []
+    signalled: list[int] = []
+    connected = threading.Event()
+
+    async def slow(worker: _Worker) -> None:
+        started.append(worker.pid)
+        await connect(worker)
+        connected.set()
+        await asyncio.sleep(0.3)
+
+    def watching(group: int, sent: int) -> None:
+        signalled.append(group)
+        killpg(group, sent)
+
+    monkeypatch.setattr(_Worker, "connect", slow)
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        calling = asyncio.run_coroutine_threadsafe(pool.call("nap", {}, CALL, 10), loop)
+        assert connected.wait(5)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(5)
+        async with asyncio.timeout(5):
+            await pool.close()
+        [spawned] = started
+        assert reaped(spawned)
+        monkeypatch.setattr(os, "killpg", watching)
+        thread = threading.Thread(target=loop.run_forever)
+        thread.start()
+        with pytest.raises(WorkerError, match="the worker for nap stopped: it was closed"):
+            async with asyncio.timeout(5):
+                await asyncio.wrap_future(calling)
+        assert spawned not in signalled
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        monkeypatch.undo()
+        pool._drop(CLOSED)
+        loop.close()
+
+
 def test_a_worker_started_while_its_pool_closes_is_stopped(tmp_path: Path) -> None:
     pool = WorkerPool([script(tmp_path, "nap", PID)])
     _, children = held()

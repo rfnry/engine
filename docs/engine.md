@@ -2351,8 +2351,9 @@ each live loop its own engine. A worker that stops — for another loop, a retir
 `close()` — is reaped and its pipes closed then and there, so a thousand `asyncio.run` calls leave
 the engine holding no more files or processes than one does. `close()` from another loop stops the
 workers at once: while their loop runs in another thread, the stop runs on that loop — or in the
-caller, should that loop stop before it gets to it — and `close()` returns once it is done. Close
-the engine before its loop ends: closing it later from another loop still stops every worker, but
+caller, should that loop stop before it gets to it — and `close()` returns once it is done. A
+worker that loop was still starting when it stopped is killed and reaped in the caller, while its
+pipes wait for that loop: they close when it runs again. Close the engine before its loop ends: closing it later from another loop still stops every worker, but
 Python warns of the worker pipes left on the closed loop (`ResourceWarning`).
 
 By default every agent of the tree shares one worker. `Engine(root, models=...,

@@ -98,6 +98,7 @@ class _Worker:
         self.threaded: frozenset[str] = frozenset()
         self.sent = 0
         self.ended = False
+        self.killed = False
         self._loop = loop
         self._stdin: asyncio.WriteTransport | None = None
         self._readers: list[asyncio.ReadTransport] = []
@@ -172,11 +173,16 @@ class _Worker:
             self.cancelling[id] = self.sent
         self.write(json.dumps({"id": id, "cancel": True}))
 
+    def kill(self) -> None:
+        if not self.killed:
+            self.killed = True
+            _kill(self.pid)
+
     def stop(self, reason: str | None = None) -> None:
         if self.ended:
             return
         self.ended = True
-        _kill(self.pid)
+        self.kill()
         if not self._loop.is_closed():
             for reader in self._readers:
                 if not reader.is_closing():
@@ -298,18 +304,18 @@ class WorkerPool:
         if handing is None:
             await self._started()
             return
-        loop, handed, soon = handing
+        loop, handed, dropped, soon = handing
         try:
             while not handed.done() and loop.is_running():
                 await asyncio.sleep(POLL)
         except asyncio.CancelledError:
-            handed.add_done_callback(_logged)
+            dropped.add_done_callback(_logged)
             raise
-        if handed.done():
-            handed.result()
-        else:
+        if not handed.done():
             soon.cancel()
             self._drop(CLOSED, starting=True)
+        if dropped.done():
+            dropped.result()
 
     async def _started(self) -> None:
         spawning = self._spawning
@@ -319,42 +325,40 @@ class WorkerPool:
     def release(self) -> None:
         handing = self._shut()
         if handing is not None:
-            handing[1].add_done_callback(_logged)
+            handing[2].add_done_callback(_logged)
 
-    def _shut(self) -> tuple[asyncio.AbstractEventLoop, Future[None], asyncio.Handle] | None:
+    def _shut(
+        self,
+    ) -> tuple[asyncio.AbstractEventLoop, Future[None], Future[None], asyncio.Handle] | None:
         self._closed = True
         loop = self._loop
         here = asyncio.get_running_loop()
         if loop is not None and loop is not here and loop.is_running():
             handed: Future[None] = Future()
-            return loop, handed, loop.call_soon_threadsafe(self._hand, handed)
+            dropped: Future[None] = Future()
+            return loop, handed, dropped, loop.call_soon_threadsafe(self._hand, handed, dropped)
         self._drop(CLOSED, starting=loop is not None and loop is not here)
         return None
 
-    def _hand(self, handed: Future[None]) -> None:
-        failed: BaseException | None = None
+    def _hand(self, handed: Future[None], dropped: Future[None]) -> None:
         try:
             self._drop(CLOSED)
         except BaseException as exc:
-            failed = exc
-
-        def settle(_: object = None) -> None:
-            if failed is None:
-                handed.set_result(None)
-            else:
-                handed.set_exception(failed)
-
+            dropped.set_exception(exc)
+        else:
+            dropped.set_result(None)
         spawning = self._spawning
         if spawning is None:
-            settle()
+            handed.set_result(None)
         else:
-            spawning.add_done_callback(settle)
+            spawning.add_done_callback(lambda _: handed.set_result(None))
 
     def _drop(self, reason: str, starting: bool = False) -> None:
         workers = [worker for worker in self._workers if worker is not None]
-        if starting and self._starting is not None:
-            _kill(self._starting.pid)
-            self._starting.process.wait()
+        held = self._starting
+        if starting and held is not None:
+            held.kill()
+            held.process.wait()
         self._workers = [None] * len(self._workers)
         failed: list[BaseException] = []
         for worker in workers:
