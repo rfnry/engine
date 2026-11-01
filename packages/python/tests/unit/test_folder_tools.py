@@ -899,15 +899,17 @@ async def test_a_tool_named_time_that_imports_time_runs_on_the_standard_module(
         assert await EngineTools(engine, agent="a", scope="acme").dispatch("time", {}) == "True"
 
 
-@pytest.mark.parametrize("name", ["_stat", "_io", "_collections_abc"])
-def test_a_helper_named_like_a_built_in_module_is_refused(tmp_path: Path, name: str) -> None:
+@pytest.mark.parametrize("name", ["_stat", "_weakrefset", "_strptime"])
+def test_a_helper_named_like_a_standard_library_module_is_refused(
+    tmp_path: Path, name: str
+) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a"))
     write(tmp_path / f"a/tools/{name}.py", "X = 1\n")
     tool(tmp_path / "a/tools", "fetch", body=f"import {name}\n" + RUN)
     with pytest.raises(ConfigurationError) as raised:
         load_tree(tmp_path)
     assert str(raised.value) == (
-        f"tools/folder: {tmp_path / 'a/tools' / f'{name}.py'} is named like the built-in module {name!r}, which the worker imports instead; rename it"
+        f"tools/folder: {tmp_path / 'a/tools' / f'{name}.py'} is named like the standard-library module {name!r}, and the worker can't load both; rename it"
     )
 
 

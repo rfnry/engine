@@ -683,6 +683,85 @@ async def test_a_worker_that_dies_with_its_pipe_held_reports_its_exit_code(
             os.kill(int(held.read_text()), signal.SIGKILL)
 
 
+async def test_a_worker_that_dies_before_its_start_up_line_fails_its_calls(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    pool = WorkerPool([script(tmp_path, "early", "import os\nos._exit(3)\n" + PID)])
+    try:
+        async with asyncio.timeout(5):
+            calls = (pool.call("early", {}, CALL, 10) for _ in range(2))
+            results = await asyncio.gather(*calls, return_exceptions=True)
+        assert [str(result) for result in results] == [
+            "workers/pool: the worker for early stopped: exited with code 3"
+        ] * 2
+        assert all(isinstance(result, WorkerError) for result in results)
+        assert loop_errors(caplog) == []
+    finally:
+        await pool.close()
+
+
+GARBLE = (
+    "import fcntl, os, time\n"
+    "def run(args, call):\n"
+    "    err = os.readlink('/proc/self/fd/2')\n"
+    "    for name in os.listdir('/proc/self/fd'):\n"
+    "        fd = int(name)\n"
+    "        try:\n"
+    "            link = os.readlink(f'/proc/self/fd/{fd}')\n"
+    "            mode = fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE\n"
+    "        except OSError:\n"
+    "            continue\n"
+    "        if fd > 2 and link.startswith('pipe:') and link != err and mode == os.O_WRONLY:\n"
+    "            os.write(fd, args['line'].encode() + b'\\n')\n"
+    "    time.sleep(30)\n"
+)
+
+
+@pytest.mark.parametrize(
+    "line", ["not a reply", "[1]", '{"id": 0}', '{"id": 0, "error": 1}', '{"threaded": [{}]}']
+)
+async def test_a_line_that_is_not_a_reply_stops_the_worker_and_fails_its_calls(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, line: str
+) -> None:
+    pool = WorkerPool([script(tmp_path, "garble", GARBLE), script(tmp_path, "wait", WAIT)])
+    try:
+        async with asyncio.timeout(5):
+            results = await asyncio.gather(
+                pool.call("garble", {"line": line}, CALL, 10),
+                pool.call("wait", {"sleep": 30}, CALL, 10),
+                return_exceptions=True,
+            )
+        assert [str(result) for result in results] == [
+            "workers/pool: the worker for garble stopped: it sent a line that is not a reply",
+            "workers/pool: the worker for wait stopped: it sent a line that is not a reply",
+        ]
+        assert loop_errors(caplog) == []
+    finally:
+        await pool.close()
+
+
+async def test_stopping_a_worker_whose_process_group_is_gone_raises_nothing(
+    tmp_path: Path,
+) -> None:
+    pool = WorkerPool([script(tmp_path, "nap", PID)])
+    try:
+        first = pid(await pool.call("nap", {}, CALL, 5))
+        flight = asyncio.create_task(pool.call("nap", {"sleep": 30}, CALL, None))
+        await asyncio.sleep(0.1)
+        [worker] = pool._workers
+        assert worker is not None
+        os.kill(first, signal.SIGKILL)
+        worker.process.wait()
+        with pytest.raises(ProcessLookupError):
+            os.killpg(first, 0)
+        worker.stop()
+        with pytest.raises(WorkerError) as raised:
+            await flight
+        assert str(raised.value) == "workers/pool: the worker for nap stopped: killed by signal 9"
+    finally:
+        await pool.close()
+
+
 async def test_a_reply_sent_just_before_the_worker_exits_still_answers_its_call(
     tmp_path: Path,
 ) -> None:

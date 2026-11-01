@@ -211,9 +211,13 @@ def _check_run(path: Path, module: ast.Module, what: str, given: str) -> None:
 
 def _check_name(path: Path) -> None:
     name = path.stem
-    if name in sys.builtin_module_names or FrozenImporter.find_spec(name) is not None:
+    if (
+        name in sys.stdlib_module_names
+        or name in sys.builtin_module_names
+        or FrozenImporter.find_spec(name) is not None
+    ):
         raise ConfigurationError(
-            f"tools/folder: {path} is named like the built-in module {name!r}, which the worker imports instead; rename it"
+            f"tools/folder: {path} is named like the standard-library module {name!r}, and the worker can't load both; rename it"
         )
 
 

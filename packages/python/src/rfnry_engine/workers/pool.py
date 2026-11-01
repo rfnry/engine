@@ -27,7 +27,9 @@ PROGRAM = Path(__file__).with_name("process.py")
 CLOSED = "it was closed"
 RETIRED = "every thread was held by a call past its deadline"
 MOVED = "a call came from another event loop"
+GARBLED = "it sent a line that is not a reply"
 CAP = 64 * 1024
+DRAIN = 1024 * 1024
 POLL = 0.01
 
 
@@ -47,6 +49,21 @@ def _lines(pending: bytearray, data: bytes) -> list[bytes]:
         start = end + 1
     pending += data[start:]
     return lines
+
+
+def _reply(line: bytes) -> dict[str, Any] | None:
+    try:
+        reply = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(reply, dict):
+        return None
+    match reply:
+        case {"threaded": [*keys]} if len(reply) == 1 and all(isinstance(k, str) for k in keys):
+            return reply
+        case {"id": int(), "result": _} | {"id": int(), "error": str()} if len(reply) == 2:
+            return reply
+    return None
 
 
 def _reason(code: int) -> str:
@@ -106,14 +123,23 @@ class _Worker:
             self._loop.call_soon_threadsafe(self._exited)
 
     def _exited(self) -> None:
-        if not self.ended:
-            self.received(1, cast(IO[bytes], self.process.stdout).read() or b"")
-            self.stop()
+        if self.ended:
+            return
+        try:
+            left = os.read(cast(IO[bytes], self.process.stdout).fileno(), DRAIN)
+        except BlockingIOError:
+            left = b""
+        self.received(1, left)
+        self.stop()
 
     def received(self, fd: int, data: bytes) -> None:
         if fd == 1:
             for line in _lines(self._out, data):
-                self._answer(json.loads(line))
+                reply = _reply(line)
+                if reply is None:
+                    self.stop(GARBLED)
+                    return
+                self._answer(reply)
         elif logger.isEnabledFor(logging.DEBUG):
             for line in _lines(self._err, data):
                 self._log(line)

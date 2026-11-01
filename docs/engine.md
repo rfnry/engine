@@ -1088,9 +1088,10 @@ with different options, under two question fingerprints and one agent fingerprin
 question's script imports what a tool's does — the standard library, installed packages and the
 helpers of its folder, `questions/_name.py`, at the top of the script — and is read when the tree
 loads, as a tool's is, so `fingerprint.agent` covers it; a `.py` without its `.json`, one with no
-`run` at its top level, or a helper named like a built-in module, as a tool's is, is a
-`ConfigurationError`. A route goes by a question whose options its JSON fixes, never by one a script
-fills ([Both kinds together](#both-kinds-together)).
+`run` at its top level, or a helper named like a standard-library module, `questions/_stat.py`, is a
+`ConfigurationError`, as it is for a tool's helper ([Tools](#tools)). A route goes by a question
+whose options its JSON fixes, never by one a script fills
+([Both kinds together](#both-kinds-together)).
 
 Some answer spaces are known only when the run starts: the children of the node a walk chose last,
 the candidates a search returned, the skills an agent has today. Those questions are composed when
@@ -2113,10 +2114,12 @@ holds it, and counts in the fingerprint of every agent that sees it; a folder na
 anywhere else is content like any other. A decision agent has no tools, and a `tools/` folder on
 its path is not offered to it. A `.json` without its `.py`, or a `.py` without its `.json`, is a
 `ConfigurationError` naming the file; a file whose name starts with `_` or `.` is not a tool, and
-`_name.py` is a helper the scripts of its folder import. A helper named like a module built into the
-interpreter, `_stat.py` or `_io.py`, is a `ConfigurationError` too, since the worker would import
-the built-in in its place: `tools/folder: <path> is named like the built-in module '_stat', which
-the worker imports instead; rename it`.
+`_name.py` is a helper the scripts of its folder import. A helper named like a module of the
+standard library, `_stat.py`, `_weakrefset.py` or `_strptime.py`, is a `ConfigurationError` too,
+since in the worker it would either lose to the module of that name or stand in for it for every
+library there: `tools/folder: <path> is named like the standard-library module '_stat', and the
+worker can't load both; rename it`. A question's helper, `questions/_name.py`, is refused the same
+way.
 
 `<name>.json` takes three keys:
 
@@ -2211,7 +2214,9 @@ whose records keep naming what ran, while a data file a script opens when it is 
 from disk then. A worker starts at the first call that needs it, never when the engine is built,
 and again after a crash, and lives until you close the engine — `await engine.close()`, or leaving
 `async with Engine(...) as engine:` — which stops every worker and whatever it started, and raises
-the first error stopping one raised once all are stopped, logging the others. A closed
+the first error stopping one raised once all are stopped, logging the others. The engine watches
+each worker with one thread of its own, which waits on the worker's exit and ends with it, so a
+server counting its threads counts one more for each worker running. A closed
 engine stays closed: a run, a tool call or an `EngineTools` after `close()` is an `InputError`,
 `engine: this engine was closed; build a new Engine`, before any model is called, so nothing is
 recorded of it, and a run still in flight when it closed starts no other run — its `Delegate` call
@@ -2231,18 +2236,19 @@ server, the model reads `WorkerError: workers/process: refund sent back 40000023
 limit of 33554432 bytes`, and the worker goes on. A result under the limit still costs your server
 about three times its size while it is read, for each worker with one in flight. A worker that exits
 — `os._exit()`, a signal, out of memory, a crash in a C extension — fails every call it had in
-flight, even while a process it forked still holds its pipes, since a thread the engine keeps per
-worker waits on its exit and ends with it: `WorkerError: workers/pool: the worker for refund
-stopped: exited with code 3`, or `killed by signal 9` when a signal ended it, the run goes on, and
-the next call starts a new worker. Past `tool_timeout` the model reads `TimeoutError: workers/pool:
-refund timed out after 30s`, a deadline that counts the wait for a worker too: an `async def run` is
-cancelled in the worker and holds none of its threads, unless it blocks the worker's event loop —
-`time.sleep` or blocking I/O inside it — so that its cancel is still unanswered when a call sent
-after it passes its deadline too, and then each of those calls holds a thread; a `def run` cannot be
-stopped, so its thread runs on and its result is discarded, and once every thread of a worker is
-held so, the next call stops that worker and starts a new one, and the calls the old one still had
-in flight fail with `WorkerError: workers/pool: the worker for refund stopped: every thread was held
-by a call past its deadline`.
+flight, even while a process it forked still holds its pipes: `WorkerError: workers/pool: the worker
+for refund stopped: exited with code 3`, or `killed by signal 9` when a signal ended it, the run
+goes on, and the next call starts a new worker. A worker that sends back a line that is not a reply,
+as a process it forked writing to its pipe could, is stopped the same way, its calls failing with
+`workers/pool: the worker for refund stopped: it sent a line that is not a reply`. Past
+`tool_timeout` the model reads `TimeoutError: workers/pool: refund timed out after 30s`, a deadline
+that counts the wait for a worker too: an `async def run` is cancelled in the worker and holds none
+of its threads, unless it blocks the worker's event loop — `time.sleep` or blocking I/O inside it —
+so that its cancel is still unanswered when a call sent after it passes its deadline too, and then
+each of those calls holds a thread; a `def run` cannot be stopped, so its thread runs on and its
+result is discarded, and once every thread of a worker is held so, the next call stops that worker
+and starts a new one, and the calls the old one still had in flight fail with `WorkerError:
+workers/pool: the worker for refund stopped: every thread was held by a call past its deadline`.
 
 An engine serves one event loop at a time, as a workspace's jobs live in one loop, and its workers
 follow the loop that calls them: a call from a loop other than the one that started them stops
@@ -2682,8 +2688,8 @@ agent does not see, a tool's `.json` without its `.py` or a script without its `
 JSON with an unknown key, no description, an `input_schema` that is not an object or a schema that
 does not compile, a script or helper that is not valid Python, imports the engine, the server's own
 code, a module relatively or a sibling script or subfolder of its folder, or imports a helper inside
-a function, a helper named like a built-in module, a tool named like one the engine gives the
-agent, a `workers=` naming a folder that
+a function, a helper named like a standard-library module, a tool named like one the engine gives
+the agent, a `workers=` naming a folder that
 holds no agent or one inside another it names, a `reads:` that is not a path from the root, names no
 folder of the tree, a `tools/` folder on an agent's path or a folder inside one, leaves the root,
 names the agent's own folder, one that holds it or one inside it, or names two folders one inside
