@@ -859,6 +859,19 @@ def test_a_tool_that_imports_a_sibling_tool_is_refused(tmp_path: Path) -> None:
     )
 
 
+def test_a_tool_that_imports_a_broken_link_beside_it_is_refused_by_the_link_s_module_name(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch", body="import b\n" + RUN)
+    (tmp_path / "a/tools/b.py").symlink_to("gone.py")
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tools/folder: {tmp_path / 'a/tools/fetch.py'} imports 'b', which sits in its tools/ folder but is not a helper; a tool reaches only the helpers of its folder, so move the shared code into a helper _b.py"
+    )
+
+
 def test_a_tool_that_imports_a_subfolder_package_is_refused(tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a"))
     write(tmp_path / "a/tools/pkg/__init__.py", "X = 1\n")
