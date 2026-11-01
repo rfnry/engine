@@ -604,12 +604,12 @@ async def test_a_path_the_folder_lacks_says_how_to_reach_the_workspace(
             ),
         ):
             await both.dispatch(name, {"path": "task_folder/a.csv"})
-    with pytest.raises(InputError, match="^tools/builtins: not a directory: knowledge/notes.md$"):
+    with pytest.raises(InputError, match="^tools/builtins: not a folder: knowledge/notes.md$"):
         await both.dispatch("LS", {"path": "knowledge/notes.md"})
     with pytest.raises(InputError, match="^tools/builtins: not a file: knowledge$"):
         await both.dispatch("Read", {"path": "knowledge"})
     alone = Tools([*builtins(media), load_tool(media)])
-    with pytest.raises(InputError, match="^tools/builtins: not a directory: task_folder$"):
+    with pytest.raises(InputError, match="^tools/builtins: not a folder: task_folder$"):
         await alone.dispatch("LS", {"path": "task_folder"})
     for name in ["Read", "Load"]:
         with pytest.raises(InputError, match="^tools/builtins: not a file: task_folder/a.csv$"):
@@ -1071,30 +1071,53 @@ async def test_grep_labels_a_file_link_s_matches_with_the_path_it_was_given(tmp_
     ]
 
 
-async def test_read_of_a_file_with_a_trailing_slash_is_not_a_folder(tmp_path: Path) -> None:
+@pytest.mark.parametrize("after", ["/", "/.", "/..", "/./"])
+async def test_a_file_s_path_with_a_folder_part_after_it_is_not_a_folder(
+    tmp_path: Path, after: str
+) -> None:
     (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
     (tmp_path / "alias.md").symlink_to("notes.md")
     (tmp_path / "rules").mkdir()
     tools = Tools(builtins(tmp_path))
     load = Tools([load_tool(tmp_path)])
-    for tool, name, args in [
-        (tools, "Read", {"path": "notes.md/"}),
-        (tools, "Read", {"path": "alias.md/"}),
-        (tools, "Read", {"path": "notes.md//"}),
-        (tools, "Read", {"path": f"{tmp_path}/notes.md/"}),
-        (load, "Load", {"path": "notes.md/"}),
-        (tools, "Grep", {"pattern": "notes", "path": "notes.md/"}),
+    for path in [
+        f"notes.md{after}",
+        f"alias.md{after}",
+        f"rules/../notes.md{after}",
+        f"{tmp_path}/notes.md{after}",
+        f"notes.md{after}/x",
     ]:
-        with pytest.raises(InputError) as raised:
-            await tool.dispatch(name, args)
-        assert str(raised.value) == f"tools/builtins: not a folder: {args['path']}"
+        for tool, name, args in [
+            (tools, "Read", {"path": path}),
+            (load, "Load", {"path": path}),
+            (tools, "Grep", {"pattern": "notes", "path": path}),
+            (tools, "LS", {"path": path}),
+        ]:
+            with pytest.raises(InputError) as raised:
+                await tool.dispatch(name, args)
+            assert str(raised.value) == f"tools/builtins: not a folder: {path}"
+
+
+async def test_a_folder_s_path_may_end_in_a_folder_part_and_a_file_s_reads_as_written(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
+    (tmp_path / "rules").mkdir()
+    tools = Tools(builtins(tmp_path))
     with pytest.raises(InputError) as raised:
         await tools.dispatch("Read", {"path": "rules/"})
     assert str(raised.value) == "tools/builtins: not a file: rules/"
+    with pytest.raises(InputError) as raised:
+        await tools.dispatch("LS", {"path": "notes.md"})
+    assert str(raised.value) == "tools/builtins: not a folder: notes.md"
+    for path in ["rules/", "rules/.", "rules/./"]:
+        assert await tools.dispatch("LS", {"path": path}) == "(empty)"
+        assert await tools.dispatch("Grep", {"pattern": "notes", "path": path}) == (
+            "no matches found"
+        )
+    assert await tools.dispatch("LS", {"path": "rules/.."}) == "notes.md\nrules/"
     assert await tools.dispatch("Read", {"path": "notes.md"}) == "notes"
-    assert await tools.dispatch("Grep", {"pattern": "notes", "path": "rules/"}) == (
-        "no matches found"
-    )
+    assert await tools.dispatch("Read", {"path": "rules/../notes.md"}) == "notes"
 
 
 async def test_a_link_inside_a_hidden_folder_that_leads_outside_reports_hidden(

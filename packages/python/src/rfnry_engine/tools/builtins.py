@@ -108,6 +108,15 @@ def _hides(jail: Jail, path: str | Path) -> bool:
     return _hidden(seen) or _hidden(Path(named.name))
 
 
+def _through_folders(jail: Jail, path: str) -> str:
+    parts = path.split("/")
+    for n in range(1, len(parts)):
+        held = _within(jail, Path(jail.root, "/".join(parts[:n])))
+        if held is not None and (held[0] / held[1]).is_file():
+            raise InputError(f"tools/builtins: not a folder: {path}")
+    return path
+
+
 def _named(jail: Jail, path: str) -> str:
     if _hides(jail, path):
         raise InputError(
@@ -190,11 +199,9 @@ def _name_of(fd: int, path: str, removed: bool) -> Path:
 
 def _contents(jail: Jail, path: str, limit: int, missing: str = "") -> tuple[Path, bytes]:
     try:
-        fd = jail.open(path)
+        fd = jail.open(_through_folders(jail, path))
         try:
             found = os.fstat(fd)
-            if path.endswith("/") and not stat.S_ISDIR(found.st_mode):
-                raise InputError(f"tools/builtins: not a folder: {path}")
             if not stat.S_ISREG(found.st_mode):
                 raise InputError(f"tools/builtins: not a file: {path}")
             if found.st_size > limit:
@@ -313,9 +320,11 @@ class _Directory:
                     f"tools/builtins: pattern took longer than {budget:g}s; simplify it or narrow path and glob"
                 ) from exc
 
-        base = self.jail.resolve(_named(self.jail, a.path)) if a.path else self.root
-        if a.path and a.path.endswith("/") and base.is_file():
-            raise InputError(f"tools/builtins: not a folder: {a.path}")
+        base = (
+            self.jail.resolve(_through_folders(self.jail, _named(self.jail, a.path)))
+            if a.path
+            else self.root
+        )
         lines: list[str] = []
         scanned = 0
         exhausted = False
@@ -393,7 +402,7 @@ class _Directory:
 
     def ls(self, args: dict[str, Any]) -> str:
         a = LSArgs.model_validate(args)
-        path = _named(self.jail, a.path or ".")
+        path = _through_folders(self.jail, _named(self.jail, a.path or "."))
         place = self.jail.resolve(path)
         try:
             fd = self.jail.open(path, os.O_RDONLY | os.O_DIRECTORY)
@@ -418,7 +427,7 @@ class _Directory:
                     f"tools/builtins: not a directory of your folder: {path}; Shell lists your workspace"
                 ) from None
             if exc.errno in (errno.ENOENT, errno.ENOTDIR):
-                raise InputError(f"tools/builtins: not a directory: {path}") from None
+                raise InputError(f"tools/builtins: not a folder: {path}") from None
             raise InputError(f"tools/builtins: cannot list {path}: {exc.strerror}") from None
         if not entries:
             return "(empty)"

@@ -223,7 +223,7 @@ def _check_name(path: Path) -> None:
 
 def _beside(folder: Path) -> frozenset[str]:
     return frozenset(
-        p.stem if p.suffix == ".py" else p.name
+        p.stem if p.suffix == ".py" and not p.is_dir() else p.name
         for p in folder.iterdir()
         if not p.name.startswith((".", "_")) and (p.is_dir() or p.suffix == ".py")
     )

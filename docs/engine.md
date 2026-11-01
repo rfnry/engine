@@ -351,8 +351,9 @@ hidden, and so is every file read through it, for the fingerprint never follows 
 `Glob`, `Grep`, `LS` and the map show nothing these rules hide, nor a link that leads outside those
 folders, while `LS` lists a broken or looping link inside them by its name, as it lists a file, and
 `Grep` given a file labels its matches with the path as given, a file link under its own name. A
-path that ends in `/` names a folder, as POSIX has it: `Read`, `Load` or `Grep` of `notes.md/` is
-`tools/builtins: not a folder: notes.md/`. A file link that comes from outside those folders, or
+part written after a file names a folder that is not there, as POSIX has it, so `Read`, `Load`,
+`Grep` and `LS` of `notes.md/`, `notes.md/.`, `notes.md/..` or `notes.md/x` are `tools/builtins: not
+a folder: notes.md/`, the path as written. A file link that comes from outside those folders, or
 leads from one of them into another, is judged by the file it leads to as well as by its own name,
 since the fingerprint covers it only there, and a path that leads outside them is the jail's error
 (`jail: path outside the agent directory: <path>`), unless it leaves them through a hidden name: a

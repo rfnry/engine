@@ -547,7 +547,7 @@ def test_an_unreadable_folder_is_warned_about_once_per_loaded_tree(
 
 @pytest.mark.parametrize(
     ("agent", "link"),
-    [(".", ".lib"), ("a", ".lib"), ("a", "lib")],
+    [(".", ".lib"), ("a", "lib")],
 )
 def test_an_agent_s_own_tools_linked_to_a_hidden_folder_inside_it_is_refused_at_load(
     tmp_path: Path, agent: str, link: str

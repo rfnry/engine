@@ -872,6 +872,15 @@ def test_a_tool_that_imports_a_broken_link_beside_it_is_refused_by_the_link_s_mo
     )
 
 
+def test_a_folder_named_like_a_script_beside_a_tool_is_not_taken_for_the_script(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    tool(tmp_path / "a/tools", "fetch", body="import b\n" + RUN)
+    write(tmp_path / "a/tools/b.py/notes.txt", "a folder, not a script\n")
+    assert list(load_tree(tmp_path)["a"].folder_tools) == ["fetch"]
+
+
 def test_a_tool_that_imports_a_subfolder_package_is_refused(tmp_path: Path) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a"))
     write(tmp_path / "a/tools/pkg/__init__.py", "X = 1\n")
