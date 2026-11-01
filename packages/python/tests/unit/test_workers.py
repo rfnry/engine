@@ -851,6 +851,35 @@ async def test_close_stops_every_worker_before_it_raises_what_the_first_stop_rai
     ] == ["workers/pool: could not stop a worker: stop 2 would not close its pipe"]
 
 
+async def test_a_stop_that_raises_still_stops_the_other_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stop = _Worker.stop
+    refused: list[_Worker] = []
+
+    def refusing(worker: _Worker, reason: str | None = None) -> None:
+        if not refused:
+            refused.append(worker)
+            raise OSError("the first worker would not stop")
+        stop(worker, reason)
+
+    pool = WorkerPool([script(tmp_path, "wait", WAIT)], processes=2)
+    calls = (pool.call("wait", {"sleep": 0.2}, CALL, 5) for _ in range(2))
+    pids = {pid(value) for value in await asyncio.gather(*calls)}
+    started = [worker for worker in pool._workers if worker is not None]
+    assert len(pids) == len(started) == 2
+    monkeypatch.setattr(_Worker, "stop", refusing)
+    try:
+        with pytest.raises(OSError, match="^the first worker would not stop$"):
+            await pool.close()
+        [kept] = refused
+        assert alive(kept.pid) and all(reaped(value) for value in pids - {kept.pid})
+    finally:
+        monkeypatch.undo()
+        for worker in started:
+            stop(worker, CLOSED)
+
+
 async def test_closing_the_workers_closes_every_pool_before_it_raises_what_the_first_raised(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
