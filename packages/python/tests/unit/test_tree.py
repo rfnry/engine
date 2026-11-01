@@ -570,3 +570,48 @@ def test_an_agent_s_own_tools_linked_to_a_hidden_folder_inside_it_is_refused_at_
     assert str(caught.value) == (
         f"tree: {folder / 'tools'} links to {folder.resolve() / '.lib'}, a hidden folder the agent's fingerprint leaves out; move the folder to a visible name"
     )
+
+
+def test_an_unreadable_file_is_warned_about_once_per_loaded_tree_and_left_out(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    for root in (tmp_path / "with", tmp_path / "without"):
+        _agent(root, "a", "kind: generation\nmodel: strong\npreload: true\n")
+        _agent(root, "b", "kind: generation\nmodel: strong\nreads: [a/kb]\n")
+        (root / "a/kb").mkdir()
+        (root / "a/kb/open.md").write_text("---\ndescription: Open\n---\nx\n")
+    locked = (tmp_path / "with/a/kb/notes.md").resolve()
+    locked.write_text("---\ndescription: Locked\n---\ny\n")
+    locked.chmod(0)
+    try:
+        warned = [
+            f"folders: cannot read {locked}: [Errno 13] Permission denied: '{locked}'; it is left out"
+        ]
+        for _ in range(2):
+            caplog.clear()
+            with caplog.at_level(logging.WARNING):
+                agents = load_tree(tmp_path / "with")
+            assert [m for m in caplog.messages if "cannot read" in m] == warned
+        alike = load_tree(tmp_path / "without")
+        assert {name: spec.fingerprint for name, spec in agents.items()} == {
+            name: spec.fingerprint for name, spec in alike.items()
+        }
+        assert "notes.md" not in agents["a"].listing + agents["b"].listing
+        assert "open.md — Open" in agents["a"].listing
+    finally:
+        locked.chmod(0o644)
+
+
+@pytest.mark.parametrize("kind", ["file", "folder"])
+def test_a_name_that_is_not_utf8_is_refused_naming_its_path(tmp_path: Path, kind: str) -> None:
+    _agent(tmp_path, "a", "kind: generation\nmodel: strong\n")
+    named = os.path.join(os.fsencode(tmp_path / "a"), b"caf\xe9")
+    if kind == "file":
+        with open(named, "wb") as file:
+            file.write(b"menu")
+    else:
+        os.mkdir(named)
+    shown = repr(os.fsdecode(named))
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == f"tree: the name of {shown} is not UTF-8; rename it"

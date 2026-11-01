@@ -292,7 +292,8 @@ file. A `name:` is plain text — not blank, not hidden, not padded, no slash �
 without renaming the agent; two agents with one name are a `ConfigurationError` naming both files.
 `model:` names a model, `strong` or `judge` for instance; what the name maps to is the engine's to
 say. An agent has the tools of its own `tools/` folder and of the `tools/` folder of every folder
-above it ([Tools](#tools)):
+above it, a tool of a folder nearer the agent replacing one of the same name above it
+([Tools](#tools)):
 
 ```markdown
 ---
@@ -393,21 +394,25 @@ link to a folder on the way to the link or one holding it, which would lead the 
 folder it cannot read is left out, with one warning that names it each time the tree loads, however
 many walks meet it: on the `rfnry_engine.tree` logger when the root's walk for agents meets it
 first, on `rfnry_engine.folders` when the walk of an agent's folder or one it reads for its map,
-preload and fingerprint does. What the engine loads stays where the content fingerprint finds it,
-since the fingerprint leaves out a link that leads out of the folder it walks: a tool's `.json`,
-`.py` or helper that is a link to a place outside its `tools/` folder, which the fingerprint walks
-on its own for every agent that gets its tools, is a `ConfigurationError` (`tools/folder: <path>
-links to <target>, outside its folder; move the file into its folder, or link the agent's whole
-folder`, or `the whole tools/ folder` for the `tools/` folder of a folder without an `AGENT.md`),
-and so is a question's `.json`, `.py` or helper, a task or an `AGENT.md` that is a link to a place
-outside the agent's folder, and an agent's own `tools/`, `tasks/` or `questions/` folder that is a
-link to a folder outside the agent's (`tree: <path> links to <target>, outside the agent's folder;
-move the folder into the agent's folder, or link the agent's whole folder`) or to a hidden folder
-inside it, which the fingerprint leaves out as it leaves out every hidden name (`tree: <path> links
-to <target>, a hidden folder the agent's fingerprint leaves out; move the folder to a visible
-name`). Any other link that stays inside loads, and so do an agent's whole folder linked in and a
-`tools/` folder of a folder without an `AGENT.md` linked from elsewhere, which the agents below it
-walk where it leads.
+preload and fingerprint does. A file it cannot read is left out the same way, on
+`rfnry_engine.folders`: out of the map, the preload and the fingerprint, which is then the
+fingerprint of the folder without it. A file or folder whose name is not UTF-8 is a
+`ConfigurationError` naming it: `tree: the name of '/srv/agents/support/caf\udce9.md' is not UTF-8;
+rename it`. What the engine loads stays where the content fingerprint finds it, since the
+fingerprint leaves out a link that leads out of the folder it walks: a tool's `.json`, `.py` or
+helper that is a link to a place outside its `tools/` folder, which the fingerprint walks on its own
+for every agent that gets its tools, is a `ConfigurationError` (`tools/folder: <path> links to
+<target>, outside its folder; move the file into its folder, or link the agent's whole folder`, or
+`the whole tools/ folder` for the `tools/` folder of a folder without an `AGENT.md`), and so is a
+question's `.json`, `.py` or helper, a task or an `AGENT.md` that is a link to a place outside the
+agent's folder, and an agent's own `tools/`, `tasks/` or `questions/` folder that is a link to a
+folder outside the agent's (`tree: <path> links to <target>, outside the agent's folder; move the
+folder into the agent's folder, or link the agent's whole folder`) or to a hidden folder inside it,
+which the fingerprint leaves out as it leaves out every hidden name (`tree: <path> links to
+<target>, a hidden folder the agent's fingerprint leaves out; move the folder to a visible name`).
+Any other link that stays inside loads, and so do an agent's whole folder linked in and a `tools/`
+folder of a folder without an `AGENT.md` linked from elsewhere, which the agents below it walk where
+it leads.
 
 A root holds agents and folders without an `AGENT.md` side by side, and an agent reads other folders
 of its root by naming them in `reads:` — folders without an `AGENT.md`, or other agents' folders:
@@ -2168,14 +2173,16 @@ A `tools/` folder on an agent's path from the root — the root's, a group folde
 own — is a declaration, as `tasks/` and `questions/` are: it stays out of every map and preload,
 since the model sees its tools as tools, stays readable to the tools of the agent whose folder
 holds it, and counts in the fingerprint of every agent that sees it; a folder named `tools`
-anywhere else is content like any other. A decision agent has no tools, and a `tools/` folder on
-its path is not offered to it. A `.json` without its `.py`, or a `.py` without its `.json`, is a
-`ConfigurationError` naming the file; a file whose name starts with `_` or `.` is not a tool, and
-`_name.py` is a helper the scripts of its folder import. A helper named like a module of the
-standard library, `_stat.py`, `_weakrefset.py` or `_strptime.py`, is a `ConfigurationError` too,
-since the worker can't load both: `tools/folder: <path> is named like the standard-library module
-'_stat', and the worker can't load both; rename it`. A question's helper, `questions/_name.py`, is
-refused the same way.
+anywhere else is content like any other. Two `tools/` folders on an agent's path may each hold a
+tool of one name: the agent gets the one nearer it, its own folder's before a group's and a group's
+before the root's, as a run's own `tools=` replace both. A decision agent has no tools, and a
+`tools/` folder on its path is not offered to it. A `.json` without its `.py`, or a `.py` without
+its `.json`, is a `ConfigurationError` naming the file; a file whose name starts with `_` or `.` is
+not a tool, and `_name.py` is a helper the scripts of its folder import. A helper named like a
+module of the standard library, `_stat.py`, `_weakrefset.py` or `_strptime.py`, is a
+`ConfigurationError` too, since the worker can't load both: `tools/folder: <path> is named like the
+standard-library module '_stat', and the worker can't load both; rename it`. A question's helper,
+`questions/_name.py`, is refused the same way.
 
 `<name>.json` takes three keys:
 
@@ -2740,60 +2747,60 @@ Everything the package exports, by role.
 
 `ConfigurationError` for a tree, a model, a tool or a workspace the engine cannot use — a tree with
 no `AGENT.md`, a link to a folder on the way to it or one holding it, one that would reach an agent
-twice, a tool's file that links out of its `tools/` folder, a question's file, a task or an
-`AGENT.md` that links out of the agent's folder, an agent's own `tools/`, `tasks/` or `questions/`
-folder that links out of it, an `AGENT.md` without a `name:` or a `model:` in plain text, or whose
-`kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names to
-adapters, a model no agent runs on, an agent whose model has not its kind's method, two agents with
-one name, an agent in `agents:` or `route:` the tree does not have, an unknown key in the
-frontmatter of an `AGENT.md` or a task (`frontmatter: unknown key 'route.min_confidance' in
-agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a `description:` that is not a
-string in a file the map would show, a decision agent with `preload: true`, `workspace: true` or
-`tools:`, a generation agent with `questions/` or `route:`, a `tools:` with no list, a `tools:`
-entry that is blank, padded or listed twice, a `tools:` that names `Output` or keeps a tool the
-agent does not see, a tool's `.json` without its `.py` or a script without its `.json`, a tool's
-JSON with an unknown key, no description, an `input_schema` that is not an object or a schema that
-does not compile, a script or helper that is not valid Python, imports the engine, the server's own
-code, a module relatively or a sibling script or subfolder of its folder, or imports a helper inside
-a function, a helper named like a standard-library module, a tool named like one the engine gives
-the agent, a `workers=` naming a folder that holds no agent or one inside another it names, a
-`reads:` that is not a path from the root, names no folder of the tree, a `tools/` folder on an
-agent's path or a folder inside one, leaves the root, names the agent's own folder, one that holds
-it or one inside it, or names two folders one inside the other, `reads:` on a decision agent or on
-an agent whose folder is a link to a folder elsewhere, a file `preload: true` would send that
-neither `Read` nor `Load` would hand over — over 20 MB, of a type the model's `media_types` does not
-name, or not the type its name says — one skill as both `skills/x.md` and `skills/x/SKILL.md`, a
-question in markdown, a question's JSON that is not an object, holds an unknown key, has no
-instructions or does not fit its type, a question's script without its `.json`, a decision agent
-with `tasks/`, a route not by a choice question of the router's `questions/`, by one a script fills,
-or that maps an option the question does not have, a route entry that names a task its agent does
-not have, a task for a decision agent, or gives a decision agent nothing to ask, two tools of a run
-with one name or one named like a tool the engine gives the agent, a run of an agent whose model was
-not given, or of a router whose target's model was not given, a missing workspace, a `Local` root
-that is not a directory, a `shell` that is not a list of strings or whose first word is not on
-`PATH`, a backend without `spawn`, `read` and `write`, a `Workspace` without a scope, a `max_steps`,
-`max_depth`, `tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is
-not positive, a `worker_result_bytes` that is neither a positive integer nor `None`, an `approve`
-that returns anything but `True` or `False`, a judge that is not a decision agent or a teacher that
-is not a generation agent. `NotFoundError` for an agent the tree does not have — a judge, a teacher
-or a replay's agent in the candidate included — a task the agent does not have (`engine: agent
-'support' has no task 'ghost'`), found when the run starts, or a run the refinery does not.
-`InputError` for a call the library refuses: an empty scope, an input that is not a string, a JSON
-object or a list, a workspace of another scope, a history that breaks a tool call from its result, a
-`start` outside the history or without one, tags outside their limits, runtime questions that do not
-fit, a runtime id the run already asks, questions for a generation agent, a task or a skill for a
-decision agent, a decision run with no question to ask, media the decision model does not declare, a
-media part with both or neither of `data` and `url`, a correction of the wrong shape or for a
-question the run was not asked, a `delete_runs` or `verify_absent` given both `run_ids` and `tags`
-or an empty one, a `delete_runs` given neither, an `export` or a `replay` given a `holdout_percent`
-outside 0 to 100, a `replay` given empty `tags` or a `limit`, `concurrency` or `repeat` below 1, a
-tool called with bad arguments, arguments JSON cannot hold or a path outside its directory, and any
-use of an engine after `close()` (`engine: this engine was closed; build a new Engine`).
-`ModelError` when an adapter breaks the contract — a result whose fields do not fit, a missing
-answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score
-outside its levels — or a folder tool's result does not match its `output_schema`, or a question's
-script returns anything but an object, a key its JSON sets or one its type does not take, or a
-question that does not fit. `RunawayError` when a loop exceeds `max_steps` (default 200).
+twice, a tool's file that links out of its `tools/` folder, a file or folder whose name is not
+UTF-8, a question's file, a task or an `AGENT.md` that links out of the agent's folder, an agent's
+own `tools/`, `tasks/` or `questions/` folder that links out of it, an `AGENT.md` without a `name:`
+or a `model:` in plain text, or whose `kind:` is neither `generation` nor `decision`, a `models`
+that is not a mapping of names to adapters, a model no agent runs on, an agent whose model has not
+its kind's method, two agents with one name, an agent in `agents:` or `route:` the tree does not
+have, an unknown key in the frontmatter of an `AGENT.md` or a task (`frontmatter: unknown key
+'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a
+`description:` that is not a string in a file the map would show, a decision agent with `preload:
+true`, `workspace: true` or `tools:`, a generation agent with `questions/` or `route:`, a `tools:`
+with no list, a `tools:` entry that is blank, padded or listed twice, a `tools:` that names `Output`
+or keeps a tool the agent does not see, a tool's `.json` without its `.py` or a script without its
+`.json`, a tool's JSON with an unknown key, no description, an `input_schema` that is not an object
+or a schema that does not compile, a script or helper that is not valid Python, imports the engine,
+the server's own code, a module relatively or a sibling script or subfolder of its folder, or
+imports a helper inside a function, a helper named like a standard-library module, a tool named like
+one the engine gives the agent, a `workers=` naming a folder that holds no agent or one inside
+another it names, a `reads:` that is not a path from the root, names no folder of the tree, a
+`tools/` folder on an agent's path or a folder inside one, leaves the root, names the agent's own
+folder, one that holds it or one inside it, or names two folders one inside the other, `reads:` on a
+decision agent or on an agent whose folder is a link to a folder elsewhere, a file `preload: true`
+would send that neither `Read` nor `Load` would hand over — over 20 MB, of a type the model's
+`media_types` does not name, or not the type its name says — one skill as both `skills/x.md` and
+`skills/x/SKILL.md`, a question in markdown, a question's JSON that is not an object, holds an
+unknown key, has no instructions or does not fit its type, a question's script without its `.json`,
+a decision agent with `tasks/`, a route not by a choice question of the router's `questions/`, by
+one a script fills, or that maps an option the question does not have, a route entry that names a
+task its agent does not have, a task for a decision agent, or gives a decision agent nothing to ask,
+two tools of a run with one name or one named like a tool the engine gives the agent, a run of an
+agent whose model was not given, or of a router whose target's model was not given, a missing
+workspace, a `Local` root that is not a directory, a `shell` that is not a list of strings or whose
+first word is not on `PATH`, a backend without `spawn`, `read` and `write`, a `Workspace` without a
+scope, a `max_steps`, `max_depth`, `tool_timeout`, `history_walk`, `history_chars`, `timeout` or
+`output_bytes` that is not positive, a `worker_result_bytes` that is neither a positive integer nor
+`None`, an `approve` that returns anything but `True` or `False`, a judge that is not a decision
+agent or a teacher that is not a generation agent. `NotFoundError` for an agent the tree does not
+have — a judge, a teacher or a replay's agent in the candidate included — a task the agent does not
+have (`engine: agent 'support' has no task 'ghost'`), found when the run starts, or a run the
+refinery does not. `InputError` for a call the library refuses: an empty scope, an input that is not
+a string, a JSON object or a list, a workspace of another scope, a history that breaks a tool call
+from its result, a `start` outside the history or without one, tags outside their limits, runtime
+questions that do not fit, a runtime id the run already asks, questions for a generation agent, a
+task or a skill for a decision agent, a decision run with no question to ask, media the decision
+model does not declare, a media part with both or neither of `data` and `url`, a correction of the
+wrong shape or for a question the run was not asked, a `delete_runs` or `verify_absent` given both
+`run_ids` and `tags` or an empty one, a `delete_runs` given neither, an `export` or a `replay` given
+a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or a `limit`, `concurrency` or
+`repeat` below 1, a tool called with bad arguments, arguments JSON cannot hold or a path outside its
+directory, and any use of an engine after `close()` (`engine: this engine was closed; build a new
+Engine`). `ModelError` when an adapter breaks the contract — a result whose fields do not fit, a
+missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1,
+a score outside its levels — or a folder tool's result does not match its `output_schema`, or a
+question's script returns anything but an object, a key its JSON sets or one its type does not take,
+or a question that does not fit. `RunawayError` when a loop exceeds `max_steps` (default 200).
 `DelegationLoopError` for a route into an agent already in the same chain of routes;
 `DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
 `Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool or

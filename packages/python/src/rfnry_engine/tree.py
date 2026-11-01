@@ -400,6 +400,15 @@ def _subfolders(folder: Path) -> list[Path]:
         return []
 
 
+def _utf8(name: str, path: Path) -> None:
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ConfigurationError(
+            f"tree: the name of {str(path)!r} is not UTF-8; rename it"
+        ) from None
+
+
 def _loops(top: Path, found: Mapping[str, Path], key: str, target: Path) -> bool:
     parts = key.split("/")
     above = [top, *(found["/".join(parts[:n])] for n in range(1, len(parts)))]
@@ -420,6 +429,7 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
                 or (holds and child.name in DECLARED)
             ):
                 continue
+            _utf8(child.name, child)
             place = child.resolve()
             key = f"{at}/{child.name}" if at else child.name
             if child.is_symlink():
@@ -650,6 +660,8 @@ def load_agent(
     files = sorted(
         [*content(root, False, inner=True), *_under(reads, lambda folder: folder.files), *above]
     )
+    for rel, file in files:
+        _utf8(rel, file)
     try:
         preload, read = (
             preload_parts(

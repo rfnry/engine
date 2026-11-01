@@ -67,6 +67,15 @@ def _unreadable(exc: OSError) -> None:
         logger.warning("folders: cannot read %s: %s; it is left out", exc.filename, exc)
 
 
+def _readable(path: Path) -> bool:
+    try:
+        os.close(os.open(path, os.O_RDONLY))
+    except OSError as exc:
+        _unreadable(exc)
+        return False
+    return True
+
+
 def _walk(
     folder: Path, declared: bool, inner: bool = False, tools: Collection[Path] = ()
 ) -> tuple[list[str], list[tuple[str, Path]]]:
@@ -98,7 +107,7 @@ def _walk(
                 or (declared and top and name in DECLARATIONS)
             ):
                 continue
-            if path.is_file() and _inside(jail, path):
+            if path.is_file() and _inside(jail, path) and _readable(path):
                 files.append((name if top else f"{at}/{name}", path))
     return sorted(dirs), sorted(files)
 

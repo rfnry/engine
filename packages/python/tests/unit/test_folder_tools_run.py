@@ -539,6 +539,30 @@ def test_a_kept_name_may_be_a_tool_of_a_folder_above(tmp_path: Path) -> None:
     assert list(load_tree(tmp_path)["support"].folder_tools) == ["notify"]
 
 
+async def test_a_tool_of_a_folder_nearer_the_agent_replaces_one_of_the_same_name_above(
+    tmp_path: Path,
+) -> None:
+    for place, said in (("tools", "root"), ("team/tools", "team")):
+        tool(
+            tmp_path / place,
+            "notify",
+            description=f"{said} notify",
+            body=f"def run(args, call):\n    return 'from {said}'\n",
+        )
+    write(tmp_path / "team/writer/AGENT.md", agent_md("writer"))
+    write(tmp_path / "desk/AGENT.md", agent_md("desk"))
+    async with Engine(tmp_path, models={}) as engine:
+        got = {}
+        for agent in ("writer", "desk"):
+            surface = EngineTools(engine, agent=agent, scope="acme")
+            [notify] = [d for d in surface.definitions() if d["name"] == "notify"]
+            got[agent] = (notify["description"], await surface.dispatch("notify", {}))
+    assert got == {
+        "writer": ("team notify", "from team"),
+        "desk": ("root notify", "from root"),
+    }
+
+
 async def test_workers_puts_a_folder_s_agents_on_its_own_processes(tmp_path: Path) -> None:
     tool(tmp_path / "tools", "pid", body=PID)
     write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))

@@ -209,7 +209,7 @@ async def problems(conn: Any) -> list[str]:
     state = await conn.fetchrow(_STATE)
     schema, path, role = state["schema"], state["path"], state["role"]
     names = _names(path, role, schema)
-    first = names[0] if names else None
+    first = _first(path, role, schema)
     if first is not None and first != schema:
         held = await conn.fetchval(
             "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)", first
