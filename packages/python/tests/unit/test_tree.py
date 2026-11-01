@@ -1,7 +1,10 @@
 import json
 import logging
 import os
+import sys
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -701,7 +704,7 @@ def test_an_unreadable_skill_is_refused_at_load_as_a_task_is(
     "folder", ["a/tasks", "a/tools", "d/questions", "a/skills", "a/skills/deep"]
 )
 def test_a_declared_folder_that_cannot_be_read_or_searched_is_refused_naming_it(
-    tmp_path: Path, folder: str, mode: int
+    tmp_path: Path, folder: str, mode: int, caplog: pytest.LogCaptureFixture
 ) -> None:
     for rel, text in {
         **DECLARED_FILES,
@@ -714,10 +717,157 @@ def test_a_declared_folder_that_cannot_be_read_or_searched_is_refused_naming_it(
     place = tmp_path / folder
     place.chmod(mode)
     try:
-        with pytest.raises(ConfigurationError) as caught:
+        with caplog.at_level(logging.WARNING), pytest.raises(ConfigurationError) as caught:
             load_tree(tmp_path)
     finally:
         place.chmod(0o755)
     assert str(caught.value) == (
         f"tree: cannot read {place}: Permission denied; make it readable to the engine"
     )
+    assert [m for m in caplog.messages if "cannot read" in m] == []
+
+
+@pytest.mark.parametrize("folder", ["a/skills", "a/skills/deep"])
+def test_an_unreadable_skills_folder_is_refused_before_an_agent_above_it_walks_it(
+    tmp_path: Path, folder: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    for rel, text in {
+        "AGENT.md": "---\nname: top\nkind: generation\nmodel: strong\n---\nbody\n",
+        "a/AGENT.md": "---\nname: a\nkind: generation\nmodel: strong\n---\nbody\n",
+        "a/skills/deep/SKILL.md": "---\ndescription: Deep\n---\nGo deep.\n",
+    }.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    place = tmp_path / folder
+    place.chmod(0)
+    try:
+        with caplog.at_level(logging.WARNING), pytest.raises(ConfigurationError) as caught:
+            load_tree(tmp_path)
+    finally:
+        place.chmod(0o755)
+    assert str(caught.value) == (
+        f"tree: cannot read {place.resolve()}: Permission denied; make it readable to the engine"
+    )
+    assert [m for m in caplog.messages if "cannot read" in m] == []
+
+
+@pytest.mark.parametrize("folder", ["d/skills", "d/skills/deep"])
+def test_an_unreadable_skills_folder_of_a_decision_agent_is_content_left_out_with_a_warning(
+    tmp_path: Path, folder: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    for rel, text in {
+        **DECLARED_FILES,
+        "d/skills/deep/SKILL.md": "---\ndescription: Deep\n---\nGo deep.\n",
+    }.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    place = (tmp_path / folder).resolve()
+    place.chmod(0)
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert sorted(load_tree(tmp_path)) == ["a", "d"]
+    finally:
+        place.chmod(0o755)
+    assert [m for m in caplog.messages if "cannot read" in m] == [
+        f"folders: cannot read {place}: [Errno 13] Permission denied: '{place}'; it is left out"
+    ]
+
+
+@pytest.mark.parametrize(
+    "linked", ["a/skills/outside", "a/skills/outside.md", "a/skills/deep/SKILL.md"]
+)
+def test_a_link_under_skills_that_no_skill_is_loaded_from_is_never_read(
+    tmp_path: Path, linked: str
+) -> None:
+    root, out = tmp_path / "root", tmp_path / "out"
+    for rel, text in {
+        "a/AGENT.md": "---\nname: a\nkind: generation\nmodel: strong\n---\nbody\n",
+        "a/skills/brief.md": "---\ndescription: Brief\n---\nBe brief.\n",
+        "a/skills/deep/notes.md": "Notes.\n",
+    }.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    (out / "skill").mkdir(parents=True)
+    (out / "skill" / "SKILL.md").write_text("---\ndescription: Out\n---\nout\n")
+    target = out / "skill" if linked.endswith("outside") else out / "skill" / "SKILL.md"
+    (root / linked).symlink_to(target)
+    assert sorted(load_tree(root)["a"].skills) == ["brief"]
+    target.chmod(0)
+    try:
+        assert sorted(load_tree(root)["a"].skills) == ["brief"]
+    finally:
+        target.chmod(0o755)
+
+
+def test_a_skills_folder_linked_out_of_the_agent_s_folder_is_never_read(tmp_path: Path) -> None:
+    root, out = tmp_path / "root", tmp_path / "out"
+    (root / "a").mkdir(parents=True)
+    (root / "a/AGENT.md").write_text("---\nname: a\nkind: generation\nmodel: strong\n---\nbody\n")
+    (out / "deep").mkdir(parents=True)
+    (out / "deep" / "SKILL.md").write_text("---\ndescription: Out\n---\nout\n")
+    (root / "a/skills").symlink_to(out)
+    assert load_tree(root)["a"].skills == {}
+    (out / "deep").chmod(0)
+    try:
+        assert load_tree(root)["a"].skills == {}
+    finally:
+        (out / "deep").chmod(0o755)
+
+
+class _Vanishing:
+    def __init__(self, folder: str, name: str) -> None:
+        self.entries = SCANDIR(folder)
+        self.name = name
+
+    def __enter__(self) -> _Vanishing:
+        self.entries.__enter__()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.entries.__exit__(None, None, None)
+
+    def __iter__(self) -> Iterator[os.DirEntry[str]]:
+        for entry in self.entries:
+            if entry.name == self.name:
+                os.unlink(entry.path)
+            yield entry
+
+
+SCANDIR = os.scandir
+
+
+@pytest.mark.parametrize(
+    ("folder", "name"),
+    [
+        ("a/tasks", "4913"),
+        ("a/tools", ".x.py.swp"),
+        ("d/questions", "_old.json"),
+        ("a/skills", "~brief.md"),
+        ("a/skills/deep", ".SKILL.md.swp"),
+    ],
+)
+def test_a_file_removed_while_its_declared_folder_is_listed_is_left_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder: str, name: str
+) -> None:
+    for rel, text in {
+        **DECLARED_FILES,
+        "a/skills/brief.md": "---\ndescription: Brief\n---\nBe brief.\n",
+        "a/skills/deep/SKILL.md": "---\ndescription: Deep\n---\nGo deep.\n",
+        f"{folder}/{name}": "a temporary file\n",
+    }.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    place = str(tmp_path / folder)
+
+    def racing(path: Any = ".") -> Any:
+        listed = str(path) in (place, os.path.realpath(place))
+        by_check = sys._getframe(1).f_code.co_name == "_declared"
+        return _Vanishing(path, name) if listed and by_check else SCANDIR(path)
+
+    monkeypatch.setattr(os, "scandir", racing)
+    agents = load_tree(tmp_path)
+    monkeypatch.undo()
+    assert not (tmp_path / folder / name).exists()
+    assert sorted(agents["a"].tasks) == ["t"] and sorted(agents["a"].skills) == ["brief", "deep"]
+    assert sorted(agents["a"].folder_tools) == ["x"]
+    assert sorted([*agents["d"].questions, *agents["d"].scripted]) == ["filled", "ok"]

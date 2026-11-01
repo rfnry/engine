@@ -402,7 +402,12 @@ or a question's script — is never left out: one it cannot read is a `Configura
 (`tree: cannot read <path>: Permission denied; make it readable to the engine`, or `tools/folder:`
 for a script or a tool's file), and any other file of a skill's folder is content. Nor is a folder
 that declares them left out: a `tasks/`, `tools/`, `questions/`, `skills/` or `skills/<name>/`
-folder it cannot read or search is a `ConfigurationError` naming that folder. A file or folder whose
+folder it cannot read or search is a `ConfigurationError` naming that folder, with no warning before
+it — a decision agent's `skills/` is content, left out with the warning. What a skill is read from
+is what its agent's map holds, so a link under `skills/` that leads out of the agent's folder or to a
+hidden one is never read, whatever it leads to. A file removed while the engine lists its folder —
+an editor's swap file, an rsync temporary, a ConfigMap's `..data` swap — is left out as though it was
+never there; one that cannot be read for any other reason is refused as above. A file or folder whose
 name is not UTF-8 is a `ConfigurationError` naming it: `tree: the name of
 '/srv/agents/support/caf\udce9.md' is not UTF-8; rename it`. What the engine loads stays where the
 content fingerprint finds it, since the fingerprint leaves out a link that leads out of the folder
