@@ -229,8 +229,8 @@ def _log(*errors: BaseException) -> None:
         logger.error("workers/pool: could not stop a worker: %s", error, exc_info=error)
 
 
-def _logged(handed: Future[None]) -> None:
-    if not handed.cancelled() and (error := handed.exception()) is not None:
+def _logged(dropped: Future[None]) -> None:
+    if (error := dropped.exception()) is not None:
         _log(error)
 
 
@@ -304,14 +304,14 @@ class WorkerPool:
         if handing is None:
             await self._started()
             return
-        loop, handed, dropped, soon = handing
+        loop, dropped, soon = handing
         try:
-            while not handed.done() and loop.is_running():
+            while not (handed := dropped.done() and self._spawning is None) and loop.is_running():
                 await asyncio.sleep(POLL)
         except asyncio.CancelledError:
             dropped.add_done_callback(_logged)
             raise
-        if not handed.done():
+        if not handed:
             soon.cancel()
             self._drop(CLOSED, starting=True)
         if dropped.done():
@@ -325,38 +325,29 @@ class WorkerPool:
     def release(self) -> None:
         handing = self._shut()
         if handing is not None:
-            handing[2].add_done_callback(_logged)
+            handing[1].add_done_callback(_logged)
 
-    def _shut(
-        self,
-    ) -> tuple[asyncio.AbstractEventLoop, Future[None], Future[None], asyncio.Handle] | None:
+    def _shut(self) -> tuple[asyncio.AbstractEventLoop, Future[None], asyncio.Handle] | None:
         self._closed = True
         loop = self._loop
         here = asyncio.get_running_loop()
         if loop is not None and loop is not here and loop.is_running():
-            handed: Future[None] = Future()
             dropped: Future[None] = Future()
-            return loop, handed, dropped, loop.call_soon_threadsafe(self._hand, handed, dropped)
+            return loop, dropped, loop.call_soon_threadsafe(self._hand, dropped)
         self._drop(CLOSED, starting=loop is not None and loop is not here)
         return None
 
-    def _hand(self, handed: Future[None], dropped: Future[None]) -> None:
+    def _hand(self, dropped: Future[None]) -> None:
         try:
             self._drop(CLOSED)
         except BaseException as exc:
             dropped.set_exception(exc)
         else:
             dropped.set_result(None)
-        spawning = self._spawning
-        if spawning is None:
-            handed.set_result(None)
-        else:
-            spawning.add_done_callback(lambda _: handed.set_result(None))
 
     def _drop(self, reason: str, starting: bool = False) -> None:
         workers = [worker for worker in self._workers if worker is not None]
-        held = self._starting
-        if starting and held is not None:
+        if starting and (held := self._starting) is not None:
             held.kill()
             held.process.wait()
         self._workers = [None] * len(self._workers)
