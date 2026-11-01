@@ -638,6 +638,39 @@ async def test_a_failed_recording_is_logged_and_the_run_returned(
     assert f"refinery.record failed for run {run.run_id}" in caplog.text
 
 
+async def test_a_run_whose_args_nest_past_the_serializer_s_limit_is_returned_and_logged_unrecorded(
+    fixtures: Path, storage: Storage, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def look(args: dict[str, Any]) -> str:
+        return "seen"
+
+    deep: list[Any] = []
+    for _ in range(299):
+        deep = [deep]
+    call = ToolCall(id="c1", name="look", args={"x": deep})
+    refinery = Refinery(storage)
+    llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("done"))
+    engine = engine_for(fixtures, llm, refinery=refinery)
+    with caplog.at_level("WARNING"):
+        run = await engine.run(
+            "billing", "acme", "x", tools=Tools([Tool("look", "Look", body=look)])
+        )
+    assert isinstance(run, Generation) and run.reply == "done"
+    [step] = run.steps
+    assert (step.tool, step.result, step.args == {"x": deep}) == ("look", "seen", True)
+    [logged] = [r for r in caplog.records if r.name == "rfnry_engine.engine"]
+    assert (logged.levelname, logged.getMessage()) == (
+        "WARNING",
+        f"refinery.record failed for run {run.run_id}",
+    )
+    assert logged.exc_info is not None
+    failed = logged.exc_info[1]
+    assert type(failed) is ValueError
+    assert str(failed) == "Circular reference detected (depth exceeded)"
+    with pytest.raises(NotFoundError):
+        await refinery.run("acme", run.run_id)
+
+
 PNG = b"\x89PNG\r\n\x1a\n"
 
 

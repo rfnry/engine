@@ -27,6 +27,7 @@ from rfnry_engine.records import (
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.stop import Stop
+from rfnry_engine.tools import bridge as bridging
 from rfnry_engine.tools.bridge import CALLS, Bridge
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
@@ -1212,3 +1213,118 @@ async def test_a_call_past_the_cap_is_refused_and_leaves_no_step(
     bridged = [s for s in run.steps if s.tool == "wait"]
     assert len(bridged) == CALLS
     assert all(s.by == "1" for s in bridged)
+
+
+def bridged(run: Generation, events: list[Event]) -> tuple[list[Step], list[str]]:
+    started = [e.call_id for e in events if isinstance(e, ToolCallStarted | ToolResultReady)]
+    return [s for s in run.steps if s.by is not None], started
+
+
+async def test_a_command_past_its_call_budget_is_refused_and_leaves_no_step(
+    tmp_path: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bridging, "COMMAND_CALLS", 3)
+    script(root, "import json\nprint(json.dumps([call('lookup') for _ in range(5)]))\n")
+    async with asyncio.timeout(30), Workspace(Local(root), scope="acme", timeout=20) as work:
+        run, events, _ = await run_coder(
+            tmp_path, work, tools=[Tool("lookup", "Look", body=lookup)]
+        )
+    replies = json.loads(result(run.steps[-1])["stdout"])
+    assert [json.loads(r["result"]) for r in replies[:3]] == [{"value": 2}] * 3
+    refused = {"error": "tools/bridge: this command made its 3 calls; no more are answered"}
+    assert replies[3:] == [refused] * 2
+    steps, seen = bridged(run, events)
+    assert len(steps) == bridging.COMMAND_CALLS
+    assert [s.tool for s in run.steps] == ["lookup"] * 3 + ["Shell"]
+    assert sorted(seen) == sorted(["1", "1", "1.1", "1.1", "1.2", "1.2", "1.3", "1.3"])
+
+
+async def test_a_command_past_its_byte_budget_is_refused_and_leaves_no_step(
+    tmp_path: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bridging, "COMMAND_BYTES", 2_500)
+    script(
+        root,
+        "import json\n"
+        "print(json.dumps([call('lookup', pad='x' * 1000) for _ in range(3)] + [call('lookup')]))\n",
+    )
+    async with asyncio.timeout(30), Workspace(Local(root), scope="acme", timeout=20) as work:
+        run, events, _ = await run_coder(
+            tmp_path, work, tools=[Tool("lookup", "Look", body=lookup)]
+        )
+    replies = json.loads(result(run.steps[-1])["stdout"])
+    assert [json.loads(r["result"]) for r in replies[:2]] == [{"value": 2}] * 2
+    refused = "tools/bridge: this command sent its 2500 bytes of calls; no more are answered"
+    assert replies[2:] == [{"error": refused}] * 2
+    steps, seen = bridged(run, events)
+    assert [s.args for s in steps] == [{"pad": "x" * 1000}] * 2
+    assert sorted(seen) == sorted(["1", "1", "1.1", "1.1", "1.2", "1.2"])
+
+
+NEST = """
+def nest(levels):
+    value = []
+    for _ in range(levels - 1):
+        value = [value]
+    return value
+"""
+
+
+def nest(levels: int) -> list[Any]:
+    value: list[Any] = []
+    for _ in range(levels - 1):
+        value = [value]
+    return value
+
+
+async def test_a_call_whose_args_nest_past_the_depth_is_refused_and_leaves_no_step(
+    tmp_path: Path, root: Path, storage: Storage
+) -> None:
+    script(
+        root,
+        f"import json\n{NEST}"
+        "print(json.dumps([call('lookup', x=nest(127)), call('lookup', x=nest(128))]))\n",
+    )
+    events: list[Event] = []
+
+    async def handler(event: Event) -> None:
+        events.append(event)
+
+    refinery = Refinery(storage)
+    llm = Scripted(use(shell()), text_reply("ok"))
+    async with (
+        asyncio.timeout(30),
+        Workspace(Local(root), scope="acme", timeout=20) as work,
+        Engine(make_tree(tmp_path), models={"strong": llm}, refinery=refinery) as engine,
+    ):
+        run = await engine.run(
+            "coder",
+            "acme",
+            "x",
+            workspace=work,
+            tools=Tools([Tool("lookup", "Look", body=lookup)]),
+            on_event=handler,
+        )
+    assert isinstance(run, Generation)
+    kept, refused = json.loads(result(run.steps[-1])["stdout"])
+    assert json.loads(kept["result"]) == {"value": 2}
+    assert refused == {"error": "tools/bridge: a call's args nest deeper than 128 levels"}
+    steps, seen = bridged(run, events)
+    assert [s.args for s in steps] == [{"x": nest(127)}]
+    assert sorted(seen) == sorted(["1", "1", "1.1", "1.1"])
+    read = await refinery.run("acme", run.run_id)
+    assert isinstance(read, Generation) and read.steps == run.steps
+
+
+async def test_the_description_states_a_command_s_budgets(tmp_path: Path, root: Path) -> None:
+    llm = Scripted(text_reply("ok"))
+    async with (
+        Workspace(Local(root), scope="acme") as work,
+        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+    ):
+        await engine.run("coder", "acme", "x", workspace=work)
+    assert (
+        " A command makes at most 10000 calls in all, sending at most 2 MiB of request lines;"
+        " past either, each further call is answered with an error, so spread larger work over"
+        " several commands." in described(llm)
+    )

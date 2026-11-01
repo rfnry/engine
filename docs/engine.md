@@ -1664,7 +1664,19 @@ returns parts, their JSON list, media `data` in base64. `error` is the text the 
 `NotApproved: lookup_order was not approved`, `TimeoutError: engine: lookup_order timed out after
 30s`, a tool's own error. A line that is not one JSON object with a string `tool` and an object
 `args`, a line over 1 MiB, and a request without the command's key are answered with an `error` that
-starts with `tools/bridge:`, and run nothing.
+starts with `tools/bridge:`, and run nothing. A command makes at most 10,000 calls and sends at most
+2 MiB of request lines in all: every request that reaches the run's tools is a call, a name the
+socket does not carry included, and every line read whole counts toward the 2 MiB as it is read,
+before it is parsed, one the bridge refuses included. Past either, every further request is answered
+`{"error": "tools/bridge: this command made its 10000 calls; no more are answered"}` or
+`{"error": "tools/bridge: this command sent its 2097152 bytes of calls; no more are answered"}`, so
+a script with more to do splits it over several commands, as the `Shell` description tells the
+model. A call whose `args` nest deeper than 128 levels of lists and objects, `args` itself the
+first, is answered `{"error": "tools/bridge: a call's args nest deeper than 128 levels"}`; the depth
+is read from the line before it is parsed, its strings aside, so any other field of the request
+nested as deep, or a malformed line that opens as many, gets the same error. None of these runs
+anything or leaves a step or an event, and a connection closed at the cap of 64 below counts toward
+neither budget.
 
 The socket carries every tool the run offers the model — the builtins, `History`, the folder tools,
 the run's `tools=` — except the workspace's own (`Shell`, `Job`, `Jobs`, `Write`, `Edit`) and any
@@ -1731,8 +1743,16 @@ but where a deployment puts the workspace does not.
 - Until its command ends, each open connection holds a file descriptor and up to 1 MiB in the
   engine's process, which a sandbox's limits don't cover. The workspace `timeout` bounds how long,
   and a command has at most 64 calls in flight at once, so it holds at most 64 file descriptors and
-  64 requests of up to 1 MiB each, plus their parsed arguments, in the engine's process. A script
-  that opens more finds its connection closed, and should retry.
+  64 requests of up to 1 MiB each in the engine's process. A script that opens more finds its
+  connection closed, and should retry.
+- A command makes at most 10,000 calls, sends at most 2 MiB of request lines and nests a call's
+  `args` at most 128 levels deep. Past each, a request is answered with its error before it is
+  parsed — `tools/bridge: this command made its 10000 calls; no more are answered`,
+  `tools/bridge: this command sent its 2097152 bytes of calls; no more are answered`,
+  `tools/bridge: a call's args nest deeper than 128 levels` — and leaves no step and no event. So
+  one command adds at most 10,000 steps to the run's record, the engine parses at most 2 MiB of its
+  requests however they are shaped, which bounds the arguments it holds and records, and every
+  argument it records nests well inside the depth the record's serializer takes.
 - The socket lives only while the command runs; something the command leaves running cannot call
   afterwards.
 
@@ -1837,8 +1857,11 @@ label and what really happened, and the three levels of improvement they feed.
 
 Attach a refinery and every run is recorded when it ends — one that raises after its first model
 call too, as far as it got, with its error. A recording that fails is logged as a warning and
-never fails the run. `refinery.run(scope, run_id)` reads a recorded run back, its delegated and
-routed runs in place, to continue it anywhere — see [Running an agent](#running-an-agent).
+never fails the run, as one does when a model's tool call nests its `args` past 254 levels of lists
+and objects, `args` itself the first, or fewer in a delegated or routed run, deeper than the
+record's serializer goes (`ValueError: Circular reference detected (depth exceeded)`).
+`refinery.run(scope, run_id)` reads a recorded run back, its delegated and routed runs in place, to
+continue it anywhere — see [Running an agent](#running-an-agent).
 
 ```python
 refinery = Refinery(PostgresStorage(pool))

@@ -334,7 +334,7 @@ async def test_hostile_requests_get_a_reply_and_log_nothing(
     with caplog.at_level(logging.DEBUG):
         reply = await ask(bridge, raw)
         await asyncio.sleep(0.05)
-    assert reply == ({"error": WRONG} if surrogate == "key" else {"error": BAD})
+    assert reply == ({"error": WRONG} if surrogate == "key" else {"error": DEEP})
     assert seen.calls == []
     assert [r for r in caplog.records if r.levelno > logging.DEBUG] == []
 
@@ -472,3 +472,121 @@ async def test_a_slot_frees_when_a_call_ends(root: Path) -> None:
     finally:
         held.release()
         await b.close()
+
+
+CALLED = "tools/bridge: this command made its {} calls; no more are answered"
+SENT = "tools/bridge: this command sent its {} bytes of calls; no more are answered"
+DEEP = "tools/bridge: a call's args nest deeper than 128 levels"
+
+
+def deep(b: Bridge, depth: int) -> bytes:
+    head = json.dumps({"key": b.key, "tool": "echo"})[:-1].encode()
+    return head + b', "args": {"x": ' + b"[" * (depth - 1) + b"]" * (depth - 1) + b"}}\n"
+
+
+def nest(levels: int) -> list[Any]:
+    value: list[Any] = []
+    for _ in range(levels - 1):
+        value = [value]
+    return value
+
+
+async def test_the_budgets_are_the_bench_s(bridge: Bridge) -> None:
+    assert (bridging.COMMAND_CALLS, bridging.COMMAND_BYTES, bridging.DEPTH) == (
+        10_000,
+        2_097_152,
+        128,
+    )
+
+
+async def test_a_command_past_its_call_budget_is_refused(
+    bridge: Bridge, seen: Seen, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bridging, "COMMAND_CALLS", 3)
+    assert await ask(bridge, b"not json\n") == {"error": BAD}
+    replies = [await ask(bridge, request(bridge, args={"x": i})) for i in range(5)]
+    assert replies == [{"result": i} for i in range(3)] + [{"error": CALLED.format(3)}] * 2
+    assert seen.calls == [("echo", {"x": i}) for i in range(3)]
+
+
+async def test_a_command_past_its_byte_budget_is_refused(
+    bridge: Bridge, seen: Seen, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    line, bad = request(bridge), b"not json\n"
+    budget = len(bad) + 2 * len(line)
+    monkeypatch.setattr(bridging, "COMMAND_BYTES", budget)
+    assert await ask(bridge, bad) == {"error": BAD}
+    assert [await ask(bridge, line) for _ in range(2)] == [{"result": 1}] * 2
+    assert await ask(bridge, line) == {"error": SENT.format(budget)}
+    assert await ask(bridge, b"[\n") == {"error": SENT.format(budget)}
+    assert seen.calls == [("echo", {"x": 1})] * 2
+
+
+async def test_a_connection_refused_at_the_cap_counts_toward_no_budget(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = asyncio.Event()
+    got: list[int] = []
+
+    async def answer(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        got.append(args["x"])
+        if args["x"] == 0:
+            await gate.wait()
+        return {"result": args["x"]}
+
+    b = await Bridge.open(root, answer)
+    try:
+        first = request(b, args={"x": 0})
+        monkeypatch.setattr(bridging, "CALLS", 1)
+        monkeypatch.setattr(bridging, "COMMAND_CALLS", 2)
+        monkeypatch.setattr(bridging, "COMMAND_BYTES", 2 * len(first))
+        reader, writer = await asyncio.open_unix_connection(b.path)
+        writer.write(first)
+        async with asyncio.timeout(5):
+            while not got:
+                await asyncio.sleep(0.01)
+        for _ in range(3):
+            over, gone = await asyncio.open_unix_connection(b.path)
+            async with asyncio.timeout(5):
+                line = await over.readline()
+            gone.close()
+            assert json.loads(line) == {
+                "error": "tools/bridge: at most 1 calls at once; wait for one to finish"
+            }
+        gate.set()
+        async with asyncio.timeout(5):
+            assert json.loads(await reader.readline()) == {"result": 0}
+            writer.close()
+            while b._open:
+                await asyncio.sleep(0.01)
+        assert await ask(b, request(b, args={"x": 1})) == {"result": 1}
+        assert await ask(b, request(b, args={"x": 2})) == {"error": CALLED.format(2)}
+        assert got == [0, 1]
+    finally:
+        gate.set()
+        await b.close()
+
+
+async def test_a_call_whose_args_nest_past_the_depth_is_refused(
+    bridge: Bridge, seen: Seen, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.DEBUG):
+        assert await ask(bridge, deep(bridge, 128)) == {"result": nest(127)}
+        assert await ask(bridge, deep(bridge, 129)) == {"error": DEEP}
+        assert await ask(bridge, deep(bridge, 60_000)) == {"error": DEEP}
+        await asyncio.sleep(0.05)
+    assert seen.calls == [("echo", {"x": nest(127)})]
+    assert [r for r in caplog.records if r.levelno > logging.DEBUG] == []
+
+
+async def test_the_depth_is_of_lists_and_objects_outside_strings(
+    bridge: Bridge, seen: Seen
+) -> None:
+    text = '[[[[{{{{"\\' * 50 + '\\"]]'
+    args = {"[[[[": text, "s": text + "\\", "x": nest(127)}
+    assert await ask(bridge, request(bridge, args=args)) == {"result": nest(127)}
+    deeper = {"[[[[": text, "s": text + "\\", "x": nest(128)}
+    assert await ask(bridge, request(bridge, args=deeper)) == {"error": DEEP}
+    assert await ask(bridge, request(bridge, extra=nest(128))) == {"result": 1}
+    assert await ask(bridge, request(bridge, extra=nest(129))) == {"error": DEEP}
+    assert seen.calls == [("echo", args), ("echo", {"x": 1})]

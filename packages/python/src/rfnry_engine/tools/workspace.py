@@ -22,7 +22,7 @@ from rfnry_engine.foreground import current
 from rfnry_engine.jail import Jail
 from rfnry_engine.records import Pipe
 from rfnry_engine.stop import join, wait
-from rfnry_engine.tools.bridge import CALLS, Answer, Bridge
+from rfnry_engine.tools.bridge import CALLS, COMMAND_BYTES, COMMAND_CALLS, Answer, Bridge
 from rfnry_engine.tools.tools import Tool
 
 logger = logging.getLogger(__name__)
@@ -792,9 +792,11 @@ class Workspace:
                 ' {"result": <what you would read for that call>} or {"error": <its error>}.'
                 f" Each connection makes one call; open several to make calls at once, up to {CALLS},"
                 " and a connection past that is closed at once, with the error line or a broken pipe or"
-                " a reset, so retry it later. Every tool"
-                " you have is there except the workspace's own (Shell, Job, Jobs, Write, Edit),"
-                " Delegate and Output."
+                " a reset, so retry it later. A command makes at most"
+                f" {COMMAND_CALLS} calls in all, sending at most {COMMAND_BYTES // 1_048_576} MiB"
+                " of request lines; past either, each further call is answered with an error, so"
+                " spread larger work over several commands. Every tool you have is there except"
+                " the workspace's own (Shell, Job, Jobs, Write, Edit), Delegate and Output."
             )
         return told
 
