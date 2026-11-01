@@ -80,7 +80,11 @@ def reaped(pid: int) -> bool:
 def held() -> tuple[int, list[str]]:
     states = []
     for task in Path("/proc/self/task").glob("*/children"):
-        for child in task.read_text().split():
+        try:
+            children = task.read_text().split()
+        except OSError:
+            continue
+        for child in children:
             with contextlib.suppress(OSError):
                 states.append(Path(f"/proc/{child}/stat").read_text().rsplit(")", 1)[1].split()[0])
     return len(os.listdir("/proc/self/fd")), states
@@ -645,6 +649,59 @@ async def test_a_worker_that_exits_past_a_child_it_forked_fails_its_call_with_it
     finally:
         await pool.close()
     assert await gone(int(held.read_text()))
+
+
+@pytest.mark.parametrize("watch", ["waitid", "wait"])
+async def test_a_worker_that_dies_with_its_pipe_held_reports_its_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, watch: str
+) -> None:
+    if watch == "wait":
+        monkeypatch.delattr(os, "waitid")
+    body = (
+        "import ctypes, os, time\n"
+        "from pathlib import Path\n"
+        "def run(args, call):\n"
+        "    child = ctypes.CDLL(None).fork()\n"
+        "    if child == 0:\n"
+        "        time.sleep(30)\n"
+        "        os._exit(0)\n"
+        "    Path(args['file']).write_text(str(child))\n"
+        "    os._exit(3)\n"
+    )
+    pool = WorkerPool([script(tmp_path, "forks", body)])
+    held = tmp_path / "child.txt"
+    try:
+        started = time.monotonic()
+        with pytest.raises(WorkerError) as raised:
+            await pool.call("forks", {"file": str(held)}, CALL, 10)
+        assert time.monotonic() - started < 5
+        assert str(raised.value) == "workers/pool: the worker for forks stopped: exited with code 3"
+        assert await gone(int(held.read_text()))
+    finally:
+        await pool.close()
+        with contextlib.suppress(OSError, ValueError):
+            os.kill(int(held.read_text()), signal.SIGKILL)
+
+
+async def test_a_reply_sent_just_before_the_worker_exits_still_answers_its_call(
+    tmp_path: Path,
+) -> None:
+    body = (
+        "import os, threading\n"
+        "def run(args, call):\n"
+        "    if args.get('exit'):\n"
+        "        threading.Timer(0.1, os._exit, (3,)).start()\n"
+        "    return 'done'\n"
+    )
+    pool = WorkerPool([script(tmp_path, "last", body)])
+    try:
+        assert await pool.call("last", {}, CALL, 5) == "done"
+        last = asyncio.create_task(pool.call("last", {"exit": True}, CALL, 5))
+        await asyncio.sleep(0)
+        time.sleep(0.5)
+        assert await last == "done"
+    finally:
+        await pool.close()
 
 
 async def test_many_processes_share_the_calls(tmp_path: Path) -> None:

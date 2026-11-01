@@ -2,6 +2,7 @@ import asyncio
 import base64
 import datetime
 import json
+import logging
 import os
 import re
 import time
@@ -608,6 +609,21 @@ async def test_a_worker_tells_its_pool_which_scripts_take_a_thread(tmp_path: Pat
         assert pid(await EngineTools(engine, agent="shop", scope="acme").dispatch("wait", {})) == 1
         [worker] = engine._workers.pool("shop")._workers
         assert worker is not None and worker.threaded == {"tools/pid", "desk/questions/size"}
+
+
+async def test_closing_the_engine_reports_no_worker_exit(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    tool(tmp_path / "tools", "pid", body=PID)
+    write(tmp_path / "shop/AGENT.md", agent_md("shop"))
+    async with Engine(tmp_path, models={}) as engine:
+        worker = pid(await EngineTools(engine, agent="shop", scope="acme").dispatch("pid", {}))
+    assert not Path(f"/proc/{worker}").exists()
+    await asyncio.sleep(0.2)
+    assert [
+        record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING
+    ] == []
 
 
 @pytest.mark.parametrize(

@@ -72,7 +72,11 @@ async def storage(pool: Any) -> PostgresStorage:
 def _workers_left() -> list[int]:
     found = []
     for task in Path("/proc/self/task").glob("*/children"):
-        for child in task.read_text().split():
+        try:
+            children = task.read_text().split()
+        except OSError:
+            continue
+        for child in children:
             try:
                 command = Path(f"/proc/{child}/cmdline").read_bytes()
                 state = Path(f"/proc/{child}/stat").read_text().rsplit(")", 1)[1].split()[0]

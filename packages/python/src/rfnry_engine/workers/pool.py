@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from collections.abc import Collection, Mapping, Sequence
 from concurrent.futures import Future
 from functools import partial
@@ -93,6 +94,21 @@ class _Worker:
         for fd, pipe in ((2, self.process.stderr), (1, self.process.stdout)):
             reader, _ = await self._loop.connect_read_pipe(partial(_Pipe, self, fd), pipe)
             self._readers.append(reader)
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    def _watch(self) -> None:
+        if hasattr(os, "waitid"):
+            with contextlib.suppress(ChildProcessError):
+                os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOWAIT)
+        else:
+            self.process.wait()
+        with contextlib.suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(self._exited)
+
+    def _exited(self) -> None:
+        if not self.ended:
+            self.received(1, cast(IO[bytes], self.process.stdout).read() or b"")
+            self.stop()
 
     def received(self, fd: int, data: bytes) -> None:
         if fd == 1:
