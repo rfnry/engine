@@ -20,7 +20,16 @@ from pydantic import (
 from rfnry_engine.chain import preload_digest
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
-from rfnry_engine.folders import DECLARED, content, declares, entries, joined, leads_out
+from rfnry_engine.folders import (
+    DECLARED,
+    content,
+    declares,
+    entries,
+    joined,
+    leads_out,
+    unwarned,
+    warns_once,
+)
 from rfnry_engine.frontmatter import (
     body_of,
     description,
@@ -390,7 +399,8 @@ def _subfolders(folder: Path) -> list[Path]:
         with os.scandir(folder) as entries:
             return sorted(Path(entry.path) for entry in entries if _is_folder(entry))
     except OSError as exc:
-        logger.warning("tree: cannot read %s: %s; it is left out", folder, exc)
+        if unwarned(folder):
+            logger.warning("tree: cannot read %s: %s; it is left out", folder, exc)
         return []
 
 
@@ -693,6 +703,7 @@ def load_agent(
     )
 
 
+@warns_once()
 def load_tree(
     root: Path, media: Mapping[str, Collection[str] | None] | None = None
 ) -> dict[str, AgentSpec]:

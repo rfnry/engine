@@ -1,6 +1,8 @@
 import logging
 import os
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from rfnry_engine.errors import InputError
@@ -11,6 +13,28 @@ logger = logging.getLogger(__name__)
 
 DECLARED = frozenset({"tools", "tasks", "questions"})
 DECLARATIONS = frozenset({"AGENT.md"})
+
+_warned: ContextVar[set[str] | None] = ContextVar("warned", default=None)
+
+
+@contextmanager
+def warns_once() -> Iterator[None]:
+    token = _warned.set(set())
+    try:
+        yield
+    finally:
+        _warned.reset(token)
+
+
+def unwarned(place: str | Path) -> bool:
+    seen = _warned.get()
+    if seen is None:
+        return True
+    real = os.path.realpath(place)
+    if real in seen:
+        return False
+    seen.add(real)
+    return True
 
 
 def declares(folder: Path) -> bool:
@@ -39,7 +63,8 @@ def leads_out(path: Path, folder: Path) -> Path | None:
 
 
 def _unreadable(exc: OSError) -> None:
-    logger.warning("folders: cannot read %s: %s; it is left out", exc.filename, exc)
+    if unwarned(exc.filename):
+        logger.warning("folders: cannot read %s: %s; it is left out", exc.filename, exc)
 
 
 def _walk(

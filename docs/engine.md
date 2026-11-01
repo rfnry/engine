@@ -389,23 +389,24 @@ and a link that would reach an agent twice is a `ConfigurationError` naming the 
 leads: one to a folder of the root that holds an `AGENT.md`, in it or below it, or two links to one
 such folder elsewhere, the second link named being the one that leads to the other path; so is a
 link to a folder on the way to the link or one holding it, which would lead the walk into itself. A
-folder it cannot read is left out, with a warning that names it: on the `rfnry_engine.tree` logger
-when the root is walked for agents, on `rfnry_engine.folders` when an agent's folder or one it reads
-is walked for its map, preload and fingerprint. What the engine loads stays where the content
-fingerprint finds it, since the fingerprint leaves out a link that leads out of the folder it walks:
-a tool's `.json`, `.py` or helper that is a link to a place outside its `tools/` folder, which the
-fingerprint walks on its own for every agent that gets its tools, is a `ConfigurationError`
-(`tools/folder: <path> links to <target>, outside its folder; move the file into its folder, or link
-the agent's whole folder`, or `the whole tools/ folder` for the `tools/` folder of a folder without
-an `AGENT.md`), and so is a question's `.json`, `.py` or helper, a task or an `AGENT.md` that is a
-link to a place outside the agent's folder, and an agent's own `tools/`, `tasks/` or `questions/`
-folder that is a link to a folder outside the agent's (`tree: <path> links to <target>, outside the
-agent's folder; move the folder into the agent's folder, or link the agent's whole folder`) or to a
-hidden folder inside it, which the fingerprint leaves out as it leaves out every hidden name (`tree:
-<path> links to <target>, a hidden folder the agent's fingerprint leaves out; move the folder to a
-visible name`). Any other link that stays inside loads, and so do an agent's whole folder linked in
-and a `tools/` folder of a folder without an `AGENT.md` linked from elsewhere, which the agents
-below it walk where it leads.
+folder it cannot read is left out, with one warning that names it each time the tree loads, however
+many walks meet it: on the `rfnry_engine.tree` logger when the root's walk for agents meets it
+first, on `rfnry_engine.folders` when the walk of an agent's folder or one it reads for its map,
+preload and fingerprint does. What the engine loads stays where the content fingerprint finds it,
+since the fingerprint leaves out a link that leads out of the folder it walks: a tool's `.json`,
+`.py` or helper that is a link to a place outside its `tools/` folder, which the fingerprint walks
+on its own for every agent that gets its tools, is a `ConfigurationError` (`tools/folder: <path>
+links to <target>, outside its folder; move the file into its folder, or link the agent's whole
+folder`, or `the whole tools/ folder` for the `tools/` folder of a folder without an `AGENT.md`),
+and so is a question's `.json`, `.py` or helper, a task or an `AGENT.md` that is a link to a place
+outside the agent's folder, and an agent's own `tools/`, `tasks/` or `questions/` folder that is a
+link to a folder outside the agent's (`tree: <path> links to <target>, outside the agent's folder;
+move the folder into the agent's folder, or link the agent's whole folder`) or to a hidden folder
+inside it, which the fingerprint leaves out as it leaves out every hidden name (`tree: <path> links
+to <target>, a hidden folder the agent's fingerprint leaves out; move the folder to a visible
+name`). Any other link that stays inside loads, and so do an agent's whole folder linked in and a
+`tools/` folder of a folder without an `AGENT.md` linked from elsewhere, which the agents below it
+walk where it leads.
 
 A root holds agents and folders without an `AGENT.md` side by side, and an agent reads other folders
 of its root by naming them in `reads:` — folders without an `AGENT.md`, or other agents' folders:

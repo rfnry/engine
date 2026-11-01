@@ -1,4 +1,6 @@
 import json
+import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -511,3 +513,33 @@ def test_reads_needs_the_agent_s_folder_inside_the_root_not_a_link_to_elsewhere(
         "---\nname: coding\nkind: generation\nmodel: strong\n---\n"
     )
     assert load_tree(root)["coding"].reads == {}
+
+
+def test_an_unreadable_folder_is_warned_about_once_per_loaded_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _agent(tmp_path, "a", "kind: generation\nmodel: strong\npreload: true\n")
+    _agent(tmp_path, "b", "kind: generation\nmodel: strong\nreads: [a/kb]\n")
+    for name in ("a/kb/locked/x.md", "a/tasks/locked/y.md", "a/kb/z.md"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("x\n")
+    kb, tasks = (tmp_path / "a/kb/locked").resolve(), (tmp_path / "a/tasks/locked").resolve()
+    real = os.scandir
+
+    def scandir(path: object = ".") -> object:
+        if Path(str(path)).resolve() in (kb, tasks):
+            raise PermissionError(13, "denied", str(path))
+        return real(path)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    warned = [
+        f"tree: cannot read {kb}: [Errno 13] denied: '{kb}'; it is left out",
+        f"folders: cannot read {tasks}: [Errno 13] denied: '{tasks}'; it is left out",
+    ]
+    with caplog.at_level(logging.WARNING):
+        assert list(load_tree(tmp_path)) == ["a", "b"]
+    assert [m for m in caplog.messages if "cannot read" in m] == warned
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        load_tree(tmp_path)
+    assert [m for m in caplog.messages if "cannot read" in m] == warned
