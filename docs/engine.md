@@ -1579,7 +1579,7 @@ start inherits, say, whose processes it signals.
 The folder in the shell. `Workspace(local, scope="acme", tree="/srv/agents")` says where the agent
 tree is mounted in the sandbox, as commands see it. The commands of a run then get `RFNRY_TREE`, the
 tree as `posixpath.normpath` writes it, so `/srv/agents/` is `/srv/agents`, and `RFNRY_AGENT`, the
-running agent's folder in it, and the `Shell` description tells the model that the folder is at
+running agent's folder in it. The `Shell` description tells the model that the folder is at
 `$RFNRY_AGENT`, read-only, with its files, skills and scripts to read and run, and that each folder
 the agent reads is at `$RFNRY_TREE/<name>`. A skill's script is run as
 `python "$RFNRY_AGENT/skills/plot/run.py"`. The sandbox mounts the tree read-only at the same path:

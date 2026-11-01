@@ -600,6 +600,51 @@ class Once:
         return None
 
 
+class Fails(Once):
+    def __init__(self, stdout: Reads, stderr: Reads, after: asyncio.Event) -> None:
+        super().__init__(stdout, stderr)
+        self.after = after
+
+    async def wait(self) -> int:
+        await self.after.wait()
+        raise RuntimeError("the backend could not wait")
+
+
+async def test_a_cancel_after_a_failed_command_reaches_a_command_output_handler_that_is_still_running(
+    tmp_path: Path, root: Path
+) -> None:
+    entered = asyncio.Event()
+    swallowed = asyncio.Event()
+    backstop = Backstop()
+
+    async def hi() -> bytes:
+        return b"hi\n"
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, CommandOutput):
+            entered.set()
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                backstop.arm()
+                swallowed.set()
+                await asyncio.sleep(5)
+
+    work = Workspace(Fails(Reads(hi), Reads(), entered), scope="acme")
+    call = ToolCall(id="1", name="Shell", args={"command": "x"})
+    running = asyncio.create_task(go(tmp_path, root, call, handler, work))
+    try:
+        async with asyncio.timeout(10):
+            await swallowed.wait()
+            running.cancel()
+            await asyncio.wait({running})
+    finally:
+        backstop.disarm()
+    assert running.cancelled()
+    assert not backstop.fired
+    assert backstop.sender is not None and backstop.sender.done()
+
+
 async def test_a_read_larger_than_the_backlog_still_drops_until_the_next_batch(
     tmp_path: Path, root: Path
 ) -> None:
