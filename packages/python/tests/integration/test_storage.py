@@ -968,14 +968,24 @@ async def test_put_runs_stores_nothing_when_the_database_refuses_a_row(storage: 
     assert await storage.get_run("a", "r1") is None
 
 
-async def test_put_runs_stores_nothing_when_a_body_is_not_json(storage: Storage) -> None:
+async def test_put_runs_stores_nothing_and_raises_the_error_of_a_body_that_is_not_json(
+    storage: Storage,
+) -> None:
     bad = _run("a", "r2").model_copy(update={"body": {"on": datetime.now(UTC).date()}})
-    with pytest.raises(StorageError) as raised:
+    with pytest.raises(TypeError, match="^Object of type date is not JSON serializable"):
         await storage.put_runs("a", [_run("a", "r1"), bad])
-    assert str(raised.value) == (
-        "refinery/postgres: storage rejected put_runs: Object of type date is not JSON serializable"
-    )
     assert await storage.get_run("a", "r1") is None
+
+
+async def test_an_error_that_is_not_the_database_s_reaches_the_caller_as_itself(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(conn: object) -> list[str]:
+        raise KeyError("version")
+
+    monkeypatch.setattr("rfnry_engine.refinery.postgres.migrations.problems", broken)
+    with pytest.raises(KeyError, match="version"):
+        await storage.check()
 
 
 async def coded(**codec: Any) -> Any:
