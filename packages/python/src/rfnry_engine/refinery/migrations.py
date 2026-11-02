@@ -1,5 +1,6 @@
 import json
 import re
+import sys
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, NamedTuple
 
@@ -380,16 +381,25 @@ async def apply(
     return plan
 
 
+def refused(exc: Exception) -> bool:
+    if isinstance(exc, OSError):
+        return True
+    asyncpg = sys.modules.get("asyncpg")
+    return asyncpg is not None and isinstance(
+        exc, (asyncpg.PostgresError, asyncpg.InterfaceError, asyncpg.InternalClientError)
+    )
+
+
 async def _execute(conn: Any, statement: str | Call) -> None:
-    if isinstance(statement, Call):
-        try:
-            await statement.run(conn)
-        except Exception as exc:
-            raise StorageError(f"refinery/migrations: {statement.name} failed: {exc}") from exc
-        return
     try:
-        await conn.execute(statement)
+        if isinstance(statement, Call):
+            await statement.run(conn)
+        else:
+            await conn.execute(statement)
     except Exception as exc:
+        if not refused(exc):
+            raise
+        name = statement.name if isinstance(statement, Call) else statement.split("\n")[0]
         raise StorageError(
-            f"refinery/migrations: {statement.split(chr(10))[0]} failed: {exc}"
+            f"refinery/migrations: {name} failed: {str(exc) or type(exc).__name__}"
         ) from exc

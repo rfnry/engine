@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import UTC, datetime
 from functools import partial
@@ -216,6 +217,51 @@ async def test_a_failing_step_leaves_the_schema_as_it_was(
             await migrations.apply(conn, migrations.plan_upgrade)
         assert await conn.fetchval("SELECT max(version) FROM engine_migrations") == NOW
     assert "engine_probe" not in await tables(pool, name)
+
+
+async def test_an_error_of_a_step_s_own_code_reaches_the_caller_as_itself(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name, pool = await created(schemas)
+
+    async def defect(conn: Any) -> None:
+        raise KeyError("tags")
+
+    broken = Migration(
+        NEXT,
+        "broken",
+        ("CREATE TABLE engine_probe (n INTEGER)", migrations.Call("fill engine_probe", defect)),
+    )
+    probing(monkeypatch, broken)
+    async with pool.acquire() as conn:
+        with pytest.raises(KeyError, match="tags"):
+            await migrations.apply(conn, migrations.plan_upgrade)
+        assert await conn.fetchval("SELECT max(version) FROM engine_migrations") == NOW
+    assert "engine_probe" not in await tables(pool, name)
+
+
+async def test_a_step_that_times_out_raises_storage_error_naming_the_timeout(
+    schemas: Schemas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name, pool = await created(schemas)
+
+    async def slow(conn: Any) -> None:
+        await conn.execute("SELECT pg_sleep(5)", timeout=0.2)
+
+    waiting = Migration(
+        NEXT,
+        "waiting",
+        ("CREATE TABLE engine_probe (n INTEGER)", migrations.Call("wait on the database", slow)),
+    )
+    probing(monkeypatch, waiting)
+    async with pool.acquire() as conn:
+        with pytest.raises(
+            StorageError, match="^refinery/migrations: wait on the database failed: TimeoutError$"
+        ) as raised:
+            await asyncio.wait_for(migrations.apply(conn, migrations.plan_upgrade), 10)
+        assert await conn.fetchval("SELECT max(version) FROM engine_migrations") == NOW
+    assert "engine_probe" not in await tables(pool, name)
+    assert isinstance(raised.value.__cause__, TimeoutError)
 
 
 async def test_a_plan_the_schema_has_moved_past_is_refused(

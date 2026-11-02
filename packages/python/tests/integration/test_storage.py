@@ -1,9 +1,12 @@
 import asyncio
 import json
 import shutil
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
 import pytest
@@ -986,6 +989,72 @@ async def test_an_error_that_is_not_the_database_s_reaches_the_caller_as_itself(
     monkeypatch.setattr("rfnry_engine.refinery.postgres.migrations.problems", broken)
     with pytest.raises(KeyError, match="version"):
         await storage.check()
+
+
+async def test_a_connection_the_server_refuses_raises_storage_error() -> None:
+    parts = urlsplit(URL)
+    refused = urlunsplit(parts._replace(netloc=f"{parts.username}:{parts.password}@127.0.0.1:1"))
+    pool = await asyncpg.create_pool(refused, min_size=0, max_size=1)
+    try:
+        with pytest.raises(
+            StorageError, match="^refinery/postgres: storage rejected get_run: "
+        ) as raised:
+            await asyncio.wait_for(PostgresStorage(pool).get_run("a", "r1"), 10)
+    finally:
+        await asyncio.wait_for(pool.close(), 5)
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+async def test_a_call_past_the_pool_s_command_timeout_raises_storage_error_naming_the_timeout(
+    pool: Any, storage: Storage
+) -> None:
+    timed = await asyncpg.create_pool(
+        URL, min_size=1, max_size=1, command_timeout=0.3, server_settings={"search_path": SCHEMA}
+    )
+    try:
+        async with pool.acquire() as holder, holder.transaction():
+            await holder.execute("LOCK TABLE engine_runs IN ACCESS EXCLUSIVE MODE")
+            with pytest.raises(
+                StorageError, match="^refinery/postgres: storage rejected get_run: TimeoutError$"
+            ) as raised:
+                await asyncio.wait_for(PostgresStorage(timed).get_run("a", "r1"), 10)
+    finally:
+        await asyncio.wait_for(timed.close(), 5)
+    assert isinstance(raised.value.__cause__, TimeoutError)
+
+
+async def test_a_closed_pool_raises_storage_error() -> None:
+    closed = await asyncpg.create_pool(
+        URL, min_size=1, max_size=1, server_settings={"search_path": SCHEMA}
+    )
+    await asyncio.wait_for(closed.close(), 5)
+    with pytest.raises(
+        StorageError, match="^refinery/postgres: storage rejected get_run: "
+    ) as raised:
+        await asyncio.wait_for(PostgresStorage(closed).get_run("a", "r1"), 10)
+    assert isinstance(raised.value.__cause__, asyncpg.InterfaceError)
+
+
+class Outdated:
+    async def fetchrow(self, *args: Any) -> Any:
+        raise asyncpg.exceptions.OutdatedSchemaCacheError(
+            "cached statement plan is invalid due to a database schema or configuration change"
+        )
+
+
+class OutdatedPool:
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[Outdated]:
+        yield Outdated()
+
+
+async def test_a_driver_error_of_asyncpg_s_own_raises_storage_error() -> None:
+    with pytest.raises(
+        StorageError,
+        match="^refinery/postgres: storage rejected get_run: cached statement plan is invalid",
+    ) as raised:
+        await PostgresStorage(OutdatedPool()).get_run("a", "r1")
+    assert isinstance(raised.value.__cause__, asyncpg.exceptions.InternalClientError)
 
 
 async def coded(**codec: Any) -> Any:

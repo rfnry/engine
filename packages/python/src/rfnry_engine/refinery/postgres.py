@@ -94,21 +94,6 @@ def _tree(
     return sql, params
 
 
-def _refused(exc: Exception) -> bool:
-    import asyncpg
-
-    return isinstance(
-        exc,
-        (
-            asyncpg.PostgresError,
-            asyncpg.InterfaceError,
-            asyncpg.exceptions.InternalClientError,
-            OSError,
-            TimeoutError,
-        ),
-    )
-
-
 class PostgresStorage:
     def __init__(self, pool: Any) -> None:
         self._pool = pool
@@ -117,12 +102,12 @@ class PostgresStorage:
     async def _guard(self, operation: str) -> AsyncIterator[None]:
         try:
             yield
-        except StorageError:
-            raise
         except Exception as exc:
-            if not _refused(exc):
+            if not migrations.refused(exc):
                 raise
-            raise StorageError(f"refinery/postgres: storage rejected {operation}: {exc}") from exc
+            raise StorageError(
+                f"refinery/postgres: storage rejected {operation}: {str(exc) or type(exc).__name__}"
+            ) from exc
 
     async def check(self) -> None:
         async with self._guard("check"), self._pool.acquire() as conn:

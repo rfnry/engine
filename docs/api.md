@@ -1472,7 +1472,7 @@ Nesting went deeper than `max_depth`. Through `Delegate` it reaches the model as
 class StorageError(EngineException): ...
 ```
 
-The storage refused: the database failed, or a row's scope is not the scope of the call. `PostgresStorage` raises it for an error of the database or the driver (asyncpg's), of the connection (`OSError`) or of a timeout; any other error, such as a row body that is not JSON, reaches the caller as itself.
+The storage refused: the database failed, or a row's scope is not the scope of the call. `PostgresStorage`, and a step the `rfnry-engine` command runs, raise it for an error of the database or the driver (asyncpg's), of the connection (`OSError`) or of a timeout (`TimeoutError`, an `OSError`), its message ending in the error's text or, when the error has none, its type's name (`refinery/postgres: storage rejected get_run: TimeoutError`); any other error, such as a row body that is not JSON or a defect in a step's own code, reaches the caller as itself.
 
 ### `WorkerError`
 
