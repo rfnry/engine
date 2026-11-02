@@ -123,23 +123,31 @@ async def test_a_coder_calls_a_tool_from_its_script(adapters: Any, tmp_path: Pat
 async def test_reasoning_goes_back_only_where_it_was_given(adapters: Any) -> None:
     async with Engine(FIXTURES, models={"strong": adapters.generation()}) as engine:
         today, tomorrow = "Today is 2026-10-11.", "Today is 2026-10-12."
-        first = await engine.run(
-            "support",
-            "live",
+
+        async def reasoned(text: str, **given: Any) -> Generation:
+            runs: list[Generation] = []
+            while len(runs) < 3 and not any(
+                m.reasoning for m in (runs[-1].added if runs else []) if m.role == "assistant"
+            ):
+                run = await engine.run("support", "live", text, **given)
+                assert isinstance(run, Generation)
+                runs.append(run)
+            return runs[-1]
+
+        first = await reasoned(
             "I was charged twice for order A-1. Read the refund rule and tell me what is owed.",
             context=today,
         )
-        assert isinstance(first, Generation)
         assert any(m.reasoning for m in first.conversation if m.role == "assistant"), (
-            "the live model returned no reasoning in the first run; the check would prove nothing"
+            "the live model returned no reasoning in three first runs; the check would prove nothing"
         )
-        same = await engine.run("support", "live", AGAIN, history=first.conversation, context=today)
+        same = await reasoned(AGAIN, history=first.conversation, context=today)
         moved = await engine.run(
             "support", "live", AGAIN, history=first.conversation, context=tomorrow
         )
         assert isinstance(same, Generation) and isinstance(moved, Generation)
         assert any(m.reasoning for m in same.added if m.role == "assistant"), (
-            "the live model returned no reasoning in the second run; the cut check would prove nothing"
+            "the live model returned no reasoning in three second runs; the cut check would prove nothing"
         )
         conversation = [*first.conversation, *same.added]
         cut = await engine.run(
