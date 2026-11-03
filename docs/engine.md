@@ -2666,6 +2666,16 @@ rfnry-engine check --schema engine            # exits 0 when the schema fits thi
 Take a snapshot and stop the app instances running the old version first: `upgrade` reminds you,
 asks before it runs unless `--yes`, and runs every pending step in one transaction under a lock.
 
+Every run and label a released version recorded reads back in this one: the upgrade to schema
+version 3 rewrites each stored body in the shape this version records, whatever release wrote it —
+a generation run from before 0.1.4 gets its `sent` in place of the `messages` it held, a key added
+since, such as a step's `by` or a run's `settings`, its value for nothing, and a run's `call` the
+tags of the run that made it — so `refinery.run`, `export` and `label` read every row, and a body
+already in this shape is not touched. A body no release recorded — one written by hand, or cut
+short — stops the upgrade before anything changes, naming it: `refinery/migrations: run 'r9' of
+scope 'acme' holds a body no release of rfnry-engine recorded (KeyError: 'messages'); delete it
+or restore its body, then upgrade again`. The rewrite reads every row once, in pages of a thousand.
+
 Tables made by `initialize()` in rfnry-engine 0.1.4 or earlier are adopted where they are:
 `rfnry-engine upgrade --schema <their schema>` records them, and gives a table from before 0.1.4 its
 `tags` column and the indexes it lacked. It fills `tags` again from each recorded run's own tags, in

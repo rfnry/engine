@@ -2,6 +2,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from functools import partial
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
@@ -9,12 +10,17 @@ from uuid import uuid4
 import asyncpg
 import pytest
 from database import URL, Schemas, admin, quoted
+from unit.fakes import Fixed, MemoryBucket, Scripted, generation_record
 
+from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError, StorageError
+from rfnry_engine.models import CheckAnswer, Message, Reply, ScoreAnswer, ToolCall
+from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery import migrations
+from rfnry_engine.refinery.labels import Label, Review
 from rfnry_engine.refinery.migrations import Migration, Plan
-from rfnry_engine.refinery.postgres import PostgresStorage
-from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.postgres import PostgresStorage, stored_tags
+from rfnry_engine.refinery.refinery import Refinery, flatten, label_of, read_back
 from rfnry_engine.refinery.storage import RunRow
 
 BEFORE_TAGS = [
@@ -68,22 +74,19 @@ async def initialized(schemas: Schemas, ddl: list[str] = WITH_TAGS) -> tuple[str
 
 
 def run(run_id: str, tags: dict[str, str] | None = None, reply: str = "") -> RunRow:
-    body: dict[str, Any] = {"reply": reply or run_id}
-    if tags is not None:
-        body["tags"] = tags
-    return RunRow(
-        scope="acme",
-        run_id=run_id,
-        parent_run_id=None,
-        agent="lead",
-        kind="generation",
-        task=None,
-        at=AT,
-        recorded=AT,
-        duration_ms=1,
-        model="m",
-        body=body,
-    )
+    record = generation_record(agent="lead", reply=reply or run_id, run_id=run_id)
+    [row] = flatten(record.model_copy(update={"tags": tags or {}, "at": AT}), AT)
+    return row
+
+
+APPROVED = Label(
+    label_id="l1",
+    run_id="r1",
+    scope="acme",
+    at=AT,
+    source="human",
+    review=Review(stance="approval"),
+).model_dump(mode="json")
 
 
 HOSTILE = run("r3", {"customer": "c-퀴"}, reply="tool said a\x00b \udc80")
@@ -104,8 +107,9 @@ async def written_before(pool: Any, tagged: bool) -> None:
             await conn.execute(f"INSERT INTO engine_runs ({columns}) VALUES ({values})", *args)
         await conn.execute(
             "INSERT INTO engine_labels (scope, label_id, run_id, source, at, body) "
-            "VALUES ('acme', 'l1', 'r1', 'human', $1, '{\"stance\": \"approval\"}')",
+            "VALUES ('acme', 'l1', 'r1', 'human', $1, $2::text::json)",
             AT,
+            json.dumps(APPROVED),
         )
 
 
@@ -576,3 +580,156 @@ async def test_check_names_the_grants_a_role_lacks(schemas: Schemas) -> None:
     finally:
         await admin(f"DROP OWNED BY {role}")
         await admin(f"DROP ROLE {role}")
+
+
+ROWS = Path(__file__).parents[1] / "fixtures" / "rows"
+AGENTS = Path(__file__).parents[1] / "fixtures" / "agents"
+RELEASES = ["0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.1.4", "0.1.5", "0.1.6", "0.1.7"]
+RUN_COLUMNS = (
+    "scope, run_id, parent_run_id, agent, kind, task, at, recorded, duration_ms, model, body"
+)
+
+
+async def released(schemas: Schemas, version: str) -> tuple[Any, dict[str, Any]]:
+    held = json.loads((ROWS / f"{version}.json").read_text(encoding="utf-8"))
+    if version >= "0.1.5":
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:2])
+            patched.setattr(migrations, "LATEST", 2)
+            _, pool = await created(schemas)
+    else:
+        _, pool = await initialized(schemas, WITH_TAGS if version == "0.1.4" else BEFORE_TAGS)
+    tagged = version >= "0.1.4"
+    async with pool.acquire() as conn:
+        for row in held["engine_runs"]:
+            columns, values = (
+                RUN_COLUMNS,
+                "$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text::json",
+            )
+            args = [
+                row["scope"],
+                row["run_id"],
+                row["parent_run_id"],
+                row["agent"],
+                row["kind"],
+                row["task"],
+                datetime.fromisoformat(row["at"]),
+                datetime.fromisoformat(row["recorded"]),
+                row["duration_ms"],
+                row["model"],
+                json.dumps(row["body"]),
+            ]
+            if tagged:
+                columns, values = columns + ", tags", values + ", $12::text::jsonb"
+                args.append(stored_tags(row["body"]))
+            await conn.execute(f"INSERT INTO engine_runs ({columns}) VALUES ({values})", *args)
+        for label in held["engine_labels"]:
+            await conn.execute(
+                "INSERT INTO engine_labels (scope, label_id, run_id, source, at, body) "
+                "VALUES ($1, $2, $3, $4, $5, $6::text::json)",
+                label["scope"],
+                label["label_id"],
+                label["run_id"],
+                label["source"],
+                datetime.fromisoformat(label["at"]),
+                json.dumps(label["body"]),
+            )
+    return pool, held
+
+
+def recorded_by(held: dict[str, Any], agent: str) -> dict[str, Any]:
+    found: dict[str, Any] = next(row for row in held["engine_runs"] if row["agent"] == agent)
+    return found
+
+
+@pytest.mark.parametrize("version", RELEASES)
+async def test_upgrade_brings_every_run_and_label_a_release_recorded_to_this_version_s_shape(
+    schemas: Schemas, version: str
+) -> None:
+    pool, held = await released(schemas, version)
+    async with pool.acquire() as conn:
+        await migrations.apply(conn, migrations.plan_upgrade)
+    storage = PostgresStorage(pool)
+    refinery = Refinery(storage)
+    await storage.check()
+    rows = await storage.runs("acme", limit=None)
+    assert sorted(row.run_id for row in rows) == sorted(
+        row["run_id"] for row in held["engine_runs"]
+    )
+    for row in rows:
+        assert row.body == flatten(read_back(row, {}), row.recorded)[0].body
+    [label] = await storage.labels("acme")
+    assert label.body == label_of(label).model_dump(mode="json")
+    desk, helper, triage = (recorded_by(held, agent) for agent in ("desk", "helper", "triage"))
+    lead = await refinery.run("acme", desk["run_id"])
+    assert isinstance(lead, Generation)
+    body = desk["body"]
+    sent = body["messages"] if "messages" in body else body["conversation"][: body["sent"]]
+    assert lead.messages == [Message.model_validate(message) for message in sent]
+    assert lead.conversation == [Message.model_validate(m) for m in body["conversation"]]
+    assert [step.by for step in lead.steps] == [None, None]
+    [child] = lead.children
+    tagged = None if child.call is None else dict(child.call.tags)
+    assert tagged == (None if "call" not in helper["body"] else {"ticket": "T-1"})
+    assert isinstance(await refinery.run("acme", triage["run_id"]), Decision)
+    exported = await refinery.export("acme", MemoryBucket(), holdout_percent=0)
+    assert exported.rows == {"generation": 2, "preference": 1, "decision": 1}
+    teaching = Reply(
+        tool_calls=[
+            ToolCall(
+                id="t1",
+                name="Output",
+                args={"answers": {"urgent": True}, "rationale": "An outage is urgent."},
+            )
+        ],
+        stop_reason="tool_use",
+    )
+    judging = Fixed(
+        {
+            "grounded": CheckAnswer(probability=0.9),
+            "done": ScoreAnswer(score=2, probabilities=[0.0, 0.1, 0.9]),
+        }
+    )
+    async with Engine(AGENTS, models={"strong": Scripted(teaching), "judge": judging}) as engine:
+        labeled = await refinery.label("acme", engine, judge="judge", teacher="teacher")
+    assert (labeled.judged, labeled.taught, labeled.errors) == (2, 1, {})
+
+
+async def test_a_body_already_in_this_version_s_shape_is_left_as_it_is(schemas: Schemas) -> None:
+    pool, held = await released(schemas, "0.1.7")
+    written = "SELECT run_id, xmin::text AS x FROM engine_runs ORDER BY run_id"
+    async with pool.acquire() as conn:
+        before = {row["run_id"]: row["x"] for row in await conn.fetch(written)}
+        await migrations.apply(conn, migrations.plan_upgrade)
+        after = {row["run_id"]: row["x"] for row in await conn.fetch(written)}
+    unchanged = {run_id for run_id in before if before[run_id] == after[run_id]}
+    assert unchanged == {recorded_by(held, "desk")["run_id"], recorded_by(held, "triage")["run_id"]}
+
+
+@pytest.mark.parametrize("table", ["engine_runs", "engine_labels"])
+async def test_a_body_no_release_recorded_stops_the_upgrade_naming_it(
+    schemas: Schemas, table: str
+) -> None:
+    name, pool = await initialized(schemas, BEFORE_TAGS)
+    async with pool.acquire() as conn:
+        if table == "engine_runs":
+            await conn.execute(
+                f"INSERT INTO engine_runs ({RUN_COLUMNS}) VALUES "
+                "('acme', 'r9', NULL, 'lead', 'generation', NULL, $1, $1, 1, 'm', '{\"reply\": \"x\"}')",
+                AT,
+            )
+        else:
+            await conn.execute(
+                "INSERT INTO engine_labels (scope, label_id, run_id, source, at, body) "
+                "VALUES ('acme', 'l9', 'r1', 'human', $1, '{\"stance\": \"approval\"}')",
+                AT,
+            )
+        with pytest.raises(ConfigurationError) as caught:
+            await migrations.apply(conn, migrations.plan_upgrade)
+        assert await tables(pool, name) == TABLES
+    named = "run 'r9'" if table == "engine_runs" else "label 'l9'"
+    assert str(caught.value).startswith(
+        f"refinery/migrations: {named} of scope 'acme' holds a body no release of rfnry-engine "
+        "recorded ("
+    )
+    assert str(caught.value).endswith("; delete it or restore its body, then upgrade again")

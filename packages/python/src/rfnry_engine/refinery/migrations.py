@@ -65,6 +65,114 @@ async def _fill_tags(conn: Any) -> None:
         after = (rows[-1]["scope"], rows[-1]["run_id"])
 
 
+def _reason(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {(str(exc).splitlines() or [''])[0]}"
+
+
+_UNREAD = (AttributeError, KeyError, TypeError, ValueError, InputError)
+
+
+async def _calling_tags(conn: Any, calls: dict[str, set[str]]) -> dict[tuple[str, str], Any]:
+    found: dict[tuple[str, str], Any] = {}
+    for scope, run_ids in calls.items():
+        rows = await conn.fetch(
+            "SELECT run_id, (body -> 'tags')::text AS tags FROM engine_runs "
+            "WHERE scope = $1 AND run_id = ANY($2::text[])",
+            scope,
+            sorted(run_ids),
+        )
+        for row in rows:
+            found[(scope, row["run_id"])] = json.loads(row["tags"] or "null") or {}
+    return found
+
+
+def _untagged(body: dict[str, Any]) -> str | None:
+    call = body.get("call")
+    calling = call.get("run_id") if isinstance(call, dict) and "tags" not in call else None
+    return calling if isinstance(calling, str) else None
+
+
+async def _reshape_runs(conn: Any) -> None:
+    from rfnry_engine.refinery.refinery import reshaped
+    from rfnry_engine.refinery.storage import RunRow
+
+    after: tuple[str, str] = ("", "")
+    while True:
+        rows = await conn.fetch(
+            "SELECT scope, run_id, parent_run_id, agent, kind, task, at, recorded, duration_ms, "
+            "model, body::text AS body FROM engine_runs WHERE (scope, run_id) > ($1, $2) "
+            "ORDER BY scope, run_id LIMIT 1000",
+            *after,
+        )
+        if not rows:
+            return
+        bodies = [json.loads(row["body"]) for row in rows]
+        calls: dict[str, set[str]] = {}
+        for row, body in zip(rows, bodies, strict=True):
+            calling = _untagged(body) if isinstance(body, dict) else None
+            if calling is not None:
+                calls.setdefault(row["scope"], set()).add(calling)
+        tags = await _calling_tags(conn, calls)
+        changed: list[tuple[str, str, bytes]] = []
+        for row, body in zip(rows, bodies, strict=True):
+            try:
+                calling = _untagged(body)
+                held = body
+                if calling is not None:
+                    found = tags.get((row["scope"], calling), {})
+                    held = {**body, "call": {**body["call"], "tags": found}}
+                shaped = reshaped(RunRow(**{**dict(row), "body": held}))
+            except _UNREAD as exc:
+                raise ConfigurationError(
+                    f"refinery/migrations: run {row['run_id']!r} of scope {row['scope']!r} holds a "
+                    f"body no release of rfnry-engine recorded ({_reason(exc)}); delete it or "
+                    "restore its body, then upgrade again"
+                ) from exc
+            if shaped != body:
+                changed.append((row["scope"], row["run_id"], json.dumps(shaped).encode()))
+        if changed:
+            await conn.executemany(
+                "UPDATE engine_runs SET body = convert_from($3::bytea, 'UTF8')::json "
+                "WHERE scope = $1 AND run_id = $2",
+                changed,
+            )
+        after = (rows[-1]["scope"], rows[-1]["run_id"])
+
+
+async def _reshape_labels(conn: Any) -> None:
+    from rfnry_engine.refinery.labels import Label
+
+    after: tuple[str, str] = ("", "")
+    while True:
+        rows = await conn.fetch(
+            "SELECT scope, label_id, body::text AS body FROM engine_labels "
+            "WHERE (scope, label_id) > ($1, $2) ORDER BY scope, label_id LIMIT 1000",
+            *after,
+        )
+        if not rows:
+            return
+        changed: list[tuple[str, str, bytes]] = []
+        for row in rows:
+            body = json.loads(row["body"])
+            try:
+                shaped = Label.model_validate(body).model_dump(mode="json")
+            except _UNREAD as exc:
+                raise ConfigurationError(
+                    f"refinery/migrations: label {row['label_id']!r} of scope {row['scope']!r} "
+                    f"holds a body no release of rfnry-engine recorded ({_reason(exc)}); delete it "
+                    "or restore its body, then upgrade again"
+                ) from exc
+            if shaped != body:
+                changed.append((row["scope"], row["label_id"], json.dumps(shaped).encode()))
+        if changed:
+            await conn.executemany(
+                "UPDATE engine_labels SET body = convert_from($3::bytea, 'UTF8')::json "
+                "WHERE scope = $1 AND label_id = $2",
+                changed,
+            )
+        after = (rows[-1]["scope"], rows[-1]["label_id"])
+
+
 _TAGS: tuple[str | Call, ...] = (
     "ALTER TABLE engine_runs ADD COLUMN IF NOT EXISTS tags JSONB",
     Call("fill engine_runs.tags from each run's body, computed by rfnry-engine", _fill_tags),
@@ -74,7 +182,17 @@ _TAGS: tuple[str | Call, ...] = (
 )
 
 
-MIGRATIONS = [Migration(1, "create", _CREATE), Migration(2, "tags", _TAGS)]
+_RESHAPE: tuple[str | Call, ...] = (
+    Call("rewrite each engine_runs body in the shape this rfnry-engine records", _reshape_runs),
+    Call("rewrite each engine_labels body in the shape this rfnry-engine records", _reshape_labels),
+)
+
+
+MIGRATIONS = [
+    Migration(1, "create", _CREATE),
+    Migration(2, "tags", _TAGS),
+    Migration(3, "reshape", _RESHAPE),
+]
 
 
 LATEST = MIGRATIONS[-1].version

@@ -110,6 +110,13 @@ def read_back(row: RunRow, under: dict[str, list[RunRow]]) -> Run:
     return Decision.model_validate(body, context=READ_BACK)
 
 
+def reshaped(row: RunRow) -> dict[str, Any]:
+    body: dict[str, Any] = _copied(row.body)
+    if row.kind == "generation" and "sent" not in body:
+        body["sent"] = len(body.pop("messages"))
+    return flatten(read_back(row.model_copy(update={"body": body}), {}), row.recorded)[0].body
+
+
 def printed(row: RunRow) -> Fingerprint:
     return Fingerprint.model_validate(row.body["fingerprint"])
 

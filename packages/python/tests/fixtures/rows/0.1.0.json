@@ -1,0 +1,755 @@
+{
+ "engine_labels": [
+  {
+   "at": "2026-10-01T12:05:00Z",
+   "body": {
+    "answers": null,
+    "at": "2026-10-01T12:05:00Z",
+    "label_id": "l1",
+    "outcome": null,
+    "review": {
+     "comment": null,
+     "correction": "A-1 shipped today.",
+     "stance": "objection"
+    },
+    "run_id": "ab2e9542dd34485593b67d54892dce69",
+    "scope": "acme",
+    "source": "human"
+   },
+   "label_id": "l1",
+   "run_id": "ab2e9542dd34485593b67d54892dce69",
+   "scope": "acme",
+   "source": "human"
+  }
+ ],
+ "engine_runs": [
+  {
+   "agent": "desk",
+   "at": "2026-11-03T19:42:46.811757Z",
+   "body": {
+    "agent": "desk",
+    "at": "2026-11-03T19:42:46.811757Z",
+    "calls": 3,
+    "children": [],
+    "context": null,
+    "conversation": [
+     {
+      "content": "earlier",
+      "is_error": false,
+      "prefix": null,
+      "reasoning": null,
+      "role": "user",
+      "tool_call_id": null,
+      "tool_calls": [],
+      "usage": null
+     },
+     {
+      "content": "noted",
+      "is_error": false,
+      "prefix": null,
+      "reasoning": null,
+      "role": "assistant",
+      "tool_call_id": null,
+      "tool_calls": [],
+      "usage": null
+     },
+     {
+      "content": "Where is A-1?",
+      "is_error": false,
+      "prefix": null,
+      "reasoning": null,
+      "role": "user",
+      "tool_call_id": null,
+      "tool_calls": [],
+      "usage": null
+     },
+     {
+      "content": "",
+      "is_error": false,
+      "prefix": "c01c5cf84f7d5821",
+      "reasoning": null,
+      "role": "assistant",
+      "tool_call_id": null,
+      "tool_calls": [
+       {
+        "args": {
+         "id": "A-1"
+        },
+        "id": "c1",
+        "name": "lookup"
+       }
+      ],
+      "usage": null
+     },
+     {
+      "content": "{\"order\": \"A-1\", \"status\": \"shipped\"}",
+      "is_error": false,
+      "prefix": null,
+      "reasoning": null,
+      "role": "tool",
+      "tool_call_id": "c1",
+      "tool_calls": [],
+      "usage": null
+     },
+     {
+      "content": "",
+      "is_error": false,
+      "prefix": "699b7c974db6682a",
+      "reasoning": null,
+      "role": "assistant",
+      "tool_call_id": null,
+      "tool_calls": [
+       {
+        "args": {
+         "agent": "helper",
+         "input": "help"
+        },
+        "id": "d1",
+        "name": "Delegate"
+       }
+      ],
+      "usage": null
+     },
+     {
+      "content": "helped",
+      "is_error": false,
+      "prefix": null,
+      "reasoning": null,
+      "role": "tool",
+      "tool_call_id": "d1",
+      "tool_calls": [],
+      "usage": null
+     },
+     {
+      "content": "done",
+      "is_error": false,
+      "prefix": "6bf8f6ea464ad704",
+      "reasoning": null,
+      "role": "assistant",
+      "tool_call_id": null,
+      "tool_calls": [],
+      "usage": {
+       "cache_creation": 0,
+       "cache_read": 0,
+       "input": 10,
+       "output": 2
+      }
+     }
+    ],
+    "duration_ms": 13,
+    "error": null,
+    "fingerprint": {
+     "agent": "7750b122f42ee1a6",
+     "questions": null,
+     "tools": "440524d183489d94"
+    },
+    "input": "Where is A-1?",
+    "kind": "generation",
+    "messages": [
+     {
+      "content": "earlier",
+      "is_error": false,
+      "prefix": null,
+      "reasoning": null,
+      "role": "user",
+      "tool_call_id": null,
+      "tool_calls": [],
+      "usage": null
+     },
+     {
+      "content": "noted",
+      "is_error": false,
+      "prefix": null,
+      "reasoning": null,
+      "role": "assistant",
+      "tool_call_id": null,
+      "tool_calls": [],
+      "usage": null
+     },
+     {
+      "content": "Where is A-1?",
+      "is_error": false,
+      "prefix": null,
+      "reasoning": null,
+      "role": "user",
+      "tool_call_id": null,
+      "tool_calls": [],
+      "usage": null
+     }
+    ],
+    "model": null,
+    "parent_run_id": null,
+    "preload": [],
+    "reply": "done",
+    "run_id": "ab2e9542dd34485593b67d54892dce69",
+    "scope": "acme",
+    "start": 0,
+    "steps": [
+     {
+      "approved": null,
+      "args": {
+       "id": "A-1"
+      },
+      "at": "2026-11-03T19:42:46.819735Z",
+      "child_run_id": null,
+      "duration_ms": 0,
+      "is_error": false,
+      "result": "{\"order\": \"A-1\", \"status\": \"shipped\"}",
+      "stopped": false,
+      "tool": "lookup"
+     },
+     {
+      "approved": null,
+      "args": {
+       "agent": "helper",
+       "input": "help"
+      },
+      "at": "2026-11-03T19:42:46.824981Z",
+      "child_run_id": "e8ea5594633c4eba8841a476d6b9b29f",
+      "duration_ms": 4,
+      "is_error": false,
+      "result": "helped",
+      "stopped": false,
+      "tool": "Delegate"
+     }
+    ],
+    "stop_reason": "end_turn",
+    "stopped": null,
+    "system": "<<<AGENT>>>\nYou are desk.\n\n<<<TOOLS>>>\n- Read: Read a text file by its path in the FILES map. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.\n- Grep: Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder of the FILES map; without it, your own folder is searched.\n- Glob: Find files by glob pattern, e.g. '**/*.md'. Paths are those of the FILES map.\n- LS: List a folder by its path in the FILES map; without a path, your own folder.\n- Load: Load a file of the FILES map as it is, such as an image, a PDF or audio, so you see or hear it yourself.\n- Delegate: Hand an input to another agent and get its reply.\n- lookup: Look an order up\n\n<<<AGENTS>>>\n- helper: Helper",
+    "tags": {
+     "ticket": "T-1"
+    },
+    "task": null,
+    "tools": [
+     {
+      "description": "Read a text file by its path in the FILES map. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.",
+      "input_schema": {
+       "properties": {
+        "limit": {
+         "anyOf": [
+          {
+           "minimum": 1,
+           "type": "integer"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null,
+         "title": "Limit"
+        },
+        "offset": {
+         "default": 0,
+         "minimum": 0,
+         "title": "Offset",
+         "type": "integer"
+        },
+        "path": {
+         "title": "Path",
+         "type": "string"
+        }
+       },
+       "required": [
+        "path"
+       ],
+       "title": "ReadArgs",
+       "type": "object"
+      },
+      "name": "Read"
+     },
+     {
+      "description": "Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder of the FILES map; without it, your own folder is searched.",
+      "input_schema": {
+       "properties": {
+        "case_insensitive": {
+         "default": false,
+         "title": "Case Insensitive",
+         "type": "boolean"
+        },
+        "glob": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null,
+         "title": "Glob"
+        },
+        "head_limit": {
+         "default": 250,
+         "minimum": 1,
+         "title": "Head Limit",
+         "type": "integer"
+        },
+        "mode": {
+         "default": "files",
+         "enum": [
+          "files",
+          "content"
+         ],
+         "title": "Mode",
+         "type": "string"
+        },
+        "path": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null,
+         "title": "Path"
+        },
+        "pattern": {
+         "title": "Pattern",
+         "type": "string"
+        }
+       },
+       "required": [
+        "pattern"
+       ],
+       "title": "GrepArgs",
+       "type": "object"
+      },
+      "name": "Grep"
+     },
+     {
+      "description": "Find files by glob pattern, e.g. '**/*.md'. Paths are those of the FILES map.",
+      "input_schema": {
+       "properties": {
+        "pattern": {
+         "title": "Pattern",
+         "type": "string"
+        }
+       },
+       "required": [
+        "pattern"
+       ],
+       "title": "GlobArgs",
+       "type": "object"
+      },
+      "name": "Glob"
+     },
+     {
+      "description": "List a folder by its path in the FILES map; without a path, your own folder.",
+      "input_schema": {
+       "properties": {
+        "limit": {
+         "default": 250,
+         "minimum": 1,
+         "title": "Limit",
+         "type": "integer"
+        },
+        "path": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null,
+         "title": "Path"
+        }
+       },
+       "title": "LSArgs",
+       "type": "object"
+      },
+      "name": "LS"
+     },
+     {
+      "description": "Load a file of the FILES map as it is, such as an image, a PDF or audio, so you see or hear it yourself.",
+      "input_schema": {
+       "properties": {
+        "path": {
+         "title": "Path",
+         "type": "string"
+        }
+       },
+       "required": [
+        "path"
+       ],
+       "title": "LoadArgs",
+       "type": "object"
+      },
+      "name": "Load"
+     },
+     {
+      "description": "Hand an input to another agent and get its reply.\n- helper: Helper",
+      "input_schema": {
+       "properties": {
+        "agent": {
+         "enum": [
+          "helper"
+         ],
+         "type": "string"
+        },
+        "input": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "agent",
+        "input"
+       ],
+       "type": "object"
+      },
+      "name": "Delegate"
+     },
+     {
+      "description": "Look an order up",
+      "input_schema": {
+       "properties": {
+        "id": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "name": "lookup"
+     }
+    ],
+    "usage": {
+     "cache_creation": 0,
+     "cache_read": 0,
+     "input": 10,
+     "output": 2
+    }
+   },
+   "duration_ms": 13,
+   "kind": "generation",
+   "model": null,
+   "parent_run_id": null,
+   "recorded": "2026-10-01T12:00:00Z",
+   "run_id": "ab2e9542dd34485593b67d54892dce69",
+   "scope": "acme",
+   "task": null
+  },
+  {
+   "agent": "helper",
+   "at": "2026-11-03T19:42:46.820583Z",
+   "body": {
+    "agent": "helper",
+    "at": "2026-11-03T19:42:46.820583Z",
+    "calls": 1,
+    "children": [],
+    "context": null,
+    "conversation": [
+     {
+      "content": "help",
+      "is_error": false,
+      "prefix": null,
+      "reasoning": null,
+      "role": "user",
+      "tool_call_id": null,
+      "tool_calls": [],
+      "usage": null
+     },
+     {
+      "content": "helped",
+      "is_error": false,
+      "prefix": "30d4666eafcb0fcf",
+      "reasoning": null,
+      "role": "assistant",
+      "tool_call_id": null,
+      "tool_calls": [],
+      "usage": {
+       "cache_creation": 0,
+       "cache_read": 0,
+       "input": 5,
+       "output": 1
+      }
+     }
+    ],
+    "duration_ms": 4,
+    "error": null,
+    "fingerprint": {
+     "agent": "851f101c8ed13434",
+     "questions": null,
+     "tools": "bf9483e841b995d4"
+    },
+    "input": "help",
+    "kind": "generation",
+    "messages": [
+     {
+      "content": "help",
+      "is_error": false,
+      "prefix": null,
+      "reasoning": null,
+      "role": "user",
+      "tool_call_id": null,
+      "tool_calls": [],
+      "usage": null
+     }
+    ],
+    "model": null,
+    "parent_run_id": "ab2e9542dd34485593b67d54892dce69",
+    "preload": [],
+    "reply": "helped",
+    "run_id": "e8ea5594633c4eba8841a476d6b9b29f",
+    "scope": "acme",
+    "start": 0,
+    "steps": [],
+    "stop_reason": "end_turn",
+    "stopped": null,
+    "system": "<<<AGENT>>>\nYou are helper.\n\n<<<TOOLS>>>\n- Read: Read a text file by its path in the FILES map. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.\n- Grep: Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder of the FILES map; without it, your own folder is searched.\n- Glob: Find files by glob pattern, e.g. '**/*.md'. Paths are those of the FILES map.\n- LS: List a folder by its path in the FILES map; without a path, your own folder.\n- Load: Load a file of the FILES map as it is, such as an image, a PDF or audio, so you see or hear it yourself.\n- lookup: Look an order up",
+    "tags": {
+     "ticket": "T-1"
+    },
+    "task": null,
+    "tools": [
+     {
+      "description": "Read a text file by its path in the FILES map. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.",
+      "input_schema": {
+       "properties": {
+        "limit": {
+         "anyOf": [
+          {
+           "minimum": 1,
+           "type": "integer"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null,
+         "title": "Limit"
+        },
+        "offset": {
+         "default": 0,
+         "minimum": 0,
+         "title": "Offset",
+         "type": "integer"
+        },
+        "path": {
+         "title": "Path",
+         "type": "string"
+        }
+       },
+       "required": [
+        "path"
+       ],
+       "title": "ReadArgs",
+       "type": "object"
+      },
+      "name": "Read"
+     },
+     {
+      "description": "Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder of the FILES map; without it, your own folder is searched.",
+      "input_schema": {
+       "properties": {
+        "case_insensitive": {
+         "default": false,
+         "title": "Case Insensitive",
+         "type": "boolean"
+        },
+        "glob": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null,
+         "title": "Glob"
+        },
+        "head_limit": {
+         "default": 250,
+         "minimum": 1,
+         "title": "Head Limit",
+         "type": "integer"
+        },
+        "mode": {
+         "default": "files",
+         "enum": [
+          "files",
+          "content"
+         ],
+         "title": "Mode",
+         "type": "string"
+        },
+        "path": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null,
+         "title": "Path"
+        },
+        "pattern": {
+         "title": "Pattern",
+         "type": "string"
+        }
+       },
+       "required": [
+        "pattern"
+       ],
+       "title": "GrepArgs",
+       "type": "object"
+      },
+      "name": "Grep"
+     },
+     {
+      "description": "Find files by glob pattern, e.g. '**/*.md'. Paths are those of the FILES map.",
+      "input_schema": {
+       "properties": {
+        "pattern": {
+         "title": "Pattern",
+         "type": "string"
+        }
+       },
+       "required": [
+        "pattern"
+       ],
+       "title": "GlobArgs",
+       "type": "object"
+      },
+      "name": "Glob"
+     },
+     {
+      "description": "List a folder by its path in the FILES map; without a path, your own folder.",
+      "input_schema": {
+       "properties": {
+        "limit": {
+         "default": 250,
+         "minimum": 1,
+         "title": "Limit",
+         "type": "integer"
+        },
+        "path": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "default": null,
+         "title": "Path"
+        }
+       },
+       "title": "LSArgs",
+       "type": "object"
+      },
+      "name": "LS"
+     },
+     {
+      "description": "Load a file of the FILES map as it is, such as an image, a PDF or audio, so you see or hear it yourself.",
+      "input_schema": {
+       "properties": {
+        "path": {
+         "title": "Path",
+         "type": "string"
+        }
+       },
+       "required": [
+        "path"
+       ],
+       "title": "LoadArgs",
+       "type": "object"
+      },
+      "name": "Load"
+     },
+     {
+      "description": "Look an order up",
+      "input_schema": {
+       "properties": {
+        "id": {
+         "type": "string"
+        }
+       },
+       "type": "object"
+      },
+      "name": "lookup"
+     }
+    ],
+    "usage": {
+     "cache_creation": 0,
+     "cache_read": 0,
+     "input": 5,
+     "output": 1
+    }
+   },
+   "duration_ms": 4,
+   "kind": "generation",
+   "model": null,
+   "parent_run_id": "ab2e9542dd34485593b67d54892dce69",
+   "recorded": "2026-10-01T12:00:00Z",
+   "run_id": "e8ea5594633c4eba8841a476d6b9b29f",
+   "scope": "acme",
+   "task": null
+  },
+  {
+   "agent": "triage",
+   "at": "2026-11-03T19:42:46.825842Z",
+   "body": {
+    "agent": "triage",
+    "answers": {
+     "urgent": {
+      "confidence": 0.8,
+      "probability": 0.9,
+      "type": "check"
+     }
+    },
+    "at": "2026-11-03T19:42:46.825842Z",
+    "duration_ms": 0,
+    "error": null,
+    "fingerprint": {
+     "agent": "34309285480f72c1",
+     "questions": "20df337ba21ab806",
+     "tools": "4f53cda18c2baa0c"
+    },
+    "kind": "decision",
+    "model": null,
+    "parent_run_id": null,
+    "questions": {
+     "urgent": {
+      "instructions": "Is it urgent?",
+      "no": null,
+      "type": "check",
+      "yes": null
+     }
+    },
+    "routed_to": null,
+    "run_id": "ff923671e64c427eb0ea6ab1b74da240",
+    "runtime": [],
+    "scope": "acme",
+    "state": {
+     "message": "It is down"
+    },
+    "tags": {
+     "ticket": "T-1"
+    },
+    "task": null,
+    "usage": {
+     "cache_creation": 0,
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    }
+   },
+   "duration_ms": 0,
+   "kind": "decision",
+   "model": null,
+   "parent_run_id": null,
+   "recorded": "2026-10-01T12:00:00Z",
+   "run_id": "ff923671e64c427eb0ea6ab1b74da240",
+   "scope": "acme",
+   "task": null
+  }
+ ],
+ "written_by": "rfnry-engine 0.1.0"
+}
