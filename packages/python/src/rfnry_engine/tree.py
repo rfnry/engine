@@ -120,7 +120,7 @@ class AgentFront(BaseModel):
     def _tools_keep_each_once(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             raise ValueError(
-                "tree: it is empty; write tools: [] to keep none of the folder and file tools, or leave tools: out to keep them all"
+                "tree: it is empty; write tools: [] to keep none of the folder, file and run tools, or leave tools: out to keep them all"
             )
         for entry in value:
             if not entry.strip() or entry != entry.strip():
@@ -631,14 +631,18 @@ def _folder_tools(
     return tools
 
 
-def _kept(agent: str, front: AgentFront, tools: Collection[str]) -> list[str] | None:
+def _kept(agent: str, front: AgentFront) -> list[str] | None:
     if front.tools is None:
         return None
-    seen = sorted({*tools, *BUILTINS})
+    declared = {
+        HISTORY_TOOL,
+        *([DELEGATE_TOOL] if front.agents else []),
+        *(WORKSPACE_NAMES if front.workspace else []),
+    }
     for name in front.tools:
-        if name not in seen:
+        if name in declared:
             raise ConfigurationError(
-                f"tree: agent {agent!r} keeps {name!r} in tools:, which it does not see; its tools are {', '.join(seen)}"
+                f"tree: agent {agent!r} keeps {name!r} in tools:, which comes with its own declaration and stays whatever tools: lists; leave it out of tools:"
             )
     return list(front.tools)
 
@@ -746,7 +750,7 @@ def load_agent(
         agents=front.agents,
         route=front.route,
         questions=questions,
-        keep=_kept(agent, front, folder_tools),
+        keep=_kept(agent, front),
         tasks=tasks,
         task_bodies=task_bodies,
         fingerprint=folder_fingerprint(files, read),

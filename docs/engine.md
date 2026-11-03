@@ -2380,12 +2380,14 @@ an agent, at any depth below it or itself, or a folder inside another one named,
 `ConfigurationError`:
 `engine: workers names 'support/billing' inside 'support', which it names too; keep one`.
 
-Every tool an agent sees is on. `tools:` in its `AGENT.md` narrows them to the ones it lists —
-`tools: [lookup_order, Read]` keeps only these, `tools: []` none of them, leaving the agent only the
-tools that come with their own declarations, and an agent without `tools:` keeps every one — so an
-agent leaves out a tool it inherits by listing the ones it keeps. In the tree above, billing keeps
-`lookup_order` from `customer_support/`, its own `refund` and `Read`, leaving out `notify` and the
-other file tools:
+Every tool an agent gets is on: the tools of its folders, the file tools, and the tools of the run,
+given to its own run with `run(tools=)` or to the run that delegated or routed to it, below.
+`tools:` in its `AGENT.md` keeps exactly the ones it lists — `tools: [lookup_order, Read]` keeps
+only these, `tools: []` none of them, leaving the agent only the tools that come with their own
+declarations, and an agent without `tools:` keeps every one — so an agent leaves out a tool it
+inherits, from a folder above or from the run that delegated to it, by listing the ones it keeps.
+In the tree above, billing keeps `lookup_order` from `customer_support/`, its own `refund` and
+`Read`, leaving out `notify`, the other file tools and any tool a run would give it:
 
 ```markdown
 ---
@@ -2399,12 +2401,17 @@ Refund a duplicate charge with refund. Never promise a refund the rules do not a
 
 `Read Grep Glob LS Load` come with every generation agent, `Delegate` with `agents:`, a workspace's
 tools with `workspace: true`, `History` with a run whose `start=` is past the beginning of its
-history, and `Output` with `expect=`. A list narrows the folders' tools and those five file tools
-only: each of the others comes with its own declaration, or with the run, and stays as long as
-that does, so there is nothing else to leave out, and `Output` cannot be named in `tools:`. When
-the tree loads, a kept name that is neither a tool the agent sees nor a file tool is a
-`ConfigurationError` that names the ones it has — `tree: agent 'support' keeps 'refnd' in tools:,
-which it does not see; its tools are Glob, Grep, LS, Load, Read, refund`. A tool in a folder named
+history, and `Output` with `expect=`. A list keeps from the folders' tools, those five file tools
+and the run's tools: each of the others comes with its own declaration, or with the run, and stays
+as long as that does, so naming one in `tools:` is a `ConfigurationError` when the tree loads —
+`tree: agent 'support' keeps 'Delegate' in tools:, which comes with its own declaration and stays
+whatever tools: lists; leave it out of tools:` — and `Output` cannot be named in `tools:` either.
+Any other name loads, since it may name a tool a run will give, which the tree cannot know, and is
+checked when a run starts: a kept name that is neither a tool of the agent's folders, a file tool
+nor a tool of the run is a `ConfigurationError` before any model is called, naming the ones the run
+offers — `tools/engine_tools: agent 'support' keeps 'refnd' in tools:, which this run does not
+offer; its tools are Glob, Grep, LS, Load, Read, refund` — which the model of a run that delegated
+to it reads as the `Delegate` call's error, while a route raises it. A tool in a folder named
 like one the engine gives the agent is a `ConfigurationError` naming its file, and `History`'s name
 is taken on every run, so a tool named `History` is refused from the first.
 
@@ -2439,6 +2446,12 @@ the same name, since the run is nearer than the agent's own folder: that is how 
 folder tool that calls a real system, and how you swap in a version bound to a tenant's connection.
 Two tools of one run with one name are refused, and so is a run's tool named like one the engine
 gives the agent.
+
+A run's tools ride the runs it delegates and routes to, as its tags do, and each agent keeps of
+them what its own `tools:` lists. A lead given rfnry-memory's `MemoryTools` that delegates to a
+writer with `tools: [Read]` keeps the memory tools for itself, and the writer is offered `Read`
+alone; a writer without `tools:` gets the memory tools too, and one that needs one of them names
+it, `tools: [Read, memory_search]`.
 
 Every tool call inside a run has a deadline, `Engine(tool_timeout=30.0)` by default and `None` to
 turn it off. When it passes, the model gets the error
@@ -2494,7 +2507,8 @@ model — from a test, or from a loop of your own. `EngineTools` holds exactly w
 a run is offered: the file tools, `History`, the folder tools, whose calls go to their worker under
 `tool_timeout` with `call` holding the scope and the `tags` given to it, the workspace's,
 `Delegate` and the run's `tools`.
-`tools:` narrows only the folders' tools and those five file tools; the rest stay:
+`tools:` keeps of the folders' tools, those five file tools and the `tools` given only the ones it
+lists; the rest stay:
 
 ```python
 surface = EngineTools(engine, agent="support", scope="acme")
@@ -2802,7 +2816,8 @@ or a task (`frontmatter: unknown key 'route.min_confidance' in agents/frontdesk/
 frontmatter that is not valid YAML or a `description:` that is not a string in a file the map would
 show, a decision agent with `preload: true`, `workspace: true` or `tools:`, a generation agent with
 `questions/` or `route:`, a `tools:` with no list, a `tools:` entry that is blank, padded or listed
-twice, a `tools:` that names `Output` or keeps a tool the agent does not see, a tool's `.json`
+twice, a `tools:` that names `Output` or a tool that comes with its own declaration, a `tools:`
+name a run does not offer, when the run starts, a tool's `.json`
 without its `.py` or a script without its `.json`, a tool's JSON with an unknown key, no
 description, an `input_schema` that is not an object or a schema that does not compile, a script or
 helper that is not valid Python, imports the engine, the server's own code, a module relatively or a

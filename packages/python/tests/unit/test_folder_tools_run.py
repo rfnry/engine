@@ -403,10 +403,123 @@ async def test_an_allow_list_keeps_only_the_named_folder_and_file_tools(tmp_path
             start=1,
         ).names
     assert sorted(names) == sorted(
-        ["Read", "History", "lookup_order", "Shell", "Job", "Jobs", "Write", "Edit"]
-        + ["Delegate", "ping"]
+        ["Read", "History", "lookup_order", "Shell", "Job", "Jobs", "Write", "Edit", "Delegate"]
     )
     assert engine.agents["shop"].tools == ["lookup_order"]
+
+
+async def test_an_allow_list_keeps_only_the_named_run_tools(tmp_path: Path) -> None:
+    write(tmp_path / "shop/AGENT.md", agent_md("shop", extra="tools: [ping, lookup_order, Read]\n"))
+    tool(tmp_path / "shop/tools", "lookup_order")
+    given = Tools([Tool("ping", "Ping", body=pong), Tool("pong", "Pong", body=pong)])
+    llm = Scripted(calling(("ping", {})), text_reply("done"))
+    async with Engine(tmp_path, models={"strong": llm}) as engine:
+        run = await generated(engine, "shop", "acme", "x", tools=given)
+        names = EngineTools(engine, agent="shop", scope="acme", tools=given).names
+    assert sorted(names) == ["Read", "lookup_order", "ping"]
+    assert sorted(t.name for t in run.tools) == ["Read", "lookup_order", "ping"]
+    assert (run.steps[0].result, run.steps[0].is_error) == ("pong", False)
+    assert engine.agents["shop"].tools == ["lookup_order"]
+
+
+async def test_a_delegated_or_routed_agent_keeps_only_the_inherited_run_tools_it_names(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "lead/AGENT.md", agent_md("lead", extra="agents: [drafter, helper]\n"))
+    write(
+        tmp_path / "drafter/AGENT.md",
+        agent_md("drafter", extra="description: Drafts\ntools: [Read]\n"),
+    )
+    write(tmp_path / "helper/AGENT.md", agent_md("helper", extra="description: Helps\n"))
+    write(
+        tmp_path / "desk/AGENT.md",
+        agent_md(
+            "desk", kind="decision", model="judge", extra="route: {by: go, to: {next: drafter}}\n"
+        ),
+    )
+    write(
+        tmp_path / "desk/questions/go.json",
+        '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep", "next": "Pass"}}',
+    )
+    given = Tools([Tool("remember", "Remember", body=pong)])
+    llm = Scripted(
+        calling(("Delegate", {"agent": "drafter", "input": "draft"})),
+        text_reply("drafted"),
+        calling(("Delegate", {"agent": "helper", "input": "help"})),
+        text_reply("helped"),
+        text_reply("lead done"),
+        text_reply("routed"),
+    )
+    async with Engine(tmp_path, models={"strong": llm, "judge": Answering()}) as engine:
+        lead = await generated(engine, "lead", "acme", "x", tools=given)
+        routed = await engine.run("desk", "acme", "x", tools=given)
+    drafter, helper = lead.children
+    assert isinstance(drafter, Generation) and isinstance(helper, Generation)
+    assert isinstance(routed, Decision) and isinstance(routed.routed_to, Generation)
+    assert "remember" in [t.name for t in lead.tools]
+    assert [t.name for t in drafter.tools] == ["Read"]
+    assert "remember" in [t.name for t in helper.tools]
+    assert [t.name for t in routed.routed_to.tools] == ["Read"]
+    assert drafter.fingerprint.tools == routed.routed_to.fingerprint.tools
+
+
+@pytest.mark.parametrize(
+    "written", ["refnd", '"!refund"', 'refund, "!Grep"', '"!Delegate"', '"!Output"', "Delegate"]
+)
+async def test_a_kept_name_no_folder_gives_loads_and_a_run_that_does_not_offer_it_is_refused(
+    tmp_path: Path, written: str
+) -> None:
+    write(tmp_path / "support/AGENT.md", agent_md("support", extra=f"tools: [{written}]\n"))
+    tool(tmp_path / "support/tools", "refund")
+    kept = [name.strip().strip('"') for name in written.split(",")][-1]
+    llm = Scripted()
+    async with Engine(tmp_path, models={"strong": llm}) as engine:
+        with pytest.raises(ConfigurationError) as caught:
+            await engine.run("support", "acme", "x")
+        with pytest.raises(ConfigurationError) as surfaced:
+            EngineTools(engine, agent="support", scope="acme")
+        given = Tools([Tool(kept, "Given", body=pong)])
+        offered = EngineTools(engine, agent="support", scope="acme", tools=given).names
+    said = (
+        f"tools/engine_tools: agent 'support' keeps '{kept}' in tools:, which this run does not "
+        "offer; its tools are Glob, Grep, LS, Load, Read, refund"
+    )
+    assert str(caught.value) == str(surfaced.value) == said
+    assert llm.calls == []
+    assert kept in offered
+
+
+async def test_a_delegated_run_that_does_not_offer_a_kept_name_is_a_tool_error_and_a_route_raises(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "lead/AGENT.md", agent_md("lead", extra="agents: [drafter]\n"))
+    write(
+        tmp_path / "drafter/AGENT.md",
+        agent_md("drafter", extra="description: Drafts\ntools: [remember]\n"),
+    )
+    write(
+        tmp_path / "desk/AGENT.md",
+        agent_md(
+            "desk", kind="decision", model="judge", extra="route: {by: go, to: {next: drafter}}\n"
+        ),
+    )
+    write(
+        tmp_path / "desk/questions/go.json",
+        '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep", "next": "Pass"}}',
+    )
+    llm = Scripted(
+        calling(("Delegate", {"agent": "drafter", "input": "draft"})), text_reply("done")
+    )
+    said = (
+        "tools/engine_tools: agent 'drafter' keeps 'remember' in tools:, which this run does not "
+        "offer; its tools are Glob, Grep, LS, Load, Read"
+    )
+    async with Engine(tmp_path, models={"strong": llm, "judge": Answering()}) as engine:
+        lead = await generated(engine, "lead", "acme", "x")
+        with pytest.raises(ConfigurationError) as caught:
+            await engine.run("desk", "acme", "x")
+    assert (lead.steps[0].result, lead.steps[0].is_error) == (f"ConfigurationError: {said}", True)
+    assert str(caught.value) == said
 
 
 async def test_an_allow_list_leaves_output_to_expect(tmp_path: Path) -> None:
@@ -497,7 +610,7 @@ async def test_a_run_tool_named_like_a_folder_tool_keeps_the_run_s_deadline(
         ("[3]", "tools"),
         (
             "",
-            "tools: it is empty; write tools: [] to keep none of the folder and file tools, or leave tools: out to keep them all",
+            "tools: it is empty; write tools: [] to keep none of the folder, file and run tools, or leave tools: out to keep them all",
         ),
     ],
 )
@@ -523,11 +636,11 @@ def test_a_decision_agent_cannot_list_tools(tmp_path: Path, tools: str) -> None:
 @pytest.mark.parametrize(
     ("listed", "kept"),
     [
-        ("", ["Read", "Grep", "Glob", "LS", "Load", "lookup_order"]),
+        ("", ["Read", "Grep", "Glob", "LS", "Load", "lookup_order", "ping"]),
         ("tools: []\n", []),
     ],
 )
-async def test_an_empty_tools_keeps_no_folder_or_file_tool_and_none_keeps_them_all(
+async def test_an_empty_tools_keeps_no_folder_file_or_run_tool_and_none_keeps_them_all(
     tmp_path: Path, listed: str, kept: list[str]
 ) -> None:
     write(tmp_path / "shop/AGENT.md", agent_md("shop", extra=f"agents: [aide]\n{listed}"))
@@ -543,34 +656,31 @@ async def test_an_empty_tools_keeps_no_folder_or_file_tool_and_none_keeps_them_a
             history=[Message(role="user", content="hi")],
             start=1,
         ).names
-    assert sorted(names) == sorted([*kept, "History", "Delegate", "ping"])
+    assert sorted(names) == sorted([*kept, "History", "Delegate"])
     assert engine.agents["shop"].tools == [name for name in kept if name == "lookup_order"]
 
 
 @pytest.mark.parametrize(
-    ("written", "kept", "extra"),
+    ("written", "extra"),
     [
-        ("refnd", "refnd", ""),
-        ("Delegate", "Delegate", "agents: [aide]\n"),
-        ("History", "History", ""),
-        ("Shell", "Shell", "workspace: true\n"),
-        ('"!refund"', "!refund", ""),
-        ('refund, "!Grep"', "!Grep", ""),
-        ('"!Delegate"', "!Delegate", "agents: [aide]\n"),
-        ('"!Output"', "!Output", ""),
+        ("Delegate", "agents: [aide]\n"),
+        ("History", ""),
+        ("Shell", "workspace: true\n"),
+        ("refund, Edit", "workspace: true\n"),
     ],
 )
-def test_a_kept_name_the_agent_does_not_see_is_refused(
-    tmp_path: Path, written: str, kept: str, extra: str
+def test_a_kept_name_of_a_tool_that_comes_with_its_own_declaration_is_refused(
+    tmp_path: Path, written: str, extra: str
 ) -> None:
     write(tmp_path / "support/AGENT.md", agent_md("support", extra=f"{extra}tools: [{written}]\n"))
     write(tmp_path / "aide/AGENT.md", agent_md("aide"))
     tool(tmp_path / "support/tools", "refund")
+    kept = written.split(", ")[-1]
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"tree: agent 'support' keeps '{kept}' in tools:, which it does not see; "
-        "its tools are Glob, Grep, LS, Load, Read, refund"
+        f"tree: agent 'support' keeps {kept!r} in tools:, which comes with its own declaration "
+        "and stays whatever tools: lists; leave it out of tools:"
     )
 
 

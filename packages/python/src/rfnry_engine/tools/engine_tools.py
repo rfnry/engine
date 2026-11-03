@@ -7,7 +7,7 @@ from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.models import HistoryLike, ToolCall
 from rfnry_engine.records import EventHandler
 from rfnry_engine.stop import Stop
-from rfnry_engine.tools.builtins import builtins, load_tool
+from rfnry_engine.tools.builtins import BUILTINS, builtins, load_tool
 from rfnry_engine.tools.declared import chosen, described, folder_tool, picked
 from rfnry_engine.tools.delegate import delegate_tool
 from rfnry_engine.tools.history import HISTORY_TOOL, history_tool
@@ -68,6 +68,14 @@ class EngineTools(Tools):
             raise ConfigurationError(
                 f"tools/engine_tools: a tool named {HISTORY_TOOL!r} collides with the builtin"
             )
+        if spec.keep is not None:
+            offered = sorted({*BUILTINS, *spec.folder_tools, *given.names})
+            for name in spec.keep:
+                if name not in offered:
+                    raise ConfigurationError(
+                        f"tools/engine_tools: agent {agent!r} keeps {name!r} in tools:, which this run does not offer; its tools are {', '.join(offered)}"
+                    )
+            given = given.without(*(name for name in given.names if name not in spec.keep))
         room = workspace if spec.workspace else None
         media_types = getattr(engine.models.get(spec.model), "media_types", None)
         backend = room.backend if room else None
