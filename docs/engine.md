@@ -2212,7 +2212,8 @@ tool of one name: the agent gets the one nearer it, its own folder's before a gr
 before the root's, as a run's own `tools=` replace both. A decision agent has no tools, and a
 `tools/` folder on its path is not offered to it. A `.json` without its `.py`, or a `.py` without
 its `.json`, is a `ConfigurationError` naming the file; a file whose name starts with `_` or `.` is
-not a tool, and `_name.py` is a helper the scripts of its folder import. A helper named like a
+not a tool, and `_name.py` is a helper the scripts of its folder, and of every `tools/` folder
+below it, import. A helper named like a
 module of the standard library, `_stat.py`, `_weakrefset.py` or `_strptime.py`, is a
 `ConfigurationError` too, since the worker can't load both: `tools/folder: <path> is named like the
 standard-library module '_stat', and the worker can't load both; rename it`. A question's helper,
@@ -2276,12 +2277,26 @@ a PDF the model reads itself, an image it looks at. A result JSON cannot hold, a
 `set`, is a tool error naming its type; arguments it cannot hold, passed from code, are an
 `InputError` before any worker sees them (`workers/pool: the arguments for refund are not JSON: Object of
 type datetime is not JSON serializable`). A script imports the standard library, installed packages
-and the helpers of its own `tools/` folder — its `_name.py` files, by name, at the top of the
-script; a tool's script or a package beside it is no helper, and importing one is a
-`ConfigurationError` at load (`tools/folder: <path> imports 'b', which sits in its tools/ folder but
-is not a helper; a tool reaches only the helpers of its folder, so move the shared code into a
-helper _b.py`), unless the name is one of the standard library's, `time` or `json`, or resolves to
-an installed package.
+and the helpers of its own `tools/` folder and of each `tools/` folder above it on the way to the
+root — their `_name.py` files, by name, at the top of the script, a helper of a nearer folder
+replacing one of the same name above it, as a tool does, for the helpers it imports in turn too.
+One agent's version of a shared tool sits in its own `tools/` under the shared tool's name and
+imports the shared tool's helper, with no second copy of the code:
+
+```
+agents/
+  tools/_read.py, order_history.json, order_history.py     every agent: the whole history
+  frontline/tools/order_history.json, order_history.py     frontline: its own, importing _read
+```
+
+A tool's script or a package beside it, or in a `tools/` folder above it, is no helper, and
+importing one is a `ConfigurationError` at load (`tools/folder: <path> imports 'b', which sits in its
+tools/ folder but is not a helper; a tool reaches only the helpers of its tools/ folder and of those
+above it, so move the shared code into a helper _b.py`, or `which sits in the tools/ folder <folder>
+above it`), unless the name is one of the standard library's, `time` or `json`, or resolves to an
+installed package. A helper of a `tools/` folder beside the script's, or below it, is out of its
+reach. Every agent that sees a `tools/` folder sees the ones above it, so its fingerprint covers
+every helper its tools can import.
 It never imports the engine, nor your server's code. When the tree loads, each script is read
 without running it: a script with no `def run` or `async def run` at its top level is a
 `ConfigurationError` (`tools/folder: <path> has no run at its top level; a tool defines def run(args,

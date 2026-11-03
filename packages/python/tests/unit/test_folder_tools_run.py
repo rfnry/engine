@@ -1192,3 +1192,30 @@ async def test_a_relative_root_hands_the_workers_absolute_paths(
         monkeypatch.chdir(tmp_path / "agents/shop")
         found = await EngineTools(engine, agent="shop", scope="acme").dispatch("where", {})
     assert found == str((tmp_path / "agents/shop/tools/where.py").resolve())
+
+
+SHOWN = "import _read\ndef run(args, call):\n    return [_read.WHO, _read.__file__]\n"
+
+
+async def test_a_script_runs_with_the_helpers_of_the_tools_folders_above_it(
+    tmp_path: Path,
+) -> None:
+    write(tmp_path / "tools/_read.py", "import _base\nWHO = 'above, ' + _base.NAME\n")
+    write(tmp_path / "tools/_base.py", "NAME = 'with its own helper'\n")
+    tool(tmp_path / "tools", "outer", body=SHOWN)
+    write(tmp_path / "alpha/AGENT.md", agent_md("alpha"))
+    tool(tmp_path / "alpha/tools", "inner", body=SHOWN)
+    write(tmp_path / "beta/AGENT.md", agent_md("beta"))
+    write(tmp_path / "beta/tools/_read.py", "WHO = 'near'\n")
+    tool(tmp_path / "beta/tools", "local", body=SHOWN)
+    above = ["above, with its own helper", str(tmp_path / "tools/_read.py")]
+    async with Engine(tmp_path, models={}) as engine:
+        alpha = EngineTools(engine, agent="alpha", scope="acme")
+        beta = EngineTools(engine, agent="beta", scope="acme")
+        shown: list[object] = [
+            await alpha.dispatch("inner", {}),
+            await alpha.dispatch("outer", {}),
+            await beta.dispatch("local", {}),
+            await beta.dispatch("outer", {}),
+        ]
+    assert shown == [above, above, ["near", str(tmp_path / "beta/tools/_read.py")], above]

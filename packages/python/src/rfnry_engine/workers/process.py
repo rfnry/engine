@@ -41,8 +41,7 @@ def _spec(name: str, loader: _Source) -> ModuleSpec:
 
 
 class _Helpers(MetaPathFinder):
-    def __init__(self, folder: Path, sources: dict[str, str]) -> None:
-        self.folder = folder
+    def __init__(self, sources: dict[str, list[str]]) -> None:
         self.sources = sources
 
     def find_spec(
@@ -50,7 +49,8 @@ class _Helpers(MetaPathFinder):
     ) -> ModuleSpec | None:
         if path is not None or name not in self.sources:
             return None
-        return _spec(name, _Source(self.folder / f"{name}.py", self.sources[name]))
+        place, source = self.sources[name]
+        return _spec(name, _Source(Path(place), source))
 
 
 def _import(key: str, path: Path, source: str) -> ModuleType | str:
@@ -78,7 +78,7 @@ def _before_paths() -> int:
 
 
 def _load(
-    scripts: list[dict[str, str]], helpers: dict[str, dict[str, str]]
+    scripts: list[dict[str, str]], helpers: dict[str, dict[str, list[str]]]
 ) -> dict[str, ModuleType | str]:
     folders: dict[Path, dict[str, tuple[Path, str]]] = {}
     for script in scripts:
@@ -87,13 +87,15 @@ def _load(
     loaded: dict[str, ModuleType | str] = {}
     for folder, members in folders.items():
         before = set(sys.modules)
-        finder = _Helpers(folder, helpers.get(str(folder), {}))
+        finder = _Helpers(helpers.get(str(folder), {}))
         sys.meta_path.insert(_before_paths(), finder)
         for key, (path, source) in members.items():
             loaded[key] = _import(key, path, source)
         sys.meta_path.remove(finder)
         for name in set(sys.modules) - before:
-            if not name.startswith(PREFIX) and _inside(sys.modules[name], folder):
+            if not name.startswith(PREFIX) and (
+                name in finder.sources or _inside(sys.modules[name], folder)
+            ):
                 del sys.modules[name]
     return loaded
 

@@ -17,7 +17,7 @@ import pytest
 from pydantic import JsonValue
 
 from rfnry_engine.errors import InputError, WorkerError
-from rfnry_engine.workers.pool import CAP, CLOSED, Script, WorkerPool, Workers, _Worker
+from rfnry_engine.workers.pool import CAP, CLOSED, Helper, Script, WorkerPool, Workers, _Worker
 
 CALL = {"scope": "acme"}
 PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
@@ -29,7 +29,7 @@ def script(tmp_path: Path, name: str, body: str) -> Script:
     path = tmp_path / f"{name}.py"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
-    helpers = {p.stem: p.read_text(encoding="utf-8") for p in path.parent.glob("_*.py")}
+    helpers = {p.stem: Helper(p, p.read_text(encoding="utf-8")) for p in path.parent.glob("_*.py")}
     return Script(name, path, body, helpers)
 
 
@@ -438,7 +438,8 @@ async def test_a_worker_runs_the_source_it_was_given_under_the_script_s_path(
         "def run(args, call):\n"
         "    return [_client.NAME, __file__, run.__code__.co_filename, _client.__file__]\n"
     )
-    pool = WorkerPool([Script("tools/given", path, body, {"_client": "NAME = 'given'\n"})])
+    given = Helper(tmp_path / "tools/_client.py", "NAME = 'given'\n")
+    pool = WorkerPool([Script("tools/given", path, body, {"_client": given})])
     try:
         assert await pool.call("tools/given", {}, CALL, 5) == [
             "given",

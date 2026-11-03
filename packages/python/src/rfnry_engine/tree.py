@@ -41,7 +41,14 @@ from rfnry_engine.jail import Jail
 from rfnry_engine.models import Check, Choice, Part, Question, Score
 from rfnry_engine.tools.builtins import BUILTINS, preload_parts
 from rfnry_engine.tools.delegate import DELEGATE_TOOL
-from rfnry_engine.tools.folder import ToolDef, load_scripts, load_tools, project_of
+from rfnry_engine.tools.folder import (
+    NOWHERE,
+    ToolDef,
+    ToolFolder,
+    load_scripts,
+    load_tools,
+    project_of,
+)
 from rfnry_engine.tools.history import HISTORY_TOOL
 from rfnry_engine.tools.workspace import WORKSPACE_NAMES
 from rfnry_engine.workers.pool import Script
@@ -800,10 +807,14 @@ def load_tree(
     )
     for prefix in prefixes:
         _declared(root / prefix / "tools")
-    tool_folders = {
-        prefix: load_tools(root / prefix / "tools", project, root, script_folders)
-        for prefix in prefixes
-    }
+    loaded: dict[str, ToolFolder] = {}
+    for prefix in prefixes:
+        above = next(
+            (loaded[held].reach for held in reversed(_on_path(prefix)[:-1]) if held in loaded),
+            NOWHERE,
+        )
+        loaded[prefix] = load_tools(root / prefix / "tools", project, root, script_folders, above)
+    tool_folders = {prefix: folder.tools for prefix, folder in loaded.items()}
     tools = _tool_places(root, tool_folders)
     folders = {name: _Folder(place, tools) for name, place in found.items()}
     agents: dict[str, AgentSpec] = {}

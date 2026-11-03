@@ -33,11 +33,16 @@ DRAIN = 1024 * 1024
 POLL = 0.01
 
 
+class Helper(NamedTuple):
+    path: Path
+    source: str
+
+
 class Script(NamedTuple):
     key: str
     path: Path
     source: str
-    helpers: Mapping[str, str]
+    helpers: Mapping[str, Helper]
 
 
 def _lines(pending: bytearray, data: bytes) -> list[bytes]:
@@ -252,7 +257,12 @@ class WorkerPool:
                 {"key": key, "path": str(path), "source": source}
                 for key, path, source, _ in scripts
             ],
-            "helpers": {str(path.parent): dict(helpers) for _, path, _, helpers in scripts},
+            "helpers": {
+                str(path.parent): {
+                    name: [str(held.path), held.source] for name, held in helpers.items()
+                }
+                for _, path, _, helpers in scripts
+            },
             "threads": threads,
             "limit": limit,
         }

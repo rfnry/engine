@@ -414,7 +414,7 @@ def test_an_installed_package_inside_the_project_passes(
     assert Path(yaml.__file__).resolve().is_relative_to(project)
     tool(tmp_path / "tools", "fetch", body="import yaml\n" + RUN)
     folders = {(tmp_path / "tools").resolve()}
-    assert list(load_tools(tmp_path / "tools", project, tmp_path, folders)) == ["fetch"]
+    assert list(load_tools(tmp_path / "tools", project, tmp_path, folders).tools) == ["fetch"]
 
 
 def test_a_site_packages_folder_of_the_project_that_is_not_the_interpreter_s_is_refused(
@@ -855,7 +855,7 @@ def test_a_tool_that_imports_a_sibling_tool_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"tools/folder: {tmp_path / 'a/tools/fetch.py'} imports 'b', which sits in its tools/ folder but is not a helper; a tool reaches only the helpers of its folder, so move the shared code into a helper _b.py"
+        f"tools/folder: {tmp_path / 'a/tools/fetch.py'} imports 'b', which sits in its tools/ folder but is not a helper; a tool reaches only the helpers of its tools/ folder and of those above it, so move the shared code into a helper _b.py"
     )
 
 
@@ -868,7 +868,7 @@ def test_a_tool_that_imports_a_broken_link_beside_it_is_refused_by_the_link_s_mo
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"tools/folder: {tmp_path / 'a/tools/fetch.py'} imports 'b', which sits in its tools/ folder but is not a helper; a tool reaches only the helpers of its folder, so move the shared code into a helper _b.py"
+        f"tools/folder: {tmp_path / 'a/tools/fetch.py'} imports 'b', which sits in its tools/ folder but is not a helper; a tool reaches only the helpers of its tools/ folder and of those above it, so move the shared code into a helper _b.py"
     )
 
 
@@ -968,3 +968,38 @@ def test_a_tool_file_that_links_elsewhere_in_the_agent_s_folder_is_refused(tmp_p
         ConfigurationError, match="fetch.py links to .*/a/lib.py, outside its folder;"
     ):
         load_tree(tmp_path)
+
+
+def test_a_script_may_import_a_helper_of_a_tools_folder_above_it(tmp_path: Path) -> None:
+    write(tmp_path / "desk/shop/AGENT.md", agent_md("shop"))
+    write(tmp_path / "tools/_read.py", "BASE = 'https://acme.test'\n")
+    tool(tmp_path / "desk/shop/tools", "fetch", body="import _read\nfrom _read import BASE\n" + RUN)
+    assert list(load_tree(tmp_path)["shop"].folder_tools) == ["fetch"]
+
+
+def test_a_helper_of_a_tools_folder_beside_or_below_is_not_reached(tmp_path: Path) -> None:
+    write(tmp_path / "shop/AGENT.md", agent_md("shop"))
+    write(tmp_path / "desk/AGENT.md", agent_md("desk"))
+    write(tmp_path / "desk/tools/_read.py", "BASE = 'x'\n")
+    tool(tmp_path / "desk/tools", "local", body="import _read\n" + RUN)
+    tool(tmp_path / "shop/tools", "fetch", body="import _read\n" + RUN)
+    tool(tmp_path / "tools", "outer", body="import _read\n" + RUN)
+    tree = load_tree(tmp_path)
+    assert list(tree["desk"].folder_tools) == ["local", "outer"]
+    assert set(tree["desk"].folder_tools["local"].helpers) == {"_read"}
+    assert set(tree["shop"].folder_tools["fetch"].helpers) == set()
+    assert set(tree["shop"].folder_tools["outer"].helpers) == set()
+
+
+def test_a_tool_of_a_tools_folder_above_is_no_helper(tmp_path: Path) -> None:
+    write(tmp_path / "shop/AGENT.md", agent_md("shop"))
+    tool(tmp_path / "tools", "lookup")
+    tool(tmp_path / "shop/tools", "fetch", body="import lookup\n" + RUN)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tools/folder: {tmp_path / 'shop/tools/fetch.py'} imports 'lookup', which sits in the "
+        f"tools/ folder {tmp_path / 'tools'} above it but is not a helper; a tool reaches only "
+        "the helpers of its tools/ folder and of those above it, so move the shared code into a "
+        "helper _lookup.py"
+    )
