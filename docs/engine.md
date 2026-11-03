@@ -646,8 +646,10 @@ in the order they started, as `refinery.run` reads them back.
 Pass `tags=` to mark a run with what you will group it by later — the commit of the tree, an
 experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64
 characters, values up to 256 — anything else is an `InputError`. The record and every exported row
-carry them; the model never sees them. Delegated and routed runs inherit the tags of the run that
-started them, so a version or an arm covers the whole tree of runs:
+carry them, and so does every tool call the run makes, in `call` ([Tools](#tools)); the model never
+sees them. Delegated and routed runs inherit the tags of the run that started them, so a version or
+an arm covers the whole tree of runs, and a ticket the tools are bound to binds the delegated run's
+tools as well:
 
 ```python
 run = await engine.run("support", scope="acme", input=message, tags={"commit": "4f2c9e1", "arm": "b"})
@@ -1115,7 +1117,7 @@ async with Engine(root=Path("agents"), models={"judge": dm}) as engine:
 The script runs in the decision agent's worker, as a tool's does ([Tools](#tools)), before the
 decision model is called. `input` is the run's state as JSON — the text, the object or list as
 given, or the parts as their JSON, media `data` in base64 — and `call` holds the run's `scope`,
-`run_id` and `agent` and the `question` it fills, so what it reads is the tenant's. The scripts of
+`run_id`, `agent` and `tags` and the `question` it fills, so what it reads is the tenant's. The scripts of
 a run's questions run at once, each under `tool_timeout`, and the question each fills is checked as
 a file is. A script that raises (`WorkerError: engine: order.py of decision agent 'matcher' could
 not fill question 'order': KeyError: 'customer'`), runs past its deadline (`TimeoutError: workers/pool:
@@ -2259,11 +2261,15 @@ async def run(args, call):
 ```
 
 `args` is what the model wrote, already checked. `call` is the call it serves, set by the engine,
-never by the model: its `scope` — the tenant, always — and inside a run its `run_id`, `agent`,
-`tool`, `call_id` and `by`, the fields of `CallInfo`, `by` naming the `Shell` call whose command
-made the call through the [tool bridge](#workspace), `None` for the model's. What is a tenant's travels in `call`; what every
-tenant shares, a URL or a token, comes from the environment, which a worker inherits from your
-server as it is — the engine never reads it. `run` returns a string; JSON — an object, a list, a
+never by the model: its `scope` — the tenant, always — its `tags`, and inside a run its `run_id`,
+`agent`, `tool`, `call_id` and `by`, the fields of `CallInfo`, `by` naming the `Shell` call whose
+command made the call through the [tool bridge](#workspace), `None` for the model's. `tags` are
+the tags of the run the call serves, which a delegated or routed run inherits, and outside a run
+the ones given to `EngineTools`, `{}` without. What is a tenant's travels in `call`, and so does
+what the run is about: a tool bound to the ticket or the customer a run serves reads it from
+`call["tags"]`, which your code set and the model can neither see nor change, never from an
+argument the model writes. What every tenant shares, a URL or a token, comes from the environment,
+which a worker inherits from your server as it is — the engine never reads it. `run` returns a string; JSON — an object, a list, a
 number — the model reads as JSON; or a list of parts, each an object with the `type` and the fields
 of a `Text`, `Image`, `Audio` or `Document`, media `data` in base64, which reach the model as parts:
 a PDF the model reads itself, an image it looks at. A result JSON cannot hold, a `datetime` or a
@@ -2460,8 +2466,8 @@ place it checks is still the folder it was given, one folder at a time without f
 a link swapped in after the check is refused.
 
 A run's tool learns the call it serves with `current_call()`, a `CallInfo` — the run's id, its
-agent and scope, the tool and the call's id, what a script reads in `call` — so a side effect can
-carry the run that caused it, as an audit row or a header does:
+agent, scope and tags, the tool and the call's id, what a script reads in `call` — so a side effect
+can carry the run that caused it, as an audit row or a header does:
 
 ```python
 async def refund(args):
@@ -2486,7 +2492,8 @@ That is how rfnry-memory mounts: its `MemoryTools` is a `Tools`, and neither lib
 other. The set an agent runs with is itself a first-class object, so you can drive it without a
 model — from a test, or from a loop of your own. `EngineTools` holds exactly what the model of such
 a run is offered: the file tools, `History`, the folder tools, whose calls go to their worker under
-`tool_timeout` with `call` holding the scope, the workspace's, `Delegate` and the run's `tools`.
+`tool_timeout` with `call` holding the scope and the `tags` given to it, the workspace's,
+`Delegate` and the run's `tools`.
 `tools:` narrows only the folders' tools and those five file tools; the rest stay:
 
 ```python
@@ -2730,9 +2737,9 @@ The tree of agents is shared by every tenant and holds no tenant's data; a run's
 copies of what it takes from the tree, and a model adapter copies of those, so no tenant's code
 reaches another tenant's runs through them. The workers are shared too: a
 script's module state — a client it builds when it loads, a cache it fills, a global it sets — is
-shared by every tenant whose runs call it, and only `call` is the tenant's: its `scope` always, and
-the rest of what it carries — a tool call's `run_id`, `agent`, `tool`, `call_id` and `by` inside a run, a
-question's `run_id`, `agent` and `question`. A script that keeps anything between calls keys it by
+shared by every tenant whose runs call it, and only `call` is the tenant's: its `scope` and `tags`
+always, and the rest of what it carries — a tool call's `run_id`, `agent`, `tool`, `call_id` and `by`
+inside a run, a question's `run_id`, `agent` and `question`. A script that keeps anything between calls keys it by
 `call["scope"]`, as the engine keys every row.
 
 Inside a tenant, erase by tag or by run id. A support desk serves every customer in one scope; tag

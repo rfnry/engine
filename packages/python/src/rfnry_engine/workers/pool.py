@@ -266,7 +266,7 @@ class WorkerPool:
         self._starting: _Worker | None = None
 
     async def call(
-        self, key: str, args: JsonValue, call: Mapping[str, str], timeout: float | None
+        self, key: str, args: JsonValue, call: Mapping[str, JsonValue], timeout: float | None
     ) -> JsonValue:
         name = key.rsplit("/", 1)[-1]
         id = next(self._ids)

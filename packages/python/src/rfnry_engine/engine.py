@@ -936,7 +936,7 @@ class Engine:
 
         try:
             if spec.scripted:
-                filled = await self._filled(spec, scope, run_id, state)
+                filled = await self._filled(spec, scope, run_id, state, options.tags)
                 asked = dict(sorted({**own, **filled}.items()))
                 questions = {**asked, **options.questions}
             decided = as_decided(
@@ -968,13 +968,19 @@ class Engine:
         return decision()
 
     async def _filled(
-        self, spec: AgentSpec, scope: str, run_id: str, state: State
+        self, spec: AgentSpec, scope: str, run_id: str, state: State, tags: Mapping[str, str]
     ) -> dict[str, Question]:
         pool = self._workers.pool(spec.name)
         given = STATE.dump_python(state, mode="json")
 
         async def fill(qid: str, front: dict[str, JsonValue], script: Script) -> Question:
-            call = {"scope": scope, "run_id": run_id, "agent": spec.name, "question": qid}
+            call: dict[str, JsonValue] = {
+                "scope": scope,
+                "run_id": run_id,
+                "agent": spec.name,
+                "question": qid,
+                "tags": dict(tags),
+            }
             named = f"{script.path.name} of decision agent {spec.name!r}"
             try:
                 held = await pool.call(script.key, given, call, self.tool_timeout)
@@ -1140,7 +1146,13 @@ class Engine:
 
         def called(call: ToolCall, by: str | None = None) -> CallInfo:
             return CallInfo(
-                run_id=run_id, agent=spec.name, scope=scope, tool=call.name, call_id=call.id, by=by
+                run_id=run_id,
+                agent=spec.name,
+                scope=scope,
+                tool=call.name,
+                call_id=call.id,
+                by=by,
+                tags=options.tags,
             )
 
         async def show(call: ToolCall, here: Foreground, stream: Pipe, text: str) -> None:

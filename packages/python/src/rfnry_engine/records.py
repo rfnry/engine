@@ -1,5 +1,6 @@
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any, Literal, Self
 
 from pydantic import (
@@ -10,6 +11,8 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
     ValidationInfo,
+    field_serializer,
+    field_validator,
     model_validator,
 )
 
@@ -68,6 +71,28 @@ class CallInfo(BaseModel):
     tool: str
     call_id: str
     by: str | None = None
+    tags: Mapping[str, str] = Field(default_factory=dict, validate_default=True)
+
+    @field_validator("tags", mode="after")
+    @classmethod
+    def _held(cls, value: Mapping[str, str]) -> Mapping[str, str]:
+        return MappingProxyType(dict(value))
+
+    @field_serializer("tags")
+    def _shown(self, value: Mapping[str, str]) -> dict[str, str]:
+        return dict(value)
+
+    def __hash__(self) -> int:
+        return hash(
+            (self.run_id, self.agent, self.scope, self.tool, self.call_id, self.by)
+            + (frozenset(self.tags.items()),)
+        )
+
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Self:
+        return self
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (type(self).model_validate, (self.model_dump(),))
 
 
 class RunStarted(BaseModel):

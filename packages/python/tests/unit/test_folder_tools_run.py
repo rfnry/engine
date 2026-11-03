@@ -16,7 +16,7 @@ from pydantic import BaseModel, JsonValue
 from rfnry_engine import Engine, tree
 from rfnry_engine.errors import ConfigurationError, InputError, WorkerError
 from rfnry_engine.models import Image, Message, Reply, Text, ToolCall
-from rfnry_engine.records import Generation
+from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
@@ -147,8 +147,68 @@ async def test_a_script_reads_the_call_it_serves(tmp_path: Path) -> None:
         "tool": "whose",
         "call_id": "c1",
         "by": None,
+        "tags": {},
     }
-    assert outside == {"scope": "globex"}
+    assert outside == {"scope": "globex", "tags": {}}
+
+
+WHOSE = "def run(args, call):\n    return {'agent': call.get('agent'), 'tags': call['tags']}\n"
+
+
+async def test_a_script_reads_the_tags_of_the_run_it_serves(tmp_path: Path) -> None:
+    tool(tmp_path / "tools", "whose", body=WHOSE)
+    write(tmp_path / "lead/AGENT.md", agent_md("lead", extra="agents: [shop]\n"))
+    write(tmp_path / "shop/AGENT.md", agent_md("shop", extra="description: Looks things up\n"))
+    write(
+        tmp_path / "desk/AGENT.md",
+        agent_md(
+            "desk", kind="decision", model="judge", extra="route: {by: go, to: {next: shop}}\n"
+        ),
+    )
+    write(
+        tmp_path / "desk/questions/go.json",
+        '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep", "next": "Pass"}}',
+    )
+    ticket = {"ticket": "T-7"}
+    llm = Scripted(
+        calling(("whose", {})),
+        text_reply("own"),
+        calling(("Delegate", {"agent": "shop", "input": "look"})),
+        calling(("whose", {})),
+        text_reply("child"),
+        text_reply("lead"),
+        calling(("whose", {})),
+        text_reply("routed"),
+        calling(("whose", {})),
+        text_reply("consulted"),
+    )
+    recorded: list[Run] = []
+
+    class Recording:
+        async def record(self, run: Run) -> None:
+            recorded.append(run)
+
+    async with Engine(
+        tmp_path, models={"strong": llm, "judge": Answering()}, refinery=Recording()
+    ) as engine:
+        own = await generated(engine, "shop", "acme", "x", tags=ticket)
+        lead = await generated(engine, "lead", "acme", "x", tags=ticket)
+        routed = await engine.run("desk", "acme", "x", tags=ticket)
+        consult = engine.tool("shop", scope="acme", tags={"ticket": "T-9"})
+        await consult.dispatch("shop", {"input": "look"})
+        outside = await EngineTools(engine, agent="shop", scope="acme", tags=ticket).dispatch(
+            "whose", {}
+        )
+    [child] = lead.children
+    assert isinstance(child, Generation) and isinstance(routed, Decision)
+    assert isinstance(routed.routed_to, Generation)
+    consulted = recorded[-1]
+    assert isinstance(consulted, Generation) and consulted.tags == {"ticket": "T-9"}
+    assert [
+        json.loads(str(step.result))
+        for step in (own.steps[0], child.steps[0], routed.routed_to.steps[0], consulted.steps[0])
+    ] == [{"agent": "shop", "tags": ticket}] * 3 + [{"agent": "shop", "tags": {"ticket": "T-9"}}]
+    assert outside == {"agent": None, "tags": ticket}
 
 
 async def test_invalid_arguments_never_reach_the_worker(tmp_path: Path) -> None:

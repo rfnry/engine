@@ -1,4 +1,5 @@
 import json
+from collections.abc import Mapping
 from copy import deepcopy
 from functools import cache
 from typing import Any, cast
@@ -40,9 +41,11 @@ def chosen(spec: AgentSpec) -> dict[str, ToolDef]:
     return {name: tool for name, tool in spec.folder_tools.items() if picked(spec, name)}
 
 
-def _call(scope: str) -> dict[str, str]:
+def _call(scope: str, tags: Mapping[str, str]) -> dict[str, JsonValue]:
     held = current_call()
-    return held.model_dump() if held is not None and held.scope == scope else {"scope": scope}
+    if held is not None and held.scope == scope:
+        return held.model_dump()
+    return {"scope": scope, "tags": dict(tags)}
 
 
 def _parted(name: str, result: JsonValue) -> Result:
@@ -60,7 +63,13 @@ def _parted(name: str, result: JsonValue) -> Result:
         ) from exc
 
 
-def folder_tool(definition: ToolDef, pool: WorkerPool, timeout: float | None, scope: str) -> Tool:
+def folder_tool(
+    definition: ToolDef,
+    pool: WorkerPool,
+    timeout: float | None,
+    scope: str,
+    tags: Mapping[str, str],
+) -> Tool:
     name = definition.name
     arguments = _compiled(definition.input_schema)
     returns = None if definition.output_schema is None else _compiled(definition.output_schema)
@@ -72,7 +81,7 @@ def folder_tool(definition: ToolDef, pool: WorkerPool, timeout: float | None, sc
             raise InputError(
                 f"tools/declared: invalid arguments for {name}: {reason(exc)}"
             ) from exc
-        result = await pool.call(definition.key, args, _call(scope), timeout)
+        result = await pool.call(definition.key, args, _call(scope, tags), timeout)
         if returns is not None:
             try:
                 returns.validate(result)

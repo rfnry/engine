@@ -88,7 +88,7 @@ class EngineTools(Tools):
             )
         pool = engine._workers.pool(agent)
         folder = [
-            folder_tool(definition, pool, engine.tool_timeout, scope)
+            folder_tool(definition, pool, engine.tool_timeout, scope, dict(tags or {}))
             for name, definition in chosen(spec).items()
             if name not in given
         ]

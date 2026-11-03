@@ -2,6 +2,8 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from rfnry_engine import CallInfo, Engine, EngineTools, Stop, current_call
 from rfnry_engine.models import Reply, ToolCall
 from rfnry_engine.records import (
@@ -474,3 +476,64 @@ async def test_a_failed_decision_run_keeps_its_call(tmp_path: Path) -> None:
     assert isinstance(run, Generation)
     [child] = run.children
     assert child.error is not None and child.call is not None and child.call.call_id == "d1"
+
+
+async def test_a_call_carries_the_tags_of_the_run_it_serves(tmp_path: Path) -> None:
+    seen = Seen()
+    started: list[CallInfo | None] = []
+
+    async def watch(event: Event) -> None:
+        if isinstance(event, RunStarted):
+            started.append(event.call)
+
+    llm = Scripted(
+        use(ToolCall(id="p1", name="probe", args={})),
+        use(ToolCall(id="d1", name="Delegate", args={"agent": "child", "input": "go"})),
+        use(ToolCall(id="c1", name="probe", args={})),
+        text_reply("child done"),
+        text_reply("lead done"),
+    )
+    engine = Engine(tree(tmp_path, lead="agents: [child]\n", child=""), models={"strong": llm})
+    run = await engine.run(
+        "lead", "acme", "x", tools=seen.tools(), tags={"ticket": "T-7"}, on_event=watch
+    )
+    assert isinstance(run, Generation)
+    [child] = run.children
+    assert seen.calls == [
+        CallInfo(
+            run_id=run.run_id,
+            agent="lead",
+            scope="acme",
+            tool="probe",
+            call_id="p1",
+            tags={"ticket": "T-7"},
+        ),
+        CallInfo(
+            run_id=child.run_id,
+            agent="child",
+            scope="acme",
+            tool="probe",
+            call_id="c1",
+            tags={"ticket": "T-7"},
+        ),
+    ]
+    assert [None if call is None else call.tags for call in started] == [None, {"ticket": "T-7"}]
+    assert child.call is not None and child.call.tags == {"ticket": "T-7"}
+
+
+def test_a_call_s_tags_cannot_be_changed_and_it_can_be_kept_in_a_set() -> None:
+    held = CallInfo(
+        run_id="r1", agent="desk", scope="acme", tool="probe", call_id="p1", tags={"ticket": "T-7"}
+    )
+    with pytest.raises(TypeError):
+        held.tags["ticket"] = "T-8"  # type: ignore[index]
+    assert held.tags == {"ticket": "T-7"}
+    same = CallInfo(
+        run_id="r1", agent="desk", scope="acme", tool="probe", call_id="p1", tags={"ticket": "T-7"}
+    )
+    other = CallInfo(
+        run_id="r1", agent="desk", scope="acme", tool="probe", call_id="p1", tags={"ticket": "T-8"}
+    )
+    assert {held, same, other} == {held, other}
+    assert held.model_dump()["tags"] == {"ticket": "T-7"}
+    assert CallInfo.model_validate(held.model_dump()) == held

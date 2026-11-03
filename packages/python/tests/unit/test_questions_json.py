@@ -333,12 +333,21 @@ async def test_a_script_reads_the_state_and_the_call(tmp_path: Path) -> None:
             [Text(text="This one"), Image(media_type="image/png", data=b"\x89PNG")],
         )
         joined = await engine.run("matcher", "acme", [Text(text="a"), Text(text="b")])
+        tagged = await engine.run("matcher", "acme", "my desk", tags={"customer": "c-81"})
     assert sent(given, "input") == {"message": "my desk", "plan": "team"}
     assert sent(given, "call") == {
         "scope": "acme",
         "run_id": given.run_id,
         "agent": "matcher",
         "question": "order",
+        "tags": {},
+    }
+    assert sent(tagged, "call") == {
+        "scope": "acme",
+        "run_id": tagged.run_id,
+        "agent": "matcher",
+        "question": "order",
+        "tags": {"customer": "c-81"},
     }
     assert sent(parts, "input") == [
         {"type": "text", "text": "This one"},
