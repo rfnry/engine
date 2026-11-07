@@ -570,6 +570,19 @@ async def test_the_deadline_defaults_to_thirty_seconds_and_none_disables_it(fixt
             engine_for(fixtures, Scripted(), tool_timeout=bad)
 
 
+def test_worker_env_is_names_and_values_of_text_or_none(fixtures: Path) -> None:
+    assert engine_for(fixtures, Scripted()).worker_env is None
+    assert engine_for(fixtures, Scripted(), worker_env={}).worker_env == {}
+    given = {"READ_KEY": "k"}
+    assert engine_for(fixtures, Scripted(), worker_env=given).worker_env == given
+    for bad in (["PATH=x"], "PATH=x", {"A": 1}, {1: "a"}, {"": "a"}, {"A=B": "c"}, {"A": "b\0"}):
+        with pytest.raises(
+            ConfigurationError,
+            match=r"^engine: worker_env must map names to text, or be None to inherit the server's environment$",
+        ):
+            engine_for(fixtures, Scripted(), worker_env=bad)
+
+
 def test_the_worker_result_limit_is_a_positive_number_of_bytes_or_none(fixtures: Path) -> None:
     assert engine_for(fixtures, Scripted()).worker_result_bytes == 32 * 2**20
     assert engine_for(fixtures, Scripted(), worker_result_bytes=None).worker_result_bytes is None

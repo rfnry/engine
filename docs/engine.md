@@ -2270,7 +2270,11 @@ the ones given to `EngineTools`, `{}` without. What is a tenant's travels in `ca
 what the run is about: a tool bound to the ticket or the customer a run serves reads it from
 `call["tags"]`, which your code set and the model can neither see nor change, never from an
 argument the model writes. What every tenant shares, a URL or a token, comes from the environment,
-which a worker inherits from your server as it is — the engine never reads it. `run` returns a string; JSON — an object, a list, a
+which a worker inherits from your server as it is — the engine never reads it. Give
+`Engine(worker_env=)` and that mapping is the whole of a worker's environment instead: what your
+tools read and whatever else their code needs, `PATH` included if it starts a command, with your
+server's own keys left out. It decides what a script finds in its environment; a worker still runs
+as your server's user, so it is no sandbox. `run` returns a string; JSON — an object, a list, a
 number — the model reads as JSON; or a list of parts, each an object with the `type` and the fields
 of a `Text`, `Image`, `Audio` or `Document`, media `data` in base64, which reach the model as parts:
 a PDF the model reads itself, an image it looks at. A result JSON cannot hold, a `datetime` or a
@@ -2865,7 +2869,8 @@ was not given, a missing workspace, a `Local` root that is not a directory, a `s
 list of strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and `write`,
 a `Workspace` without a scope, a `max_steps`, `max_depth`, `tool_timeout`, `history_walk`,
 `history_chars`, `timeout` or `output_bytes` that is not positive, a `worker_result_bytes` that is
-neither a positive integer nor `None`, an `approve` that returns anything but `True` or `False`, a
+neither a positive integer nor `None`, a `worker_env` that is neither a mapping of names to text nor
+`None`, an `approve` that returns anything but `True` or `False`, a
 judge that is not a decision agent or a teacher that is not a generation agent. `NotFoundError` for
 an agent the tree does not have — a judge, a teacher or a replay's agent in the candidate included —
 a task the agent does not have (`engine: agent 'support' has no task 'ghost'`), found when the run

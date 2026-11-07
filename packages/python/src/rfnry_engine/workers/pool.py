@@ -251,7 +251,9 @@ class WorkerPool:
         processes: int = 1,
         threads: int = 32,
         limit: int | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
+        self._env = env
         self._scripts = {
             "scripts": [
                 {"key": key, "path": str(path), "source": source}
@@ -412,6 +414,7 @@ class WorkerPool:
             stderr=subprocess.PIPE,
             bufsize=0,
             start_new_session=True,
+            env=self._env,
         )
         worker = self._starting = _Worker(process, asyncio.get_running_loop())
         try:
@@ -433,6 +436,7 @@ class Workers:
         agents: Mapping[str, AgentSpec],
         groups: Mapping[str, int] | None,
         limit: int | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         named = dict(groups or {})
         scripts: dict[str | None, dict[str, Script]] = {None: {}, **{name: {} for name in named}}
@@ -448,6 +452,7 @@ class Workers:
                 [held[key] for key in sorted(held)],
                 processes=1 if group is None else named[group],
                 limit=limit,
+                env=env,
             )
             for group, held in scripts.items()
         }

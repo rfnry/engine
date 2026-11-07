@@ -15,7 +15,7 @@ from pydantic import BaseModel, JsonValue
 
 from rfnry_engine import Engine, tree
 from rfnry_engine.errors import ConfigurationError, InputError, WorkerError
-from rfnry_engine.models import Image, Message, Reply, Text, ToolCall
+from rfnry_engine.models import Choice, Image, Message, Reply, Text, ToolCall
 from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
@@ -365,6 +365,77 @@ async def test_a_folder_tool_s_result_is_held_to_the_engine_s_limit(tmp_path: Pa
         str(run.steps[0].result),
     )
     assert run.reply == "done"
+
+
+ENVIRONMENT = "import os\ndef run(args, call):\n    return dict(os.environ)\n"
+
+
+async def worker_environment(root: Path, **options: Any) -> dict[str, str]:
+    tool(shop(root) / "shop/tools", "environment", body=ENVIRONMENT)
+    async with Engine(root, models={"strong": Scripted()}, **options) as engine:
+        seen = await EngineTools(engine, agent="shop", scope="acme").dispatch("environment", {})
+    return cast(dict[str, str], seen)
+
+
+async def test_a_worker_inherits_the_server_s_environment_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SERVER_SECRET", "kept")
+    assert (await worker_environment(tmp_path))["SERVER_SECRET"] == "kept"
+
+
+async def test_worker_env_is_the_whole_of_what_a_worker_gets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SERVER_SECRET", "kept")
+    seen = await worker_environment(tmp_path, worker_env={"READ_KEY": "k"})
+    assert seen["READ_KEY"] == "k"
+    assert "SERVER_SECRET" not in seen
+    assert "PATH" not in seen
+
+
+async def test_a_worker_starts_with_an_empty_worker_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SERVER_SECRET", "kept")
+    assert "SERVER_SECRET" not in await worker_environment(tmp_path, worker_env={})
+
+
+async def test_worker_env_reaches_the_workers_of_a_named_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SERVER_SECRET", "kept")
+    seen = await worker_environment(tmp_path, workers={"shop": 1}, worker_env={"READ_KEY": "k"})
+    assert seen["READ_KEY"] == "k"
+    assert "SERVER_SECRET" not in seen
+
+
+async def test_a_question_s_script_runs_under_worker_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SERVER_SECRET", "kept")
+    write(tmp_path / "desk/AGENT.md", agent_md("desk", "decision", "judge"))
+    write(tmp_path / "desk/questions/order.json", '{"type": "choice", "instructions": "Which?"}')
+    write(
+        tmp_path / "desk/questions/order.py",
+        "import os\ndef run(input, call):\n"
+        "    return {'options': {os.environ.get('SERVER_SECRET', 'gone'): 'Seen', 'x': 'X'}}\n",
+    )
+    async with Engine(tmp_path, models={"judge": Answering()}, worker_env={}) as engine:
+        run = await engine.run("desk", "acme", "x")
+    assert isinstance(run, Decision)
+    question = run.questions["order"]
+    assert isinstance(question, Choice)
+    assert "gone" in question.options
+
+
+async def test_worker_env_is_read_when_the_engine_is_built(tmp_path: Path) -> None:
+    given = {"READ_KEY": "k"}
+    tool(shop(tmp_path) / "shop/tools", "environment", body=ENVIRONMENT)
+    async with Engine(tmp_path, models={"strong": Scripted()}, worker_env=given) as engine:
+        given["READ_KEY"] = "changed"
+        seen = await EngineTools(engine, agent="shop", scope="acme").dispatch("environment", {})
+    assert cast(dict[str, str], seen)["READ_KEY"] == "k"
 
 
 async def test_a_folder_tool_owns_its_deadline_inside_a_run_and_from_code(tmp_path: Path) -> None:

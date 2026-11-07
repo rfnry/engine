@@ -559,6 +559,24 @@ def _groups(agents: Mapping[str, AgentSpec], workers: Mapping[str, int] | None) 
     return dict(workers)
 
 
+def _worker_env(given: Mapping[str, str] | None) -> dict[str, str] | None:
+    if given is None:
+        return None
+    if not isinstance(given, Mapping) or not all(
+        isinstance(name, str)
+        and isinstance(value, str)
+        and name
+        and "=" not in name
+        and "\0" not in name
+        and "\0" not in value
+        for name, value in given.items()
+    ):
+        raise ConfigurationError(
+            "engine: worker_env must map names to text, or be None to inherit the server's environment"
+        )
+    return dict(given)
+
+
 class Engine:
     def __init__(
         self,
@@ -571,6 +589,7 @@ class Engine:
         max_depth: int = 5,
         tool_timeout: float | None = 30.0,
         worker_result_bytes: int | None = 33_554_432,
+        worker_env: Mapping[str, str] | None = None,
         history_walk: int = 10_000,
         history_chars: int = 100_000,
     ) -> None:
@@ -603,6 +622,7 @@ class Engine:
         self.max_depth = max_depth
         self.tool_timeout = tool_timeout
         self.worker_result_bytes = worker_result_bytes
+        self.worker_env = _worker_env(worker_env)
         self.history_walk = history_walk
         self.history_chars = history_chars
         self._agents = load_tree(
@@ -611,7 +631,9 @@ class Engine:
         )
         validate_tree(self._agents)
         _check_models(self._agents, self._models)
-        self._workers = Workers(self._agents, _groups(self._agents, workers), worker_result_bytes)
+        self._workers = Workers(
+            self._agents, _groups(self._agents, workers), worker_result_bytes, self.worker_env
+        )
         self._closed = False
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
 
