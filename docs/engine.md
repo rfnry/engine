@@ -348,31 +348,31 @@ needs it, with the `Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can rea
 own directory, the folders it reads and the [`skills/` folders above it](#skills), and nothing the
 content fingerprint leaves out, which is every name starting with `.` and every `__pycache__`: such
 a path is an `InputError` (`tools/builtins: .env is hidden; names starting with . and __pycache__
-are not part of the agent's folder`). A path that begins with `SKILLS`, which spells a `skills/`
-folder above the agent, starts from that folder, so it holds when the agent's folder, or one above
-it, is a link. A path is judged where it leads, its links and `..` resolved, from the agent's folder
-or the read folder it lies in, as the fingerprint walks them. A file reads when the folder that
-holds it has no hidden name on its way there and its own name, as written, is not hidden: a visible
-link to a hidden file of the same folder, `notes.md -> .env`, reads under its own name, the one the
-fingerprint covers it under, while `kb/../.env` is hidden, and so is `/elsewhere/git/config` when
-`/elsewhere/git` links to the agent's `.git`. A folder that `LS` or `Grep` is given reads when the
-folder it leads to has no hidden name: a visible link to a hidden folder, `shown -> .secret`, is
-hidden, and so is every file read through it, for the fingerprint never follows a folder link, and
-`Glob`, `Grep`, `LS` and the map show nothing these rules hide, nor a link that leads outside those
-folders, while `LS` lists a broken or looping link inside them by its name, as it lists a file, and
-`Grep` given a file labels its matches with the path as given, a file link under its own name. A
-part written after a file names a folder that is not there, as POSIX has it, so `Read`, `Load`,
-`Grep` and `LS` of `notes.md/`, `notes.md/.`, `notes.md/..` or `notes.md/x` are `tools/builtins: not
-a folder: notes.md/`, the path as written. A file link that comes from outside those folders, or
-leads from one of them into another, is judged by the file it leads to as well as by its own name,
-since the fingerprint covers it only there, and a path that leads outside them is the jail's error
-(`jail: path outside the agent directory: <path>`), unless it leaves them through a hidden name: a
-link in a hidden folder that leads out, `.secret/notes -> /elsewhere`, is hidden, and so is every
-path through it. `Read` returns a text file as text. `Load` hands the model any other file as it is
-— an image, a PDF, a recording, a spreadsheet — so a price list, a diagram or a scanned form sits in
-the folder as it came, the model reads it with its own understanding of images and documents, there
-is no parser in between, and nothing is loaded until the model asks — unless the agent sets
-`preload: true`, below.
+are not part of the agent's folder`). A path into a `skills/` folder above the agent, as the
+`SKILLS` section lists it (`../skills/brief.md`), starts from that folder, so it holds when the
+agent's folder, or one above it, is a link. A path is judged where it leads, its links and `..`
+resolved, from the agent's folder or the read folder it lies in, as the fingerprint walks them. A
+file reads when the folder that holds it has no hidden name on its way there and its own name, as
+written, is not hidden: a visible link to a hidden file of the same folder, `notes.md -> .env`,
+reads under its own name, the one the fingerprint covers it under, while `kb/../.env` is hidden, and
+so is `/elsewhere/git/config` when `/elsewhere/git` links to the agent's `.git`. A folder that `LS`
+or `Grep` is given reads when the folder it leads to has no hidden name: a visible link to a hidden
+folder, `shown -> .secret`, is hidden, and so is every file read through it, for the fingerprint
+never follows a folder link, and `Glob`, `Grep`, `LS` and the map show nothing these rules hide, nor
+a link that leads outside those folders, while `LS` lists a broken or looping link inside them by
+its name, as it lists a file, and `Grep` given a file labels its matches with the path as given, a
+file link under its own name. A part written after a file names a folder that is not there, as POSIX
+has it, so `Read`, `Load`, `Grep` and `LS` of `notes.md/`, `notes.md/.`, `notes.md/..` or
+`notes.md/x` are `tools/builtins: not a folder: notes.md/`, the path as written. A file link that
+comes from outside those folders, or leads from one of them into another, is judged by the file it
+leads to as well as by its own name, since the fingerprint covers it only there, and a path that
+leads outside them is the jail's error (`jail: path outside the agent directory: <path>`), unless it
+leaves them through a hidden name: a link in a hidden folder that leads out, `.secret/notes ->
+/elsewhere`, is hidden, and so is every path through it. `Read` returns a text file as text. `Load`
+hands the model any other file as it is — an image, a PDF, a recording, a spreadsheet — so a price
+list, a diagram or a scanned form sits in the folder as it came, the model reads it with its own
+understanding of images and documents, there is no parser in between, and nothing is loaded until
+the model asks — unless the agent sets `preload: true`, below.
 
 `AGENT.md` makes a directory an agent, and its frontmatter names it. `Engine(root)` walks `root` and
 loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested
