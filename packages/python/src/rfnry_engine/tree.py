@@ -726,12 +726,13 @@ def _preload_names(
     for said in front.preload:
         name = _from_agent(agent, "preloads", said, path)
         if not _within(name, places):
-            reason = (
-                "in a folder that holds the agent, and reads: cannot name such a folder; move the file into the agent's folder or into a folder it reads"
-                if _in_a_holder(tree, name, path)
-                else "outside its folder and the folders it reads; add its folder to reads:, or move the file into the agent's folder"
+            if _in_a_holder(tree, name, path):
+                raise ConfigurationError(
+                    f"tree: agent {agent!r} preloads {said!r}, in a folder that holds the agent, and reads: cannot name such a folder; move the file into the agent's folder or into a folder it reads"
+                )
+            raise ConfigurationError(
+                f"tree: agent {agent!r} preloads {said!r}, outside its folder and the folders it reads; add its folder to reads:, or move the file into the agent's folder"
             )
-            raise ConfigurationError(f"tree: agent {agent!r} preloads {said!r}, {reason}")
         shown = posixpath.relpath(name, path)
         target = jail.resolve(shown)
         if not _there(target):
