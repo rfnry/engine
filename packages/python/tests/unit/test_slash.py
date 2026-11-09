@@ -72,6 +72,19 @@ async def test_a_skill_that_is_not_public_is_no_command(tmp_path: Path) -> None:
     assert sent(llm) == [CLOSING, Text(text="/escalate x")]
 
 
+def test_public_skills_on_an_agent_holding_no_skills_says_so(tmp_path: Path) -> None:
+    write(
+        tmp_path / "bare/AGENT.md",
+        "---\nname: bare\nkind: generation\nmodel: strong\npublic_skills: [escalate]\n---\nWork.\n",
+    )
+    with pytest.raises(ConfigurationError) as refused:
+        load_tree(tmp_path)
+    assert str(refused.value) == (
+        f"tree: {tmp_path / 'bare'}/AGENT.md names 'escalate' in public_skills:, a skill agent "
+        "'bare' does not have; it has no skills"
+    )
+
+
 def test_public_skills_lists_them_with_their_descriptions(tmp_path: Path) -> None:
     engine = Engine(agents(tmp_path), models={})
     assert engine.agents["reviewer"].public_skills == {
@@ -85,10 +98,9 @@ def test_public_skills_lists_them_with_their_descriptions(tmp_path: Path) -> Non
     ("line", "named", "have"),
     [
         ("public_skills: [ghost]\n", "ghost", "its skills are close, escalate"),
-        ("skills: [close]\npublic_skills: [escalate]\n", "escalate", "its skills are close"),
-        ("skills: none\npublic_skills: [escalate]\n", "escalate", "it has no skills"),
+        ("skills: [close]\npublic_skills: [ghost]\n", "ghost", "its skills are close, escalate"),
     ],
-    ids=["unknown", "left-out-by-skills", "no-skills"],
+    ids=["unknown", "held-not-offered"],
 )
 def test_public_skills_names_only_skills_the_agent_has(
     tmp_path: Path, line: str, named: str, have: str
@@ -230,10 +242,16 @@ async def test_an_input_that_only_looks_like_a_command_is_ordinary_input(
     assert run.skill is None and run.input == given
 
 
-async def test_a_skill_skills_leaves_out_is_no_command(tmp_path: Path) -> None:
-    root = agents(tmp_path, "skills: [close]\npublic_skills: [close]\n")
-    run, llm = await ran(root, "/escalate x")
-    assert run.skill is None and run.input == "/escalate x" and sent(llm) == "/escalate x"
+async def test_public_skills_may_name_a_skill_the_model_is_not_offered(tmp_path: Path) -> None:
+    root = agents(tmp_path, "skills: [escalate]\npublic_skills: [close]\n")
+    run, llm = await ran(root, "/close x")
+    assert run.skill == "close" and run.input == "x"
+    assert sent(llm) == [CLOSING, Text(text="x")]
+    assert "skills/close.md" not in run.system
+    assert "skills/escalate.md — Hand it to a person" in run.system
+    assert Engine(root, models={}).agents["reviewer"].public_skills == {
+        "close": "Close the ticket",
+    }
 
 
 async def test_skill_and_slash_name_at_once_is_refused_before_any_model_call(

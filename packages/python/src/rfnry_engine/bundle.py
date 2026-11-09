@@ -17,7 +17,8 @@ def build_bundle(
             "SKILLS",
             "\n".join(
                 f"{s.path} — {s.description}" if s.description else s.path
-                for s in spec.skills.values()
+                for name, s in spec.skills.items()
+                if name in spec.offered
             )
             if opens
             else "",

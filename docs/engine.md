@@ -301,7 +301,7 @@ every run follows.
 - `preload:` lists the files and folders a generation agent is sent with every input.
 - `reads:` lists the other folders a generation agent reads; a generation agent only.
 - `tools:` keeps some of the tools a generation agent has, or `all` or `none`.
-- `skills:` keeps some of the skills a generation agent has, or `all` or `none`.
+- `skills:` names the skills a generation agent's model is offered, or `all` or `none`.
 - `public_skills:` lists the skills people may call by typing `/name`, or `all` or `none`; a
   generation agent only.
 
@@ -509,7 +509,7 @@ tenant.
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its `path`
 — its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the `agents` it
 may call, the folders it `reads`, the `tools` it gets from its folders, as its `tools:` narrows
-them, the `skills` it has, as its `skills:` keeps them, and the `public_skills` people may call,
+them, the `skills` it holds, the ones the code may invoke, and the `public_skills` people may call,
 [below](#skills). When the tree has loaded, the engine logs the names
 of its agents at INFO on the `rfnry_engine.engine` logger — `engine: agents loaded [lead, triage,
 writer]` — so a folder meant to be an agent that is not shows at start;
@@ -605,9 +605,9 @@ questions`).
 A skill is how to do something: `skills/<name>.md`, or `skills/<name>/SKILL.md` for one that keeps
 files of its own beside it, in a generation agent's own folder or a folder above it; a skill folder
 written for another tool — `skills/<name>/SKILL.md` with `name:` and `description:` — works as it
-is, its other keys left alone. The prompt lists the agent's skills in a section of their own, after
-the map: one line per skill, in name order, its path as `Read` takes it and its `description:` when
-it has one.
+is, its other keys left alone. The prompt lists the skills the model is offered in a section of
+their own, after the map: one line per skill, in name order, its path as `Read` takes it and its
+`description:` when it has one.
 
 ```
 <<<SKILLS>>>
@@ -677,48 +677,64 @@ Delegated and routed runs never take the caller's skill. `run.skill` records it,
 generation row carries it, and a replay asks the candidate for it again, so the candidate's own
 skill file is the one read.
 
-`engine.agents[name].skills` lists the skills the agent has, the ones the code may invoke with
-`skill=`, each to its description, `""` when it has none. A skill the agent does not have is a
-`NotFoundError` before any model call, naming the ones it has — `engine: agent 'support' has no
-skill 'refund'; its skills are escalate` — and `skill=` on a decision agent is an `InputError`. When
-the tree loads, one skill as both `skills/x.md` and `skills/x/SKILL.md` is a `ConfigurationError`.
-Names that start with `_` or `.` are not skills, and neither is an `AGENT.md` or a `SKILL.md`
-directly in `skills/`: a skill file is a `<name>.md` there or a `<name>/SKILL.md`.
+`engine.agents[name].skills` lists every skill the agent holds, own and inherited, the ones the code
+may invoke with `skill=`, offered to the model or not, each to its description, `""` when it has
+none. A skill the agent does not hold is a `NotFoundError` before any model call, naming the ones it
+holds — `engine: agent 'support' has no skill 'refund'; its skills are escalate` — and `skill=` on a
+decision agent is an `InputError`. When the tree loads, one skill as both `skills/x.md` and
+`skills/x/SKILL.md` is a `ConfigurationError`. Names that start with `_` or `.` are not skills, and
+neither is an `AGENT.md` or a `SKILL.md` directly in `skills/`: a skill file is a `<name>.md` there
+or a `<name>/SKILL.md`.
 
-`skills:` in an `AGENT.md` keeps exactly the skills it lists, as `tools:` does for tools:
-`skills: [brief, tone]` keeps these two, own or inherited, `skills: none` none, and an agent with
-`skills: all`, or without `skills:`, keeps every skill it has. `all` and `none` are words only as the
-whole value: inside a list they are names, so `skills: [all]` keeps a skill called `all`. An empty
-list, a `skills:` with no value, or any other value that is not a list, a word or a number or
+`skills:` in an `AGENT.md` is what the model is offered, as `tools:` is for tools:
+`skills: [brief, tone]` offers these two, own or inherited, `skills: none` none, and an agent with
+`skills: all`, or without `skills:`, offers every skill it holds. `all` and `none` are words only as
+the whole value: inside a list they are names, so `skills: [all]` offers a skill called `all`. An
+empty list, a `skills:` with no value, or any other value that is not a list, a word or a number or
 `true` included, is a `ConfigurationError` naming the key
 (`frontmatter: invalid agent agents/support/AGENT.md; skills: it is empty; write skills: all to keep every
 skill, skills: none to keep none, or the skills to keep, such as skills: [escalate]`, or `write all, none or a
-list of names, got 'brief'`), and so are `tools:` and `public_skills:` written alike. A skill that `skills:` leaves
-out is not listed in the prompt, is not in `engine.agents[name].skills` and is no `skill=` — a
-`NotFoundError` — but its file stays a file of the folder: `Read` reaches it by its path, and it
-stays in the fingerprint as any file does. `skills:` that names a skill the agent does not have is a
-`ConfigurationError` when the tree loads — `tree: agents/support/AGENT.md keeps 'ghost' in skills:,
+list of names, got 'brief'`), and so are `tools:` and `public_skills:` written alike. A skill left
+out of `skills:` is not in the `SKILLS` list, but the agent still holds it: the code's `skill=`
+reaches it, it stays in `engine.agents[name].skills`, and like every skill held it stays in the
+fingerprint. `skills:` that names a skill the agent does not hold is a `ConfigurationError` when
+the tree loads — `tree: agents/support/AGENT.md keeps 'ghost' in skills:,
 a skill agent 'support' does not have; its skills are brief, close` (`it has no skills` when it has
 none), or, for a skill a `.gitignore` hides from an agent with `gitignore: true`, `tree:
 agents/support/AGENT.md keeps 'local' in skills:, a skill a .gitignore hides from agent 'support';
 stop ignoring it, or drop it from skills:` — as is a blank or padded entry, a name listed twice, or
 `skills:` on a decision agent. `public_skills:` names the same refusal for its entry.
 
+A skill the model is not offered, and that this run did not invoke, is not there for its file tools:
+`Read` or `Load` naming it reads exactly as a file that does not exist — `tools/builtins: not a
+file: skills/close.md`, or the workspace's wording beside a workspace — `LS` naming it reads as a
+folder that does not exist, `Grep` naming it finds nothing, and `LS`, `Glob` and `Grep` leave it out
+of what they list, whatever the spelling, `..` and links included, as the `gitignore:` check does.
+For `skills/<name>.md` that is the file, for `skills/<name>/SKILL.md` the whole `<name>/` folder. A
+skill invoked with `skill=` or `/name` is there on that run, its folder's other files included,
+while every other skill left out stays hidden; delegated and routed runs invoke nothing, so they see
+only what is offered. Only the agent's own and inherited skills count: a `skills/` folder inside
+another agent's folder it reads stays as any file of that folder. `preload:` is unchanged: naming a
+skill sends it, offered or not. A workspace sees the real files: a `Shell` command reads whatever the
+mount holds, so this is what the file tools and the prompt hold, not a boundary, and what must stay
+away from a model stays out of the tree.
+
 `public_skills:` in an `AGENT.md` names the skills people may call by typing `/name`. Absent or
 `none` it names none, so typing `/name` invokes nothing on an agent that does not list it;
-`public_skills: all` makes every skill the agent keeps public, and an empty list or no value is a
+`public_skills: all` makes every skill the model is offered public, so a code-only skill is public
+only when named, and an empty list or no value is a
 `ConfigurationError` (`public_skills: it is empty; write public_skills: none so no one can call a
 skill, public_skills: all so people may call every skill the agent keeps, or the skills people may
 call, such as public_skills: [escalate]`). `engine.agents[name].public_skills` is the menu a consumer shows people: the public skills
 in name order, each to its description, `{}` when there are none. A name in it must be a skill the
-agent has after `skills:` — `tree: agents/support/AGENT.md names 'ghost' in public_skills:, a skill
+agent holds, offered or not — `tree: agents/support/AGENT.md names 'ghost' in public_skills:, a skill
 agent 'support' does not have; its skills are brief, close` (`it has no skills` when it has none) —
 and, as for `skills:`, a blank or padded entry, a name listed twice, or `public_skills:` on a
 decision agent is a `ConfigurationError` when the tree loads, as is a name that holds whitespace,
 since no one could type it (`skills:` and `skill=` still take such a name); `public_skills: all`
-with a kept skill of that kind is the same error, naming it (`tree: agents/support/AGENT.md makes 'my
-skill' public through public_skills: all, and no one can type /my skill; rename the skill to one
-word, or list the skills people may call`).
+with an offered skill of that kind is the same error, naming it (`tree: agents/support/AGENT.md
+makes 'my skill' public through public_skills: all, and no one can type /my skill; rename the skill
+to one word, or list the skills people may call`).
 
 `engine.run` reads an input for a command when it is a string that starts with `/`, at its very
 first character, or a list whose first part is a `Text` that does. Its first word is the text up to
@@ -731,11 +747,11 @@ parts, and every input to a decision agent, which has no skills. A skill the age
 make public is no command either: the input stays as it came, so typing the name of a code-only
 skill invokes nothing and gets the answer any other text would.
 
-`public_skills:` decides what typing invokes, not what the model may open: `/secret x` reaches the
-model as text, and `secret` is still in its `SKILLS` list, for an agent that has `Read` or `Load`,
-where the model may open it with `Read`. A skill the model should not be offered is left out of
-`skills:`, which takes it off the list; its file stays readable by path, so one the model must not
-reach at all has to live outside the folders the agent reaches.
+`public_skills:` decides what typing invokes, not what the model is offered: `/secret x` reaches the
+model as text, and a skill `skills:` offers stays in its `SKILLS` list whether or not it is public,
+for an agent that has `Read` or `Load`, where the model may open it with `Read`. A skill the model
+should not be offered is left out of `skills:`, which takes it off the list and away from its file
+tools; the code still reaches it, and a person only if `public_skills:` names it.
 
 Giving both ways at once is an `InputError` before any model call — `engine: a run invokes one
 skill, by skill= or by an input that starts with /<name>; got skill='escalate' and /close` — while
@@ -775,15 +791,15 @@ run.fingerprint.tools                                # "a02c77e1f4b9d305": the t
 
 `fingerprint.agent` is a short sha256 over every file the agent reads, by relative path and content:
 its own directory, the `tools/` folder of each folder above it, whose tools it gets, and the
-`skills/` folder of each folder above it, whose skills it has, under their paths from the agent's
-folder, `../tools/` and `../skills/`, and each folder it names in `reads:` with that folder's files
-under its path from the agent's folder, `../<name>/` (`../../shared/books/` for an agent two folders
-deep), as the map shows them — leaving out hidden files and folders and every file or folder named
-`__pycache__`, as `LS`, `Glob` and `Grep` do, links that lead out of them, folder links to a
-hidden name, and, for an agent with `gitignore: true`, what a `.gitignore` ignores, but never its
-`AGENT.md` or its own `tools/`. The engine takes it once, when it loads the tree, so an edit to the
-agent, to a folder it reads or to a `skills/` folder above it shows in the next `Engine` built from
-the folder.
+`skills/` folder of each folder above it, whose skills it holds, offered to the model or not, under
+their paths from the agent's folder, `../tools/` and `../skills/`, and each folder it names in
+`reads:` with that folder's files under its path from the agent's folder, `../<name>/`
+(`../../shared/books/` for an agent two folders deep), as the map shows them — leaving out hidden
+files and folders and every file or folder named `__pycache__`, as `LS`, `Glob` and `Grep` do, links
+that lead out of them, folder links to a hidden name, and, for an agent with `gitignore: true`, what
+a `.gitignore` ignores, but never its `AGENT.md` or its own `tools/`. The engine takes it once, when
+it loads the tree, so an edit to the agent, to a folder it reads or to a `skills/` folder above it
+shows in the next `Engine` built from the folder.
 `fingerprint.tools` is one over `run.tools` — each tool's name, description and schema — so it
 covers the tools the agent gets from its folders, the `tools=` a run passes, `Output` when `expect=`
 asks for one, in `Delegate` the agents it may call — their names, descriptions and kinds — and a
@@ -3030,7 +3046,7 @@ out of the agent's folder, an agent's own `tools/`, `questions/` or `skills/` fo
 of it, a `skills:` or `public_skills:` that names a skill the agent does not have, holds a blank,
 padded or twice-listed entry or sits in a decision agent's `AGENT.md` (`all` and `none` included), a
 `tools:`, `skills:` or `public_skills:` that is an empty list, has no value, is a word but `all`
-or `none` or holds an entry that is not text, a `public_skills: all` over a kept skill whose name
+or `none` or holds an entry that is not text, a `public_skills: all` over an offered skill whose name
 holds whitespace, a `public_skills:` entry that holds whitespace, an `AGENT.md` without a `name:` or
 a `model:` in plain text, or whose
 `kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names to

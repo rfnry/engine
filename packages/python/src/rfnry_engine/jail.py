@@ -19,9 +19,11 @@ class Jail:
         also: Iterable[Path | str] = (),
         reach: Mapping[str, Path | str] | None = None,
         ignored: Callable[[Path], bool] | None = None,
+        withheld: Callable[[Path], bool] | None = None,
     ) -> None:
         self.root = Path(root).resolve()
         self.ignored = ignored
+        self.withheld = withheld
         self._reach = {name: Path(place).resolve() for name, place in (reach or {}).items()}
         self.also = [*(Path(place).resolve() for place in also), *self._reach.values()]
         self._identities = {place: _identity(place) for place in (self.root, *self.also)}
@@ -33,6 +35,14 @@ class Jail:
                 return place / written[len(name) :].lstrip("/")
         return self.root / path
 
+    def _withholds(self, path: str | Path) -> bool:
+        if self.withheld is None:
+            return False
+        try:
+            return self.withheld(self._joined(path))
+        except ValueError:
+            return False
+
     def resolve(self, path: str | Path) -> Path:
         try:
             target = self._joined(path).resolve()
@@ -43,6 +53,8 @@ class Jail:
         return target
 
     def open(self, path: str | Path, flags: int = os.O_RDONLY, mode: int = 0o666) -> int:
+        if self._withholds(path):
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
         target = self.resolve(path)
         place = next(p for p in (self.root, *self.also) if target == p or p in target.parents)
         *folders, name = target.relative_to(place).parts or (".",)

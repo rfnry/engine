@@ -34,6 +34,10 @@ ALLOWED: dict[tuple[str, str], str] = {
         "frontmatter.py",
         "yaml.constructor.ConstructorError(None, None, f'duplicate key {key!r}', key_node.start_mark)",
     ): "a YAML error, which parse_frontmatter_doc reports as frontmatter: invalid YAML in its file",
+    (
+        "jail.py",
+        "FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))",
+    ): "a path a Jail withholds reads as a missing file, the same OSError an open of one raises",
 }
 
 

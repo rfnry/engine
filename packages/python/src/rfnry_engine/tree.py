@@ -251,6 +251,7 @@ def as_question(data: Mapping[str, JsonValue]) -> Question:
 
 class Skill(BaseModel):
     path: str
+    place: Path
     description: str
     body: str
 
@@ -275,6 +276,7 @@ class AgentSpec(BaseModel):
     listing: str = ""
     reads: dict[str, Path] = Field(default_factory=dict)
     skills: dict[str, Skill] = Field(default_factory=dict)
+    offered: frozenset[str] = frozenset()
     public_skills: tuple[str, ...] = ()
     skill_folders: dict[str, Path] = Field(default_factory=dict)
     folder_tools: dict[str, ToolDef] = Field(default_factory=dict)
@@ -442,7 +444,10 @@ def _skills_in(
             )
         raw = _read(path)
         found[name] = Skill(
-            path=f"{shown}/{rel}", description=description(raw, path) or "", body=body_of(raw)
+            path=f"{shown}/{rel}",
+            place=entry,
+            description=description(raw, path) or "",
+            body=body_of(raw),
         )
     return dict(sorted(found.items()))
 
@@ -940,15 +945,14 @@ def load_agent(
                 raise ConfigurationError(
                     f"tree: {directory}/AGENT.md keeps {name!r} in skills:, a skill agent {agent!r} does not have; {have}"
                 )
-    skills = dict(
-        sorted((n, s) for n, s in merged.items() if front.skills is None or n in front.skills)
-    )
+    skills = dict(sorted(merged.items()))
+    offered = frozenset(merged if front.skills is None else front.skills)
     if front.kind == "decision" and "public_skills" in front.model_fields_set:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot declare public_skills:; skills are for generation agents"
         )
     if front.public_skills == "all":
-        for name in skills:
+        for name in sorted(offered):
             if len(name.split()) > 1:
                 raise ConfigurationError(
                     f"tree: {directory}/AGENT.md makes {name!r} public through public_skills: all, and no one can type /{name}; rename the skill to one word, or list the skills people may call"
@@ -956,7 +960,7 @@ def load_agent(
     listed = [] if front.public_skills == "all" else front.public_skills or []
     for name in listed:
         if name not in skills:
-            if name not in merged and name in every_skill():
+            if name in every_skill():
                 raise ConfigurationError(
                     f"tree: {directory}/AGENT.md names {name!r} in public_skills:, a skill a .gitignore hides from agent {agent!r}; stop ignoring it, or drop it from public_skills:"
                 )
@@ -1054,8 +1058,9 @@ def load_agent(
         ),
         reads=read_places,
         skills=skills,
+        offered=offered,
         public_skills=tuple(
-            sorted(skills if front.public_skills == "all" else front.public_skills or ())
+            sorted(offered if front.public_skills == "all" else front.public_skills or ())
         ),
         skill_folders=skill_folders,
         folder_tools=folder_tools,

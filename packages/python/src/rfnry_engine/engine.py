@@ -389,7 +389,7 @@ def _skilled(spec: AgentSpec, skill: str | None) -> str | None:
         have = (
             f"its skills are {', '.join(spec.skills)}"
             if spec.skills
-            else "it has no skills; a skill is skills/<name>.md or skills/<name>/SKILL.md in its folder or a folder above it, and skills: keeps the ones it lists"
+            else "it has no skills; a skill is skills/<name>.md or skills/<name>/SKILL.md in its folder or a folder above it"
         )
         raise NotFoundError(f"engine: agent {spec.name!r} has no skill {skill!r}; {have}")
     return skill
@@ -1083,6 +1083,7 @@ class Engine:
             approve=options.approve,
             history=options.source,
             start=options.start,
+            invoked=options.skill,
         )
         room = options.workspace if spec.workspace else None
         barred = WORKSPACE_NAMES | {DELEGATE_TOOL, OUTPUT_TOOL}

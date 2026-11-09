@@ -1,6 +1,8 @@
 import json
+import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rfnry_engine.errors import ConfigurationError, InputError
@@ -13,7 +15,7 @@ from rfnry_engine.tools.delegate import delegate_tool
 from rfnry_engine.tools.history import HISTORY_TOOL, history_tool
 from rfnry_engine.tools.tools import Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import Workspace
-from rfnry_engine.tree import from_agent
+from rfnry_engine.tree import AgentSpec, from_agent
 
 if TYPE_CHECKING:
     from rfnry_engine.engine import Engine
@@ -23,6 +25,30 @@ def _own(item: Tool | ToolsLike) -> Tool | ToolsLike:
     if isinstance(item, Tool) and item.args is not None and item.input_schema is None:
         return replace(item, input_schema=json.loads(described(item.args)))
     return item
+
+
+def _withheld(spec: AgentSpec, invoked: str | None) -> Callable[[Path], bool] | None:
+    seen = {*spec.offered, invoked}
+    gone = [skill.place for name, skill in spec.skills.items() if name not in seen]
+    if not gone:
+        return None
+    shown = {
+        file
+        for name, skill in spec.skills.items()
+        if name in seen
+        for file in (skill.place, skill.place / "SKILL.md")
+    }
+
+    def withheld(path: Path) -> bool:
+        spelled = Path(os.path.normpath(path))
+        if spelled in shown:
+            return False
+        real = Path(os.path.realpath(path))
+        return any(
+            found == place or place in found.parents for found in (spelled, real) for place in gone
+        )
+
+    return withheld
 
 
 class EngineTools(Tools):
@@ -40,6 +66,7 @@ class EngineTools(Tools):
         start: int = 0,
         on_event: EventHandler | None = None,
         stop: Callable[[], Stop | None] | None = None,
+        invoked: str | None = None,
     ) -> None:
         engine._open()
         if not scope:
@@ -80,9 +107,10 @@ class EngineTools(Tools):
         media_types = getattr(engine.models.get(spec.model), "media_types", None)
         backend = room.backend if room else None
         reach = from_agent(spec.path, {**spec.reads, **spec.skill_folders})
+        withheld = _withheld(spec, invoked)
         files = [
-            *builtins(spec.root, reach, backend, spec.ignored),
-            load_tool(spec.root, backend, media_types, reach, spec.ignored),
+            *builtins(spec.root, reach, backend, spec.ignored, withheld),
+            load_tool(spec.root, backend, media_types, reach, spec.ignored, withheld),
         ]
         items: list[Tool | ToolsLike] = [tool for tool in files if picked(spec, tool.name)]
         if history is not None and start > 0:
