@@ -803,7 +803,7 @@ def test_an_unreadable_skills_folder_is_refused_before_an_agent_above_it_walks_i
 
 
 @pytest.mark.parametrize("folder", ["d/skills", "d/skills/deep"])
-def test_an_unreadable_skills_folder_of_a_decision_agent_is_content_left_out_with_a_warning(
+def test_an_unreadable_skills_folder_of_a_decision_agent_is_left_out_with_a_warning(
     tmp_path: Path, folder: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     for rel, text in {

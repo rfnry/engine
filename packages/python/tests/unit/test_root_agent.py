@@ -159,7 +159,9 @@ def test_the_root_agent_s_hidden_and_declaration_folders_are_never_agents(tmp_pa
         root / "skills/AGENT.md",
         "---\nname: skilled\nkind: generation\nmodel: strong\n---\nNot an agent.\n",
     )
-    assert list(load_tree(root)) == ["billing", "desk", "old", "triage"]
+    agents = load_tree(root)
+    assert list(agents) == ["billing", "desk", "old", "triage"]
+    assert "AGENT" not in agents["desk"].skills
 
 
 def test_a_hidden_folder_is_never_an_agent_of_a_tree(tmp_path: Path) -> None:

@@ -319,7 +319,7 @@ def _skills_in(folder: Path, holder: Path, shown: str) -> dict[str, Skill]:
         return {}
     found: dict[str, Skill] = {}
     for entry in _declared(folder):
-        if entry.name.startswith(("_", ".")):
+        if entry.name.startswith(("_", ".")) or entry.name == "AGENT.md":
             continue
         if entry.suffix == ".md" and entry.is_file():
             name, rel, path = entry.stem, entry.name, entry

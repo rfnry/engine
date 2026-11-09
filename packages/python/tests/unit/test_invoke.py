@@ -121,6 +121,21 @@ async def test_a_skill_is_never_in_the_map_or_the_preload(tmp_path: Path) -> Non
     assert read == "An example.\n"
 
 
+async def test_bad_frontmatter_in_a_skill_s_other_file_never_stops_the_tree(tmp_path: Path) -> None:
+    examples = "---\ndescription: [bad\n---\nAn example.\n"
+    root = reviewer(
+        tmp_path,
+        **{
+            "skills/x/SKILL.md": "---\ndescription: Do x\n---\nDo it.\n",
+            "skills/x/examples.md": examples,
+        },
+    )
+    engine = Engine(root, models={"strong": Scripted()})
+    assert set(engine.agents["reviewer"].skills) == {"x"}
+    tools = EngineTools(engine, agent="reviewer", scope="acme")
+    assert await tools.dispatch("Read", {"path": "skills/x/examples.md"}) == examples
+
+
 def test_a_skill_named_twice_is_refused(tmp_path: Path) -> None:
     root = skills(tmp_path, **{"reviewer/skills/risk/SKILL.md": "Again.\n"})
     with pytest.raises(ConfigurationError) as refused:
@@ -140,7 +155,7 @@ async def test_an_invoked_skill_rides_in_front_of_the_input(tmp_path: Path) -> N
     assert llm.calls[0][1] == [sent]
     assert isinstance(run, Generation) and run.skill == "redline" and run.input == "clause 7"
     assert run.messages == [sent] and run.conversation[0] == sent
-    assert SKILL.text not in llm.calls[0][0]
+    assert "<<<SKILL " not in llm.calls[0][0]
 
 
 @pytest.mark.parametrize(
@@ -285,7 +300,7 @@ def test_a_block_between_dashes_that_holds_no_keys_says_so(tmp_path: Path) -> No
     )
 
 
-def test_a_block_after_a_blank_line_is_body_in_the_map_and_in_the_prompt(tmp_path: Path) -> None:
+def test_a_block_after_a_blank_line_is_body_in_skills_and_in_the_prompt(tmp_path: Path) -> None:
     from rfnry_engine.frontmatter import body_of
 
     root = reviewer(tmp_path, **{"skills/risk.md": "\n---\ndescription: Rate it\n---\nRate.\n"})

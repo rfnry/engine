@@ -402,12 +402,12 @@ for a script or a tool's file), while any other file of a skill's folder that it
 out with the warning. Nor is a folder that declares them left out: a `tools/`, `questions/`,
 `skills/` or `skills/<name>/` folder it cannot read or search is a `ConfigurationError` naming that
 folder, with no warning before it — a decision agent has no skills, so its `skills/` is left out
-with the warning. A skill is read from the agent's `skills/` folder itself: a `<name>.md` in it, or
-the `SKILL.md` of a `<name>/` folder in it that holds no `AGENT.md`. A skill file that is a link
-counts when it leads to a file in the agent's folder, a hidden one included, and is never read when
-it leads out of it, while a folder link under `skills/`, or a `skills/` that is itself a link inside
-the agent's folder, is never entered, so no skill is read through it and nothing behind it is
-checked. A file removed while the engine lists its folder —
+with the warning. A skill is read from the agent's `skills/` folder itself: a `<name>.md` in it but
+an `AGENT.md`, or the `SKILL.md` of a `<name>/` folder in it that holds no `AGENT.md`. A skill file
+that is a link counts when it leads to a file in the agent's folder, a hidden one included, and is
+never read when it leads out of it, while a folder link under `skills/`, or a `skills/` that is
+itself a link inside the agent's folder, is never entered, so no skill is read through it and
+nothing behind it is checked. A file removed while the engine lists its folder —
 an editor's swap file, an rsync temporary, a ConfigMap's `..data` swap — is left out as though it was
 never there; one that cannot be read for any other reason is refused as above. A file or folder whose
 name is not UTF-8 is a `ConfigurationError` naming it: `tree: the name of
@@ -492,12 +492,12 @@ Tag the document. Every rule applies to every document.
 ```
 
 With `preload: true` the model also receives every file of its folder and of the folders it reads
-— all but `AGENT.md`, `skills/`, `tools/`, `questions/` and the folders of the agents inside it,
-described or not — sorted by path character by character, each under its path: what `Read` would
-return for it, and for a file `Read` refuses — over 5 MB, or not text — the part `Load` would hand
-over. Skills stay listed for the model to open the one that fits, never sent ahead. The map stays
-a map and the folder stays as it is; only when the files are read changes, so no turn goes to
-opening them.
+— all but an agent's `AGENT.md`, `skills/`, `tools/` and `questions/` and the folders of the agents
+inside it, described or not — sorted by path character by character, each under its path: what
+`Read` would return for it, and for a file `Read` refuses — over 5 MB, or not text — the part `Load`
+would hand over. Skills stay listed for the model to open the one that fits, never sent ahead. The
+map stays a map and the folder stays as it is; only when the files are read changes, so no turn goes
+to opening them.
 They travel as one user message ahead of the history, sent with every model call, and are read when
 the engine loads the tree, as the fingerprint is taken, so an edit shows in the next `Engine`.
 `run.preload` holds that message's parts; `run.messages` and `run.conversation` leave it out, so a
@@ -549,7 +549,7 @@ pass `skill=`. A skill the agent does not have is a `NotFoundError` before any m
 the ones it has — `engine: agent 'support' has no skill 'refund'; its skills are escalate` — and
 `skill=` on a decision agent is an `InputError`. When the tree loads, one skill as both
 `skills/x.md` and `skills/x/SKILL.md` is a `ConfigurationError`. Names that start with `_` or `.`
-are not skills.
+are not skills, and neither is an `AGENT.md` in `skills/`.
 
 ### Running an agent
 
