@@ -688,7 +688,7 @@ def test_a_kept_name_of_a_tool_that_comes_with_its_own_declaration_is_refused(
 def test_a_leftover_tools_md_is_content_and_a_markdown_file_in_tools_is_no_tool(
     tmp_path: Path,
 ) -> None:
-    write(tmp_path / "shop/AGENT.md", agent_md("shop", extra="preload: true\n"))
+    write(tmp_path / "shop/AGENT.md", agent_md("shop", extra="preload: ['.']\n"))
     write(tmp_path / "shop/TOOLS.md", "---\nfetch: Fetch\n---\n")
     write(tmp_path / "shop/tools/fetch.md", "---\ndescription: Fetch\n---\nHow to fetch.\n")
     spec = load_tree(tmp_path)["shop"]

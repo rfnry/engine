@@ -535,7 +535,7 @@ async def test_reasoning_is_left_out_once_a_preloaded_file_changed(
     agent = root / "support" / "AGENT.md"
     agent.write_text(
         agent.read_text(encoding="utf-8").replace(
-            "agents: [triage]\n", "agents: [triage]\npreload: true\n"
+            "agents: [triage]\n", "agents: [triage]\npreload: ['.']\n"
         ),
         encoding="utf-8",
     )

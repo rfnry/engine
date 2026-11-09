@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import posixpath
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Collection, Mapping
 from functools import cached_property
 from itertools import combinations
 from pathlib import Path
@@ -109,7 +109,7 @@ class AgentFront(BaseModel):
     agents: list[str] = Field(default_factory=list)
     route: RouteSpec | None = None
     workspace: bool = False
-    preload: bool = False
+    preload: list[str] = Field(default_factory=list)
     reads: list[str] = Field(default_factory=list)
     tools: list[str] | str | None = None
     skills: list[str] | str | None = None
@@ -136,6 +136,15 @@ class AgentFront(BaseModel):
         if not value.strip() or value != value.strip():
             raise ValueError(
                 f"tree: model must not be blank or padded, got {value!r}; write the name of a model the engine is given, such as model: strong"
+            )
+        return value
+
+    @field_validator("preload", mode="before")
+    @classmethod
+    def _preload_names_something(cls, value: object) -> object:
+        if value is None or value == []:
+            raise ValueError(
+                "tree: it is empty; leave preload: out to send nothing, or name what to send, such as preload: ['./knowledge']"
             )
         return value
 
@@ -599,11 +608,11 @@ def _spelled(names: Collection[str], path: str) -> list[str]:
 
 
 def _holds(folder: str, path: str) -> bool:
-    return path == folder or path.startswith(f"{folder}/")
+    return folder == "." or path == folder or path.startswith(f"{folder}/")
 
 
 def _within(name: str, folders: Collection[str]) -> bool:
-    return any(name == folder or name.startswith(f"{folder}/") for folder in folders)
+    return any(_holds(folder, name) for folder in folders)
 
 
 def _reads(
@@ -669,12 +678,45 @@ def _reads(
     return {name: folders[name] for name in names}
 
 
-def _under(
-    reads: Mapping[str, _Folder], files: Callable[[_Folder], list[tuple[str, Path]]]
-) -> list[tuple[str, Path]]:
-    return [
-        (f"{name}/{rel}", path) for name, folder in reads.items() for rel, path in files(folder)
-    ]
+def _under(reads: Mapping[str, _Folder]) -> list[tuple[str, Path]]:
+    return [(f"{name}/{rel}", path) for name, folder in reads.items() for rel, path in folder.files]
+
+
+def _preload_names(
+    agent: str,
+    front: AgentFront,
+    path: str,
+    reached: Collection[str],
+    jail: Jail,
+    apart: Collection[Path],
+) -> list[str]:
+    entries: list[tuple[str, str, Path]] = []
+    for said in front.preload:
+        name = _from_agent(agent, "preloads", said, path)
+        if not _within(name, [path, *reached]):
+            raise ConfigurationError(
+                f"tree: agent {agent!r} preloads {said!r}, outside its folder and the folders it reads; add its folder to reads:, or move the file into the agent's folder"
+            )
+        target = jail.resolve(posixpath.relpath(name, path))
+        if not target.exists():
+            raise ConfigurationError(
+                f"tree: agent {agent!r} preloads {said!r}, which does not exist; write its path from the agent's folder"
+            )
+        entries.append((name, said, target))
+    for (one, one_said, _), (other, other_said, _) in combinations(entries, 2):
+        if _holds(one, other) or _holds(other, one):
+            raise ConfigurationError(
+                f"tree: agent {agent!r} preloads {one_said!r} and {other_said!r}, one inside the other; keep one"
+            )
+    names: list[str] = []
+    for name, _, target in entries:
+        shown = posixpath.relpath(name, path)
+        if target.is_dir():
+            walked = _Folder(target, apart).preloaded
+            names += [posixpath.normpath(f"{shown}/{rel}") for rel, _ in walked]
+        else:
+            names.append(shown)
+    return names
 
 
 def _tool_places(root: Path, prefixes: Collection[str]) -> frozenset[Path]:
@@ -834,30 +876,25 @@ def load_agent(
         if prefix != path
         for rel, file in content(tree / prefix / handed, False)
     ]
-    files = sorted(
-        [*content(root, False, inner=True), *_under(reads, lambda folder: folder.files), *above]
-    )
+    files = sorted([*content(root, False, inner=True), *_under(reads), *above])
     for rel, file in files:
         _utf8(rel, file)
+    read_places = {name: folder.place for name, folder in held.items()}
+    skill_folders = {
+        posixpath.normpath(f"{prefix}/skills"): (tree / prefix / "skills").resolve()
+        for prefix in gives
+        if prefix != path
+    }
+    jail = Jail(root, reach=from_agent(path, {**read_places, **skill_folders}))
     try:
-        preload, read = (
-            preload_parts(
-                sorted(
-                    rel
-                    for rel, _ in [
-                        *content(root, True, apart=apart),
-                        *_under(reads, lambda folder: folder.preloaded),
-                    ]
-                ),
-                Jail(root, also=[folder.place for folder in reads.values()]),
-                front.tools is None or "Load" in front.tools,
-            )
-            if front.preload
-            else ([], {})
+        preload, read = preload_parts(
+            _preload_names(agent, front, path, [*read_places, *skill_folders], jail, apart),
+            jail,
+            front.tools is None or "Load" in front.tools,
         )
     except InputError as exc:
         raise ConfigurationError(
-            f"tree: agent {agent!r} cannot preload its folder: {exc}; move that file out of its folders, or drop preload: true"
+            f"tree: agent {agent!r} cannot preload: {exc}; fix that file, or drop it from preload:"
         ) from exc
     folder_tools = _folder_tools(agent, front, [tool_folders[prefix] for prefix in sees])
     return AgentSpec(
@@ -880,16 +917,12 @@ def load_agent(
         listing=joined(
             entries(root, True, apart), {name: folder.mapped for name, folder in reads.items()}
         ),
-        reads={name: folder.place for name, folder in held.items()},
+        reads=read_places,
         skills=skills,
         public_skills=tuple(
             sorted(skills if front.public_skills == "all" else front.public_skills or ())
         ),
-        skill_folders={
-            posixpath.normpath(f"{prefix}/skills"): (tree / prefix / "skills").resolve()
-            for prefix in gives
-            if prefix != path
-        },
+        skill_folders=skill_folders,
         folder_tools=folder_tools,
     )
 

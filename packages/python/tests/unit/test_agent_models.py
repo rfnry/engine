@@ -173,7 +173,7 @@ async def test_a_router_is_refused_before_its_questions_when_a_target_s_model_wa
 
 
 def with_picture(root: Path) -> Path:
-    write(root / "lead/AGENT.md", agent_md("lead", extra="preload: true\n"))
+    write(root / "lead/AGENT.md", agent_md("lead", extra="preload: ['.']\n"))
     (root / "lead/diagram.png").write_bytes(PNG)
     write(root / "writer/AGENT.md", agent_md("writer", model="fast"))
     return root
@@ -181,7 +181,7 @@ def with_picture(root: Path) -> Path:
 
 def test_a_preload_loads_a_file_its_model_does_not_take(tmp_path: Path) -> None:
     root = with_picture(tmp_path)
-    write(root / "writer/AGENT.md", agent_md("writer", model="fast", extra="preload: true\n"))
+    write(root / "writer/AGENT.md", agent_md("writer", model="fast", extra="preload: ['.']\n"))
     (root / "writer/diagram.png").write_bytes(PNG)
     loaded = Engine(root, models={"strong": Pictures(), "fast": Documents()})
     assert loaded._agents["writer"].preload == [

@@ -630,7 +630,7 @@ def test_a_tool_may_take_the_name_of_an_engine_tool_the_agent_is_not_given(
 async def test_a_tools_folder_leaves_the_map_and_the_preload_and_stays_readable(
     tmp_path: Path,
 ) -> None:
-    write(tmp_path / "a/AGENT.md", agent_md("a", extra="preload: true\n"))
+    write(tmp_path / "a/AGENT.md", agent_md("a", extra="preload: ['.']\n"))
     write(tmp_path / "a/rules.md", "Be kind.\n")
     tool(tmp_path / "a/tools", "fetch", body="BODY = 'fetches'\n" + RUN)
     write(tmp_path / "a/tools/README.md", "How the tools work.\n")
@@ -729,7 +729,7 @@ def test_no_agent_is_found_inside_a_tools_folder(tmp_path: Path) -> None:
 async def test_a_group_folder_s_tools_leave_the_map_and_preload_of_the_agent_around_it(
     tmp_path: Path,
 ) -> None:
-    write(tmp_path / "AGENT.md", agent_md("lead", extra="preload: true\n"))
+    write(tmp_path / "AGENT.md", agent_md("lead", extra="preload: ['.']\n"))
     write(tmp_path / "notes.md", "Be kind.\n")
     write(tmp_path / "support/guide.md", "Answer fast.\n")
     tool(tmp_path / "support/tools", "lookup_order", body="BODY = 'looks up'\n" + RUN)
@@ -750,7 +750,8 @@ def test_a_read_folder_s_tools_leave_the_reader_s_map_and_preload(tmp_path: Path
     tool(tmp_path / "support/tools", "lookup_order", body="BODY = 'looks up'\n" + RUN)
     write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
     write(
-        tmp_path / "desk/AGENT.md", agent_md("desk", extra="reads: ['../support']\npreload: true\n")
+        tmp_path / "desk/AGENT.md",
+        agent_md("desk", extra="reads: ['../support']\npreload: ['../support']\n"),
     )
     desk = load_tree(tmp_path)["desk"]
     assert desk.listing == "../support/\n  guide.md — Answer fast"

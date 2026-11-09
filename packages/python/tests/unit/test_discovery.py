@@ -55,7 +55,7 @@ def test_an_outer_agent_preloads_its_folder_without_its_inner_agents(tmp_path: P
     team(tmp_path)
     write(
         tmp_path / "lead/AGENT.md",
-        agent_md("lead", extra="agents: [writer, triage]\npreload: true\n"),
+        agent_md("lead", extra="agents: [writer, triage]\npreload: ['.']\n"),
     )
     sent = "".join(p.text for p in load_tree(tmp_path)["lead"].preload if isinstance(p, Text))
     assert "<<<playbook.md>>>" in sent and "<<<helpers/notes.md>>>" in sent

@@ -102,7 +102,7 @@ async def test_skills_are_listed_in_their_own_section_after_the_files(tmp_path: 
 
 
 PRELOADING = (
-    "---\nname: reviewer\nkind: generation\nmodel: strong\ndescription: Reviews\npreload: true\n"
+    "---\nname: reviewer\nkind: generation\nmodel: strong\ndescription: Reviews\npreload: ['.']\n"
     "---\nYou review contracts.\n"
 )
 

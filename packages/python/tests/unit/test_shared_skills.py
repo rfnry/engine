@@ -176,15 +176,19 @@ def test_no_skills_folder_appears_in_any_map_or_preload(tmp_path: Path) -> None:
     root = shared(
         tmp_path,
         **{
-            "AGENT.md": agent_md("lead", extra="preload: true\n"),
+            "AGENT.md": agent_md("lead", extra="preload: ['.']\n"),
             "desks/notes.md": "Desk notes.\n",
             "desks/support/guide.md": "The guide.\n",
             "docs/skills/plain.md": "Plain content.\n",
             "librarian/AGENT.md": agent_md(
-                "librarian", extra="reads: ['../docs']\npreload: true\n"
+                "librarian", extra="reads: ['../docs']\npreload: ['../docs']\n"
             ),
-            "reader/AGENT.md": agent_md("reader", extra="reads: ['../desks']\npreload: true\n"),
-            "peer/AGENT.md": agent_md("peer", extra="reads: ['../desks/support']\npreload: true\n"),
+            "reader/AGENT.md": agent_md(
+                "reader", extra="reads: ['../desks']\npreload: ['../desks']\n"
+            ),
+            "peer/AGENT.md": agent_md(
+                "peer", extra="reads: ['../desks/support']\npreload: ['../desks/support']\n"
+            ),
         },
     )
     agents = load_tree(root)

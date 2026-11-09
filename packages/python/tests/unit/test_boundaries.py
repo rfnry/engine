@@ -38,7 +38,7 @@ from .fakes import Answering, Desk, Scripted, answer_to, ask, delegating, lead, 
 from .test_engine_workspace import make_tree, use
 
 GENERATION = {
-    "g/AGENT.md": "---\nname: g\nkind: generation\nmodel: strong\ndescription: G\npreload: true\n---\nYou are g.\n",
+    "g/AGENT.md": "---\nname: g\nkind: generation\nmodel: strong\ndescription: G\npreload: ['.']\n---\nYou are g.\n",
     "g/kb.md": "the preloaded knowledge\n",
 }
 SCHEMA: dict[str, Any] = {"type": "object", "properties": {"q": {"type": "object"}}}

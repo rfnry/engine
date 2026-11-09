@@ -27,6 +27,7 @@ from rfnry_engine.refinery.labels import Review
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
+from rfnry_engine.tree import AgentSpec, load_tree
 
 from .fakes import (
     Answering,
@@ -53,7 +54,7 @@ def tree(fixtures: Path, tmp_path: Path) -> Path:
 def preload_all(folder: Path) -> None:
     agent = folder / "AGENT.md"
     text = agent.read_text(encoding="utf-8")
-    agent.write_text(text.replace("\n---\n", "\npreload: true\n---\n", 1), encoding="utf-8")
+    agent.write_text(text.replace("\n---\n", "\npreload: ['.']\n---\n", 1), encoding="utf-8")
 
 
 def furnish(support: Path) -> None:
@@ -244,7 +245,7 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
     ("front", "message"),
     [
         (
-            "name: a\nkind: decision\nmodel: judge\npreload: true\n",
+            "name: a\nkind: decision\nmodel: judge\npreload: ['.']\n",
             "^tree: decision agent 'a' cannot declare preload:; a decision agent reads no files",
         ),
         (
@@ -253,7 +254,7 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
         ),
     ],
 )
-def test_preload_is_true_and_a_decision_agent_cannot_declare_it(
+def test_a_preload_that_is_not_a_list_and_a_decision_agent_s_preload_are_refused(
     tmp_path: Path, front: str, message: str
 ) -> None:
     (tmp_path / "a" / "questions").mkdir(parents=True)
@@ -527,16 +528,239 @@ async def test_preload_all_sends_every_file_but_agent_md_and_the_declarations(
     ]
 
 
-def test_preload_all_sends_the_read_folders_too_in_path_order(tmp_path: Path) -> None:
-    (tmp_path / "coding").mkdir()
-    (tmp_path / "coding" / "AGENT.md").write_text(
-        "---\nname: coding\nkind: generation\nmodel: strong\nreads: ['../books']\npreload: true\n---\nHi\n"
+def write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def agent_md(name: str, extra: str) -> str:
+    return f"---\nname: {name}\nkind: generation\nmodel: strong\n{extra}---\nWork.\n"
+
+
+def sent(spec: AgentSpec) -> list[str]:
+    return [part.text.split("\n", 1)[0] for part in spec.preload if isinstance(part, Text)]
+
+
+def load_error(root: Path) -> str:
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(root)
+    return str(caught.value)
+
+
+def test_preload_sends_what_it_names_in_list_order(tmp_path: Path) -> None:
+    write(
+        tmp_path / "coding/AGENT.md",
+        agent_md("coding", "reads: ['../books']\npreload: ['./knowledge', './a.md', '../books']\n"),
     )
-    (tmp_path / "coding" / "notes.md").write_text("Own.\n")
-    (tmp_path / "books").mkdir()
-    (tmp_path / "books" / "a.md").write_text("Shared.\n")
-    spec = Engine(tmp_path, models={"strong": Scripted()})._spec("coding")
-    assert spec.preload == [
-        Text(text="<<<../books/a.md>>>\nShared.\n"),
-        Text(text="<<<notes.md>>>\nOwn.\n"),
+    write(tmp_path / "coding/knowledge/z.md", "Zed.\n")
+    write(tmp_path / "coding/knowledge/b.md", "Bee.\n")
+    write(tmp_path / "coding/a.md", "Own.\n")
+    write(tmp_path / "coding/left-out.md", "Not named.\n")
+    write(tmp_path / "books/x.md", "Shared.\n")
+    assert load_tree(tmp_path)["coding"].preload == [
+        Text(text="<<<knowledge/b.md>>>\nBee.\n"),
+        Text(text="<<<knowledge/z.md>>>\nZed.\n"),
+        Text(text="<<<a.md>>>\nOwn.\n"),
+        Text(text="<<<../books/x.md>>>\nShared.\n"),
     ]
+
+
+async def test_no_preload_sends_nothing(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", ""))
+    write(tmp_path / "a/notes.md", "Own.\n")
+    assert load_tree(tmp_path)["a"].preload == []
+    run = await Engine(tmp_path, models={"strong": Scripted(text_reply("ok"))}).run(
+        "a", "acme", "x"
+    )
+    assert isinstance(run, Generation) and run.preload == []
+
+
+@pytest.mark.parametrize(
+    ("entry", "names"),
+    [
+        (".", ["desk/guide.md", "knowledge/plans.md", "rules/refunds.md"]),
+        ("./desk", ["desk/guide.md"]),
+        ("./desk/writer", ["desk/writer/notes.md"]),
+        ("./questions", ["questions/note.txt"]),
+        (
+            "./tools",
+            [
+                "tools/lookup_order.json",
+                "tools/lookup_order.py",
+                "tools/now.json",
+                "tools/now.py",
+            ],
+        ),
+    ],
+)
+def test_a_folder_entry_leaves_out_declarations_and_inner_agents(
+    fixtures: Path, tmp_path: Path, entry: str, names: list[str]
+) -> None:
+    root = tree(fixtures, tmp_path)
+    support = root / "support"
+    write(support / "desk/guide.md", "The guide.\n")
+    write(support / "desk/writer/AGENT.md", agent_md("writer", ""))
+    write(support / "desk/writer/notes.md", "Inner.\n")
+    write(support / "questions/note.txt", "A note.\n")
+    agent = support / "AGENT.md"
+    agent.write_text(
+        agent.read_text(encoding="utf-8").replace("\n---\n", f"\npreload: ['{entry}']\n---\n", 1),
+        encoding="utf-8",
+    )
+    assert sent(engine(root, Scripted())._agents["support"]) == [f"<<<{name}>>>" for name in names]
+
+
+@pytest.mark.parametrize(
+    ("entry", "names"),
+    [
+        ("./skills/plain.md", ["skills/plain.md"]),
+        ("./skills", ["skills/deep/SKILL.md", "skills/plain.md"]),
+    ],
+)
+async def test_a_skill_named_directly_is_preloaded_and_still_listed(
+    tmp_path: Path, entry: str, names: list[str]
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", f"preload: ['{entry}']\n"))
+    write(tmp_path / "a/skills/plain.md", "---\ndescription: Plain\n---\nDo it plainly.\n")
+    write(tmp_path / "a/skills/deep/SKILL.md", "Go deep.\n")
+    built = Engine(tmp_path, models={"strong": Scripted(text_reply("ok"))})
+    run = await built.run("a", "acme", "x")
+    assert isinstance(run, Generation)
+    assert sent(built._spec("a")) == [f"<<<{name}>>>" for name in names]
+    assert "skills/plain.md — Plain" in run.system
+    assert built._spec("a").skills["plain"].path == "skills/plain.md"
+
+
+@pytest.mark.parametrize("linked", [False, True], ids=["in-the-tree", "a-linked-agent"])
+@pytest.mark.parametrize("entry", ["../skills/tone.md", "../skills"])
+def test_an_inherited_skill_can_be_preloaded(tmp_path: Path, entry: str, linked: bool) -> None:
+    root = tmp_path / "agents"
+    write(root / "skills/tone.md", "Keep it warm.\n")
+    place = tmp_path / "outside/desk" if linked else root / "desk"
+    write(place / "AGENT.md", agent_md("desk", f"preload: ['{entry}']\n"))
+    if linked:
+        (root / "desk").symlink_to(place)
+    spec = load_tree(root)["desk"]
+    assert spec.preload == [Text(text="<<<../skills/tone.md>>>\nKeep it warm.\n")]
+    assert spec.skills["tone"].path == "../skills/tone.md"
+
+
+@pytest.mark.parametrize("written", ["../policy.md", "../other/x.md", "../other", ".."])
+def test_a_path_outside_what_the_agent_reads_is_refused(tmp_path: Path, written: str) -> None:
+    write(tmp_path / "policy.md", "Policy.\n")
+    write(tmp_path / "other/x.md", "Other.\n")
+    write(tmp_path / "a/AGENT.md", agent_md("a", f"preload: ['{written}']\n"))
+    assert load_error(tmp_path) == (
+        f"tree: agent 'a' preloads {written!r}, outside its folder and the folders it reads; add its folder to reads:, or move the file into the agent's folder"
+    )
+
+
+@pytest.mark.parametrize("written", ["./nope.md", "../books/nope.md", "./a.md/below", "./gone"])
+def test_a_missing_path_is_refused(tmp_path: Path, written: str) -> None:
+    write(
+        tmp_path / "a/AGENT.md",
+        agent_md("a", f"reads: ['../books']\npreload: ['{written}']\n"),
+    )
+    write(tmp_path / "a/a.md", "Own.\n")
+    write(tmp_path / "books/x.md", "Shared.\n")
+    (tmp_path / "a/gone").symlink_to(tmp_path / "a/removed.md")
+    assert load_error(tmp_path) == (
+        f"tree: agent 'a' preloads {written!r}, which does not exist; write its path from the agent's folder"
+    )
+
+
+@pytest.mark.parametrize(
+    ("entries", "one", "other"),
+    [
+        ("['./knowledge', './knowledge/a.md']", "./knowledge", "./knowledge/a.md"),
+        ("['./knowledge/a.md', './knowledge']", "./knowledge/a.md", "./knowledge"),
+        ("['./knowledge', './knowledge/']", "./knowledge", "./knowledge/"),
+        ("['./knowledge', '../a/knowledge']", "./knowledge", "../a/knowledge"),
+        ("['./a.md', './a.md']", "./a.md", "./a.md"),
+        ("['.', './knowledge/a.md']", ".", "./knowledge/a.md"),
+    ],
+)
+def test_an_overlap_is_refused(tmp_path: Path, entries: str, one: str, other: str) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", f"preload: {entries}\n"))
+    write(tmp_path / "a/a.md", "Own.\n")
+    write(tmp_path / "a/knowledge/a.md", "Known.\n")
+    assert load_error(tmp_path) == (
+        f"tree: agent 'a' preloads {one!r} and {other!r}, one inside the other; keep one"
+    )
+
+
+def test_a_root_agent_s_own_folder_overlaps_what_is_inside_it(tmp_path: Path) -> None:
+    write(tmp_path / "AGENT.md", agent_md("lead", "preload: ['.', './notes.md']\n"))
+    write(tmp_path / "notes.md", "Own.\n")
+    assert load_error(tmp_path) == (
+        "tree: agent 'lead' preloads '.' and './notes.md', one inside the other; keep one"
+    )
+
+
+@pytest.mark.parametrize("value", ["[]", ""], ids=["empty-list", "no-value"])
+def test_an_empty_preload_is_refused(tmp_path: Path, value: str) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", f"preload: {value}".rstrip() + "\n"))
+    assert load_error(tmp_path) == (
+        f"frontmatter: invalid agent {tmp_path / 'a/AGENT.md'}; preload: it is empty; leave preload: out to send nothing, or name what to send, such as preload: ['./knowledge']"
+    )
+
+
+def test_preload_true_is_refused(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", "preload: true\n"))
+    assert load_error(tmp_path) == (
+        f"frontmatter: invalid agent {tmp_path / 'a/AGENT.md'}; preload: input should be a valid list"
+    )
+
+
+@pytest.mark.parametrize(
+    ("written", "reason"),
+    [
+        (
+            "knowledge",
+            "which is not a path from its folder; write it as './knowledge' or '../shared', with no leading /, no .. after a name, no hidden folder, no empty segment and no backslash",
+        ),
+        ("../../x.md", "above the root of the tree; a path in AGENT.md stays inside the tree"),
+    ],
+)
+def test_an_entry_follows_the_rule_for_a_path_from_the_agent_s_folder(
+    tmp_path: Path, written: str, reason: str
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", f"preload: ['{written}']\n"))
+    assert load_error(tmp_path) == f"tree: agent 'a' preloads {written!r}, {reason}"
+
+
+def test_a_preloaded_file_in_a_read_folder_counts_in_the_fingerprint(tmp_path: Path) -> None:
+    write(
+        tmp_path / "coding/AGENT.md",
+        agent_md("coding", "reads: ['../books']\npreload: ['../books/x.md']\n"),
+    )
+    write(tmp_path / "books/x.md", "One.\n")
+    spec = load_tree(tmp_path)["coding"]
+    assert spec.preload == [Text(text="<<<../books/x.md>>>\nOne.\n")]
+    write(tmp_path / "books/x.md", "Two.\n")
+    assert load_tree(tmp_path)["coding"].fingerprint != spec.fingerprint
+
+
+@pytest.mark.parametrize(
+    ("written", "name"), [("./__pycache__/x.pyc", "__pycache__/x.pyc"), ("./pub", "pub/secret.md")]
+)
+def test_a_name_read_hides_is_refused(tmp_path: Path, written: str, name: str) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", f"preload: ['{written}']\n"))
+    write(tmp_path / "a/__pycache__/x.pyc", "cached\n")
+    write(tmp_path / "a/.private/secret.md", "Secret.\n")
+    (tmp_path / "a/pub").symlink_to(tmp_path / "a/.private")
+    assert load_error(tmp_path) == (
+        f"tree: agent 'a' cannot preload: tools/builtins: {name} is hidden; names starting with . and __pycache__ are not part of the agent's folder; fix that file, or drop it from preload:"
+    )
+
+
+@pytest.mark.parametrize(("written", "target"), [("./leak.md", "secret.md"), ("./leak", "secrets")])
+def test_a_link_out_of_the_folder_is_refused(tmp_path: Path, written: str, target: str) -> None:
+    root = tmp_path / "agents"
+    write(root / "a/AGENT.md", agent_md("a", f"preload: ['{written}']\n"))
+    write(tmp_path / "secret.md", "Secret.\n")
+    write(tmp_path / "secrets/x.md", "Secret.\n")
+    (root / "a" / written.removeprefix("./")).symlink_to(tmp_path / target)
+    assert load_error(root) == (
+        f"tree: agent 'a' cannot preload: jail: path outside the agent directory: {written.removeprefix('./')}; fix that file, or drop it from preload:"
+    )

@@ -185,7 +185,7 @@ def preload_parts(
     parts: list[Part] = []
     read: dict[str, bytes] = {}
     for name in names:
-        opened, data, size, complete = _open(jail, name, _MAX_BYTES, "", False)
+        opened, data, size, complete = _open(jail, _named(jail, name), _MAX_BYTES, "", False)
         text = None
         if complete:
             read[name] = data

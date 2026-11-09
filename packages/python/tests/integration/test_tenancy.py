@@ -167,7 +167,7 @@ async def test_erasing_a_run_by_id_leaves_the_consults_it_made(storage: Storage)
 
 
 PRELOADED = {
-    "g/AGENT.md": "---\nname: g\nkind: generation\nmodel: strong\ndescription: G\npreload: true\n---\nYou are g.\n",
+    "g/AGENT.md": "---\nname: g\nkind: generation\nmodel: strong\ndescription: G\npreload: ['.']\n---\nYou are g.\n",
     "g/kb.md": "the preloaded knowledge\n",
     "g/tools/look.json": json.dumps(
         {

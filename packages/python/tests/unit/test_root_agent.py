@@ -59,7 +59,7 @@ def test_a_root_agent_has_the_agents_of_its_folder_beside_it(tmp_path: Path) -> 
 
 
 def test_a_root_agent_preloads_its_folder_without_its_agents(tmp_path: Path) -> None:
-    root = orchestra(tmp_path / "desk", "agents: [billing]\npreload: true\n")
+    root = orchestra(tmp_path / "desk", "agents: [billing]\npreload: ['.']\n")
     sent = "".join(p.text for p in load_tree(root)["desk"].preload if isinstance(p, Text))
     assert "<<<playbook.md>>>" in sent and "<<<policies/returns.md>>>" in sent
     assert "rates.md" not in sent and "You bill." not in sent and "A sample." not in sent

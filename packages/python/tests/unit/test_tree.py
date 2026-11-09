@@ -574,7 +574,7 @@ def test_reads_needs_the_agent_s_folder_inside_the_root_not_a_link_to_elsewhere(
 def test_an_unreadable_folder_is_warned_about_once_per_loaded_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    _agent(tmp_path, "a", "kind: generation\nmodel: strong\npreload: true\n")
+    _agent(tmp_path, "a", "kind: generation\nmodel: strong\npreload: ['.']\n")
     _agent(tmp_path, "b", "kind: generation\nmodel: strong\nreads: ['../a/kb']\n")
     for name in ("a/kb/locked/x.md", "a/notes/locked/y.md", "a/kb/z.md"):
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
@@ -632,7 +632,7 @@ def test_an_unreadable_file_is_warned_about_once_per_loaded_tree_and_left_out(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     for root in (tmp_path / "with", tmp_path / "without"):
-        _agent(root, "a", "kind: generation\nmodel: strong\npreload: true\n")
+        _agent(root, "a", "kind: generation\nmodel: strong\npreload: ['.']\n")
         _agent(root, "b", "kind: generation\nmodel: strong\nreads: ['../a/kb']\n")
         (root / "a/kb").mkdir()
         (root / "a/kb/open.md").write_text("---\ndescription: Open\n---\nx\n")
