@@ -388,7 +388,7 @@ def _skilled(spec: AgentSpec, skill: str | None) -> str | None:
         have = (
             f"its skills are {', '.join(spec.skills)}"
             if spec.skills
-            else "it has no skills; a skill is skills/<name>.md or skills/<name>/SKILL.md"
+            else "it has no skills; a skill is skills/<name>.md or skills/<name>/SKILL.md in its folder or a folder above it, and skills: keeps the ones it lists"
         )
         raise NotFoundError(f"engine: agent {spec.name!r} has no skill {skill!r}; {have}")
     return skill

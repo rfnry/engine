@@ -283,7 +283,7 @@ agents/
 
 The frontmatter of `AGENT.md` names the agent (`name:`), its kind (`kind:`), the model it runs on
 (`model:`) and what the agent may call, and, when it needs fewer tools than it has, the ones it
-keeps (`tools:`); its body is the persona.
+keeps (`tools:`) and the skills it keeps (`skills:`); its body is the persona.
 `name:`, `kind:` and `model:` are required: a missing one, a `kind:` other than `generation` or
 `decision`, or a blank, padded or non-text `name:` or `model:` is a `ConfigurationError` naming the
 file. A `name:` is plain text — not blank, not hidden, not padded, no slash — and is what `run`,
@@ -479,7 +479,7 @@ agent that reads `my_agents/acme/` reads it for every tenant.
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its `path`
 — its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the `agents` it
 may call, the folders it `reads`, the `tools` it gets from its folders, as its `tools:` narrows
-them, and the `skills` it has, [below](#skills). When the tree has loaded, the engine logs the names
+them, and the `skills` it has, as its `skills:` keeps them, [below](#skills). When the tree has loaded, the engine logs the names
 of its agents at INFO on the `rfnry_engine.engine` logger — `engine: agents loaded [lead, triage,
 writer]` — so a folder meant to be an agent that is not shows at start;
 `logging.basicConfig(level=logging.INFO)` shows it.
@@ -592,6 +592,16 @@ the ones it has — `engine: agent 'support' has no skill 'refund'; its skills a
 `skill=` on a decision agent is an `InputError`. When the tree loads, one skill as both
 `skills/x.md` and `skills/x/SKILL.md` is a `ConfigurationError`. Names that start with `_` or `.`
 are not skills, and neither is an `AGENT.md` in `skills/`.
+
+`skills:` in an `AGENT.md` keeps exactly the skills it lists, as `tools:` does for tools:
+`skills: [brief, tone]` keeps these two, own or inherited, `skills: []` none, and an agent without
+`skills:`, or with `skills:` and no value, keeps every skill it has. A skill that `skills:` leaves
+out is not listed in the prompt, is not in `engine.agents[name].skills` and is no `skill=` — a
+`NotFoundError` — but its file stays a file of the folder: `Read` reaches it by its path, and it
+stays in the fingerprint as any file does. `skills:` that names a skill the agent does not have is a
+`ConfigurationError` when the tree loads — `tree: agents/support/AGENT.md keeps 'ghost' in skills:,
+a skill agent 'support' does not have; its skills are brief, close` (`it has no skills` when it has
+none) — as is a blank or padded entry, a name listed twice, or `skills:` on a decision agent.
 
 ### Running an agent
 
@@ -2866,7 +2876,8 @@ no `AGENT.md`, a link to a folder on the way to it or one holding it, one that w
 twice, a tool's file that links out of its `tools/` folder, a file or folder whose name is not
 UTF-8, a file an agent is made of that cannot be read, a question's file or an `AGENT.md` that links
 out of the agent's folder, an agent's own `tools/`, `questions/` or `skills/` folder that links out
-of it, a `tasks/` folder in an agent's folder, whatever it holds (`tree: tasks are gone
+of it, a `skills:` that names a skill the agent does not have or sits in a decision agent's
+`AGENT.md`, a `tasks/` folder in an agent's folder, whatever it holds (`tree: tasks are gone
 (agents/support/tasks/triage.md); make it a skill, or say it in the input`), an `AGENT.md` without
 a `name:` or a `model:` in plain text,
 or whose `kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names

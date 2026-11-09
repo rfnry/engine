@@ -92,6 +92,7 @@ class AgentFront(BaseModel):
     preload: bool = False
     reads: list[str] = Field(default_factory=list)
     tools: list[str] | None = None
+    skills: list[str] | None = None
 
     @field_validator("name")
     @classmethod
@@ -136,6 +137,21 @@ class AgentFront(BaseModel):
             raise ValueError(
                 f"tree: {OUTPUT_TOOL!r} cannot be kept by name; it comes with expect= on a run, so leave it out of tools:"
             )
+        return value
+
+    @field_validator("skills")
+    @classmethod
+    def _skills_keep_each_once(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        for entry in value:
+            if not entry.strip() or entry != entry.strip():
+                raise ValueError(
+                    f"tree: an entry must not be blank or padded, got {entry!r}; write the name of a skill to keep, such as skills: [escalate]"
+                )
+        twice = sorted({entry for entry in value if value.count(entry) > 1})
+        if twice:
+            raise ValueError(f"tree: {twice[0]!r} is listed twice; list each skill once")
         return value
 
 
@@ -686,7 +702,22 @@ def load_agent(
     merged = {
         name: skill for prefix in gives for name, skill in _skills_from(tree, prefix, path).items()
     }
-    skills = dict(sorted(merged.items()))
+    if front.kind == "decision" and front.skills is not None:
+        raise ConfigurationError(
+            f"tree: decision agent {agent!r} cannot declare skills:; skills are for generation agents"
+        )
+    if front.skills is not None:
+        for name in front.skills:
+            if name not in merged:
+                have = (
+                    f"its skills are {', '.join(sorted(merged))}" if merged else "it has no skills"
+                )
+                raise ConfigurationError(
+                    f"tree: {directory}/AGENT.md keeps {name!r} in skills:, a skill agent {agent!r} does not have; {have}"
+                )
+    skills = dict(
+        sorted((n, s) for n, s in merged.items() if front.skills is None or n in front.skills)
+    )
     if front.kind == "decision" and front.tools is not None:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot list tools:; tools are for generation agents, so give them to one it routes to"

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from rfnry_engine import Engine
-from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_engine.models import Document, Text
 from rfnry_engine.records import Generation
 from rfnry_engine.tools.engine_tools import EngineTools
@@ -282,3 +282,98 @@ def test_an_unreadable_skills_folder_above_is_refused_naming_it(
     assert [m for m in caplog.messages if "cannot read" in m] == [
         f"tree: cannot read {place}: [Errno 13] Permission denied: '{place}'; it is left out"
     ]
+
+
+def with_skills(root: Path, line: str) -> Path:
+    return shared(root, **{"desks/support/AGENT.md": agent_md("support", extra=line)})
+
+
+@pytest.mark.parametrize("line", ["", "skills:\n"], ids=["absent", "null"])
+def test_skills_absent_or_null_keeps_every_skill(tmp_path: Path, line: str) -> None:
+    engine = Engine(with_skills(tmp_path, line), models={"strong": Scripted(text_reply("x"))})
+    assert set(engine.agents["support"].skills) == {"brief", "close", "plot", "tone"}
+
+
+async def test_skills_keeps_the_ones_it_lists(tmp_path: Path) -> None:
+    engine = Engine(
+        with_skills(tmp_path, "skills: [brief, tone]\n"),
+        models={"strong": Scripted(text_reply("Done."))},
+    )
+    assert engine.agents["support"].skills == {"brief": "Desk brief", "tone": "Root tone"}
+    run = await engine.run("support", "acme", "Hello.")
+    assert isinstance(run, Generation)
+    assert (
+        "<<<SKILLS>>>\n../skills/brief.md — Desk brief\n../../skills/tone.md — Root tone\n\n<<<TOOLS>>>"
+        in run.system
+    )
+    with pytest.raises(NotFoundError) as caught:
+        await engine.run("support", "acme", "Hello.", skill="close")
+    assert (
+        str(caught.value)
+        == "engine: agent 'support' has no skill 'close'; its skills are brief, tone"
+    )
+
+
+async def test_skills_empty_keeps_none(tmp_path: Path) -> None:
+    engine = Engine(
+        with_skills(tmp_path, "skills: []\n"), models={"strong": Scripted(text_reply("Done."))}
+    )
+    run = await engine.run("support", "acme", "Hello.")
+    assert isinstance(run, Generation)
+    assert "<<<SKILLS>>>" not in run.system
+    assert engine.agents["support"].skills == {}
+    with pytest.raises(NotFoundError) as caught:
+        await engine.run("support", "acme", "Hello.", skill="brief")
+    assert str(caught.value) == (
+        "engine: agent 'support' has no skill 'brief'; it has no skills; a skill is "
+        "skills/<name>.md or skills/<name>/SKILL.md in its folder or a folder above it, and "
+        "skills: keeps the ones it lists"
+    )
+
+
+def test_skills_naming_a_skill_the_agent_does_not_have_is_refused_with_the_ones_it_has(
+    tmp_path: Path,
+) -> None:
+    with_skills(tmp_path, "skills: [brief, ghost]\n")
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {tmp_path / 'desks/support'}/AGENT.md keeps 'ghost' in skills:, a skill agent "
+        "'support' does not have; its skills are brief, close, plot, tone"
+    )
+
+
+@pytest.mark.parametrize(
+    ("line", "said"),
+    [
+        (
+            "skills: [' x']\n",
+            "skills: an entry must not be blank or padded, got ' x'; write the name of a skill to keep, such as skills: [escalate]",
+        ),
+        ("skills: [brief, brief]\n", "skills: 'brief' is listed twice; list each skill once"),
+    ],
+)
+def test_skills_entries_are_plain_names_each_once(tmp_path: Path, line: str, said: str) -> None:
+    with_skills(tmp_path, line)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert f"frontmatter: invalid agent {tmp_path / 'desks/support/AGENT.md'}; {said}" in str(
+        caught.value
+    )
+
+
+def test_a_decision_agent_cannot_declare_skills(tmp_path: Path) -> None:
+    shared(tmp_path, **{"desks/triage/AGENT.md": agent_md("triage", "decision", "skills: []\n")})
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        "tree: decision agent 'triage' cannot declare skills:; skills are for generation agents"
+    )
+
+
+async def test_a_skill_skills_leaves_out_is_still_a_file_read_reaches(tmp_path: Path) -> None:
+    root = with_skills(tmp_path, "skills: [brief]\n")
+    engine = Engine(root, models={})
+    assert list(engine.agents["support"].skills) == ["brief"]
+    tools = EngineTools(engine, agent="support", scope="acme")
+    assert await tools.dispatch("Read", {"path": "skills/close.md"}) == "Close the ticket.\n"

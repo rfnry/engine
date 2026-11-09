@@ -200,7 +200,8 @@ async def test_a_run_that_continues_still_has_the_skill(tmp_path: Path) -> None:
             "chat",
             NotFoundError,
             "engine: agent 'chat' has no skill 'ghost'; it has no skills; a skill is "
-            "skills/<name>.md or skills/<name>/SKILL.md",
+            "skills/<name>.md or skills/<name>/SKILL.md in its folder or a folder above it, and "
+            "skills: keeps the ones it lists",
         ),
         (
             skills,
