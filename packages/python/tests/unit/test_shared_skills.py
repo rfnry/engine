@@ -406,10 +406,13 @@ def test_an_empty_list_or_no_value_is_refused(tmp_path: Path, key: str, value: s
 
 
 @pytest.mark.parametrize("key", KEYS)
-def test_any_other_word_is_refused(tmp_path: Path, key: str) -> None:
-    assert seen(tmp_path, f"{key}: brief\n") == (
+@pytest.mark.parametrize(
+    ("value", "got"), [("brief", "'brief'"), ("true", "True"), ("3", "3"), ("1.5", "1.5")]
+)
+def test_any_other_word_is_refused(tmp_path: Path, key: str, value: str, got: str) -> None:
+    assert seen(tmp_path, f"{key}: {value}\n") == (
         f"frontmatter: invalid agent {tmp_path / 'desks/support/AGENT.md'}; "
-        f"{key}: write all, none or a list of names, got 'brief'"
+        f"{key}: write all, none or a list of names, got {got}"
     )
 
 

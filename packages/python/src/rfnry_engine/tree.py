@@ -139,6 +139,13 @@ class AgentFront(BaseModel):
             )
         return value
 
+    @field_validator("tools", "skills", "public_skills", mode="before")
+    @classmethod
+    def _a_scalar_is_a_word(cls, value: object) -> object:
+        if value is not None and not isinstance(value, (list, str)):
+            raise ValueError(f"tree: write all, none or a list of names, got {value!r}")
+        return value
+
     @field_validator("tools")
     @classmethod
     def _tools_keep_each_once(cls, value: list[str] | str | None) -> list[str] | None:

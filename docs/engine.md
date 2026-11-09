@@ -289,7 +289,7 @@ agents/
 The frontmatter of `AGENT.md` names the agent (`name:`), its kind (`kind:`), the model it runs on
 (`model:`) and what the agent may call, and, when it needs fewer tools than it has, the ones it
 keeps (`tools:`) and the skills it keeps (`skills:`), and the skills people may call by typing
-`/name` (`public_skills:`); its body is the persona and the rules every run follows.
+`/name` (`public_skills:`); each of the three takes `all`, `none` or a list of names; its body is the persona and the rules every run follows.
 `name:`, `kind:` and `model:` are required: a missing one, a `kind:` other than `generation` or
 `decision`, or a blank, padded or non-text `name:` or `model:` is a `ConfigurationError` naming the
 file. A `name:` is plain text — not blank, not hidden, not padded, no slash — and is what `run`,
@@ -611,9 +611,10 @@ directly in `skills/`: a skill file is a `<name>.md` there or a `<name>/SKILL.md
 
 `skills:` in an `AGENT.md` keeps exactly the skills it lists, as `tools:` does for tools:
 `skills: [brief, tone]` keeps these two, own or inherited, `skills: none` none, and an agent with
-`skills: all`, or without `skills:`, keeps every skill it has. `all` and `none` are words only on
-their own: inside a list they are names, so `skills: [all]` keeps a skill called `all`. An empty
-list, a `skills:` with no value or any other word is a `ConfigurationError` naming the key
+`skills: all`, or without `skills:`, keeps every skill it has. `all` and `none` are words only as the
+whole value: inside a list they are names, so `skills: [all]` keeps a skill called `all`. An empty
+list, a `skills:` with no value, or any other value that is not a list, a word or a number or
+`true` included, is a `ConfigurationError` naming the key
 (`frontmatter: invalid agent agents/support/AGENT.md; skills: it is empty; write skills: all to keep every
 skill, skills: none to keep none, or the skills to keep, such as skills: [escalate]`, or `write all, none or a
 list of names, got 'brief'`), and so are `tools:` and `public_skills:` written alike. A skill that `skills:` leaves
@@ -2957,7 +2958,7 @@ not have, an unknown key in the frontmatter of an `AGENT.md` (`frontmatter: unkn
 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a
 `description:` that is not a string in a file the map would show or a skill, a decision agent with
 `preload: true`, `workspace: true` or `tools:`, a generation agent with `questions/` or `route:`, a
-`tools:` with no list, a `tools:` entry that is blank, padded or listed twice, a `tools:` that names
+`tools:` entry that is blank, padded or listed twice, a `tools:` that names
 `Output` or a tool that comes with its own declaration, a `tools:` name a run does not offer, when
 the run starts, a tool's `.json` without its `.py` or a script without its `.json`, a tool's JSON
 with an unknown key, no description, an `input_schema` that is not an object or a schema that does
