@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import posixpath
+import re
 from collections.abc import Callable, Collection, Mapping
 from functools import cached_property
 from itertools import combinations
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from pathspec import GitIgnoreSpec
+from pathspec.patterns.gitignore.spec import GitIgnoreSpecPattern
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -391,14 +393,24 @@ def _declared(folder: Path) -> list[Path]:
     return sorted(found)
 
 
+def _compiled(line: str) -> GitIgnoreSpecPattern | None:
+    written = line.rstrip()
+    try:
+        return GitIgnoreSpecPattern(f"{written}*/" if written.endswith("/**/") else line)
+    except ValueError, re.PatternError:
+        return None
+
+
 def _gitignore(path: Path) -> GitIgnoreSpec:
     try:
-        return GitIgnoreSpec.from_lines(path.read_text(encoding="utf-8-sig").splitlines())
-    except (OSError, ValueError) as exc:
+        text = path.read_bytes().decode("utf-8-sig")
+    except (OSError, UnicodeDecodeError) as exc:
         reason = getattr(exc, "strerror", None) or exc
         raise ConfigurationError(
             f"tree: cannot read {path}: {reason}; make it readable to the engine"
         ) from exc
+    compiled = (_compiled(line) for line in text.split("\n"))
+    return GitIgnoreSpec([pattern for pattern in compiled if pattern is not None])
 
 
 class _Gitignores:
@@ -414,10 +426,11 @@ class _Gitignores:
     def reached(self, place: Path) -> Gitignored:
         if place not in self._reached:
             check = Gitignored(place)
-            for directory, names, filenames in os.walk(place):
+            for directory, names, _ in os.walk(place):
                 here = Path(directory)
-                if ".gitignore" in filenames:
-                    check.specs[here] = self._spec(here / ".gitignore")
+                gitignore = here / ".gitignore"
+                if gitignore.is_file() and not gitignore.is_symlink():
+                    check.specs[here] = self._spec(gitignore)
                 names[:] = [
                     name
                     for name in names
@@ -817,6 +830,17 @@ def _skill_places(root: Path, prefixes: Collection[str]) -> frozenset[Path]:
     return frozenset((root / prefix / "skills").resolve() for prefix in prefixes)
 
 
+def _except_what_runs(root: Path, ignored: Callable[[Path], bool]) -> Callable[[Path], bool]:
+    definition = root / "AGENT.md"
+    tools = (root / "tools").resolve()
+
+    def left_out(path: Path) -> bool:
+        runs = path in (definition, tools) or tools in path.parents or path in tools.parents
+        return not runs and ignored(path)
+
+    return left_out
+
+
 def _gives_skills(folder: Path) -> bool:
     return folder.is_dir() and not folder.is_symlink()
 
@@ -997,7 +1021,8 @@ def load_agent(
         if prefix != path
         for rel, file in content(tree / prefix / handed, False, ignored=ignored)
     ]
-    files = sorted([*content(root, False, inner=True, ignored=ignored), *_under(reads), *above])
+    hashed = None if ignored is None else _except_what_runs(root, ignored)
+    files = sorted([*content(root, False, inner=True, ignored=hashed), *_under(reads), *above])
     for rel, file in files:
         _utf8(rel, file)
     jail = Jail(root, reach=from_agent(path, {**read_places, **skill_folders}), ignored=ignored)

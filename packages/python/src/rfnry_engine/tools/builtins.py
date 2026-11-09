@@ -4,7 +4,7 @@ import mimetypes
 import os
 import stat
 import time
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from fnmatch import fnmatch
 from itertools import islice
 from pathlib import Path
@@ -111,8 +111,11 @@ def _hides(jail: Jail, path: str | Path) -> bool:
 def _ignored(jail: Jail, path: str | Path) -> bool:
     if jail.ignored is None:
         return False
+    joined = jail._joined(path)
     try:
-        return jail.ignored(Path(os.path.normpath(jail._joined(path))))
+        return jail.ignored(Path(os.path.normpath(joined))) or jail.ignored(
+            Path(os.path.realpath(joined))
+        )
     except ValueError:
         return False
 
@@ -315,10 +318,20 @@ class _Directory:
         missing = 'Read with where="workspace" reads from your workspace' if self.workspace else ""
         return _lines(_contents(self.jail, _named(self.jail, a.path), _MAX_BYTES, missing)[1], a)
 
+    def _below(self, base: Path) -> Iterator[Path]:
+        if self.jail.ignored is None:
+            yield from base.rglob("*")
+            return
+        for directory, names, filenames in os.walk(base):
+            here = Path(directory)
+            names[:] = [name for name in names if not _ignored(self.jail, here / name)]
+            yield from (here / name for name in names)
+            yield from (here / name for name in filenames if not _ignored(self.jail, here / name))
+
     def _files_under(self, base: Path, glob: str | None) -> tuple[list[Path], bool]:
         if base.is_file():
             return [base], False
-        walked = list(islice(base.rglob("*"), _MAX_WALK + 1))
+        walked = list(islice(self._below(base), _MAX_WALK + 1))
         found: list[Path] = []
         for candidate in walked[:_MAX_WALK]:
             rel = Path(self._shown(candidate))
@@ -326,7 +339,6 @@ class _Directory:
                 not candidate.is_file()
                 or _hidden(rel)
                 or _hides(self.jail, candidate)
-                or _ignored(self.jail, candidate)
                 or not self._inside(candidate)
             ):
                 continue
@@ -419,7 +431,8 @@ class _Directory:
                 "tools/builtins: pattern must be relative and stay inside the agent directory or a folder it reads"
             )
         try:
-            entries = list(islice(base.glob(pattern), _MAX_WALK + 1))
+            kept = (p for p in base.glob(pattern) if not _ignored(self.jail, p))
+            entries = list(islice(kept, _MAX_WALK + 1))
         except ValueError as exc:
             raise InputError(f"tools/builtins: invalid glob pattern {a.pattern!r}: {exc}") from exc
         truncated = len(entries) > _MAX_WALK
@@ -429,7 +442,6 @@ class _Directory:
             if p.is_file()
             and not _hidden(Path(self._shown(p)))
             and not _hides(self.jail, p)
-            and not _ignored(self.jail, p)
             and self._inside(p)
         )
         suffix = f"\n[truncated: walk exceeded {_MAX_WALK} entries]" if truncated else ""

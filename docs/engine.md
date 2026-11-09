@@ -568,17 +568,19 @@ it. `Read`, `Load`, `Grep` or `LS` naming it reads `tools/builtins: debug.log is
 debug.log is ignored by a .gitignore; it is not part of the agent's folder; fix that file, or drop
 it from preload:`). A link is judged by its own name and by where it leads. The key is per agent:
 another agent reading the same folder without `gitignore: true` sees every file. A tool's script
-still loads from `tools/` whatever a `.gitignore` says; it is what the agent calls, not a file it
-sees.
+still loads from `tools/` whatever a `.gitignore` says, and `AGENT.md` and the agent's own `tools/`
+stay in its fingerprint whatever one says, since the engine runs them.
 
 A workspace sees the real files: a `Shell` command reads whatever the mount holds, ignored or not.
 `gitignore: true` is a convenience for what the agent's file tools and prompt hold, not a boundary;
 what must stay away from a model stays out of the tree.
 
-A `.gitignore` that cannot be read or decoded is a `ConfigurationError` when the tree loads (`tree:
-cannot read agents/coding/.gitignore: Permission denied; make it readable to the engine`), and so
-is `gitignore:` on a decision agent (`tree: decision agent 'triage' cannot declare gitignore:; a
-decision agent reads no files, so give it what it needs in its input or its questions`).
+A line that is no valid pattern is skipped, as Git skips it, and a `.gitignore` that is a link or
+not a plain file is not read. One that cannot be read or decoded is a `ConfigurationError` when the
+tree loads (`tree: cannot read agents/coding/.gitignore: Permission denied; make it readable to the
+engine`), and so is `gitignore:` on a decision agent (`tree: decision agent 'triage' cannot declare
+gitignore:; a decision agent reads no files, so give it what it needs in its input or its
+questions`).
 
 ### Skills
 
@@ -757,9 +759,10 @@ folder, `../tools/` and `../skills/`, and each folder it names in `reads:` with 
 under its path from the agent's folder, `../<name>/` (`../../shared/books/` for an agent two folders
 deep), as the map shows them — leaving out hidden files and folders and every file or folder named
 `__pycache__`, as `LS`, `Glob` and `Grep` do, links that lead out of them, folder links to a
-hidden name, and, for an agent with `gitignore: true`, what a `.gitignore` ignores. The engine takes
-it once, when it loads the tree, so an edit to the agent, to a folder it reads or to a `skills/`
-folder above it shows in the next `Engine` built from the folder.
+hidden name, and, for an agent with `gitignore: true`, what a `.gitignore` ignores, but never its
+`AGENT.md` or its own `tools/`. The engine takes it once, when it loads the tree, so an edit to the
+agent, to a folder it reads or to a `skills/` folder above it shows in the next `Engine` built from
+the folder.
 `fingerprint.tools` is one over `run.tools` — each tool's name, description and schema — so it
 covers the tools the agent gets from its folders, the `tools=` a run passes, `Output` when `expect=`
 asks for one, in `Delegate` the agents it may call — their names, descriptions and kinds — and a
@@ -3017,8 +3020,7 @@ unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter t
 YAML or a `description:` that is not a string in a file the map would show or a skill, a decision
 agent with `preload:`, `workspace: true`, `tools:` or `gitignore:`, a generation agent with
 `questions/` or `route:`, a `.gitignore` of an agent with `gitignore: true` that cannot be read or
-decoded or holds a line that is no pattern, a `tools:` entry that is blank, padded or listed twice,
-a `tools:` that names `Output` or a tool that comes with its own declaration, a `tools:` name a run
+decoded, a `tools:` entry that is blank, padded or listed twice, a `tools:` that names `Output` or a tool that comes with its own declaration, a `tools:` name a run
 does not offer, when the run starts, a tool's `.json` without its `.py` or a script without its
 `.json`, a tool's JSON with an unknown key, no description, an `input_schema` that is not an object
 or a schema that does not compile, a script or helper that is not valid Python, imports the engine,
