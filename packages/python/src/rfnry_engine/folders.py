@@ -77,7 +77,7 @@ def _readable(path: Path) -> bool:
 
 
 def _walk(
-    folder: Path, declared: bool, inner: bool = False, tools: Collection[Path] = ()
+    folder: Path, declared: bool, inner: bool = False, apart: Collection[Path] = ()
 ) -> tuple[list[str], list[tuple[str, Path]]]:
     folder = folder.resolve()
     jail = Jail(folder)
@@ -93,7 +93,7 @@ def _walk(
             if not name.startswith(".")
             and name != "__pycache__"
             and not (declared and top and name in DECLARED)
-            and here / name not in tools
+            and here / name not in apart
             and (inner or not declares(here / name))
             and _inside(jail, here / name)
             and _shown(folder, here / name)
@@ -113,13 +113,13 @@ def _walk(
 
 
 def content(
-    folder: Path, declared: bool, inner: bool = False, tools: Collection[Path] = ()
+    folder: Path, declared: bool, inner: bool = False, apart: Collection[Path] = ()
 ) -> list[tuple[str, Path]]:
-    return _walk(folder, declared, inner, tools)[1]
+    return _walk(folder, declared, inner, apart)[1]
 
 
-def entries(folder: Path, declared: bool, tools: Collection[Path] = ()) -> list[str]:
-    dirs, files = _walk(folder, declared, tools=tools)
+def entries(folder: Path, declared: bool, apart: Collection[Path] = ()) -> list[str]:
+    dirs, files = _walk(folder, declared, apart=apart)
     children: dict[str, list[tuple[str, str, bool]]] = {}
     for rel in dirs:
         parent, _, name = rel.rpartition("/")

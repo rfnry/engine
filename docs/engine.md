@@ -366,7 +366,7 @@ is no parser in between, and nothing is loaded until the model asks — unless t
 loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested
 as you choose — `root` itself when it has one, `support/`, `desks/billing/triage/`. A folder without
 an `AGENT.md` is a group of agents, or a folder of knowledge the agents read; it is never run.
-Hidden folders, an agent's own `questions/` and `skills/`, which stay its declarations, and every
+Hidden folders, an agent's own `questions/`, which stays its declaration, and every `skills/` and
 `tools/` folder are never searched for agents, so an `AGENT.md` in them is no agent. An agent inside
 another agent's folder is an agent like any other, which the outer one calls through `agents:`; the
 root, when it is an agent, is the outer agent of the whole tree. A tree with no `AGENT.md` anywhere
@@ -401,13 +401,16 @@ or a question's script — is never left out: one it cannot read is a `Configura
 for a script or a tool's file), while any other file of a skill's folder that it cannot read is left
 out with the warning. Nor is a folder that declares them left out: a `tools/`, `questions/`,
 `skills/` or `skills/<name>/` folder it cannot read or search is a `ConfigurationError` naming that
-folder, with no warning before it — a decision agent has no skills, so its `skills/` is left out
-with the warning. A skill is read from the agent's `skills/` folder itself: a `<name>.md` in it but
-an `AGENT.md`, or the `SKILL.md` of a `<name>/` folder in it that holds no `AGENT.md`. A skill file
-that is a link counts when it leads to a file in the agent's folder, a hidden one included, and is
-never read when it leads out of it, while a folder link under `skills/`, or a `skills/` that is
-itself a link inside the agent's folder, is never entered, so no skill is read through it and
-nothing behind it is checked. A file removed while the engine lists its folder —
+folder, with no warning before it unless it is, or lies in, a `tools/` or `skills/` folder of a
+folder without an `AGENT.md`, which the root's walk for agents meets first and warns about — a
+decision agent has no skills, so its `skills/` is left out with the warning. A skill is read from a
+`skills/` folder itself, the agent's own or one [above it](#skills): a `<name>.md` in it but an
+`AGENT.md`, or the `SKILL.md` of a `<name>/` folder in it that holds no `AGENT.md`. A skill file
+that is a link counts when it leads to a file in the agent's folder — for a `skills/` folder above
+it, in that `skills/` folder — a hidden one included, and is never read when it leads out of it,
+while a folder link under `skills/`, or a `skills/` that is itself a link, one inside the agent's
+folder or any above it, is never entered, so no skill is read through it and nothing behind it is
+checked. A file removed while the engine lists its folder —
 an editor's swap file, an rsync temporary, a ConfigMap's `..data` swap — is left out as though it was
 never there; one that cannot be read for any other reason is refused as above. A file or folder whose
 name is not UTF-8 is a `ConfigurationError` naming it: `tree: the name of
@@ -451,23 +454,24 @@ You write code. The books hold the house's conventions.
 Each folder it reads follows its own in the map as `../books/`, and the tools take its files by that
 path — `Read` of `../books/python/async.md`, `Grep` with `path="../books"`, `Glob` of
 `../books/**/*.md`; without a path, `Grep` and `Glob` search the agent's own folder. Nothing outside
-the agent's folder and the folders it reads is reachable. Another agent's folder shows in the map
-without its `AGENT.md` and declarations, which stay readable, and a folder read shows without the
-agents inside it, as an agent's own map does. `preload: true` sends the folders it reads too, under
+the agent's folder, the folders it reads and the [`skills/` folders above it](#skills) is reachable.
+Another agent's folder shows in the map without its `AGENT.md` and declarations, which stay
+readable, and a folder read shows without the agents inside it or the `skills/` and `tools/` folders
+on their paths, as an agent's own map does. `preload: true` sends the folders it reads too, under
 the same paths, and an edit to one changes the fingerprint of every agent that reads it. `reads:`
 names a folder by its path from the root, another agent's or not — `books`, or `shared/books` for a
 folder deeper in the tree — written with `/` and a trailing `/` allowed; the map and the tools spell
 it from the agent's own folder, `../books/` for an agent directly under the root and
 `../shared/books/` for the deeper one. Each of these is a `ConfigurationError` when the tree loads:
 a path that starts with `./`, `/` or `..`, holds `\`, an empty segment or a hidden one; a folder the
-tree does not have; a [`tools/` folder](#tools) on an agent's path, or a folder inside one, which
-gives its tools and is not read as content; a link that leaves the root; the agent's own folder or
-one that holds it; a folder inside the agent's own, which its map holds already, so every `reads:`
-of a root agent; two folders one inside the other; `reads:` on a decision agent, which reads no
-files; and `reads:` on an agent whose folder is a link to a folder elsewhere — link the whole root
-instead. The tree is shared by every tenant: it holds how to do the work, never a tenant's data —
-that comes per run, in the input, the history or the workspace. An agent that reads
-`my_agents/acme/` reads it for every tenant.
+tree does not have; a [`tools/`](#tools) or [`skills/`](#skills) folder on an agent's path, or a
+folder inside one, which gives its tools or skills and is not read as content; a link that leaves
+the root; the agent's own folder or one that holds it; a folder inside the agent's own, which its
+map holds already, so every `reads:` of a root agent; two folders one inside the other; `reads:` on
+a decision agent, which reads no files; and `reads:` on an agent whose folder is a link to a folder
+elsewhere — link the whole root instead. The tree is shared by every tenant: it holds how to do the
+work, never a tenant's data — that comes per run, in the input, the history or the workspace. An
+agent that reads `my_agents/acme/` reads it for every tenant.
 
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its `path`
 — its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the `agents` it
@@ -492,12 +496,12 @@ Tag the document. Every rule applies to every document.
 ```
 
 With `preload: true` the model also receives every file of its folder and of the folders it reads
-— all but an agent's `AGENT.md`, `skills/`, `tools/` and `questions/` and the folders of the agents
-inside it, described or not — sorted by path character by character, each under its path: what
-`Read` would return for it, and for a file `Read` refuses — over 5 MB, or not text — the part `Load`
-would hand over. Skills stay listed for the model to open the one that fits, never sent ahead. The
-map stays a map and the folder stays as it is; only when the files are read changes, so no turn goes
-to opening them.
+— all but an agent's `AGENT.md` and `questions/`, the `skills/` and `tools/` folders on an agent's
+path and the folders of the agents inside it, described or not — sorted by path character by
+character, each under its path: what `Read` would return for it, and for a file `Read` refuses —
+over 5 MB, or not text — the part `Load` would hand over. Skills stay listed for the model to open
+the one that fits, never sent ahead. The map stays a map and the folder stays as it is; only when
+the files are read changes, so no turn goes to opening them.
 They travel as one user message ahead of the history, sent with every model call, and are read when
 the engine loads the tree, as the fingerprint is taken, so an edit shows in the next `Engine`.
 `run.preload` holds that message's parts; `run.messages` and `run.conversation` leave it out, so a
@@ -511,15 +515,48 @@ or not the type its name says — with `Load`'s own message.
 ### Skills
 
 A skill is how to do something: `skills/<name>.md`, or `skills/<name>/SKILL.md` for one that keeps
-files of its own beside it, in a generation agent's own folder; a skill folder written for another
-tool — `skills/<name>/SKILL.md` with `name:` and `description:` — works as it is, its other keys
-left alone. The prompt lists the agent's skills in a section of their own, after the map: one line
-per skill, in name order, its path as `Read` takes it and its `description:` when it has one.
+files of its own beside it, in a generation agent's own folder or a folder above it; a skill folder
+written for another tool — `skills/<name>/SKILL.md` with `name:` and `description:` — works as it
+is, its other keys left alone. The prompt lists the agent's skills in a section of their own, after
+the map: one line per skill, in name order, its path as `Read` takes it and its `description:` when
+it has one.
 
 ```
 <<<SKILLS>>>
 skills/escalate.md — Hand a conversation to a person
 ```
+
+An agent has the skills of its own `skills/` folder and of the `skills/` folder of every folder
+above it — the root's, a group folder's or an outer agent's — as it has the [tools](#tools) of the
+`tools/` folders above it: a skill of a folder nearer the agent replaces one of the same name above
+it, its own folder's before a group's and a group's before the root's. Each is listed under its path
+from the agent's folder, the path `Read` takes:
+
+```
+agents/
+  skills/brief.md, tone.md     every agent of the tree has them
+  desks/
+    skills/brief.md            the agents under desks/ have this brief instead of the root's
+    support/AGENT.md
+    support/skills/close.md    only support, and the agents inside it, have close
+```
+
+```
+<<<SKILLS>>>
+../skills/brief.md — Brief the desk
+skills/close.md — Close a ticket
+../../skills/tone.md — Keep it warm
+```
+
+A `skills/` folder on an agent's path is a declaration, as the agent's own is: it stays out of every
+map and preload, a folder another agent reads included, and `reads:` cannot name it; `Read`, `Load`,
+`Grep`, `Glob` and `LS` reach its files under the path the list shows, `../skills/plot/run.py` for a
+file a skill keeps, and a workspace command at `$RFNRY_AGENT/../skills/plot/run.py`; and its files
+count in the fingerprint of every agent that has its skills. A decision agent has no skills, so a
+`skills/` folder above it gives it none and leaves its fingerprint alone. A `skills/` folder above
+that is a link is never entered and gives no skills, and a skill file in one that links out of it is
+never read. A folder named `skills` off every agent's path is content like any other, but never
+holds an agent.
 
 The model opens a skill with `Read` when it judges it fits. The `skills/` folder stays out of the
 map and out of `preload: true`, so a skill is read only when it is wanted; a skill's other files
@@ -581,17 +618,19 @@ run.fingerprint.tools                                # "a02c77e1f4b9d305": the t
 ```
 
 `fingerprint.agent` is a short sha256 over every file the agent reads, by relative path and content:
-its own directory, the `tools/` folder of each folder above it, whose tools it gets, under its path
-from the agent's folder, `../tools/`, and each folder it names in `reads:` with that folder's files
+its own directory, the `tools/` folder of each folder above it, whose tools it gets, and the
+`skills/` folder of each folder above it, whose skills it has, under their paths from the agent's
+folder, `../tools/` and `../skills/`, and each folder it names in `reads:` with that folder's files
 under its path from the agent's folder, `../<name>/` (`../../shared/books/` for an agent two folders
 deep), as the map shows them — leaving out hidden files and folders and every file or folder named
 `__pycache__`, as `LS`, `Glob` and `Grep` do, links that lead out of them, and folder links to a
-hidden name. The engine takes it once, when it loads the tree, so an edit to the agent or to a
-folder it reads shows in the next `Engine` built from the folder. `fingerprint.tools` is one over
-`run.tools` — each tool's name, description and schema — so it covers the tools the agent gets from
-its folders, the `tools=` a run passes, `Output` when `expect=` asks for one, in `Delegate` the
-agents it may call — their names, descriptions and kinds — and a workspace's tools, whose
-`Shell` description says whether the workspace has `tree=` and whether its commands can call tools.
+hidden name. The engine takes it once, when it loads the tree, so an edit to the agent, to a
+folder it reads or to a `skills/` folder above it shows in the next `Engine` built from the folder.
+`fingerprint.tools` is one over `run.tools` — each tool's name, description and schema — so it
+covers the tools the agent gets from its folders, the `tools=` a run passes, `Output` when `expect=`
+asks for one, in `Delegate` the agents it may call — their names, descriptions and kinds — and a
+workspace's tools, whose `Shell` description says whether the workspace has `tree=` and whether its
+commands can call tools.
 Neither sees what varies per run and is not the agent — the input, the history, `context=`, `tags=`
 — so two runs of an unchanged folder share it and any edit changes it, a tool's script included. The
 model is `run.model`; the code behind a tool a run passes is yours to version. A decision run
@@ -2841,11 +2880,12 @@ module relatively or a sibling script or subfolder of its folder, or imports a h
 function, a helper named like a standard-library module, a tool named like one the engine gives the
 agent, a `workers=`
 naming a folder that holds no agent or one inside another it names, a `reads:` that is not a path
-from the root, names no folder of the tree, a `tools/` folder on an agent's path or a folder inside
-one, leaves the root, names the agent's own folder, one that holds it or one inside it, or names two
-folders one inside the other, `reads:` on a decision agent or on an agent whose folder is a link to
-a folder elsewhere, a file `preload: true` would send that neither `Read` nor `Load` would hand over
-— over 20 MB, of a type the model's `media_types` does not name, or not the type its name says — one
+from the root, names no folder of the tree, a `tools/` or `skills/` folder on an agent's path or a
+folder inside one, leaves the root, names the agent's own folder, one that holds it or one inside
+it, or names two folders one inside the other, `reads:` on a decision agent or on an agent whose
+folder is a link to a folder elsewhere, a file `preload: true` would send that neither `Read` nor
+`Load` would hand over — over 20 MB, of a type the model's `media_types` does not name, or not the
+type its name says — one
 skill as both `skills/x.md` and `skills/x/SKILL.md`, a question in markdown, a question's JSON that
 is not an object, holds an unknown key, has no instructions or does not fit its type, a question's
 script without its `.json`, a route not by a choice question of the router's `questions/`, by one a

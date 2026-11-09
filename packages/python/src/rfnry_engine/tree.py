@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 Kind = Literal["generation", "decision"]
 OUTPUT_TOOL = "Output"
+HANDED_DOWN = frozenset({"skills", "tools"})
 
 
 class RouteSpec(BaseModel):
@@ -208,6 +209,7 @@ class AgentSpec(BaseModel):
     listing: str = ""
     reads: dict[str, Path] = Field(default_factory=dict)
     skills: dict[str, Skill] = Field(default_factory=dict)
+    skill_folders: dict[str, Path] = Field(default_factory=dict)
     folder_tools: dict[str, ToolDef] = Field(default_factory=dict)
 
 
@@ -380,9 +382,9 @@ def _questions(
 
 
 class _Folder:
-    def __init__(self, place: Path, tools: Collection[Path] = ()) -> None:
+    def __init__(self, place: Path, apart: Collection[Path] = ()) -> None:
         self.place = place
-        self.tools = tools
+        self.apart = apart
 
     @cached_property
     def files(self) -> list[tuple[str, Path]]:
@@ -390,11 +392,11 @@ class _Folder:
 
     @cached_property
     def preloaded(self) -> list[tuple[str, Path]]:
-        return content(self.place, declares(self.place), tools=self.tools)
+        return content(self.place, declares(self.place), apart=self.apart)
 
     @cached_property
     def mapped(self) -> list[str]:
-        return entries(self.place, declares(self.place), self.tools)
+        return entries(self.place, declares(self.place), self.apart)
 
 
 def from_agent[T](path: str, reads: Mapping[str, T]) -> dict[str, T]:
@@ -434,7 +436,7 @@ def _loops(top: Path, found: Mapping[str, Path], key: str, target: Path) -> bool
 
 
 def _is_agent(folder: Path, path: str) -> bool:
-    return "tools" not in path.split("/") and declares(folder)
+    return not HANDED_DOWN.intersection(path.split("/")) and declares(folder)
 
 
 def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
@@ -471,7 +473,9 @@ def _holds_agent(folder: Path) -> bool:
     return declares(folder) or any(
         _holds_agent(child)
         for child in _subfolders(folder)
-        if not child.name.startswith(".") and child.name != "tools" and not child.is_symlink()
+        if not child.name.startswith(".")
+        and child.name not in HANDED_DOWN
+        and not child.is_symlink()
     )
 
 
@@ -529,6 +533,7 @@ def _reads(
     path: str,
     folders: Mapping[str, _Folder],
     tools: Collection[str],
+    skills: Collection[str],
 ) -> dict[str, _Folder]:
     if front.kind == "decision" and front.reads:
         raise ConfigurationError(
@@ -541,8 +546,13 @@ def _reads(
                 f"tree: agent {agent!r} reads {name!r}, a tools/ folder or a folder inside one; a tools/ folder gives its tools to the agents below it and is not read as content, so drop it from reads:"
             )
     for name in names:
+        if _within(name, skills):
+            raise ConfigurationError(
+                f"tree: agent {agent!r} reads {name!r}, a skills/ folder or a folder inside one; a skills/ folder gives its skills to the agents below it and is not read as content, so drop it from reads:"
+            )
+    for name in names:
         if name not in folders:
-            offered = (folder for folder in folders if not _within(folder, tools))
+            offered = (folder for folder in folders if not _within(folder, [*tools, *skills]))
             choices = ", ".join(sorted(offered)) or "none"
             raise ConfigurationError(
                 f"tree: agent {agent!r} reads unknown folder {name!r}; reads: names a folder by its path from the root, one of: {choices}"
@@ -583,6 +593,22 @@ def _under(
 
 def _tool_places(root: Path, prefixes: Collection[str]) -> frozenset[Path]:
     return frozenset((root / prefix / "tools").resolve() for prefix in prefixes)
+
+
+def _skill_places(root: Path, prefixes: Collection[str]) -> frozenset[Path]:
+    return frozenset((root / prefix / "skills").resolve() for prefix in prefixes)
+
+
+def _gives_skills(folder: Path) -> bool:
+    return folder.is_dir() and not folder.is_symlink()
+
+
+def _skills_from(tree: Path, prefix: str, path: str) -> dict[str, Skill]:
+    place = (tree / prefix).resolve()
+    folder = place / "skills"
+    return _skills_in(
+        folder, place if prefix == path else folder, posixpath.relpath(f"{prefix}/skills", path)
+    )
 
 
 def _on_path(path: str) -> list[str]:
@@ -643,6 +669,7 @@ def load_agent(
     tree_root: Path | None = None,
     tool_folders: Mapping[str, dict[str, ToolDef]] | None = None,
     script_folders: Collection[Path] = (),
+    skill_prefixes: Collection[str] = (),
 ) -> AgentSpec:
     front, body = _agent_front(directory)
     agent = front.name
@@ -654,7 +681,12 @@ def load_agent(
         directory / "questions", tree_root or directory, script_folders
     )
     root = directory.resolve()
-    skills = {} if front.kind == "decision" else _skills_in(root / "skills", root, "skills")
+    tree = tree_root or directory
+    gives = [] if front.kind == "decision" else [p for p in _on_path(path) if p in skill_prefixes]
+    merged = {
+        name: skill for prefix in gives for name, skill in _skills_from(tree, prefix, path).items()
+    }
+    skills = dict(sorted(merged.items()))
     if front.kind == "decision" and front.tools is not None:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot list tools:; tools are for generation agents, so give them to one it routes to"
@@ -673,15 +705,17 @@ def load_agent(
         )
     tool_folders = tool_folders or {}
     declared = [posixpath.normpath(f"{prefix}/tools") for prefix in tool_folders]
-    held = _reads(agent, front, directory, tree_root or directory, path, folders or {}, declared)
+    skill_paths = [posixpath.normpath(f"{prefix}/skills") for prefix in skill_prefixes]
+    held = _reads(agent, front, directory, tree, path, folders or {}, declared, skill_paths)
     reads = from_agent(path, held)
     sees = [] if front.kind == "decision" else [p for p in _on_path(path) if p in tool_folders]
-    tools = _tool_places(tree_root or directory, tool_folders)
+    apart = _tool_places(tree, tool_folders) | _skill_places(tree, skill_prefixes)
     above = [
-        (posixpath.relpath(f"{prefix}/tools/{rel}", path), file)
-        for prefix in sees
+        (posixpath.relpath(f"{prefix}/{handed}/{rel}", path), file)
+        for handed, seen in (("tools", sees), ("skills", gives))
+        for prefix in seen
         if prefix != path
-        for rel, file in content((tree_root or directory) / prefix / "tools", False)
+        for rel, file in content(tree / prefix / handed, False)
     ]
     files = sorted(
         [*content(root, False, inner=True), *_under(reads, lambda folder: folder.files), *above]
@@ -694,7 +728,7 @@ def load_agent(
                 sorted(
                     rel
                     for rel, _ in [
-                        *content(root, True, tools=tools),
+                        *content(root, True, apart=apart),
                         *_under(reads, lambda folder: folder.preloaded),
                     ]
                 ),
@@ -727,10 +761,15 @@ def load_agent(
         preload=preload,
         preload_digest=preload_digest(preload),
         listing=joined(
-            entries(root, True, tools), {name: folder.mapped for name, folder in reads.items()}
+            entries(root, True, apart), {name: folder.mapped for name, folder in reads.items()}
         ),
         reads={name: folder.place for name, folder in held.items()},
         skills=skills,
+        skill_folders={
+            posixpath.normpath(f"{prefix}/skills"): (tree / prefix / "skills").resolve()
+            for prefix in gives
+            if prefix != path
+        },
         folder_tools=folder_tools,
     )
 
@@ -754,11 +793,9 @@ def load_tree(
             place = (root / path).resolve()
             _skills_in(place / "skills", place, "skills")
     project = project_of(root)
-    prefixes = [
-        prefix
-        for prefix in dict.fromkeys(p for path in paths for p in _on_path(path))
-        if (root / prefix / "tools").is_dir()
-    ]
+    on_paths = list(dict.fromkeys(p for path in paths for p in _on_path(path)))
+    prefixes = [prefix for prefix in on_paths if (root / prefix / "tools").is_dir()]
+    skill_prefixes = [prefix for prefix in on_paths if _gives_skills(root / prefix / "skills")]
     asking = [root / path / "questions" for path in paths]
     script_folders = frozenset(
         place.resolve()
@@ -775,8 +812,8 @@ def load_tree(
         )
         loaded[prefix] = load_tools(root / prefix / "tools", project, root, script_folders, above)
     tool_folders = {prefix: folder.tools for prefix, folder in loaded.items()}
-    tools = _tool_places(root, tool_folders)
-    folders = {name: _Folder(place, tools) for name, place in found.items()}
+    apart = _tool_places(root, tool_folders) | _skill_places(root, skill_prefixes)
+    folders = {name: _Folder(place, apart) for name, place in found.items()}
     agents: dict[str, AgentSpec] = {}
     for path in paths:
         spec = load_agent(
@@ -787,6 +824,7 @@ def load_tree(
             tree_root=root,
             tool_folders=tool_folders,
             script_folders=script_folders,
+            skill_prefixes=skill_prefixes,
         )
         twin = agents.get(spec.name)
         if twin is not None:
