@@ -161,8 +161,14 @@ class AgentFront(BaseModel):
 
     @field_validator("public_skills")
     @classmethod
-    def _public_skills_name_each_once(cls, value: list[str] | None) -> list[str] | None:
-        return _each_skill_once(value, "a skill people may call, such as public_skills: [escalate]")
+    def _public_skills_can_be_typed(cls, value: list[str] | None) -> list[str] | None:
+        _each_skill_once(value, "a skill people may call, such as public_skills: [escalate]")
+        for entry in value or ():
+            if len(entry.split()) > 1:
+                raise ValueError(
+                    f"tree: {entry!r} holds whitespace, so no one can type /{entry}; rename the skill to one word, such as my-skill"
+                )
+        return value
 
 
 class QuestionFront(BaseModel):

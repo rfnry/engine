@@ -5,8 +5,8 @@ import pytest
 
 from rfnry_engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
-from rfnry_engine.models import CheckAnswer, Content, Image, State, Text
-from rfnry_engine.records import Generation, Run
+from rfnry_engine.models import CheckAnswer, ChoiceAnswer, Content, Image, State, Text
+from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tree import load_tree
 
@@ -80,6 +80,7 @@ def test_public_skills_lists_them_with_their_descriptions(tmp_path: Path) -> Non
         "close": "Close the ticket",
         "escalate": "Hand it to a person",
     }
+    assert list(engine.agents["reviewer"].public_skills) == ["close", "escalate"]
 
 
 @pytest.mark.parametrize(
@@ -111,11 +112,23 @@ def test_public_skills_names_only_skills_the_agent_has(
             "public_skills: an entry must not be blank or padded, got ' x'; write the name of a skill people may call, such as public_skills: [escalate]",
         ),
         (
+            "public_skills: ['']\n",
+            "public_skills: an entry must not be blank or padded, got ''; write the name of a skill people may call, such as public_skills: [escalate]",
+        ),
+        (
             "public_skills: [close, close]\n",
             "public_skills: 'close' is listed twice; list each skill once",
         ),
+        (
+            "public_skills: ['my skill']\n",
+            "public_skills: 'my skill' holds whitespace, so no one can type /my skill; rename the skill to one word, such as my-skill",
+        ),
+        (
+            'public_skills: ["my\\tskill"]\n',
+            "public_skills: 'my\\tskill' holds whitespace, so no one can type /my\tskill; rename the skill to one word, such as my-skill",
+        ),
     ],
-    ids=["padded", "twice"],
+    ids=["padded", "blank", "twice", "a-space", "a-tab"],
 )
 def test_public_skills_entries_are_plain_names_each_once(
     tmp_path: Path, line: str, said: str
@@ -123,9 +136,19 @@ def test_public_skills_entries_are_plain_names_each_once(
     agents(tmp_path, line)
     with pytest.raises(ConfigurationError) as refused:
         load_tree(tmp_path)
-    assert str(refused.value).startswith(
-        f"frontmatter: invalid agent {tmp_path / 'reviewer/AGENT.md'}; {said}"
+    assert (
+        str(refused.value) == f"frontmatter: invalid agent {tmp_path / 'reviewer/AGENT.md'}; {said}"
     )
+
+
+async def test_a_name_that_holds_whitespace_stays_a_skill_the_code_may_invoke(
+    tmp_path: Path,
+) -> None:
+    root = agents(tmp_path, "skills: ['my skill']\n")
+    write(root / "reviewer/skills/my skill.md", "Do it.\n")
+    run, llm = await ran(root, "x", skill="my skill")
+    assert run.skill == "my skill"
+    assert sent(llm) == [Text(text="<<<SKILL skills/my skill.md>>>\nDo it."), Text(text="x")]
 
 
 @pytest.mark.parametrize("line", ["public_skills: [escalate]\n", "public_skills: []\n"])
@@ -142,10 +165,21 @@ def test_public_skills_on_a_decision_agent_is_refused(tmp_path: Path, line: str)
     )
 
 
-async def test_an_input_starting_with_slash_name_invokes_that_skill(tmp_path: Path) -> None:
-    run, llm = await ran(agents(tmp_path), "/escalate  A third complaint.")
-    assert run.skill == "escalate" and run.input == "A third complaint."
-    assert sent(llm) == [SKILL, Text(text="A third complaint.")]
+@pytest.mark.parametrize(
+    ("given", "rest"),
+    [
+        ("/escalate  A third complaint.", "A third complaint."),
+        ("/escalate\tx", "x"),
+        ("/escalate\nx", "x"),
+    ],
+    ids=["spaces", "tab", "newline"],
+)
+async def test_an_input_starting_with_slash_name_invokes_that_skill(
+    tmp_path: Path, given: str, rest: str
+) -> None:
+    run, llm = await ran(agents(tmp_path), given)
+    assert run.skill == "escalate" and run.input == rest
+    assert sent(llm) == [SKILL, Text(text=rest)]
 
 
 @pytest.mark.parametrize("given", ["/escalate", [Text(text="/escalate")]], ids=["str", "list"])
@@ -168,6 +202,7 @@ async def test_a_list_input_starting_with_slash_name_invokes_it(tmp_path: Path) 
     "given",
     [
         "/refund x",
+        "/ESCALATE x",
         "/etc/passwd please",
         "/escalate/x",
         "/escalatex",
@@ -178,6 +213,7 @@ async def test_a_list_input_starting_with_slash_name_invokes_it(tmp_path: Path) 
     ],
     ids=[
         "unknown-name",
+        "another-case",
         "path",
         "name-then-slash",
         "name-then-more",
@@ -239,9 +275,20 @@ async def test_engine_tool_and_delegate_inputs_never_invoke_a_skill(tmp_path: Pa
         root / "lead/AGENT.md",
         "---\nname: lead\nkind: generation\nmodel: strong\nagents: [reviewer]\n---\nLead.\n",
     )
+    write(
+        root / "frontdesk/AGENT.md",
+        "---\nname: frontdesk\nkind: decision\nmodel: judge\nroute:\n  by: intent\n  to:\n    review: reviewer\n---\n",
+    )
+    write(
+        root / "frontdesk/questions/intent.json",
+        '{"type": "choice", "instructions": "Which?", "options": {"review": null, "other": null}}',
+    )
     recorded = Recorded()
     llm = Scripted(*[text_reply("Done.")] * 2)
-    engine = Engine(root, refinery=recorded, models={"strong": llm})
+    judge = Fixed(
+        {"intent": ChoiceAnswer(choice="review", probabilities={"review": 0.9, "other": 0.1})}
+    )
+    engine = Engine(root, refinery=recorded, models={"strong": llm, "judge": judge})
     consult = engine.tool("reviewer", scope="acme")
     assert await consult.dispatch("reviewer", {"input": "/escalate x"}) == "Done."
     assert untouched(recorded.runs[-1]) and sent(llm) == "/escalate x"
@@ -250,7 +297,13 @@ async def test_engine_tool_and_delegate_inputs_never_invoke_a_skill(tmp_path: Pa
     )
     assert untouched(recorded.runs[-1])
     llm = Scripted(delegating("reviewer", "/escalate x"), text_reply("Done."), text_reply("Done."))
-    run = await Engine(root, models={"strong": llm}).run("lead", "acme", "Go.")
+    run = await Engine(root, models={"strong": llm, "judge": judge}).run("lead", "acme", "Go.")
     assert isinstance(run, Generation)
     [child] = run.children
     assert untouched(child)
+    llm = Scripted(text_reply("Done."))
+    decided = await Engine(root, models={"strong": llm, "judge": judge}).run(
+        "frontdesk", "acme", "/escalate x"
+    )
+    assert isinstance(decided, Decision) and decided.routed_to is not None
+    assert untouched(decided.routed_to)

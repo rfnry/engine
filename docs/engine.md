@@ -618,7 +618,8 @@ in name order, each to its description, `{}` when there are none. A name in it m
 agent has after `skills:` — `tree: agents/support/AGENT.md names 'ghost' in public_skills:, a skill
 agent 'support' does not have; its skills are brief, close` (`it has no skills` when it has none) —
 and, as for `skills:`, a blank or padded entry, a name listed twice, or `public_skills:` on a
-decision agent is a `ConfigurationError` when the tree loads.
+decision agent is a `ConfigurationError` when the tree loads, as is a name that holds whitespace,
+since no one could type it (`skills:` and `skill=` still take such a name).
 
 `engine.run` reads an input for a command when it is a string that starts with `/`, at its very
 first character, or a list whose first part is a `Text` that does. Its first word is the text up to
@@ -628,8 +629,14 @@ first part becomes that text, or is dropped when nothing follows, and a list lef
 becomes `""`. Any other input stays as it came, and is never an error: a path (`/etc/passwd`), an
 unknown name, `/escalate/x`, `/escalatex`, ` /escalate`, a JSON object or a JSON list that is not
 parts, and every input to a decision agent, which has no skills. A skill the agent has but does not
-make public is no command either: the input stays as it came, so a person who guesses the name of
-a code-only skill gets no skill and learns nothing.
+make public is no command either: the input stays as it came, so typing the name of a code-only
+skill invokes nothing and gets the answer any other text would.
+
+`public_skills:` decides what typing invokes, not what the model may open: `/secret x` reaches the
+model as text, and `secret` is still in its `SKILLS` list, where the model may open it with `Read`.
+A skill the model should not be offered is left out of `skills:`, which takes it off the list; its
+file stays readable by path, so one the model must not reach at all has to live outside the folders
+the agent reaches.
 
 Giving both ways at once is an `InputError` before any model call — `engine: a run invokes one
 skill, by skill= or by an input that starts with /<name>; got skill='escalate' and /close` — while
@@ -2159,12 +2166,14 @@ It replays the top-level runs of `agent` in the scope, oldest first. `holdout=Tr
 held-out ones, by the same hash and `holdout_percent` as `export`; `labeled=True` those a person
 reviewed or the world reported on; `tags=` those whose tags contain these, as `delete_runs` matches;
 `fingerprint=` the runs one version produced — the `run.fingerprint` of any of them, its `agent`,
-`tools` and `questions` all equal; `limit=` the first so many. Each is `candidate.run(agent, scope,
-…, record=False)` with the recorded input — parts as parts — the history sent before it, the
+`tools` and `questions` all equal; `limit=` the first so many. Each is a run of the candidate,
+as `candidate.run(agent, scope, …, record=False)` would be but never reading `/name`, with the
+recorded input — parts as parts — the history sent before it, the
 skill and the `context`, so the candidate sees what the recorded run saw, its own skill file
 read for a recorded skill. A run invoked by `/name` recorded that skill and the rest of its input,
 and the replay sends that pair: `/name` is never read again, so a rest that itself starts with
-`/<skill>` replays as text. A decision run replays its state, and asks its runtime questions again
+`/<skill>` replays as text, as does a recorded input of `/close x` whose `close` has become public
+on the candidate since. A decision run replays its state, and asks its runtime questions again
 as they were recorded while the questions of its folder come from the candidate's folder, its
 scripts filling theirs anew — a runtime id the candidate's folder now asks fails that pair; when its
 route reached a generation run, that run's input, history and context go too. What a record does not
@@ -2918,7 +2927,7 @@ UTF-8, a file an agent is made of that cannot be read, a question's file or an `
 out of the agent's folder, an agent's own `tools/`, `questions/` or `skills/` folder that links out
 of it, a `skills:` or `public_skills:` that names a skill the agent does not have, holds a blank,
 padded or twice-listed entry or sits in a decision agent's
-`AGENT.md`, a `tasks/` folder in an agent's folder, whatever it holds (`tree: tasks are gone
+`AGENT.md`, a `public_skills:` entry that holds whitespace, a `tasks/` folder in an agent's folder, whatever it holds (`tree: tasks are gone
 (agents/support/tasks/triage.md); make it a skill, or say it in the input`), an `AGENT.md` without
 a `name:` or a `model:` in plain text,
 or whose `kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names

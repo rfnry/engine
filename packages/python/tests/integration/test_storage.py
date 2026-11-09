@@ -721,16 +721,40 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     assert [p async for p in refinery.replay("b", candidate, agent="support")] == []
 
 
-async def test_the_replay_of_a_slash_run_sends_skill_and_rest_and_reads_no_slash_again(
-    storage: Storage, tmp_path: Path
-) -> None:
+def reviewing(root: Path, line: str) -> Path:
     for path, text in {
-        "reviewer/AGENT.md": "---\nname: reviewer\nkind: generation\nmodel: strong\npublic_skills: [escalate, close]\n---\nReview.\n",
+        "reviewer/AGENT.md": f"---\nname: reviewer\nkind: generation\nmodel: strong\n{line}---\nReview.\n",
         "reviewer/skills/escalate.md": "Say so, then stop.\n",
         "reviewer/skills/close.md": "Close it.\n",
     }.items():
-        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / path).write_text(text, encoding="utf-8")
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text, encoding="utf-8")
+    return root
+
+
+async def test_a_recorded_slash_text_stays_text_on_a_candidate_that_made_it_public(
+    storage: Storage, tmp_path: Path
+) -> None:
+    refinery = Refinery(storage)
+    await Engine(
+        reviewing(tmp_path / "before", ""),
+        refinery=refinery,
+        models={"strong": Scripted(text_reply("Done."))},
+    ).run("reviewer", "a", "/close x")
+    seeing = Seeing()
+    candidate = Engine(
+        reviewing(tmp_path / "after", "public_skills: [close]\n"), models={"strong": seeing}
+    )
+    [pair] = [p async for p in refinery.replay("a", candidate, agent="reviewer")]
+    assert pair.error is None
+    assert isinstance(pair.candidate, Generation) and pair.candidate.skill is None
+    assert seeing.seen[0][-1].content == "/close x"
+
+
+async def test_the_replay_of_a_slash_run_sends_skill_and_rest_and_reads_no_slash_again(
+    storage: Storage, tmp_path: Path
+) -> None:
+    reviewing(tmp_path, "public_skills: [escalate, close]\n")
     refinery = Refinery(storage)
     run = await Engine(
         tmp_path, refinery=refinery, models={"strong": Scripted(text_reply("Done."))}
