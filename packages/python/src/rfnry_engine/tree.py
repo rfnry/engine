@@ -1,3 +1,4 @@
+import errno
 import json
 import logging
 import os
@@ -451,9 +452,12 @@ def _questions(
 
 
 class _Folder:
-    def __init__(self, place: Path, apart: Collection[Path] = ()) -> None:
+    def __init__(
+        self, place: Path, apart: Collection[Path] = (), within: Path | None = None
+    ) -> None:
         self.place = place
         self.apart = apart
+        self.within = within
 
     @cached_property
     def files(self) -> list[tuple[str, Path]]:
@@ -461,7 +465,7 @@ class _Folder:
 
     @cached_property
     def preloaded(self) -> list[tuple[str, Path]]:
-        return content(self.place, declares(self.place), apart=self.apart)
+        return content(self.place, declares(self.place), apart=self.apart, within=self.within)
 
     @cached_property
     def mapped(self) -> list[str]:
@@ -682,41 +686,66 @@ def _under(reads: Mapping[str, _Folder]) -> list[tuple[str, Path]]:
     return [(f"{name}/{rel}", path) for name, folder in reads.items() for rel, path in folder.files]
 
 
+def _there(target: Path) -> bool:
+    try:
+        target.stat()
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return False
+        raise ConfigurationError(
+            f"tree: cannot read {target}: {exc.strerror or exc}; make it readable to the engine"
+        ) from exc
+    return True
+
+
+def _in_a_holder(tree: Path, name: str, path: str) -> bool:
+    folder = name if (tree / name).is_dir() else posixpath.dirname(name) or "."
+    return _holds(folder, path)
+
+
+def _sent(shown: str, target: Path, holder: Path, apart: Collection[Path]) -> dict[str, Path]:
+    if not target.is_dir():
+        return {shown: target}
+    return {
+        posixpath.normpath(f"{shown}/{rel}"): file.resolve()
+        for rel, file in _Folder(target, apart, holder).preloaded
+    }
+
+
 def _preload_names(
     agent: str,
     front: AgentFront,
+    tree: Path,
     path: str,
-    reached: Collection[str],
+    reached: Mapping[str, Path],
     jail: Jail,
     apart: Collection[Path],
 ) -> list[str]:
-    entries: list[tuple[str, str, Path]] = []
+    places = {path: jail.root, **reached}
+    entries: list[tuple[str, str, dict[str, Path]]] = []
     for said in front.preload:
         name = _from_agent(agent, "preloads", said, path)
-        if not _within(name, [path, *reached]):
-            raise ConfigurationError(
-                f"tree: agent {agent!r} preloads {said!r}, outside its folder and the folders it reads; add its folder to reads:, or move the file into the agent's folder"
+        if not _within(name, places):
+            reason = (
+                "in a folder that holds the agent, and reads: cannot name such a folder; move the file into the agent's folder or into a folder it reads"
+                if _in_a_holder(tree, name, path)
+                else "outside its folder and the folders it reads; add its folder to reads:, or move the file into the agent's folder"
             )
-        target = jail.resolve(posixpath.relpath(name, path))
-        if not target.exists():
+            raise ConfigurationError(f"tree: agent {agent!r} preloads {said!r}, {reason}")
+        shown = posixpath.relpath(name, path)
+        target = jail.resolve(shown)
+        if not _there(target):
             raise ConfigurationError(
                 f"tree: agent {agent!r} preloads {said!r}, which does not exist; write its path from the agent's folder"
             )
-        entries.append((name, said, target))
-    for (one, one_said, _), (other, other_said, _) in combinations(entries, 2):
-        if _holds(one, other) or _holds(other, one):
+        holder = next(place for folder, place in places.items() if _holds(folder, name))
+        entries.append((name, said, _sent(shown, target, holder, apart)))
+    for (one, one_said, one_sent), (other, other_said, other_sent) in combinations(entries, 2):
+        if one == other or set(one_sent.values()) & set(other_sent.values()):
             raise ConfigurationError(
                 f"tree: agent {agent!r} preloads {one_said!r} and {other_said!r}, one inside the other; keep one"
             )
-    names: list[str] = []
-    for name, _, target in entries:
-        shown = posixpath.relpath(name, path)
-        if target.is_dir():
-            walked = _Folder(target, apart).preloaded
-            names += [posixpath.normpath(f"{shown}/{rel}") for rel, _ in walked]
-        else:
-            names.append(shown)
-    return names
+    return [name for _, _, sent in entries for name in sent]
 
 
 def _tool_places(root: Path, prefixes: Collection[str]) -> frozenset[Path]:
@@ -888,7 +917,7 @@ def load_agent(
     jail = Jail(root, reach=from_agent(path, {**read_places, **skill_folders}))
     try:
         preload, read = preload_parts(
-            _preload_names(agent, front, path, [*read_places, *skill_folders], jail, apart),
+            _preload_names(agent, front, tree, path, {**read_places, **skill_folders}, jail, apart),
             jail,
             front.tools is None or "Load" in front.tools,
         )

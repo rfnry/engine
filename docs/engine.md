@@ -519,31 +519,35 @@ its `skills/` and `tools/` folders and those on an agent's path and the folders 
 it stay out, and naming one of those folders directly sends it. A skill is preloaded only when it is
 named, and stays listed for the model to open the one that fits.
 
-The entries go in the order of the list, each file under the path the map and `Read` use: what
-`Read` would return for it. A file that is not text, or is over 5 MB, goes as a line naming its type
-and size, such as `image/png, 15 bytes; Load opens it`, which `Load` opens when the model asks;
-nothing about it is refused when the tree loads. An agent whose `tools:` leaves out `Load` gets the
-line without `; Load opens it`. The map stays a map and the folder stays as it is; only when the
-files are read changes, so no turn goes to opening a text file. They travel as one user message
-ahead of the history, sent with every model call, and are read when the engine loads the tree, as
-the fingerprint is taken, so an edit shows in the next `Engine`. `run.preload` holds that message's
-parts; `run.messages` and `run.conversation` leave it out, so a conversation passed back does not
-send the folder twice and a replay preloads from the candidate's folder. The tools stay as they are
-— `Read` hands over the text the model already holds. Each agent sends its own list, a delegated or
-routed one included.
+The entries go in the order of the list, each file under the path the map and `Read` use, or, for an
+entry that is a link to a folder, under the link's own name, which `Read` takes though the map lists
+the files under the folder the link leads to: what `Read` would return for it. A file that is not
+text, or is over 5 MB, goes as a line naming its type and size, such as `image/png, 15 bytes; Load
+opens it`, which `Load` opens when the model asks; nothing about it is refused when the tree loads.
+An agent whose `tools:` leaves out `Load` gets the line without `; Load opens it`. The map stays a
+map and the folder stays as it is; only when the files are read changes, so no turn goes to opening
+a text file. They travel as one user message ahead of the history, sent with every model call, and
+are read when the engine loads the tree, as the fingerprint is taken, so an edit shows in the next
+`Engine`. `run.preload` holds that message's parts; `run.messages` and `run.conversation` leave it
+out, so a conversation passed back does not send the folder twice and a replay preloads from the
+candidate's folder. The tools stay as they are — `Read` hands over the text the model already holds.
+Each agent sends its own list, a delegated or routed one included.
 
 A decision agent reads no files, so `preload:` on one is a `ConfigurationError` when the tree loads.
 So are an empty `preload:` or one with no value, one that is not a list, an entry outside the
-agent's folder and the folders it reads, a file directly in the folder that holds the agent
-included, since `reads:` cannot name a folder that holds the agent (`tree: agent 'tagger' preloads
-'../policy.md', outside its folder and the folders it reads; add its folder to reads:, or move the
-file into the agent's folder`), an entry that does not exist (`tree: agent 'tagger' preloads
-'./nope.md', which does not exist; write its path from the agent's folder`), two entries one inside
-the other, one folder written two ways included (`tree: agent 'tagger' preloads './knowledge' and
-'./knowledge/', one inside the other; keep one`), and a named file `Read` would refuse or that goes
-missing or unreadable after the list is read (`tree: agent 'tagger' cannot preload: tools/builtins:
-__pycache__/x.pyc is hidden; names starting with . and __pycache__ are not part of the agent's
-folder; fix that file, or drop it from preload:`).
+agent's folder and the folders it reads (`tree: agent 'tagger' preloads '../books/x.md', outside its
+folder and the folders it reads; add its folder to reads:, or move the file into the agent's
+folder`), or in a folder that holds the agent, which `reads:` cannot name (`tree: agent 'tagger'
+preloads '../policy.md', in a folder that holds the agent, and reads: cannot name such a folder;
+move the file into the agent's folder or into a folder it reads`), an entry that does not exist
+(`tree: agent 'tagger' preloads './nope.md', which does not exist; write its path from the agent's
+folder`), an entry whose path cannot be read (`tree: cannot read <path>: Permission denied; make it
+readable to the engine`), two entries that name one path or would send one file, a link counted
+(`tree: agent 'tagger' preloads './knowledge' and './knowledge/', one inside the other; keep one`) —
+a folder entry does not send what it leaves out, so `['.', './skills/x.md']` loads — and a named
+file `Read` would refuse or that goes missing or unreadable after the list is read (`tree: agent
+'tagger' cannot preload: tools/builtins: __pycache__/x.pyc is hidden; names starting with . and
+__pycache__ are not part of the agent's folder; fix that file, or drop it from preload:`).
 
 ### Skills
 
@@ -2332,21 +2336,21 @@ agents/
       tools/refund.json, refund.py             only billing, and the agents inside it, see refund
 ```
 
-A `tools/` folder on an agent's path from the root — the root's, a group folder's or the agent's
-own — is a declaration, as an agent's own `questions/` and `skills/` are: it stays out of every map
-and preload, since the model sees its tools as tools, stays readable to the tools of the agent
-whose folder holds it, and counts in the fingerprint of every agent that sees it; a folder named
-`tools` anywhere else is content like any other. Two `tools/` folders on an agent's path may each
-hold a tool of one name: the agent gets the one nearer it, its own folder's before a group's and a
-group's before the root's, as a run's own `tools=` replace both. A decision agent has no tools, and
-a `tools/` folder on its path is not offered to it. A `.json` without its `.py`, or a `.py` without
-its `.json`, is a `ConfigurationError` naming the file; a file whose name starts with `_` or `.` is
-not a tool, and `_name.py` is a helper the scripts of its folder, and of every `tools/` folder
-below it, import. A helper named like a
-module of the standard library, `_stat.py`, `_weakrefset.py` or `_strptime.py`, is a
-`ConfigurationError` too, since the worker can't load both: `tools/folder: <path> is named like the
-standard-library module '_stat', and the worker can't load both; rename it`. A question's helper,
-`questions/_name.py`, is refused the same way.
+A `tools/` folder on an agent's path from the root — the root's, a group folder's or the agent's own
+— is a declaration, as an agent's own `questions/` and `skills/` are: it stays out of every map and
+of any folder `preload:` names, since the model sees its tools as tools, and goes ahead only when
+`preload:` names it directly (`'./tools'`); it stays readable to the tools of the agent whose folder
+holds it, and counts in the fingerprint of every agent that sees it; a folder named `tools` anywhere
+else is content like any other. Two `tools/` folders on an agent's path may each hold a tool of one
+name: the agent gets the one nearer it, its own folder's before a group's and a group's before the
+root's, as a run's own `tools=` replace both. A decision agent has no tools, and a `tools/` folder
+on its path is not offered to it. A `.json` without its `.py`, or a `.py` without its `.json`, is a
+`ConfigurationError` naming the file; a file whose name starts with `_` or `.` is not a tool, and
+`_name.py` is a helper the scripts of its folder, and of every `tools/` folder below it, import. A
+helper named like a module of the standard library, `_stat.py`, `_weakrefset.py` or `_strptime.py`,
+is a `ConfigurationError` too, since the worker can't load both: `tools/folder: <path> is named like
+the standard-library module '_stat', and the worker can't load both; rename it`. A question's
+helper, `questions/_name.py`, is refused the same way.
 
 `<name>.json` takes three keys:
 
@@ -2992,53 +2996,54 @@ that is not a path from the agent's folder or goes above the root, names no fold
 agent's own folder, one that holds it or one inside it, or names two folders one inside the other,
 `reads:` on a decision agent or on an agent whose folder is a link to a folder elsewhere, a
 `preload:` that is empty, has no value or is not a list, an entry of it that is not a path from the
-agent's folder, goes above the root, lies outside the agent's folder and the folders it reads, does
-not exist or lies inside another entry, one written two ways included, a file it names that `Read`
-would refuse or that cannot be read, one skill as both `skills/x.md` and `skills/x/SKILL.md`, a
-question in markdown, a question's JSON that is not an object, holds an unknown key, has no
-instructions or does not fit its type, a question's script without its `.json`, a route not by a
-choice question of the router's `questions/`, by one a script fills, or that maps an option the
-question does not have, a route entry that is not an agent's name — one that names a task reads
-`frontmatter: invalid agent agents/frontdesk/AGENT.md; route.to: tasks are gone (route entry
-'technical' names task 'triage'); name the agent alone, and make the task a skill or say it in the
-agent's AGENT.md` — or that gives a decision agent nothing to ask, two tools of a run with one name
-or one named like a tool the engine gives the agent, a run of an agent whose model was not given, or
-of a router whose target's model was not given, a missing workspace, a `Local` root that is not a
-directory, a `shell` that is not a list of strings or whose first word is not on `PATH`, a backend
-without `spawn`, `read` and `write`, a `Workspace` without a scope, a `max_steps`, `max_depth`,
-`tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is not positive, a
-`worker_result_bytes` that is neither a positive integer nor `None`, an `approve` that returns
-anything but `True` or `False`, a judge that is not a decision agent or a teacher that is not a
-generation agent. `NotFoundError` for an agent the tree does not have — a judge, a teacher or a
-replay's agent in the candidate included — a skill the agent does not have (`engine: agent 'support'
-has no skill 'refund'; its skills are escalate`), found when the run starts, or a run the refinery
-does not. `InputError` for a call the library refuses: an empty scope, an input that is not a
-string, a JSON object or a list of JSON values and parts, a workspace of another scope, a history
-that breaks a tool call from its result, a `start` outside the history or without one, tags outside
-their limits, runtime questions that do not fit, a runtime id the run already asks, questions for a
-generation agent, a skill for a decision agent, a run given a skill both by `skill=` and by an input
-that starts with a public `/name` (`engine: a run invokes one skill, by skill= or by an input that
-starts with /<name>; got skill='escalate' and /close`), a decision run with no question to ask,
-media the decision model does not declare, a media part with both or neither of `data` and `url`, a
-correction of the wrong shape or for a question the run was not asked, a `delete_runs` or
-`verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an
-`export` or a `replay` given a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or
-a `limit`, `concurrency` or `repeat` below 1, a tool called with bad arguments, arguments JSON
-cannot hold or a path outside its directory, and any use of an engine after `close()` (`engine: this
-engine was closed; build a new Engine`). `ModelError` when an adapter breaks the contract — a result
-whose fields do not fit, a missing answer, probabilities that do not cover the options, lie outside
-0 and 1 or do not sum to 1, a score outside its levels — or a folder tool's result does not match
-its `output_schema`, or a question's script returns anything but an object, a key its JSON sets or
-one its type does not take, or a question that does not fit. `RunawayError` when a loop exceeds
-`max_steps` (default 200). `DelegationLoopError` for a route into an agent already in the same chain
-of routes; `DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool
-error through `Delegate` and raises through a route. `StorageError` for the database. `WorkerError`
-for a tool or a question's script that fails in its worker process: what its script raised,
-`sys.exit()` included, a result JSON cannot hold, a result or error over `worker_result_bytes`, a
-worker that stopped while the call was in flight (`workers/pool: the worker for lookup_order
-stopped: exited with code 3`) or a call in flight when `close()` stopped its worker. Inside a run, a
-tool's error is the model's to read, never raised. All under `EngineException` — the root takes the
-`Exception` suffix, every child ends in `Error`, the same shape as rfnry-memory's. Every message
-names the module that raised it, then says what went wrong in lowercase: `engine: agent 'ghost' was
-not found`, `tools/workspace: path outside the workspace: ../x`. A tool's error reaches the model
-with its type in front: `InputError: tools: unknown tool 'Ghost'`.
+agent's folder, goes above the root, lies outside the agent's folder and the folders it reads or in
+a folder that holds the agent, does not exist or cannot be reached, or names the path another entry
+names or would send a file another entry sends, a link counted, a file it names that `Read` would
+refuse or that cannot be read, one skill as both `skills/x.md` and `skills/x/SKILL.md`, a question
+in markdown, a question's JSON that is not an object, holds an unknown key, has no instructions or
+does not fit its type, a question's script without its `.json`, a route not by a choice question of
+the router's `questions/`, by one a script fills, or that maps an option the question does not have,
+a route entry that is not an agent's name — one that names a task reads `frontmatter: invalid agent
+agents/frontdesk/AGENT.md; route.to: tasks are gone (route entry 'technical' names task 'triage');
+name the agent alone, and make the task a skill or say it in the agent's AGENT.md` — or that gives a
+decision agent nothing to ask, two tools of a run with one name or one named like a tool the engine
+gives the agent, a run of an agent whose model was not given, or of a router whose target's model
+was not given, a missing workspace, a `Local` root that is not a directory, a `shell` that is not a
+list of strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and `write`,
+a `Workspace` without a scope, a `max_steps`, `max_depth`, `tool_timeout`, `history_walk`,
+`history_chars`, `timeout` or `output_bytes` that is not positive, a `worker_result_bytes` that is
+neither a positive integer nor `None`, an `approve` that returns anything but `True` or `False`, a
+judge that is not a decision agent or a teacher that is not a generation agent. `NotFoundError` for
+an agent the tree does not have — a judge, a teacher or a replay's agent in the candidate included —
+a skill the agent does not have (`engine: agent 'support' has no skill 'refund'; its skills are
+escalate`), found when the run starts, or a run the refinery does not. `InputError` for a call the
+library refuses: an empty scope, an input that is not a string, a JSON object or a list of JSON
+values and parts, a workspace of another scope, a history that breaks a tool call from its result, a
+`start` outside the history or without one, tags outside their limits, runtime questions that do not
+fit, a runtime id the run already asks, questions for a generation agent, a skill for a decision
+agent, a run given a skill both by `skill=` and by an input that starts with a public `/name`
+(`engine: a run invokes one skill, by skill= or by an input that starts with /<name>; got
+skill='escalate' and /close`), a decision run with no question to ask, media the decision model does
+not declare, a media part with both or neither of `data` and `url`, a correction of the wrong shape
+or for a question the run was not asked, a `delete_runs` or `verify_absent` given both `run_ids` and
+`tags` or an empty one, a `delete_runs` given neither, an `export` or a `replay` given a
+`holdout_percent` outside 0 to 100, a `replay` given empty `tags` or a `limit`, `concurrency` or
+`repeat` below 1, a tool called with bad arguments, arguments JSON cannot hold or a path outside its
+directory, and any use of an engine after `close()` (`engine: this engine was closed; build a new
+Engine`). `ModelError` when an adapter breaks the contract — a result whose fields do not fit, a
+missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1,
+a score outside its levels — or a folder tool's result does not match its `output_schema`, or a
+question's script returns anything but an object, a key its JSON sets or one its type does not take,
+or a question that does not fit. `RunawayError` when a loop exceeds `max_steps` (default 200).
+`DelegationLoopError` for a route into an agent already in the same chain of routes;
+`DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
+`Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool or
+a question's script that fails in its worker process: what its script raised, `sys.exit()` included,
+a result JSON cannot hold, a result or error over `worker_result_bytes`, a worker that stopped while
+the call was in flight (`workers/pool: the worker for lookup_order stopped: exited with code 3`) or
+a call in flight when `close()` stopped its worker. Inside a run, a tool's error is the model's to
+read, never raised. All under `EngineException` — the root takes the `Exception` suffix, every child
+ends in `Error`, the same shape as rfnry-memory's. Every message names the module that raised it,
+then says what went wrong in lowercase: `engine: agent 'ghost' was not found`, `tools/workspace:
+path outside the workspace: ../x`. A tool's error reaches the model with its type in front:
+`InputError: tools: unknown tool 'Ghost'`.

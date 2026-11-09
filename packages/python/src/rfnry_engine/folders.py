@@ -77,10 +77,15 @@ def _readable(path: Path) -> bool:
 
 
 def _walk(
-    folder: Path, declared: bool, inner: bool = False, apart: Collection[Path] = ()
+    folder: Path,
+    declared: bool,
+    inner: bool = False,
+    apart: Collection[Path] = (),
+    within: Path | None = None,
 ) -> tuple[list[str], list[tuple[str, Path]]]:
     folder = folder.resolve()
-    jail = Jail(folder)
+    holder = folder if within is None else within.resolve()
+    jail = Jail(holder)
     dirs: list[str] = []
     files: list[tuple[str, Path]] = []
     for directory, names, filenames in os.walk(folder, onerror=_unreadable):
@@ -96,7 +101,7 @@ def _walk(
             and here / name not in apart
             and (inner or not declares(here / name))
             and _inside(jail, here / name)
-            and _shown(folder, here / name)
+            and _shown(holder, here / name)
         ]
         dirs += [name if top else f"{at}/{name}" for name in names]
         for name in filenames:
@@ -113,9 +118,13 @@ def _walk(
 
 
 def content(
-    folder: Path, declared: bool, inner: bool = False, apart: Collection[Path] = ()
+    folder: Path,
+    declared: bool,
+    inner: bool = False,
+    apart: Collection[Path] = (),
+    within: Path | None = None,
 ) -> list[tuple[str, Path]]:
-    return _walk(folder, declared, inner, apart)[1]
+    return _walk(folder, declared, inner, apart, within)[1]
 
 
 def entries(folder: Path, declared: bool, apart: Collection[Path] = ()) -> list[str]:

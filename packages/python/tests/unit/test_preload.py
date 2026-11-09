@@ -645,14 +645,26 @@ def test_an_inherited_skill_can_be_preloaded(tmp_path: Path, entry: str, linked:
     assert spec.skills["tone"].path == "../skills/tone.md"
 
 
-@pytest.mark.parametrize("written", ["../policy.md", "../other/x.md", "../other", ".."])
-def test_a_path_outside_what_the_agent_reads_is_refused(tmp_path: Path, written: str) -> None:
+NOT_READ = "outside its folder and the folders it reads; add its folder to reads:, or move the file into the agent's folder"
+HOLDS_THE_AGENT = "in a folder that holds the agent, and reads: cannot name such a folder; move the file into the agent's folder or into a folder it reads"
+
+
+@pytest.mark.parametrize(
+    ("written", "reason"),
+    [
+        ("../policy.md", HOLDS_THE_AGENT),
+        ("..", HOLDS_THE_AGENT),
+        ("../other/x.md", NOT_READ),
+        ("../other", NOT_READ),
+    ],
+)
+def test_a_path_outside_what_the_agent_reads_is_refused(
+    tmp_path: Path, written: str, reason: str
+) -> None:
     write(tmp_path / "policy.md", "Policy.\n")
     write(tmp_path / "other/x.md", "Other.\n")
     write(tmp_path / "a/AGENT.md", agent_md("a", f"preload: ['{written}']\n"))
-    assert load_error(tmp_path) == (
-        f"tree: agent 'a' preloads {written!r}, outside its folder and the folders it reads; add its folder to reads:, or move the file into the agent's folder"
-    )
+    assert load_error(tmp_path) == f"tree: agent 'a' preloads {written!r}, {reason}"
 
 
 @pytest.mark.parametrize("written", ["./nope.md", "../books/nope.md", "./a.md/below", "./gone"])
@@ -695,6 +707,110 @@ def test_a_root_agent_s_own_folder_overlaps_what_is_inside_it(tmp_path: Path) ->
     assert load_error(tmp_path) == (
         "tree: agent 'lead' preloads '.' and './notes.md', one inside the other; keep one"
     )
+
+
+@pytest.mark.parametrize(
+    ("entries", "one", "other"),
+    [
+        ("['./v2', './latest']", "./v2", "./latest"),
+        ("['./x.md', './y.md']", "./x.md", "./y.md"),
+        ("['./k', './to-k.md']", "./k", "./to-k.md"),
+        ("['../books', './to-books']", "../books", "./to-books"),
+    ],
+)
+def test_two_entries_that_send_one_file_through_a_link_are_refused(
+    tmp_path: Path, entries: str, one: str, other: str
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", f"reads: ['../books']\npreload: {entries}\n"))
+    write(tmp_path / "a/v2/v.md", "V.\n")
+    (tmp_path / "a/latest").symlink_to("v2")
+    write(tmp_path / "a/x.md", "X.\n")
+    (tmp_path / "a/y.md").symlink_to("x.md")
+    write(tmp_path / "a/k/n.md", "N.\n")
+    (tmp_path / "a/to-k.md").symlink_to("k/n.md")
+    write(tmp_path / "books/b.md", "B.\n")
+    (tmp_path / "a/to-books").symlink_to("../books")
+    assert load_error(tmp_path) == (
+        f"tree: agent 'a' preloads {one!r} and {other!r}, one inside the other; keep one"
+    )
+
+
+@pytest.mark.parametrize(
+    ("entries", "names"),
+    [
+        ("['.', './skills/s.md']", ["notes.md", "sub/guide.md", "skills/s.md"]),
+        ("['.', './tools/README.md']", ["notes.md", "sub/guide.md", "tools/README.md"]),
+        ("['./sub', './sub/inner']", ["sub/guide.md", "sub/inner/notes.md"]),
+    ],
+)
+def test_entries_that_send_no_file_in_common_all_go(
+    tmp_path: Path, entries: str, names: list[str]
+) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", f"preload: {entries}\n"))
+    write(tmp_path / "a/notes.md", "Own.\n")
+    write(tmp_path / "a/skills/s.md", "A skill.\n")
+    write(tmp_path / "a/tools/README.md", "Tools.\n")
+    write(tmp_path / "a/sub/guide.md", "Guide.\n")
+    write(tmp_path / "a/sub/inner/AGENT.md", agent_md("inner", ""))
+    write(tmp_path / "a/sub/inner/notes.md", "Inner.\n")
+    assert sent(load_tree(tmp_path)["a"]) == [f"<<<{name}>>>" for name in names]
+
+
+@pytest.mark.parametrize(
+    ("entry", "folder", "names"),
+    [
+        ("./k", "a/k", ["k/link.md", "k/x.md"]),
+        ("../books/k", "books/k", ["../books/k/link.md", "../books/k/x.md"]),
+        ("../skills/deep", "skills/deep", ["../skills/deep/link.md", "../skills/deep/x.md"]),
+    ],
+)
+def test_a_folder_entry_sends_a_link_the_map_lists_under_it(
+    tmp_path: Path, entry: str, folder: str, names: list[str]
+) -> None:
+    root = tmp_path / "agents"
+    write(root / "a/AGENT.md", agent_md("a", f"reads: ['../books']\npreload: ['{entry}']\n"))
+    write(root / "books/other.md", "Other.\n")
+    write(root / folder / "x.md", "X.\n")
+    write(root / Path(folder).parent / "n.md", "N.\n")
+    (root / folder / "link.md").symlink_to("../n.md")
+    write(tmp_path / "outside.md", "Secret.\n")
+    (root / folder / "out.md").symlink_to(tmp_path / "outside.md")
+    assert load_tree(root)["a"].preload == [
+        Text(text=f"<<<{names[0]}>>>\nN.\n"),
+        Text(text=f"<<<{names[1]}>>>\nX.\n"),
+    ]
+
+
+def test_a_folder_link_entry_goes_under_the_link_s_name(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", "preload: ['./latest']\n"))
+    write(tmp_path / "a/v2/x.md", "One.\n")
+    (tmp_path / "a/latest").symlink_to("v2")
+    assert load_tree(tmp_path)["a"].preload == [Text(text="<<<latest/x.md>>>\nOne.\n")]
+
+
+def test_a_sub_folder_of_a_read_folder_is_preloaded(tmp_path: Path) -> None:
+    write(
+        tmp_path / "coding/AGENT.md",
+        agent_md("coding", "reads: ['../books']\npreload: ['../books/sub']\n"),
+    )
+    write(tmp_path / "books/other.md", "Other.\n")
+    write(tmp_path / "books/sub/x.md", "Inside.\n")
+    assert load_tree(tmp_path)["coding"].preload == [
+        Text(text="<<<../books/sub/x.md>>>\nInside.\n")
+    ]
+
+
+def test_an_entry_the_engine_cannot_reach_is_not_called_missing(tmp_path: Path) -> None:
+    write(tmp_path / "a/AGENT.md", agent_md("a", "preload: ['./locked/x.md']\n"))
+    write(tmp_path / "a/locked/x.md", "Locked.\n")
+    locked = tmp_path / "a/locked"
+    locked.chmod(0)
+    try:
+        assert load_error(tmp_path) == (
+            f"tree: cannot read {(locked / 'x.md').resolve()}: Permission denied; make it readable to the engine"
+        )
+    finally:
+        locked.chmod(0o755)
 
 
 @pytest.mark.parametrize("value", ["[]", ""], ids=["empty-list", "no-value"])
