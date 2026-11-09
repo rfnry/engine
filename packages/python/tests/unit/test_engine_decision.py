@@ -211,16 +211,6 @@ async def test_foreign_answers_alone_are_accepted_and_still_validated(fixtures: 
         await Engine(fixtures, models={"judge": Fixed(_foreign(1.5))}).run("triage", "acme", "x")
 
 
-async def test_a_routing_agent_given_a_task_is_refused_before_it_is_asked(
-    fixtures: Path,
-) -> None:
-    dm = Fixed(_intent("other", 0.9))
-    engine = Engine(fixtures, models={"strong": Scripted(), "judge": dm})
-    with pytest.raises(InputError, match="^engine: decision agent 'frontdesk' takes no task; "):
-        await engine.run("frontdesk", "acme", "x", task="triage")
-    assert dm.calls == []
-
-
 class Verdict(BaseModel):
     refund: bool
 

@@ -70,7 +70,7 @@ def test_an_outer_agent_s_fingerprint_counts_its_inner_agents(tmp_path: Path) ->
 
 def test_hidden_and_declaration_folders_are_never_searched_for_agents(tmp_path: Path) -> None:
     team(tmp_path)
-    for place in (".draft/x", "lead/tasks/x", "desks/support/triage/questions/x"):
+    for place in (".draft/x", "desks/support/triage/questions/x"):
         write(tmp_path / place / "AGENT.md", agent_md("ghost"))
     assert list(load_tree(tmp_path)) == ["lead", "triage", "writer"]
 
@@ -304,18 +304,6 @@ def test_a_looping_link_inside_a_group_folder_does_not_hide_the_agent_beside_it(
     assert list(load_tree(tmp_path)) == ["writer"]
 
 
-def test_a_task_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
-    write(tmp_path / "a/AGENT.md", agent_md("a"))
-    write(tmp_path / "elsewhere.md", "Do it.\n")
-    (tmp_path / "a/tasks").mkdir()
-    (tmp_path / "a/tasks/do.md").symlink_to(tmp_path / "elsewhere.md")
-    with pytest.raises(ConfigurationError) as caught:
-        load_tree(tmp_path)
-    assert str(caught.value) == (
-        f"tree: {tmp_path / 'a/tasks/do.md'} links to {tmp_path / 'elsewhere.md'}, outside the agent's folder; move the file into the agent's folder, or link the agent's whole folder"
-    )
-
-
 def test_an_agent_md_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
     write(tmp_path / "elsewhere.md", agent_md("a"))
     (tmp_path / "a").mkdir()
@@ -325,13 +313,6 @@ def test_an_agent_md_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> 
     assert str(caught.value) == (
         f"tree: {tmp_path / 'a/AGENT.md'} links to {tmp_path / 'elsewhere.md'}, outside the agent's folder; move the file into the agent's folder, or link the agent's whole folder"
     )
-
-
-def test_a_task_that_links_inside_its_folder_loads(tmp_path: Path) -> None:
-    write(tmp_path / "a/AGENT.md", agent_md("a"))
-    write(tmp_path / "a/tasks/sub/real.md", "Do it.\n")
-    (tmp_path / "a/tasks/do.md").symlink_to("sub/real.md")
-    assert "do" in load_tree(tmp_path)["a"].tasks
 
 
 def test_an_agent_reached_through_a_link_and_a_link_of_its_own_names_the_first_link(
@@ -360,7 +341,6 @@ def test_an_agent_reached_through_a_link_and_a_link_of_its_own_names_the_first_l
                 "notify.py": "def run(args, call):\n    return {}\n",
             },
         ),
-        ("tasks", "generation", {"do.md": "Do it.\n"}),
         ("questions", "decision", {"urgent.json": '{"type": "check", "instructions": "Urgent?"}'}),
     ],
 )
@@ -390,7 +370,6 @@ def test_an_agent_s_own_folder_that_links_out_of_the_agent_s_folder_is_refused(
                 "notify.py": "def run(args, call):\n    return {}\n",
             },
         ),
-        ("tasks", "generation", {"do.md": "Do it.\n"}),
         ("questions", "decision", {"urgent.json": '{"type": "check", "instructions": "Urgent?"}'}),
     ],
 )
@@ -440,19 +419,19 @@ def test_a_folder_link_to_a_hidden_folder_leaves_the_agent_s_map_and_fingerprint
 
 
 def test_an_agent_s_own_folder_that_links_inside_the_agent_s_folder_loads(tmp_path: Path) -> None:
-    write(tmp_path / "a/AGENT.md", agent_md("a"))
-    write(tmp_path / "a/notes/do.md", "Do it.\n")
-    (tmp_path / "a/tasks").symlink_to("notes", target_is_directory=True)
-    assert list(load_tree(tmp_path)["a"].tasks) == ["do"]
+    write(tmp_path / "a/AGENT.md", agent_md("a", kind="decision"))
+    write(tmp_path / "a/notes/urgent.json", '{"type": "check", "instructions": "Urgent?"}')
+    (tmp_path / "a/questions").symlink_to("notes", target_is_directory=True)
+    assert list(load_tree(tmp_path)["a"].questions) == ["urgent"]
 
 
 def test_an_agent_reached_through_a_link_keeps_its_own_folders(tmp_path: Path) -> None:
     write(tmp_path / "elsewhere/a/AGENT.md", agent_md("a"))
-    write(tmp_path / "elsewhere/a/tasks/do.md", "Do it.\n")
+    write(tmp_path / "elsewhere/a/skills/do.md", "Do it.\n")
     root = tmp_path / "root"
     root.mkdir()
     (root / "a").symlink_to(tmp_path / "elsewhere/a", target_is_directory=True)
-    assert list(load_tree(root)["a"].tasks) == ["do"]
+    assert list(load_tree(root)["a"].skills) == ["do"]
 
 
 def test_a_group_folder_s_tools_linked_from_elsewhere_load_and_count_in_the_agents_below(
@@ -468,16 +447,3 @@ def test_a_group_folder_s_tools_linked_from_elsewhere_load_and_count_in_the_agen
     assert list(before.folder_tools) == ["notify"]
     write(shared / "notify.py", "def run(args, call):\n    return {'sent': True}\n")
     assert load_tree(root)["writer"].fingerprint != before.fingerprint
-
-
-def test_a_task_that_links_elsewhere_in_the_agent_s_folder_loads_and_counts_in_it(
-    tmp_path: Path,
-) -> None:
-    write(tmp_path / "a/AGENT.md", agent_md("a"))
-    write(tmp_path / "a/notes/do.md", "Do it.\n")
-    (tmp_path / "a/tasks").mkdir()
-    (tmp_path / "a/tasks/do.md").symlink_to("../notes/do.md")
-    before = load_tree(tmp_path)["a"]
-    assert before.task_bodies["do"] == "Do it."
-    write(tmp_path / "a/notes/do.md", "Do it twice.\n")
-    assert load_tree(tmp_path)["a"].fingerprint != before.fingerprint

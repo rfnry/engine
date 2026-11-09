@@ -5,14 +5,12 @@ from rfnry_engine.tree import AgentSpec
 def build_bundle(
     spec: AgentSpec,
     *,
-    task: str | None,
     tools: list[ToolSpec],
     agents: list[AgentSpec],
     context: str | None,
 ) -> str:
     sections = [
         ("AGENT", spec.body),
-        ("TASK", "" if task is None else spec.task_bodies.get(task, "")),
         ("FILES", spec.listing),
         (
             "TOOLS",

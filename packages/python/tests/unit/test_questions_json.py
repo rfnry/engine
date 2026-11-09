@@ -131,7 +131,8 @@ def test_a_decision_agent_with_tasks_is_refused(tmp_path: Path, held: str) -> No
     write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
     write(tmp_path / "triage/questions/urgent.json", '{"type": "check", "instructions": "Urgent?"}')
     write(tmp_path / "triage" / held, '{"type": "check", "instructions": "Polite?"}')
-    message = "tree: decision agent 'triage' has tasks/; a decision agent asks only questions/, so make another decision agent for another set of questions"
+    named = tmp_path / "triage" / ("tasks/tone.md" if held.endswith(".md") else "tasks")
+    message = f"tree: tasks are gone ({named}); make it a skill, or say it in the input"
     with pytest.raises(ConfigurationError) as raised:
         load_tree(tmp_path)
     assert str(raised.value) == message
@@ -452,65 +453,30 @@ def test_a_question_script_is_part_of_the_agent_fingerprint(tmp_path: Path) -> N
     assert load_tree(tmp_path)["matcher"].fingerprint != before
 
 
-async def test_a_decision_agent_takes_no_task(tmp_path: Path) -> None:
-    matcher(tmp_path)
-    judge = Answering()
-    async with Engine(tmp_path, models={"judge": judge}) as engine:
-        with pytest.raises(
-            InputError,
-            match="^engine: decision agent 'matcher' takes no task; it asks its questions/, so run another decision agent for another set of questions$",
-        ):
-            await engine.run("matcher", "acme", "x", task="tone")
-    assert judge.calls == []
-
-
-def test_a_route_entry_may_not_name_a_task_for_a_decision_agent(tmp_path: Path) -> None:
+def test_a_route_entry_naming_a_task_is_refused_with_the_way_out(tmp_path: Path) -> None:
+    path = tmp_path / "desk/AGENT.md"
     write(
-        tmp_path / "desk/AGENT.md",
+        path,
         agent_md(
             "desk",
             kind="decision",
             model="judge",
-            extra="route: {by: team, to: {a: {agent: triage, task: tone}}}\n",
+            extra="route: {by: team, to: {technical: {agent: support, task: triage}}}\n",
         ),
     )
     write(
         tmp_path / "desk/questions/team.json",
-        '{"type": "choice", "instructions": "?", "options": {"a": "A", "b": "B"}}',
+        '{"type": "choice", "instructions": "?", "options": {"technical": "T", "other": "O"}}',
     )
-    write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
-    write(tmp_path / "triage/questions/urgent.json", '{"type": "check", "instructions": "Urgent?"}')
-    message = "tree: route of 'desk' names task 'tone' for decision agent 'triage', which takes no task; drop task: from that entry"
+    write(tmp_path / "support/AGENT.md", agent_md("support"))
+    message = (
+        f"frontmatter: invalid agent {path}; route.to: tasks are gone (route entry 'technical' "
+        "names task 'triage'); name the agent alone, and make the task a skill or say it in the "
+        "agent's AGENT.md"
+    )
     with pytest.raises(ConfigurationError) as raised:
-        Engine(tmp_path, models={"judge": Answering()})
+        Engine(tmp_path, models={"judge": Answering(), "strong": Scripted()})
     assert str(raised.value) == message
-
-
-async def test_a_route_entry_with_a_task_to_a_generation_agent_still_works(tmp_path: Path) -> None:
-    write(
-        tmp_path / "desk/AGENT.md",
-        agent_md(
-            "desk",
-            kind="decision",
-            model="judge",
-            extra="route: {by: team, to: {b: {agent: writer, task: apology}}}\n",
-        ),
-    )
-    write(
-        tmp_path / "desk/questions/team.json",
-        '{"type": "choice", "instructions": "?", "options": {"a": "A", "b": "B"}}',
-    )
-    write(tmp_path / "writer/AGENT.md", agent_md("writer"))
-    write(tmp_path / "writer/tasks/apology.md", "Apologise first.\n")
-    llm = Scripted(text_reply("Sorry."))
-    run = await Engine(tmp_path, models={"judge": Answering(), "strong": llm}).run(
-        "desk", "acme", "x"
-    )
-    assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
-    assert (
-        run.routed_to.reply == "Sorry." and "<<<TASK>>>\nApologise first." in run.routed_to.system
-    )
-    assert "<<<TASK>>>\nApologise first." in llm.calls[0][0]
 
 
 async def test_questions_a_model_composes_reach_a_scripted_decision_agent(tmp_path: Path) -> None:

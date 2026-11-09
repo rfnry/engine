@@ -104,7 +104,6 @@ def delegating(agent: str) -> Reply:
 
 COMPOSED = json.loads(next(body for lang, body in BLOCKS if lang == "json" and "questions" in body))
 ASKS = 'run = await engine.run("support", scope="acme", input="I was charged twice in March. Refund one.")'
-ROUTE = next(body for lang, body in BLOCKS if lang == "yaml" and "task:" in body)
 
 
 @dataclass
@@ -246,7 +245,6 @@ def tree(root: Path) -> None:
         root / "support/rules/refunds.md",
         "---\ndescription: When a refund is owed\n---\nA double charge is refunded in full.\n",
     )
-    write(root / "support/tasks/triage.md", "Triage the message.\n")
     write(root / "support/tools/lookup_order.json", LOOKUP)
     write(root / "support/tools/lookup_order.py", SCRIPT)
     write(
@@ -447,15 +445,13 @@ async def test_the_question_the_model_composes_reaches_the_decision_agent(
     assert namespace["run"].steps[0].args == COMPOSED
 
 
-def test_the_route_entry_with_a_task_loads(tmp_path: Path) -> None:
+def test_the_route_entry_names_an_agent_alone(tmp_path: Path) -> None:
     root = tmp_path / "agents"
     tree(root)
-    front = markdown("description: Routes an incoming message").split("route:")[0]
-    write(root / "frontdesk/AGENT.md", f"{front}{ROUTE}---\n")
     agents = load_tree(root)
     validate_tree(agents)
     route = agents["frontdesk"].route
-    assert route is not None and route.to["technical"].task == "triage"
+    assert route is not None and route.to == {"billing": "billing", "technical": "support"}
 
 
 def test_the_agent_that_preloads_its_folder_loads(tmp_path: Path) -> None:

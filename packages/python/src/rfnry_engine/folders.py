@@ -11,7 +11,7 @@ from rfnry_engine.jail import Jail
 
 logger = logging.getLogger(__name__)
 
-DECLARED = frozenset({"tools", "tasks", "questions"})
+DECLARED = frozenset({"tools", "questions"})
 DECLARATIONS = frozenset({"AGENT.md"})
 
 _warned: ContextVar[set[str] | None] = ContextVar("warned", default=None)

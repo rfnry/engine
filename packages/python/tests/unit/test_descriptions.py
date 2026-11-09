@@ -68,6 +68,11 @@ def test_run_takes_no_questions() -> None:
     assert "questions" not in inspect.signature(Engine.run).parameters
 
 
+def test_run_takes_no_task() -> None:
+    assert "task" not in inspect.signature(Engine.run).parameters
+    assert "task" not in inspect.signature(Engine.tool).parameters
+
+
 def test_engine_tool_is_described_by_the_agent_md(tmp_path: Path) -> None:
     write(
         tmp_path / "billing/AGENT.md",

@@ -229,17 +229,6 @@ async def test_a_delegated_decision_run_asks_its_folder(fixtures: Path) -> None:
     assert set(child.questions) == {"urgent", "severity"}
 
 
-async def test_a_task_is_refused_for_a_decision_agent_whatever_it_asks(tmp_path: Path) -> None:
-    root = grader(tmp_path)
-    dm = Answering()
-    engine = Engine(root, models={"judge": dm})
-    with pytest.raises(InputError, match="^engine: decision agent 'grader' takes no task; "):
-        await engine.run("grader", "acme", "x", task="tone")
-    with pytest.raises(InputError, match="^engine: decision agent 'questionless' takes no task; "):
-        await ask(engine, "questionless", "acme", "x", task="tone", questions=RUNTIME)
-    assert dm.calls == []
-
-
 async def test_runtime_questions_are_recorded_and_read_back(
     tmp_path: Path, storage: Storage
 ) -> None:

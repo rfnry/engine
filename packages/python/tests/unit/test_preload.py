@@ -205,14 +205,12 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
         "support",
         "acme",
         "Charged twice.",
-        task="triage",
         context="Acme is on the enterprise plan.",
         history=history,
     )
     [(system, messages, tools)] = llm.calls
     assert system == (
         "<<<AGENT>>>\nYou are the support desk. Be brief, cite the rule you apply.\n\n"
-        "<<<TASK>>>\nDecide whether this message needs a person.\n\n"
         "<<<FILES>>>\nknowledge/\n  plans.md — The three plans\nrules/\n"
         "  refunds.md — When a refund is owed\nskills/\n"
         "  escalate.md — Hand a conversation to a person\n\n"

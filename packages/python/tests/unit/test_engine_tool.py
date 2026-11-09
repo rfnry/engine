@@ -155,8 +155,6 @@ async def test_a_decision_agent_as_a_tool_takes_questions_of_the_caller(
     [run] = recorder.runs
     assert isinstance(run, Decision) and run.runtime == ["area"]
     assert run.questions["area"] == Choice.model_validate(PICK)
-    with pytest.raises(InputError, match="^engine: decision agent 'grader' takes no task; "):
-        await grader.dispatch("grader", {"input": "Thanks!", "task": "tone"})
     questionless = engine.tool("questionless", scope="acme")
     assert list(questionless.definitions()[0]["input_schema"]["properties"]) == [
         "input",
@@ -175,23 +173,17 @@ async def test_a_decision_agent_as_a_tool_takes_questions_of_the_caller(
         await questionless.dispatch("questionless", {"input": "x"})
 
 
-async def test_a_generation_agent_as_a_tool_takes_a_task_it_has(tmp_path: Path) -> None:
+async def test_a_generation_agent_as_a_tool_takes_only_its_input(tmp_path: Path) -> None:
     llm = Scripted(text_reply("Sorry, it is late."))
     recorder = Recorded()
     engine = Engine(lead(tmp_path), refinery=recorder, models={"strong": llm, "judge": Answering()})
     writer = engine.tool("writer", scope="acme")
-    properties = writer.definitions()[0]["input_schema"]["properties"]
-    assert list(properties) == ["input", "task"] and properties["task"]["enum"] == ["apology"]
-    await writer.dispatch("writer", {"input": "Late parcel", "task": "apology"})
+    assert list(writer.definitions()[0]["input_schema"]["properties"]) == ["input"]
+    assert await writer.dispatch("writer", {"input": "Late parcel"}) == "Sorry, it is late."
     [run] = recorder.runs
-    assert isinstance(run, Generation) and "<<<TASK>>>\nApologise first." in run.system
-    assert "<<<TASK>>>\nApologise first." in llm.calls[0][0]
-    with pytest.raises(NotFoundError, match="^engine: agent 'writer' has no task 'tone'; "):
-        await writer.dispatch("writer", {"input": "x", "task": "tone"})
+    assert isinstance(run, Generation) and run.input == "Late parcel"
     with pytest.raises(InputError, match="^engine: generation agent 'writer' takes no questions$"):
         await writer.dispatch("writer", {"input": "x", "questions": {"area": PICK}})
-    lead_ = engine.tool("lead", scope="acme")
-    assert list(lead_.definitions()[0]["input_schema"]["properties"]) == ["input"]
     assert len(llm.calls) == 1
 
 

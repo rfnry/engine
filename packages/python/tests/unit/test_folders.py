@@ -19,7 +19,6 @@ def coding(root: Path) -> Path:
         root / "AGENT.md",
         "---\nname: coding\nkind: generation\nmodel: strong\ndescription: Codes\n---\nHi\n",
     )
-    write(root / "tasks/review.md", "---\ndescription: Reviews\n---\nReview it.\n")
     write(root / "questions/q.json", '{"type": "check", "instructions": "Is it?"}')
     write(root / "notes/style.md", "---\ndescription: The house style\n---\nTabs never.\n")
     write(root / "notes/draft.md", "No frontmatter, so no description.\n")
@@ -114,8 +113,7 @@ def test_a_folder_without_agent_md_shows_its_declaration_folders_as_content(
 ) -> None:
     root = coding(tmp_path / "coding")
     shown = entries(root, False)
-    assert "tasks/" in shown and "  review.md — Reviews" in shown
-    assert "questions/" in shown
+    assert "questions/" in shown and "  q.json" in shown
 
 
 def test_read_folders_follow_under_their_path_without_an_agent_s_declarations(
@@ -131,7 +129,7 @@ def test_read_folders_follow_under_their_path_without_an_agent_s_declarations(
         writing / "AGENT.md",
         "---\nname: writing\nkind: generation\nmodel: strong\ndescription: Writes\n---\n",
     )
-    write(writing / "tasks/x.md", "---\ndescription: A task\n---\n")
+    write(writing / "questions/x.json", '{"type": "check", "instructions": "Is it?"}')
     write(writing / "voice.md", "---\ndescription: Voice\n---\n")
     shown = {"../books": entries(books, False), "../writing": entries(writing, True)}
     assert joined(entries(own, True), shown) == (
@@ -151,13 +149,13 @@ def test_content_leaves_out_what_the_prompt_already_holds(tmp_path: Path) -> Non
     ]
     plain = [rel for rel, _ in content(root, False)]
     assert "AGENT.md" in plain
-    assert "tasks/review.md" in plain
+    assert "questions/q.json" in plain
 
 
 def test_a_file_named_like_a_declaration_folder_is_content(tmp_path: Path) -> None:
     write(tmp_path / "AGENT.md", "---\nname: root\nkind: generation\nmodel: strong\n---\n")
-    write(tmp_path / "tasks", "a file, not a folder\n")
-    assert [rel for rel, _ in content(tmp_path, True)] == ["tasks"]
+    write(tmp_path / "questions", "a file, not a folder\n")
+    assert [rel for rel, _ in content(tmp_path, True)] == ["questions"]
 
 
 def test_a_link_out_of_the_folder_is_neither_mapped_nor_content(tmp_path: Path) -> None:

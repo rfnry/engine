@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import DelegationLoopError, InputError, NotFoundError
+from rfnry_engine.errors import DelegationLoopError, InputError
 from rfnry_engine.models import (
     Answer,
     Check,
@@ -294,16 +294,6 @@ async def test_delegate_is_not_bound_by_the_tool_deadline(fixtures: Path) -> Non
 
 BAD_DELEGATIONS: list[tuple[dict[str, Any], type[Exception], str]] = [
     (
-        {"agent": "writer", "input": "x", "task": "ghost"},
-        NotFoundError,
-        "engine: agent 'writer' has no task 'ghost'",
-    ),
-    (
-        {"agent": "grader", "input": "x", "task": "apology"},
-        InputError,
-        "engine: decision agent 'grader' takes no task; it asks its questions/, so run another decision agent for another set of questions",
-    ),
-    (
         {"agent": "writer", "input": "x", "questions": {"area": PICK}},
         InputError,
         "engine: generation agent 'writer' takes no questions",
@@ -368,7 +358,7 @@ def _bare(args: dict[str, Any]) -> Reply:
     return Reply(tool_calls=[ToolCall(id="d", name="Delegate", args=args)], stop_reason="tool_use")
 
 
-async def test_delegate_offers_a_task_and_questions_only_when_a_target_takes_them(
+async def test_delegate_offers_questions_only_when_a_target_is_a_decision_agent(
     tmp_path: Path,
 ) -> None:
     root = lead(tmp_path)
@@ -380,20 +370,19 @@ async def test_delegate_offers_a_task_and_questions_only_when_a_target_takes_the
     [offered] = EngineTools(engine, agent="lead", scope="acme").only("Delegate").definitions()
     schema = offered["input_schema"]
     assert schema["required"] == ["agent", "input"]
-    assert schema["properties"]["task"] == {
-        "type": "string",
-        "enum": ["apology"],
-        "description": "A task of the agent, to run it with",
-    }
+    assert list(schema["properties"]) == ["agent", "input", "questions"]
     assert schema["properties"]["questions"]["additionalProperties"] == QUESTION
     assert offered["description"] == (
         "Hand an input to another agent and get its reply.\n"
         "- grader (decision agent): Grades replies\n"
-        "- writer (tasks: apology): Writes replies\n"
+        "- writer: Writes replies\n"
         "- questionless (decision agent): Answers what it is asked"
     )
     [plain] = EngineTools(engine, agent="plain", scope="acme").only("Delegate").definitions()
-    assert list(plain["input_schema"]["properties"]) == ["agent", "input", "task"]
+    assert list(plain["input_schema"]["properties"]) == ["agent", "input"]
+    assert plain["description"] == (
+        "Hand an input to another agent and get its reply.\n- writer: Writes replies"
+    )
 
 
 async def test_an_adapter_that_edits_the_offered_schema_changes_no_later_run(
@@ -429,31 +418,19 @@ async def test_a_generation_agent_asks_a_decision_agent_a_question_it_composed(
     assert dm.calls == [("Charged twice", {"area": Choice.model_validate(PICK)})]
 
 
-async def test_delegate_names_a_generation_agent_s_task_and_a_decision_agent_s_own_questions(
-    tmp_path: Path,
-) -> None:
+async def test_delegate_names_a_decision_agent_s_own_questions(tmp_path: Path) -> None:
     angry = {"type": "check", "instructions": "Is `message` angry?", "yes": ["Insults", "Caps"]}
     llm = Scripted(
-        Reply(
-            tool_calls=[
-                *delegating("grader", "Sorry!", "g", questions={"angry": angry}).tool_calls,
-                *delegating("writer", "Late parcel", "w", task="apology").tool_calls,
-            ],
-            stop_reason="tool_use",
-        ),
-        text_reply("Apologised."),
-        text_reply("done"),
+        delegating("grader", "Sorry!", "g", questions={"angry": angry}), text_reply("done")
     )
     run = await Engine(lead(tmp_path), models={"strong": llm, "judge": Answering()}).run(
         "lead", "acme", "x"
     )
-    assert isinstance(run, Generation) and [s.is_error for s in run.steps] == [False, False]
-    graded, written = run.children
+    assert isinstance(run, Generation) and [s.is_error for s in run.steps] == [False]
+    [graded] = run.children
     assert isinstance(graded, Decision) and graded.runtime == ["angry"]
     assert list(graded.questions) == ["urgent", "angry"]
     assert graded.questions["angry"] == Check.model_validate(angry)
-    assert isinstance(written, Generation)
-    assert "<<<TASK>>>\nApologise first." in written.system and written.reply == "Apologised."
 
 
 async def test_children_follow_their_steps_whatever_order_they_finish_in(fixtures: Path) -> None:

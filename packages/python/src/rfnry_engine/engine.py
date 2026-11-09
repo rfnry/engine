@@ -116,7 +116,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class _Options:
-    task: str | None
     history: list[Message]
     context: str | None
     expect: type[BaseModel] | None
@@ -143,7 +142,6 @@ class AgentInfo(BaseModel):
     agents: list[str]
     reads: list[str]
     tools: list[str]
-    tasks: dict[str, str]
     skills: dict[str, str]
 
 
@@ -645,7 +643,6 @@ class Engine:
                 agents=spec.agents,
                 reads=list(spec.reads),
                 tools=list(chosen(spec)),
-                tasks=dict(spec.tasks),
                 skills={called: skill.description for called, skill in spec.skills.items()},
             )
             for name, spec in self._agents.items()
@@ -663,7 +660,6 @@ class Engine:
         scope: str,
         input: State,
         *,
-        task: str | None = None,
         skill: str | None = None,
         history: Sequence[object] | HistoryLike | None = None,
         start: int = 0,
@@ -682,7 +678,6 @@ class Engine:
             agent,
             scope,
             input,
-            task=task,
             skill=skill,
             history=history,
             start=start,
@@ -705,7 +700,6 @@ class Engine:
         input: State,
         *,
         questions: Mapping[str, QuestionLike] | None = None,
-        task: str | None = None,
         skill: str | None = None,
         history: Sequence[object] | HistoryLike | None = None,
         start: int = 0,
@@ -741,7 +735,6 @@ class Engine:
         given = await _window(held, start)
         _paired(given, start)
         options = _Options(
-            task=task,
             history=given,
             context=context,
             expect=expect,
@@ -814,7 +807,6 @@ class Engine:
                 agent,
                 scope,
                 args["input"],
-                task=args.get("task"),
                 questions=args.get("questions"),
                 context=context,
                 tools=tools,
@@ -857,13 +849,6 @@ class Engine:
         routed: bool = False,
     ) -> Run:
         self._open()
-        if options.task is not None and spec.kind == "decision":
-            raise InputError(
-                f"engine: decision agent {spec.name!r} takes no task; it asks its questions/, so run another decision agent for another set of questions"
-            )
-        if options.task is not None and options.task not in spec.tasks:
-            have = f"its tasks are {', '.join(spec.tasks)}" if spec.tasks else "it has no tasks"
-            raise NotFoundError(f"engine: agent {spec.name!r} has no task {options.task!r}; {have}")
         async with enter(spec.name, self.max_depth, routed=routed):
             if spec.kind == "generation":
                 with taking(options.stop):
@@ -953,9 +938,9 @@ class Engine:
                 target = route.to.get(answer.choice) if isinstance(answer, ChoiceAnswer) else None
                 floor = route.min_confidence
                 if target is not None and (floor is None or answer.confidence >= floor):
-                    forwarded = replace(options, task=target.task, questions={}, failed=routing)
+                    forwarded = replace(options, questions={}, failed=routing)
                     routed = await self._run(
-                        self._agents[target.agent],
+                        self._agents[target],
                         scope,
                         _given(input),
                         forwarded,
@@ -1025,12 +1010,12 @@ class Engine:
     def _check_routes(self, spec: AgentSpec, seen: set[str]) -> None:
         seen.add(spec.name)
         for target in spec.route.to.values() if spec.route is not None else []:
-            routed = self._agents[target.agent]
+            routed = self._agents[target]
             if routed.model not in self._models:
                 raise ConfigurationError(
-                    f"engine: agent {spec.name!r} routes to agent {target.agent!r}, which runs on model {routed.model!r}, which this engine was not given"
+                    f"engine: agent {spec.name!r} routes to agent {target!r}, which runs on model {routed.model!r}, which this engine was not given"
                 )
-            if routed.kind == "decision" and target.agent not in seen:
+            if routed.kind == "decision" and target not in seen:
                 self._check_routes(routed, seen)
 
     async def _generation(
@@ -1108,7 +1093,6 @@ class Engine:
         targets = [self._agents[name] for name in spec.agents]
         system = build_bundle(
             spec,
-            task=options.task,
             tools=specs,
             agents=targets,
             context=options.context,
@@ -1206,7 +1190,6 @@ class Engine:
                 target = self._agents[args.agent]
                 forwarded = replace(
                     options,
-                    task=args.task,
                     questions=_asked(target, args.questions),
                     history=[],
                     expect=None,

@@ -1,9 +1,13 @@
 import re
 from pathlib import Path
 
+from rfnry_engine import Engine
 from rfnry_engine.bundle import build_bundle
 from rfnry_engine.models import ToolSpec
+from rfnry_engine.records import Generation
 from rfnry_engine.tree import load_tree
+
+from .fakes import Scripted, text_reply
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "agents"
 
@@ -17,13 +21,11 @@ def test_sections_in_order_with_missing_ones_skipped() -> None:
     tools = [ToolSpec(name="Read", description="Read a file", input_schema={})]
     bundle = build_bundle(
         agents["support"],
-        task="triage",
         tools=tools,
         agents=[agents["triage"]],
         context="Plan: Team",
     )
-    assert _labels(bundle) == ["AGENT", "TASK", "FILES", "TOOLS", "AGENTS", "CONTEXT"]
-    assert "Decide whether this message needs a person." in bundle
+    assert _labels(bundle) == ["AGENT", "FILES", "TOOLS", "AGENTS", "CONTEXT"]
     assert (
         "<<<FILES>>>\nknowledge/\n  plans.md — The three plans\nrules/\n"
         "  refunds.md — When a refund is owed\nskills/\n"
@@ -41,7 +43,7 @@ def test_an_old_index_file_is_an_ordinary_file(tmp_path: Path) -> None:
     )
     (tmp_path / "a" / "INDEX.md").write_text("Read rules/x.md first.\n")
     (tmp_path / "a" / "rules" / "_index.md").write_text("- x.md — the x rule\n")
-    bundle = build_bundle(load_tree(tmp_path)["a"], task=None, tools=[], agents=[], context=None)
+    bundle = build_bundle(load_tree(tmp_path)["a"], tools=[], agents=[], context=None)
     assert _labels(bundle) == ["AGENT", "FILES"]
     assert "Read rules/x.md first." not in bundle
     assert bundle.endswith("<<<FILES>>>\nINDEX.md\nrules/\n  _index.md")
@@ -49,6 +51,18 @@ def test_an_old_index_file_is_an_ordinary_file(tmp_path: Path) -> None:
 
 def test_bare_agent_has_only_agent_and_tools() -> None:
     agents = load_tree(FIXTURES)
-    bundle = build_bundle(agents["billing"], task=None, tools=[], agents=[], context=None)
+    bundle = build_bundle(agents["billing"], tools=[], agents=[], context=None)
     assert _labels(bundle) == ["AGENT"]
     assert bundle == "<<<AGENT>>>\nYou are billing."
+
+
+async def test_the_system_prompt_of_an_agent_varies_only_by_context() -> None:
+    llm = Scripted(text_reply("a"), text_reply("b"), text_reply("c"))
+    async with Engine(FIXTURES, models={"strong": llm}) as engine:
+        plain = await engine.run("support", "acme", "Charged twice.")
+        skilled = await engine.run("support", "acme", "Hand me over.", skill="escalate")
+        given = await engine.run("support", "acme", "Charged twice.", context="x")
+    assert isinstance(plain, Generation) and isinstance(skilled, Generation)
+    assert isinstance(given, Generation)
+    assert plain.system == skilled.system
+    assert given.system == f"{plain.system}\n\n<<<CONTEXT>>>\nx"

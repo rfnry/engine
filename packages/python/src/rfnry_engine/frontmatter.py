@@ -176,18 +176,10 @@ def parse_frontmatter_doc[T: BaseModel](
             if error["type"] == "extra_forbidden"
         ]
         if unknown:
-            others = [key for key in unknown if key != "name"]
-            fix = "; ".join(
-                [
-                    *(["its file names it, so remove the name: line"] if "name" in unknown else []),
-                    *(
-                        []
-                        if not others
-                        else ["check its spelling"]
-                        if any("." in key for key in others)
-                        else [f"it takes {', '.join(model.model_fields)}"]
-                    ),
-                ]
+            fix = (
+                "check its spelling"
+                if any("." in key for key in unknown)
+                else f"it takes {', '.join(model.model_fields)}"
             )
             raise ConfigurationError(
                 f"frontmatter: unknown key {', '.join(map(repr, unknown))} in {source}; {fix}"

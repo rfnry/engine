@@ -95,7 +95,7 @@ async def test_what_varies_per_run_leaves_the_fingerprint_alone(
         context="Acme is on the enterprise plan.",
         tags={"commit": "4f2c9e1"},
         history=[Message(role="user", content="earlier"), Message(role="assistant", content="ok")],
-        task="triage",
+        skill="escalate",
     )
     other = await engine(root).run("support", "acme", {"message": "a different input"})
     assert plain.fingerprint == varied.fingerprint == other.fingerprint

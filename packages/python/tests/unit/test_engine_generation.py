@@ -481,22 +481,6 @@ async def test_refusals(fixtures: Path) -> None:
         await Engine(fixtures, models={}).run("billing", "acme", "x")
 
 
-@pytest.mark.parametrize("task", ["ghost", "../AGENT", "../../billing/AGENT", "../rules/refunds"])
-async def test_a_task_is_looked_up_like_an_agent_and_never_a_path_out_of_tasks(
-    fixtures: Path, task: str, storage: Storage
-) -> None:
-    llm = Scripted(text_reply("x"))
-    refinery = Refinery(storage)
-    engine = engine_for(fixtures, llm, refinery=refinery)
-    message = f"^engine: agent 'support' has no task {re.escape(repr(task))}; its tasks are triage$"
-    with pytest.raises(NotFoundError, match=message):
-        await engine.run("support", "acme", "x", task=task)
-    assert llm.calls == [] and await refinery.storage.runs("acme") == []
-    run = await engine.run("support", "acme", "x", task="triage")
-    assert isinstance(run, Generation)
-    assert "<<<TASK>>>\nDecide whether this message needs a person." in run.system
-
-
 async def test_recording_is_opt_in_per_run(fixtures: Path) -> None:
     class Recorder:
         def __init__(self) -> None:

@@ -27,11 +27,11 @@ def test_load_tree_finds_every_agent_with_its_kind() -> None:
     }
 
 
-def test_generation_agent_carries_body_agents_tools_tasks() -> None:
+def test_generation_agent_carries_body_agents_tools_skills() -> None:
     support = load_tree(FIXTURES)["support"]
     assert support.body.startswith("You are the support desk")
     assert support.agents == ["triage"]
-    assert support.tasks == {"triage": ""}
+    assert list(support.skills) == ["escalate"]
     assert list(support.folder_tools) == ["lookup_order", "now"] and support.keep is None
 
 
@@ -315,7 +315,7 @@ def test_a_question_s_text_is_a_string_an_object_or_a_list(tmp_path: Path, text:
 def test_a_decision_agent_may_have_no_questions_of_its_own(tmp_path: Path) -> None:
     _agent(tmp_path, "a", "kind: decision\nmodel: judge\n")
     spec = load_agent(tmp_path / "a")
-    assert spec.questions == {} and spec.tasks == {} and spec.scripted == {}
+    assert spec.questions == {} and spec.scripted == {}
 
 
 def test_a_delegate_target_needs_no_questions_of_its_own(tmp_path: Path) -> None:
@@ -334,15 +334,12 @@ def _router(root: Path, to: str) -> None:
     )
     _agent(root, "b", "kind: decision\nmodel: judge\n")
     _agent(root, "g", "kind: generation\nmodel: strong\n")
-    (root / "g" / "tasks").mkdir()
-    (root / "g" / "tasks" / "billing.md").write_text("Answer the billing question.\n")
 
 
-@pytest.mark.parametrize("to", ["{x: b}", "{x: {agent: b}}"])
 def test_a_route_to_a_decision_agent_that_could_never_ask_anything_is_refused(
-    tmp_path: Path, to: str
+    tmp_path: Path,
 ) -> None:
-    _router(tmp_path, to)
+    _router(tmp_path, "{x: b}")
     message = (
         "^tree: route of 'a' gives decision agent 'b' nothing to ask: it has no questions/; "
         "give it questions/, since a route hands it only the input$"
@@ -351,40 +348,61 @@ def test_a_route_to_a_decision_agent_that_could_never_ask_anything_is_refused(
         validate_tree(load_tree(tmp_path))
 
 
-def test_a_route_names_only_a_task_its_agent_has(tmp_path: Path) -> None:
-    _router(tmp_path, "{x: {agent: g, task: tone}}")
-    message = (
-        "^tree: route of 'a' points at agent 'g', which has no task 'tone'; its tasks are billing$"
+def test_a_route_entry_is_an_agent_s_name(tmp_path: Path) -> None:
+    team = (
+        '{"type": "choice", "instructions": "Which?", "options": {"technical": "T", "other": "O"}}'
     )
-    with pytest.raises(ConfigurationError, match=message):
-        validate_tree(load_tree(tmp_path))
-
-
-def test_a_route_entry_is_an_agent_or_a_generation_agent_with_one_of_its_tasks(
-    tmp_path: Path,
-) -> None:
-    _router(tmp_path, "{x: g, y: {agent: g, task: billing}}")
+    _agent(
+        tmp_path,
+        "a",
+        "kind: decision\nmodel: judge\nroute: {by: team, to: {technical: support}}\n",
+        {"team": team},
+    )
+    _agent(tmp_path, "support", "kind: generation\nmodel: strong\n")
     agents = load_tree(tmp_path)
     validate_tree(agents)
     route = agents["a"].route
-    assert route is not None
-    assert {option: (t.agent, t.task) for option, t in route.to.items()} == {
-        "x": ("g", None),
-        "y": ("g", "billing"),
-    }
-    named = load_tree(FIXTURES)["frontdesk"].route
-    assert named is not None
-    assert {option: (t.agent, t.task) for option, t in named.to.items()} == {
-        "billing": ("billing", None),
-        "technical": ("support", None),
-    }
+    assert route is not None and route.to == {"technical": "support"}
+    (tmp_path / "a" / "AGENT.md").write_text(
+        "---\nname: a\nkind: decision\nmodel: judge\n"
+        "route: {by: team, to: {technical: {agent: support}}}\n---\n"
+    )
+    with pytest.raises(
+        ConfigurationError, match="route.to.technical: input should be a valid string"
+    ):
+        load_tree(tmp_path)
 
 
-def test_a_route_entry_with_an_unknown_key_names_it(tmp_path: Path) -> None:
-    _router(tmp_path, "{x: {agent: b, tsak: grade}}")
-    message = "^frontmatter: unknown key 'route.to.x.tsak' in "
-    with pytest.raises(ConfigurationError, match=message):
-        load_agent(tmp_path / "a")
+@pytest.mark.parametrize(
+    "kind", ["kind: generation\nmodel: strong\n", "kind: decision\nmodel: judge\n"]
+)
+def test_a_tasks_folder_in_an_agent_s_folder_is_refused_naming_its_first_file(
+    tmp_path: Path, kind: str
+) -> None:
+    _agent(tmp_path, "support", kind)
+    (tmp_path / "support" / "tasks").mkdir()
+    for name in ("b.md", "a.md"):
+        (tmp_path / "support" / "tasks" / name).write_text("Do it.\n")
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: tasks are gone ({tmp_path}/support/tasks/a.md); make it a skill, or say it in the input"
+    )
+    for name in ("b.md", "a.md"):
+        (tmp_path / "support" / "tasks" / name).unlink()
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: tasks are gone ({tmp_path}/support/tasks); make it a skill, or say it in the input"
+    )
+
+
+def test_a_tasks_folder_outside_any_agent_is_content(tmp_path: Path) -> None:
+    _agent(tmp_path, "support", "kind: generation\nmodel: strong\nreads: [shared]\n")
+    (tmp_path / "shared" / "tasks").mkdir(parents=True)
+    (tmp_path / "shared" / "tasks" / "x.md").write_text("Do it.\n")
+    listing = load_tree(tmp_path)["support"].listing.splitlines()
+    assert listing[listing.index("../shared/") :] == ["../shared/", "  tasks/", "    x.md"]
 
 
 def _shelf(root: Path, coding: str = "reads: [books, writing]\n") -> Path:
@@ -523,21 +541,21 @@ def test_an_unreadable_folder_is_warned_about_once_per_loaded_tree(
 ) -> None:
     _agent(tmp_path, "a", "kind: generation\nmodel: strong\npreload: true\n")
     _agent(tmp_path, "b", "kind: generation\nmodel: strong\nreads: [a/kb]\n")
-    for name in ("a/kb/locked/x.md", "a/tasks/locked/y.md", "a/kb/z.md"):
+    for name in ("a/kb/locked/x.md", "a/notes/locked/y.md", "a/kb/z.md"):
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_text("x\n")
-    kb, tasks = (tmp_path / "a/kb/locked").resolve(), (tmp_path / "a/tasks/locked").resolve()
+    kb, notes = (tmp_path / "a/kb/locked").resolve(), (tmp_path / "a/notes/locked").resolve()
     real = os.scandir
 
     def scandir(path: object = ".") -> object:
-        if Path(str(path)).resolve() in (kb, tasks):
+        if Path(str(path)).resolve() in (kb, notes):
             raise PermissionError(13, "denied", str(path))
         return real(path)  # type: ignore[call-overload]
 
     monkeypatch.setattr(os, "scandir", scandir)
     warned = [
         f"tree: cannot read {kb}: [Errno 13] denied: '{kb}'; it is left out",
-        f"folders: cannot read {tasks}: [Errno 13] denied: '{tasks}'; it is left out",
+        f"tree: cannot read {notes}: [Errno 13] denied: '{notes}'; it is left out",
     ]
     with caplog.at_level(logging.WARNING):
         assert list(load_tree(tmp_path)) == ["a", "b"]
@@ -622,7 +640,6 @@ def test_a_name_that_is_not_utf8_is_refused_naming_its_path(tmp_path: Path, kind
 
 DECLARED_FILES = {
     "a/AGENT.md": "---\nname: a\nkind: generation\nmodel: strong\n---\nbody\n",
-    "a/tasks/t.md": "---\ndescription: T\n---\ndo it\n",
     "a/tools/x.json": '{"description": "X", "input_schema": {"type": "object"}}',
     "a/tools/x.py": "def run(args, call):\n    return 'x'\n",
     "a/tools/_shared.py": "VALUE = 1\n",
@@ -637,7 +654,6 @@ DECLARED_FILES = {
     ("locked", "module"),
     [
         ("a/AGENT.md", "tree"),
-        ("a/tasks/t.md", "tree"),
         ("d/questions/ok.json", "tree"),
         ("a/tools/x.json", "tools/folder"),
         ("a/tools/x.py", "tools/folder"),
@@ -700,9 +716,7 @@ def test_an_unreadable_skill_is_refused_at_load_as_a_task_is(
 
 
 @pytest.mark.parametrize("mode", [0, 0o600], ids=["unreadable", "unsearchable"])
-@pytest.mark.parametrize(
-    "folder", ["a/tasks", "a/tools", "d/questions", "a/skills", "a/skills/deep"]
-)
+@pytest.mark.parametrize("folder", ["a/tools", "d/questions", "a/skills", "a/skills/deep"])
 def test_a_declared_folder_that_cannot_be_read_or_searched_is_refused_naming_it(
     tmp_path: Path, folder: str, mode: int, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -918,7 +932,6 @@ SCANDIR = os.scandir
 @pytest.mark.parametrize(
     ("folder", "name"),
     [
-        ("a/tasks", "4913"),
         ("a/tools", ".x.py.swp"),
         ("d/questions", "_old.json"),
         ("a/skills", "~brief.md"),
@@ -947,6 +960,6 @@ def test_a_file_removed_while_its_declared_folder_is_listed_is_left_out(
     agents = load_tree(tmp_path)
     monkeypatch.undo()
     assert not (tmp_path / folder / name).exists()
-    assert sorted(agents["a"].tasks) == ["t"] and sorted(agents["a"].skills) == ["brief", "deep"]
+    assert sorted(agents["a"].skills) == ["brief", "deep"]
     assert sorted(agents["a"].folder_tools) == ["x"]
     assert sorted([*agents["d"].questions, *agents["d"].scripted]) == ["filled", "ok"]

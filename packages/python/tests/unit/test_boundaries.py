@@ -326,7 +326,6 @@ async def test_what_the_engine_s_accessors_hand_out_cannot_change_the_engine(
     info.agents.append("billing")
     info.reads.append("billing")
     info.tools.append("Write")
-    info.tasks["triage"] = "MEDDLED"
     info.skills["escalate"] = "MEDDLED"
     assert engine.agents == before
     with pytest.raises(TypeError):

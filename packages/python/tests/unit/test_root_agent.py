@@ -155,17 +155,7 @@ def test_the_root_agent_s_hidden_and_declaration_folders_are_never_agents(tmp_pa
         root / ".draft/AGENT.md",
         "---\nname: draft\nkind: generation\nmodel: strong\n---\nNot an agent.\n",
     )
-    write(root / "tasks/AGENT.md", "Not an agent: a task of the root agent.\n")
-    write(root / "tasks/close.md", "Close the ticket.\n")
-    tree = load_tree(root)
-    assert list(tree) == ["billing", "desk", "old", "triage"]
-    assert sorted(tree["desk"].tasks) == ["AGENT", "close"]
-    write(
-        root / "billing/AGENT.md",
-        "---\nname: billing\nkind: generation\nmodel: strong\nreads: [tasks]\n---\nYou bill.\n",
-    )
-    with pytest.raises(ConfigurationError, match="reads unknown folder 'tasks'"):
-        load_tree(root)
+    assert list(load_tree(root)) == ["billing", "desk", "old", "triage"]
 
 
 def test_a_hidden_folder_is_never_an_agent_of_a_tree(tmp_path: Path) -> None:
@@ -177,18 +167,6 @@ def test_a_hidden_folder_is_never_an_agent_of_a_tree(tmp_path: Path) -> None:
         tmp_path / "live/AGENT.md", "---\nname: live\nkind: generation\nmodel: strong\n---\nLive.\n"
     )
     assert list(load_tree(tmp_path)) == ["live"]
-
-
-def test_an_unknown_key_beside_name_is_named_in_the_fix_too(tmp_path: Path) -> None:
-    write(tmp_path / "a/AGENT.md", "---\nname: a\nkind: generation\nmodel: strong\n---\nHi.\n")
-    write(
-        tmp_path / "a/tasks/fetch.md",
-        "---\nname: fetch\ndescription: Fetch\nwrokspace: true\n---\n",
-    )
-    with pytest.raises(ConfigurationError) as refused:
-        load_tree(tmp_path)
-    said = str(refused.value)
-    assert "remove the name: line" in said and "it takes description" in said
 
 
 @pytest.mark.parametrize(

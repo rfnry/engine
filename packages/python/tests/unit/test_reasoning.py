@@ -387,15 +387,12 @@ async def test_a_run_stamps_on_from_where_settle_stopped_and_both_reasonings_go_
 
 
 async def test_reasoning_is_left_out_once_what_came_before_it_changed(fixtures: Path) -> None:
-    llm = Scripted(reading(), text_reply("Refund in full."), *[text_reply("ok") for _ in range(4)])
+    llm = Scripted(reading(), text_reply("Refund in full."), *[text_reply("ok") for _ in range(3)])
     engine = Engine(fixtures, models={"strong": llm})
     history = (await first_run(engine)).conversation
     extra = Tools([Tool("extra", "An extra tool", body=now)])
     runs = [
         await engine.run("support", "acme", "Which?", history=history, context="Acme is free."),
-        await engine.run(
-            "support", "acme", "Which?", history=history, context=CONTEXT, task="triage"
-        ),
         await engine.run(
             "support", "acme", "Which?", history=history, context=CONTEXT, tools=extra
         ),

@@ -40,68 +40,6 @@ def reviewer(tmp_path: Path, **files: str) -> Path:
     )
 
 
-def tasks(tmp_path: Path) -> Path:
-    return tree(
-        tmp_path,
-        {
-            "reviewer/AGENT.md": REVIEWER,
-            "reviewer/tasks/review.md": (
-                "---\ndescription: Review  a whole\n  contract\n---\nReview every clause.\n"
-            ),
-            "reviewer/tasks/triage.md": "Sort the request.\n",
-            "chat/AGENT.md": "---\nname: chat\nkind: generation\nmodel: strong\ndescription: Talks\n---\nYou talk.\n",
-            "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades\n---\n",
-            "grader/questions/polite.json": '{"type": "check", "instructions": "Polite?"}',
-        },
-    )
-
-
-def test_a_task_is_listed_with_its_description(tmp_path: Path) -> None:
-    agents = Engine(tasks(tmp_path), models={}).agents
-    assert agents["reviewer"].tasks == {"review": "Review a whole contract", "triage": ""}
-    assert agents["chat"].tasks == {} and agents["grader"].tasks == {}
-
-
-async def test_only_a_task_s_body_reaches_the_model(tmp_path: Path) -> None:
-    llm = Scripted(text_reply("Done."), text_reply("Sorted."))
-    engine = Engine(tasks(tmp_path), models={"strong": llm})
-    await engine.run("reviewer", "acme", "Clause 7", task="review")
-    await engine.run("reviewer", "acme", "Clause 7", task="triage")
-    first, second = (system for system, _, _ in llm.calls)
-    assert "<<<TASK>>>\nReview every clause.\n\n<<<TOOLS>>>" in first
-    assert "description" not in first.split("<<<TOOLS>>>")[0]
-    assert "<<<TASK>>>\nSort the request.\n\n" in second
-
-
-@pytest.mark.parametrize(
-    ("front", "said"),
-    [
-        ("name: review", "unknown key 'name'"),
-        ("when: always", "unknown key 'when' in .*; it takes description$"),
-        ("description: [a, b]", "invalid task"),
-    ],
-)
-def test_a_task_takes_only_a_description(tmp_path: Path, front: str, said: str) -> None:
-    root = reviewer(tmp_path, **{"tasks/review.md": f"---\n{front}\n---\nReview.\n"})
-    with pytest.raises(ConfigurationError, match=said):
-        Engine(root, models={})
-
-
-@pytest.mark.parametrize(
-    ("agent", "fix"),
-    [("reviewer", "its tasks are review, triage"), ("chat", "it has no tasks")],
-)
-async def test_a_task_the_agent_lacks_is_refused_with_the_ones_it_has(
-    tmp_path: Path, agent: str, fix: str
-) -> None:
-    llm = Scripted()
-    engine = Engine(tasks(tmp_path), models={"strong": llm})
-    with pytest.raises(NotFoundError) as refused:
-        await engine.run(agent, "acme", "x", task="ghost")
-    assert str(refused.value) == f"engine: agent '{agent}' has no task 'ghost'; {fix}"
-    assert llm.calls == []
-
-
 REDLINE = (
     "---\nname: redline\ndescription: How to write a redline\nallowed-tools: Read\n---\n"
     "Write the redline.\nSee examples.md.\n"
@@ -286,14 +224,6 @@ async def test_the_skill_is_recorded_replayed_and_exported(
     assert row["skill"] == "redline" and "task" not in row
 
 
-def test_a_task_that_is_not_utf8_is_refused_with_its_path(tmp_path: Path) -> None:
-    root = reviewer(tmp_path)
-    (root / "reviewer" / "tasks").mkdir()
-    (root / "reviewer" / "tasks" / "review.md").write_bytes("Revisão\n".encode("latin-1"))
-    with pytest.raises(ConfigurationError, match=r"^tree: .*review\.md is not UTF-8 text; "):
-        Engine(root, models={})
-
-
 def test_a_skill_that_is_not_utf8_is_refused_when_the_tree_loads(tmp_path: Path) -> None:
     root = reviewer(tmp_path)
     (root / "reviewer" / "skills").mkdir()
@@ -302,29 +232,21 @@ def test_a_skill_that_is_not_utf8_is_refused_when_the_tree_loads(tmp_path: Path)
         Engine(root, models={})
 
 
-@pytest.mark.parametrize("name", ["tasks/review.md", "skills/review.md"])
-async def test_a_byte_order_mark_never_reaches_the_model(tmp_path: Path, name: str) -> None:
-    root = reviewer(tmp_path, **{name: "\ufeffReview it.\n"})
+async def test_a_byte_order_mark_never_reaches_the_model(tmp_path: Path) -> None:
+    root = reviewer(tmp_path, **{"skills/review.md": "\ufeffReview it.\n"})
     llm = Scripted(text_reply("Done."))
-    tasked = name.startswith("tasks")
-    await Engine(root, models={"strong": llm}).run(
-        "reviewer",
-        "acme",
-        "x",
-        task="review" if tasked else None,
-        skill=None if tasked else "review",
-    )
+    await Engine(root, models={"strong": llm}).run("reviewer", "acme", "x", skill="review")
     system, messages, _ = llm.calls[0]
     sent = json.dumps([m.model_dump(mode="json") for m in messages], ensure_ascii=False)
     assert "\ufeff" not in system and "\ufeff" not in sent
 
 
 def test_a_block_between_dashes_that_holds_no_keys_says_so(tmp_path: Path) -> None:
-    root = reviewer(tmp_path, **{"tasks/review.md": "---\nJust a rule above.\n---\nReview.\n"})
+    root = tree(tmp_path, {"reviewer/AGENT.md": "---\nJust a rule above.\n---\nReview.\n"})
     with pytest.raises(ConfigurationError) as refused:
         Engine(root, models={})
     said = str(refused.value)
-    assert said.startswith("frontmatter: ") and "TaskFront" not in said
+    assert said.startswith("frontmatter: ") and "AgentFront" not in said
     assert said.endswith(
         "write key: value lines between the two --- lines, or start the file without ---"
     )
@@ -338,17 +260,6 @@ def test_a_block_after_a_blank_line_is_body_in_the_map_and_in_the_prompt(tmp_pat
     assert body_of((root / "reviewer/skills/risk.md").read_text(encoding="utf-8")).startswith(
         "---\ndescription"
     )
-
-
-async def test_a_task_edited_after_the_tree_loads_reaches_no_prompt(tmp_path: Path) -> None:
-    root = reviewer(
-        tmp_path, **{"tasks/review.md": "---\ndescription: Review it\n---\nReview the clause.\n"}
-    )
-    llm = Scripted(text_reply("Done."))
-    engine = Engine(root, models={"strong": llm})
-    (root / "reviewer/tasks/review.md").write_text("Changed.\n", encoding="utf-8")
-    await engine.run("reviewer", "acme", "Look.", task="review")
-    assert "Review the clause." in llm.calls[0][0] and "Changed." not in llm.calls[0][0]
 
 
 async def test_an_invoked_skill_edited_after_the_tree_loads_is_the_loaded_one(

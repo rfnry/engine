@@ -56,17 +56,17 @@ async def test_an_agent_reads_another_agent_s_folder_in_full(tmp_path: Path) -> 
         (tmp_path / name / "AGENT.md").write_text(
             f"---\nname: {name}\nkind: generation\nmodel: strong\n{front}---\nHi\n"
         )
-    (tmp_path / "writing" / "tasks").mkdir()
-    (tmp_path / "writing" / "tasks" / "draft.md").write_text("Draft it.\n")
+    (tmp_path / "writing" / "skills").mkdir()
+    (tmp_path / "writing" / "skills" / "draft.md").write_text("Draft it.\n")
     engine = Engine(tmp_path, models={"strong": Scripted()})
     assert engine.agents["coding"].reads == ["writing"] and engine.agents["writing"].reads == []
     tools = EngineTools(engine, agent="coding", scope="acme")
     assert "Hi" in await tools.dispatch("Read", {"path": "../writing/AGENT.md"})
-    assert await tools.dispatch("Read", {"path": "../writing/tasks/draft.md"}) == "Draft it.\n"
-    loaded = await tools.dispatch("Load", {"path": "../writing/tasks/draft.md"})
+    assert await tools.dispatch("Read", {"path": "../writing/skills/draft.md"}) == "Draft it.\n"
+    loaded = await tools.dispatch("Load", {"path": "../writing/skills/draft.md"})
     assert isinstance(loaded, list) and len(loaded) == 1
     assert isinstance(loaded[0], Document) and loaded[0].data == b"Draft it.\n"
-    assert engine._spec("coding").listing == "../writing/"
+    assert engine._spec("coding").listing == "../writing/\n  skills/\n    draft.md"
 
 
 async def test_an_adapter_editing_a_builtin_schema_changes_no_later_run(fixtures: Path) -> None:

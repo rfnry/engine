@@ -311,7 +311,6 @@ LEAD = {
     "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades replies\n---\n",
     "grader/questions/urgent.json": '{"type": "check", "instructions": "Urgent?"}',
     "writer/AGENT.md": "---\nname: writer\nkind: generation\nmodel: strong\ndescription: Writes replies\n---\nWrite.\n",
-    "writer/tasks/apology.md": "Apologise first.\n",
     "questionless/AGENT.md": "---\nname: questionless\nkind: decision\nmodel: judge\ndescription: Answers what it is asked\n---\n",
 }
 

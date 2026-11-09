@@ -35,7 +35,6 @@ from rfnry_engine.frontmatter import (
     description,
     parse_frontmatter_doc,
     plainly,
-    split_frontmatter,
 )
 from rfnry_engine.jail import Jail
 from rfnry_engine.models import Check, Choice, Part, Question, Score
@@ -59,29 +58,24 @@ Kind = Literal["generation", "decision"]
 OUTPUT_TOOL = "Output"
 
 
-class RouteTarget(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    agent: str
-    task: str | None = None
-
-
 class RouteSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     by: str
-    to: dict[str, RouteTarget]
+    to: dict[str, str]
     min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @field_validator("to", mode="before")
     @classmethod
-    def _a_name_is_an_agent(cls, value: object) -> object:
+    def _an_entry_names_no_task(cls, value: object) -> object:
         if not isinstance(value, dict):
             return value
-        return {
-            option: {"agent": target} if isinstance(target, str) else target
-            for option, target in value.items()
-        }
+        for option, target in value.items():
+            if isinstance(target, dict) and "task" in target:
+                raise ValueError(
+                    f"tree: tasks are gone (route entry {option!r} names task {target['task']!r}); name the agent alone, and make the task a skill or say it in the agent's AGENT.md"
+                )
+        return value
 
 
 class AgentFront(BaseModel):
@@ -188,12 +182,6 @@ def as_question(data: Mapping[str, JsonValue]) -> Question:
     return QUESTION_TYPES[front.type].model_validate(front.model_dump(exclude_unset=True))
 
 
-class TaskFront(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    description: str | None = None
-
-
 class Skill(BaseModel):
     path: str
     description: str
@@ -212,8 +200,6 @@ class AgentSpec(BaseModel):
     route: RouteSpec | None
     questions: dict[str, Question]
     keep: list[str] | None
-    tasks: dict[str, str]
-    task_bodies: dict[str, str] = Field(default_factory=dict)
     fingerprint: str
     workspace: bool = False
     scripted: dict[str, tuple[dict[str, JsonValue], Script]] = Field(default_factory=dict)
@@ -297,13 +283,18 @@ def _front(path: Path) -> dict[str, JsonValue]:
         raise ConfigurationError(f"tree: invalid question {path}; {plainly(exc)}") from exc
 
 
-def _task(path: Path, agent: Path) -> tuple[str, str]:
-    _held(path, agent)
-    raw = _read(path)
-    if split_frontmatter(raw) is None:
-        return "", body_of(raw)
-    front, _ = parse_frontmatter_doc(raw, model=TaskFront, source=path, label="task")
-    return " ".join((front.description or "").split()), body_of(raw)
+def _no_tasks(agent: Path) -> None:
+    folder = agent / "tasks"
+    if not folder.is_dir():
+        return
+    found = [
+        p
+        for p in _declared(folder)
+        if p.suffix == ".md" and not p.name.startswith(".") and p.is_file()
+    ]
+    raise ConfigurationError(
+        f"tree: tasks are gone ({found[0] if found else folder}); make it a skill, or say it in the input"
+    )
 
 
 def _skills(files: list[tuple[str, Path]], agent: str) -> dict[str, Skill]:
@@ -367,14 +358,6 @@ def _readable_skills(agent: Path) -> None:
             skill = path / "SKILL.md"
             if skill in _declared(path) and skill.is_file() and leads_out(skill, agent) is None:
                 _opens(skill)
-
-
-def _markdown_files(directory: Path) -> list[Path]:
-    if not directory.is_dir():
-        return []
-    return [
-        p for p in _declared(directory) if p.suffix == ".md" and not p.name.startswith(("_", "."))
-    ]
 
 
 def _question_files(directory: Path) -> list[Path]:
@@ -675,10 +658,7 @@ def load_agent(
 ) -> AgentSpec:
     front, body = _agent_front(directory)
     agent = front.name
-    if front.kind == "decision" and (directory / "tasks").is_dir():
-        raise ConfigurationError(
-            f"tree: decision agent {agent!r} has tasks/; a decision agent asks only questions/, so make another decision agent for another set of questions"
-        )
+    _no_tasks(directory)
     if front.kind == "generation" and _question_files(directory / "questions"):
         raise ConfigurationError(
             f"tree: generation agent {agent!r} cannot declare questions/; questions are for decision agents, so make it kind: decision or move them to one"
@@ -686,11 +666,8 @@ def load_agent(
     questions, scripted = _questions(
         directory / "questions", tree_root or directory, script_folders
     )
-    loaded = {p.stem: _task(p, directory) for p in _markdown_files(directory / "tasks")}
     if front.kind == "generation":
         _readable_skills(directory.resolve())
-    tasks = {name: said for name, (said, _) in loaded.items()}
-    task_bodies = {name: body for name, (_, body) in loaded.items()}
     if front.kind == "decision" and front.tools is not None:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot list tools:; tools are for generation agents, so give them to one it routes to"
@@ -758,8 +735,6 @@ def load_agent(
         route=front.route,
         questions=questions,
         keep=_kept(agent, front),
-        tasks=tasks,
-        task_bodies=task_bodies,
         fingerprint=folder_fingerprint(files, read),
         workspace=front.workspace,
         scripted=scripted,
@@ -862,20 +837,12 @@ def validate_tree(agents: dict[str, AgentSpec]) -> None:
                 raise ConfigurationError(
                     f"tree: route of {spec.name!r} maps unknown option {option!r}; the options of {spec.route.by!r} are {', '.join(question.options)}"
                 )
-            routed = agents.get(target.agent)
+            routed = agents.get(target)
             if routed is None:
                 raise ConfigurationError(
-                    f"tree: route of {spec.name!r} points at unknown agent {target.agent!r}; the tree has {', '.join(sorted(agents))}"
-                )
-            if routed.kind == "decision" and target.task is not None:
-                raise ConfigurationError(
-                    f"tree: route of {spec.name!r} names task {target.task!r} for decision agent {target.agent!r}, which takes no task; drop task: from that entry"
-                )
-            if target.task is not None and target.task not in routed.tasks:
-                raise ConfigurationError(
-                    f"tree: route of {spec.name!r} points at agent {target.agent!r}, which has no task {target.task!r}; its tasks are {', '.join(routed.tasks) or 'none'}"
+                    f"tree: route of {spec.name!r} points at unknown agent {target!r}; the tree has {', '.join(sorted(agents))}"
                 )
             if routed.kind == "decision" and not routed.questions and not routed.scripted:
                 raise ConfigurationError(
-                    f"tree: route of {spec.name!r} gives decision agent {target.agent!r} nothing to ask: it has no questions/; give it questions/, since a route hands it only the input"
+                    f"tree: route of {spec.name!r} gives decision agent {target!r} nothing to ask: it has no questions/; give it questions/, since a route hands it only the input"
                 )

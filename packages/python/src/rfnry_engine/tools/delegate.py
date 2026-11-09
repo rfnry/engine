@@ -61,7 +61,6 @@ _routes: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
 
 class AgentArgs(BaseModel):
     input: str
-    task: str | None = None
     questions: dict[str, Any] | None = None
 
     @field_validator("questions")
@@ -81,13 +80,6 @@ class DelegateArgs(AgentArgs):
 
 def run_arguments(agents: list[AgentSpec]) -> dict[str, Any]:
     arguments: dict[str, Any] = {}
-    tasks = list(dict.fromkeys(task for agent in agents for task in agent.tasks))
-    if tasks:
-        arguments["task"] = {
-            "type": "string",
-            "enum": tasks,
-            "description": "A task of the agent, to run it with",
-        }
     if any(agent.kind == "decision" for agent in agents):
         arguments["questions"] = {
             "type": "object",
@@ -143,10 +135,7 @@ def delegate_schema(engine: Engine, spec: AgentSpec) -> dict[str, Any]:
 
 
 def _listed(agent: AgentSpec) -> str:
-    notes = ["decision agent"] if agent.kind == "decision" else []
-    if agent.tasks:
-        notes.append(f"tasks: {', '.join(agent.tasks)}")
-    shown = f" ({'; '.join(notes)})" if notes else ""
+    shown = " (decision agent)" if agent.kind == "decision" else ""
     return f"- {agent.name}{shown}: {agent.description}"
 
 
@@ -193,7 +182,6 @@ def delegate_tool(
                     parsed.agent,
                     scope,
                     parsed.input,
-                    task=parsed.task,
                     questions=parsed.questions,
                     tools=tools,
                     workspace=workspace,
