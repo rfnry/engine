@@ -173,17 +173,22 @@ def _handed(path: Path, data: bytes, shown: str, media_types: Collection[str] | 
     return _part(path, data, media_type)
 
 
-def preload_parts(
-    names: list[str], media_types: Collection[str] | None, jail: Jail
-) -> tuple[list[Part], dict[str, bytes]]:
+def _reference(name: str, path: Path, head: bytes, size: int) -> Text:
+    media_type = mimetypes.guess_type(path.name)[0] or _signed(head) or "application/octet-stream"
+    return Text(text=f"<<<{name}>>>\n{media_type}, {size} bytes; Load opens it")
+
+
+def preload_parts(names: list[str], jail: Jail) -> tuple[list[Part], dict[str, bytes]]:
     parts: list[Part] = []
     read: dict[str, bytes] = {}
     for name in names:
-        opened, data = _contents(jail, name, _LOAD_BYTES)
-        read[name] = data
-        text = _decoded(data) if len(data) <= _MAX_BYTES else None
+        opened, data, head, size = _opened(jail, name)
+        text = None
+        if data is not None:
+            read[name] = data
+            text = _decoded(data)
         if text is None:
-            parts += [Text(text=f"<<<{name}>>>"), _handed(opened, data, name, media_types)]
+            parts.append(_reference(name, opened, head, size))
         else:
             parts.append(Text(text=f"<<<{name}>>>\n{text}"))
     return parts, read
@@ -197,18 +202,25 @@ def _name_of(fd: int, path: str, removed: bool) -> Path:
     return Path(opened.removesuffix(" (deleted)") if removed else opened)
 
 
-def _contents(jail: Jail, path: str, limit: int, missing: str = "") -> tuple[Path, bytes]:
+def _open(
+    jail: Jail, path: str, limit: int, missing: str, whole: bool
+) -> tuple[Path, bytes | None, bytes, int]:
     try:
         fd = jail.open(_through_folders(jail, path))
         try:
             found = os.fstat(fd)
             if not stat.S_ISREG(found.st_mode):
                 raise InputError(f"tools/builtins: not a file: {path}")
-            if found.st_size > limit:
+            if whole and found.st_size > limit:
                 raise InputError(f"tools/builtins: file exceeds {limit} bytes: {path}")
             opened = _name_of(fd, path, found.st_nlink == 0)
             with open(fd, "rb", closefd=False) as file:
-                data = file.read(limit + 1)
+                if found.st_size > limit:
+                    data = None
+                    head = file.read(_SNIFF)
+                else:
+                    data = file.read(limit + 1)
+                    head = data[:_SNIFF]
         finally:
             os.close(fd)
     except OSError as exc:
@@ -219,9 +231,20 @@ def _contents(jail: Jail, path: str, limit: int, missing: str = "") -> tuple[Pat
         if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ENXIO):
             raise InputError(f"tools/builtins: not a file: {path}") from None
         raise InputError(f"tools/builtins: cannot read {path}: {exc.strerror}") from None
-    if len(data) > limit:
-        raise InputError(f"tools/builtins: file exceeds {limit} bytes: {path}")
-    return opened, data
+    if data is not None and len(data) > limit:
+        if whole:
+            raise InputError(f"tools/builtins: file exceeds {limit} bytes: {path}")
+        data = None
+    return opened, data, head, found.st_size
+
+
+def _opened(jail: Jail, path: str) -> tuple[Path, bytes | None, bytes, int]:
+    return _open(jail, path, _MAX_BYTES, "", False)
+
+
+def _contents(jail: Jail, path: str, limit: int, missing: str = "") -> tuple[Path, bytes]:
+    opened, data, _, _ = _open(jail, path, limit, missing, True)
+    return opened, data or b""
 
 
 def _lines(data: bytes, a: ReadArgs) -> str:

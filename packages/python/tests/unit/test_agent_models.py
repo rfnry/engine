@@ -179,14 +179,20 @@ def with_picture(root: Path) -> Path:
     return root
 
 
-def test_an_agent_s_preload_follows_its_own_model_s_media_types(tmp_path: Path) -> None:
+async def test_a_preload_loads_whatever_its_model_takes_and_load_follows_the_model(
+    tmp_path: Path,
+) -> None:
     root = with_picture(tmp_path)
     engine = Engine(root, models={"strong": Pictures(), "fast": Documents()})
     assert engine.agents["lead"].model == "strong"
     write(root / "writer/AGENT.md", agent_md("writer", model="fast", extra="preload: true\n"))
     (root / "writer/diagram.png").write_bytes(PNG)
-    with pytest.raises(ConfigurationError, match="agent 'writer' cannot preload"):
-        Engine(root, models={"strong": Pictures(), "fast": Documents()})
+    loaded = Engine(root, models={"strong": Pictures(), "fast": Documents()})
+    assert loaded.agents["writer"].model == "fast"
+    with pytest.raises(InputError, match="does not take image/png"):
+        await EngineTools(loaded, agent="writer", scope="acme").dispatch(
+            "Load", {"path": "diagram.png"}
+        )
 
 
 async def test_load_follows_the_media_types_of_the_agent_s_model(tmp_path: Path) -> None:

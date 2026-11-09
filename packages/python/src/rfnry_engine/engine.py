@@ -627,10 +627,7 @@ class Engine:
         self.worker_result_bytes = worker_result_bytes
         self.history_walk = history_walk
         self.history_chars = history_chars
-        self._agents = load_tree(
-            self.root,
-            {name: getattr(model, "media_types", None) for name, model in self._models.items()},
-        )
+        self._agents = load_tree(self.root)
         validate_tree(self._agents)
         _check_models(self._agents, self._models)
         self._workers = Workers(self._agents, _groups(self._agents, workers), worker_result_bytes)

@@ -75,11 +75,9 @@ def preloaded(support: Path) -> list[Part]:
         return Text(text=f"<<<{name}>>>\n" + (support / name).read_text(encoding="utf-8"))
 
     return [
-        Text(text="<<<knowledge/diagram.png>>>"),
-        Image(media_type="image/png", data=PNG),
+        Text(text="<<<knowledge/diagram.png>>>\nimage/png, 15 bytes; Load opens it"),
         text("knowledge/plans.md"),
-        Text(text="<<<knowledge/rates.pdf>>>"),
-        Document(media_type="application/pdf", name="rates.pdf", data=PDF),
+        Text(text="<<<knowledge/rates.pdf>>>\napplication/pdf, 18 bytes; Load opens it"),
         text("rules/chargebacks/disputed.md"),
         text("rules/refunds.md"),
     ]
@@ -113,7 +111,7 @@ async def test_preload_all_puts_every_rule_and_knowledge_file_before_the_model_i
     assert run.fingerprint.agent != before.fingerprint.agent
 
 
-async def test_a_binary_knowledge_file_goes_in_as_the_part_load_hands_over(
+async def test_a_file_that_is_not_text_goes_in_as_a_reference_load_opens(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tree(fixtures, tmp_path)
@@ -125,16 +123,15 @@ async def test_a_binary_knowledge_file_goes_in_as_the_part_load_hands_over(
     run = await built.run("support", "acme", "What does express cost?")
     assert isinstance(run, Generation)
     surface = EngineTools(built, agent="support", scope="acme")
-    for name in ("knowledge/rates.pdf", "knowledge/diagram.png"):
-        loaded = await surface.dispatch("Load", {"path": name})
-        assert isinstance(loaded, list) and len(loaded) == 1
-        at = run.preload.index(Text(text=f"<<<{name}>>>"))
-        assert run.preload[at + 1 : at + 2] == loaded
+    assert not any(isinstance(part, Image | Document) for part in run.preload)
+    for name, part in {
+        "knowledge/rates.pdf": Document(media_type="application/pdf", name="rates.pdf", data=PDF),
+        "knowledge/diagram.png": Image(media_type="image/png", data=PNG),
+    }.items():
+        assert await surface.dispatch("Load", {"path": name}) == [part]
 
 
-async def test_a_preloaded_link_goes_in_as_the_part_load_hands_over(
-    fixtures: Path, tmp_path: Path
-) -> None:
+async def test_a_preloaded_link_goes_in_as_a_reference(fixtures: Path, tmp_path: Path) -> None:
     root = tree(fixtures, tmp_path)
     support = root / "support"
     furnish(support)
@@ -150,8 +147,7 @@ async def test_a_preloaded_link_goes_in_as_the_part_load_hands_over(
     assert loaded == [
         Document(media_type="text/markdown", name="notes.md", data=b"# Notes\n\x00 kept as bytes\n")
     ]
-    at = run.preload.index(Text(text="<<<knowledge/notes>>>"))
-    assert run.preload[at + 1 : at + 2] == loaded
+    assert Text(text="<<<knowledge/notes>>>\ntext/markdown, 24 bytes; Load opens it") in run.preload
 
 
 class RuleFollower:
@@ -264,17 +260,20 @@ def test_preload_is_true_and_a_decision_agent_cannot_declare_it(
         Engine(tmp_path, models={"strong": Scripted(), "judge": Answering()})
 
 
-def test_a_preloaded_file_that_is_not_the_type_its_name_says_is_refused_when_the_tree_loads(
+async def test_a_preloaded_file_that_is_not_the_type_its_name_says_loads_and_load_refuses_it(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tree(fixtures, tmp_path)
     (root / "support" / "knowledge" / "diagram.png").write_bytes(b"\0not a png")
     preload_all(root / "support")
-    with pytest.raises(
-        ConfigurationError,
-        match=r"^tree: agent 'support' cannot preload its folder: tools/builtins: diagram.png is not the image/png its name says; move that file out of its folders, or drop preload: true$",
-    ):
-        engine(root, Scripted())
+    built = engine(root, Scripted(text_reply("ok")))
+    run = await built.run("support", "acme", "x")
+    assert isinstance(run, Generation)
+    assert (
+        Text(text="<<<knowledge/diagram.png>>>\nimage/png, 10 bytes; Load opens it") in run.preload
+    )
+    refused = await refusal(root, Scripted(), "knowledge/diagram.png")
+    assert refused == "tools/builtins: diagram.png is not the image/png its name says"
 
 
 async def test_the_preload_is_read_when_the_tree_loads_as_the_fingerprint_is_taken(
@@ -382,24 +381,22 @@ async def refusal(root: Path, llm: GenerationModel, name: str, tool: str = "Load
     return str(refused.value)
 
 
-async def test_a_file_over_load_s_cap_is_refused_when_the_tree_loads_with_load_s_message(
+async def test_a_file_over_load_s_cap_loads_the_tree_and_load_refuses_it_when_asked(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tree(fixtures, tmp_path)
     with (root / "support" / "knowledge" / "archive.bin").open("wb") as file:
         file.truncate(20 * 1024 * 1024 + 1)
+    preload_all(root / "support")
+    run = await engine(root, Scripted(text_reply("ok"))).run("support", "acme", "x")
+    assert isinstance(run, Generation)
+    held = "<<<knowledge/archive.bin>>>\napplication/octet-stream, 20971521 bytes; Load opens it"
+    assert Text(text=held) in run.preload
     load = await refusal(root, Scripted(), "knowledge/archive.bin")
     assert load == "tools/builtins: file exceeds 20971520 bytes: knowledge/archive.bin"
-    preload_all(root / "support")
-    with pytest.raises(ConfigurationError) as refused:
-        engine(root, Scripted())
-    assert str(refused.value) == (
-        f"tree: agent 'support' cannot preload its folder: {load}; "
-        "move that file out of its folders, or drop preload: true"
-    )
 
 
-async def test_a_text_file_over_read_s_cap_goes_in_as_load_hands_it(
+async def test_a_text_file_over_read_s_cap_goes_in_as_a_reference(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tree(fixtures, tmp_path)
@@ -411,6 +408,7 @@ async def test_a_text_file_over_read_s_cap_goes_in_as_load_hands_it(
     built = engine(root, Scripted(text_reply("ok")))
     run = await built.run("support", "acme", "x")
     assert isinstance(run, Generation)
+    assert Text(text=f"<<<{name}>>>\ntext/plain, 5242881 bytes; Load opens it") in run.preload
     loaded = await EngineTools(built, agent="support", scope="acme").dispatch(
         "Load", {"path": name}
     )
@@ -419,35 +417,29 @@ async def test_a_text_file_over_read_s_cap_goes_in_as_load_hands_it(
             media_type="text/plain", name="notes.txt", data=(root / "support" / name).read_bytes()
         )
     ]
-    at = run.preload.index(Text(text=f"<<<{name}>>>"))
-    assert run.preload[at + 1 : at + 2] == loaded
 
 
-async def test_a_file_the_model_does_not_take_is_refused_when_the_tree_loads_with_load_s_message(
+async def test_a_file_the_model_does_not_take_loads_the_tree_and_load_refuses_it_when_asked(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tree(fixtures, tmp_path)
     name = "knowledge/greeting.wav"
     (root / "support" / name).write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00")
-    load = await refusal(root, PicturesAndDocuments(), name)
-    kind = mimetypes.guess_type(name)[0]
-    assert load == f"tools/builtins: the model does not take {kind} files: {name}"
     preload_all(root / "support")
-    with pytest.raises(ConfigurationError) as refused:
-        engine(root, PicturesAndDocuments())
-    assert str(refused.value) == (
-        f"tree: agent 'support' cannot preload its folder: {load}; "
-        "move that file out of its folders, or drop preload: true"
-    )
-    built = engine(root, Scripted(text_reply("ok")))
-    run = await built.run("support", "acme", "x")
+    narrow = engine(root, PicturesAndDocuments(text_reply("ok")))
+    run = await narrow.run("support", "acme", "x")
     assert isinstance(run, Generation)
-    loaded = await EngineTools(built, agent="support", scope="acme").dispatch(
+    kind = mimetypes.guess_type(name)[0]
+    assert Text(text=f"<<<{name}>>>\n{kind}, 18 bytes; Load opens it") in run.preload
+    surface = EngineTools(narrow, agent="support", scope="acme")
+    with pytest.raises(InputError) as refused:
+        await surface.dispatch("Load", {"path": name})
+    assert str(refused.value) == f"tools/builtins: the model does not take {kind} files: {name}"
+    taking = engine(root, Scripted(text_reply("ok")))
+    loaded = await EngineTools(taking, agent="support", scope="acme").dispatch(
         "Load", {"path": name}
     )
     assert isinstance(loaded, list) and len(loaded) == 1 and isinstance(loaded[0], Audio)
-    at = run.preload.index(Text(text=f"<<<{name}>>>"))
-    assert run.preload[at + 1 : at + 2] == loaded
 
 
 def test_the_preload_and_the_fingerprint_come_from_one_read_of_each_file(

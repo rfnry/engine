@@ -187,9 +187,9 @@ reply's text as it arrives and `on_delta(text, reasoning=True)` with the model's
 vendor streams it; one that never passes `reasoning=` streams text alone. An adapter that has
 `media_types`, the file types its model takes — `{"image/*", "application/pdf"}` — lets `Load`
 refuse the rest with an error the model can act on, instead of the next model call failing; without
-it, `Load` hands the model any file. Each agent follows the `media_types` of its own model: a file a
-model does not take is a `ConfigurationError` where that agent's `preload: true` would read it, and
-`Load` refuses it for that agent alone. An adapter that has `model`, the name of the model it calls,
+it, `Load` hands the model any file. Each agent follows the `media_types` of its own model: `Load`
+refuses a file for the agent whose model does not take it, and for that agent alone; nothing about a
+file `preload: true` sends is refused when the tree loads. An adapter that has `model`, the name of the model it calls,
 names the run's model before any reply does. An adapter that has `settings`, a JSON object of what
 it sends its vendor besides the conversation — `{"effort": "high", "max_tokens": 4096}` — has them
 recorded beside the model; a `Reply` or a `Decided` may carry its own for one call, and they win,
@@ -504,8 +504,9 @@ Tag the document. Every rule applies to every document.
 With `preload: true` the model also receives every file of its folder and of the folders it reads
 — all but an agent's `AGENT.md` and `questions/`, the `skills/` and `tools/` folders on an agent's
 path and the folders of the agents inside it, described or not — sorted by path character by
-character, each under its path: what `Read` would return for it, and for a file `Read` refuses —
-over 5 MB, or not text — the part `Load` would hand over. Skills stay listed for the model to open
+character, each under its path: what `Read` would return for it. A file that is not text, or is over 5 MB,
+goes as a line naming its type and size, such as `image/png, 15 bytes; Load opens it`, which `Load`
+opens when the model asks; nothing about it is refused when the tree loads. Skills stay listed for the model to open
 the one that fits, never sent ahead. The map stays a map and the folder stays as it is; only when
 the files are read changes, so no turn goes to opening them.
 They travel as one user message ahead of the history, sent with every model call, and are read when
@@ -514,9 +515,8 @@ the engine loads the tree, as the fingerprint is taken, so an edit shows in the 
 conversation passed back does not send the folder twice and a replay preloads from the candidate's
 folder. The tools stay as they are — `Read` and `Load` hand over what the model already holds. Each
 agent preloads its own folder, a delegated or routed one included. A decision agent reads no files,
-so `preload:` on one is a `ConfigurationError` when the tree loads; so is a file neither `Read` nor
-`Load` would hand over — over 20 MB, of a type the agent's own model's `media_types` does not name,
-or not the type its name says — with `Load`'s own message.
+so `preload:` on one is a `ConfigurationError` when the tree loads; a file the agent cannot read
+is one too.
 
 ### Skills
 
@@ -2949,9 +2949,7 @@ naming a folder that holds no agent or one inside another it names, a `reads:` t
 from the root, names no folder of the tree, a `tools/` or `skills/` folder on an agent's path or a
 folder inside one, leaves the root, names the agent's own folder, one that holds it or one inside
 it, or names two folders one inside the other, `reads:` on a decision agent or on an agent whose
-folder is a link to a folder elsewhere, a file `preload: true` would send that neither `Read` nor
-`Load` would hand over — over 20 MB, of a type the model's `media_types` does not name, or not the
-type its name says — one
+folder is a link to a folder elsewhere, one
 skill as both `skills/x.md` and `skills/x/SKILL.md`, a question in markdown, a question's JSON that
 is not an object, holds an unknown key, has no instructions or does not fit its type, a question's
 script without its `.json`, a route not by a choice question of the router's `questions/`, by one a

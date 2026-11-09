@@ -696,7 +696,6 @@ def _agent_front(directory: Path) -> tuple[AgentFront, str]:
 
 def load_agent(
     directory: Path,
-    media: Mapping[str, Collection[str] | None] | None = None,
     folders: Mapping[str, _Folder] | None = None,
     path: str = ".",
     tree_root: Path | None = None,
@@ -790,7 +789,6 @@ def load_agent(
                         *_under(reads, lambda folder: folder.preloaded),
                     ]
                 ),
-                (media or {}).get(front.model),
                 Jail(root, also=[folder.place for folder in reads.values()]),
             )
             if front.preload
@@ -834,9 +832,7 @@ def load_agent(
 
 
 @warns_once()
-def load_tree(
-    root: Path, media: Mapping[str, Collection[str] | None] | None = None
-) -> dict[str, AgentSpec]:
+def load_tree(root: Path) -> dict[str, AgentSpec]:
     root = Path(root)
     found, links = _tree_folders(root)
     _refuse_links(root, found, links)
@@ -876,7 +872,6 @@ def load_tree(
     for path in paths:
         spec = load_agent(
             root / path,
-            media,
             folders,
             path=path,
             tree_root=root,
