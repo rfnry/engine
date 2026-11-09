@@ -790,6 +790,7 @@ def load_agent(
                     ]
                 ),
                 Jail(root, also=[folder.place for folder in reads.values()]),
+                front.tools is None or "Load" in front.tools,
             )
             if front.preload
             else ([], {})

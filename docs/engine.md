@@ -189,11 +189,11 @@ vendor streams it; one that never passes `reasoning=` streams text alone. An ada
 refuse the rest with an error the model can act on, instead of the next model call failing; without
 it, `Load` hands the model any file. Each agent follows the `media_types` of its own model: `Load`
 refuses a file for the agent whose model does not take it, and for that agent alone; nothing about a
-file `preload: true` sends is refused when the tree loads. An adapter that has `model`, the name of the model it calls,
-names the run's model before any reply does. An adapter that has `settings`, a JSON object of what
-it sends its vendor besides the conversation — `{"effort": "high", "max_tokens": 4096}` — has them
-recorded beside the model; a `Reply` or a `Decided` may carry its own for one call, and they win,
-even when empty. An adapter's `settings` attribute that is not a JSON object is ignored; a reply's
+file `preload: true` sends is refused when the tree loads. An adapter that has `model`, the name of
+the model it calls, names the run's model before any reply does. An adapter that has `settings`, a
+JSON object of what it sends its vendor besides the conversation — `{"effort": "high",
+"max_tokens": 4096}` — has them recorded beside the model; a `Reply` or a `Decided` may carry its
+own for one call, and they win, even when empty. An adapter's `settings` attribute that is not a JSON object is ignored; a reply's
 or a decided's settings that are not JSON break the contract (`ModelError`). They are stored and
 exported with the run, so a credential or an endpoint never goes in them.
 
@@ -504,19 +504,20 @@ Tag the document. Every rule applies to every document.
 With `preload: true` the model also receives every file of its folder and of the folders it reads
 — all but an agent's `AGENT.md` and `questions/`, the `skills/` and `tools/` folders on an agent's
 path and the folders of the agents inside it, described or not — sorted by path character by
-character, each under its path: what `Read` would return for it. A file that is not text, or is over 5 MB,
-goes as a line naming its type and size, such as `image/png, 15 bytes; Load opens it`, which `Load`
-opens when the model asks; nothing about it is refused when the tree loads. Skills stay listed for the model to open
-the one that fits, never sent ahead. The map stays a map and the folder stays as it is; only when
-the files are read changes, so no turn goes to opening them.
+character, each under its path: what `Read` would return for it. A file that is not text, or is
+over 5 MB, goes as a line naming its type and size, such as `image/png, 15 bytes; Load opens it`,
+which `Load` opens when the model asks; nothing about it is refused when the tree loads. An agent
+whose `tools:` leaves out `Load` gets the line without `; Load opens it`. Skills stay listed for
+the model to open the one that fits, never sent ahead. The map stays a map and the folder stays as
+it is; only when the files are read changes, so no turn goes to opening a text file.
 They travel as one user message ahead of the history, sent with every model call, and are read when
 the engine loads the tree, as the fingerprint is taken, so an edit shows in the next `Engine`.
 `run.preload` holds that message's parts; `run.messages` and `run.conversation` leave it out, so a
 conversation passed back does not send the folder twice and a replay preloads from the candidate's
-folder. The tools stay as they are — `Read` and `Load` hand over what the model already holds. Each
+folder. The tools stay as they are — `Read` hands over the text the model already holds. Each
 agent preloads its own folder, a delegated or routed one included. A decision agent reads no files,
-so `preload:` on one is a `ConfigurationError` when the tree loads; a file the agent cannot read
-is one too.
+so `preload:` on one is a `ConfigurationError` when the tree loads; so is a file that goes missing
+or unreadable after its folder is listed.
 
 ### Skills
 
@@ -2949,10 +2950,9 @@ naming a folder that holds no agent or one inside another it names, a `reads:` t
 from the root, names no folder of the tree, a `tools/` or `skills/` folder on an agent's path or a
 folder inside one, leaves the root, names the agent's own folder, one that holds it or one inside
 it, or names two folders one inside the other, `reads:` on a decision agent or on an agent whose
-folder is a link to a folder elsewhere, one
-skill as both `skills/x.md` and `skills/x/SKILL.md`, a question in markdown, a question's JSON that
-is not an object, holds an unknown key, has no instructions or does not fit its type, a question's
-script without its `.json`, a route not by a choice question of the router's `questions/`, by one a
+folder is a link to a folder elsewhere, one skill as both `skills/x.md` and `skills/x/SKILL.md`, a
+question in markdown, a question's JSON that is not an object, holds an unknown key, has no
+instructions or does not fit its type, a question's script without its `.json`, a route not by a choice question of the router's `questions/`, by one a
 script fills, or that maps an option the question does not have, a route entry that is not an
 agent's name — one that names a task reads `frontmatter: invalid agent agents/frontdesk/AGENT.md;
 route.to: tasks are gone (route entry 'technical' names task 'triage'); name the agent alone, and

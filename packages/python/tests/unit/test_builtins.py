@@ -314,7 +314,7 @@ async def test_preload_names_and_types_a_link_as_load_does(
     (knowledge / "notes.md").write_bytes(NOTES)
     (knowledge / link).symlink_to(target)
     name = f"knowledge/{link}"
-    parts, _ = preload_parts([name], Jail(media))
+    parts, _ = preload_parts([name], Jail(media), True)
     size = len(part.data or b"")
     reference = f"<<<{name}>>>\n{part.media_type}, {size} bytes; Load opens it"
     assert parts == [Text(text=reference)]
@@ -338,7 +338,7 @@ async def test_a_file_removed_after_it_was_opened_keeps_its_own_name(
     if by == "Load":
         assert await Tools([load_tool(media)]).dispatch("Load", {"path": name}) == [part]
     else:
-        parts, _ = preload_parts([name], Jail(media))
+        parts, _ = preload_parts([name], Jail(media), True)
         assert parts == [
             Text(text=f"<<<{name}>>>\napplication/pdf, {len(PDF)} bytes; Load opens it")
         ]

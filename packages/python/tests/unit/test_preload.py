@@ -124,6 +124,11 @@ async def test_a_file_that_is_not_text_goes_in_as_a_reference_load_opens(
     assert isinstance(run, Generation)
     surface = EngineTools(built, agent="support", scope="acme")
     assert not any(isinstance(part, Image | Document) for part in run.preload)
+    for line in (
+        "<<<knowledge/diagram.png>>>\nimage/png, 15 bytes; Load opens it",
+        "<<<knowledge/rates.pdf>>>\napplication/pdf, 18 bytes; Load opens it",
+    ):
+        assert Text(text=line) in run.preload
     for name, part in {
         "knowledge/rates.pdf": Document(media_type="application/pdf", name="rates.pdf", data=PDF),
         "knowledge/diagram.png": Image(media_type="image/png", data=PNG),
@@ -394,6 +399,35 @@ async def test_a_file_over_load_s_cap_loads_the_tree_and_load_refuses_it_when_as
     assert Text(text=held) in run.preload
     load = await refusal(root, Scripted(), "knowledge/archive.bin")
     assert load == "tools/builtins: file exceeds 20971520 bytes: knowledge/archive.bin"
+
+
+async def test_a_file_over_read_s_cap_is_in_the_fingerprint_though_the_preload_never_reads_it(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    big = root / "support" / "knowledge" / "notes.txt"
+    big.write_text("a" * (5 * 1024 * 1024 + 1), encoding="utf-8")
+    preload_all(root / "support")
+    before = engine(root, Scripted())._agents["support"].fingerprint
+    big.write_text("b" + "a" * (5 * 1024 * 1024), encoding="utf-8")
+    assert engine(root, Scripted())._agents["support"].fingerprint != before
+
+
+async def test_an_agent_without_load_is_not_told_load_opens_a_file(
+    fixtures: Path, tmp_path: Path
+) -> None:
+    root = tree(fixtures, tmp_path)
+    support = root / "support"
+    furnish(support)
+    preload_all(support)
+    agent = support / "AGENT.md"
+    agent.write_text(
+        agent.read_text(encoding="utf-8").replace("\n---\n", "\ntools: [Read]\n---\n", 1),
+        encoding="utf-8",
+    )
+    spec = engine(root, Scripted())._agents["support"]
+    assert Text(text="<<<knowledge/diagram.png>>>\nimage/png, 15 bytes") in spec.preload
+    assert not any("Load opens it" in getattr(part, "text", "") for part in spec.preload)
 
 
 async def test_a_text_file_over_read_s_cap_goes_in_as_a_reference(

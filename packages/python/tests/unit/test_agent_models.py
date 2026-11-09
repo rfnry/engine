@@ -6,7 +6,7 @@ import pytest
 
 from rfnry_engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
-from rfnry_engine.models import Message
+from rfnry_engine.models import Message, Text
 from rfnry_engine.records import Generation
 from rfnry_engine.tools.engine_tools import EngineTools
 
@@ -179,20 +179,14 @@ def with_picture(root: Path) -> Path:
     return root
 
 
-async def test_a_preload_loads_whatever_its_model_takes_and_load_follows_the_model(
-    tmp_path: Path,
-) -> None:
+def test_a_preload_loads_a_file_its_model_does_not_take(tmp_path: Path) -> None:
     root = with_picture(tmp_path)
-    engine = Engine(root, models={"strong": Pictures(), "fast": Documents()})
-    assert engine.agents["lead"].model == "strong"
     write(root / "writer/AGENT.md", agent_md("writer", model="fast", extra="preload: true\n"))
     (root / "writer/diagram.png").write_bytes(PNG)
     loaded = Engine(root, models={"strong": Pictures(), "fast": Documents()})
-    assert loaded.agents["writer"].model == "fast"
-    with pytest.raises(InputError, match="does not take image/png"):
-        await EngineTools(loaded, agent="writer", scope="acme").dispatch(
-            "Load", {"path": "diagram.png"}
-        )
+    assert loaded._agents["writer"].preload == [
+        Text(text="<<<diagram.png>>>\nimage/png, 15 bytes; Load opens it")
+    ]
 
 
 async def test_load_follows_the_media_types_of_the_agent_s_model(tmp_path: Path) -> None:
