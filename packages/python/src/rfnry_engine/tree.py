@@ -72,18 +72,6 @@ class RouteSpec(BaseModel):
     to: dict[str, str]
     min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
-    @field_validator("to", mode="before")
-    @classmethod
-    def _an_entry_names_no_task(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        for option, target in value.items():
-            if isinstance(target, dict) and "task" in target:
-                raise ValueError(
-                    f"tree: tasks are gone (route entry {option!r} names task {target['task']!r}); name the agent alone, and make the task a skill or say it in the agent's AGENT.md"
-                )
-        return value
-
 
 def _each_skill_once(value: list[str], wanted: str) -> list[str]:
     for entry in value:
@@ -158,7 +146,10 @@ class AgentFront(BaseModel):
     @field_validator("tools", "skills", "public_skills", mode="before")
     @classmethod
     def _a_scalar_is_a_word(cls, value: object) -> object:
-        if value is not None and not isinstance(value, (list, str)):
+        if value is not None and (
+            not isinstance(value, (list, str))
+            or (isinstance(value, list) and not all(isinstance(entry, str) for entry in value))
+        ):
             raise ValueError(f"tree: write all, none or a list of names, got {value!r}")
         return value
 
@@ -360,20 +351,6 @@ def _front(path: Path) -> dict[str, JsonValue]:
         return QuestionFront.model_validate(_object(path)).model_dump(exclude_unset=True)
     except ValidationError as exc:
         raise ConfigurationError(f"tree: invalid question {path}; {plainly(exc)}") from exc
-
-
-def _no_tasks(agent: Path) -> None:
-    folder = agent / "tasks"
-    if not folder.is_dir():
-        return
-    try:
-        listed = sorted(folder.iterdir())
-    except OSError:
-        listed = []
-    found = [p for p in listed if p.suffix == ".md" and not p.name.startswith(".") and p.is_file()]
-    raise ConfigurationError(
-        f"tree: tasks are gone ({found[0] if found else folder}); make it a skill, or say it in the input"
-    )
 
 
 def _declared(folder: Path) -> list[Path]:
@@ -586,8 +563,6 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
 
     def walk(folder: Path, at: str) -> None:
         holds = declares(folder)
-        if _is_agent(folder, at):
-            _no_tasks(folder)
         for child in _subfolders(folder):
             if (
                 child.name.startswith(".")
@@ -717,7 +692,10 @@ def _reads(
             offered = (
                 folder
                 for folder in folders
-                if not _within(folder, [*tools, *skills]) and not _holds(folder, path)
+                if not _within(folder, [*tools, *skills])
+                and not _holds(folder, path)
+                and path != "."
+                and not folder.startswith(f"{path}/")
             )
             choices = ", ".join(_spelled(sorted(offered), path)) or "none"
             raise ConfigurationError(

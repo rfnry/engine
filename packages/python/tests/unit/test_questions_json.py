@@ -126,18 +126,6 @@ def test_a_markdown_question_is_refused(tmp_path: Path) -> None:
     assert str(raised.value) == message
 
 
-@pytest.mark.parametrize("held", ["tasks/tone/polite.json", "tasks/tone.md"])
-def test_a_decision_agent_with_tasks_is_refused(tmp_path: Path, held: str) -> None:
-    write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
-    write(tmp_path / "triage/questions/urgent.json", '{"type": "check", "instructions": "Urgent?"}')
-    write(tmp_path / "triage" / held, '{"type": "check", "instructions": "Polite?"}')
-    named = tmp_path / "triage" / ("tasks/tone.md" if held.endswith(".md") else "tasks")
-    message = f"tree: tasks are gone ({named}); make it a skill, or say it in the input"
-    with pytest.raises(ConfigurationError) as raised:
-        load_tree(tmp_path)
-    assert str(raised.value) == message
-
-
 def test_a_question_script_without_its_json_is_refused(tmp_path: Path) -> None:
     write(tmp_path / "matcher/AGENT.md", agent_md("matcher", kind="decision", model="judge"))
     path = tmp_path / "matcher/questions/order.py"
@@ -451,32 +439,6 @@ def test_a_question_script_is_part_of_the_agent_fingerprint(tmp_path: Path) -> N
     before = load_tree(tmp_path)["matcher"].fingerprint
     write(tmp_path / "matcher/questions/order.py", ORDER.replace("First", "Earliest"))
     assert load_tree(tmp_path)["matcher"].fingerprint != before
-
-
-def test_a_route_entry_naming_a_task_is_refused_with_the_way_out(tmp_path: Path) -> None:
-    path = tmp_path / "desk/AGENT.md"
-    write(
-        path,
-        agent_md(
-            "desk",
-            kind="decision",
-            model="judge",
-            extra="route: {by: team, to: {technical: {agent: support, task: triage}}}\n",
-        ),
-    )
-    write(
-        tmp_path / "desk/questions/team.json",
-        '{"type": "choice", "instructions": "?", "options": {"technical": "T", "other": "O"}}',
-    )
-    write(tmp_path / "support/AGENT.md", agent_md("support"))
-    message = (
-        f"frontmatter: invalid agent {path}; route.to: tasks are gone (route entry 'technical' "
-        "names task 'triage'); name the agent alone, and make the task a skill or say it in the "
-        "agent's AGENT.md"
-    )
-    with pytest.raises(ConfigurationError) as raised:
-        Engine(tmp_path, models={"judge": Answering(), "strong": Scripted()})
-    assert str(raised.value) == message
 
 
 async def test_questions_a_model_composes_reach_a_scripted_decision_agent(tmp_path: Path) -> None:

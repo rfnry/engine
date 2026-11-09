@@ -9,15 +9,18 @@ def build_bundle(
     agents: list[AgentSpec],
     context: str | None,
 ) -> str:
+    opens = any(t.name in ("Read", "Load") for t in tools)
     sections = [
         ("AGENT", spec.body),
-        ("FILES", spec.listing),
+        ("FILES", spec.listing if opens else ""),
         (
             "SKILLS",
             "\n".join(
                 f"{s.path} — {s.description}" if s.description else s.path
                 for s in spec.skills.values()
-            ),
+            )
+            if opens
+            else "",
         ),
         (
             "TOOLS",

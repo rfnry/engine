@@ -250,3 +250,21 @@ def test_a_link_that_sorts_before_its_target_does_not_take_its_folders(tmp_path:
     (root / "alink").symlink_to(root / "shared", target_is_directory=True)
     spec = load_tree(root)["coding"]
     assert spec.reads == {"shared/books": (root / "shared/books").resolve()}
+
+
+def test_the_unknown_folder_choices_leave_out_the_agent_s_own_folders(tmp_path: Path) -> None:
+    write(tmp_path / "shared/books/a.md", "A.\n")
+    write(tmp_path / "desk/AGENT.md", agent_md("desk", extra="reads: ['../ghost']\n"))
+    write(tmp_path / "desk/notes/n.md", "N.\n")
+    write(tmp_path / "desk/notes/deep/d.md", "D.\n")
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value).endswith("one of: ../shared, ../shared/books")
+
+
+def test_a_root_agent_is_offered_no_folder_to_read(tmp_path: Path) -> None:
+    write(tmp_path / "AGENT.md", agent_md("root", extra="reads: ['./ghost']\n"))
+    write(tmp_path / "notes/n.md", "N.\n")
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value).endswith("one of: none")

@@ -345,6 +345,19 @@ def test_a_route_to_a_decision_agent_that_could_never_ask_anything_is_refused(
         validate_tree(load_tree(tmp_path))
 
 
+def test_a_route_entry_that_is_not_a_name_fails_as_any_bad_value(tmp_path: Path) -> None:
+    _agent(
+        tmp_path,
+        "a",
+        "kind: decision\nmodel: judge\n"
+        "route: {by: team, to: {technical: {agent: support, task: triage}}}\n",
+    )
+    with pytest.raises(
+        ConfigurationError, match="route.to.technical: input should be a valid string"
+    ):
+        load_tree(tmp_path)
+
+
 def test_a_route_entry_is_an_agent_s_name(tmp_path: Path) -> None:
     team = (
         '{"type": "choice", "instructions": "Which?", "options": {"technical": "T", "other": "O"}}'
@@ -373,58 +386,21 @@ def test_a_route_entry_is_an_agent_s_name(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "kind", ["kind: generation\nmodel: strong\n", "kind: decision\nmodel: judge\n"]
 )
-def test_a_tasks_folder_in_an_agent_s_folder_is_refused_naming_its_first_file(
-    tmp_path: Path, kind: str
-) -> None:
+def test_a_tasks_folder_is_an_ordinary_folder(tmp_path: Path, kind: str) -> None:
     _agent(tmp_path, "support", kind)
     tasks = tmp_path / "support" / "tasks"
     tasks.mkdir()
-    for name in ("b.md", "a.md", ".#a.md"):
-        (tasks / name).write_text("Do it.\n")
-    with pytest.raises(ConfigurationError) as caught:
-        load_tree(tmp_path)
-    assert str(caught.value) == (
-        f"tree: tasks are gone ({tmp_path}/support/tasks/a.md); make it a skill, or say it in the input"
-    )
-    for name in ("b.md", "a.md"):
-        (tasks / name).unlink()
-    (tasks / "a.md").mkdir()
-    with pytest.raises(ConfigurationError) as caught:
-        load_tree(tmp_path)
-    assert str(caught.value) == (
-        f"tree: tasks are gone ({tmp_path}/support/tasks); make it a skill, or say it in the input"
-    )
-
-
-def test_a_tasks_folder_holding_an_agent_md_is_refused_naming_it(tmp_path: Path) -> None:
-    _agent(tmp_path, "support", "kind: generation\nmodel: strong\n")
-    (tmp_path / "support" / "tasks").mkdir()
-    (tmp_path / "support" / "tasks" / "AGENT.md").write_text("Not an agent: a task.\n")
-    (tmp_path / "support" / "tasks" / "close.md").write_text("Close the ticket.\n")
-    with pytest.raises(ConfigurationError) as caught:
-        load_tree(tmp_path)
-    assert str(caught.value) == (
-        f"tree: tasks are gone ({tmp_path}/support/tasks/AGENT.md); make it a skill, or say it in the input"
-    )
-
-
-def test_a_tasks_folder_that_cannot_be_read_is_refused_naming_it(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    _agent(tmp_path, "support", "kind: generation\nmodel: strong\n")
-    tasks = tmp_path / "support" / "tasks"
-    tasks.mkdir()
     (tasks / "triage.md").write_text("Triage it.\n")
-    tasks.chmod(0)
-    try:
-        with caplog.at_level(logging.WARNING), pytest.raises(ConfigurationError) as caught:
-            load_tree(tmp_path)
-    finally:
-        tasks.chmod(0o755)
-    assert str(caught.value) == (
-        f"tree: tasks are gone ({tasks}); make it a skill, or say it in the input"
-    )
-    assert [m for m in caplog.messages if "cannot read" in m] == []
+    agents = load_tree(tmp_path)
+    assert list(agents) == ["support"]
+    listing = agents["support"].listing.splitlines()
+    assert listing[listing.index("tasks/") :] == ["tasks/", "  triage.md"]
+
+
+def test_agent_discovery_enters_a_tasks_folder(tmp_path: Path) -> None:
+    _agent(tmp_path, "support", "kind: generation\nmodel: strong\n")
+    _agent(tmp_path / "support" / "tasks", "triage", "kind: generation\nmodel: strong\n")
+    assert sorted(load_tree(tmp_path)) == ["support", "triage"]
 
 
 def test_a_tasks_folder_outside_any_agent_is_content(tmp_path: Path) -> None:
