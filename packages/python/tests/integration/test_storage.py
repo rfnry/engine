@@ -71,7 +71,6 @@ def _run(
         parent_run_id=parent,
         agent=agent,
         kind=kind,
-        task=None,
         at=at,
         recorded=recorded or at,
         duration_ms=1,
@@ -294,7 +293,6 @@ async def test_a_body_with_parts_round_trips(storage: Storage) -> None:
                 parent_run_id=None,
                 agent="support",
                 kind="generation",
-                task=None,
                 at=datetime.now(UTC),
                 recorded=datetime.now(UTC),
                 duration_ms=1,
@@ -677,7 +675,6 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
         "a",
         list(parts),
         history=history,
-        task="triage",
         context="Acme is enterprise.",
         tags={"arm": "a", "customer": "c-1"},
     )
@@ -705,7 +702,7 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     assert isinstance(model.seen[0][-1].content, list) and model.seen[0][-1].content == parts
     candidate_first = pairs[0].candidate
     assert isinstance(candidate_first, Generation) and isinstance(first, Generation)
-    assert candidate_first.task == "triage" and candidate_first.context == "Acme is enterprise."
+    assert candidate_first.context == first.context == "Acme is enterprise."
     assert candidate_first.fingerprint == first.fingerprint
     assert await replayed(tags={"arm": "a"}) == [first.run_id, third.run_id]
     assert await replayed(tags={"arm": "a", "customer": "c-1"}) == [first.run_id]
@@ -754,7 +751,7 @@ async def test_runtime_questions_and_the_questions_part_round_trip_and_replay(
     assert list(again.questions) == ["urgent", "area"]
     assert list(again.questions["area"].model_dump()["options"]) == ["returns", "delivery"]
     [row] = await storage.runs("a", run_ids=[asked.run_id])
-    assert row.task is None and "task" not in row.body
+    assert "task" not in row.body
     bucket = MemoryBucket()
     await refinery.export("a", bucket)
     rows = [
@@ -1096,7 +1093,7 @@ async def test_a_pool_whose_bytea_codec_takes_only_bytes_cannot_record(storage: 
         with pytest.raises(
             StorageError,
             match=r"^refinery/postgres: storage rejected put_runs: invalid input for query argument "
-            r"\$11: .*'_Encoded' object has no attribute 'hex'",
+            r"\$10: .*'_Encoded' object has no attribute 'hex'",
         ):
             await PostgresStorage(pool).put_runs("a", [_run("a", "r1")])
     finally:

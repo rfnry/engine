@@ -176,7 +176,6 @@ class Generation(BaseModel):
     agent: str
     scope: str
     tags: dict[str, str] = Field(default_factory=dict)
-    task: str | None = None
     skill: str | None = None
     context: str | None = None
     at: datetime

@@ -169,7 +169,7 @@ whose runs it is asked about too, and a lookup — and the model reads any other
 replay with `tools=` stubs that only read, which win over the folder's tools of the same names.
 
 Each replay is given the recorded input — an image replays as an image — the history before it (with
-`conversation=`, the conversation before it, and `History`), the task and the context, so the
+`conversation=`, the conversation before it, and `History`), the skill and the context, so the
 candidate answers the question the recorded run answered. The latest review decides the reference: a
 person's correction is the right answer, an approval makes the recorded reply one, and a run labeled
 only by its outcome has no text to grade against, so it is skipped here and its outcome counted on

@@ -507,7 +507,9 @@ async def test_a_route_entry_with_a_task_to_a_generation_agent_still_works(tmp_p
         "desk", "acme", "x"
     )
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
-    assert run.routed_to.task == "apology" and run.routed_to.reply == "Sorry."
+    assert (
+        run.routed_to.reply == "Sorry." and "<<<TASK>>>\nApologise first." in run.routed_to.system
+    )
     assert "<<<TASK>>>\nApologise first." in llm.calls[0][0]
 
 

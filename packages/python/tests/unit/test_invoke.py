@@ -102,13 +102,6 @@ async def test_a_task_the_agent_lacks_is_refused_with_the_ones_it_has(
     assert llm.calls == []
 
 
-async def test_a_run_with_a_task_records_it(tmp_path: Path) -> None:
-    run = await Engine(tasks(tmp_path), models={"strong": Scripted(text_reply("Done."))}).run(
-        "reviewer", "acme", "x", task="review"
-    )
-    assert isinstance(run, Generation) and run.task == "review"
-
-
 REDLINE = (
     "---\nname: redline\ndescription: How to write a redline\nallowed-tools: Read\n---\n"
     "Write the redline.\nSee examples.md.\n"
@@ -290,7 +283,7 @@ async def test_the_skill_is_recorded_replayed_and_exported(
     await refinery.export("acme", bucket)
     [rows] = [data for key, data in bucket.objects.items() if "/generation/" in key]
     [row] = [json.loads(line) for line in rows.decode().splitlines()]
-    assert row["skill"] == "redline" and row["task"] is None
+    assert row["skill"] == "redline" and "task" not in row
 
 
 def test_a_task_that_is_not_utf8_is_refused_with_its_path(tmp_path: Path) -> None:

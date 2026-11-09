@@ -237,7 +237,7 @@ async def test_a_fingerprint_selects_one_recorded_version(
     assert len(await collect(refinery.replay("acme", engine, agent="support"))) == 3
 
 
-async def test_the_candidate_is_sent_the_input_history_task_and_context_as_recorded(
+async def test_the_candidate_is_sent_the_input_history_skill_and_context_as_recorded(
     fixtures: Path,
     storage: Storage,
 ) -> None:
@@ -259,7 +259,7 @@ async def test_the_candidate_is_sent_the_input_history_task_and_context_as_recor
         "acme",
         parts,
         history=history,
-        task="triage",
+        skill="escalate",
         context="Acme is on the enterprise plan.",
     )
     with_object = await recorder.run("support", "acme", {"order": "A-1", "items": [1, 2]})
@@ -277,18 +277,19 @@ async def test_the_candidate_is_sent_the_input_history_task_and_context_as_recor
         assert messages == recorded.messages
         assert system == recorded.system
         assert pair.candidate.messages == recorded.messages
-        assert pair.candidate.task == recorded.task
+        assert pair.candidate.skill == recorded.skill
         assert pair.candidate.context == recorded.context
         assert pair.candidate.fingerprint == recorded.fingerprint
     (system, _, _), first_pair = sent[with_parts.run_id]
     first = first_pair.candidate
     assert isinstance(first, Generation) and first.input == parts
     assert isinstance(first.messages[-1].content, list)
-    assert first.messages[-1].content[1] == parts[1]
+    assert first.skill == "escalate" and first.messages[-1].content[1:] == parts
+    opening = first.messages[-1].content[0]
+    assert isinstance(opening, Text) and 'Say "escalating" and stop.' in opening.text
     second = sent[with_object.run_id][1].candidate
     assert isinstance(second, Generation) and second.input == {"order": "A-1", "items": [1, 2]}
     assert second.messages[-1].content == json.dumps({"order": "A-1", "items": [1, 2]})
-    assert "Decide whether this message needs a person." in system
     assert "Acme is on the enterprise plan." in system
 
 
@@ -1082,7 +1083,7 @@ async def test_a_parent_whose_child_was_given_questions_replays_as_one_run(
         refinery.replay("acme", Engine(tmp_path, models={"strong": llm, "judge": dm}), agent="lead")
     )
     assert pair.error is None and isinstance(pair.candidate, Generation)
-    assert pair.candidate.reply == "Again." and pair.candidate.task is None
+    assert pair.candidate.reply == "Again."
     [again] = pair.candidate.children
     assert isinstance(again, Decision) and again.runtime == ["area"]
     assert [list(q) for _, q in dm.calls] == [["urgent", "area"]]

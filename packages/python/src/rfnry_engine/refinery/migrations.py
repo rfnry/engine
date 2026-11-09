@@ -99,7 +99,7 @@ async def _reshape_runs(conn: Any) -> None:
     after: tuple[str, str] = ("", "")
     while True:
         rows = await conn.fetch(
-            "SELECT scope, run_id, parent_run_id, agent, kind, task, at, recorded, duration_ms, "
+            "SELECT scope, run_id, parent_run_id, agent, kind, at, recorded, duration_ms, "
             "model, body::text AS body FROM engine_runs WHERE (scope, run_id) > ($1, $2) "
             "ORDER BY scope, run_id LIMIT 1000",
             *after,
@@ -188,10 +188,17 @@ _RESHAPE: tuple[str | Call, ...] = (
 )
 
 
+_DROP_TASK: tuple[str | Call, ...] = (
+    Call("rewrite each engine_runs body in the shape this rfnry-engine records", _reshape_runs),
+    "ALTER TABLE engine_runs DROP COLUMN task",
+)
+
+
 MIGRATIONS = [
     Migration(1, "create", _CREATE),
     Migration(2, "tags", _TAGS),
     Migration(3, "reshape", _RESHAPE),
+    Migration(4, "drop task", _DROP_TASK),
 ]
 
 

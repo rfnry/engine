@@ -452,7 +452,7 @@ async def test_delegate_names_a_generation_agent_s_task_and_a_decision_agent_s_o
     assert isinstance(graded, Decision) and graded.runtime == ["angry"]
     assert list(graded.questions) == ["urgent", "angry"]
     assert graded.questions["angry"] == Check.model_validate(angry)
-    assert isinstance(written, Generation) and written.task == "apology"
+    assert isinstance(written, Generation)
     assert "<<<TASK>>>\nApologise first." in written.system and written.reply == "Apologised."
 
 

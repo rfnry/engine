@@ -1232,8 +1232,8 @@ child.answers["refund"].probability       # 0.91
 child.answers["cause"].choice             # "duplicate"
 ```
 
-A generation child records its task, and a decision child its runtime questions, as any run does,
-and the step keeps what the model sent. `Delegate` offers `task` only when a target has tasks and
+A decision child records its runtime questions, as any run does, and the step keeps what the model
+sent, a task it named included. `Delegate` offers `task` only when a target has tasks and
 `questions` only when one is a decision agent, and its schema describes the question object once,
 for all three types. A task the target does not have, a task for a decision agent, questions for a
 generation agent, a question that does not fit, an id the target already asks, a decision run with
@@ -2020,7 +2020,7 @@ datasets:
 
 | dataset | one row per | what it holds |
 | --- | --- | --- |
-| `generation` | generation run | task, skill, context, tags, model, settings, fingerprint, system, preload, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
+| `generation` | generation run | skill, context, tags, model, settings, fingerprint, system, preload, start, messages, tools, conversation, steps, reply, stopped, stop_reason, usage, every label |
 | `preference` | human correction | tags, fingerprint, model, settings, prompt (system, preload, messages), chosen (the correction), rejected (the reply) |
 | `decision` | question of a decision run | tags, model, settings, fingerprint, state, question, answer, probabilities, confidence, truth, truth_source, truth_model, truth_settings, outcome |
 
@@ -2083,8 +2083,8 @@ held-out ones, by the same hash and `holdout_percent` as `export`; `labeled=True
 reviewed or the world reported on; `tags=` those whose tags contain these, as `delete_runs` matches;
 `fingerprint=` the runs one version produced — the `run.fingerprint` of any of them, its `agent`,
 `tools` and `questions` all equal; `limit=` the first so many. Each is `candidate.run(agent, scope,
-…, record=False)` with the recorded input — parts as parts — the history sent before it, the task,
-the skill and the `context`, so the candidate sees what the recorded run saw, its own skill file
+…, record=False)` with the recorded input — parts as parts — the history sent before it, the
+skill and the `context`, so the candidate sees what the recorded run saw, its own skill file
 read for a recorded skill. A decision run replays its state, and asks its runtime questions again
 as they were recorded while the questions of its folder come from the candidate's folder, its
 scripts filling theirs anew — a runtime id the candidate's folder now asks fails that pair; when its
@@ -2690,6 +2690,8 @@ already in this shape is not touched. A body no release recorded — one written
 short — stops the upgrade before anything changes, naming it: `refinery/migrations: run 'r9' of
 scope 'acme' holds a body no release of rfnry-engine recorded (KeyError: 'messages'); delete it
 or restore its body, then upgrade again`. The rewrite reads every row once, in pages of a thousand.
+The upgrade to schema version 4 drops `engine_runs.task` and rewrites each stored body without its
+`task`, the same way: a run records no task.
 
 Tables made by `initialize()` in rfnry-engine 0.1.4 or earlier are adopted where they are:
 `rfnry-engine upgrade --schema <their schema>` records them, and gives a table from before 0.1.4 its
@@ -2747,7 +2749,7 @@ class Refinery:
     storage: Storage
     async def record(self, run: Run) -> None
 
-class RunRow(BaseModel):   scope, run_id, parent_run_id, agent, kind, task, at, recorded, duration_ms, model, body
+class RunRow(BaseModel):   scope, run_id, parent_run_id, agent, kind, at, recorded, duration_ms, model, body
 class LabelRow(BaseModel): scope, label_id, run_id, source, at, body
 class Exported(BaseModel): keys, rows, watermark
 class Labeled(BaseModel):  judged, taught, errors

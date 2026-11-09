@@ -184,7 +184,7 @@ async def test_a_generation_agent_as_a_tool_takes_a_task_it_has(tmp_path: Path) 
     assert list(properties) == ["input", "task"] and properties["task"]["enum"] == ["apology"]
     await writer.dispatch("writer", {"input": "Late parcel", "task": "apology"})
     [run] = recorder.runs
-    assert isinstance(run, Generation) and run.task == "apology"
+    assert isinstance(run, Generation) and "<<<TASK>>>\nApologise first." in run.system
     assert "<<<TASK>>>\nApologise first." in llm.calls[0][0]
     with pytest.raises(NotFoundError, match="^engine: agent 'writer' has no task 'tone'; "):
         await writer.dispatch("writer", {"input": "x", "task": "tone"})

@@ -46,7 +46,6 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
         "call": body["call"],
         "holdout": holdout,
         "agent": row.agent,
-        "task": row.task,
         "skill": body["skill"],
         "context": body["context"],
         "tags": body["tags"],

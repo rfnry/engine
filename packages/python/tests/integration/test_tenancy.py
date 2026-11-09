@@ -79,7 +79,6 @@ async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
                 parent_run_id=None,
                 agent="x",
                 kind="generation",
-                task=None,
                 at=run.at,
                 recorded=run.at,
                 duration_ms=0,

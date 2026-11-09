@@ -10,7 +10,6 @@ class RunRow(BaseModel):
     parent_run_id: str | None
     agent: str
     kind: str
-    task: str | None
     at: datetime
     recorded: datetime
     duration_ms: int

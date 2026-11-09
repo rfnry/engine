@@ -493,7 +493,7 @@ async def test_a_task_is_looked_up_like_an_agent_and_never_a_path_out_of_tasks(
         await engine.run("support", "acme", "x", task=task)
     assert llm.calls == [] and await refinery.storage.runs("acme") == []
     run = await engine.run("support", "acme", "x", task="triage")
-    assert isinstance(run, Generation) and run.task == "triage"
+    assert isinstance(run, Generation)
     assert "<<<TASK>>>\nDecide whether this message needs a person." in run.system
 
 

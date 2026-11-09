@@ -1478,7 +1478,6 @@ class Engine:
                 agent=spec.name,
                 scope=scope,
                 tags=dict(options.tags),
-                task=options.task,
                 skill=options.skill,
                 context=options.context,
                 at=at,
