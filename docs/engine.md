@@ -613,7 +613,9 @@ their own, after the map: one line per skill, in name order, its path as `Read` 
 Each audience has its own key. The model is offered what `skills:` names: those skills are listed in
 `SKILLS`, as below, and opened with `Read`. The code's `skill=` reaches every skill the agent holds,
 offered or not. A person's `/name` reaches what `public_skills:` names. A skill neither offered nor
-invoked on this run is not there for the file tools.
+invoked on this run is not there for the file tools. `preload:` is the other way a skill reaches the
+prompt: a skill named there, or a whole `skills/` folder named there, is sent whether or not the
+model is offered it.
 
 ```
 <<<SKILLS>>>
