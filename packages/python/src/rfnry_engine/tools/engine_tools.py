@@ -1,11 +1,9 @@
 import json
-import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rfnry_engine.errors import ConfigurationError, InputError
+from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_engine.models import HistoryLike, ToolCall
 from rfnry_engine.records import EventHandler
 from rfnry_engine.stop import Stop
@@ -15,7 +13,7 @@ from rfnry_engine.tools.delegate import delegate_tool
 from rfnry_engine.tools.history import HISTORY_TOOL, history_tool
 from rfnry_engine.tools.tools import Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import Workspace
-from rfnry_engine.tree import AgentSpec, from_agent
+from rfnry_engine.tree import from_agent, no_such_skill, withheld_skills
 
 if TYPE_CHECKING:
     from rfnry_engine.engine import Engine
@@ -25,30 +23,6 @@ def _own(item: Tool | ToolsLike) -> Tool | ToolsLike:
     if isinstance(item, Tool) and item.args is not None and item.input_schema is None:
         return replace(item, input_schema=json.loads(described(item.args)))
     return item
-
-
-def _withheld(spec: AgentSpec, invoked: str | None) -> Callable[[Path], bool] | None:
-    seen = {*spec.offered, invoked}
-    gone = [skill.place for name, skill in spec.skills.items() if name not in seen]
-    if not gone:
-        return None
-    shown = {
-        file
-        for name, skill in spec.skills.items()
-        if name in seen
-        for file in (skill.place, skill.place / "SKILL.md")
-    }
-
-    def withheld(path: Path) -> bool:
-        spelled = Path(os.path.normpath(path))
-        if spelled in shown:
-            return False
-        real = Path(os.path.realpath(path))
-        return any(
-            found == place or place in found.parents for found in (spelled, real) for place in gone
-        )
-
-    return withheld
 
 
 class EngineTools(Tools):
@@ -86,6 +60,8 @@ class EngineTools(Tools):
                     f"tools/engine_tools: start must be between 0 and {len(history)}; got {start}"
                 )
         spec = engine._spec(agent)
+        if invoked is not None and invoked not in spec.skills:
+            raise NotFoundError(f"tools/engine_tools: {no_such_skill(spec, invoked)}")
         if spec.workspace and workspace is None:
             raise ConfigurationError(
                 f"tools/engine_tools: agent {agent!r} declares workspace: true; pass workspace= to the run"
@@ -107,7 +83,7 @@ class EngineTools(Tools):
         media_types = getattr(engine.models.get(spec.model), "media_types", None)
         backend = room.backend if room else None
         reach = from_agent(spec.path, {**spec.reads, **spec.skill_folders})
-        withheld = _withheld(spec, invoked)
+        withheld = withheld_skills(spec.skills, {*spec.offered, invoked})
         files = [
             *builtins(spec.root, reach, backend, spec.ignored, withheld),
             load_tool(spec.root, backend, media_types, reach, spec.ignored, withheld),

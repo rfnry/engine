@@ -201,7 +201,7 @@ def _reference(name: str, path: Path, head: bytes, size: int, loadable: bool) ->
 
 
 def preload_parts(
-    names: list[str], jail: Jail, loadable: bool
+    names: list[str], jail: Jail, loadable: bool, withheld: Collection[str] = ()
 ) -> tuple[list[Part], dict[str, bytes]]:
     parts: list[Part] = []
     read: dict[str, bytes] = {}
@@ -212,7 +212,9 @@ def preload_parts(
             read[name] = data
             text = _decoded(data)
         if text is None:
-            parts.append(_reference(name, opened, data[:_SNIFF], size, loadable))
+            parts.append(
+                _reference(name, opened, data[:_SNIFF], size, loadable and name not in withheld)
+            )
         else:
             parts.append(Text(text=f"<<<{name}>>>\n{text}"))
     return parts, read

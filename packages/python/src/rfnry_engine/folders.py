@@ -127,7 +127,7 @@ class Gitignored:
         return self._names(path) or (real != path and self._names(real))
 
 
-def any_ignores(checks: Collection[Gitignored]) -> Callable[[Path], bool]:
+def any_ignores(checks: Collection[Callable[[Path], bool]]) -> Callable[[Path], bool]:
     def ignored(path: Path) -> bool:
         return any(check(path) for check in checks)
 

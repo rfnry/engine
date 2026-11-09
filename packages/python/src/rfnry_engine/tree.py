@@ -181,18 +181,18 @@ class AgentFront(BaseModel):
     def _skills_keep_each_once(cls, value: list[str] | str | None) -> list[str] | None:
         value = _a_word_or_names(
             value,
-            "write skills: all to keep every skill, skills: none to keep none, or the skills to keep, such as skills: [escalate]",
+            "write skills: all to offer every skill, skills: none to offer none, or the skills to offer, such as skills: [escalate]",
         )
         if isinstance(value, str):
             return None if value == "all" else []
-        return _each_skill_once(value, "a skill to keep, such as skills: [escalate]")
+        return _each_skill_once(value, "a skill to offer, such as skills: [escalate]")
 
     @field_validator("public_skills")
     @classmethod
     def _public_skills_can_be_typed(cls, value: list[str] | str | None) -> list[str] | str | None:
         value = _a_word_or_names(
             value,
-            "write public_skills: none so no one can call a skill, public_skills: all so people may call every skill the agent keeps, or the skills people may call, such as public_skills: [escalate]",
+            "write public_skills: none so no one can call a skill, public_skills: all so people may call every skill the model is offered, or the skills people may call, such as public_skills: [escalate]",
         )
         if isinstance(value, str):
             return None if value == "none" else value
@@ -252,6 +252,7 @@ def as_question(data: Mapping[str, JsonValue]) -> Question:
 class Skill(BaseModel):
     path: str
     place: Path
+    shadowed: tuple[Path, ...] = ()
     description: str
     body: str
 
@@ -281,6 +282,52 @@ class AgentSpec(BaseModel):
     skill_folders: dict[str, Path] = Field(default_factory=dict)
     folder_tools: dict[str, ToolDef] = Field(default_factory=dict)
     ignored: Callable[[Path], bool] | None = None
+
+
+def no_such_skill(spec: AgentSpec, skill: str) -> str:
+    have = (
+        f"its skills are {', '.join(spec.skills)}"
+        if spec.skills
+        else "it has no skills; a skill is skills/<name>.md or skills/<name>/SKILL.md in its folder or a folder above it"
+    )
+    return f"agent {spec.name!r} has no skill {skill!r}; {have}"
+
+
+def withheld_skills(
+    skills: Mapping[str, Skill], seen: Collection[str | None]
+) -> Callable[[Path], bool] | None:
+    gone = [
+        place
+        for name, skill in skills.items()
+        if name not in seen
+        for place in (skill.place, *skill.shadowed)
+    ]
+    if not gone:
+        return None
+    shown = {
+        file
+        for name, skill in skills.items()
+        if name in seen
+        for file in (skill.place, skill.place / "SKILL.md")
+    }
+
+    def withheld(path: Path) -> bool:
+        spelled = Path(os.path.normpath(path))
+        if spelled in shown:
+            return False
+        real = Path(os.path.realpath(path))
+        return any(
+            found == place or place in found.parents for found in (spelled, real) for place in gone
+        )
+
+    return withheld
+
+
+def _left_out(
+    ignored: Callable[[Path], bool] | None, withheld: Callable[[Path], bool] | None
+) -> Callable[[Path], bool] | None:
+    checks = [check for check in (ignored, withheld) if check is not None]
+    return any_ignores(checks) if checks else None
 
 
 def _held(path: Path, agent: Path) -> None:
@@ -496,11 +543,13 @@ class _Folder:
         apart: Collection[Path] = (),
         within: Path | None = None,
         ignored: Callable[[Path], bool] | None = None,
+        withheld: Callable[[Path], bool] | None = None,
     ) -> None:
         self.place = place
         self.apart = apart
         self.within = within
         self.ignored = ignored
+        self.left_out = _left_out(ignored, withheld)
 
     @cached_property
     def files(self) -> list[tuple[str, Path]]:
@@ -513,7 +562,7 @@ class _Folder:
             declares(self.place),
             apart=self.apart,
             within=self.within,
-            ignored=self.ignored,
+            ignored=self.left_out,
         )
 
     @cached_property
@@ -759,12 +808,16 @@ def _sent(
     holder: Path,
     apart: Collection[Path],
     ignored: Callable[[Path], bool] | None,
+    withheld: Callable[[Path], bool] | None,
 ) -> dict[str, Path]:
     if not target.is_dir() or (ignored is not None and ignored(target)):
         return {shown: target}
+    named = any(target == place or place in target.parents for place in apart)
     return {
         posixpath.normpath(f"{shown}/{rel}"): file.resolve()
-        for rel, file in _Folder(target, apart, holder, ignored).preloaded
+        for rel, file in _Folder(
+            target, apart, holder, ignored, None if named else withheld
+        ).preloaded
     }
 
 
@@ -776,6 +829,7 @@ def _preload_names(
     reached: Mapping[str, Path],
     jail: Jail,
     apart: Collection[Path],
+    withheld: Callable[[Path], bool] | None,
 ) -> list[str]:
     places = {path: jail.root, **reached}
     entries: list[tuple[str, str, dict[str, Path]]] = []
@@ -796,7 +850,7 @@ def _preload_names(
                 f"tree: agent {agent!r} preloads {said!r}, which does not exist; write its path from the agent's folder"
             )
         holder = next(place for folder, place in places.items() if _holds(folder, name))
-        entries.append((name, said, _sent(shown, target, holder, apart, jail.ignored)))
+        entries.append((name, said, _sent(shown, target, holder, apart, jail.ignored, withheld)))
     for (one, one_said, one_sent), (other, other_said, other_sent) in combinations(entries, 2):
         if one == other or set(one_sent.values()) & set(other_sent.values()):
             raise ConfigurationError(
@@ -915,11 +969,15 @@ def load_agent(
     root = directory.resolve()
     tree = tree_root or directory
     gives = [] if front.kind == "decision" else [p for p in _on_path(path) if p in skill_prefixes]
-    merged = {
-        name: skill
-        for prefix in gives
-        for name, skill in _skills_from(tree, prefix, path, ignores).items()
-    }
+    merged: dict[str, Skill] = {}
+    for prefix in gives:
+        for name, skill in _skills_from(tree, prefix, path, ignores).items():
+            farther = merged.get(name)
+            merged[name] = (
+                skill
+                if farther is None
+                else skill.model_copy(update={"shadowed": (farther.place, *farther.shadowed)})
+            )
 
     def every_skill() -> dict[str, Skill]:
         return {
@@ -937,16 +995,17 @@ def load_agent(
             if name not in merged:
                 if name in every_skill():
                     raise ConfigurationError(
-                        f"tree: {directory}/AGENT.md keeps {name!r} in skills:, a skill a .gitignore hides from agent {agent!r}; stop ignoring it, or drop it from skills:"
+                        f"tree: {directory}/AGENT.md offers {name!r} in skills:, a skill a .gitignore hides from agent {agent!r}; stop ignoring it, or drop it from skills:"
                     )
                 have = (
                     f"its skills are {', '.join(sorted(merged))}" if merged else "it has no skills"
                 )
                 raise ConfigurationError(
-                    f"tree: {directory}/AGENT.md keeps {name!r} in skills:, a skill agent {agent!r} does not have; {have}"
+                    f"tree: {directory}/AGENT.md offers {name!r} in skills:, a skill agent {agent!r} does not have; {have}"
                 )
     skills = dict(sorted(merged.items()))
     offered = frozenset(merged if front.skills is None else front.skills)
+    withheld = withheld_skills(skills, offered)
     if front.kind == "decision" and "public_skills" in front.model_fields_set:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot declare public_skills:; skills are for generation agents"
@@ -1025,10 +1084,14 @@ def load_agent(
         _utf8(rel, file)
     jail = Jail(root, reach=from_agent(path, {**read_places, **skill_folders}), ignored=ignored)
     try:
+        names = _preload_names(
+            agent, front, tree, path, {**read_places, **skill_folders}, jail, apart, withheld
+        )
         preload, read = preload_parts(
-            _preload_names(agent, front, tree, path, {**read_places, **skill_folders}, jail, apart),
+            names,
             jail,
             front.tools is None or "Load" in front.tools,
+            {name for name in names if withheld is not None and withheld(jail._joined(name))},
         )
     except InputError as exc:
         raise ConfigurationError(
@@ -1053,7 +1116,7 @@ def load_agent(
         preload=preload,
         preload_digest=preload_digest(preload),
         listing=joined(
-            entries(root, True, apart, ignored),
+            entries(root, True, apart, _left_out(ignored, withheld)),
             {name: folder.mapped for name, folder in reads.items()},
         ),
         reads=read_places,

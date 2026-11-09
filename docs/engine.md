@@ -544,10 +544,11 @@ entry that is a link to a folder, under the link's own name, which `Read` takes 
 the files under the folder the link leads to: what `Read` would return for it. A file that is not
 text, or is over 5 MB, goes as a line naming its type and size, such as `image/png, 15 bytes; Load
 opens it`, which `Load` opens when the model asks; nothing about it is refused when the tree loads.
-An agent whose `tools:` leaves out `Load` gets the line without `; Load opens it`. The map stays a
-map and the folder stays as it is; only when the files are read changes, so no turn goes to opening
-a text file. They travel as one user message ahead of the history, sent with every model call, and
-are read when the engine loads the tree, as the fingerprint is taken, so an edit shows in the next
+An agent whose `tools:` leaves out `Load` gets the line without `; Load opens it`, and so does a file
+of a skill the model is not offered, since its `Load` could not open it. The map stays a map and the
+folder stays as it is; only when the files are read changes, so no turn goes to opening a text file.
+They travel as one user message ahead of the history, sent with every model call, and are read when
+the engine loads the tree, as the fingerprint is taken, so an edit shows in the next
 `Engine`. `run.preload` holds that message's parts; `run.messages` and `run.conversation` leave it
 out, so a conversation passed back does not send the folder twice and a replay preloads from the
 candidate's folder. The tools stay as they are — `Read` hands over the text the model already holds.
@@ -609,6 +610,11 @@ is, its other keys left alone. The prompt lists the skills the model is offered 
 their own, after the map: one line per skill, in name order, its path as `Read` takes it and its
 `description:` when it has one.
 
+Each audience has its own key. The model is offered what `skills:` names: those skills are listed in
+`SKILLS`, as below, and opened with `Read`. The code's `skill=` reaches every skill the agent holds,
+offered or not. A person's `/name` reaches what `public_skills:` names. A skill neither offered nor
+invoked on this run is not there for the file tools.
+
 ```
 <<<SKILLS>>>
 skills/escalate.md — Hand a conversation to a person
@@ -652,8 +658,9 @@ like any other, but never holds an agent.
 The model opens a skill with `Read` when it judges it fits. The `skills/` folder stays out of the
 map and of any folder `preload:` names, so a skill is read only when it is wanted, or sent ahead
 when `preload:` names it directly (`'./skills/x.md'`); a skill's other files are found through its
-`SKILL.md` and read by their paths under `skills/<name>/`, as any file is, and there is no tool of
-its own for skills. A script a skill keeps is a file like any other, which the model reads; to run
+`SKILL.md` and read by their paths under `skills/<name>/`, as any file is, for a skill the model is
+offered or the run invoked, a skill neither offered nor invoked being not there, and there is no tool
+of its own for skills. A script a skill keeps is a file like any other, which the model reads; to run
 it, the agent needs a [workspace](#workspace) whose shell can reach the agent's folder — mount it
 read-only, outside the workspace, and say where in `AGENT.md`. A skill's body is read when the tree
 loads, so editing the file afterwards changes no prompt; build a new `Engine`.
@@ -672,10 +679,10 @@ run.input                                            # "A third complaint."
 
 The skill goes in front of the input, in the same user message: a text part of `<<<SKILL
 skills/escalate.md>>>` on its own line and the file's body without its frontmatter, then the input
-as it came. It is part of the conversation, so a run that continues from it still has the skill.
-Delegated and routed runs never take the caller's skill. `run.skill` records it, an exported
-generation row carries it, and a replay asks the candidate for it again, so the candidate's own
-skill file is the one read.
+as it came. It is part of the conversation, so a run that continues from it with no `skill=` still
+has the skill's text, but not its files unless `skills:` offers it. Delegated and routed runs never
+take the caller's skill. `run.skill` records it, an exported generation row carries it, and a replay
+asks the candidate for it again, so the candidate's own skill file is the one read.
 
 `engine.agents[name].skills` lists every skill the agent holds, own and inherited, the ones the code
 may invoke with `skill=`, offered to the model or not, each to its description, `""` when it has
@@ -692,16 +699,16 @@ or a `<name>/SKILL.md`.
 the whole value: inside a list they are names, so `skills: [all]` offers a skill called `all`. An
 empty list, a `skills:` with no value, or any other value that is not a list, a word or a number or
 `true` included, is a `ConfigurationError` naming the key
-(`frontmatter: invalid agent agents/support/AGENT.md; skills: it is empty; write skills: all to keep every
-skill, skills: none to keep none, or the skills to keep, such as skills: [escalate]`, or `write all, none or a
+(`frontmatter: invalid agent agents/support/AGENT.md; skills: it is empty; write skills: all to offer every
+skill, skills: none to offer none, or the skills to offer, such as skills: [escalate]`, or `write all, none or a
 list of names, got 'brief'`), and so are `tools:` and `public_skills:` written alike. A skill left
 out of `skills:` is not in the `SKILLS` list, but the agent still holds it: the code's `skill=`
 reaches it, it stays in `engine.agents[name].skills`, and like every skill held it stays in the
 fingerprint. `skills:` that names a skill the agent does not hold is a `ConfigurationError` when
-the tree loads — `tree: agents/support/AGENT.md keeps 'ghost' in skills:,
+the tree loads — `tree: agents/support/AGENT.md offers 'ghost' in skills:,
 a skill agent 'support' does not have; its skills are brief, close` (`it has no skills` when it has
 none), or, for a skill a `.gitignore` hides from an agent with `gitignore: true`, `tree:
-agents/support/AGENT.md keeps 'local' in skills:, a skill a .gitignore hides from agent 'support';
+agents/support/AGENT.md offers 'local' in skills:, a skill a .gitignore hides from agent 'support';
 stop ignoring it, or drop it from skills:` — as is a blank or padded entry, a name listed twice, or
 `skills:` on a decision agent. `public_skills:` names the same refusal for its entry.
 
@@ -710,21 +717,25 @@ A skill the model is not offered, and that this run did not invoke, is not there
 file: skills/close.md`, or the workspace's wording beside a workspace — `LS` naming it reads as a
 folder that does not exist, `Grep` naming it finds nothing, and `LS`, `Glob` and `Grep` leave it out
 of what they list, whatever the spelling, `..` and links included, as the `gitignore:` check does.
-For `skills/<name>.md` that is the file, for `skills/<name>/SKILL.md` the whole `<name>/` folder. A
-skill invoked with `skill=` or `/name` is there on that run, its folder's other files included,
-while every other skill left out stays hidden; delegated and routed runs invoke nothing, so they see
-only what is offered. Only the agent's own and inherited skills count: a `skills/` folder inside
-another agent's folder it reads stays as any file of that folder. `preload:` is unchanged: naming a
-skill sends it, offered or not. A workspace sees the real files: a `Shell` command reads whatever the
-mount holds, so this is what the file tools and the prompt hold, not a boundary, and what must stay
-away from a model stays out of the tree.
+For `skills/<name>.md` that is the file, for `skills/<name>/SKILL.md` the whole `<name>/` folder,
+and a skill of a folder above that a nearer one of the same name replaces follows that name: a file
+it shadows is not there when the name is not offered, and stays as any file when it is. A link
+elsewhere in the folder that leads to such a skill is left out of the map and of a folder `preload:`
+names, judged by where it leads, and stays in the fingerprint. A skill invoked with `skill=` or
+`/name` is there on that run, its folder's other files included, and on a replay of that run, while
+every other skill left out stays hidden; delegated and routed runs and a run of `engine.tool` invoke
+nothing, so they see only what is offered. Only the agent's own and inherited skills count: a
+`skills/` folder inside another agent's folder it reads stays as any file of that folder. `preload:`
+is unchanged: naming a skill sends it, offered or not. A workspace sees the real files: a `Shell`
+command reads whatever the mount holds. This hides a skill from the file tools and the prompt; it is
+not a boundary, and what must stay away from a model stays out of the tree.
 
 `public_skills:` in an `AGENT.md` names the skills people may call by typing `/name`. Absent or
 `none` it names none, so typing `/name` invokes nothing on an agent that does not list it;
 `public_skills: all` makes every skill the model is offered public, so a code-only skill is public
 only when named, and an empty list or no value is a
 `ConfigurationError` (`public_skills: it is empty; write public_skills: none so no one can call a
-skill, public_skills: all so people may call every skill the agent keeps, or the skills people may
+skill, public_skills: all so people may call every skill the model is offered, or the skills people may
 call, such as public_skills: [escalate]`). `engine.agents[name].public_skills` is the menu a consumer shows people: the public skills
 in name order, each to its description, `{}` when there are none. A name in it must be a skill the
 agent holds, offered or not — `tree: agents/support/AGENT.md names 'ghost' in public_skills:, a skill

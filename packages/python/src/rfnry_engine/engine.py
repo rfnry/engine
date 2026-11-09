@@ -102,6 +102,7 @@ from rfnry_engine.tree import (
     as_question,
     foreign,
     load_tree,
+    no_such_skill,
     validate_tree,
 )
 from rfnry_engine.workers.pool import Script, Workers
@@ -386,12 +387,7 @@ def _skilled(spec: AgentSpec, skill: str | None) -> str | None:
             f"engine: decision agent {spec.name!r} takes no skill; skills are for generation agents"
         )
     if skill not in spec.skills:
-        have = (
-            f"its skills are {', '.join(spec.skills)}"
-            if spec.skills
-            else "it has no skills; a skill is skills/<name>.md or skills/<name>/SKILL.md in its folder or a folder above it"
-        )
-        raise NotFoundError(f"engine: agent {spec.name!r} has no skill {skill!r}; {have}")
+        raise NotFoundError(f"engine: {no_such_skill(spec, skill)}")
     return skill
 
 

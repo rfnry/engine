@@ -7,7 +7,9 @@ import pytest
 from rfnry_engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_engine.models import ChoiceAnswer, Document, Reply, Text, ToolCall
-from rfnry_engine.records import Decision, Generation
+from rfnry_engine.records import Decision, Generation, Run
+from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tools
 from rfnry_engine.tools.workspace import Local, Workspace
@@ -300,7 +302,7 @@ def with_skills(root: Path, line: str) -> Path:
 
 
 @pytest.mark.parametrize("line", ["", "skills: all\n"], ids=["absent", "all"])
-def test_skills_absent_or_all_keeps_every_skill(tmp_path: Path, line: str) -> None:
+def test_skills_absent_or_all_offers_every_skill(tmp_path: Path, line: str) -> None:
     engine = Engine(with_skills(tmp_path, line), models={"strong": Scripted(text_reply("x"))})
     assert set(engine.agents["support"].skills) == {"brief", "close", "plot", "tone"}
 
@@ -365,7 +367,7 @@ def test_skills_naming_a_skill_the_agent_does_not_have_is_refused_with_the_ones_
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"tree: {tmp_path / 'desks/support'}/AGENT.md keeps 'ghost' in skills:, a skill agent "
+        f"tree: {tmp_path / 'desks/support'}/AGENT.md offers 'ghost' in skills:, a skill agent "
         "'support' does not have; its skills are brief, close, plot, tone"
     )
 
@@ -375,7 +377,7 @@ def test_skills_naming_a_skill_the_agent_does_not_have_is_refused_with_the_ones_
     [
         (
             "skills: [' x']\n",
-            "skills: an entry must not be blank or padded, got ' x'; write the name of a skill to keep, such as skills: [escalate]",
+            "skills: an entry must not be blank or padded, got ' x'; write the name of a skill to offer, such as skills: [escalate]",
         ),
         ("skills: [brief, brief]\n", "skills: 'brief' is listed twice; list each skill once"),
     ],
@@ -494,6 +496,7 @@ async def test_a_skill_not_offered_is_not_there_however_it_is_spelled(
     tools = tools_of(root)
     assert await refused(tools, "Read", {"path": path}) == not_a_file(path)
     assert "link.md" not in await tools.dispatch("LS", {})
+    assert "link.md" not in load_tree(root)["support"].listing
 
 
 async def test_a_path_out_past_a_skill_not_offered_reads_as_past_a_missing_one(
@@ -656,14 +659,144 @@ async def test_a_routed_run_sees_only_what_is_offered(tmp_path: Path) -> None:
     assert step.is_error and step.result == f"InputError: {not_a_file('../skills/brief.md')}"
 
 
+@pytest.mark.parametrize(
+    ("entry", "sent"),
+    [
+        ("./skills/close.md", {"skills/close.md": CLOSE}),
+        ("../skills/plot", {"../skills/plot/SKILL.md": PLOT, "../skills/plot/run.py": RUN}),
+    ],
+    ids=["a-file", "a-folder"],
+)
 def test_a_skill_named_in_preload_is_sent_though_the_model_is_not_offered_it(
-    tmp_path: Path,
+    tmp_path: Path, entry: str, sent: dict[str, str]
 ) -> None:
-    spec = load_tree(with_skills(tmp_path, "skills: [tone]\npreload: ['./skills/close.md']\n"))[
-        "support"
+    spec = load_tree(with_skills(tmp_path, f"skills: [tone]\npreload: ['{entry}']\n"))["support"]
+    assert not {"close", "plot"} & spec.offered
+    assert spec.preload == [Text(text=f"<<<{path}>>>\n{text}") for path, text in sent.items()]
+
+
+@pytest.mark.parametrize(
+    ("line", "left_out"),
+    [("skills: [tone]\n", True), ("skills: [tone, close]\n", False)],
+    ids=["not-offered", "offered"],
+)
+def test_a_link_to_a_skill_not_offered_is_left_out_of_a_preloaded_folder(
+    tmp_path: Path, line: str, left_out: bool
+) -> None:
+    root = with_skills(tmp_path, f"{line}preload: ['./knowledge']\n")
+    write(root / "desks/support/knowledge/notes.md", "Notes.\n")
+    (root / "desks/support/knowledge/live.md").symlink_to("../skills/close.md")
+    spec = load_tree(root)["support"]
+    notes = Text(text="<<<knowledge/notes.md>>>\nNotes.\n")
+    if left_out:
+        assert spec.preload == [notes]
+        assert "live.md" not in spec.listing
+    else:
+        assert spec.preload == [Text(text=f"<<<knowledge/live.md>>>\n{CLOSE}"), notes]
+        assert "live.md" in spec.listing
+
+
+def test_a_link_left_out_of_the_map_stays_in_the_fingerprint(tmp_path: Path) -> None:
+    root = with_skills(tmp_path, "skills: [tone]\n")
+    (root / "desks/support/live.md").symlink_to("skills/close.md")
+    before = load_tree(root)["support"].fingerprint
+    (root / "desks/support/live.md").unlink()
+    assert load_tree(root)["support"].fingerprint != before
+
+
+@pytest.mark.parametrize(
+    ("line", "said"),
+    [
+        ("skills: [tone]\n", "application/pdf, 13 bytes"),
+        ("skills: [tone, plot]\n", "application/pdf, 13 bytes; Load opens it"),
+    ],
+    ids=["not-offered", "offered"],
+)
+def test_a_preloaded_file_of_a_skill_not_offered_does_not_say_load_opens_it(
+    tmp_path: Path, line: str, said: str
+) -> None:
+    root = with_skills(tmp_path, f"{line}preload: ['../skills/plot/diagram.pdf']\n")
+    (root / "desks/skills/plot/diagram.pdf").write_bytes(b"%PDF-1.4\x00\xff\xfe\xfd\xfc")
+    assert load_tree(root)["support"].preload == [
+        Text(text=f"<<<../skills/plot/diagram.pdf>>>\n{said}")
     ]
-    assert "close" not in spec.offered
-    assert spec.preload == [Text(text=f"<<<skills/close.md>>>\n{CLOSE}")]
+
+
+@pytest.mark.parametrize(
+    ("line", "invoked", "there"),
+    [
+        ("skills: [tone]\n", None, False),
+        ("skills: [tone]\n", "close", True),
+        ("skills: [tone, close]\n", None, True),
+    ],
+    ids=["not-offered", "invoked", "offered"],
+)
+async def test_a_file_a_nearer_skill_shadows_follows_its_name(
+    tmp_path: Path, line: str, invoked: str | None, there: bool
+) -> None:
+    root = with_skills(tmp_path, line)
+    write(root / "desks/skills/close.md", "The group's close.\n")
+    tools = tools_of(root, invoked=invoked)
+    if there:
+        assert (
+            await tools.dispatch("Read", {"path": "../skills/close.md"}) == "The group's close.\n"
+        )
+    else:
+        path = "../skills/close.md"
+        assert await refused(tools, "Read", {"path": path}) == not_a_file(path)
+    assert ("close.md" in await tools.dispatch("LS", {"path": "../skills"})) is there
+
+
+def test_invoked_names_a_skill_the_agent_holds(tmp_path: Path) -> None:
+    engine = Engine(shared(tmp_path), models={})
+    with pytest.raises(NotFoundError) as caught:
+        EngineTools(engine, agent="support", scope="acme", invoked="typo")
+    assert str(caught.value) == (
+        "tools/engine_tools: agent 'support' has no skill 'typo'; "
+        "its skills are brief, close, plot, tone"
+    )
+
+
+class Recorded:
+    def __init__(self) -> None:
+        self.runs: list[Run] = []
+
+    async def record(self, run: Run) -> None:
+        self.runs.append(run)
+
+
+async def test_a_run_of_engine_tool_sees_only_what_is_offered(tmp_path: Path) -> None:
+    recorded = Recorded()
+    llm = Scripted(read("skills/close.md"), text_reply("Done."))
+    engine = Engine(
+        with_skills(tmp_path, "skills: [tone]\ndescription: Desk\n"),
+        refinery=recorded,
+        models={"strong": llm},
+    )
+    await engine.tool("support", scope="acme").dispatch("support", {"input": "Close it."})
+    [run] = recorded.runs
+    assert isinstance(run, Generation) and run.skill is None
+    [step] = run.steps
+    assert step.is_error and step.result == f"InputError: {not_a_file('skills/close.md')}"
+
+
+async def test_a_replay_of_an_invoked_run_reaches_the_skill_it_invoked(
+    tmp_path: Path, storage: Storage
+) -> None:
+    root = with_skills(tmp_path, "skills: [tone]\n")
+    refinery = Refinery(storage)
+    recorder = Engine(root, refinery=refinery, models={"strong": Scripted(text_reply("Drawn."))})
+    await recorder.run("support", "acme", "Draw it.", skill="plot")
+    llm = Scripted(read("../skills/plot/run.py"), text_reply("Again."))
+    [pair] = [
+        pair
+        async for pair in refinery.replay(
+            "acme", Engine(root, models={"strong": llm}), agent="support"
+        )
+    ]
+    assert isinstance(pair.candidate, Generation) and pair.candidate.skill == "plot"
+    [step] = pair.candidate.steps
+    assert step.result == RUN and not step.is_error
 
 
 def test_a_skill_skills_leaves_out_stays_in_the_fingerprint(tmp_path: Path) -> None:
@@ -678,8 +811,8 @@ def test_a_skill_skills_leaves_out_stays_in_the_fingerprint(tmp_path: Path) -> N
 
 EMPTY = {
     "tools": "it is empty; write tools: all to keep every tool, tools: none to keep none, or the tools to keep, such as tools: [lookup_order]",
-    "skills": "it is empty; write skills: all to keep every skill, skills: none to keep none, or the skills to keep, such as skills: [escalate]",
-    "public_skills": "it is empty; write public_skills: none so no one can call a skill, public_skills: all so people may call every skill the agent keeps, or the skills people may call, such as public_skills: [escalate]",
+    "skills": "it is empty; write skills: all to offer every skill, skills: none to offer none, or the skills to offer, such as skills: [escalate]",
+    "public_skills": "it is empty; write public_skills: none so no one can call a skill, public_skills: all so people may call every skill the model is offered, or the skills people may call, such as public_skills: [escalate]",
 }
 KEYS = ["tools", "skills", "public_skills"]
 
@@ -733,7 +866,7 @@ def test_all_equals_leaving_the_line_out(tmp_path: Path, key: str) -> None:
     assert a.model_dump() == b.model_dump()
 
 
-def test_none_keeps_nothing(tmp_path: Path) -> None:
+def test_none_offers_nothing(tmp_path: Path) -> None:
     spec = load_tree(with_skills(tmp_path, "tools: none\nskills: none\npublic_skills: none\n"))
     assert spec["support"].keep == [] and spec["support"].offered == frozenset()
     assert spec["support"].public_skills == ()
@@ -752,7 +885,7 @@ def test_a_none_in_a_list_with_no_such_skill_is_the_unknown_skill_refusal(
     tmp_path: Path,
 ) -> None:
     assert seen(tmp_path, "skills: [none]\n") == (
-        f"tree: {tmp_path / 'desks/support'}/AGENT.md keeps 'none' in skills:, a skill agent "
+        f"tree: {tmp_path / 'desks/support'}/AGENT.md offers 'none' in skills:, a skill agent "
         "'support' does not have; its skills are brief, close, plot, tone"
     )
 
@@ -767,7 +900,7 @@ def test_public_skills_all_is_what_the_model_is_offered(tmp_path: Path) -> None:
     assert set(kept.skills) == {"brief", "close", "my skill", "plot", "tone"}
 
 
-def test_public_skills_all_refuses_a_kept_skill_that_cannot_be_typed(tmp_path: Path) -> None:
+def test_public_skills_all_refuses_an_offered_skill_that_cannot_be_typed(tmp_path: Path) -> None:
     root = with_skills(tmp_path, "public_skills: all\n")
     write(root / "desks/support/skills/my skill.md", "Do it.\n")
     with pytest.raises(ConfigurationError) as caught:

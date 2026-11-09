@@ -536,7 +536,7 @@ def test_an_ignored_skill_is_refused_as_hidden_not_as_missing(tmp_path: Path, ke
     write(tmp_path / "a/AGENT.md", agent_md("a", extra))
     write(tmp_path / "a/.gitignore", "skills/local.md\n")
     write(tmp_path / "a/skills/local.md", "---\ndescription: Local\n---\nBody.\n")
-    verb = "keeps" if key == "skills" else "names"
+    verb = "offers" if key == "skills" else "names"
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
