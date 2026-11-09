@@ -377,3 +377,14 @@ async def test_a_skill_skills_leaves_out_is_still_a_file_read_reaches(tmp_path: 
     assert list(engine.agents["support"].skills) == ["brief"]
     tools = EngineTools(engine, agent="support", scope="acme")
     assert await tools.dispatch("Read", {"path": "skills/close.md"}) == "Close the ticket.\n"
+    assert await tools.dispatch("Read", {"path": "../../skills/tone.md"}) == TONE
+
+
+def test_a_skill_skills_leaves_out_stays_in_the_fingerprint(tmp_path: Path) -> None:
+    root = with_skills(tmp_path, "skills: [brief]\n")
+    before = load_tree(root)["support"].fingerprint
+    write(root / "desks/support/skills/close.md", "Close it twice.\n")
+    own = load_tree(root)["support"].fingerprint
+    assert own != before
+    write(root / "skills/tone.md", TONE + "More.\n")
+    assert load_tree(root)["support"].fingerprint not in (before, own)
