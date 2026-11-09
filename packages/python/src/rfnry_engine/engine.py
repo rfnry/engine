@@ -143,6 +143,7 @@ class AgentInfo(BaseModel):
     reads: list[str]
     tools: list[str]
     skills: dict[str, str]
+    public_skills: dict[str, str]
 
 
 class Recorder(Protocol):
@@ -392,6 +393,29 @@ def _skilled(spec: AgentSpec, skill: str | None) -> str | None:
         )
         raise NotFoundError(f"engine: agent {spec.name!r} has no skill {skill!r}; {have}")
     return skill
+
+
+def _command(spec: AgentSpec, text: str) -> tuple[str, str] | None:
+    if not text.startswith("/"):
+        return None
+    word, *rest = text.split(maxsplit=1)
+    if word[1:] not in spec.public_skills:
+        return None
+    return word[1:], rest[0] if rest else ""
+
+
+def _slashed(spec: AgentSpec, input: State) -> tuple[str, State] | None:
+    if isinstance(input, str):
+        return _command(spec, input)
+    parts = _parts(input)
+    if not parts or not isinstance(parts[0], Text):
+        return None
+    read = _command(spec, parts[0].text)
+    if read is None:
+        return None
+    named, rest = read
+    kept = [Text(text=rest), *parts[1:]] if rest else parts[1:]
+    return named, kept or ""
 
 
 def _copied(value: Any) -> Any:
@@ -644,6 +668,9 @@ class Engine:
                 reads=list(spec.reads),
                 tools=list(chosen(spec)),
                 skills={called: skill.description for called, skill in spec.skills.items()},
+                public_skills={
+                    called: spec.skills[called].description for called in spec.public_skills
+                },
             )
             for name, spec in self._agents.items()
         }
@@ -691,6 +718,7 @@ class Engine:
             inbox=inbox,
             tags=tags,
             approve=approve,
+            slash=True,
         )
 
     async def _start(
@@ -713,6 +741,7 @@ class Engine:
         inbox: asyncio.Queue[Any] | None = None,
         tags: Mapping[str, str] | None = None,
         approve: Approve | None = None,
+        slash: bool = False,
     ) -> Run:
         self._open()
         if not scope:
@@ -729,6 +758,13 @@ class Engine:
         input = _given(input)
         spec = self._spec(agent)
         asked = _asked(spec, questions)
+        slashed = _slashed(spec, input) if slash else None
+        if slashed is not None:
+            if skill is not None:
+                raise InputError(
+                    f"engine: a run invokes one skill, by skill= or by an input that starts with /<name>; got skill={skill!r} and /{slashed[0]}"
+                )
+            skill, input = slashed
         invoked = _skilled(spec, skill)
         tagged = _tags(tags)
         held = history if history is None or isinstance(history, HistoryLike) else list(history)

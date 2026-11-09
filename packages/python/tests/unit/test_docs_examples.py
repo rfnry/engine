@@ -177,6 +177,13 @@ SETUPS = {
             )
         }
     ),
+    'run = await engine.run("support", scope="acme", input="A third complaint this week.", skill="escalate")': Setup(
+        replace={
+            'run.input                                            # "A third complaint."': (
+                'assert run.skill == "escalate" and run.input == "A third complaint."'
+            )
+        }
+    ),
     "from rfnry_engine import Local, Workspace": Setup(
         replace={"/srv/tenants/acme/work": "work", '"bwrap",': '"env",'}
     ),

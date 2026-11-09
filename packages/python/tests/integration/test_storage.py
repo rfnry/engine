@@ -721,6 +721,41 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     assert [p async for p in refinery.replay("b", candidate, agent="support")] == []
 
 
+async def test_the_replay_of_a_slash_run_sends_skill_and_rest_and_reads_no_slash_again(
+    storage: Storage, tmp_path: Path
+) -> None:
+    for path, text in {
+        "reviewer/AGENT.md": "---\nname: reviewer\nkind: generation\nmodel: strong\npublic_skills: [escalate, close]\n---\nReview.\n",
+        "reviewer/skills/escalate.md": "Say so, then stop.\n",
+        "reviewer/skills/close.md": "Close it.\n",
+    }.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text, encoding="utf-8")
+    refinery = Refinery(storage)
+    run = await Engine(
+        tmp_path, refinery=refinery, models={"strong": Scripted(text_reply("Done."))}
+    ).run("reviewer", "a", "/escalate /close now")
+    row = await storage.get_run("a", run.run_id)
+    assert row is not None and row.body["skill"] == "escalate"
+    assert row.body["input"] == "/close now"
+    candidate = Seeing()
+    [pair] = [
+        p
+        async for p in refinery.replay(
+            "a", Engine(tmp_path, models={"strong": candidate}), agent="reviewer"
+        )
+    ]
+    assert pair.error is None
+    skill = Text(text="<<<SKILL skills/escalate.md>>>\nSay so, then stop.")
+    assert len(candidate.seen) == 1
+    assert candidate.seen[0][-1].content == [skill, Text(text="/close now")]
+    bucket = MemoryBucket()
+    await refinery.export("a", bucket)
+    [rows] = [data for key, data in bucket.objects.items() if "/generation/" in key]
+    [exported] = [json.loads(line) for line in rows.decode().splitlines()]
+    assert exported["skill"] == "escalate"
+
+
 AREA = Choice(
     instructions={"question": "Which area?", "within": "orders"},
     options={"returns": None, "delivery": {"what": "Parcels", "examples": ["Late"]}},

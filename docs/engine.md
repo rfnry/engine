@@ -283,7 +283,8 @@ agents/
 
 The frontmatter of `AGENT.md` names the agent (`name:`), its kind (`kind:`), the model it runs on
 (`model:`) and what the agent may call, and, when it needs fewer tools than it has, the ones it
-keeps (`tools:`) and the skills it keeps (`skills:`); its body is the persona.
+keeps (`tools:`) and the skills it keeps (`skills:`), and the skills people may call by typing
+`/name` (`public_skills:`); its body is the persona.
 `name:`, `kind:` and `model:` are required: a missing one, a `kind:` other than `generation` or
 `decision`, or a blank, padded or non-text `name:` or `model:` is a `ConfigurationError` naming the
 file. A `name:` is plain text — not blank, not hidden, not padded, no slash — and is what `run`,
@@ -301,6 +302,7 @@ kind: generation
 model: strong
 description: Handles technical support conversations
 agents: [triage]
+public_skills: [escalate]
 ---
 You are the support desk for Acme. Be brief, be exact, cite the rule you are applying.
 ```
@@ -479,7 +481,8 @@ agent that reads `my_agents/acme/` reads it for every tenant.
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its `path`
 — its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the `agents` it
 may call, the folders it `reads`, the `tools` it gets from its folders, as its `tools:` narrows
-them, and the `skills` it has, as its `skills:` keeps them, [below](#skills). When the tree has loaded, the engine logs the names
+them, the `skills` it has, as its `skills:` keeps them, and the `public_skills` people may call,
+[below](#skills). When the tree has loaded, the engine logs the names
 of its agents at INFO on the `rfnry_engine.engine` logger — `engine: agents loaded [lead, triage,
 writer]` — so a folder meant to be an agent that is not shows at start;
 `logging.basicConfig(level=logging.INFO)` shows it.
@@ -569,12 +572,18 @@ are found through its `SKILL.md` and read by their paths under `skills/<name>/`,
 there is no tool of its own for skills. A script a skill keeps is a file like any other, which the
 model reads; to run it, the agent needs a [workspace](#workspace) whose shell can reach the agent's
 folder — mount it read-only, outside the workspace, and say where in `AGENT.md`. A skill's body is
-read when the tree loads, so editing the file afterwards changes no prompt; build a new `Engine`. A
-person can also ask for one — `/skill escalate` in a chat — and the run is given it with `skill=`:
+read when the tree loads, so editing the file afterwards changes no prompt; build a new `Engine`.
+
+A run invokes a skill in two ways: from the code with `skill=`, or from a person with an input that
+starts with `/<name>`, when the agent makes that skill public:
 
 ```python
 run = await engine.run("support", scope="acme", input="A third complaint this week.", skill="escalate")
 run.skill                                            # "escalate"
+
+run = await engine.run("support", scope="acme", input="/escalate A third complaint.")
+run.skill                                            # "escalate"
+run.input                                            # "A third complaint."
 ```
 
 The skill goes in front of the input, in the same user message: a text part of `<<<SKILL
@@ -585,9 +594,8 @@ generation row carries it, and a replay asks the candidate for it again, so the 
 skill file is the one read.
 
 `engine.agents[name].skills` lists the skills the agent has, the ones the code may invoke with
-`skill=`, each to its description, `""` when it has none. Which of them a person may invoke is yours
-to decide — the same tree may serve people with different menus — and nothing is invoked unless you
-pass `skill=`. A skill the agent does not have is a `NotFoundError` before any model call, naming
+`skill=`, each to its description, `""` when it has none. A skill the agent does not have is a
+`NotFoundError` before any model call, naming
 the ones it has — `engine: agent 'support' has no skill 'refund'; its skills are escalate` — and
 `skill=` on a decision agent is an `InputError`. When the tree loads, one skill as both
 `skills/x.md` and `skills/x/SKILL.md` is a `ConfigurationError`. Names that start with `_` or `.`
@@ -602,6 +610,33 @@ stays in the fingerprint as any file does. `skills:` that names a skill the agen
 `ConfigurationError` when the tree loads — `tree: agents/support/AGENT.md keeps 'ghost' in skills:,
 a skill agent 'support' does not have; its skills are brief, close` (`it has no skills` when it has
 none) — as is a blank or padded entry, a name listed twice, or `skills:` on a decision agent.
+
+`public_skills:` in an `AGENT.md` names the skills people may call by typing `/name`. Absent, empty
+(`[]`) or with no value it names none, so typing `/name` invokes nothing on an agent that does not
+list it. `engine.agents[name].public_skills` is the menu a consumer shows people: the public skills
+in name order, each to its description, `{}` when there are none. A name in it must be a skill the
+agent has after `skills:` — `tree: agents/support/AGENT.md names 'ghost' in public_skills:, a skill
+agent 'support' does not have; its skills are brief, close` (`it has no skills` when it has none) —
+and, as for `skills:`, a blank or padded entry, a name listed twice, or `public_skills:` on a
+decision agent is a `ConfigurationError` when the tree loads.
+
+`engine.run` reads an input for a command when it is a string that starts with `/`, at its very
+first character, or a list whose first part is a `Text` that does. Its first word is the text up to
+the first whitespace; when that word is `/` and the name of a public skill, the run takes that skill
+and the input becomes the text after the word, its leading whitespace stripped — in a list the
+first part becomes that text, or is dropped when nothing follows, and a list left with no part
+becomes `""`. Any other input stays as it came, and is never an error: a path (`/etc/passwd`), an
+unknown name, `/escalate/x`, `/escalatex`, ` /escalate`, a JSON object or a JSON list that is not
+parts, and every input to a decision agent, which has no skills. A skill the agent has but does not
+make public is no command either: the input stays as it came, so a person who guesses the name of
+a code-only skill gets no skill and learns nothing.
+
+Giving both ways at once is an `InputError` before any model call — `engine: a run invokes one
+skill, by skill= or by an input that starts with /<name>; got skill='escalate' and /close` — while
+`skill="escalate"` with an input of `/ghost x`, which names no public skill, takes `escalate` and
+keeps that input. The run records `skill` and the rest of the input as its `input`, and a replay
+sends that pair and never reads `/name` again. `Delegate`, `engine.tool` and routes never read
+`/name`: their input comes from a model or a router, and they never take a skill.
 
 ### Running an agent
 
@@ -1260,7 +1295,8 @@ not make the call.
 name, description and kind. The model calls it with an agent and an input; the child runs
 under the same scope and its reply — text for a generation agent; for a decision agent its answers,
 and the routed run's reply when it routed, as `engine.tool` returns them — comes back as the tool
-result. The child's record is attached to the parent's `children`, and the
+result. Its input comes from the model and is never read for `/name`, and the child takes no skill.
+The child's record is attached to the parent's `children`, and the
 step that called it carries the child's `run_id`. A decision agent used this way is how a
 generation agent asks a fast, calibrated question mid-task: is this destructive, which skill
 applies, is the user done.
@@ -2126,7 +2162,9 @@ reviewed or the world reported on; `tags=` those whose tags contain these, as `d
 `tools` and `questions` all equal; `limit=` the first so many. Each is `candidate.run(agent, scope,
 …, record=False)` with the recorded input — parts as parts — the history sent before it, the
 skill and the `context`, so the candidate sees what the recorded run saw, its own skill file
-read for a recorded skill. A decision run replays its state, and asks its runtime questions again
+read for a recorded skill. A run invoked by `/name` recorded that skill and the rest of its input,
+and the replay sends that pair: `/name` is never read again, so a rest that itself starts with
+`/<skill>` replays as text. A decision run replays its state, and asks its runtime questions again
 as they were recorded while the questions of its folder come from the candidate's folder, its
 scripts filling theirs anew — a runtime id the candidate's folder now asks fails that pair; when its
 route reached a generation run, that run's input, history and context go too. What a record does not
@@ -2577,8 +2615,8 @@ combined = MemoryTools(memory, corpus_id="acme") + surface.only("Read", "Grep")
 
 A `Delegate` dispatched this way runs the child as its own top-level run, with the scope, `tools=`,
 `workspace=` and `tags=` given to `EngineTools` and the `questions` it is called with —
-what a `Delegate` inside a run would give it. A refusal raises here, where inside a run the model
-reads it.
+what a `Delegate` inside a run would give it, its input likewise never read for `/name`. A refusal
+raises here, where inside a run the model reads it.
 
 An agent is itself a tool. `engine.tool(agent, scope=...)` gives any runtime — a live voice model, a
 loop of your own — one tool that runs the agent: named for the agent and described by the
@@ -2595,7 +2633,9 @@ triaged["answers"]["urgent"]["probability"]                # 0.91
 surface = consult + MemoryTools(memory, corpus_id="acme")
 ```
 
-A generation agent's tool returns its reply. A decision agent's returns `{"answers": {…}}`, and when
+The tool's `input` is never read for `/name` and the run it starts takes no skill: the caller is a
+runtime, not a person typing. A generation agent's tool returns its reply. A decision agent's
+returns `{"answers": {…}}`, and when
 it routed, also `"routed_to": {"agent": …, "reply": …}` — the routed run's result, nested the same
 way when the target is itself a decision agent — so a caller that consults a routing agent gets the
 answer it routed to, not only the answers.
@@ -2876,7 +2916,8 @@ no `AGENT.md`, a link to a folder on the way to it or one holding it, one that w
 twice, a tool's file that links out of its `tools/` folder, a file or folder whose name is not
 UTF-8, a file an agent is made of that cannot be read, a question's file or an `AGENT.md` that links
 out of the agent's folder, an agent's own `tools/`, `questions/` or `skills/` folder that links out
-of it, a `skills:` that names a skill the agent does not have or sits in a decision agent's
+of it, a `skills:` or `public_skills:` that names a skill the agent does not have, holds a blank,
+padded or twice-listed entry or sits in a decision agent's
 `AGENT.md`, a `tasks/` folder in an agent's folder, whatever it holds (`tree: tasks are gone
 (agents/support/tasks/triage.md); make it a skill, or say it in the input`), an `AGENT.md` without
 a `name:` or a `model:` in plain text,
@@ -2923,7 +2964,10 @@ starts, or a run the refinery does not. `InputError` for a call the library refu
 an input that is not a string, a JSON object or a list of JSON values and parts, a workspace of
 another scope, a history that breaks a tool call from its result, a `start` outside the history or
 without one, tags outside their limits, runtime questions that do not fit, a runtime id the run
-already asks, questions for a generation agent, a skill for a decision agent, a decision run with no
+already asks, questions for a generation agent, a skill for a decision agent, a run given a skill
+both by `skill=` and by an input that starts with a public `/name` (`engine: a run invokes one
+skill, by skill= or by an input that starts with /<name>; got skill='escalate' and /close`), a
+decision run with no
 question to ask, media the decision model does not declare, a media part with both or neither of
 `data` and `url`, a correction of the wrong shape or for a question the run was not asked, a
 `delete_runs` or `verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs`

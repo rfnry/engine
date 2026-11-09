@@ -79,6 +79,20 @@ class RouteSpec(BaseModel):
         return value
 
 
+def _each_skill_once(value: list[str] | None, wanted: str) -> list[str] | None:
+    if value is None:
+        return None
+    for entry in value:
+        if not entry.strip() or entry != entry.strip():
+            raise ValueError(
+                f"tree: an entry must not be blank or padded, got {entry!r}; write the name of {wanted}"
+            )
+    twice = sorted({entry for entry in value if value.count(entry) > 1})
+    if twice:
+        raise ValueError(f"tree: {twice[0]!r} is listed twice; list each skill once")
+    return value
+
+
 class AgentFront(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -93,6 +107,7 @@ class AgentFront(BaseModel):
     reads: list[str] = Field(default_factory=list)
     tools: list[str] | None = None
     skills: list[str] | None = None
+    public_skills: list[str] | None = None
 
     @field_validator("name")
     @classmethod
@@ -142,17 +157,12 @@ class AgentFront(BaseModel):
     @field_validator("skills")
     @classmethod
     def _skills_keep_each_once(cls, value: list[str] | None) -> list[str] | None:
-        if value is None:
-            return None
-        for entry in value:
-            if not entry.strip() or entry != entry.strip():
-                raise ValueError(
-                    f"tree: an entry must not be blank or padded, got {entry!r}; write the name of a skill to keep, such as skills: [escalate]"
-                )
-        twice = sorted({entry for entry in value if value.count(entry) > 1})
-        if twice:
-            raise ValueError(f"tree: {twice[0]!r} is listed twice; list each skill once")
-        return value
+        return _each_skill_once(value, "a skill to keep, such as skills: [escalate]")
+
+    @field_validator("public_skills")
+    @classmethod
+    def _public_skills_name_each_once(cls, value: list[str] | None) -> list[str] | None:
+        return _each_skill_once(value, "a skill people may call, such as public_skills: [escalate]")
 
 
 class QuestionFront(BaseModel):
@@ -225,6 +235,7 @@ class AgentSpec(BaseModel):
     listing: str = ""
     reads: dict[str, Path] = Field(default_factory=dict)
     skills: dict[str, Skill] = Field(default_factory=dict)
+    public_skills: tuple[str, ...] = ()
     skill_folders: dict[str, Path] = Field(default_factory=dict)
     folder_tools: dict[str, ToolDef] = Field(default_factory=dict)
 
@@ -718,6 +729,16 @@ def load_agent(
     skills = dict(
         sorted((n, s) for n, s in merged.items() if front.skills is None or n in front.skills)
     )
+    if front.kind == "decision" and front.public_skills is not None:
+        raise ConfigurationError(
+            f"tree: decision agent {agent!r} cannot declare public_skills:; skills are for generation agents"
+        )
+    for name in front.public_skills or ():
+        if name not in skills:
+            have = f"its skills are {', '.join(skills)}" if skills else "it has no skills"
+            raise ConfigurationError(
+                f"tree: {directory}/AGENT.md names {name!r} in public_skills:, a skill agent {agent!r} does not have; {have}"
+            )
     if front.kind == "decision" and front.tools is not None:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot list tools:; tools are for generation agents, so give them to one it routes to"
@@ -796,6 +817,7 @@ def load_agent(
         ),
         reads={name: folder.place for name, folder in held.items()},
         skills=skills,
+        public_skills=tuple(sorted(front.public_skills or ())),
         skill_folders={
             posixpath.normpath(f"{prefix}/skills"): (tree / prefix / "skills").resolve()
             for prefix in gives
