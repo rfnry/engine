@@ -289,7 +289,9 @@ agents/
 The frontmatter of `AGENT.md` names the agent (`name:`), its kind (`kind:`), the model it runs on
 (`model:`) and what the agent may call, and, when it needs fewer tools than it has, the ones it
 keeps (`tools:`) and the skills it keeps (`skills:`), and the skills people may call by typing
-`/name` (`public_skills:`); each of the three takes `all`, `none` or a list of names; its body is the persona and the rules every run follows.
+`/name` (`public_skills:`); each of the three takes `all`, `none` or a list of names; `gitignore:
+true` leaves out what a `.gitignore` ignores, below; its body is the persona and the rules every run
+follows.
 `name:`, `kind:` and `model:` are required: a missing one, a `kind:` other than `generation` or
 `decision`, or a blank, padded or non-text `name:` or `model:` is a `ConfigurationError` naming the
 file. A `name:` is plain text — not blank, not hidden, not padded, no slash — and is what `run`,
@@ -549,6 +551,35 @@ file `Read` would refuse or that goes missing or unreadable after the list is re
 'tagger' cannot preload: tools/builtins: __pycache__/x.pyc is hidden; names starting with . and
 __pycache__ are not part of the agent's folder; fix that file, or drop it from preload:`).
 
+`gitignore: true` in an `AGENT.md` leaves out what a `.gitignore` ignores, as Git would, so a folder
+kept in a repository can hold its `build/` and its logs without the agent seeing them. In the
+agent's own folder, in each folder in `reads:` and in each inherited `skills/` folder, the
+`.gitignore` files at or below that folder decide; one above it is not read. Patterns are relative
+to their file, a deeper file overrides a shallower one, `!` re-includes, and nothing under an
+ignored folder can be re-included. The engine reads each `.gitignore` once, when it loads the tree,
+so a change shows in the next `Engine`, and it reads no Git data: a file a pattern matches is
+ignored even if Git tracks it.
+
+A file so ignored is not there for that agent. It is left out of the map, of a folder `preload:`
+names, of the skills the agent has and of its fingerprint, and `Glob`, `Grep` and `LS` do not list
+it. `Read`, `Load`, `Grep` or `LS` naming it reads `tools/builtins: debug.log is ignored by a
+.gitignore; it is not part of the agent's folder`, and a `preload:` entry naming it is a
+`ConfigurationError` through the same message (`tree: agent 'coding' cannot preload: tools/builtins:
+debug.log is ignored by a .gitignore; it is not part of the agent's folder; fix that file, or drop
+it from preload:`). A link is judged by its own name and by where it leads. The key is per agent:
+another agent reading the same folder without `gitignore: true` sees every file. A tool's script
+still loads from `tools/` whatever a `.gitignore` says; it is what the agent calls, not a file it
+sees.
+
+A workspace sees the real files: a `Shell` command reads whatever the mount holds, ignored or not.
+`gitignore: true` is a convenience for what the agent's file tools and prompt hold, not a boundary;
+what must stay away from a model stays out of the tree.
+
+A `.gitignore` that cannot be read or decoded is a `ConfigurationError` when the tree loads (`tree:
+cannot read agents/coding/.gitignore: Permission denied; make it readable to the engine`), and so
+is `gitignore:` on a decision agent (`tree: decision agent 'triage' cannot declare gitignore:; a
+decision agent reads no files, so give it what it needs in its input or its questions`).
+
 ### Skills
 
 A skill is how to do something: `skills/<name>.md`, or `skills/<name>/SKILL.md` for one that keeps
@@ -725,9 +756,10 @@ its own directory, the `tools/` folder of each folder above it, whose tools it g
 folder, `../tools/` and `../skills/`, and each folder it names in `reads:` with that folder's files
 under its path from the agent's folder, `../<name>/` (`../../shared/books/` for an agent two folders
 deep), as the map shows them — leaving out hidden files and folders and every file or folder named
-`__pycache__`, as `LS`, `Glob` and `Grep` do, links that lead out of them, and folder links to a
-hidden name. The engine takes it once, when it loads the tree, so an edit to the agent, to a
-folder it reads or to a `skills/` folder above it shows in the next `Engine` built from the folder.
+`__pycache__`, as `LS`, `Glob` and `Grep` do, links that lead out of them, folder links to a
+hidden name, and, for an agent with `gitignore: true`, what a `.gitignore` ignores. The engine takes
+it once, when it loads the tree, so an edit to the agent, to a folder it reads or to a `skills/`
+folder above it shows in the next `Engine` built from the folder.
 `fingerprint.tools` is one over `run.tools` — each tool's name, description and schema — so it
 covers the tools the agent gets from its folders, the `tools=` a run passes, `Output` when `expect=`
 asks for one, in `Delegate` the agents it may call — their names, descriptions and kinds — and a
@@ -1767,7 +1799,8 @@ the agent reads is at `$RFNRY_TREE/<name>`. A skill's script is run as
 for an unsandboxed `Local` the tree's own path. Commands started with `background=true` get the
 variables too; a `Shell` that code dispatches outside a run gets none. Cautions:
 
-- the shell sees every file under the mount, hidden ones included, which the file tools refuse;
+- the shell sees every file under the mount, hidden ones and those `gitignore: true` leaves out
+  included, which the file tools refuse;
 - the fingerprint covers what the folder holds, not what a command reads;
 - a mount of the whole tree shows the other agents' folders; mount less to hide them;
 - `refinery.replay(candidate, workspace=)` needs a workspace whose sandbox mounts the candidate's
@@ -2982,68 +3015,69 @@ agent whose model has not its kind's method, two agents with one name, an agent 
 `route:` the tree does not have, an unknown key in the frontmatter of an `AGENT.md` (`frontmatter:
 unknown key 'route.min_confidance' in agents/frontdesk/AGENT.md`), frontmatter that is not valid
 YAML or a `description:` that is not a string in a file the map would show or a skill, a decision
-agent with `preload:`, `workspace: true` or `tools:`, a generation agent with `questions/` or
-`route:`, a `tools:` entry that is blank, padded or listed twice, a `tools:` that names `Output` or
-a tool that comes with its own declaration, a `tools:` name a run does not offer, when the run
-starts, a tool's `.json` without its `.py` or a script without its `.json`, a tool's JSON with an
-unknown key, no description, an `input_schema` that is not an object or a schema that does not
-compile, a script or helper that is not valid Python, imports the engine, the server's own code, a
-module relatively or a sibling script or subfolder of its folder, or imports a helper inside a
-function, a helper named like a standard-library module, a tool named like one the engine gives the
-agent, a `workers=` naming a folder that holds no agent or one inside another it names, a `reads:`
-that is not a path from the agent's folder or goes above the root, names no folder of the tree, a
-`tools/` or `skills/` folder on an agent's path or a folder inside one, leaves the root, names the
-agent's own folder, one that holds it or one inside it, or names two folders one inside the other,
-`reads:` on a decision agent or on an agent whose folder is a link to a folder elsewhere, a
-`preload:` that is empty, has no value or is not a list, an entry of it that is not a path from the
-agent's folder, goes above the root, lies outside the agent's folder and the folders it reads or in
-a folder that holds the agent, does not exist or cannot be reached, or names the path another entry
-names or would send a file another entry sends, a link counted, a file it names that `Read` would
-refuse or that cannot be read, one skill as both `skills/x.md` and `skills/x/SKILL.md`, a question
-in markdown, a question's JSON that is not an object, holds an unknown key, has no instructions or
-does not fit its type, a question's script without its `.json`, a route not by a choice question of
-the router's `questions/`, by one a script fills, or that maps an option the question does not have,
-a route entry that is not an agent's name — one that names a task reads `frontmatter: invalid agent
-agents/frontdesk/AGENT.md; route.to: tasks are gone (route entry 'technical' names task 'triage');
-name the agent alone, and make the task a skill or say it in the agent's AGENT.md` — or that gives a
-decision agent nothing to ask, two tools of a run with one name or one named like a tool the engine
-gives the agent, a run of an agent whose model was not given, or of a router whose target's model
-was not given, a missing workspace, a `Local` root that is not a directory, a `shell` that is not a
-list of strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and `write`,
-a `Workspace` without a scope, a `max_steps`, `max_depth`, `tool_timeout`, `history_walk`,
-`history_chars`, `timeout` or `output_bytes` that is not positive, a `worker_result_bytes` that is
-neither a positive integer nor `None`, an `approve` that returns anything but `True` or `False`, a
-judge that is not a decision agent or a teacher that is not a generation agent. `NotFoundError` for
-an agent the tree does not have — a judge, a teacher or a replay's agent in the candidate included —
-a skill the agent does not have (`engine: agent 'support' has no skill 'refund'; its skills are
-escalate`), found when the run starts, or a run the refinery does not. `InputError` for a call the
-library refuses: an empty scope, an input that is not a string, a JSON object or a list of JSON
-values and parts, a workspace of another scope, a history that breaks a tool call from its result, a
-`start` outside the history or without one, tags outside their limits, runtime questions that do not
-fit, a runtime id the run already asks, questions for a generation agent, a skill for a decision
-agent, a run given a skill both by `skill=` and by an input that starts with a public `/name`
-(`engine: a run invokes one skill, by skill= or by an input that starts with /<name>; got
-skill='escalate' and /close`), a decision run with no question to ask, media the decision model does
-not declare, a media part with both or neither of `data` and `url`, a correction of the wrong shape
-or for a question the run was not asked, a `delete_runs` or `verify_absent` given both `run_ids` and
-`tags` or an empty one, a `delete_runs` given neither, an `export` or a `replay` given a
-`holdout_percent` outside 0 to 100, a `replay` given empty `tags` or a `limit`, `concurrency` or
-`repeat` below 1, a tool called with bad arguments, arguments JSON cannot hold or a path outside its
-directory, and any use of an engine after `close()` (`engine: this engine was closed; build a new
-Engine`). `ModelError` when an adapter breaks the contract — a result whose fields do not fit, a
-missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1,
-a score outside its levels — or a folder tool's result does not match its `output_schema`, or a
-question's script returns anything but an object, a key its JSON sets or one its type does not take,
-or a question that does not fit. `RunawayError` when a loop exceeds `max_steps` (default 200).
-`DelegationLoopError` for a route into an agent already in the same chain of routes;
-`DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
-`Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool or
-a question's script that fails in its worker process: what its script raised, `sys.exit()` included,
-a result JSON cannot hold, a result or error over `worker_result_bytes`, a worker that stopped while
-the call was in flight (`workers/pool: the worker for lookup_order stopped: exited with code 3`) or
-a call in flight when `close()` stopped its worker. Inside a run, a tool's error is the model's to
-read, never raised. All under `EngineException` — the root takes the `Exception` suffix, every child
-ends in `Error`, the same shape as rfnry-memory's. Every message names the module that raised it,
-then says what went wrong in lowercase: `engine: agent 'ghost' was not found`, `tools/workspace:
-path outside the workspace: ../x`. A tool's error reaches the model with its type in front:
-`InputError: tools: unknown tool 'Ghost'`.
+agent with `preload:`, `workspace: true`, `tools:` or `gitignore:`, a generation agent with
+`questions/` or `route:`, a `.gitignore` of an agent with `gitignore: true` that cannot be read or
+decoded or holds a line that is no pattern, a `tools:` entry that is blank, padded or listed twice,
+a `tools:` that names `Output` or a tool that comes with its own declaration, a `tools:` name a run
+does not offer, when the run starts, a tool's `.json` without its `.py` or a script without its
+`.json`, a tool's JSON with an unknown key, no description, an `input_schema` that is not an object
+or a schema that does not compile, a script or helper that is not valid Python, imports the engine,
+the server's own code, a module relatively or a sibling script or subfolder of its folder, or
+imports a helper inside a function, a helper named like a standard-library module, a tool named like
+one the engine gives the agent, a `workers=` naming a folder that holds no agent or one inside
+another it names, a `reads:` that is not a path from the agent's folder or goes above the root,
+names no folder of the tree, a `tools/` or `skills/` folder on an agent's path or a folder inside
+one, leaves the root, names the agent's own folder, one that holds it or one inside it, or names two
+folders one inside the other, `reads:` on a decision agent or on an agent whose folder is a link to
+a folder elsewhere, a `preload:` that is empty, has no value or is not a list, an entry of it that
+is not a path from the agent's folder, goes above the root, lies outside the agent's folder and the
+folders it reads or in a folder that holds the agent, does not exist or cannot be reached, or names
+the path another entry names or would send a file another entry sends, a link counted, a file it
+names that `Read` would refuse or that cannot be read, one skill as both `skills/x.md` and
+`skills/x/SKILL.md`, a question in markdown, a question's JSON that is not an object, holds an
+unknown key, has no instructions or does not fit its type, a question's script without its `.json`,
+a route not by a choice question of the router's `questions/`, by one a script fills, or that maps
+an option the question does not have, a route entry that is not an agent's name — one that names a
+task reads `frontmatter: invalid agent agents/frontdesk/AGENT.md; route.to: tasks are gone (route
+entry 'technical' names task 'triage'); name the agent alone, and make the task a skill or say it in
+the agent's AGENT.md` — or that gives a decision agent nothing to ask, two tools of a run with one
+name or one named like a tool the engine gives the agent, a run of an agent whose model was not
+given, or of a router whose target's model was not given, a missing workspace, a `Local` root that
+is not a directory, a `shell` that is not a list of strings or whose first word is not on `PATH`, a
+backend without `spawn`, `read` and `write`, a `Workspace` without a scope, a `max_steps`,
+`max_depth`, `tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is
+not positive, a `worker_result_bytes` that is neither a positive integer nor `None`, an `approve`
+that returns anything but `True` or `False`, a judge that is not a decision agent or a teacher that
+is not a generation agent. `NotFoundError` for an agent the tree does not have — a judge, a teacher
+or a replay's agent in the candidate included — a skill the agent does not have (`engine: agent
+'support' has no skill 'refund'; its skills are escalate`), found when the run starts, or a run the
+refinery does not. `InputError` for a call the library refuses: an empty scope, an input that is not
+a string, a JSON object or a list of JSON values and parts, a workspace of another scope, a history
+that breaks a tool call from its result, a `start` outside the history or without one, tags outside
+their limits, runtime questions that do not fit, a runtime id the run already asks, questions for a
+generation agent, a skill for a decision agent, a run given a skill both by `skill=` and by an input
+that starts with a public `/name` (`engine: a run invokes one skill, by skill= or by an input that
+starts with /<name>; got skill='escalate' and /close`), a decision run with no question to ask,
+media the decision model does not declare, a media part with both or neither of `data` and `url`, a
+correction of the wrong shape or for a question the run was not asked, a `delete_runs` or
+`verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an
+`export` or a `replay` given a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or
+a `limit`, `concurrency` or `repeat` below 1, a tool called with bad arguments, arguments JSON
+cannot hold or a path outside its directory, and any use of an engine after `close()` (`engine: this
+engine was closed; build a new Engine`). `ModelError` when an adapter breaks the contract — a result
+whose fields do not fit, a missing answer, probabilities that do not cover the options, lie outside
+0 and 1 or do not sum to 1, a score outside its levels — or a folder tool's result does not match
+its `output_schema`, or a question's script returns anything but an object, a key its JSON sets or
+one its type does not take, or a question that does not fit. `RunawayError` when a loop exceeds
+`max_steps` (default 200). `DelegationLoopError` for a route into an agent already in the same chain
+of routes; `DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool
+error through `Delegate` and raises through a route. `StorageError` for the database. `WorkerError`
+for a tool or a question's script that fails in its worker process: what its script raised,
+`sys.exit()` included, a result JSON cannot hold, a result or error over `worker_result_bytes`, a
+worker that stopped while the call was in flight (`workers/pool: the worker for lookup_order
+stopped: exited with code 3`) or a call in flight when `close()` stopped its worker. Inside a run, a
+tool's error is the model's to read, never raised. All under `EngineException` — the root takes the
+`Exception` suffix, every child ends in `Error`, the same shape as rfnry-memory's. Every message
+names the module that raised it, then says what went wrong in lowercase: `engine: agent 'ghost' was
+not found`, `tools/workspace: path outside the workspace: ../x`. A tool's error reaches the model
+with its type in front: `InputError: tools: unknown tool 'Ghost'`.

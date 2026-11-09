@@ -4,7 +4,7 @@ import mimetypes
 import os
 import stat
 import time
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from fnmatch import fnmatch
 from itertools import islice
 from pathlib import Path
@@ -108,6 +108,15 @@ def _hides(jail: Jail, path: str | Path) -> bool:
     return _hidden(seen) or _hidden(Path(named.name))
 
 
+def _ignored(jail: Jail, path: str | Path) -> bool:
+    if jail.ignored is None:
+        return False
+    try:
+        return jail.ignored(Path(os.path.normpath(jail._joined(path))))
+    except ValueError:
+        return False
+
+
 def _through_folders(jail: Jail, path: str) -> str:
     parts = path.split("/")
     for n in range(1, len(parts)):
@@ -121,6 +130,10 @@ def _named(jail: Jail, path: str) -> str:
     if _hides(jail, path):
         raise InputError(
             f"tools/builtins: {path} is hidden; names starting with . and __pycache__ are not part of the agent's folder"
+        )
+    if _ignored(jail, path):
+        raise InputError(
+            f"tools/builtins: {path} is ignored by a .gitignore; it is not part of the agent's folder"
         )
     return path
 
@@ -273,12 +286,16 @@ def _read_tool(read: Tool, workspace: Backend | None) -> Tool:
 
 class _Directory:
     def __init__(
-        self, root: Path, reads: Mapping[str, Path] | None = None, workspace: bool = False
+        self,
+        root: Path,
+        reads: Mapping[str, Path] | None = None,
+        workspace: bool = False,
+        ignored: Callable[[Path], bool] | None = None,
     ) -> None:
         self.root = Path(root).resolve()
         self.workspace = workspace
         self.reads = {name: Path(folder).resolve() for name, folder in (reads or {}).items()}
-        self.jail = Jail(self.root, reach=self.reads)
+        self.jail = Jail(self.root, reach=self.reads, ignored=ignored)
 
     def _shown(self, path: Path) -> str:
         for name, folder in self.reads.items():
@@ -309,6 +326,7 @@ class _Directory:
                 not candidate.is_file()
                 or _hidden(rel)
                 or _hides(self.jail, candidate)
+                or _ignored(self.jail, candidate)
                 or not self._inside(candidate)
             ):
                 continue
@@ -411,6 +429,7 @@ class _Directory:
             if p.is_file()
             and not _hidden(Path(self._shown(p)))
             and not _hides(self.jail, p)
+            and not _ignored(self.jail, p)
             and self._inside(p)
         )
         suffix = f"\n[truncated: walk exceeded {_MAX_WALK} entries]" if truncated else ""
@@ -430,6 +449,7 @@ class _Directory:
                             for e in found
                             if not _hidden(Path(e.name))
                             and not _hides(self.jail, place / e.name)
+                            and not _ignored(self.jail, place / e.name)
                             and self._inside(place / e.name)
                         ),
                         key=lambda e: e.name,
@@ -452,9 +472,12 @@ class _Directory:
 
 
 def builtins(
-    root: Path, reads: Mapping[str, Path] | None = None, workspace: Backend | None = None
+    root: Path,
+    reads: Mapping[str, Path] | None = None,
+    workspace: Backend | None = None,
+    ignored: Callable[[Path], bool] | None = None,
 ) -> list[Tool]:
-    directory = _Directory(root, reads, workspace is not None)
+    directory = _Directory(root, reads, workspace is not None, ignored)
 
     def threaded(handler: Any) -> Any:
         async def body(args: dict[str, Any]) -> Result:
@@ -499,8 +522,9 @@ def load_tool(
     workspace: Backend | None = None,
     media_types: Collection[str] | None = None,
     reads: Mapping[str, Path] | None = None,
+    ignored: Callable[[Path], bool] | None = None,
 ) -> Tool:
-    jail = Jail(folder, reach=reads)
+    jail = Jail(folder, reach=reads, ignored=ignored)
     missing = (
         'Load with where="workspace" loads from your workspace' if workspace is not None else ""
     )

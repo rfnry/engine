@@ -81,8 +81,8 @@ class EngineTools(Tools):
         backend = room.backend if room else None
         reach = from_agent(spec.path, {**spec.reads, **spec.skill_folders})
         files = [
-            *builtins(spec.root, reach, backend),
-            load_tool(spec.root, backend, media_types, reach),
+            *builtins(spec.root, reach, backend, spec.ignored),
+            load_tool(spec.root, backend, media_types, reach, spec.ignored),
         ]
         items: list[Tool | ToolsLike] = [tool for tool in files if picked(spec, tool.name)]
         if history is not None and start > 0:

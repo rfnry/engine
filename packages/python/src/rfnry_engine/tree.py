@@ -3,12 +3,13 @@ import json
 import logging
 import os
 import posixpath
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from functools import cached_property
 from itertools import combinations
 from pathlib import Path
 from typing import Literal
 
+from pathspec import GitIgnoreSpec
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -23,6 +24,8 @@ from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
 from rfnry_engine.folders import (
     DECLARED,
+    Gitignored,
+    any_ignores,
     content,
     declares,
     entries,
@@ -110,6 +113,7 @@ class AgentFront(BaseModel):
     agents: list[str] = Field(default_factory=list)
     route: RouteSpec | None = None
     workspace: bool = False
+    gitignore: bool = False
     preload: list[str] = Field(default_factory=list)
     reads: list[str] = Field(default_factory=list)
     tools: list[str] | str | None = None
@@ -281,6 +285,7 @@ class AgentSpec(BaseModel):
     public_skills: tuple[str, ...] = ()
     skill_folders: dict[str, Path] = Field(default_factory=dict)
     folder_tools: dict[str, ToolDef] = Field(default_factory=dict)
+    ignored: Callable[[Path], bool] | None = None
 
 
 def _held(path: Path, agent: Path) -> None:
@@ -386,7 +391,45 @@ def _declared(folder: Path) -> list[Path]:
     return sorted(found)
 
 
-def _skills_in(folder: Path, holder: Path, shown: str) -> dict[str, Skill]:
+def _gitignore(path: Path) -> GitIgnoreSpec:
+    try:
+        return GitIgnoreSpec.from_lines(path.read_text(encoding="utf-8-sig").splitlines())
+    except (OSError, ValueError) as exc:
+        reason = getattr(exc, "strerror", None) or exc
+        raise ConfigurationError(
+            f"tree: cannot read {path}: {reason}; make it readable to the engine"
+        ) from exc
+
+
+class _Gitignores:
+    def __init__(self) -> None:
+        self._read: dict[Path, GitIgnoreSpec] = {}
+        self._reached: dict[Path, Gitignored] = {}
+
+    def _spec(self, path: Path) -> GitIgnoreSpec:
+        if path not in self._read:
+            self._read[path] = _gitignore(path)
+        return self._read[path]
+
+    def reached(self, place: Path) -> Gitignored:
+        if place not in self._reached:
+            check = Gitignored(place)
+            for directory, names, filenames in os.walk(place):
+                here = Path(directory)
+                if ".gitignore" in filenames:
+                    check.specs[here] = self._spec(here / ".gitignore")
+                names[:] = [
+                    name
+                    for name in names
+                    if not name.startswith(".") and name != "__pycache__" and not check(here / name)
+                ]
+            self._reached[place] = check
+        return self._reached[place]
+
+
+def _skills_in(
+    folder: Path, holder: Path, shown: str, ignored: Callable[[Path], bool] | None
+) -> dict[str, Skill]:
     if folder.is_symlink() or not folder.is_dir():
         return {}
     found: dict[str, Skill] = {}
@@ -401,7 +444,7 @@ def _skills_in(folder: Path, holder: Path, shown: str) -> dict[str, Skill]:
                 continue
         else:
             continue
-        if leads_out(path, holder) is not None:
+        if leads_out(path, holder) is not None or (ignored is not None and ignored(path)):
             continue
         if name in found:
             raise ConfigurationError(
@@ -453,23 +496,34 @@ def _questions(
 
 class _Folder:
     def __init__(
-        self, place: Path, apart: Collection[Path] = (), within: Path | None = None
+        self,
+        place: Path,
+        apart: Collection[Path] = (),
+        within: Path | None = None,
+        ignored: Callable[[Path], bool] | None = None,
     ) -> None:
         self.place = place
         self.apart = apart
         self.within = within
+        self.ignored = ignored
 
     @cached_property
     def files(self) -> list[tuple[str, Path]]:
-        return content(self.place, False, inner=True)
+        return content(self.place, False, inner=True, ignored=self.ignored)
 
     @cached_property
     def preloaded(self) -> list[tuple[str, Path]]:
-        return content(self.place, declares(self.place), apart=self.apart, within=self.within)
+        return content(
+            self.place,
+            declares(self.place),
+            apart=self.apart,
+            within=self.within,
+            ignored=self.ignored,
+        )
 
     @cached_property
     def mapped(self) -> list[str]:
-        return entries(self.place, declares(self.place), self.apart)
+        return entries(self.place, declares(self.place), self.apart, self.ignored)
 
 
 def from_agent[T](path: str, reads: Mapping[str, T]) -> dict[str, T]:
@@ -703,12 +757,18 @@ def _in_a_holder(tree: Path, name: str, path: str) -> bool:
     return _holds(folder, path)
 
 
-def _sent(shown: str, target: Path, holder: Path, apart: Collection[Path]) -> dict[str, Path]:
-    if not target.is_dir():
+def _sent(
+    shown: str,
+    target: Path,
+    holder: Path,
+    apart: Collection[Path],
+    ignored: Callable[[Path], bool] | None,
+) -> dict[str, Path]:
+    if not target.is_dir() or (ignored is not None and ignored(target)):
         return {shown: target}
     return {
         posixpath.normpath(f"{shown}/{rel}"): file.resolve()
-        for rel, file in _Folder(target, apart, holder).preloaded
+        for rel, file in _Folder(target, apart, holder, ignored).preloaded
     }
 
 
@@ -740,7 +800,7 @@ def _preload_names(
                 f"tree: agent {agent!r} preloads {said!r}, which does not exist; write its path from the agent's folder"
             )
         holder = next(place for folder, place in places.items() if _holds(folder, name))
-        entries.append((name, said, _sent(shown, target, holder, apart)))
+        entries.append((name, said, _sent(shown, target, holder, apart, jail.ignored)))
     for (one, one_said, one_sent), (other, other_said, other_sent) in combinations(entries, 2):
         if one == other or set(one_sent.values()) & set(other_sent.values()):
             raise ConfigurationError(
@@ -761,12 +821,14 @@ def _gives_skills(folder: Path) -> bool:
     return folder.is_dir() and not folder.is_symlink()
 
 
-def _skills_from(tree: Path, prefix: str, path: str) -> dict[str, Skill]:
+def _skills_from(
+    tree: Path, prefix: str, path: str, gitignores: _Gitignores | None
+) -> dict[str, Skill]:
     place = (tree / prefix).resolve()
     folder = place / "skills"
-    return _skills_in(
-        folder, place if prefix == path else folder, posixpath.relpath(f"{prefix}/skills", path)
-    )
+    holder = place if prefix == path else folder
+    ignored = None if gitignores is None else gitignores.reached(holder)
+    return _skills_in(folder, holder, posixpath.relpath(f"{prefix}/skills", path), ignored)
 
 
 def _on_path(path: str) -> list[str]:
@@ -827,9 +889,15 @@ def load_agent(
     tool_folders: Mapping[str, dict[str, ToolDef]] | None = None,
     script_folders: Collection[Path] = (),
     skill_prefixes: Collection[str] = (),
+    gitignores: _Gitignores | None = None,
 ) -> AgentSpec:
     front, body = _agent_front(directory)
     agent = front.name
+    if front.kind == "decision" and "gitignore" in front.model_fields_set:
+        raise ConfigurationError(
+            f"tree: decision agent {agent!r} cannot declare gitignore:; a decision agent reads no files, so give it what it needs in its input or its questions"
+        )
+    ignores = (gitignores or _Gitignores()) if front.gitignore else None
     if front.kind == "generation" and _question_files(directory / "questions"):
         raise ConfigurationError(
             f"tree: generation agent {agent!r} cannot declare questions/; questions are for decision agents, so make it kind: decision or move them to one"
@@ -841,7 +909,9 @@ def load_agent(
     tree = tree_root or directory
     gives = [] if front.kind == "decision" else [p for p in _on_path(path) if p in skill_prefixes]
     merged = {
-        name: skill for prefix in gives for name, skill in _skills_from(tree, prefix, path).items()
+        name: skill
+        for prefix in gives
+        for name, skill in _skills_from(tree, prefix, path, ignores).items()
     }
     if front.kind == "decision" and "skills" in front.model_fields_set:
         raise ConfigurationError(
@@ -896,6 +966,27 @@ def load_agent(
     declared = [posixpath.normpath(f"{prefix}/tools") for prefix in tool_folders]
     skill_paths = [posixpath.normpath(f"{prefix}/skills") for prefix in skill_prefixes]
     held = _reads(agent, front, directory, tree, path, folders or {}, declared, skill_paths)
+    read_places = {name: folder.place for name, folder in held.items()}
+    skill_folders = {
+        posixpath.normpath(f"{prefix}/skills"): (tree / prefix / "skills").resolve()
+        for prefix in gives
+        if prefix != path
+    }
+    ignored = (
+        None
+        if ignores is None
+        else any_ignores(
+            [
+                ignores.reached(place)
+                for place in (root, *read_places.values(), *skill_folders.values())
+            ]
+        )
+    )
+    if ignored is not None:
+        held = {
+            name: _Folder(folder.place, folder.apart, ignored=ignored)
+            for name, folder in held.items()
+        }
     reads = from_agent(path, held)
     sees = [] if front.kind == "decision" else [p for p in _on_path(path) if p in tool_folders]
     apart = _tool_places(tree, tool_folders) | _skill_places(tree, skill_prefixes)
@@ -904,18 +995,12 @@ def load_agent(
         for handed, seen in (("tools", sees), ("skills", gives))
         for prefix in seen
         if prefix != path
-        for rel, file in content(tree / prefix / handed, False)
+        for rel, file in content(tree / prefix / handed, False, ignored=ignored)
     ]
-    files = sorted([*content(root, False, inner=True), *_under(reads), *above])
+    files = sorted([*content(root, False, inner=True, ignored=ignored), *_under(reads), *above])
     for rel, file in files:
         _utf8(rel, file)
-    read_places = {name: folder.place for name, folder in held.items()}
-    skill_folders = {
-        posixpath.normpath(f"{prefix}/skills"): (tree / prefix / "skills").resolve()
-        for prefix in gives
-        if prefix != path
-    }
-    jail = Jail(root, reach=from_agent(path, {**read_places, **skill_folders}))
+    jail = Jail(root, reach=from_agent(path, {**read_places, **skill_folders}), ignored=ignored)
     try:
         preload, read = preload_parts(
             _preload_names(agent, front, tree, path, {**read_places, **skill_folders}, jail, apart),
@@ -945,7 +1030,8 @@ def load_agent(
         preload=preload,
         preload_digest=preload_digest(preload),
         listing=joined(
-            entries(root, True, apart), {name: folder.mapped for name, folder in reads.items()}
+            entries(root, True, apart, ignored),
+            {name: folder.mapped for name, folder in reads.items()},
         ),
         reads=read_places,
         skills=skills,
@@ -954,6 +1040,7 @@ def load_agent(
         ),
         skill_folders=skill_folders,
         folder_tools=folder_tools,
+        ignored=ignored,
     )
 
 
@@ -969,9 +1056,11 @@ def load_tree(root: Path) -> dict[str, AgentSpec]:
         )
     for path in paths:
         _own(root / path)
+    gitignores = _Gitignores()
     for path in paths:
-        if _agent_front(root / path)[0].kind == "generation":
-            _skills_from(root, path, path)
+        front = _agent_front(root / path)[0]
+        if front.kind == "generation":
+            _skills_from(root, path, path, gitignores if front.gitignore else None)
     project = project_of(root)
     on_paths = list(dict.fromkeys(p for path in paths for p in _on_path(path)))
     prefixes = [prefix for prefix in on_paths if (root / prefix / "tools").is_dir()]
@@ -1004,6 +1093,7 @@ def load_tree(root: Path) -> dict[str, AgentSpec]:
             tool_folders=tool_folders,
             script_folders=script_folders,
             skill_prefixes=skill_prefixes,
+            gitignores=gitignores,
         )
         twin = agents.get(spec.name)
         if twin is not None:

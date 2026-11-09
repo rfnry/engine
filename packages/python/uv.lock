@@ -522,6 +522,7 @@ version = "0.1.8"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema-rs" },
+    { name = "pathspec" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "regex" },
@@ -548,6 +549,7 @@ requires-dist = [
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.31.0,<1.0" },
     { name = "jsonschema-rs", specifier = ">=0.60.1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.3.1" },
+    { name = "pathspec", specifier = ">=1.1.1" },
     { name = "poethepoet", marker = "extra == 'dev'", specifier = ">=0.48.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
