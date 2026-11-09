@@ -249,7 +249,7 @@ def _read_tool(read: Tool, workspace: Backend | None) -> Tool:
 
     return Tool(
         "Read",
-        f"{read.description} where is 'folder' for a file of the FILES map or 'workspace' for your workspace.",
+        f"{read.description} where is 'folder' for a file of the FILES map or SKILLS, or 'workspace' for your workspace.",
         body=body,
         args=ReadAnywhereArgs,
     )
@@ -451,7 +451,7 @@ def builtins(
         _read_tool(
             Tool(
                 "Read",
-                "Read a text file by its path in the FILES map. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.",
+                "Read a text file by its path in the FILES map or SKILLS. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.",
                 body=threaded(directory.read),
                 args=ReadArgs,
             ),
@@ -504,14 +504,14 @@ def load_tool(
     if workspace is None:
         return Tool(
             "Load",
-            "Load a file of the FILES map as it is, such as an image, a PDF or audio, so you see or hear it yourself.",
+            "Load a file of the FILES map or SKILLS as it is, such as an image, a PDF or audio, so you see or hear it yourself.",
             body=body,
             args=LoadArgs,
         )
     return Tool(
         "Load",
         "Load a file as it is, such as an image, a PDF or audio, so you see or hear it yourself. "
-        "where is 'folder' for a file of the FILES map or 'workspace' for your workspace.",
+        "where is 'folder' for a file of the FILES map or SKILLS, or 'workspace' for your workspace.",
         body=body,
         args=LoadAnywhereArgs,
     )

@@ -66,7 +66,7 @@ async def test_an_agent_reads_another_agent_s_folder_in_full(tmp_path: Path) -> 
     loaded = await tools.dispatch("Load", {"path": "../writing/skills/draft.md"})
     assert isinstance(loaded, list) and len(loaded) == 1
     assert isinstance(loaded[0], Document) and loaded[0].data == b"Draft it.\n"
-    assert engine._spec("coding").listing == "../writing/\n  skills/\n    draft.md"
+    assert engine._spec("coding").listing == "../writing/"
 
 
 async def test_an_adapter_editing_a_builtin_schema_changes_no_later_run(fixtures: Path) -> None:

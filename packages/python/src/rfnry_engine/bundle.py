@@ -13,6 +13,13 @@ def build_bundle(
         ("AGENT", spec.body),
         ("FILES", spec.listing),
         (
+            "SKILLS",
+            "\n".join(
+                f"{s.path} — {s.description}" if s.description else s.path
+                for s in spec.skills.values()
+            ),
+        ),
+        (
             "TOOLS",
             "\n".join(
                 f"- {t.name}: {t.description.splitlines()[0] if t.description else ''}"

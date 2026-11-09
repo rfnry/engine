@@ -70,7 +70,7 @@ def test_an_outer_agent_s_fingerprint_counts_its_inner_agents(tmp_path: Path) ->
 
 def test_hidden_and_declaration_folders_are_never_searched_for_agents(tmp_path: Path) -> None:
     team(tmp_path)
-    for place in (".draft/x", "desks/support/triage/questions/x"):
+    for place in (".draft/x", "desks/support/triage/questions/x", "lead/skills/x"):
         write(tmp_path / place / "AGENT.md", agent_md("ghost"))
     assert list(load_tree(tmp_path)) == ["lead", "triage", "writer"]
 
@@ -371,6 +371,7 @@ def test_an_agent_s_own_folder_that_links_out_of_the_agent_s_folder_is_refused(
             },
         ),
         ("questions", "decision", {"urgent.json": '{"type": "check", "instructions": "Urgent?"}'}),
+        ("skills", "generation", {"brief.md": "---\ndescription: Brief\n---\nBe brief.\n"}),
     ],
 )
 @pytest.mark.parametrize("hidden", [".lib", "kept/.lib", "__pycache__"])

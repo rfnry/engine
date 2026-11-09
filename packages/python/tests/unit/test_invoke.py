@@ -19,6 +19,7 @@ from rfnry_engine import (
     ToolCall,
 )
 from rfnry_engine.records import Generation
+from rfnry_engine.tools.engine_tools import EngineTools
 
 from .fakes import Fixed, MemoryBucket, Scripted, text_reply
 
@@ -88,14 +89,46 @@ def test_a_skill_is_a_file_or_a_folder_in_skills_listed_with_its_description(
     assert agents["chat"].skills == {} and agents["grader"].skills == {}
 
 
+async def test_skills_are_listed_in_their_own_section_after_the_files(tmp_path: Path) -> None:
+    run = await Engine(skills(tmp_path), models={"strong": Scripted(text_reply("Done."))}).run(
+        "reviewer", "acme", "clause 7"
+    )
+    assert isinstance(run, Generation)
+    assert (
+        "<<<SKILLS>>>\nskills/plain.md\nskills/redline/SKILL.md — How to write a redline\n"
+        "skills/risk.md — How to rate a risk\n\n<<<TOOLS>>>"
+    ) in run.system
+    assert run.system.index("<<<FILES>>>") < run.system.index("<<<SKILLS>>>")
+
+
+PRELOADING = (
+    "---\nname: reviewer\nkind: generation\nmodel: strong\ndescription: Reviews\npreload: true\n"
+    "---\nYou review contracts.\n"
+)
+
+
+async def test_a_skill_is_never_in_the_map_or_the_preload(tmp_path: Path) -> None:
+    root = skills(tmp_path, **{"reviewer/AGENT.md": PRELOADING})
+    engine = Engine(root, models={"strong": Scripted()})
+    spec = engine._spec("reviewer")
+    assert "playbook.md" in spec.listing
+    assert [line for line in spec.listing.splitlines() if "skills" in line] == []
+    sent = [part.text for part in spec.preload if isinstance(part, Text)]
+    assert "<<<rules/playbook.md>>>\nThe rules.\n" in sent
+    assert [text for text in sent if text.startswith("<<<skills/")] == []
+    tools = EngineTools(engine, agent="reviewer", scope="acme")
+    read = await tools.dispatch("Read", {"path": "skills/redline/examples.md"})
+    assert read == "An example.\n"
+
+
 def test_a_skill_named_twice_is_refused(tmp_path: Path) -> None:
     root = skills(tmp_path, **{"reviewer/skills/risk/SKILL.md": "Again.\n"})
-    message = (
-        "^tree: agent 'reviewer' has the skill 'risk' as both skills/risk.md and "
-        "skills/risk/SKILL.md; keep one$"
-    )
-    with pytest.raises(ConfigurationError, match=message):
+    with pytest.raises(ConfigurationError) as refused:
         Engine(root, models={})
+    assert str(refused.value) == (
+        f"tree: {(root / 'reviewer/skills').resolve()} has the skill 'risk' as both risk.md and "
+        "risk/SKILL.md; keep one"
+    )
 
 
 async def test_an_invoked_skill_rides_in_front_of_the_input(tmp_path: Path) -> None:
@@ -107,7 +140,7 @@ async def test_an_invoked_skill_rides_in_front_of_the_input(tmp_path: Path) -> N
     assert llm.calls[0][1] == [sent]
     assert isinstance(run, Generation) and run.skill == "redline" and run.input == "clause 7"
     assert run.messages == [sent] and run.conversation[0] == sent
-    assert "<<<SKILL" not in llm.calls[0][0]
+    assert SKILL.text not in llm.calls[0][0]
 
 
 @pytest.mark.parametrize(

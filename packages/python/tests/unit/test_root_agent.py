@@ -155,6 +155,10 @@ def test_the_root_agent_s_hidden_and_declaration_folders_are_never_agents(tmp_pa
         root / ".draft/AGENT.md",
         "---\nname: draft\nkind: generation\nmodel: strong\n---\nNot an agent.\n",
     )
+    write(
+        root / "skills/AGENT.md",
+        "---\nname: skilled\nkind: generation\nmodel: strong\n---\nNot an agent.\n",
+    )
     assert list(load_tree(root)) == ["billing", "desk", "old", "triage"]
 
 

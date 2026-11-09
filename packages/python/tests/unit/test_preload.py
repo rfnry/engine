@@ -82,11 +82,10 @@ def preloaded(support: Path) -> list[Part]:
         Document(media_type="application/pdf", name="rates.pdf", data=PDF),
         text("rules/chargebacks/disputed.md"),
         text("rules/refunds.md"),
-        text("skills/escalate.md"),
     ]
 
 
-async def test_preload_all_puts_every_rule_skill_and_knowledge_file_before_the_model_in_path_order(
+async def test_preload_all_puts_every_rule_and_knowledge_file_before_the_model_in_path_order(
     fixtures: Path, tmp_path: Path
 ) -> None:
     root = tree(fixtures, tmp_path)
@@ -212,14 +211,14 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
     assert system == (
         "<<<AGENT>>>\nYou are the support desk. Be brief, cite the rule you apply.\n\n"
         "<<<FILES>>>\nknowledge/\n  plans.md — The three plans\nrules/\n"
-        "  refunds.md — When a refund is owed\nskills/\n"
-        "  escalate.md — Hand a conversation to a person\n\n"
+        "  refunds.md — When a refund is owed\n\n"
+        "<<<SKILLS>>>\nskills/escalate.md — Hand a conversation to a person\n\n"
         "<<<TOOLS>>>\n"
-        "- Read: Read a text file by its path in the FILES map. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.\n"
+        "- Read: Read a text file by its path in the FILES map or SKILLS. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.\n"
         "- Grep: Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder of the FILES map; without it, your own folder is searched.\n"
         "- Glob: Find files by glob pattern, e.g. '**/*.md'. Paths are those of the FILES map.\n"
         "- LS: List a folder by its path in the FILES map; without a path, your own folder.\n"
-        "- Load: Load a file of the FILES map as it is, such as an image, a PDF or audio, so you see or hear it yourself.\n"
+        "- Load: Load a file of the FILES map or SKILLS as it is, such as an image, a PDF or audio, so you see or hear it yourself.\n"
         "- lookup_order: Fetch an order by id. Returns the order as JSON.\n"
         "- now: The current UTC time\n"
         "- Delegate: Hand an input to another agent and get its reply.\n\n"
@@ -227,7 +226,7 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
         "<<<CONTEXT>>>\nAcme is on the enterprise plan."
     )
     assert messages == [*history, Message(role="user", content="Charged twice.")]
-    assert tools_fingerprint(tools) == "eaff21b12c6a840e"
+    assert tools_fingerprint(tools) == "c8aa2b88727dc057"
     assert [t.name for t in tools] == [
         "Read",
         "Grep",
@@ -476,8 +475,8 @@ def test_the_preload_and_the_fingerprint_come_from_one_read_of_each_file(
     spec = engine(root, Scripted())._agents["support"]
     monkeypatch.undo()
     preloaded = ["knowledge/diagram.png", "knowledge/plans.md", "knowledge/rates.pdf"]
-    preloaded += ["rules/chargebacks/disputed.md", "rules/refunds.md", "skills/escalate.md"]
-    opens = {name: 1 + name.endswith(".md") + name.startswith("skills/") for name in preloaded}
+    preloaded += ["rules/chargebacks/disputed.md", "rules/refunds.md"]
+    opens = {name: 1 + name.endswith(".md") for name in preloaded}
     assert {name: opened.count(support / name) for name in preloaded} == opens
     assert spec.fingerprint == by_hand(support)
 
@@ -499,7 +498,6 @@ async def test_preload_all_sends_every_file_but_agent_md_and_the_declarations(
         "<<<knowledge/plans.md>>>",
         "<<<notes.txt>>>",
         "<<<rules/refunds.md>>>",
-        "<<<skills/escalate.md>>>",
     ]
 
 

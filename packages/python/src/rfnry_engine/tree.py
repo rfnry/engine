@@ -297,27 +297,6 @@ def _no_tasks(agent: Path) -> None:
     )
 
 
-def _skills(files: list[tuple[str, Path]], agent: str) -> dict[str, Skill]:
-    found: dict[str, Skill] = {}
-    for rel, path in files:
-        match rel.split("/"):
-            case ["skills", file] if file.endswith(".md"):
-                name = file.removesuffix(".md")
-            case ["skills", name, "SKILL.md"]:
-                pass
-            case _:
-                continue
-        if name.startswith(("_", ".")):
-            continue
-        if name in found:
-            raise ConfigurationError(
-                f"tree: agent {agent!r} has the skill {name!r} as both skills/{name}.md and skills/{name}/SKILL.md; keep one"
-            )
-        raw = _read(path)
-        found[name] = Skill(path=rel, description=description(raw, path) or "", body=body_of(raw))
-    return dict(sorted(found.items()))
-
-
 def _declared(folder: Path) -> list[Path]:
     try:
         with os.scandir(folder) as entries:
@@ -335,29 +314,32 @@ def _declared(folder: Path) -> list[Path]:
     return sorted(found)
 
 
-def _opens(path: Path) -> None:
-    try:
-        os.close(os.open(path, os.O_RDONLY))
-    except OSError as exc:
-        raise ConfigurationError(
-            f"tree: cannot read {path}: {exc.strerror or exc}; make it readable to the engine"
-        ) from exc
-
-
-def _readable_skills(agent: Path) -> None:
-    folder = agent / "skills"
+def _skills_in(folder: Path, holder: Path, shown: str) -> dict[str, Skill]:
     if folder.is_symlink() or not folder.is_dir():
-        return
-    for path in _declared(folder):
-        if path.name.startswith(("_", ".")):
+        return {}
+    found: dict[str, Skill] = {}
+    for entry in _declared(folder):
+        if entry.name.startswith(("_", ".")):
             continue
-        if path.suffix == ".md" and path.is_file():
-            if leads_out(path, agent) is None:
-                _opens(path)
-        elif path.is_dir() and not path.is_symlink() and not declares(path):
-            skill = path / "SKILL.md"
-            if skill in _declared(path) and skill.is_file() and leads_out(skill, agent) is None:
-                _opens(skill)
+        if entry.suffix == ".md" and entry.is_file():
+            name, rel, path = entry.stem, entry.name, entry
+        elif entry.is_dir() and not entry.is_symlink() and not declares(entry):
+            name, rel, path = entry.name, f"{entry.name}/SKILL.md", entry / "SKILL.md"
+            if path not in _declared(entry) or not path.is_file():
+                continue
+        else:
+            continue
+        if leads_out(path, holder) is not None:
+            continue
+        if name in found:
+            raise ConfigurationError(
+                f"tree: {folder} has the skill {name!r} as both {name}.md and {name}/SKILL.md; keep one"
+            )
+        raw = _read(path)
+        found[name] = Skill(
+            path=f"{shown}/{rel}", description=description(raw, path) or "", body=body_of(raw)
+        )
+    return dict(sorted(found.items()))
 
 
 def _question_files(directory: Path) -> list[Path]:
@@ -426,12 +408,12 @@ def _is_folder(entry: os.DirEntry[str]) -> bool:
         return False
 
 
-def _subfolders(folder: Path, quiet: bool = False) -> list[Path]:
+def _subfolders(folder: Path) -> list[Path]:
     try:
         with os.scandir(folder) as entries:
             return sorted(Path(entry.path) for entry in entries if _is_folder(entry))
     except OSError as exc:
-        if not quiet and unwarned(folder):
+        if unwarned(folder):
             logger.warning("tree: cannot read %s: %s; it is left out", folder, exc)
         return []
 
@@ -460,11 +442,11 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     found: dict[str, Path] = {}
     links: dict[str, Path] = {}
 
-    def walk(folder: Path, at: str, skills: bool = False, skill: bool = False) -> None:
+    def walk(folder: Path, at: str) -> None:
         holds = declares(folder)
         if _is_agent(folder, at):
             _no_tasks(folder)
-        for child in _subfolders(folder, quiet=(skills or skill) and not folder.is_symlink()):
+        for child in _subfolders(folder):
             if (
                 child.name.startswith(".")
                 or child.name == "__pycache__"
@@ -479,7 +461,7 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
                 if place.is_relative_to(top) or _loops(top, found, key, place):
                     continue
             found[key] = place
-            walk(child, key, skills=holds and child.name == "skills", skill=skills)
+            walk(child, key)
 
     walk(root, "")
     return found, links
@@ -671,8 +653,8 @@ def load_agent(
     questions, scripted = _questions(
         directory / "questions", tree_root or directory, script_folders
     )
-    if front.kind == "generation":
-        _readable_skills(directory.resolve())
+    root = directory.resolve()
+    skills = {} if front.kind == "decision" else _skills_in(root / "skills", root, "skills")
     if front.kind == "decision" and front.tools is not None:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot list tools:; tools are for generation agents, so give them to one it routes to"
@@ -693,7 +675,6 @@ def load_agent(
     declared = [posixpath.normpath(f"{prefix}/tools") for prefix in tool_folders]
     held = _reads(agent, front, directory, tree_root or directory, path, folders or {}, declared)
     reads = from_agent(path, held)
-    root = directory.resolve()
     sees = [] if front.kind == "decision" else [p for p in _on_path(path) if p in tool_folders]
     tools = _tool_places(tree_root or directory, tool_folders)
     above = [
@@ -749,7 +730,7 @@ def load_agent(
             entries(root, True, tools), {name: folder.mapped for name, folder in reads.items()}
         ),
         reads={name: folder.place for name, folder in held.items()},
-        skills={} if front.kind == "decision" else _skills(content(root, True), agent),
+        skills=skills,
         folder_tools=folder_tools,
     )
 
@@ -770,7 +751,8 @@ def load_tree(
         _own(root / path)
     for path in paths:
         if _agent_front(root / path)[0].kind == "generation":
-            _readable_skills((root / path).resolve())
+            place = (root / path).resolve()
+            _skills_in(place / "skills", place, "skills")
     project = project_of(root)
     prefixes = [
         prefix

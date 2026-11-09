@@ -82,8 +82,7 @@ def test_question_with_one_option_is_refused(tmp_path: Path) -> None:
 def test_an_agent_carries_the_map_of_its_folder() -> None:
     support = load_tree(FIXTURES)["support"]
     assert support.listing == (
-        "knowledge/\n  plans.md — The three plans\nrules/\n  refunds.md — When a refund is owed\n"
-        "skills/\n  escalate.md — Hand a conversation to a person"
+        "knowledge/\n  plans.md — The three plans\nrules/\n  refunds.md — When a refund is owed"
     )
 
 
@@ -720,7 +719,7 @@ def test_a_declared_file_that_cannot_be_read_is_refused_naming_it(
 
 
 @pytest.mark.parametrize("locked", ["a/skills/brief.md", "a/skills/deep/SKILL.md"])
-def test_an_unreadable_skill_is_refused_at_load_as_a_task_is(
+def test_an_unreadable_skill_is_refused_at_load(
     tmp_path: Path, locked: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     for rel, text in {
@@ -851,19 +850,19 @@ def test_a_link_under_skills_that_no_skill_is_loaded_from_is_never_read(
         target.chmod(0o755)
 
 
-def test_a_skills_folder_linked_out_of_the_agent_s_folder_is_never_read(tmp_path: Path) -> None:
+def test_a_skills_folder_linked_out_of_the_agent_s_folder_is_refused(tmp_path: Path) -> None:
     root, out = tmp_path / "root", tmp_path / "out"
-    (root / "a").mkdir(parents=True)
-    (root / "a/AGENT.md").write_text("---\nname: a\nkind: generation\nmodel: strong\n---\nbody\n")
+    a, target = root / "a", out.resolve()
+    a.mkdir(parents=True)
+    (a / "AGENT.md").write_text("---\nname: a\nkind: generation\nmodel: strong\n---\nbody\n")
     (out / "deep").mkdir(parents=True)
     (out / "deep" / "SKILL.md").write_text("---\ndescription: Out\n---\nout\n")
-    (root / "a/skills").symlink_to(out)
-    assert load_tree(root)["a"].skills == {}
-    (out / "deep").chmod(0)
-    try:
-        assert load_tree(root)["a"].skills == {}
-    finally:
-        (out / "deep").chmod(0o755)
+    (a / "skills").symlink_to(out)
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(root)
+    assert str(caught.value) == (
+        f"tree: {a}/skills links to {target}, outside the agent's folder; move the folder into the agent's folder, or link the agent's whole folder"
+    )
 
 
 SKILLED = "---\nname: a\nkind: generation\nmodel: strong\n---\nbody\n"
@@ -926,7 +925,7 @@ def test_a_folder_link_under_skills_is_never_entered_so_no_skill_is_read_through
         (agent / locked).chmod(0o755)
 
 
-def test_an_agent_inside_skills_is_not_a_skill_of_the_agent_above_it(tmp_path: Path) -> None:
+def test_an_agent_md_inside_skills_is_never_an_agent(tmp_path: Path) -> None:
     for rel, text in {
         "a/AGENT.md": SKILLED,
         "a/skills/brief.md": SKILL,
@@ -942,7 +941,7 @@ def test_an_agent_inside_skills_is_not_a_skill_of_the_agent_above_it(tmp_path: P
         agents = load_tree(tmp_path)
     finally:
         locked.chmod(0o644)
-    assert sorted(agents) == ["a", "sub"] and sorted(agents["a"].skills) == ["brief"]
+    assert sorted(agents) == ["a"] and sorted(agents["a"].skills) == ["brief"]
 
 
 class _Vanishing:

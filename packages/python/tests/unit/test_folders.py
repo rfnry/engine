@@ -100,11 +100,7 @@ def test_the_map_shows_every_folder_and_file_in_name_order_with_its_description(
         "empty/\n"
         "notes/\n"
         "  draft.md\n"
-        "  style.md — The house style\n"
-        "skills/\n"
-        "  pdf/\n"
-        "    SKILL.md — Fill and read PDFs\n"
-        "    reference.md — Field names"
+        "  style.md — The house style"
     )
 
 
@@ -144,12 +140,11 @@ def test_content_leaves_out_what_the_prompt_already_holds(tmp_path: Path) -> Non
         "docs/tools/hammer.md",
         "notes/draft.md",
         "notes/style.md",
-        "skills/pdf/SKILL.md",
-        "skills/pdf/reference.md",
     ]
     plain = [rel for rel, _ in content(root, False)]
     assert "AGENT.md" in plain
     assert "questions/q.json" in plain
+    assert "skills/pdf/SKILL.md" in plain and "skills/pdf/reference.md" in plain
 
 
 def test_a_file_named_like_a_declaration_folder_is_content(tmp_path: Path) -> None:
@@ -204,7 +199,7 @@ def test_a_folder_holding_an_agent_md_below_the_top_is_left_out_unless_inner(
     write(root / "notes/inner/AGENT.md", "---\nname: inner\nkind: generation\nmodel: strong\n---\n")
     write(root / "notes/inner/voice.md", "Warm.\n")
     assert "notes/inner/voice.md" not in [rel for rel, _ in content(root, False)]
-    assert "notes/\n  draft.md\n  style.md — The house style\n" in "\n".join(entries(root, True))
+    assert "notes/\n  draft.md\n  style.md — The house style" in "\n".join(entries(root, True))
     inner = [rel for rel, _ in content(root, False, inner=True)]
     assert "notes/inner/AGENT.md" in inner and "notes/inner/voice.md" in inner
 

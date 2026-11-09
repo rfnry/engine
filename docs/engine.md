@@ -305,10 +305,11 @@ agents: [triage]
 You are the support desk for Acme. Be brief, be exact, cite the rule you are applying.
 ```
 
-At the start of a run the model receives `AGENT.md`, a map of its folder, the list of tools it has,
-the descriptions of the agents it may call, and any context the caller passes. The map is generated
-when the tree loads: every folder and every file, under its path as the tools take it, and beside a
-file the `description:` of its frontmatter when it has one.
+At the start of a run the model receives `AGENT.md`, a map of its folder, the list of its
+[skills](#skills), the list of tools it has, the descriptions of the agents it may call, and any
+context the caller passes. The map is generated when the tree loads: every folder and every file,
+under its path as the tools take it, and beside a file the `description:` of its frontmatter when it
+has one.
 
 ```markdown
 ---
@@ -322,18 +323,15 @@ knowledge/
   rates.pdf
 rules/
   refunds.md — When a refund is owed, and what needs a person
-skills/
-  escalate.md
 ```
 
 A file without a description is listed by its name, which often says enough; a description is one
 line of what the file holds, so the model knows what to open without opening it. Other frontmatter
-keys are left alone, so a folder written for another tool — `skills/<name>/SKILL.md` with `name:`
-and `description:` — works as it is. `AGENT.md` and the folders `questions/` and `tools/` stay
-out of the map, since the prompt already holds them, and so do the folders of the agents inside
-its own, which it reaches through `agents:` — they stay readable to its tools, as its declarations
-do, and count in its fingerprint. Frontmatter that is not valid YAML — a key named twice included,
-as YAML forbids, in any file of the folder — or a `description:` that is not a string, is a
+keys are left alone. `AGENT.md` and the folders `questions/`, `skills/` and `tools/` stay out of
+the map, since the prompt already holds them, and so do the folders of the agents inside its own,
+which it reaches through `agents:` — they stay readable to its tools, as its declarations do, and
+count in its fingerprint. Frontmatter that is not valid YAML — a key named twice included, as YAML
+forbids, in any file of the map or any skill — or a `description:` that is not a string, is a
 `ConfigurationError` naming the file and what to change, and for YAML the line, when the tree loads,
 so a typo is caught before any run. Everything else the model reads when it needs it, with the
 `Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can read only inside its own directory and the
@@ -368,10 +366,11 @@ is no parser in between, and nothing is loaded until the model asks — unless t
 loads every folder that holds an `AGENT.md` as an agent, at any depth, in folders named and nested
 as you choose — `root` itself when it has one, `support/`, `desks/billing/triage/`. A folder without
 an `AGENT.md` is a group of agents, or a folder of knowledge the agents read; it is never run.
-Hidden folders, an agent's own `questions/`, which stays its declaration, and every `tools/` folder
-are never searched for agents. An agent inside another agent's folder is an agent
-like any other, which the outer one calls through `agents:`; the root, when it is an agent, is the
-outer agent of the whole tree. A tree with no `AGENT.md` anywhere is a `ConfigurationError`.
+Hidden folders, an agent's own `questions/` and `skills/`, which stay its declarations, and every
+`tools/` folder are never searched for agents, so an `AGENT.md` in them is no agent. An agent inside
+another agent's folder is an agent like any other, which the outer one calls through `agents:`; the
+root, when it is an agent, is the outer agent of the whole tree. A tree with no `AGENT.md` anywhere
+is a `ConfigurationError`.
 
 ```
 agents/
@@ -399,14 +398,16 @@ fingerprint of the folder without it. A file the agent is made of — its `AGENT
 skill's `skills/<name>.md` or `SKILL.md`, a question's `.json`, a tool's `.json` or `.py`, a helper
 or a question's script — is never left out: one it cannot read is a `ConfigurationError` naming it
 (`tree: cannot read <path>: Permission denied; make it readable to the engine`, or `tools/folder:`
-for a script or a tool's file), and any other file of a skill's folder is content. Nor is a folder
-that declares them left out: a `tools/`, `questions/`, `skills/` or `skills/<name>/`
-folder it cannot read or search is a `ConfigurationError` naming that folder, with no warning before
-it — a decision agent's `skills/` is content, left out with the warning. A skill is read from what
-the agent's own walk loads: a file under `skills/` counts, a link to a hidden folder inside the
-agent's included, unless it is a link out of the agent's folder, while a folder link under
-`skills/`, or a `skills/` that is itself a link, is never entered, so no skill is read through it
-and nothing behind it is checked. A file removed while the engine lists its folder —
+for a script or a tool's file), while any other file of a skill's folder that it cannot read is left
+out with the warning. Nor is a folder that declares them left out: a `tools/`, `questions/`,
+`skills/` or `skills/<name>/` folder it cannot read or search is a `ConfigurationError` naming that
+folder, with no warning before it — a decision agent has no skills, so its `skills/` is left out
+with the warning. A skill is read from the agent's `skills/` folder itself: a `<name>.md` in it, or
+the `SKILL.md` of a `<name>/` folder in it that holds no `AGENT.md`. A skill file that is a link
+counts when it leads to a file in the agent's folder, a hidden one included, and is never read when
+it leads out of it, while a folder link under `skills/`, or a `skills/` that is itself a link inside
+the agent's folder, is never entered, so no skill is read through it and nothing behind it is
+checked. A file removed while the engine lists its folder —
 an editor's swap file, an rsync temporary, a ConfigMap's `..data` swap — is left out as though it was
 never there; one that cannot be read for any other reason is refused as above. A file or folder whose
 name is not UTF-8 is a `ConfigurationError` naming it: `tree: the name of
@@ -417,8 +418,8 @@ which the fingerprint walks on its own for every agent that gets its tools, is a
 `ConfigurationError` (`tools/folder: <path> links to <target>, outside its folder; move the file
 into its folder, or link the agent's whole folder`, or `the whole tools/ folder` for the `tools/`
 folder of a folder without an `AGENT.md`), and so is a question's `.json`, `.py` or helper or an
-`AGENT.md` that is a link to a place outside the agent's folder, and an agent's own `tools/` or
-`questions/` folder that is a link to a folder outside the agent's (`tree: <path> links
+`AGENT.md` that is a link to a place outside the agent's folder, and an agent's own `tools/`,
+`questions/` or `skills/` folder that is a link to a folder outside the agent's (`tree: <path> links
 to <target>, outside the agent's folder; move the folder into the agent's folder, or link the
 agent's whole folder`) or to a hidden folder inside it, which the fingerprint leaves out as it
 leaves out every hidden name (`tree: <path> links to <target>, a hidden folder the agent's
@@ -471,9 +472,9 @@ that comes per run, in the input, the history or the workspace. An agent that re
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its `path`
 — its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the `agents` it
 may call, the folders it `reads`, the `tools` it gets from its folders, as its `tools:` narrows
-them, and its `skills`, [below](#skills). When the tree has loaded, the engine logs the names of its
-agents at INFO on the `rfnry_engine.engine` logger — `engine: agents loaded [lead, triage, writer]`
-— so a folder meant to be an agent that is not shows at start;
+them, and the `skills` it has, [below](#skills). When the tree has loaded, the engine logs the names
+of its agents at INFO on the `rfnry_engine.engine` logger — `engine: agents loaded [lead, triage,
+writer]` — so a folder meant to be an agent that is not shows at start;
 `logging.basicConfig(level=logging.INFO)` shows it.
 
 An agent that needs its whole folder on every run — a few house rules applied to thousands of
@@ -490,11 +491,13 @@ preload: true
 Tag the document. Every rule applies to every document.
 ```
 
-With `preload: true` the model also receives every other file of its folder — all but `AGENT.md`,
-`questions/`, `tools/` and the folders of the agents inside it, described or not — sorted
-by path character by character, each under its path: what `Read` would return for it, and for a file
-`Read` refuses — over 5 MB, or not text — the part `Load` would hand over. The map stays a map and
-the folder stays as it is; only when the files are read changes, so no turn goes to opening them.
+With `preload: true` the model also receives every file of its folder and of the folders it reads
+— all but `AGENT.md`, `skills/`, `tools/`, `questions/` and the folders of the agents inside it,
+described or not — sorted by path character by character, each under its path: what `Read` would
+return for it, and for a file `Read` refuses — over 5 MB, or not text — the part `Load` would hand
+over. Skills stay listed for the model to open the one that fits, never sent ahead. The map stays
+a map and the folder stays as it is; only when the files are read changes, so no turn goes to
+opening them.
 They travel as one user message ahead of the history, sent with every model call, and are read when
 the engine loads the tree, as the fingerprint is taken, so an edit shows in the next `Engine`.
 `run.preload` holds that message's parts; `run.messages` and `run.conversation` leave it out, so a
@@ -509,13 +512,23 @@ or not the type its name says — with `Load`'s own message.
 
 A skill is how to do something: `skills/<name>.md`, or `skills/<name>/SKILL.md` for one that keeps
 files of its own beside it, in a generation agent's own folder; a skill folder written for another
-tool works as it is, its other keys left alone. Skills are files in the map, with their
-descriptions, and the model opens one when it judges it fits, as it opens any file. A script a
-skill keeps is a file like any other, which the model reads; to run it, the agent needs a
-[workspace](#workspace) whose shell can reach the agent's folder — mount it read-only, outside the
-workspace, and say where in `AGENT.md`. A skill's body is read when the tree loads, so editing the
-file afterwards changes no prompt; build a new `Engine`. A person can also ask for one — `/skill
-escalate` in a chat — and the run is given it with `skill=`:
+tool — `skills/<name>/SKILL.md` with `name:` and `description:` — works as it is, its other keys
+left alone. The prompt lists the agent's skills in a section of their own, after the map: one line
+per skill, in name order, its path as `Read` takes it and its `description:` when it has one.
+
+```
+<<<SKILLS>>>
+skills/escalate.md — Hand a conversation to a person
+```
+
+The model opens a skill with `Read` when it judges it fits. The `skills/` folder stays out of the
+map and out of `preload: true`, so a skill is read only when it is wanted; a skill's other files
+are found through its `SKILL.md` and read by their paths under `skills/<name>/`, as any file is, and
+there is no tool of its own for skills. A script a skill keeps is a file like any other, which the
+model reads; to run it, the agent needs a [workspace](#workspace) whose shell can reach the agent's
+folder — mount it read-only, outside the workspace, and say where in `AGENT.md`. A skill's body is
+read when the tree loads, so editing the file afterwards changes no prompt; build a new `Engine`. A
+person can also ask for one — `/skill escalate` in a chat — and the run is given it with `skill=`:
 
 ```python
 run = await engine.run("support", scope="acme", input="A third complaint this week.", skill="escalate")
@@ -529,13 +542,14 @@ Delegated and routed runs never take the caller's skill. `run.skill` records it,
 generation row carries it, and a replay asks the candidate for it again, so the candidate's own
 skill file is the one read.
 
-`engine.agents[name].skills` maps each skill to its description, `""` when it has none: the menu a
-frontend can offer. Which of them a person may invoke is yours to decide — the same tree may serve
-people with different menus — and nothing is invoked unless you pass `skill=`. A skill the agent
-does not have is a `NotFoundError` before any model call, naming the ones it has —
-`engine: agent 'support' has no skill 'refund'; its skills are escalate` — and `skill=` on a
-decision agent is an `InputError`. When the tree loads, one skill as both `skills/x.md` and
-`skills/x/SKILL.md` is a `ConfigurationError`. Names that start with `_` or `.` are not skills.
+`engine.agents[name].skills` lists the skills the agent has, the ones the code may invoke with
+`skill=`, each to its description, `""` when it has none. Which of them a person may invoke is yours
+to decide — the same tree may serve people with different menus — and nothing is invoked unless you
+pass `skill=`. A skill the agent does not have is a `NotFoundError` before any model call, naming
+the ones it has — `engine: agent 'support' has no skill 'refund'; its skills are escalate` — and
+`skill=` on a decision agent is an `InputError`. When the tree loads, one skill as both
+`skills/x.md` and `skills/x/SKILL.md` is a `ConfigurationError`. Names that start with `_` or `.`
+are not skills.
 
 ### Running an agent
 
@@ -2177,13 +2191,13 @@ agents/
 ```
 
 A `tools/` folder on an agent's path from the root — the root's, a group folder's or the agent's
-own — is a declaration, as `questions/` is: it stays out of every map and preload,
-since the model sees its tools as tools, stays readable to the tools of the agent whose folder
-holds it, and counts in the fingerprint of every agent that sees it; a folder named `tools`
-anywhere else is content like any other. Two `tools/` folders on an agent's path may each hold a
-tool of one name: the agent gets the one nearer it, its own folder's before a group's and a group's
-before the root's, as a run's own `tools=` replace both. A decision agent has no tools, and a
-`tools/` folder on its path is not offered to it. A `.json` without its `.py`, or a `.py` without
+own — is a declaration, as an agent's own `questions/` and `skills/` are: it stays out of every map
+and preload, since the model sees its tools as tools, stays readable to the tools of the agent
+whose folder holds it, and counts in the fingerprint of every agent that sees it; a folder named
+`tools` anywhere else is content like any other. Two `tools/` folders on an agent's path may each
+hold a tool of one name: the agent gets the one nearer it, its own folder's before a group's and a
+group's before the root's, as a run's own `tools=` replace both. A decision agent has no tools, and
+a `tools/` folder on its path is not offered to it. A `.json` without its `.py`, or a `.py` without
 its `.json`, is a `ConfigurationError` naming the file; a file whose name starts with `_` or `.` is
 not a tool, and `_name.py` is a helper the scripts of its folder, and of every `tools/` folder
 below it, import. A helper named like a
@@ -2807,8 +2821,8 @@ Everything the package exports, by role.
 no `AGENT.md`, a link to a folder on the way to it or one holding it, one that would reach an agent
 twice, a tool's file that links out of its `tools/` folder, a file or folder whose name is not
 UTF-8, a file an agent is made of that cannot be read, a question's file or an `AGENT.md` that links
-out of the agent's folder, an agent's own `tools/` or `questions/` folder that links out of it, a
-`tasks/` folder in an agent's folder, whatever it holds (`tree: tasks are gone
+out of the agent's folder, an agent's own `tools/`, `questions/` or `skills/` folder that links out
+of it, a `tasks/` folder in an agent's folder, whatever it holds (`tree: tasks are gone
 (agents/support/tasks/triage.md); make it a skill, or say it in the input`), an `AGENT.md` without
 a `name:` or a `model:` in plain text,
 or whose `kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names
@@ -2816,15 +2830,16 @@ to adapters, a model no agent runs on, an agent whose model has not its kind's m
 with one name, an agent in `agents:` or `route:` the tree does not have, an unknown key in the
 frontmatter of an `AGENT.md` (`frontmatter: unknown key 'route.min_confidance' in
 agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a `description:` that is not a
-string in a file the map would show, a decision agent with `preload: true`, `workspace: true` or
-`tools:`, a generation agent with `questions/` or `route:`, a `tools:` with no list, a `tools:`
-entry that is blank, padded or listed twice, a `tools:` that names `Output` or a tool that comes
-with its own declaration, a `tools:` name a run does not offer, when the run starts, a tool's
-`.json` without its `.py` or a script without its `.json`, a tool's JSON with an unknown key, no
-description, an `input_schema` that is not an object or a schema that does not compile, a script or
-helper that is not valid Python, imports the engine, the server's own code, a module relatively or a
-sibling script or subfolder of its folder, or imports a helper inside a function, a helper named
-like a standard-library module, a tool named like one the engine gives the agent, a `workers=`
+string in a file the map would show or a skill, a decision agent with `preload: true`,
+`workspace: true` or `tools:`, a generation agent with `questions/` or `route:`, a `tools:` with no
+list, a `tools:` entry that is blank, padded or listed twice, a `tools:` that names `Output` or a
+tool that comes with its own declaration, a `tools:` name a run does not offer, when the run
+starts, a tool's `.json` without its `.py` or a script without its `.json`, a tool's JSON with an
+unknown key, no description, an `input_schema` that is not an object or a schema that does not
+compile, a script or helper that is not valid Python, imports the engine, the server's own code, a
+module relatively or a sibling script or subfolder of its folder, or imports a helper inside a
+function, a helper named like a standard-library module, a tool named like one the engine gives the
+agent, a `workers=`
 naming a folder that holds no agent or one inside another it names, a `reads:` that is not a path
 from the root, names no folder of the tree, a `tools/` folder on an agent's path or a folder inside
 one, leaves the root, names the agent's own folder, one that holds it or one inside it, or names two

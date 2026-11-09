@@ -30,6 +30,7 @@ def test_every_builtin_takes_the_paths_of_the_files_map() -> None:
     [load] = Tools([load_tool(SUPPORT)]).definitions()
     for text in [*described.values(), load["description"]]:
         assert "FILES map" in text
+    assert "SKILLS" in described["Read"] and "SKILLS" in load["description"]
 
 
 async def test_read_inside_and_outside() -> None:

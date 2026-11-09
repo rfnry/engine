@@ -25,11 +25,11 @@ def test_sections_in_order_with_missing_ones_skipped() -> None:
         agents=[agents["triage"]],
         context="Plan: Team",
     )
-    assert _labels(bundle) == ["AGENT", "FILES", "TOOLS", "AGENTS", "CONTEXT"]
+    assert _labels(bundle) == ["AGENT", "FILES", "SKILLS", "TOOLS", "AGENTS", "CONTEXT"]
     assert (
         "<<<FILES>>>\nknowledge/\n  plans.md — The three plans\nrules/\n"
-        "  refunds.md — When a refund is owed\nskills/\n"
-        "  escalate.md — Hand a conversation to a person\n\n<<<TOOLS>>>"
+        "  refunds.md — When a refund is owed\n\n<<<SKILLS>>>\n"
+        "skills/escalate.md — Hand a conversation to a person\n\n<<<TOOLS>>>"
     ) in bundle
     assert "- Read: Read a file" in bundle
     assert "- triage: Judges urgency and severity of a message" in bundle
