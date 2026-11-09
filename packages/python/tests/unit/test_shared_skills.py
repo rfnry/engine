@@ -13,6 +13,7 @@ from rfnry_engine.tree import load_tree
 from .fakes import Scripted, text_reply
 
 TONE = "---\ndescription: Root tone\n---\nKeep it warm.\n"
+DESK_BRIEF = "---\ndescription: Desk brief\n---\nBrief the desk.\n"
 RUN = 'print("plotted")\n'
 REFUSED = "a skills/ folder or a folder inside one; a skills/ folder gives its skills to the agents below it and is not read as content, so drop it from reads:"
 
@@ -31,7 +32,7 @@ def shared(root: Path, **more: str) -> Path:
     for rel, text in {
         "skills/tone.md": TONE,
         "skills/brief.md": "---\ndescription: Root brief\n---\nBe brief.\n",
-        "desks/skills/brief.md": "---\ndescription: Desk brief\n---\nBrief the desk.\n",
+        "desks/skills/brief.md": DESK_BRIEF,
         "desks/skills/plot/SKILL.md": "Plot it with run.py.\n",
         "desks/skills/plot/run.py": RUN,
         "desks/support/AGENT.md": agent_md("support"),
@@ -89,9 +90,71 @@ async def test_read_and_load_reach_a_skill_above_by_its_listed_path(tmp_path: Pa
     found = await tools.dispatch("Grep", {"pattern": "warm", "path": "../../skills"})
     assert found == "../../skills/tone.md"
     assert await tools.dispatch("LS", {"path": "../skills"}) == "brief.md\nplot/"
+    for path in ("../../outside.md", "../skills/../../outside.md"):
+        with pytest.raises(InputError) as caught:
+            await tools.dispatch("Read", {"path": path})
+        assert str(caught.value) == f"jail: path outside the agent directory: {path}"
+
+
+@pytest.mark.parametrize("linked", ["desks/support", "desks"], ids=["agent", "group"])
+async def test_a_skill_above_is_reached_by_its_listed_path_through_a_linked_folder(
+    tmp_path: Path, linked: str
+) -> None:
+    root = shared(
+        tmp_path / "root",
+        **{
+            "outside.md": "Not support's.\n",
+            "desks/skills/.secret.md": "Hidden.\n",
+            "desks/skills-old/x.md": "Old.\n",
+        },
+    )
+    write(tmp_path / "outside.md", "Not support's.\n")
+    write(tmp_path / "elsewhere/outside.md", "Not support's.\n")
+    away = tmp_path / "elsewhere" / Path(linked).name
+    (root / linked).rename(away)
+    (root / linked).symlink_to(away, target_is_directory=True)
+    engine = Engine(root, models={})
+    assert {name: skill.path for name, skill in engine._spec("support").skills.items()} == {
+        "brief": "../skills/brief.md",
+        "close": "skills/close.md",
+        "plot": "../skills/plot/SKILL.md",
+        "tone": "../../skills/tone.md",
+    }
+    tools = EngineTools(engine, agent="support", scope="acme")
+    assert await tools.dispatch("Read", {"path": "../../skills/tone.md"}) == TONE
+    assert await tools.dispatch("Read", {"path": "../skills/brief.md"}) == DESK_BRIEF
+    assert await tools.dispatch("Read", {"path": "../skills//brief.md"}) == DESK_BRIEF
+    assert await tools.dispatch("Read", {"path": "../skills/plot/run.py"}) == RUN
+    assert await tools.dispatch("Read", {"path": "skills/close.md"}) == "Close the ticket.\n"
+    for path, text in (("../../skills/tone.md", TONE), ("../skills/brief.md", DESK_BRIEF)):
+        loaded = await tools.dispatch("Load", {"path": path})
+        assert isinstance(loaded, list) and len(loaded) == 1
+        assert isinstance(loaded[0], Document) and loaded[0].data == text.encode()
+    found = await tools.dispatch("Grep", {"pattern": "warm", "path": "../../skills"})
+    assert found == "../../skills/tone.md"
+    found = await tools.dispatch("Grep", {"pattern": "the desk", "path": "../skills/brief.md"})
+    assert found == "../skills/brief.md"
+    assert await tools.dispatch("LS", {"path": "../skills"}) == "brief.md\nplot/"
+    assert await tools.dispatch("LS", {"path": "../../skills"}) == "brief.md\ntone.md"
+    for tool, args in (
+        ("Read", {"path": "../../outside.md"}),
+        ("Read", {"path": "../skills/../../outside.md"}),
+        ("Load", {"path": "../skills/../../outside.md"}),
+        ("Grep", {"pattern": "Not", "path": "../skills/../../outside.md"}),
+        ("LS", {"path": "../skills/../.."}),
+        ("Read", {"path": "../skills-old/x.md"}),
+    ):
+        with pytest.raises(InputError) as caught:
+            await tools.dispatch(tool, args)
+        assert str(caught.value) == f"jail: path outside the agent directory: {args['path']}"
     with pytest.raises(InputError) as caught:
-        await tools.dispatch("Read", {"path": "../../outside.md"})
-    assert str(caught.value) == "jail: path outside the agent directory: ../../outside.md"
+        await tools.dispatch("Read", {"path": "../skills/.secret.md"})
+    assert str(caught.value) == (
+        "tools/builtins: ../skills/.secret.md is hidden; names starting with . and __pycache__ are not part of the agent's folder"
+    )
+    with pytest.raises(InputError) as caught:
+        await tools.dispatch("Read", {"path": "../skills/brief.md/x"})
+    assert str(caught.value) == "tools/builtins: not a folder: ../skills/brief.md/x"
 
 
 def test_an_edit_to_a_skill_above_changes_the_fingerprint_of_exactly_the_agents_below_it(
@@ -116,6 +179,8 @@ def test_no_skills_folder_appears_in_any_map_or_preload(tmp_path: Path) -> None:
             "AGENT.md": agent_md("lead", extra="preload: true\n"),
             "desks/notes.md": "Desk notes.\n",
             "desks/support/guide.md": "The guide.\n",
+            "docs/skills/plain.md": "Plain content.\n",
+            "librarian/AGENT.md": agent_md("librarian", extra="reads: [docs]\npreload: true\n"),
             "reader/AGENT.md": agent_md("reader", extra="reads: [desks]\npreload: true\n"),
             "peer/AGENT.md": agent_md("peer", extra="reads: [desks/support]\npreload: true\n"),
         },
@@ -129,8 +194,10 @@ def test_no_skills_folder_appears_in_any_map_or_preload(tmp_path: Path) -> None:
     assert preloaded("reader") == ["<<<../desks/notes.md>>>"]
     assert agents["peer"].listing == "../desks/support/\n  guide.md"
     assert preloaded("peer") == ["<<<../desks/support/guide.md>>>"]
-    assert agents["lead"].listing == "desks/\n  notes.md"
-    assert preloaded("lead") == ["<<<desks/notes.md>>>"]
+    assert agents["librarian"].listing == "../docs/\n  skills/\n    plain.md"
+    assert preloaded("librarian") == ["<<<../docs/skills/plain.md>>>"]
+    assert agents["lead"].listing == "desks/\n  notes.md\ndocs/\n  skills/\n    plain.md"
+    assert preloaded("lead") == ["<<<desks/notes.md>>>", "<<<docs/skills/plain.md>>>"]
     assert sorted(agents["lead"].skills) == ["brief", "tone"]
 
 

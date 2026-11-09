@@ -338,6 +338,8 @@ so a typo is caught before any run. Everything else the model reads when it need
 folders it reads, and nothing the content fingerprint leaves out, which is every name starting with
 `.` and every `__pycache__`: such a path is an `InputError`
 (`tools/builtins: .env is hidden; names starting with . and __pycache__ are not part of the agent's folder`).
+A path that starts as the map or `SKILLS` spells a folder read or a `skills/` folder above the agent
+starts from that folder, so it holds when the agent's folder, or one above it, is a link.
 A path is judged where it leads, its links and `..` resolved, from the agent's folder or the read
 folder it lies in, as the fingerprint walks them. A file reads when the folder that holds it has no
 hidden name on its way there and its own name, as written, is not hidden: a visible link to a hidden
@@ -408,9 +410,10 @@ decision agent has no skills, so its `skills/` is left out with the warning. A s
 `AGENT.md`, or the `SKILL.md` of a `<name>/` folder in it that holds no `AGENT.md`. A skill file
 that is a link counts when it leads to a file in the agent's folder — for a `skills/` folder above
 it, in that `skills/` folder — a hidden one included, and is never read when it leads out of it,
-while a folder link under `skills/`, or a `skills/` that is itself a link, one inside the agent's
-folder or any above it, is never entered, so no skill is read through it and nothing behind it is
-checked. A file removed while the engine lists its folder —
+while no skill is read through a folder link under `skills/`, or a `skills/` that is itself a link,
+one inside the agent's folder or any above it. Nothing behind one in the agent's own is checked;
+behind one above it the walk for agents goes on, as through any folder link. A file removed while
+the engine lists its folder —
 an editor's swap file, an rsync temporary, a ConfigMap's `..data` swap — is left out as though it was
 never there; one that cannot be read for any other reason is refused as above. A file or folder whose
 name is not UTF-8 is a `ConfigurationError` naming it: `tree: the name of
@@ -551,12 +554,14 @@ skills/close.md — Close a ticket
 A `skills/` folder on an agent's path is a declaration, as the agent's own is: it stays out of every
 map and preload, a folder another agent reads included, and `reads:` cannot name it; `Read`, `Load`,
 `Grep`, `Glob` and `LS` reach its files under the path the list shows, `../skills/plot/run.py` for a
-file a skill keeps, and a workspace command at `$RFNRY_AGENT/../skills/plot/run.py`; and its files
-count in the fingerprint of every agent that has its skills. A decision agent has no skills, so a
-`skills/` folder above it gives it none and leaves its fingerprint alone. A `skills/` folder above
-that is a link is never entered and gives no skills, and a skill file in one that links out of it is
-never read. A folder named `skills` off every agent's path is content like any other, but never
-holds an agent.
+file a skill keeps, whether or not a folder on the way is a link, and a workspace command at
+`$RFNRY_TREE/desks/skills/plot/run.py`, or at `$RFNRY_AGENT/../skills/plot/run.py` when no folder on
+the agent's path is a link, since the shell follows a link before `..`; and its files count in the
+fingerprint of every agent that has its skills. A decision agent has no skills, so a `skills/`
+folder above it gives it none and leaves its fingerprint alone. A `skills/` folder above that is a
+link gives no skills: none is read through it, and it joins no fingerprint of the agents below it.
+A skill file in a `skills/` folder above that links out of that folder is never read. A folder named
+`skills` off every agent's path is content like any other, but never holds an agent.
 
 The model opens a skill with `Read` when it judges it fits. The `skills/` folder stays out of the
 map and out of `preload: true`, so a skill is read only when it is wanted; a skill's other files

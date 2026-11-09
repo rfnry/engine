@@ -4,7 +4,7 @@ import mimetypes
 import os
 import stat
 import time
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Mapping
 from fnmatch import fnmatch
 from itertools import islice
 from pathlib import Path
@@ -91,7 +91,7 @@ def _within(jail: Jail, path: Path) -> tuple[Path, Path] | None:
 
 
 def _hides(jail: Jail, path: str | Path) -> bool:
-    named = jail.root / path
+    named = jail._joined(path)
     place = _within(jail, named)
     if place is None:
         for above in named.parents:
@@ -111,7 +111,7 @@ def _hides(jail: Jail, path: str | Path) -> bool:
 def _through_folders(jail: Jail, path: str) -> str:
     parts = path.split("/")
     for n in range(1, len(parts)):
-        held = _within(jail, Path(jail.root, "/".join(parts[:n])))
+        held = _within(jail, jail._joined("/".join(parts[:n])))
         if held is not None and (held[0] / held[1]).is_file():
             raise InputError(f"tools/builtins: not a folder: {path}")
     return path
@@ -262,7 +262,7 @@ class _Directory:
         self.root = Path(root).resolve()
         self.workspace = workspace
         self.reads = {name: Path(folder).resolve() for name, folder in (reads or {}).items()}
-        self.jail = Jail(self.root, also=self.reads.values())
+        self.jail = Jail(self.root, reach=self.reads)
 
     def _shown(self, path: Path) -> str:
         for name, folder in self.reads.items():
@@ -482,9 +482,9 @@ def load_tool(
     folder: Path,
     workspace: Backend | None = None,
     media_types: Collection[str] | None = None,
-    reads: Iterable[Path] = (),
+    reads: Mapping[str, Path] | None = None,
 ) -> Tool:
-    jail = Jail(folder, also=reads)
+    jail = Jail(folder, reach=reads)
     missing = (
         'Load with where="workspace" loads from your workspace' if workspace is not None else ""
     )

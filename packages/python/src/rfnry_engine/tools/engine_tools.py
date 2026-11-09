@@ -79,10 +79,10 @@ class EngineTools(Tools):
         room = workspace if spec.workspace else None
         media_types = getattr(engine.models.get(spec.model), "media_types", None)
         backend = room.backend if room else None
-        reach = {**spec.reads, **spec.skill_folders}
+        reach = from_agent(spec.path, {**spec.reads, **spec.skill_folders})
         files = [
-            *builtins(spec.root, from_agent(spec.path, reach), backend),
-            load_tool(spec.root, backend, media_types, reach.values()),
+            *builtins(spec.root, reach, backend),
+            load_tool(spec.root, backend, media_types, reach),
         ]
         items: list[Tool | ToolsLike] = [tool for tool in files if picked(spec, tool.name)]
         if history is not None and start > 0:

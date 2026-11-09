@@ -472,7 +472,9 @@ def shelf(tmp_path: Path) -> Path:
 def reading(shelf: Path) -> Tools:
     books = (shelf / "books").resolve()
     coding = shelf / "coding"
-    return Tools([*builtins(coding, {"../books": books}), load_tool(coding, None, None, [books])])
+    return Tools(
+        [*builtins(coding, {"../books": books}), load_tool(coding, None, None, {"../books": books})]
+    )
 
 
 def test_the_jail_takes_more_places(shelf: Path) -> None:
@@ -943,7 +945,7 @@ async def test_a_file_link_into_another_folder_is_judged_by_the_file_it_leads_to
     (agent / "y.md").symlink_to(books / "y.md")
     (books / "z.md").symlink_to(agent / ".env")
     tools = Tools(builtins(agent, {"books": books}))
-    load = Tools([load_tool(agent, reads=[books])])
+    load = Tools([load_tool(agent, reads={"books": books})])
     for tool, name, args in [
         (tools, "Read", {"path": "x.md"}),
         (tools, "Read", {"path": str(agent / "x.md")}),
@@ -1000,7 +1002,7 @@ async def test_a_file_whose_own_name_is_hidden_is_refused_whatever_it_leads_to(
     (agent / "y.md").symlink_to(books / "y.md")
     (agent / "notes.md").symlink_to(".env")
     tools = Tools(builtins(agent, {"books": books}))
-    load = Tools([load_tool(agent, reads=[books])])
+    load = Tools([load_tool(agent, reads={"books": books})])
     for tool, name, args in [
         (tools, "Read", {"path": ".alias"}),
         (load, "Load", {"path": ".alias"}),
@@ -1134,7 +1136,7 @@ async def test_a_link_inside_a_hidden_folder_that_leads_outside_reports_hidden(
     (books / ".cache" / "out.md").symlink_to(elsewhere / "x.md")
     (agent / "outdir").symlink_to(elsewhere, target_is_directory=True)
     tools = Tools(builtins(agent, {"../books": books}))
-    load = Tools([load_tool(agent, reads=[books])])
+    load = Tools([load_tool(agent, reads={"../books": books})])
     for tool, name, args in [
         (tools, "Read", {"path": ".secret/out.md"}),
         (tools, "Read", {"path": str(agent / ".secret" / "out.md")}),

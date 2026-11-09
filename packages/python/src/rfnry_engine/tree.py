@@ -790,8 +790,7 @@ def load_tree(
         _own(root / path)
     for path in paths:
         if _agent_front(root / path)[0].kind == "generation":
-            place = (root / path).resolve()
-            _skills_in(place / "skills", place, "skills")
+            _skills_from(root, path, path)
     project = project_of(root)
     on_paths = list(dict.fromkeys(p for path in paths for p in _on_path(path)))
     prefixes = [prefix for prefix in on_paths if (root / prefix / "tools").is_dir()]

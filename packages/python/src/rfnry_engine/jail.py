@@ -2,7 +2,7 @@ import contextlib
 import errno
 import os
 import stat
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from rfnry_engine.errors import InputError
@@ -12,17 +12,28 @@ FOLDER = PLACE | os.O_NOFOLLOW
 
 
 class Jail:
-    def __init__(self, root: Path | str, *, also: Iterable[Path | str] = ()) -> None:
+    def __init__(
+        self,
+        root: Path | str,
+        *,
+        also: Iterable[Path | str] = (),
+        reach: Mapping[str, Path | str] | None = None,
+    ) -> None:
         self.root = Path(root).resolve()
-        self.also = [Path(place).resolve() for place in also]
+        self._reach = {name: Path(place).resolve() for name, place in (reach or {}).items()}
+        self.also = [*(Path(place).resolve() for place in also), *self._reach.values()]
         self._identities = {place: _identity(place) for place in (self.root, *self.also)}
 
+    def _joined(self, path: str | Path) -> Path:
+        written = str(path)
+        for name, place in self._reach.items():
+            if written == name or written.startswith(f"{name}/"):
+                return place / written[len(name) :].lstrip("/")
+        return self.root / path
+
     def resolve(self, path: str | Path) -> Path:
-        candidate = Path(path)
-        if not candidate.is_absolute():
-            candidate = self.root / candidate
         try:
-            target = candidate.resolve()
+            target = self._joined(path).resolve()
         except (ValueError, OSError) as exc:
             raise InputError(f"jail: path outside the agent directory: {path}") from exc
         if not any(target == place or place in target.parents for place in (self.root, *self.also)):
