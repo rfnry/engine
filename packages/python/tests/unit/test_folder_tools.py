@@ -802,9 +802,7 @@ def test_an_unknown_read_folder_is_offered_every_folder_but_the_tools_folders_on
     write(tmp_path / "desk/AGENT.md", agent_md("desk", extra="reads: ['../nowhere']\n"))
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
-    assert str(caught.value).endswith(
-        "one of: ., ../kb, ../kb/tools, ../support, ../support/billing"
-    )
+    assert str(caught.value).endswith("one of: ../kb, ../kb/tools, ../support, ../support/billing")
 
 
 @pytest.mark.parametrize("suffix", [".py", ".json"])

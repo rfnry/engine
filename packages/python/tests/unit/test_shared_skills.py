@@ -216,7 +216,7 @@ def test_reads_of_an_unknown_folder_offers_no_skills_folder(tmp_path: Path) -> N
     with pytest.raises(ConfigurationError) as caught:
         load_tree(root)
     assert str(caught.value) == (
-        "tree: agent 'b' reads unknown folder '../nowhere'; reads: names a folder by its path from the agent's folder, one of: ., ../billing, ../desks, ../desks/support, ../desks/triage"
+        "tree: agent 'b' reads unknown folder '../nowhere'; reads: names a folder by its path from the agent's folder, one of: ../billing, ../desks, ../desks/support, ../desks/triage"
     )
 
 

@@ -598,6 +598,10 @@ def _spelled(names: Collection[str], path: str) -> list[str]:
     return [one if one == "." or one.startswith("..") else f"./{one}" for one in shown]
 
 
+def _holds(folder: str, path: str) -> bool:
+    return path == folder or path.startswith(f"{folder}/")
+
+
 def _within(name: str, folders: Collection[str]) -> bool:
     return any(name == folder or name.startswith(f"{folder}/") for folder in folders)
 
@@ -616,43 +620,47 @@ def _reads(
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot declare reads:; a decision agent reads no files, so give it what it needs in its input or its questions"
         )
-    names = [_from_agent(agent, "reads", name, path) for name in front.reads]
-    said = dict(zip(names, front.reads, strict=True))
-    for name in names:
+    entries = [(_from_agent(agent, "reads", said, path), said) for said in front.reads]
+    names = [name for name, _ in entries]
+    for name, said in entries:
         if _within(name, tools):
             raise ConfigurationError(
-                f"tree: agent {agent!r} reads {said[name]!r}, a tools/ folder or a folder inside one; a tools/ folder gives its tools to the agents below it and is not read as content, so drop it from reads:"
+                f"tree: agent {agent!r} reads {said!r}, a tools/ folder or a folder inside one; a tools/ folder gives its tools to the agents below it and is not read as content, so drop it from reads:"
             )
-    for name in names:
+    for name, said in entries:
         if _within(name, skills):
             raise ConfigurationError(
-                f"tree: agent {agent!r} reads {said[name]!r}, a skills/ folder or a folder inside one; a skills/ folder gives its skills to the agents below it and is not read as content, so drop it from reads:"
+                f"tree: agent {agent!r} reads {said!r}, a skills/ folder or a folder inside one; a skills/ folder gives its skills to the agents below it and is not read as content, so drop it from reads:"
             )
-    for name in names:
+    for name, said in entries:
         if name != "." and name not in folders:
-            offered = (folder for folder in folders if not _within(folder, [*tools, *skills]))
+            offered = (
+                folder
+                for folder in folders
+                if not _within(folder, [*tools, *skills]) and not _holds(folder, path)
+            )
             choices = ", ".join(_spelled(sorted(offered), path)) or "none"
             raise ConfigurationError(
-                f"tree: agent {agent!r} reads unknown folder {said[name]!r}; reads: names a folder by its path from the agent's folder, one of: {choices}"
+                f"tree: agent {agent!r} reads unknown folder {said!r}; reads: names a folder by its path from the agent's folder, one of: {choices}"
             )
-    for name in names:
+    for name, said in entries:
         if name != "." and not folders[name].place.is_relative_to(root.resolve()):
             raise ConfigurationError(
-                f"tree: agent {agent!r} reads {said[name]!r}, which resolves outside the root to {folders[name].place}; reads: needs a folder resolved inside the root, so drop the link or move the folder in"
+                f"tree: agent {agent!r} reads {said!r}, which resolves outside the root to {folders[name].place}; reads: needs a folder resolved inside the root, so drop the link or move the folder in"
             )
-    for name in names:
+    for name, said in entries:
         if name == "." or path == name or path.startswith(f"{name}/"):
             raise ConfigurationError(
-                f"tree: agent {agent!r} reads {said[name]!r}, its own folder or one that holds it; reads: names other folders, so drop it"
+                f"tree: agent {agent!r} reads {said!r}, its own folder or one that holds it; reads: names other folders, so drop it"
             )
         if path == "." or name.startswith(f"{path}/"):
             raise ConfigurationError(
-                f"tree: agent {agent!r} reads {said[name]!r}, inside its own folder; its map holds that folder already, so drop it"
+                f"tree: agent {agent!r} reads {said!r}, inside its own folder; its map holds that folder already, so drop it"
             )
-    for one, other in combinations(names, 2):
+    for (one, one_said), (other, other_said) in combinations(entries, 2):
         if one == other or one.startswith(f"{other}/") or other.startswith(f"{one}/"):
             raise ConfigurationError(
-                f"tree: agent {agent!r} reads {said[one]!r} and {said[other]!r}, one inside the other; keep one"
+                f"tree: agent {agent!r} reads {one_said!r} and {other_said!r}, one inside the other; keep one"
             )
     if names and directory.resolve() != root.resolve() / path:
         raise ConfigurationError(

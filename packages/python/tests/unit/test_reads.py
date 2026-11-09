@@ -141,12 +141,38 @@ def test_a_read_above_the_root_of_the_tree_is_refused(tmp_path: Path, written: s
     )
 
 
+def test_a_deep_agent_reading_exactly_the_root_is_refused_as_holding_it(tmp_path: Path) -> None:
+    write(tmp_path / "a/b/AGENT.md", agent_md("deep", extra="reads: ['../..']\n"))
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        "tree: agent 'deep' reads '../..', its own folder or one that holds it; reads: names other folders, so drop it"
+    )
+
+
+def test_a_root_agent_reading_up_is_above_the_root(tmp_path: Path) -> None:
+    write(tmp_path / "AGENT.md", agent_md("top", extra="reads: ['..']\n"))
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        "tree: agent 'top' reads '..', above the root of the tree; a path in AGENT.md stays inside the tree"
+    )
+
+
+def test_two_spellings_of_one_folder_are_named_as_written(tmp_path: Path) -> None:
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(books(tmp_path, "['../shared', '../shared/']"))
+    assert str(caught.value) == (
+        "tree: agent 'coding' reads '../shared' and '../shared/', one inside the other; keep one"
+    )
+
+
 def test_reads_takes_folders_only(tmp_path: Path) -> None:
     write(tmp_path / "policy.md", "Policy.\n")
     with pytest.raises(ConfigurationError) as caught:
         load_tree(books(tmp_path, "['../policy.md']"))
     assert str(caught.value) == (
-        "tree: agent 'coding' reads unknown folder '../policy.md'; reads: names a folder by its path from the agent's folder, one of: ., ../shared, ../shared/books, ../shared/books/python"
+        "tree: agent 'coding' reads unknown folder '../policy.md'; reads: names a folder by its path from the agent's folder, one of: ../shared, ../shared/books, ../shared/books/python"
     )
 
 
@@ -162,7 +188,7 @@ def test_a_read_unknown_folder_is_named_as_written_and_offered_from_the_agent_s_
     tmp_path: Path,
 ) -> None:
     with pytest.raises(
-        ConfigurationError, match=r"unknown folder '../shared/films'.*one of: \., \.\./shared"
+        ConfigurationError, match=r"unknown folder '../shared/films'.*one of: \.\./shared"
     ):
         load_tree(books(tmp_path, "['../shared/films']"))
 
