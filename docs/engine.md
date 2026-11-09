@@ -338,8 +338,8 @@ so a typo is caught before any run. Everything else the model reads when it need
 folders it reads, and nothing the content fingerprint leaves out, which is every name starting with
 `.` and every `__pycache__`: such a path is an `InputError`
 (`tools/builtins: .env is hidden; names starting with . and __pycache__ are not part of the agent's folder`).
-A path that starts as the map or `SKILLS` spells a folder read or a `skills/` folder above the agent
-starts from that folder, so it holds when the agent's folder, or one above it, is a link.
+A path that starts as `SKILLS` spells a `skills/` folder above the agent starts from that folder, so
+it holds when the agent's folder, or one above it, is a link.
 A path is judged where it leads, its links and `..` resolved, from the agent's folder or the read
 folder it lies in, as the fingerprint walks them. A file reads when the folder that holds it has no
 hidden name on its way there and its own name, as written, is not hidden: a visible link to a hidden
