@@ -422,7 +422,7 @@ async def test_an_edit_to_a_read_folder_changes_the_fingerprint_of_every_agent_r
 ) -> None:
     for name in ("coding", "writing", "other"):
         (tmp_path / name).mkdir()
-        front = "reads: [books]\n" if name != "other" else ""
+        front = "reads: ['../books']\n" if name != "other" else ""
         (tmp_path / name / "AGENT.md").write_text(
             f"---\nname: {name}\nkind: generation\nmodel: strong\n{front}---\nHi\n"
         )

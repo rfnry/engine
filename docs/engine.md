@@ -447,8 +447,8 @@ of its root by naming them in `reads:` — folders without an `AGENT.md`, or oth
 
 ```
 my_agents/
-  coding/AGENT.md       reads: [books]
-  writing/AGENT.md      reads: [books]
+  coding/AGENT.md       reads: ['../books']
+  writing/AGENT.md      reads: ['../books']
   books/                no AGENT.md: read by both, never run
 ```
 
@@ -458,7 +458,7 @@ name: coding
 kind: generation
 model: strong
 description: Writes and reviews code
-reads: [books]
+reads: ['../books']
 ---
 You write code. The books hold the house's conventions.
 ```
@@ -471,12 +471,13 @@ Another agent's folder shows in the map without its `AGENT.md` and declarations,
 readable, and a folder read shows without the agents inside it or the `skills/` and `tools/` folders
 on their paths, as an agent's own map does. `preload: true` sends the folders it reads too, under
 the same paths, and an edit to one changes the fingerprint of every agent that reads it. `reads:`
-names a folder by its path from the root, another agent's or not — `books`, or `shared/books` for a
-folder deeper in the tree — written with `/` and a trailing `/` allowed; the map and the tools spell
-it from the agent's own folder, `../books/` for an agent directly under the root and
-`../shared/books/` for the deeper one. Each of these is a `ConfigurationError` when the tree loads:
-a path that starts with `./`, `/` or `..`, holds `\`, an empty segment or a hidden one; a folder the
-tree does not have; a [`tools/`](#tools) or [`skills/`](#skills) folder on an agent's path, or a
+names a folder by its path from the agent's own folder, another agent's or not, written with `/` and
+a trailing `/` allowed and quoted in the list: `'../books'` for an agent directly under the root,
+`'../../shared/books'` for one two folders deep. It is the spelling the map and the tools show, and
+the one every path in `AGENT.md` takes. `reads:` names folders only, never a file. Each of these is
+a `ConfigurationError` when the tree loads: a path that does not start with `./` or `../`, or that
+holds `\`, an empty segment, a hidden folder or a `..` after a name; a path above the root of the
+tree; a folder the tree does not have; a [`tools/`](#tools) or [`skills/`](#skills) folder on an agent's path, or a
 folder inside one, which gives its tools or skills and is not read as content; a link that leaves
 the root; the agent's own folder or one that holds it; a folder inside the agent's own, which its
 map holds already, so every `reads:` of a root agent; two folders one inside the other; `reads:` on
@@ -2495,8 +2496,8 @@ pipes wait for that loop: they close when it runs again. Close the engine before
 Python warns of the worker pipes left on the closed loop (`ResourceWarning`).
 
 By default every agent of the tree shares one worker. `Engine(root, models=...,
-workers={"customer_support": 1, "reports": 4})` makes each folder named — by its path from the root,
-as `reads:` spells it — a group of its own, for every agent inside it at any depth, with that many
+workers={"customer_support": 1, "reports": 4})` makes each folder named — by its path from the root, such as
+`customer_support` — a group of its own, for every agent inside it at any depth, with that many
 processes, and a call goes to the group's process with the fewest calls in flight; the agents
 outside the named folders share the default group, one process. A name that is not a folder holding
 an agent, at any depth below it or itself, or a folder inside another one named, is a
@@ -2966,7 +2967,7 @@ not compile, a script or helper that is not valid Python, imports the engine, th
 a module relatively or a sibling script or subfolder of its folder, or imports a helper inside a
 function, a helper named like a standard-library module, a tool named like one the engine gives the
 agent, a `workers=` naming a folder that holds no agent or one inside another it names, a `reads:`
-that is not a path from the root, names no folder of the tree, a `tools/` or `skills/` folder on an
+that is not a path from the agent's folder or goes above the root, names no folder of the tree, a `tools/` or `skills/` folder on an
 agent's path or a folder inside one, leaves the root, names the agent's own folder, one that holds
 it or one inside it, or names two folders one inside the other, `reads:` on a decision agent or on
 an agent whose folder is a link to a folder elsewhere, one skill as both `skills/x.md` and

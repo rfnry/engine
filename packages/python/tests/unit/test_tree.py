@@ -201,10 +201,8 @@ def test_an_unknown_frontmatter_key_is_refused_by_name(
 def test_only_true_and_false_are_booleans_in_frontmatter(tmp_path: Path) -> None:
     _agent(tmp_path, "a", "kind: generation\nmodel: strong\nworkspace: true\n")
     assert load_agent(tmp_path / "a").workspace is True
-    _agent(tmp_path, "b", "kind: generation\nmodel: strong\nreads: [yes, on]\n")
-    (tmp_path / "yes").mkdir()
-    (tmp_path / "on").mkdir()
-    assert list(load_tree(tmp_path)["b"].reads) == ["yes", "on"]
+    _agent(tmp_path, "b", "kind: generation\nmodel: strong\ndescription: yes\n")
+    assert load_agent(tmp_path / "b").description == "yes"
 
 
 def test_an_unknown_key_in_a_question_is_refused_by_name(tmp_path: Path) -> None:
@@ -430,7 +428,7 @@ def test_a_tasks_folder_that_cannot_be_read_is_refused_naming_it(
 
 
 def test_a_tasks_folder_outside_any_agent_is_content(tmp_path: Path) -> None:
-    _agent(tmp_path, "support", "kind: generation\nmodel: strong\nreads: [shared]\n")
+    _agent(tmp_path, "support", "kind: generation\nmodel: strong\nreads: ['../shared']\n")
     (tmp_path / "shared" / "tasks").mkdir(parents=True)
     (tmp_path / "shared" / "tasks" / "x.md").write_text("Do it.\n")
     (tmp_path / "tools" / "kit" / "tasks").mkdir(parents=True)
@@ -442,7 +440,7 @@ def test_a_tasks_folder_outside_any_agent_is_content(tmp_path: Path) -> None:
     assert listing[listing.index("../shared/") :] == ["../shared/", "  tasks/", "    x.md"]
 
 
-def _shelf(root: Path, coding: str = "reads: [books, writing]\n") -> Path:
+def _shelf(root: Path, coding: str = "reads: ['../books', '../writing']\n") -> Path:
     _agent(root, "coding", f"kind: generation\nmodel: strong\n{coding}")
     _agent(
         root,
@@ -472,27 +470,27 @@ def test_an_agent_reads_the_folders_it_names(tmp_path: Path) -> None:
     ("front", "message"),
     [
         (
-            "kind: generation\nmodel: strong\nreads: [ghost]\n",
-            "agent 'coding' reads unknown folder 'ghost'",
+            "kind: generation\nmodel: strong\nreads: ['../ghost']\n",
+            "agent 'coding' reads unknown folder '../ghost'",
         ),
         (
-            "kind: generation\nmodel: strong\nreads: [coding]\n",
-            "agent 'coding' reads 'coding', its own folder or one that holds it",
+            "kind: generation\nmodel: strong\nreads: ['.']\n",
+            "agent 'coding' reads '.', its own folder or one that holds it",
         ),
         (
-            "kind: generation\nmodel: strong\nreads: [.hidden]\n",
-            "agent 'coding' reads '.hidden', which is not a path from the root",
+            "kind: generation\nmodel: strong\nreads: ['./.hidden']\n",
+            "agent 'coding' reads './.hidden', which is not a path from its folder",
         ),
         (
-            "kind: generation\nmodel: strong\nreads: [outside]\n",
-            "agent 'coding' reads 'outside', which resolves outside the root to .*/elsewhere",
+            "kind: generation\nmodel: strong\nreads: ['../outside']\n",
+            "agent 'coding' reads '../outside', which resolves outside the root to .*/elsewhere",
         ),
         (
-            "kind: generation\nmodel: strong\nreads: [alias]\n",
-            "agent 'coding' reads unknown folder 'alias'",
+            "kind: generation\nmodel: strong\nreads: ['../alias']\n",
+            "agent 'coding' reads unknown folder '../alias'",
         ),
         (
-            "kind: decision\nmodel: judge\nreads: [books]\n",
+            "kind: decision\nmodel: judge\nreads: ['../books']\n",
             "decision agent 'coding' cannot declare reads:",
         ),
     ],
@@ -515,20 +513,20 @@ def test_reads_names_a_readable_folder_of_the_root(
     ("front", "message"),
     [
         (
-            "kind: decision\nmodel: judge\nreads: [ghost]\n",
+            "kind: decision\nmodel: judge\nreads: ['../ghost']\n",
             "decision agent 'coding' cannot declare reads:",
         ),
         (
-            "kind: generation\nmodel: strong\nreads: [coding, ghost]\n",
-            "agent 'coding' reads unknown folder 'ghost'",
+            "kind: generation\nmodel: strong\nreads: ['.', '../ghost']\n",
+            "agent 'coding' reads unknown folder '../ghost'",
         ),
         (
-            "kind: generation\nmodel: strong\nreads: [outside, coding]\n",
-            "agent 'coding' reads 'outside', which resolves outside the root to .*/elsewhere",
+            "kind: generation\nmodel: strong\nreads: ['../outside', '.']\n",
+            "agent 'coding' reads '../outside', which resolves outside the root to .*/elsewhere",
         ),
         (
-            "kind: generation\nmodel: strong\nreads: [books, books/python, coding]\n",
-            "agent 'coding' reads 'coding', its own folder or one that holds it",
+            "kind: generation\nmodel: strong\nreads: ['../books', '../books/python', '.']\n",
+            "agent 'coding' reads '.', its own folder or one that holds it",
         ),
     ],
 )
@@ -545,10 +543,10 @@ def test_reads_that_breaks_two_rules_is_refused_for_the_rule_checked_first(
 
 
 def test_a_single_agent_root_reads_nothing(tmp_path: Path) -> None:
-    _agent(tmp_path, "solo", "kind: generation\nmodel: strong\nreads: [books]\n")
+    _agent(tmp_path, "solo", "kind: generation\nmodel: strong\nreads: ['./books']\n")
     (tmp_path / "solo" / "books").mkdir()
     with pytest.raises(
-        ConfigurationError, match="agent 'solo' reads 'books', inside its own folder"
+        ConfigurationError, match="agent 'solo' reads './books', inside its own folder"
     ):
         load_tree(tmp_path / "solo")
 
@@ -561,7 +559,7 @@ def test_reads_needs_the_agent_s_folder_inside_the_root_not_a_link_to_elsewhere(
     _agent(
         tmp_path / "elsewhere",
         "coding",
-        "kind: generation\nmodel: strong\nreads: [books]\n",
+        "kind: generation\nmodel: strong\nreads: ['../books']\n",
     )
     (root / "coding").symlink_to(tmp_path / "elsewhere" / "coding", target_is_directory=True)
     message = r"^tree: agent 'coding' declares reads: but its folder is a link to "
@@ -577,7 +575,7 @@ def test_an_unreadable_folder_is_warned_about_once_per_loaded_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     _agent(tmp_path, "a", "kind: generation\nmodel: strong\npreload: true\n")
-    _agent(tmp_path, "b", "kind: generation\nmodel: strong\nreads: [a/kb]\n")
+    _agent(tmp_path, "b", "kind: generation\nmodel: strong\nreads: ['../a/kb']\n")
     for name in ("a/kb/locked/x.md", "a/notes/locked/y.md", "a/kb/z.md"):
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_text("x\n")
@@ -635,7 +633,7 @@ def test_an_unreadable_file_is_warned_about_once_per_loaded_tree_and_left_out(
 ) -> None:
     for root in (tmp_path / "with", tmp_path / "without"):
         _agent(root, "a", "kind: generation\nmodel: strong\npreload: true\n")
-        _agent(root, "b", "kind: generation\nmodel: strong\nreads: [a/kb]\n")
+        _agent(root, "b", "kind: generation\nmodel: strong\nreads: ['../a/kb']\n")
         (root / "a/kb").mkdir()
         (root / "a/kb/open.md").write_text("---\ndescription: Open\n---\nx\n")
     locked = (tmp_path / "with/a/kb/notes.md").resolve()

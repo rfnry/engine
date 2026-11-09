@@ -107,7 +107,7 @@ async def test_the_shell_description_names_the_folder_and_what_the_agent_reads(
     tree = make_tree(
         tmp_path,
         {
-            "coder": "name: coder\nkind: generation\nmodel: strong\ndescription: Writes and runs code\nworkspace: true\nreads: [books]"
+            "coder": "name: coder\nkind: generation\nmodel: strong\ndescription: Writes and runs code\nworkspace: true\nreads: ['../books']"
         },
     )
     (tree / "books").mkdir()

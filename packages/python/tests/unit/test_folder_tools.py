@@ -749,7 +749,9 @@ def test_a_read_folder_s_tools_leave_the_reader_s_map_and_preload(tmp_path: Path
     write(tmp_path / "support/guide.md", "---\ndescription: Answer fast\n---\nAnswer fast.\n")
     tool(tmp_path / "support/tools", "lookup_order", body="BODY = 'looks up'\n" + RUN)
     write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
-    write(tmp_path / "desk/AGENT.md", agent_md("desk", extra="reads: [support]\npreload: true\n"))
+    write(
+        tmp_path / "desk/AGENT.md", agent_md("desk", extra="reads: ['../support']\npreload: true\n")
+    )
     desk = load_tree(tmp_path)["desk"]
     assert desk.listing == "../support/\n  guide.md — Answer fast"
     sent = "".join(part.text for part in desk.preload if isinstance(part, Text))
@@ -767,11 +769,11 @@ def test_a_tools_folder_on_an_agent_s_path_cannot_be_named_in_reads(
     write(tmp_path / "support/tools/data/codes.json", "[]\n")
     write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
     tool(tmp_path / "support/billing/tools", "refund")
-    write(tmp_path / "desk/AGENT.md", agent_md("desk", extra=f"reads: [{name}]\n"))
+    write(tmp_path / "desk/AGENT.md", agent_md("desk", extra=f"reads: ['../{name}']\n"))
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
     assert str(caught.value) == (
-        f"tree: agent 'desk' reads {name!r}, a tools/ folder or a folder inside one; a tools/ folder gives its tools to the agents below it and is not read as content, so drop it from reads:"
+        f"tree: agent 'desk' reads '../{name}', a tools/ folder or a folder inside one; a tools/ folder gives its tools to the agents below it and is not read as content, so drop it from reads:"
     )
 
 
@@ -780,7 +782,9 @@ def test_a_tools_folder_off_every_agent_s_path_can_be_read_as_content(tmp_path: 
     write(tmp_path / "kb/tools/lookup.json", DEF)
     write(tmp_path / "a/AGENT.md", agent_md("a"))
     write(tmp_path / "a/docs/tools/notes.md", "---\ndescription: Notes\n---\nBe brief.\n")
-    write(tmp_path / "b/AGENT.md", agent_md("b", extra="reads: [kb/tools, a/docs/tools]\n"))
+    write(
+        tmp_path / "b/AGENT.md", agent_md("b", extra="reads: ['../kb/tools', '../a/docs/tools']\n")
+    )
     b = load_tree(tmp_path)["b"]
     assert b.listing == (
         "../kb/tools/\n  codes.md — Codes\n  lookup.json\n../a/docs/tools/\n  notes.md — Notes"
@@ -795,10 +799,12 @@ def test_an_unknown_read_folder_is_offered_every_folder_but_the_tools_folders_on
     tool(tmp_path / "support/tools", "lookup_order")
     write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
     write(tmp_path / "kb/tools/codes.md", "A-1 is open.\n")
-    write(tmp_path / "desk/AGENT.md", agent_md("desk", extra="reads: [nowhere]\n"))
+    write(tmp_path / "desk/AGENT.md", agent_md("desk", extra="reads: ['../nowhere']\n"))
     with pytest.raises(ConfigurationError) as caught:
         load_tree(tmp_path)
-    assert str(caught.value).endswith("one of: desk, kb, kb/tools, support, support/billing")
+    assert str(caught.value).endswith(
+        "one of: ., ../kb, ../kb/tools, ../support, ../support/billing"
+    )
 
 
 @pytest.mark.parametrize("suffix", [".py", ".json"])

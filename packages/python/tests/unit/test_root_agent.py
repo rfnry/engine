@@ -31,7 +31,7 @@ def orchestra(root: Path, front: str = "agents: [billing, triage]\n") -> Path:
     )
     write(
         root / "billing/AGENT.md",
-        "---\nname: billing\nkind: generation\nmodel: strong\ndescription: Bills\nreads: [policies]\n---\nYou bill.\n",
+        "---\nname: billing\nkind: generation\nmodel: strong\ndescription: Bills\nreads: ['../policies']\n---\nYou bill.\n",
     )
     write(root / "billing/rates.md", "---\ndescription: Rates\n---\n$1.\n")
     write(

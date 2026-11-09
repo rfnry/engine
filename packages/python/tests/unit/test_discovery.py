@@ -157,7 +157,7 @@ async def test_a_link_inside_the_tree_to_a_folder_without_agents_is_ignored(
 ) -> None:
     team(tmp_path)
     write(tmp_path / "shared/books/a.md", "A.\n")
-    write(tmp_path / "coder/AGENT.md", agent_md("coder", extra="reads: [shared/books]\n"))
+    write(tmp_path / "coder/AGENT.md", agent_md("coder", extra="reads: ['../shared/books']\n"))
     (tmp_path / "desks/books").symlink_to(tmp_path / "shared/books", target_is_directory=True)
     folders, _ = _tree_folders(tmp_path)
     assert "desks/books" not in folders
@@ -207,7 +207,9 @@ def test_a_folder_reached_by_two_links_out_of_the_tree_without_agents_is_read_tw
 
 def test_a_read_folder_two_levels_away_is_spelled_from_the_agent(tmp_path: Path) -> None:
     write(tmp_path / "shared/books/a.md", "A.\n")
-    write(tmp_path / "team/coder/AGENT.md", agent_md("coder", extra="reads: [shared/books]\n"))
+    write(
+        tmp_path / "team/coder/AGENT.md", agent_md("coder", extra="reads: ['../../shared/books']\n")
+    )
     assert "../../shared/books/\n  a.md" in load_tree(tmp_path)["coder"].listing
 
 
@@ -215,7 +217,9 @@ async def test_a_glob_of_a_read_folder_two_levels_away_is_spelled_from_the_agent
     tmp_path: Path,
 ) -> None:
     write(tmp_path / "shared/books/a.md", "A.\n")
-    write(tmp_path / "team/coder/AGENT.md", agent_md("coder", extra="reads: [shared/books]\n"))
+    write(
+        tmp_path / "team/coder/AGENT.md", agent_md("coder", extra="reads: ['../../shared/books']\n")
+    )
     surface = EngineTools(Engine(tmp_path, models={}), agent="coder", scope="acme")
     found = await surface.dispatch("Glob", {"pattern": "../../shared/books/*.md"})
     assert found == "../../shared/books/a.md"
@@ -224,7 +228,7 @@ async def test_a_glob_of_a_read_folder_two_levels_away_is_spelled_from_the_agent
 def test_a_group_of_agents_named_in_reads_shows_without_its_agents(tmp_path: Path) -> None:
     write(tmp_path / "team/notes.md", "Notes.\n")
     write(tmp_path / "team/writer/AGENT.md", agent_md("writer"))
-    write(tmp_path / "lead/AGENT.md", agent_md("lead", extra="reads: [team]\n"))
+    write(tmp_path / "lead/AGENT.md", agent_md("lead", extra="reads: ['../team']\n"))
     assert load_tree(tmp_path)["lead"].listing.splitlines() == ["../team/", "  notes.md"]
 
 

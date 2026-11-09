@@ -180,9 +180,11 @@ def test_no_skills_folder_appears_in_any_map_or_preload(tmp_path: Path) -> None:
             "desks/notes.md": "Desk notes.\n",
             "desks/support/guide.md": "The guide.\n",
             "docs/skills/plain.md": "Plain content.\n",
-            "librarian/AGENT.md": agent_md("librarian", extra="reads: [docs]\npreload: true\n"),
-            "reader/AGENT.md": agent_md("reader", extra="reads: [desks]\npreload: true\n"),
-            "peer/AGENT.md": agent_md("peer", extra="reads: [desks/support]\npreload: true\n"),
+            "librarian/AGENT.md": agent_md(
+                "librarian", extra="reads: ['../docs']\npreload: true\n"
+            ),
+            "reader/AGENT.md": agent_md("reader", extra="reads: ['../desks']\npreload: true\n"),
+            "peer/AGENT.md": agent_md("peer", extra="reads: ['../desks/support']\npreload: true\n"),
         },
     )
     agents = load_tree(root)
@@ -203,18 +205,18 @@ def test_no_skills_folder_appears_in_any_map_or_preload(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("named", ["desks/skills", "desks/skills/plot", "skills"])
 def test_reads_of_a_skills_folder_is_refused(tmp_path: Path, named: str) -> None:
-    root = shared(tmp_path, **{"b/AGENT.md": agent_md("b", extra=f"reads: [{named}]\n")})
+    root = shared(tmp_path, **{"b/AGENT.md": agent_md("b", extra=f"reads: ['../{named}']\n")})
     with pytest.raises(ConfigurationError) as caught:
         load_tree(root)
-    assert str(caught.value) == f"tree: agent 'b' reads {named!r}, {REFUSED}"
+    assert str(caught.value) == f"tree: agent 'b' reads '../{named}', {REFUSED}"
 
 
 def test_reads_of_an_unknown_folder_offers_no_skills_folder(tmp_path: Path) -> None:
-    root = shared(tmp_path, **{"b/AGENT.md": agent_md("b", extra="reads: [nowhere]\n")})
+    root = shared(tmp_path, **{"b/AGENT.md": agent_md("b", extra="reads: ['../nowhere']\n")})
     with pytest.raises(ConfigurationError) as caught:
         load_tree(root)
     assert str(caught.value) == (
-        "tree: agent 'b' reads unknown folder 'nowhere'; reads: names a folder by its path from the root, one of: b, billing, desks, desks/support, desks/triage"
+        "tree: agent 'b' reads unknown folder '../nowhere'; reads: names a folder by its path from the agent's folder, one of: ., ../billing, ../desks, ../desks/support, ../desks/triage"
     )
 
 

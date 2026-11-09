@@ -52,7 +52,7 @@ def skills(tmp_path: Path, **more: str) -> Path:
         tmp_path,
         {
             "reviewer/AGENT.md": (
-                "---\nname: reviewer\nkind: generation\nmodel: strong\ndescription: Reviews\nagents: [chat]\nreads: [books]\n"
+                "---\nname: reviewer\nkind: generation\nmodel: strong\ndescription: Reviews\nagents: [chat]\nreads: ['../books']\n"
                 "---\nYou review contracts.\n"
             ),
             "reviewer/skills/redline/SKILL.md": REDLINE,

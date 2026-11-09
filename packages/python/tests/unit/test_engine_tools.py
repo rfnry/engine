@@ -51,7 +51,7 @@ def test_engine_tools_need_a_scope(fixtures: Path) -> None:
 
 
 async def test_an_agent_reads_another_agent_s_folder_in_full(tmp_path: Path) -> None:
-    for name, front in [("coding", "reads: [writing]\n"), ("writing", "")]:
+    for name, front in [("coding", "reads: ['../writing']\n"), ("writing", "")]:
         (tmp_path / name).mkdir()
         (tmp_path / name / "AGENT.md").write_text(
             f"---\nname: {name}\nkind: generation\nmodel: strong\n{front}---\nHi\n"
