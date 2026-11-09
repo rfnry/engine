@@ -26,12 +26,20 @@ from .fakes import Fixed
 
 DOCS = Path(__file__).parents[4] / "docs" / "engine.md"
 GUIDE = Path(__file__).parents[4] / "docs" / "evaluation.md"
+API = Path(__file__).parents[4] / "docs" / "api.md"
 
 
 def test_every_public_name_is_documented() -> None:
     text = DOCS.read_text(encoding="utf-8")
     missing = [name for name in rfnry_engine.__all__ if name not in text]
     assert missing == []
+
+
+def test_the_guide_proposes_no_rules_folder_and_no_task() -> None:
+    for doc in (DOCS, API, GUIDE):
+        text = doc.read_text(encoding="utf-8")
+        assert "rules/" not in text, doc.name
+        assert "task=" not in text, doc.name
 
 
 def test_the_evaluation_guide_compiles_and_names_real_verbs() -> None:

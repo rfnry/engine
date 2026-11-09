@@ -613,15 +613,16 @@ async def written_as_released(conn: Any, row: dict[str, Any], *, tagged: bool) -
 
 async def released(schemas: Schemas, version: str) -> tuple[Any, dict[str, Any]]:
     held = json.loads((ROWS / f"{version}.json").read_text(encoding="utf-8"))
-    if version >= "0.1.5":
-        schema = 3 if version >= "0.1.8" else 2
+    number = tuple(map(int, version.split(".")))
+    if number >= (0, 1, 5):
+        schema = 3 if number >= (0, 1, 8) else 2
         with pytest.MonkeyPatch.context() as patched:
             patched.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:schema])
             patched.setattr(migrations, "LATEST", schema)
             _, pool = await created(schemas)
     else:
         _, pool = await initialized(schemas, WITH_TAGS if version == "0.1.4" else BEFORE_TAGS)
-    tagged = version >= "0.1.4"
+    tagged = number >= (0, 1, 4)
     async with pool.acquire() as conn:
         for row in held["engine_runs"]:
             await written_as_released(conn, row, tagged=tagged)

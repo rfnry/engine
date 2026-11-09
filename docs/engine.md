@@ -23,10 +23,11 @@ Every public name, with its signature, is in [the API reference](api.md).
 file under version control: its markdown, and the definition and the script of each tool it calls.
 The library reads the tree; it never writes it.
 
-**The model chooses.** A run gives the model who the agent is, a map of its folder and the tools it
-has; the model opens what a question needs, follows the skill that fits, and calls the tool or the
-agent that can help. One agent with a well-kept folder covers many jobs, and whether a second one is
-worth it is [measured](#orchestrating), not assumed.
+**The model chooses.** A run gives the model who the agent is and the rules every run follows, a
+map of its folder, the list of its skills and the tools it has; the model opens what a question
+needs, follows the skill that fits, and calls the tool or the agent that can help. One agent with a
+well-kept folder covers many jobs, and whether a second one is worth it is
+[measured](#orchestrating), not assumed.
 
 **Two kinds of model, one or both.** Open-ended work — conversation, tool use, writing — is
 generation. Closed-set judgement — which of these, how much, is this true — is decision. A
@@ -55,8 +56,9 @@ default scope and nothing reads across scopes. Multi-tenancy is the default.
 ```
 agents/
   support/
-    AGENT.md                  who the agent is and the model it runs on
-    rules/refunds.md          read when a question needs it
+    AGENT.md                  who the agent is, the rules every run follows, its model
+    knowledge/refunds.md      read when a question needs it
+    skills/escalate.md        how to do a thing: listed, and opened when it fits
     tools/lookup_order.json   a tool: what the model reads about it
     tools/lookup_order.py     what runs when the model calls it
 ```
@@ -106,16 +108,18 @@ async with Engine(root=Path("agents"), models={"strong": llm}) as engine:
 JSON is what the model reads about it — what it does, what it returns and the arguments it takes —
 and the script is what runs, `run(args, call)`, in a worker process the engine starts beside your
 server, so a tool that crashes takes down its worker, never your server; `call["scope"]` is the
-tenant of the run ([Tools](#tools)). `AGENT.md` holds the agent's instructions — who it is, what it
-does, when to use which tool. The model receives `AGENT.md`, its tools and a map of its folder,
-opens `rules/refunds.md` when the question needs it, and answers. One call runs an agent for a
-tenant and returns its record; leaving `async with` closes the engine, which stops its workers.
+tenant of the run ([Tools](#tools)). `AGENT.md` holds the agent's persona and the rules every run
+follows — who it is, what it does, when to use which tool. The model receives `AGENT.md`, its tools,
+a map of its folder and the list of its skills, opens `knowledge/refunds.md` when the question needs
+it, and answers. One call runs an agent for a tenant and returns its record; leaving `async with`
+closes the engine, which stops its workers.
 
 An agent grows by its tree:
 
 | to give an agent | add to the tree | in your code |
 | --- | --- | --- |
-| a rule, a reference, a document | any file in its folder | |
+| the persona and the rules every run follows | `AGENT.md` | |
+| a reference, a document, anything else | any file in its folder, in the map with its `description:` | |
 | a way of doing something | a [skill](#skills) | |
 | a system of yours | a [tool](#tools): `tools/<name>.json` and `<name>.py` | |
 | a shell to write and run code | [`workspace: true`](#workspace) | a `Workspace` |
@@ -159,7 +163,7 @@ roles merges them. A `Reply` whose `stop_reason` is `"tool_use"` and whose `tool
 means "run these and call me again"; anything else is final:
 
 ```python
-Reply(text="", tool_calls=[ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})], stop_reason="tool_use")
+Reply(text="", tool_calls=[ToolCall(id="c1", name="Read", args={"path": "knowledge/refunds.md"})], stop_reason="tool_use")
 Reply(text="Refunded the second charge.", stop_reason="end_turn", usage=Usage(input=812, output=41), model="…")
 ```
 
@@ -193,8 +197,9 @@ file `preload: true` sends is refused when the tree loads. An adapter that has `
 the model it calls, names the run's model before any reply does. An adapter that has `settings`, a
 JSON object of what it sends its vendor besides the conversation — `{"effort": "high",
 "max_tokens": 4096}` — has them recorded beside the model; a `Reply` or a `Decided` may carry its
-own for one call, and they win, even when empty. An adapter's `settings` attribute that is not a JSON object is ignored; a reply's
-or a decided's settings that are not JSON break the contract (`ModelError`). They are stored and
+own for one call, and they win, even when empty. An adapter's `settings` attribute that is not a
+JSON object is ignored; a reply's or a decided's settings that are not JSON break the contract
+(`ModelError`). They are stored and
 exported with the run, so a credential or an endpoint never goes in them.
 
 A decision model answers three kinds of question:
@@ -274,17 +279,17 @@ class Fixed:
 ```
 agents/
   support/
-    AGENT.md              who the agent is
-    rules/refunds.md      any folders and files, all in the map; a description adds a line
-    skills/escalate.md    how to do a thing: the model's to choose, or a person's to ask for
+    AGENT.md              who the agent is and the rules every run follows
+    knowledge/refunds.md  any folders and files, all in the map; a description adds a line
     knowledge/rates.pdf   text, images, PDFs, anything — read when needed
+    skills/escalate.md    how to do a thing: listed in SKILLS, opened at the model's choice, or invoked
     tools/refund.json     a tool, with refund.py beside it, that the model calls
 ```
 
 The frontmatter of `AGENT.md` names the agent (`name:`), its kind (`kind:`), the model it runs on
 (`model:`) and what the agent may call, and, when it needs fewer tools than it has, the ones it
 keeps (`tools:`) and the skills it keeps (`skills:`), and the skills people may call by typing
-`/name` (`public_skills:`); its body is the persona.
+`/name` (`public_skills:`); its body is the persona and the rules every run follows.
 `name:`, `kind:` and `model:` are required: a missing one, a `kind:` other than `generation` or
 `decision`, or a blank, padded or non-text `name:` or `model:` is a `ConfigurationError` naming the
 file. A `name:` is plain text — not blank, not hidden, not padded, no slash — and is what `run`,
@@ -307,6 +312,10 @@ public_skills: [escalate]
 You are the support desk for Acme. Be brief, be exact, cite the rule you are applying.
 ```
 
+The engine does not care where rules live; put the ones every run follows in `AGENT.md`, whose body
+is in the prompt of every run. A file the model has to open may not be opened, depending on the
+model, so one that must reach every run goes with `preload: true`, below.
+
 At the start of a run the model receives `AGENT.md`, a map of its folder, the list of its
 [skills](#skills), the list of tools it has, the descriptions of the agents it may call, and any
 context the caller passes. The map is generated when the tree loads: every folder and every file,
@@ -323,21 +332,22 @@ A duplicate charge is refunded in full without approval.
 ```
 knowledge/
   rates.pdf
-rules/
   refunds.md — When a refund is owed, and what needs a person
 ```
 
 A file without a description is listed by its name, which often says enough; a description is one
 line of what the file holds, so the model knows what to open without opening it. Other frontmatter
 keys are left alone. `AGENT.md` and the folders `questions/`, `skills/` and `tools/` stay out of
-the map, since the prompt already holds them, and so do the folders of the agents inside its own,
+the map, since the prompt holds `AGENT.md` and lists the skills and tools, and so do the folders of
+the agents inside its own,
 which it reaches through `agents:` — they stay readable to its tools, as its declarations do, and
 count in its fingerprint. Frontmatter that is not valid YAML — a key named twice included, as YAML
 forbids, in any file of the map or any skill — or a `description:` that is not a string, is a
 `ConfigurationError` naming the file and what to change, and for YAML the line, when the tree loads,
 so a typo is caught before any run. Everything else the model reads when it needs it, with the
-`Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can read only inside its own directory and the
-folders it reads, and nothing the content fingerprint leaves out, which is every name starting with
+`Read`, `Grep`, `Glob`, `LS` and `Load` tools, and it can read only inside its own directory, the
+folders it reads and the [`skills/` folders above it](#skills), and nothing the content fingerprint
+leaves out, which is every name starting with
 `.` and every `__pycache__`: such a path is an `InputError`
 (`tools/builtins: .env is hidden; names starting with . and __pycache__ are not part of the agent's folder`).
 A path that starts as `SKILLS` spells a `skills/` folder above the agent starts from that folder, so
@@ -487,18 +497,18 @@ of its agents at INFO on the `rfnry_engine.engine` logger — `engine: agents lo
 writer]` — so a folder meant to be an agent that is not shows at start;
 `logging.basicConfig(level=logging.INFO)` shows it.
 
-An agent that needs its whole folder on every run — a few house rules applied to thousands of
-documents — asks for it, with `preload: true`:
+An agent with reference files every run needs — a few pages applied to thousands of documents —
+asks for them, with `preload: true`:
 
 ```markdown
 ---
 name: tagger
 kind: generation
 model: strong
-description: Tags each incoming document by the house rules
+description: Tags each incoming document by its reference files
 preload: true
 ---
-Tag the document. Every rule applies to every document.
+Tag the document. Every reference file applies to every document.
 ```
 
 With `preload: true` the model also receives every file of its folder and of the folders it reads
@@ -1306,12 +1316,12 @@ and the routed run's reply when it routed, as `engine.tool` returns them — com
 result. Its input comes from the model and is never read for `/name`, and the child takes no skill.
 The child's record is attached to the parent's `children`, and the
 step that called it carries the child's `run_id`. A decision agent used this way is how a
-generation agent asks a fast, calibrated question mid-task: is this destructive, which skill
+generation agent asks a fast, calibrated question mid-run: is this destructive, which skill
 applies, is the user done.
 
 The model can also give a decision agent `questions` it composes itself — ids to questions of the
 three types, written as JSON, structure included — asked beside the agent's own in the same call. A
-question that occurs to the model mid-task is answered with probabilities instead of guessed at, and
+question that occurs to the model mid-run is answered with probabilities instead of guessed at, and
 a decision agent with no questions of its own is worth delegating to. The model sends:
 
 ```json
@@ -1396,7 +1406,7 @@ engine = Engine(root, models={"strong": llm, "judge": dm})
 run = await engine.run("frontdesk", scope="acme", input=message, history=history)
 run.answers["intent"].choice            # "technical"
 run.routed_to.agent                     # "support" — the generation agent that answered
-run.routed_to.children[0].agent         # "triage" — the decision agent support consulted mid-task
+run.routed_to.children[0].agent         # "triage" — the decision agent support consulted mid-run
 ```
 
 A route is by a question of the router's `questions/` whose options its `.json` fixes, since the
@@ -1418,7 +1428,7 @@ about an agent changes when a model is absent — only which agents you can run.
 The library runs agents and records what they did. The order they run in is yours or the model's: your
 code decides in a workflow, and the model decides when it delegates, routes or calls a tool of yours.
 Start with a workflow in code, where you know the steps, and add autonomy only where a fixed step
-breaks. There is no graph, planner or task board here to configure; what follows is what you write on
+breaks. There is no graph, planner or queue here to configure; what follows is what you write on
 top of the public surface, and every block runs in the test suite.
 
 A workflow is code. Tag every run with the workflow's id, so `run_tree(tags=)` and
@@ -1496,12 +1506,12 @@ claims = {}
 
 async def claim(args):
     me = current_call().run_id
-    return {"claimed": claims.setdefault(args["task"], me) == me, "by": claims[args["task"]]}
+    return {"claimed": claims.setdefault(args["item"], me) == me, "by": claims[args["item"]]}
 
 backend = PerRun("work")
-tools = Tools([Tool("claim", "Take a task for this run", body=claim, input_schema={
-    "type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]})])
-run = await engine.run("lead", scope="acme", input=task, tools=tools, on_event=backend.on_event,
+tools = Tools([Tool("claim", "Take an item of work for this run", body=claim, input_schema={
+    "type": "object", "properties": {"item": {"type": "string"}}, "required": ["item"]})])
+run = await engine.run("lead", scope="acme", input=message, tools=tools, on_event=backend.on_event,
                        workspace=Workspace(backend, scope="acme"))
 ```
 
@@ -1528,7 +1538,7 @@ tools = Tools([
     Tool("check", "Read a job started earlier", body=check, input_schema={
         "type": "object", "properties": {"job": {"type": "string"}}, "required": ["job"]}),
 ])
-outer = await engine.run("boss", scope="acme", input=task, tools=tools)
+outer = await engine.run("boss", scope="acme", input=message, tools=tools)
 ```
 
 Whether a team is worth it is measured, not assumed. Run the team and a single agent on the same
@@ -1572,7 +1582,7 @@ agents/coder/AGENT.md
 name: coder
 kind: generation
 model: strong
-description: Writes and runs code to finish a task.
+description: Writes and runs code to finish the work.
 workspace: true
 ---
 ```
@@ -2045,8 +2055,8 @@ command made through the [tool bridge](#workspace) with its `by` — and the err
 with, with each image, audio or document replaced by a placeholder naming it —
 `[image: image/jpeg]`, `[document: application/pdf, "policy.pdf"]` — while the recorded run and the
 exported datasets keep the media. A judge sees neither the system prompt nor `run.preload`, so a
-rule a preloaded agent never had to `Read` is not in front of it; ask about them in the question
-when they matter:
+rule in `AGENT.md`, or one a preloaded agent never had to `Read`, is not in front of it; ask about
+them in the question when they matter:
 
 ```
 agents/judge/
@@ -2202,9 +2212,10 @@ repository — people who do not write code edit it in the host's web UI, and ev
 reviewed pull request — check each commit out into a folder of its own, build an engine from it, and
 swap which engine new runs use. A run in flight finishes on the engine it started with. Rolling back
 is loading an older commit, and since a commit's folder never changes, a half-written checkout is
-never live. What an agent's prompt holds — `AGENT.md`, the map, the preload, an
-invoked skill, its tools' definitions and scripts — is what the engine loaded at `Engine()`; what
-the model reads with a tool, and the data a script opens, is read from disk when it asks, so remove
+never live. What an agent's prompt holds — `AGENT.md`, the map, the list of its skills, the
+preload, an invoked skill, its tools' definitions and scripts — is what the engine loaded at
+`Engine()`; what the model reads with a tool, and the data a script opens, is read from disk when it
+asks, so remove
 an old folder only once its runs have finished. Each engine starts the workers of its own tree's
 tools, which run the scripts as it read them, so close the engine you swap out — `await
 engine.close()` — once its runs have finished too. A root that is itself an agent is named by its
@@ -2617,7 +2628,7 @@ lists; the rest stay:
 ```python
 surface = EngineTools(engine, agent="support", scope="acme")
 surface.definitions()                                        # what the model would see
-await surface.dispatch("Read", {"path": "rules/refunds.md"})
+await surface.dispatch("Read", {"path": "knowledge/refunds.md"})
 await surface.dispatch("Delegate", {"agent": "triage", "input": "It is down"})
 
 combined = MemoryTools(memory, corpus_id="acme") + surface.only("Read", "Grep")
@@ -2721,7 +2732,7 @@ write with `StorageError`. A Postgres to try it on is one container, with engine
 by the command the package installs:
 
 ```bash
-docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
+docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres postgres:18-alpine
 rfnry-engine create --url postgresql://postgres:postgres@127.0.0.1:5432/postgres
 ```
 
@@ -2927,10 +2938,10 @@ twice, a tool's file that links out of its `tools/` folder, a file or folder who
 UTF-8, a file an agent is made of that cannot be read, a question's file or an `AGENT.md` that links
 out of the agent's folder, an agent's own `tools/`, `questions/` or `skills/` folder that links out
 of it, a `skills:` or `public_skills:` that names a skill the agent does not have, holds a blank,
-padded or twice-listed entry or sits in a decision agent's
-`AGENT.md`, a `public_skills:` entry that holds whitespace, a `tasks/` folder in an agent's folder, whatever it holds (`tree: tasks are gone
-(agents/support/tasks/triage.md); make it a skill, or say it in the input`), an `AGENT.md` without
-a `name:` or a `model:` in plain text,
+padded or twice-listed entry or sits in a decision agent's `AGENT.md`, a `public_skills:` entry
+that holds whitespace, a `tasks/` folder in an agent's folder, whatever it holds (`tree: tasks are
+gone (agents/support/tasks/triage.md); make it a skill, or say it in the input`), an `AGENT.md`
+without a `name:` or a `model:` in plain text,
 or whose `kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names
 to adapters, a model no agent runs on, an agent whose model has not its kind's method, two agents
 with one name, an agent in `agents:` or `route:` the tree does not have, an unknown key in the
@@ -2952,8 +2963,9 @@ folder inside one, leaves the root, names the agent's own folder, one that holds
 it, or names two folders one inside the other, `reads:` on a decision agent or on an agent whose
 folder is a link to a folder elsewhere, one skill as both `skills/x.md` and `skills/x/SKILL.md`, a
 question in markdown, a question's JSON that is not an object, holds an unknown key, has no
-instructions or does not fit its type, a question's script without its `.json`, a route not by a choice question of the router's `questions/`, by one a
-script fills, or that maps an option the question does not have, a route entry that is not an
+instructions or does not fit its type, a question's script without its `.json`, a route not by a
+choice question of the router's `questions/`, by one a script fills, or that maps an option the
+question does not have, a route entry that is not an
 agent's name — one that names a task reads `frontmatter: invalid agent agents/frontdesk/AGENT.md;
 route.to: tasks are gone (route entry 'technical' names task 'triage'); name the agent alone, and
 make the task a skill or say it in the agent's AGENT.md` — or that gives a decision agent nothing to

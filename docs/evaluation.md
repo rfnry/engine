@@ -123,8 +123,8 @@ Most gains come from the agent, not the model. Corrections show which rule is wr
 is missing, which tool fails. The loop:
 
 1. Export and read the runs that people objected to, corrected, or whose outcome failed.
-2. Change the folder: a rule, a skill, a knowledge file. With rfnry-memory, a correction that is a
-   fact can go straight into the corpus, and the next answer uses it:
+2. Change the folder: `AGENT.md`, a skill, a knowledge file. With rfnry-memory, a correction that
+   is a fact can go straight into the corpus, and the next answer uses it:
 
    ```python
    await memory.remember("factory-a", "Press 4 hydraulic oil is ISO VG 46, not 68.", subject="press:4")

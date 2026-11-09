@@ -85,7 +85,7 @@ async def test_the_copy_each_recipe_keeps_each_worker_apart(
 
     model = Workers([delegates("a", "b"), done("merged")], {"a": writing(1), "b": writing(2)})
     engine = Engine(agents(tmp_path / "agents", LEAD), models={"strong": model})
-    namespace = await execute(COPY, engine, task="go")
+    namespace = await execute(COPY, engine, message="go")
     run, backend = namespace["run"], namespace["backend"]
     assert isinstance(run, Generation)
     assert sorted(p.read_text() for p in tmp_path.glob("work/*/guide.md")) == [
@@ -96,16 +96,16 @@ async def test_the_copy_each_recipe_keeps_each_worker_apart(
     assert {backend.parent[child.run_id] for child in run.children} == {run.run_id}
 
 
-async def test_the_claim_tool_gives_a_task_to_one_run(
+async def test_the_claim_tool_gives_an_item_to_one_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    take = calls(("c", "claim", {"task": "t1"}))
+    take = calls(("c", "claim", {"item": "t1"}))
     model = Workers(
         [delegates("a", "b"), done("done")], {"a": [take, done("a")], "b": [take, done("b")]}
     )
     engine = Engine(agents(tmp_path / "agents", LEAD), models={"strong": model})
-    namespace = await execute(COPY, engine, task="go")
+    namespace = await execute(COPY, engine, message="go")
     run = namespace["run"]
     results = [json.loads(str(child.steps[0].result)) for child in run.children]
     assert sorted(r["claimed"] for r in results) == [False, True]
@@ -134,7 +134,7 @@ async def test_the_background_recipe_returns_a_run_that_links_back(
         "support/AGENT.md": "---\nname: support\nkind: generation\nmodel: strong\n---\nSupport.\n",
     }
     engine = Engine(agents(tmp_path / "agents", files), models={"strong": Boss()})
-    namespace = await execute(BACKGROUND, engine, task="go")
+    namespace = await execute(BACKGROUND, engine, message="go")
     outer = namespace["outer"]
     finished = await namespace["jobs"]["0"]
     assert isinstance(finished, Generation) and finished.reply == "all fixed"

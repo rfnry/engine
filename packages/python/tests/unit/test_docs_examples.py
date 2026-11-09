@@ -249,7 +249,7 @@ def tree(root: Path) -> None:
         root / "support/AGENT.md", markdown("description: Handles technical support conversations")
     )
     write(
-        root / "support/rules/refunds.md",
+        root / "support/knowledge/refunds.md",
         "---\ndescription: When a refund is owed\n---\nA double charge is refunded in full.\n",
     )
     write(root / "support/tools/lookup_order.json", LOOKUP)
@@ -463,10 +463,10 @@ def test_the_route_entry_names_an_agent_alone(tmp_path: Path) -> None:
 
 def test_the_agent_that_preloads_its_folder_loads(tmp_path: Path) -> None:
     write(tmp_path / "tagger/AGENT.md", markdown("description: Tags each incoming document"))
-    write(tmp_path / "tagger/rules/house.md", "Tag by department.\n")
+    write(tmp_path / "tagger/knowledge/house.md", "Tag by department.\n")
     spec = load_agent(tmp_path / "tagger")
     assert spec.kind == "generation" and spec.body.startswith("Tag the document.")
-    assert spec.preload == [Text(text="<<<rules/house.md>>>\nTag by department.\n")]
+    assert spec.preload == [Text(text="<<<knowledge/house.md>>>\nTag by department.\n")]
 
 
 async def test_the_tool_of_getting_started_runs_in_its_worker_as_written(
