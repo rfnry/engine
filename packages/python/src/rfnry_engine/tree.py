@@ -287,11 +287,11 @@ def _no_tasks(agent: Path) -> None:
     folder = agent / "tasks"
     if not folder.is_dir():
         return
-    found = [
-        p
-        for p in _declared(folder)
-        if p.suffix == ".md" and not p.name.startswith(".") and p.is_file()
-    ]
+    try:
+        listed = sorted(folder.iterdir())
+    except OSError:
+        listed = []
+    found = [p for p in listed if p.suffix == ".md" and not p.name.startswith(".") and p.is_file()]
     raise ConfigurationError(
         f"tree: tasks are gone ({found[0] if found else folder}); make it a skill, or say it in the input"
     )
@@ -451,6 +451,10 @@ def _loops(top: Path, found: Mapping[str, Path], key: str, target: Path) -> bool
     return any(place.is_relative_to(target) for place in above)
 
 
+def _is_agent(folder: Path, path: str) -> bool:
+    return "tools" not in path.split("/") and declares(folder)
+
+
 def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     top = root.resolve()
     found: dict[str, Path] = {}
@@ -458,6 +462,8 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
 
     def walk(folder: Path, at: str, skills: bool = False, skill: bool = False) -> None:
         holds = declares(folder)
+        if _is_agent(folder, at):
+            _no_tasks(folder)
         for child in _subfolders(folder, quiet=(skills or skill) and not folder.is_symlink()):
             if (
                 child.name.startswith(".")
@@ -658,7 +664,6 @@ def load_agent(
 ) -> AgentSpec:
     front, body = _agent_front(directory)
     agent = front.name
-    _no_tasks(directory)
     if front.kind == "generation" and _question_files(directory / "questions"):
         raise ConfigurationError(
             f"tree: generation agent {agent!r} cannot declare questions/; questions are for decision agents, so make it kind: decision or move them to one"
@@ -756,9 +761,7 @@ def load_tree(
     root = Path(root)
     found, links = _tree_folders(root)
     _refuse_links(root, found, links)
-    paths = [
-        path for path in [".", *found] if "tools" not in path.split("/") and declares(root / path)
-    ]
+    paths = [path for path in [".", *found] if _is_agent(root / path, path)]
     if not paths:
         raise ConfigurationError(
             f"tree: {root} holds no AGENT.md; give each agent a folder with an AGENT.md that names its name:, kind: and model:"

@@ -2808,8 +2808,9 @@ no `AGENT.md`, a link to a folder on the way to it or one holding it, one that w
 twice, a tool's file that links out of its `tools/` folder, a file or folder whose name is not
 UTF-8, a file an agent is made of that cannot be read, a question's file or an `AGENT.md` that links
 out of the agent's folder, an agent's own `tools/` or `questions/` folder that links out of it, a
-`tasks/` folder in an agent's folder (`tree: tasks are gone (agents/support/tasks/triage.md); make
-it a skill, or say it in the input`), an `AGENT.md` without a `name:` or a `model:` in plain text,
+`tasks/` folder in an agent's folder, whatever it holds (`tree: tasks are gone
+(agents/support/tasks/triage.md); make it a skill, or say it in the input`), an `AGENT.md` without
+a `name:` or a `model:` in plain text,
 or whose `kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names
 to adapters, a model no agent runs on, an agent whose model has not its kind's method, two agents
 with one name, an agent in `agents:` or `route:` the tree does not have, an unknown key in the
