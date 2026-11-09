@@ -718,7 +718,7 @@ def _reads(
     for (one, one_said), (other, other_said) in combinations(entries, 2):
         if one == other or one.startswith(f"{other}/") or other.startswith(f"{one}/"):
             raise ConfigurationError(
-                f"tree: agent {agent!r} reads {one_said!r} and {other_said!r}, one inside the other; keep one"
+                f"tree: agent {agent!r} reads {one_said!r} and {other_said!r}, the same folder or one inside the other; keep one"
             )
     if names and directory.resolve() != root.resolve() / path:
         raise ConfigurationError(
@@ -795,7 +795,7 @@ def _preload_names(
     for (one, one_said, one_sent), (other, other_said, other_sent) in combinations(entries, 2):
         if one == other or set(one_sent.values()) & set(other_sent.values()):
             raise ConfigurationError(
-                f"tree: agent {agent!r} preloads {one_said!r} and {other_said!r}, one inside the other; keep one"
+                f"tree: agent {agent!r} preloads {one_said!r} and {other_said!r}, which send the same file; keep one"
             )
     return [name for _, _, sent in entries for name in sent]
 
@@ -915,6 +915,14 @@ def load_agent(
         for prefix in gives
         for name, skill in _skills_from(tree, prefix, path, ignores).items()
     }
+
+    def every_skill() -> dict[str, Skill]:
+        return {
+            name: skill
+            for prefix in gives
+            for name, skill in _skills_from(tree, prefix, path, None).items()
+        }
+
     if front.kind == "decision" and "skills" in front.model_fields_set:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot declare skills:; skills are for generation agents"
@@ -922,6 +930,10 @@ def load_agent(
     if front.skills is not None:
         for name in front.skills:
             if name not in merged:
+                if name in every_skill():
+                    raise ConfigurationError(
+                        f"tree: {directory}/AGENT.md keeps {name!r} in skills:, a skill a .gitignore hides from agent {agent!r}; stop ignoring it, or drop it from skills:"
+                    )
                 have = (
                     f"its skills are {', '.join(sorted(merged))}" if merged else "it has no skills"
                 )
@@ -944,6 +956,10 @@ def load_agent(
     listed = [] if front.public_skills == "all" else front.public_skills or []
     for name in listed:
         if name not in skills:
+            if name not in merged and name in every_skill():
+                raise ConfigurationError(
+                    f"tree: {directory}/AGENT.md names {name!r} in public_skills:, a skill a .gitignore hides from agent {agent!r}; stop ignoring it, or drop it from public_skills:"
+                )
             have = f"its skills are {', '.join(skills)}" if skills else "it has no skills"
             raise ConfigurationError(
                 f"tree: {directory}/AGENT.md names {name!r} in public_skills:, a skill agent {agent!r} does not have; {have}"

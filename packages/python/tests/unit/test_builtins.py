@@ -25,10 +25,12 @@ def test_the_four_builtins() -> None:
     assert _tools().names == ["Read", "Grep", "Glob", "LS"]
 
 
-def test_every_builtin_takes_the_paths_of_the_files_map() -> None:
+def test_the_searching_tools_do_not_name_a_section_the_agent_may_not_have() -> None:
     described = {d["name"]: d["description"] for d in _tools().definitions()}
     [load] = Tools([load_tool(SUPPORT)]).definitions()
-    for text in [*described.values(), load["description"]]:
+    for name in ("Grep", "Glob", "LS"):
+        assert "FILES" not in described[name] and "as the map shows" in described[name]
+    for text in (described["Read"], load["description"]):
         assert "FILES map" in text
     assert "SKILLS" in described["Read"] and "SKILLS" in load["description"]
 

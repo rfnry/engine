@@ -528,3 +528,18 @@ def test_a_decision_agent_cannot_declare_gitignore(tmp_path: Path, value: str) -
     assert str(caught.value) == (
         "tree: decision agent 'd' cannot declare gitignore:; a decision agent reads no files, so give it what it needs in its input or its questions"
     )
+
+
+@pytest.mark.parametrize("key", ["skills", "public_skills"])
+def test_an_ignored_skill_is_refused_as_hidden_not_as_missing(tmp_path: Path, key: str) -> None:
+    extra = f"{ON}skills: [local]\n" if key == "skills" else f"{ON}public_skills: [local]\n"
+    write(tmp_path / "a/AGENT.md", agent_md("a", extra))
+    write(tmp_path / "a/.gitignore", "skills/local.md\n")
+    write(tmp_path / "a/skills/local.md", "---\ndescription: Local\n---\nBody.\n")
+    verb = "keeps" if key == "skills" else "names"
+    with pytest.raises(ConfigurationError) as caught:
+        load_tree(tmp_path)
+    assert str(caught.value) == (
+        f"tree: {tmp_path / 'a'}/AGENT.md {verb} 'local' in {key}:, a skill a .gitignore hides "
+        f"from agent 'a'; stop ignoring it, or drop it from {key}:"
+    )

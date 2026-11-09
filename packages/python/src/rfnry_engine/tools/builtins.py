@@ -510,19 +510,19 @@ def builtins(
         ),
         Tool(
             "Grep",
-            "Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder of the FILES map; without it, your own folder is searched.",
+            "Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder from your own folder, as the map shows it; without it, your own folder is searched.",
             body=threaded(directory.grep),
             args=GrepArgs,
         ),
         Tool(
             "Glob",
-            "Find files by glob pattern, e.g. '**/*.md'. Paths are those of the FILES map.",
+            "Find files by glob pattern, e.g. '**/*.md'. Paths are from your own folder, as the map shows them.",
             body=threaded(directory.glob),
             args=GlobArgs,
         ),
         Tool(
             "LS",
-            "List a folder by its path in the FILES map; without a path, your own folder.",
+            "List a folder by its path from your own folder, as the map shows it; without a path, your own folder.",
             body=threaded(directory.ls),
             args=LSArgs,
         ),

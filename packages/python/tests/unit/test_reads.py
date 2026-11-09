@@ -163,7 +163,7 @@ def test_two_spellings_of_one_folder_are_named_as_written(tmp_path: Path) -> Non
     with pytest.raises(ConfigurationError) as caught:
         load_tree(books(tmp_path, "['../shared', '../shared/']"))
     assert str(caught.value) == (
-        "tree: agent 'coding' reads '../shared' and '../shared/', one inside the other; keep one"
+        "tree: agent 'coding' reads '../shared' and '../shared/', the same folder or one inside the other; keep one"
     )
 
 

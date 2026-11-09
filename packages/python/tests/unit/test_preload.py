@@ -217,9 +217,9 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
         "<<<SKILLS>>>\nskills/escalate.md — Hand a conversation to a person\n\n"
         "<<<TOOLS>>>\n"
         "- Read: Read a text file by its path in the FILES map or SKILLS. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.\n"
-        "- Grep: Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder of the FILES map; without it, your own folder is searched.\n"
-        "- Glob: Find files by glob pattern, e.g. '**/*.md'. Paths are those of the FILES map.\n"
-        "- LS: List a folder by its path in the FILES map; without a path, your own folder.\n"
+        "- Grep: Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder from your own folder, as the map shows it; without it, your own folder is searched.\n"
+        "- Glob: Find files by glob pattern, e.g. '**/*.md'. Paths are from your own folder, as the map shows them.\n"
+        "- LS: List a folder by its path from your own folder, as the map shows it; without a path, your own folder.\n"
         "- Load: Load a file of the FILES map or SKILLS as it is, such as an image, a PDF or audio, so you see or hear it yourself.\n"
         "- lookup_order: Fetch an order by id. Returns the order as JSON.\n"
         "- now: The current UTC time\n"
@@ -228,7 +228,7 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
         "<<<CONTEXT>>>\nAcme is on the enterprise plan."
     )
     assert messages == [*history, Message(role="user", content="Charged twice.")]
-    assert tools_fingerprint(tools) == "c8aa2b88727dc057"
+    assert tools_fingerprint(tools) == "b777cb12c847fb73"
     assert [t.name for t in tools] == [
         "Read",
         "Grep",
@@ -697,7 +697,7 @@ def test_an_overlap_is_refused(tmp_path: Path, entries: str, one: str, other: st
     write(tmp_path / "a/a.md", "Own.\n")
     write(tmp_path / "a/knowledge/a.md", "Known.\n")
     assert load_error(tmp_path) == (
-        f"tree: agent 'a' preloads {one!r} and {other!r}, one inside the other; keep one"
+        f"tree: agent 'a' preloads {one!r} and {other!r}, which send the same file; keep one"
     )
 
 
@@ -705,7 +705,7 @@ def test_a_root_agent_s_own_folder_overlaps_what_is_inside_it(tmp_path: Path) ->
     write(tmp_path / "AGENT.md", agent_md("lead", "preload: ['.', './notes.md']\n"))
     write(tmp_path / "notes.md", "Own.\n")
     assert load_error(tmp_path) == (
-        "tree: agent 'lead' preloads '.' and './notes.md', one inside the other; keep one"
+        "tree: agent 'lead' preloads '.' and './notes.md', which send the same file; keep one"
     )
 
 
@@ -731,7 +731,7 @@ def test_two_entries_that_send_one_file_through_a_link_are_refused(
     write(tmp_path / "books/b.md", "B.\n")
     (tmp_path / "a/to-books").symlink_to("../books")
     assert load_error(tmp_path) == (
-        f"tree: agent 'a' preloads {one!r} and {other!r}, one inside the other; keep one"
+        f"tree: agent 'a' preloads {one!r} and {other!r}, which send the same file; keep one"
     )
 
 

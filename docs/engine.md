@@ -286,12 +286,25 @@ agents/
     tools/refund.json     a tool, with refund.py beside it, that the model calls
 ```
 
-The frontmatter of `AGENT.md` names the agent (`name:`), its kind (`kind:`), the model it runs on
-(`model:`) and what the agent may call, and, when it needs fewer tools than it has, the ones it
-keeps (`tools:`) and the skills it keeps (`skills:`), and the skills people may call by typing
-`/name` (`public_skills:`); each of the three takes `all`, `none` or a list of names; `gitignore:
-true` leaves out what a `.gitignore` ignores, below; its body is the persona and the rules every run
-follows.
+The frontmatter of `AGENT.md` holds these keys, and no others; its body is the persona and the rules
+every run follows.
+
+- `name:` names the agent, for every agent.
+- `kind:` is `generation` or `decision`, for every agent.
+- `model:` names the model the agent runs on, for every agent.
+- `description:` is the line other agents see in their `AGENTS` list, for every agent.
+- `agents:` lists the agents a generation agent may hand an input to with `Delegate`.
+- `route:` sends a decision agent's input to another agent by one of its questions; a decision agent
+  only.
+- `workspace:` gives a generation agent a shell and files to write in, when `true`.
+- `gitignore:` leaves out what a `.gitignore` ignores, when `true`; a generation agent only.
+- `preload:` lists the files and folders a generation agent is sent with every input.
+- `reads:` lists the other folders a generation agent reads; a generation agent only.
+- `tools:` keeps some of the tools a generation agent has, or `all` or `none`.
+- `skills:` keeps some of the skills a generation agent has, or `all` or `none`.
+- `public_skills:` lists the skills people may call by typing `/name`, or `all` or `none`; a
+  generation agent only.
+
 `name:`, `kind:` and `model:` are required: a missing one, a `kind:` other than `generation` or
 `decision`, or a blank, padded or non-text `name:` or `model:` is a `ConfigurationError` naming the
 file. A `name:` is plain text — not blank, not hidden, not padded, no slash — and is what `run`,
@@ -486,11 +499,12 @@ or that holds `\`, an empty segment, a hidden folder or a `..` after a name; a p
 of the tree; a folder the tree does not have; a [`tools/`](#tools) or [`skills/`](#skills) folder on
 an agent's path, or a folder inside one, which gives its tools or skills and is not read as content;
 a link that leaves the root; the agent's own folder or one that holds it; a folder inside the
-agent's own, which its map holds already, so every `reads:` of a root agent; two folders one inside
-the other; `reads:` on a decision agent, which reads no files; and `reads:` on an agent whose folder
-is a link to a folder elsewhere — link the whole root instead. The tree is shared by every tenant:
-it holds how to do the work, never a tenant's data — that comes per run, in the input, the history
-or the workspace. An agent that reads `my_agents/acme/` reads it for every tenant.
+agent's own, which its map holds already, so every `reads:` of a root agent; two folders that are
+the same or one inside the other; `reads:` on a decision agent, which reads no files; and `reads:`
+on an agent whose folder is a link to a folder elsewhere — link the whole root instead. The tree is
+shared by every tenant: it holds how to do the work, never a tenant's data — that comes per run, in
+the input, the history or the workspace. An agent that reads `my_agents/acme/` reads it for every
+tenant.
 
 `engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its `path`
 — its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the `agents` it
@@ -549,11 +563,11 @@ move the file into the agent's folder or into a folder it reads`), an entry that
 (`tree: agent 'tagger' preloads './nope.md', which does not exist; write its path from the agent's
 folder`), an entry whose path cannot be read (`tree: cannot read <path>: Permission denied; make it
 readable to the engine`), two entries that name one path or would send one file, a link counted
-(`tree: agent 'tagger' preloads './knowledge' and './knowledge/', one inside the other; keep one`) —
-a folder entry does not send what it leaves out, so `['.', './skills/x.md']` loads — and a named
-file `Read` would refuse or that goes missing or unreadable after the list is read (`tree: agent
-'tagger' cannot preload: tools/builtins: __pycache__/x.pyc is hidden; names starting with . and
-__pycache__ are not part of the agent's folder; fix that file, or drop it from preload:`).
+(`tree: agent 'tagger' preloads './knowledge' and './knowledge/', which send the same file; keep
+one`) — a folder entry does not send what it leaves out, so `['.', './skills/x.md']` loads — and a
+named file `Read` would refuse or that goes missing or unreadable after the list is read (`tree:
+agent 'tagger' cannot preload: tools/builtins: __pycache__/x.pyc is hidden; names starting with .
+and __pycache__ are not part of the agent's folder; fix that file, or drop it from preload:`).
 
 `gitignore: true` in an `AGENT.md` leaves out what a `.gitignore` ignores, as Git would, so a folder
 kept in a repository can hold its `build/` and its logs without the agent seeing them. In the
@@ -566,15 +580,14 @@ ignored even if Git tracks it.
 
 A file so ignored is not there for that agent. It is left out of the map, of a folder `preload:`
 names, of the skills the agent has and of its fingerprint, but never its `AGENT.md` or its own
-`tools/`, and `Glob`, `Grep` and `LS` do not list
-it. `Read`, `Load`, `Grep` or `LS` naming it reads `tools/builtins: debug.log is ignored by a
-.gitignore; it is not part of the agent's folder`, and a `preload:` entry naming it is a
-`ConfigurationError` through the same message (`tree: agent 'coding' cannot preload: tools/builtins:
-debug.log is ignored by a .gitignore; it is not part of the agent's folder; fix that file, or drop
-it from preload:`). A link is judged by its own name and by where it leads. The key is per agent:
-another agent reading the same folder without `gitignore: true` sees every file. A tool's script
-still loads from `tools/` whatever a `.gitignore` says, and `AGENT.md` and the agent's own `tools/`
-stay in its fingerprint whatever one says, since the engine runs them.
+`tools/`, and `Glob`, `Grep` and `LS` do not list it. `Read`, `Load`, `Grep` or `LS` naming it reads
+`tools/builtins: debug.log is ignored by a .gitignore; it is not part of the agent's folder`, and a
+`preload:` entry naming it is a `ConfigurationError` through the same message (`tree: agent 'coding'
+cannot preload: tools/builtins: debug.log is ignored by a .gitignore; it is not part of the agent's
+folder; fix that file, or drop it from preload:`). A link is judged by its own name and by where it
+leads. The key is per agent: another agent reading the same folder without `gitignore: true` sees
+every file. A tool's script still loads from `tools/` whatever a `.gitignore` says, and `AGENT.md`
+and the agent's own `tools/` stay in its fingerprint whatever one says, since the engine runs them.
 
 A workspace sees the real files: a `Shell` command reads whatever the mount holds, ignored or not.
 `gitignore: true` is a convenience for what the agent's file tools and prompt hold, not a boundary;
@@ -686,7 +699,10 @@ out is not listed in the prompt, is not in `engine.agents[name].skills` and is n
 stays in the fingerprint as any file does. `skills:` that names a skill the agent does not have is a
 `ConfigurationError` when the tree loads — `tree: agents/support/AGENT.md keeps 'ghost' in skills:,
 a skill agent 'support' does not have; its skills are brief, close` (`it has no skills` when it has
-none) — as is a blank or padded entry, a name listed twice, or `skills:` on a decision agent.
+none), or, for a skill a `.gitignore` hides from an agent with `gitignore: true`, `tree:
+agents/support/AGENT.md keeps 'local' in skills:, a skill a .gitignore hides from agent 'support';
+stop ignoring it, or drop it from skills:` — as is a blank or padded entry, a name listed twice, or
+`skills:` on a decision agent. `public_skills:` names the same refusal for its entry.
 
 `public_skills:` in an `AGENT.md` names the skills people may call by typing `/name`. Absent or
 `none` it names none, so typing `/name` invokes nothing on an agent that does not list it;
@@ -716,10 +732,10 @@ make public is no command either: the input stays as it came, so typing the name
 skill invokes nothing and gets the answer any other text would.
 
 `public_skills:` decides what typing invokes, not what the model may open: `/secret x` reaches the
-model as text, and `secret` is still in its `SKILLS` list, where the model may open it with `Read`.
-A skill the model should not be offered is left out of `skills:`, which takes it off the list; its
-file stays readable by path, so one the model must not reach at all has to live outside the folders
-the agent reaches.
+model as text, and `secret` is still in its `SKILLS` list, for an agent that has `Read` or `Load`,
+where the model may open it with `Read`. A skill the model should not be offered is left out of
+`skills:`, which takes it off the list; its file stays readable by path, so one the model must not
+reach at all has to live outside the folders the agent reaches.
 
 Giving both ways at once is an `InputError` before any model call — `engine: a run invokes one
 skill, by skill= or by an input that starts with /<name>; got skill='escalate' and /close` — while
@@ -2338,8 +2354,8 @@ writes; its commands are processes of their own) runs on the event loop's defaul
 `loop.set_default_executor(ThreadPoolExecutor(64))`. A turn that calls no file tool never waits on
 it.
 
-The FILES map goes out with every model call, roughly 6 tokens per file. A corpus of thousands of
-files belongs behind a retrieval tool, not in an agent's folder.
+For an agent with `Read` or `Load`, the FILES map goes out with every model call, roughly 6 tokens
+per file. A corpus of thousands of files belongs behind a retrieval tool, not in an agent's folder.
 
 With reasoning on, a run's CPU grows with the history it is sent. The window is yours; see
 [Long conversations](#long-conversations).
@@ -3014,8 +3030,9 @@ out of the agent's folder, an agent's own `tools/`, `questions/` or `skills/` fo
 of it, a `skills:` or `public_skills:` that names a skill the agent does not have, holds a blank,
 padded or twice-listed entry or sits in a decision agent's `AGENT.md` (`all` and `none` included), a
 `tools:`, `skills:` or `public_skills:` that is an empty list, has no value, is a word but `all`
-or `none` or holds an entry that is not text, a `public_skills: all` over a kept skill whose name holds whitespace, a `public_skills:`
-entry that holds whitespace, an `AGENT.md` without a `name:` or a `model:` in plain text, or whose
+or `none` or holds an entry that is not text, a `public_skills: all` over a kept skill whose name
+holds whitespace, a `public_skills:` entry that holds whitespace, an `AGENT.md` without a `name:` or
+a `model:` in plain text, or whose
 `kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names to
 adapters, a model no agent runs on, an agent whose model has not its kind's method, two agents with
 one name, an agent in `agents:` or `route:` the tree does not have, an unknown key in the
@@ -3034,10 +3051,11 @@ standard-library module, a tool named like one the engine gives the agent, a `wo
 folder that holds no agent or one inside another it names, a `reads:` that is not a path from the
 agent's folder or goes above the root, names no folder of the tree, a `tools/` or `skills/` folder
 on an agent's path or a folder inside one, leaves the root, names the agent's own folder, one that
-holds it or one inside it, or names two folders one inside the other, `reads:` on a decision agent
-or on an agent whose folder is a link to a folder elsewhere, a `preload:` that is empty, has no
-value or is not a list, an entry of it that is not a path from the agent's folder, goes above the
-root, lies outside the agent's folder and the folders it reads or in a folder that holds the agent,
+holds it or one inside it, or names two folders that are the same or one inside the other (`tree:
+agent 'coding' reads '../shared' and '../shared/', the same folder or one inside the other; keep
+one`), `reads:` on a decision agent or on an agent whose folder is a link to a folder elsewhere,
+a `preload:` that is empty, has no value or is not a list, an entry of it that is not a path from
+the agent's folder, goes above the root, lies outside the agent's folder and the folders it reads or in a folder that holds the agent,
 does not exist or cannot be reached, or names the path another entry names or would send a file
 another entry sends, a link counted, a file it names that `Read` would refuse or that cannot be
 read, one skill as both `skills/x.md` and `skills/x/SKILL.md`, a question in markdown, a question's

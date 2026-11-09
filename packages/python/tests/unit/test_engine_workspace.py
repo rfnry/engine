@@ -77,6 +77,31 @@ async def test_an_agent_with_the_flag_sees_the_five_tools(tmp_path: Path, work: 
     assert {"Shell", "Job", "Jobs", "Write", "Edit"} <= set(names(llm, 0))
 
 
+async def test_a_workspace_run_shows_the_files_and_skills_only_with_a_read_to_open_them(
+    tmp_path: Path, work: Workspace
+) -> None:
+    front = "kind: generation\nmodel: strong\ndescription: D\nworkspace: true\nskills: all"
+    extra = {
+        "blind": f"name: blind\n{front}\ntools: none",
+        "reader": f"name: reader\n{front}\ntools: [Read]",
+    }
+    root = make_tree(tmp_path, extra)
+    for name in extra:
+        (root / name / "notes.md").write_text("Notes.\n", encoding="utf-8")
+        (root / name / "skills").mkdir()
+        (root / name / "skills" / "x.md").write_text("---\ndescription: do x\n---\nX\n")
+    llm = Scripted(text_reply("a"), text_reply("b"))
+    engine = Engine(root, models={"strong": llm})
+    blind = await engine.run("blind", "acme", "x", workspace=work)
+    reader = await engine.run("reader", "acme", "x", workspace=work)
+    assert isinstance(blind, Generation) and isinstance(reader, Generation)
+    assert "Read" not in names(llm, 0) and "Shell" in names(llm, 0)
+    assert "<<<FILES>>>" not in blind.system and "<<<SKILLS>>>" not in blind.system
+    assert "Read" in names(llm, 1)
+    assert "<<<FILES>>>" in reader.system and "notes.md" in reader.system
+    assert "<<<SKILLS>>>" in reader.system and "skills/x.md" in reader.system
+
+
 async def test_a_flagged_agent_without_a_workspace_is_refused_before_the_model(
     tmp_path: Path,
 ) -> None:
