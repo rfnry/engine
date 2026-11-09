@@ -610,7 +610,7 @@ async def test_a_run_tool_named_like_a_folder_tool_keeps_the_run_s_deadline(
         ("[3]", "tools"),
         (
             "",
-            "tools: it is empty; write tools: [] to keep none of the folder, file and run tools, or leave tools: out to keep them all",
+            "tools: it is empty; write tools: all to keep every tool, tools: none to keep none, or the tools to keep, such as tools: [lookup_order]",
         ),
     ],
 )
@@ -623,7 +623,7 @@ def test_a_tools_list_that_breaks_the_grammar_is_refused_naming_the_file(
     assert str(tmp_path / "shop/AGENT.md") in str(caught.value) and said in str(caught.value)
 
 
-@pytest.mark.parametrize("tools", ["[x]", "[]"])
+@pytest.mark.parametrize("tools", ["[x]", "all", "none"])
 def test_a_decision_agent_cannot_list_tools(tmp_path: Path, tools: str) -> None:
     write(
         tmp_path / "triage/AGENT.md",
@@ -637,7 +637,8 @@ def test_a_decision_agent_cannot_list_tools(tmp_path: Path, tools: str) -> None:
     ("listed", "kept"),
     [
         ("", ["Read", "Grep", "Glob", "LS", "Load", "lookup_order", "ping"]),
-        ("tools: []\n", []),
+        ("tools: none\n", []),
+        ("tools: all\n", ["Read", "Grep", "Glob", "LS", "Load", "lookup_order", "ping"]),
     ],
 )
 async def test_an_empty_tools_keeps_no_folder_file_or_run_tool_and_none_keeps_them_all(

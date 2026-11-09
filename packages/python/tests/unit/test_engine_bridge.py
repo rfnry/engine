@@ -455,7 +455,7 @@ async def test_a_run_with_no_tool_to_offer_gets_no_bridge(tmp_path: Path, root: 
     tree = make_tree(
         tmp_path,
         {
-            "coder": "name: coder\nkind: generation\nmodel: strong\ndescription: Writes and runs code\nworkspace: true\ntools: []"
+            "coder": "name: coder\nkind: generation\nmodel: strong\ndescription: Writes and runs code\nworkspace: true\ntools: none"
         },
     )
     (tree / "coder" / "tools").mkdir()

@@ -79,9 +79,7 @@ class RouteSpec(BaseModel):
         return value
 
 
-def _each_skill_once(value: list[str] | None, wanted: str) -> list[str] | None:
-    if value is None:
-        return None
+def _each_skill_once(value: list[str], wanted: str) -> list[str]:
     for entry in value:
         if not entry.strip() or entry != entry.strip():
             raise ValueError(
@@ -90,6 +88,14 @@ def _each_skill_once(value: list[str] | None, wanted: str) -> list[str] | None:
     twice = sorted({entry for entry in value if value.count(entry) > 1})
     if twice:
         raise ValueError(f"tree: {twice[0]!r} is listed twice; list each skill once")
+    return value
+
+
+def _a_word_or_names(value: list[str] | str | None, empty: str) -> list[str] | str:
+    if value is None or value == []:
+        raise ValueError(f"tree: it is empty; {empty}")
+    if isinstance(value, str) and value not in ("all", "none"):
+        raise ValueError(f"tree: write all, none or a list of names, got {value!r}")
     return value
 
 
@@ -105,9 +111,9 @@ class AgentFront(BaseModel):
     workspace: bool = False
     preload: bool = False
     reads: list[str] = Field(default_factory=list)
-    tools: list[str] | None = None
-    skills: list[str] | None = None
-    public_skills: list[str] | None = None
+    tools: list[str] | str | None = None
+    skills: list[str] | str | None = None
+    public_skills: list[str] | str | None = None
 
     @field_validator("name")
     @classmethod
@@ -135,11 +141,13 @@ class AgentFront(BaseModel):
 
     @field_validator("tools")
     @classmethod
-    def _tools_keep_each_once(cls, value: list[str] | None) -> list[str] | None:
-        if value is None:
-            raise ValueError(
-                "tree: it is empty; write tools: [] to keep none of the folder, file and run tools, or leave tools: out to keep them all"
-            )
+    def _tools_keep_each_once(cls, value: list[str] | str | None) -> list[str] | None:
+        value = _a_word_or_names(
+            value,
+            "write tools: all to keep every tool, tools: none to keep none, or the tools to keep, such as tools: [lookup_order]",
+        )
+        if isinstance(value, str):
+            return None if value == "all" else []
         for entry in value:
             if not entry.strip() or entry != entry.strip():
                 raise ValueError(
@@ -156,14 +164,26 @@ class AgentFront(BaseModel):
 
     @field_validator("skills")
     @classmethod
-    def _skills_keep_each_once(cls, value: list[str] | None) -> list[str] | None:
+    def _skills_keep_each_once(cls, value: list[str] | str | None) -> list[str] | None:
+        value = _a_word_or_names(
+            value,
+            "write skills: all to keep every skill, skills: none to keep none, or the skills to keep, such as skills: [escalate]",
+        )
+        if isinstance(value, str):
+            return None if value == "all" else []
         return _each_skill_once(value, "a skill to keep, such as skills: [escalate]")
 
     @field_validator("public_skills")
     @classmethod
-    def _public_skills_can_be_typed(cls, value: list[str] | None) -> list[str] | None:
+    def _public_skills_can_be_typed(cls, value: list[str] | str | None) -> list[str] | str | None:
+        value = _a_word_or_names(
+            value,
+            "write public_skills: none so no one can call a skill, public_skills: all so people may call every skill the agent keeps, or the skills people may call, such as public_skills: [escalate]",
+        )
+        if isinstance(value, str):
+            return None if value == "none" else value
         _each_skill_once(value, "a skill people may call, such as public_skills: [escalate]")
-        for entry in value or ():
+        for entry in value:
             if len(entry.split()) > 1:
                 raise ValueError(
                     f"tree: {entry!r} holds whitespace, so no one can type /{entry}; rename the skill to one word, such as my-skill"
@@ -718,7 +738,7 @@ def load_agent(
     merged = {
         name: skill for prefix in gives for name, skill in _skills_from(tree, prefix, path).items()
     }
-    if front.kind == "decision" and front.skills is not None:
+    if front.kind == "decision" and "skills" in front.model_fields_set:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot declare skills:; skills are for generation agents"
         )
@@ -734,17 +754,24 @@ def load_agent(
     skills = dict(
         sorted((n, s) for n, s in merged.items() if front.skills is None or n in front.skills)
     )
-    if front.kind == "decision" and front.public_skills is not None:
+    if front.kind == "decision" and "public_skills" in front.model_fields_set:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot declare public_skills:; skills are for generation agents"
         )
-    for name in front.public_skills or ():
+    if front.public_skills == "all":
+        for name in skills:
+            if len(name.split()) > 1:
+                raise ConfigurationError(
+                    f"tree: {directory}/AGENT.md makes {name!r} public through public_skills: all, and no one can type /{name}; rename the skill to one word, or list the skills people may call"
+                )
+    listed = [] if front.public_skills == "all" else front.public_skills or []
+    for name in listed:
         if name not in skills:
             have = f"its skills are {', '.join(skills)}" if skills else "it has no skills"
             raise ConfigurationError(
                 f"tree: {directory}/AGENT.md names {name!r} in public_skills:, a skill agent {agent!r} does not have; {have}"
             )
-    if front.kind == "decision" and front.tools is not None:
+    if front.kind == "decision" and "tools" in front.model_fields_set:
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot list tools:; tools are for generation agents, so give them to one it routes to"
         )
@@ -822,7 +849,9 @@ def load_agent(
         ),
         reads={name: folder.place for name, folder in held.items()},
         skills=skills,
-        public_skills=tuple(sorted(front.public_skills or ())),
+        public_skills=tuple(
+            sorted(skills if front.public_skills == "all" else front.public_skills or ())
+        ),
         skill_folders={
             posixpath.normpath(f"{prefix}/skills"): (tree / prefix / "skills").resolve()
             for prefix in gives

@@ -610,8 +610,13 @@ Names that start with `_` or `.` are not skills, and neither is an `AGENT.md` or
 directly in `skills/`: a skill file is a `<name>.md` there or a `<name>/SKILL.md`.
 
 `skills:` in an `AGENT.md` keeps exactly the skills it lists, as `tools:` does for tools:
-`skills: [brief, tone]` keeps these two, own or inherited, `skills: []` none, and an agent without
-`skills:`, or with `skills:` and no value, keeps every skill it has. A skill that `skills:` leaves
+`skills: [brief, tone]` keeps these two, own or inherited, `skills: none` none, and an agent with
+`skills: all`, or without `skills:`, keeps every skill it has. `all` and `none` are words only on
+their own: inside a list they are names, so `skills: [all]` keeps a skill called `all`. An empty
+list, a `skills:` with no value or any other word is a `ConfigurationError` naming the key
+(`frontmatter: invalid agent agents/support/AGENT.md; skills: it is empty; write skills: all to keep every
+skill, skills: none to keep none, or the skills to keep, such as skills: [escalate]`, or `write all, none or a
+list of names, got 'brief'`), and so are `tools:` and `public_skills:` written alike. A skill that `skills:` leaves
 out is not listed in the prompt, is not in `engine.agents[name].skills` and is no `skill=` — a
 `NotFoundError` — but its file stays a file of the folder: `Read` reaches it by its path, and it
 stays in the fingerprint as any file does. `skills:` that names a skill the agent does not have is a
@@ -619,15 +624,21 @@ stays in the fingerprint as any file does. `skills:` that names a skill the agen
 a skill agent 'support' does not have; its skills are brief, close` (`it has no skills` when it has
 none) — as is a blank or padded entry, a name listed twice, or `skills:` on a decision agent.
 
-`public_skills:` in an `AGENT.md` names the skills people may call by typing `/name`. Absent, empty
-(`[]`) or with no value it names none, so typing `/name` invokes nothing on an agent that does not
-list it. `engine.agents[name].public_skills` is the menu a consumer shows people: the public skills
+`public_skills:` in an `AGENT.md` names the skills people may call by typing `/name`. Absent or
+`none` it names none, so typing `/name` invokes nothing on an agent that does not list it;
+`public_skills: all` makes every skill the agent keeps public, and an empty list or no value is a
+`ConfigurationError` (`public_skills: it is empty; write public_skills: none so no one can call a
+skill, public_skills: all so people may call every skill the agent keeps, or the skills people may
+call, such as public_skills: [escalate]`). `engine.agents[name].public_skills` is the menu a consumer shows people: the public skills
 in name order, each to its description, `{}` when there are none. A name in it must be a skill the
 agent has after `skills:` — `tree: agents/support/AGENT.md names 'ghost' in public_skills:, a skill
 agent 'support' does not have; its skills are brief, close` (`it has no skills` when it has none) —
 and, as for `skills:`, a blank or padded entry, a name listed twice, or `public_skills:` on a
 decision agent is a `ConfigurationError` when the tree loads, as is a name that holds whitespace,
-since no one could type it (`skills:` and `skill=` still take such a name).
+since no one could type it (`skills:` and `skill=` still take such a name); `public_skills: all`
+with a kept skill of that kind is the same error, naming it (`tree: agents/support/AGENT.md makes 'my
+skill' public through public_skills: all, and no one can type /my skill; rename the skill to one
+word, or list the skills people may call`).
 
 `engine.run` reads an input for a command when it is a string that starts with `/`, at its very
 first character, or a list whose first part is a `Text` that does. Its first word is the text up to
@@ -2494,8 +2505,8 @@ an agent, at any depth below it or itself, or a folder inside another one named,
 Every tool an agent gets is on: the tools of its folders, the file tools, and the tools of the run,
 given to its own run with `run(tools=)` or to the run that delegated or routed to it, below.
 `tools:` in its `AGENT.md` keeps exactly the ones it lists — `tools: [lookup_order, Read]` keeps
-only these, `tools: []` none of them, leaving the agent only the tools that come with their own
-declarations, and an agent without `tools:` keeps every one — so an agent leaves out a tool it
+only these, `tools: none` none of them, leaving the agent only the tools that come with their own
+declarations, and an agent with `tools: all` or without `tools:` keeps every one — so an agent leaves out a tool it
 inherits, from a folder above or from the run that delegated to it, by listing the ones it keeps.
 In the tree above, billing keeps `lookup_order` from `customer_support/`, its own `refund` and
 `Read`, leaving out `notify`, the other file tools and any tool a run would give it:
@@ -2934,7 +2945,9 @@ twice, a tool's file that links out of its `tools/` folder, a file or folder who
 UTF-8, a file an agent is made of that cannot be read, a question's file or an `AGENT.md` that links
 out of the agent's folder, an agent's own `tools/`, `questions/` or `skills/` folder that links out
 of it, a `skills:` or `public_skills:` that names a skill the agent does not have, holds a blank,
-padded or twice-listed entry or sits in a decision agent's `AGENT.md`, a `public_skills:` entry that
+padded or twice-listed entry or sits in a decision agent's `AGENT.md` (`all` and `none` included), a
+`tools:`, `skills:` or `public_skills:` that is an empty list, has no value or is a word but `all` or
+`none`, a `public_skills: all` over a kept skill whose name holds whitespace, a `public_skills:` entry that
 holds whitespace, a `tasks/` folder in an agent's folder, whatever it holds (`tree: tasks are gone
 (agents/support/tasks/triage.md); make it a skill, or say it in the input`), an `AGENT.md` without a
 `name:` or a `model:` in plain text, or whose `kind:` is neither `generation` nor `decision`, a

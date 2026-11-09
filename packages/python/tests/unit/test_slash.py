@@ -50,9 +50,7 @@ def sent(llm: Scripted) -> Content:
     return llm.calls[0][1][-1].content
 
 
-@pytest.mark.parametrize(
-    "line", ["", "public_skills:\n", "public_skills: []\n"], ids=["absent", "null", "empty"]
-)
+@pytest.mark.parametrize("line", ["", "public_skills: none\n"], ids=["absent", "none"])
 async def test_no_skill_is_public_by_default(tmp_path: Path, line: str) -> None:
     root = agents(tmp_path, line)
     run, llm = await ran(root, "/escalate x")
@@ -88,7 +86,7 @@ def test_public_skills_lists_them_with_their_descriptions(tmp_path: Path) -> Non
     [
         ("public_skills: [ghost]\n", "ghost", "its skills are close, escalate"),
         ("skills: [close]\npublic_skills: [escalate]\n", "escalate", "its skills are close"),
-        ("skills: []\npublic_skills: [escalate]\n", "escalate", "it has no skills"),
+        ("skills: none\npublic_skills: [escalate]\n", "escalate", "it has no skills"),
     ],
     ids=["unknown", "left-out-by-skills", "no-skills"],
 )
@@ -151,7 +149,9 @@ async def test_a_name_that_holds_whitespace_stays_a_skill_the_code_may_invoke(
     assert sent(llm) == [Text(text="<<<SKILL skills/my skill.md>>>\nDo it."), Text(text="x")]
 
 
-@pytest.mark.parametrize("line", ["public_skills: [escalate]\n", "public_skills: []\n"])
+@pytest.mark.parametrize(
+    "line", ["public_skills: [escalate]\n", "public_skills: all\n", "public_skills: none\n"]
+)
 def test_public_skills_on_a_decision_agent_is_refused(tmp_path: Path, line: str) -> None:
     write(
         tmp_path / "grader/AGENT.md",
