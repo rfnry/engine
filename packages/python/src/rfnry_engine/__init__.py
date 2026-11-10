@@ -89,7 +89,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Backend, JobInfo, Local, Process, Workspace
 
-__version__ = "0.1.10"
+__version__ = "0.1.11"
 
 __all__ = [
     "AgentInfo",
