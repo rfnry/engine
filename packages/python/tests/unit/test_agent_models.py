@@ -124,7 +124,7 @@ async def test_an_agent_whose_model_was_not_given_is_refused_when_it_runs_while_
     engine = Engine(pair(tmp_path), models={"strong": Scripted(text_reply("alone"))})
     with pytest.raises(
         ConfigurationError,
-        match="^engine: agent 'writer' runs on model 'fast', which this engine was not given$",
+        match="^engine: agent 'writer' runs on model 'fast', which neither the engine nor the run was given$",
     ):
         await engine.run("writer", "acme", "x")
     alone = await engine.run("lead", "acme", "x")
@@ -140,8 +140,10 @@ async def test_a_delegate_to_an_agent_whose_model_was_not_given_reads_as_a_tool_
     run = await engine.run("lead", "acme", "x")
     assert isinstance(run, Generation)
     step = run.steps[0]
-    assert step.is_error and "runs on model 'fast', which this engine was not given" in str(
-        step.result
+    assert (
+        step.is_error
+        and "runs on model 'fast', which neither the engine nor the run was given"
+        in str(step.result)
     )
 
 
@@ -166,7 +168,7 @@ async def test_a_router_is_refused_before_its_questions_when_a_target_s_model_wa
     engine = Engine(tmp_path, models={"judge": judge})
     with pytest.raises(
         ConfigurationError,
-        match="routes to agent 'writer', which runs on model 'fast', which this engine was not given",
+        match="routes to agent 'writer', which runs on model 'fast', which neither the engine nor the run was given",
     ):
         await engine.run("triage", "acme", "x")
     assert judge.calls == []

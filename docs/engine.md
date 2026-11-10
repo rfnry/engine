@@ -249,15 +249,31 @@ engine = Engine(root, models={"strong": strong_llm, "fast": fast_llm, "judge": d
 
 A lead on `strong` delegating to a writer on `fast` is two lines in two `AGENT.md` files, and each
 runs on its own adapter, in one record that names the model of every run. `models` is required,
-and `{}` is allowed for a tree that is only read. Its keys are plain names, like an agent's, and
-each value has `generate` or `decide`; anything else is a `ConfigurationError` when the engine is
-built. The mapping is checked against the tree then too: a model no agent runs on is refused with
-the names the tree uses (`no agent runs on model 'fsat'; the tree's agents run on judge, strong`),
-and so is an agent whose kind its model cannot serve (`agent 'writer' is a generation agent, and
+and `{}` is allowed for a tree that is only read or whose runs bring their own. Its keys are plain
+names, like an agent's, and each value has `generate` or `decide`; anything else is a
+`ConfigurationError` when the engine is built. The mapping is checked against the tree then too: a
+model neither an agent nor a mode of one runs on is refused with the names the tree uses (`no agent
+runs on model 'fsat'; the tree's agents run on judge, strong`), and so is an agent or mode whose
+kind its model cannot serve (`agent 'writer' is a generation agent, and
 model 'judge' has no generate()`). An agent whose model was not given is not an error until it
 runs: the others run, and running it, delegating to it or routing to it is a `ConfigurationError`
-saying which model it needs (`agent 'writer' runs on model 'fast', which this engine was not
-given`), before any model is called. `engine.models` holds the mapping given.
+saying which model it needs (`agent 'writer' runs on model 'fast', which neither the engine nor
+the run was given`), before any model is called. `engine.models` holds the mapping given.
+
+A run can bring its own models, over the engine's by key, for itself and every run it delegates or
+routes to. A consumer that lets people switch models then needs one engine and one worker pool, not
+one per model:
+
+```python
+engine = Engine(root, models={})
+run = await engine.run("drafter", "acme", "Draft it", models={"fast": fast_llm})
+```
+
+A run's mapping is checked like the engine's, and a key left out stays the engine's. The kind check
+runs when the run starts, for the run's agent; a delegated or routed run is checked when it starts.
+Runs at once each keep their own adapters. `run.model` records what the reply reports, else the
+adapter's `model` attribute. `engine.tool(models=)` and `refinery.replay(models=)` take the same
+mapping; a run does not lend its models to an `engine.tool` it calls.
 
 Fakes are enough to run everything in tests:
 
@@ -3081,8 +3097,8 @@ or `none` or holds an entry that is not text, a `public_skills: all` over an off
 holds whitespace, a `public_skills:` entry that holds whitespace, an `AGENT.md` without a `name:` or
 a `model:` in plain text, or whose
 `kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names to
-adapters, a model no agent runs on, an agent whose model has not its kind's method, two agents with
-one name, an agent in `agents:` or `route:` the tree does not have, an unknown key in the
+adapters, given to the engine or a run, a model neither an agent nor a mode runs on, an agent
+whose model has not its kind's method, two agents with one name, an agent in `agents:` or `route:` the tree does not have, an unknown key in the
 frontmatter of an `AGENT.md` (`frontmatter: unknown key 'route.min_confidance' in
 agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a `description:` that is not a
 string in a file the map would show or a skill, a decision agent with `preload:`, `workspace: true`,

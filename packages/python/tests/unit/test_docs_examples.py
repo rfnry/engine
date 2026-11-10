@@ -122,6 +122,14 @@ SETUPS = {
             )
         }
     ),
+    "engine = Engine(root, models={})": Setup(
+        replace={
+            'models={"fast": fast_llm})': (
+                'models={"fast": fast_llm})\n'
+                "assert run.model == 'fast-1' and dict(engine.models) == {}"
+            )
+        }
+    ),
     "class Budget:": Setup(
         replies=(delegating("triage"),),
         intent="technical",

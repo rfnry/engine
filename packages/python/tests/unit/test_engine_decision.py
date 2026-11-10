@@ -153,7 +153,7 @@ async def test_a_route_to_an_agent_without_its_model_is_refused_before_the_decis
     fixtures: Path,
 ) -> None:
     dm = Fixed(_intent("other", 0.9))
-    message = "^engine: agent 'frontdesk' routes to agent 'billing', which runs on model 'strong', which this engine was not given$"
+    message = "^engine: agent 'frontdesk' routes to agent 'billing', which runs on model 'strong', which neither the engine nor the run was given$"
     with pytest.raises(ConfigurationError, match=message):
         await Engine(fixtures, models={"judge": dm}).run("frontdesk", "acme", "x")
     assert dm.calls == []

@@ -1,7 +1,7 @@
 import asyncio
 import json
 from collections import deque
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from rfnry_engine.engine import Approve, Engine, _copied
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
-from rfnry_engine.models import HistoryLike
+from rfnry_engine.models import DecisionModel, GenerationModel, HistoryLike
 from rfnry_engine.records import READ_BACK, Decision, Fingerprint, Generation, Run
 from rfnry_engine.refinery.conflicts import find_conflicts
 from rfnry_engine.refinery.export import (
@@ -422,6 +422,7 @@ class Refinery:
         concurrency: int = 1,
         repeat: int = 1,
         conversation: Callable[[Run], Sequence[object] | HistoryLike] | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
     ) -> AsyncGenerator[Replay]:
         if not scope:
             raise InputError("refinery: scope is required")
@@ -441,6 +442,7 @@ class Refinery:
             raise InputError(f"refinery: repeat must be at least 1, got {repeat}")
         if agent not in candidate.agents:
             raise NotFoundError(f"refinery: the candidate has no agent {agent!r}")
+        merged = candidate._run_models(models)
 
         async def rerun(recorded: Run) -> Run:
             if recorded.mode is not None and recorded.mode not in candidate._agents[agent].modes:
@@ -468,6 +470,7 @@ class Refinery:
                     tools=tools,
                     workspace=workspace,
                     record=False,
+                    models=merged,
                 )
             sent = run.messages[-1].content if run.messages else None
             if run.skill is not None and isinstance(sent, list):
@@ -503,6 +506,7 @@ class Refinery:
                 tools=tools,
                 workspace=workspace,
                 record=False,
+                models=merged,
             )
 
         async def pair(kept: Run, held: list[Label], attempt: int) -> Replay:

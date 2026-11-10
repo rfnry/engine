@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
-from rfnry_engine.models import HistoryLike, ToolCall
+from rfnry_engine.models import DecisionModel, GenerationModel, HistoryLike, ToolCall
 from rfnry_engine.records import EventHandler
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.builtins import BUILTINS, builtins, load_tool
@@ -51,6 +51,7 @@ class EngineTools(Tools):
         on_event: EventHandler | None = None,
         stop: Callable[[], Stop | None] | None = None,
         invoked: str | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
     ) -> None:
         engine._open()
         if not scope:
@@ -91,7 +92,8 @@ class EngineTools(Tools):
                     )
             given = given.without(*(name for name in given.names if name not in spec.keep))
         room = workspace if spec.workspace else None
-        media_types = getattr(engine.models.get(spec.model), "media_types", None)
+        merged = engine._run_models(models)
+        media_types = getattr(merged.get(spec.model), "media_types", None)
         backend = room.backend if room else None
         reach = from_agent(spec.path, {**spec.reads, **spec.skill_folders})
         withheld = _withheld_on(spec, invoked)
@@ -124,7 +126,9 @@ class EngineTools(Tools):
             )
         if spec.agents:
             items.append(
-                delegate_tool(engine, spec, scope, tools, workspace, tags, approve, on_event, stop)
+                delegate_tool(
+                    engine, spec, scope, tools, workspace, tags, approve, on_event, stop, merged
+                )
             )
         super().__init__(map(_own, [*items, given]))
         self._in_workers = frozenset(tool.name for tool in folder)

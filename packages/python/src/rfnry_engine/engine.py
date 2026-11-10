@@ -126,6 +126,7 @@ class _Options:
     on_event: EventHandler | None
     tools: ToolsLike | None
     workspace: Workspace | None
+    models: Mapping[str, GenerationModel | DecisionModel]
     stop: Stop | None = None
     inbox: asyncio.Queue[Any] | None = None
     skill: str | None = None
@@ -503,7 +504,7 @@ def _settings(model: object) -> dict[str, JsonValue] | None:
 
 def _not_given(spec: AgentSpec) -> NoReturn:
     raise ConfigurationError(
-        f"engine: agent {spec.name!r} runs on model {spec.model!r}, which this engine was not given"
+        f"engine: agent {spec.name!r} runs on model {spec.model!r}, which neither the engine nor the run was given"
     )
 
 
@@ -530,23 +531,46 @@ def _models(
     return dict(models)
 
 
-def _check_models(
+def _of_its_kind(spec: AgentSpec, model: GenerationModel | DecisionModel) -> None:
+    if spec.kind == "generation" and not isinstance(model, GenerationModel):
+        _kind_clash(spec, "generate")
+    if spec.kind == "decision" and not isinstance(model, DecisionModel):
+        _kind_clash(spec, "decide")
+
+
+def _adapter(
+    spec: AgentSpec, models: Mapping[str, GenerationModel | DecisionModel]
+) -> GenerationModel | DecisionModel:
+    model = models.get(spec.model)
+    if model is None:
+        _not_given(spec)
+    _of_its_kind(spec, model)
+    return model
+
+
+def _with_modes(agents: Mapping[str, AgentSpec]) -> list[AgentSpec]:
+    return [held for spec in agents.values() for held in (spec, *spec.modes.values())]
+
+
+def _check_names(
     agents: Mapping[str, AgentSpec], models: Mapping[str, GenerationModel | DecisionModel]
 ) -> None:
-    used = sorted({spec.model for spec in agents.values()})
+    used = sorted({spec.model for spec in _with_modes(agents)})
     for name in sorted(models):
         if name not in used:
             raise ConfigurationError(
                 f"engine: no agent runs on model {name!r}; the tree's agents run on {', '.join(used)}"
             )
-    for spec in agents.values():
+
+
+def _check_models(
+    agents: Mapping[str, AgentSpec], models: Mapping[str, GenerationModel | DecisionModel]
+) -> None:
+    _check_names(agents, models)
+    for spec in _with_modes(agents):
         model = models.get(spec.model)
-        if model is None:
-            continue
-        if spec.kind == "generation" and not isinstance(model, GenerationModel):
-            _kind_clash(spec, "generate")
-        if spec.kind == "decision" and not isinstance(model, DecisionModel):
-            _kind_clash(spec, "decide")
+        if model is not None:
+            _of_its_kind(spec, model)
 
 
 def _groups(agents: Mapping[str, AgentSpec], workers: Mapping[str, int] | None) -> dict[str, int]:
@@ -674,6 +698,15 @@ class Engine:
             for name, spec in self._agents.items()
         }
 
+    def _run_models(
+        self, models: Mapping[str, GenerationModel | DecisionModel] | None
+    ) -> Mapping[str, GenerationModel | DecisionModel]:
+        if models is None:
+            return self._models
+        given = _models(models)
+        _check_names(self._agents, given)
+        return {**self._models, **given}
+
     def _spec(self, agent: str, mode: str | None = None) -> AgentSpec:
         spec = self._agents.get(agent)
         if spec is None:
@@ -708,6 +741,7 @@ class Engine:
         inbox: asyncio.Queue[Any] | None = None,
         tags: Mapping[str, str] | None = None,
         approve: Approve | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
     ) -> Run:
         return await self._start(
             agent,
@@ -727,6 +761,7 @@ class Engine:
             inbox=inbox,
             tags=tags,
             approve=approve,
+            models=models,
             slash=True,
         )
 
@@ -751,6 +786,7 @@ class Engine:
         inbox: asyncio.Queue[Any] | None = None,
         tags: Mapping[str, str] | None = None,
         approve: Approve | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
         slash: bool = False,
     ) -> Run:
         self._open()
@@ -777,6 +813,7 @@ class Engine:
             skill, input = slashed
         invoked = _skilled(spec, skill)
         tagged = _tags(tags)
+        merged = self._run_models(models)
         held = history if history is None or isinstance(history, HistoryLike) else list(history)
         given = await _window(held, start)
         _paired(given, start)
@@ -787,6 +824,7 @@ class Engine:
             on_event=on_event,
             tools=tools,
             workspace=workspace,
+            models=merged,
             stop=stop,
             inbox=inbox,
             skill=invoked,
@@ -832,6 +870,7 @@ class Engine:
         approve: Approve | None = None,
         on_event: EventHandler | None = None,
         stop: Callable[[], Stop | None] | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
     ) -> Tools:
         if not scope:
             raise InputError("engine: scope is required")
@@ -846,6 +885,7 @@ class Engine:
                 "add one to use it as a tool"
             )
         tagged = _tags(tags)
+        merged = self._run_models(models)
 
         async def body(args: dict[str, Any]) -> Result:
             watching, held = hooks(on_event, stop)
@@ -862,6 +902,7 @@ class Engine:
                 on_event=watching,
                 stop=held,
                 record=RECORDING.get(),
+                models=merged,
             )
             return run_result(returned(run))
 
@@ -910,11 +951,8 @@ class Engine:
         parent_run_id: str | None,
     ) -> Decision:
         caller = _caller(scope)
-        model_ = self._models.get(spec.model)
-        if model_ is None:
-            _not_given(spec)
-        model_ = cast(DecisionModel, model_)
-        self._check_routes(spec, set())
+        model_ = cast(DecisionModel, _adapter(spec, options.models))
+        self._check_routes(spec, set(), options.models)
         folder = {*spec.questions, *spec.scripted}
         clash = [qid for qid in options.questions if qid in folder]
         if clash:
@@ -1054,16 +1092,21 @@ class Engine:
             raise failed.exceptions[0] from None
         return {qid: task.result() for qid, task in filling.items()}
 
-    def _check_routes(self, spec: AgentSpec, seen: set[str]) -> None:
+    def _check_routes(
+        self,
+        spec: AgentSpec,
+        seen: set[str],
+        models: Mapping[str, GenerationModel | DecisionModel],
+    ) -> None:
         seen.add(spec.name)
         for target in spec.route.to.values() if spec.route is not None else []:
             routed = self._agents[target]
-            if routed.model not in self._models:
+            if routed.model not in models:
                 raise ConfigurationError(
-                    f"engine: agent {spec.name!r} routes to agent {target!r}, which runs on model {routed.model!r}, which this engine was not given"
+                    f"engine: agent {spec.name!r} routes to agent {target!r}, which runs on model {routed.model!r}, which neither the engine nor the run was given"
                 )
             if routed.kind == "decision" and target not in seen:
-                self._check_routes(routed, seen)
+                self._check_routes(routed, seen, models)
 
     async def _generation(
         self,
@@ -1074,10 +1117,7 @@ class Engine:
         parent_run_id: str | None,
     ) -> Generation:
         caller = _caller(scope)
-        model_ = self._models.get(spec.model)
-        if model_ is None:
-            _not_given(spec)
-        model_ = cast(GenerationModel, model_)
+        model_ = cast(GenerationModel, _adapter(spec, options.models))
         run_id = uuid4().hex
         started = time.monotonic()
         at = _now()
@@ -1099,6 +1139,7 @@ class Engine:
             history=options.source,
             start=options.start,
             invoked=options.skill,
+            models=options.models,
         )
         room = options.workspace if spec.workspace else None
         barred = WORKSPACE_NAMES | {DELEGATE_TOOL, OUTPUT_TOOL}
