@@ -22,7 +22,7 @@ from rfnry_engine.models import Reply, ToolCall
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.workers.pool import CAP, CLOSED, Helper, Script, WorkerPool, Workers, _Worker
 
-from .fakes import Scripted, delegating, text_reply
+from .fakes import Answering, Scripted, delegating, text_reply
 from .trees import write_folder
 
 CALL = {"scope": "acme"}
@@ -1612,6 +1612,8 @@ MEET = (
     "    return 'met'\n"
 )
 LONG = "def run(args, call):\n    return 'x' * args['size']\n"
+CALLS_PID = Reply(tool_calls=[ToolCall(id="c1", name="pid", args={})], stop_reason="tool_use")
+AREA = '{"type": "choice", "instructions": "Which?", "options": {"other": null, "billing": null}}'
 
 
 def _engine(folder: Path, **limits: Any) -> Engine:
@@ -1871,13 +1873,37 @@ async def test_a_delegated_run_uses_its_own_agents_worker(tmp_path: Path) -> Non
         files=PID_FILES,
     )
     lead = Scripted(delegating("helper"), text_reply("done"))
-    helper = Scripted(
-        Reply(tool_calls=[ToolCall(id="c1", name="pid", args={})], stop_reason="tool_use"),
-        text_reply("done"),
-    )
+    helper = Scripted(CALLS_PID, text_reply("done"))
     async with Engine(folder, models={"m": lead, "h": helper}) as engine:
         await engine.run("lead", "acme", "x")
         front = engine._workers.pool(engine._spec("lead"))
+        [process] = engine._workers.pool(engine._spec("helper"))._workers
+        assert front._workers == [None]
+        assert process is not None and str(process.pid) in str(helper.calls[1][1])
+
+
+async def test_a_routed_run_uses_its_own_agents_worker(tmp_path: Path) -> None:
+    folder = write_folder(
+        tmp_path,
+        {
+            "triage": {
+                "kind": "decision",
+                "model": "judge",
+                "instructions": "a.md",
+                "worker": "front",
+                "questions": ["q/area.json"],
+                "orchestration": {"route": {"by": "area", "to": {"billing": "helper"}}},
+            },
+            "helper": {**PICKS_PID, "model": "h", "worker": "back"},
+        },
+        workers={"front": {"processes": 1}, "back": {"processes": 1}},
+        tools=PID_TOOL,
+        files={**PID_FILES, "q/area.json": AREA},
+    )
+    helper = Scripted(CALLS_PID, text_reply("done"))
+    async with Engine(folder, models={"judge": Answering(), "h": helper}) as engine:
+        await engine.run("triage", "acme", "x")
+        front = engine._workers.pool(engine._spec("triage"))
         [process] = engine._workers.pool(engine._spec("helper"))._workers
         assert front._workers == [None]
         assert process is not None and str(process.pid) in str(helper.calls[1][1])

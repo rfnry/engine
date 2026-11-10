@@ -2574,11 +2574,11 @@ package named `tools` is your server's code like any other: what counts is the f
 file lies in, not its name. That catches a mistake; it is not a sandbox, and a script is trusted as
 your server's code is.
 
-A tool runs in a worker: a process the engine starts with your server's interpreter, so it has the
-packages your server has, which runs the scripts of its group's agents — their tools' and their
-questions' ([Decision agents](#decision-agents)) — and serves their calls. Workers run on POSIX
-systems only, Linux and macOS, as `Local` does: each is a session of its own, stopped with every
-process it started by signalling its process group. The scripts and their
+A tool runs in a worker: a named set of processes the engine starts with your server's interpreter,
+so they have the packages your server has. They run the scripts of the agents and modes that pick
+it — their tools' and their questions' ([Decision agents](#decision-agents)) — and serve their
+calls. Workers run on POSIX systems only, Linux and macOS, as `Local` does: each process is a session
+of its own, stopped with every process it started by signalling its process group. The scripts and their
 helpers are read when the tree loads, as skills are — the text the import check read and
 the fingerprint covers — and a worker runs that text, under each file's own path, so `__file__`
 still finds the data beside it: an edit to a tool reaches the next `Engine`, never the one running,

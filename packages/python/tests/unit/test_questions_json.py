@@ -443,6 +443,45 @@ async def test_a_question_script_runs_in_its_agent_s_worker(tmp_path: Path) -> N
     assert mine == str(tool) and theirs != mine
 
 
+async def test_a_mode_s_question_script_runs_in_the_mode_s_worker(tmp_path: Path) -> None:
+    pid = "import os\ndef run(input, call):\n    return {'options': {str(os.getpid()): 'Me', 'x': 'X'}}\n"
+    write_folder(
+        tmp_path,
+        {
+            "triage": {
+                "kind": "decision",
+                "model": "judge",
+                "instructions": "a.md",
+                "worker": "front",
+                "questions": ["q/order.json"],
+                "modes": {"chat": {"worker": "back"}},
+            },
+            "support": {
+                "kind": "generation",
+                "model": "strong",
+                "instructions": "a.md",
+                "worker": "back",
+                "tools": {"include": ["pid"]},
+            },
+        },
+        workers={"front": {"processes": 1}, "back": {"processes": 1}},
+        tools={"pid": {"module": "support/pid.py", "description": "Pid"}},
+        files={
+            "a.md": "Work.\n",
+            "q/order.json": '{"type": "choice", "instructions": "Which?"}',
+            "q/order.py": pid,
+            "support/pid.py": "import os\ndef run(args, call):\n    return os.getpid()\n",
+        },
+    )
+    async with Engine(tmp_path, models={"judge": Answering()}) as engine:
+        chat = await engine.run("triage", "acme", "x", mode="chat")
+        entry = await engine.run("triage", "acme", "x")
+        tool = await EngineTools(engine, agent="support", scope="acme").dispatch("pid", {})
+    assert isinstance(chat, Decision) and isinstance(entry, Decision)
+    in_mode, on_entry = (options(run.questions)[0] for run in (chat, entry))
+    assert in_mode == str(tool) and on_entry != in_mode
+
+
 def test_a_question_script_is_part_of_the_agent_fingerprint(tmp_path: Path) -> None:
     matcher(tmp_path)
     before = load_tree(tmp_path)["matcher"].fingerprint

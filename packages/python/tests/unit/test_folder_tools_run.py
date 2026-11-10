@@ -767,7 +767,7 @@ async def test_a_worker_s_agents_share_its_processes(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("cut", ["while-a-worker-spawns", "as-it-starts"])
-async def test_a_cancelled_close_still_stops_every_worker_of_a_group(
+async def test_a_cancelled_close_still_stops_every_process_of_a_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut: str
 ) -> None:
     write_folder(
@@ -835,7 +835,7 @@ async def test_workers_holds_a_script_once_per_pool_however_many_agents_see_it(
     ]
 
 
-async def test_two_tools_folders_of_one_worker_group_hold_a_tool_of_one_name_each(
+async def test_two_tools_folders_of_one_worker_hold_a_tool_of_one_name_each(
     tmp_path: Path,
 ) -> None:
     for side in ("left", "right"):
