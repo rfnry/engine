@@ -423,7 +423,7 @@ async def test_a_run_missing_a_name_lists_what_its_sections_grant(
 
 async def test_exclude_drops_exactly_the_workspace_tool_it_names(tmp_path: Path) -> None:
     folder = _folder(
-        tmp_path, {}, {}, include=["Write"], section={"exclude": ["Shell"]}, workspace=True
+        tmp_path, {}, {}, include=["Shell"], section={"exclude": ["Write"]}, workspace=True
     )
     room_path = tmp_path / "room"
     room_path.mkdir()
@@ -434,9 +434,80 @@ async def test_exclude_drops_exactly_the_workspace_tool_it_names(tmp_path: Path)
     ):
         await engine.run("a", "acme", "go", workspace=room)
         surface = EngineTools(engine, agent="a", scope="acme", workspace=room)
-        with pytest.raises(InputError, match=r"^tools: unknown tool 'Shell'$"):
-            await surface.dispatch("Shell", {"command": "echo hi"})
-    assert _offered(model) == sorted(set(WORKSPACE_TOOLS) - {"Shell"})
+        with pytest.raises(InputError, match=r"^tools: unknown tool 'Write'$"):
+            await surface.dispatch("Write", {"path": "x.txt", "content": "x"})
+    assert _offered(model) == sorted(set(WORKSPACE_TOOLS) - {"Write"})
+    assert not (room_path / "x.txt").exists()
+
+
+@pytest.mark.parametrize(
+    "dropped",
+    [["Shell"], ["Job"], ["Jobs"], ["Shell", "Job"], ["Job", "Jobs"]],
+    ids=lambda names: "-".join(names),
+)
+def test_excluding_some_of_shell_job_and_jobs_is_refused(
+    tmp_path: Path, dropped: list[str]
+) -> None:
+    folder = _folder(
+        tmp_path, {}, {}, include=["Write"], section={"exclude": dropped}, workspace=True
+    )
+    shown = ", ".join(sorted(dropped))
+    _refused(
+        folder,
+        rf"^compiled: agent 'a' lists only {shown} of Shell, Job and Jobs in tools\.exclude; Shell can start a job only Job and Jobs can read or stop, so exclude the three together or none of them",
+    )
+
+
+async def test_excluding_shell_job_and_jobs_together_is_valid(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {},
+        {},
+        include=["Write"],
+        section={"exclude": ["Shell", "Job", "Jobs"]},
+        workspace=True,
+    )
+    room_path = tmp_path / "room"
+    room_path.mkdir()
+    model = Scripted(text_reply("done"))
+    async with (
+        Engine(folder, models={"m": model}) as engine,
+        Workspace(Local(room_path), scope="acme") as room,
+    ):
+        await engine.run("a", "acme", "go", workspace=room)
+    assert _offered(model) == ["Edit", "Write"]
+
+
+def test_a_mode_can_complete_the_three_on_an_entry_that_needs_a_mode(tmp_path: Path) -> None:
+    entry = {
+        "kind": "generation",
+        "model": "m",
+        "workspace": True,
+        "tools": {"exclude": ["Shell"]},
+        "modes": {"chat": {"instructions": "a.md", "tools": {"exclude": ["Job", "Jobs"]}}},
+    }
+    folder = write_folder(tmp_path, {"a": entry}, files={"a.md": "Work.\n"})
+    assert load_folder(folder)["a"].modes["chat"].keep == ["Edit", "Write"]
+
+
+def test_a_delegate_target_that_does_not_exist_is_refused_with_delegate_excluded(
+    tmp_path: Path,
+) -> None:
+    folder = write_folder(
+        tmp_path,
+        {
+            "a": {
+                **GENERATION,
+                "tools": {"exclude": ["Delegate"]},
+                "orchestration": {"delegate_to": ["ghost"]},
+            },
+        },
+        files={"a.md": "Work.\n"},
+    )
+    _refused(
+        folder,
+        r"^compiled: agent 'a' names 'ghost' in delegate_to or route, and rfnry\.yaml holds no such agent",
+    )
 
 
 async def test_exclude_takes_delegation_away(tmp_path: Path) -> None:
@@ -861,6 +932,38 @@ async def test_a_module_one_tool_names_and_another_imports_loads_once(tmp_path: 
         got: list[Any] = [await surface.dispatch(name, {}) for name in ("one", "other", "one")]
     assert got == [1, 2, 3]
     assert _loads(folder) == ["other"]
+
+
+@pytest.mark.parametrize(
+    ("installed", "beside"),
+    [("a", "b"), ("b", "a")],
+    ids=["installed-first", "beside-first"],
+)
+async def test_a_module_beside_a_tool_wins_over_an_installed_one_another_folder_imported(
+    tmp_path: Path, installed: str, beside: str
+) -> None:
+    folder = _folder(
+        tmp_path,
+        {
+            "installed": {"module": f"tools/{installed}/one.py", "description": "Uses yaml"},
+            "beside": {"module": f"tools/{beside}/two.py", "description": "Uses its own"},
+        },
+        {
+            f"tools/{installed}/one.py": (
+                "import yaml as first\n"
+                "def run(args, call):\n"
+                "    import yaml as again\n"
+                "    return again is first and first.safe_load('2')\n"
+            ),
+            f"tools/{beside}/two.py": "import yaml\ndef run(args, call):\n    return yaml.VALUE\n",
+            f"tools/{beside}/yaml.py": "VALUE = 'beside'\n",
+        },
+    )
+    async with Engine(folder, models={"m": Scripted()}) as engine:
+        surface = EngineTools(engine, agent="a", scope="acme")
+        assert await surface.dispatch("beside", {}) == "beside"
+        answer: Any = await surface.dispatch("installed", {})
+    assert answer == 2
 
 
 async def test_a_call_holds_a_thread_only_when_its_function_takes_one(tmp_path: Path) -> None:

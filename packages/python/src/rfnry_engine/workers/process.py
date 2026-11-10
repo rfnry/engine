@@ -97,8 +97,9 @@ def _load(
         folders.setdefault(path.parent, {})[script["key"]] = (path, script["source"])
     loaded: dict[str, ModuleType | str] = {}
     for folder, members in folders.items():
-        before = set(sys.modules)
         finder = _Helpers(helpers.get(str(folder), {}))
+        aside = {name: sys.modules.pop(name) for name in finder.sources if name in sys.modules}
+        before = set(sys.modules)
         sys.meta_path.insert(_before_paths(), finder)
         for key, (path, source) in members.items():
             loaded[key] = (
@@ -110,6 +111,7 @@ def _load(
                 name in finder.sources or _inside(sys.modules[name], folder)
             ):
                 del sys.modules[name]
+        sys.modules.update(aside)
     return loaded
 
 

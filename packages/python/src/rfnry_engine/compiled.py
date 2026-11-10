@@ -55,6 +55,7 @@ RUN_DECIDES = {
     HISTORY_TOOL: "a run's history= and start=",
 }
 ENGINE_TOOLS = frozenset({*BUILTINS, DELEGATE_TOOL, *WORKSPACE_NAMES, *RUN_DECIDES})
+BACKGROUND_JOBS = frozenset({"Shell", "Job", "Jobs"})
 
 
 class _Asked(NamedTuple):
@@ -342,12 +343,21 @@ def _check_sections(who: str, included: Iterable[str], grants: Mapping[str, _Gra
             )
 
 
+def _check_jobs_go_together(who: str, dropped: Collection[str]) -> None:
+    named = BACKGROUND_JOBS.intersection(dropped)
+    if named and named != BACKGROUND_JOBS:
+        raise ConfigurationError(
+            f"compiled: {who} lists only {', '.join(sorted(named))} of Shell, Job and Jobs in tools.exclude; Shell can start a job only Job and Jobs can read or stop, so exclude the three together or none of them"
+        )
+
+
 def _picked_tools(who: str, resolved: Resolved, declared: Collection[str]) -> _Picked:
     grants = _grants(resolved)
     dropped = set(_names(who, "exclude", resolved.tools.exclude, declared))
     included = _names(who, "include", resolved.tools.include, declared)
     if resolved.instructions is not None:
         _check_sections(who, included, grants)
+        _check_jobs_go_together(who, dropped)
     return _Picked(
         [name for name in dict.fromkeys(included) if name not in dropped],
         frozenset(name for name, grant in grants.items() if grant.given) - dropped,
@@ -479,9 +489,11 @@ def _agent(root: Path, name: str, entry: AgentEntry, declared: _Declared) -> Age
     return spec.model_copy(update={"modes": modes})
 
 
-def _refuse_targets(agents: Mapping[str, AgentSpec], who: str, spec: AgentSpec) -> None:
+def _refuse_targets(
+    agents: Mapping[str, AgentSpec], who: str, spec: AgentSpec, delegates: Iterable[str]
+) -> None:
     routed = spec.route.to.values() if spec.route is not None else ()
-    for name in (*spec.agents, *routed):
+    for name in (*delegates, *routed):
         target = agents.get(name)
         if target is None:
             raise ConfigurationError(
@@ -519,11 +531,14 @@ def _check_route(agents: Mapping[str, AgentSpec], who: str, spec: AgentSpec) -> 
             )
 
 
-def _check_orchestration(agents: Mapping[str, AgentSpec]) -> None:
+def _check_orchestration(
+    agents: Mapping[str, AgentSpec], entries: Mapping[str, AgentEntry]
+) -> None:
     for agent in agents.values():
         for spec in (agent, *agent.modes.values()):
             who = _who(agent.name, spec.mode)
-            _refuse_targets(agents, who, spec)
+            delegates = overlaid(entries[agent.name], spec.mode).orchestration.delegate_to
+            _refuse_targets(agents, who, spec, delegates or ())
             _check_route(agents, who, spec)
 
 
@@ -563,6 +578,6 @@ def load_folder(root: Path) -> dict[str, AgentSpec]:
         name: _agent(root, name, manifest.agents[name], declared)
         for name in sorted(manifest.agents)
     }
-    _check_orchestration(agents)
+    _check_orchestration(agents, manifest.agents)
     _refuse_loose_tools(agents, manifest.tools)
     return agents
