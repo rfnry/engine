@@ -36,6 +36,13 @@ def test_every_public_name_is_documented() -> None:
     assert missing == []
 
 
+def test_at_a_glance_names_every_export() -> None:
+    text = DOCS.read_text(encoding="utf-8")
+    glance = text[text.index("## At a glance") : text.index("## Errors")]
+    missing = [name for name in rfnry_engine.__all__ if f"`{name}`" not in glance]
+    assert missing == []
+
+
 def test_the_guide_proposes_no_rules_folder_and_no_task() -> None:
     for doc in (DOCS, API, GUIDE):
         text = doc.read_text(encoding="utf-8")
@@ -44,23 +51,25 @@ def test_the_guide_proposes_no_rules_folder_and_no_task() -> None:
 
 
 REMOVED = (
-    "AGENT.md",
-    "`reads:`",
-    "reads: [",
-    "public_skills",
-    "RFNRY_AGENT",
-    "tools/<",
-    "skills/<",
-    "questions/",
-    "agent directory",
-    "Engine(root, models=",
+    r"AGENT\.md",
+    r"`reads:`",
+    r"reads: \[",
+    r"public_skills",
+    r"RFNRY_AGENT",
+    r"tools/<",
+    r"skills/<",
+    r"questions/",
+    r"agent directory",
+    r"max_steps",
+    r"Engine\([^)]*\bmodels=",
+    r"Engine\([^)]*\bworkers=",
 )
 
 
 def test_the_docs_name_no_removed_way_of_writing_a_folder() -> None:
     for doc in (DOCS, API, GUIDE):
         text = doc.read_text(encoding="utf-8")
-        named = [word for word in REMOVED if re.search(rf"(?<!\w){re.escape(word)}", text)]
+        named = [pattern for pattern in REMOVED if re.search(rf"(?<!\w){pattern}", text)]
         assert named == [], doc.name
 
 

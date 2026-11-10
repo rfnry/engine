@@ -4,9 +4,11 @@ import hashlib
 import inspect
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import types
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -293,6 +295,20 @@ class Live:
         return object()
 
 
+class Classifier(Answering):
+    def __init__(self, key: str, *, model: str | None) -> None:
+        super().__init__("billing")
+
+
+class Realtime(Live):
+    def __init__(self, key: str, *, model: str | None) -> None:
+        self.key = key
+
+
+ADAPTERS = types.ModuleType("adapters")
+vars(ADAPTERS).update(Messages=Messages, Classifier=Classifier, Realtime=Realtime)
+
+
 class Session:
     def __init__(self, transport: object, *, live: object, instructions: str) -> None:
         self.live, self.instructions = live, instructions
@@ -473,7 +489,6 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
         "providers": providers,
         "classifier": providers["classifier"],
         "live": providers["live"],
-        "Messages": Messages,
         "Session": Session,
         "transport": object(),
         "until_it_ends": until_it_ends,
@@ -550,7 +565,9 @@ async def test_docs_example_runs(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ORDERS_URL", (tmp_path / "orders").as_uri())
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "a key of the test's")
+    monkeypatch.setitem(sys.modules, "adapters", ADAPTERS)
+    for key in ("ANTHROPIC_API_KEY", "CLASSIFIER_API_KEY", "REALTIME_API_KEY"):
+        monkeypatch.setenv(key, "a key of the test's")
     setup = SETUPS.get(first_line(block), Setup())
     for old, new in setup.replace.items():
         block = block.replace(old, new)
@@ -774,6 +791,7 @@ def test_every_rfnry_yaml_of_the_docs_loads(block: str, tmp_path: Path) -> None:
     written = yaml.safe_load(block)
     document = _completed(written)
     whole = document == written
+    assert whole or "version" not in written, "a whole file of the docs needs no completing"
     write(tmp_path / MANIFEST, block if whole else yaml.safe_dump(document, sort_keys=False))
     _stubbed(tmp_path, document)
     agents = load_folder(tmp_path)
@@ -811,11 +829,27 @@ async def test_the_refund_tool_runs_in_a_worker_from_a_shell_and_under_its_tests
             [sys.executable, *argv], cwd=root, capture_output=True, text=True, check=False
         )
 
-    command = next(body for lang, body in BLOCKS if lang == "sh" and "refund.py" in body).split()
-    assert command[:2] == ["python", "billing/tools/refund.py"]
-    ran = shell("billing/tools/refund.py", '{"charge_id": "ch_81"}', "--call", '{"scope": "acme"}')
+    program, *argv = shlex.split(
+        next(body for lang, body in BLOCKS if lang == "sh" and "--call" in body)
+    )
+    assert program == "python" and argv[-2] == "--call"
+    ran = shell(*argv)
     assert ran.returncode == 0 and json.loads(ran.stdout) == refunded, ran.stderr
-    refused = shell("billing/tools/refund.py", '{"charge_id": "ch_81"}', "--call", "acme")
+    refused = shell(*argv[:-1], "acme")
     assert refused.returncode != 0 and refused.stdout == ""
     tested = shell("-m", "pytest", "-q", "-p", "no:cacheprovider", "billing/tools")
     assert tested.returncode == 0 and "2 passed" in tested.stdout, tested.stdout
+
+
+def test_the_entrypoint_of_the_docs_is_sh_and_keeps_the_token_out_of_git_s_arguments(
+    tmp_path: Path,
+) -> None:
+    script = next(body for lang, body in BLOCKS if lang == "sh" and body.startswith("#!/bin/sh"))
+    write(tmp_path / "entrypoint.sh", script)
+    checked = subprocess.run(
+        ["sh", "-n", str(tmp_path / "entrypoint.sh")], capture_output=True, text=True, check=False
+    )
+    assert checked.returncode == 0, checked.stderr
+    commands = [line for line in script.splitlines() if line.startswith("git ")]
+    assert commands and not [line for line in commands if "GIT_AUTH_TOKEN" in line]
+    assert script.splitlines()[-2].startswith("unset GIT_AUTH_TOKEN ")

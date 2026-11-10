@@ -43,9 +43,10 @@ speaks itself, is a third: the engine hands it to your voice session and records
 conversation history, the storage connection, the bucket, and the tools that must live in your
 process. The tools of the folder run in worker processes the engine starts beside yours, never
 inside it, until you close the engine. There is no background loop and no plugin registry;
-`rfnry.yaml` is plain data the engine reads once, and every verb is a function you call. It writes nothing of its own: the only writes are a model's, inside a `Workspace`
-you pass a run, and the one file the engine itself creates there, the socket a command calls the
-run's tools through, which lives as long as that command ([Workspace](#workspace)).
+`rfnry.yaml` is plain data the engine reads once, and every verb is a function you call. It writes
+nothing of its own: the only writes are a model's, inside a `Workspace` you pass a run, and the one
+file the engine itself creates there, the socket a command calls the run's tools through, which
+lives as long as that command ([Workspace](#workspace)).
 
 **Nothing is hidden.** A run returns a record: what was sent, what came back, every tool call with
 its timing, every model call with its usage, every child run. That record is what you feed your own
@@ -301,22 +302,34 @@ stay in it:
 import os
 from functools import cache
 
+from adapters import Classifier, Messages, Realtime
+
 
 @cache
 def anthropic(model, effort):
     return Messages(os.environ["ANTHROPIC_API_KEY"], model=model, effort=effort)
 
 
+@cache
+def classifier(model, effort):
+    return Classifier(os.environ["CLASSIFIER_API_KEY"], model=model)
+
+
+def live(model, effort):
+    return Realtime(os.environ["REALTIME_API_KEY"], model=model)
+
+
 engine = Engine(root, providers={"anthropic": anthropic, "classifier": classifier, "live": live})
 ```
 
-The engine calls a provider at the start of each run and of each run it delegates or routes to — and
-at each `Load` on an `EngineTools` outside a run, to read the adapter's `media_types` — and keeps
-nothing it built, so you cache and close what it builds. One vendor may have several providers, such
-as `anthropic` and `anthropic-backup` for a second key, and two agents that must move together pick
-one entry, so one change moves both. A lead on `strong` delegating to a writer on `fast` is two
-entries of one file, each run on its own adapter, in one record that names the model of every run.
-`engine.models` holds the file's entries, each a `ModelEntry`.
+`adapters` is your module of adapters, one class per vendor API. The engine calls a provider at the
+start of each run and of each run it delegates or routes to — and at each `Load` on an `EngineTools`
+outside a run, to read the adapter's `media_types` — and keeps nothing it built, so you cache and
+close what it builds; `live` caches nothing, so each session gets a model of its own. One vendor may
+have several providers, such as `anthropic` and `anthropic-backup` for a second key, and two agents
+that must move together pick one entry, so one change moves both. A lead on `strong` delegating to a
+writer on `fast` is two entries of one file, each run on its own adapter, in one record that names
+the model of every run. `engine.models` holds the file's entries, each a `ModelEntry`.
 
 The file holds no key and no environment variable: the engine never reads a credential, and a push
 to an agents repository must not choose which of the server's variables goes to a vendor. It does
@@ -542,10 +555,13 @@ A hidden name — one that starts with `.` — and `__pycache__` are reached onl
 file names them, as `.claude/agents` does; hidden names below that path stay hidden, and a path
 through one reads `tools/builtins: .env is hidden; names starting with . and __pycache__ are not
 part of the folder of the agents`. A link that leads out of the folder is left out. One that stays
-inside is read under its own name, a file link to a hidden file included, when what it leads to is
-in reach too: `exclude`, a `.gitignore` and a skill's folder judge a link by where it leads as well
-as by its own path, so `knowledge/alias.md` linking to an excluded `drafts/next.md`, or to the
-`SKILL.md` of a skill the entry does not open, reads as missing and is not preloaded. A path that
+inside is read under its own name, even when what it leads to is outside `include` or hidden, unless
+what it leads to is excluded, ignored by a `.gitignore` under `gitignore: true`, or inside a skill
+the entry holds but does not offer: an alias cannot undo an exclusion. So `knowledge/alias.md`
+linking to an excluded `drafts/next.md` reads as missing and is not preloaded, and so does
+`knowledge/howto.md` linking to `support/skills/internal/SKILL.md` when `skills.exclude` names
+`internal`, while `knowledge/out.md` linking to `outside/o.md`, which `include` does not reach, reads
+as `knowledge/out.md`. A path that
 leads outside the folder is the jail's `InputError`, `jail: path outside the folder: <path>`, and a
 part written after a file names a folder that is not there, as POSIX has it: `Read` of
 `notes.md/x` is `tools/builtins: not a folder: notes.md/x`.
@@ -567,10 +583,10 @@ a shallower one, `!` re-includes, and nothing under an ignored folder can be re-
 reads each one once, when it loads, and reads no Git data: a file a pattern matches is ignored even
 if Git tracks it. A file so ignored is not there for that agent — not on its map, not preloaded, not
 in its skills' folders or its fingerprint — while the files the agent is made of, its instructions,
-its tools' files and its questions, load whatever a `.gitignore` says. A line that is no valid pattern is skipped,
-as Git skips it, a `.gitignore` that is a link or not a plain file is not read, and one that cannot
-be read or decoded is a `ConfigurationError` (`tree: cannot read agents/support/.gitignore:
-Permission denied; make it readable to the engine`).
+its tools' files and its questions, load whatever a `.gitignore` says. A line that is no valid
+pattern is skipped, as Git skips it, a `.gitignore` that is a link or not a plain file is not read,
+and one that cannot be read or decoded is a `ConfigurationError` (`tree: cannot read
+agents/support/.gitignore: Permission denied; make it readable to the engine`).
 
 A folder or a content file the engine cannot read is left out, with one warning naming it each time
 the folder loads, on the `rfnry_engine.folders` logger, and a file removed while its folder is listed
@@ -744,10 +760,10 @@ sends that pair and never reads `/name` again. `Delegate`, `engine.tool` and rou
 
 `engine.run(agent, scope, input)` names the agent, the tenant and the input, and returns a record.
 For a generation agent that record is a `Generation`: the reply, the system prompt as sent, the
-files and skills its entry preloads (`run.preload`), the messages as sent to the first model call, the whole
-conversation, the tools the model was offered (`run.tools`, each a `ToolSpec`), every tool call as a
-`Step` with its result and timing, the model calls and their summed usage, and any child runs. It is
-the whole observability payload; hand it to your own telemetry:
+files and skills its entry preloads (`run.preload`), the messages as sent to the first model call,
+the whole conversation, the tools the model was offered (`run.tools`, each a `ToolSpec`), every tool
+call as a `Step` with its result and timing, the model calls and their summed usage, and any child
+runs. It is the whole observability payload; hand it to your own telemetry:
 
 ```python
 run.run_id, run.model, run.calls, run.usage.input, run.usage.output, run.duration_ms
@@ -853,10 +869,10 @@ run.tags                                             # {"commit": "4f2c9e1", "ar
 
 Ask for a typed reply and the model is offered an `Output` tool shaped like it. The `expect=` model
 is the output's contract, defined in code: its field descriptions and its docstring reach the model
-in the tool's schema, and what the output means beyond that is said in the instructions or a skill. When
-the model calls it with input that fits, the run ends and `run.reply` is that input as JSON; input
-that does not fit goes back to the model with what is wrong. A model that answers in text instead
-ends the run with that text as `run.reply`, which does not parse:
+in the tool's schema, and what the output means beyond that is said in the instructions or a skill.
+When the model calls it with input that fits, the run ends and `run.reply` is that input as JSON;
+input that does not fit goes back to the model with what is wrong. A model that answers in text
+instead ends the run with that text as `run.reply`, which does not parse:
 
 ```python
 class Verdict(BaseModel):
@@ -905,9 +921,10 @@ a command's variables; a storage, rows made for the call; each attempt of a repl
 and labels of its own. And a record holds objects of its own: it copies what it is given — the
 input, the history, what the inbox held, the questions asked at run time, the tools' specs and
 results, each reply's tool calls and reasoning, each answer — and the preload and the questions it
-takes from the folder, and a routed run's input is its own copy of its router's state. So no code of yours, and no tenant, reaches another run through what it was
-handed or what it returned: changing a record changes nothing the folder shares with every tenant,
-nothing of another record and nothing your code holds.
+takes from the folder, and a routed run's input is its own copy of its router's state. So no code of
+yours, and no tenant, reaches another run through what it was handed or what it returned: changing a
+record changes nothing the folder shares with every tenant, nothing of another record and nothing
+your code holds.
 
 A foreground `Shell` command of a run with a `Workspace` also sends a `CommandOutput` for what
 it writes, while it runs, and the calls it makes to the run's tools send their own
@@ -1107,11 +1124,11 @@ page in the order it happened — or, with `pattern`, the ones whose text matche
 {"before": 340, "limit": 20, "pattern": "invoice", "case_insensitive": true}
 ```
 
-It never reads what the model was given or anything after it. A page is 20 messages, at most 100;
-a search walks back at most `Engine(history_walk=10_000)` messages and a result holds at most
+It never reads what the model was given or anything after it. A page is 20 messages, at most 100; a
+search walks back at most `Engine(history_walk=10_000)` messages and a result holds at most
 `Engine(history_chars=100_000)` characters of messages, ending with where to go on when there is
-more; its deadline is `tool_timeout`, as every tool's, so a slow database gets the time you give
-it. No line of the instructions asks for it: it comes with `start=`, as `tools=` comes with the call. To
+more; its deadline is `tool_timeout`, as every tool's, so a slow database gets the time you give it.
+No line of the instructions asks for it: it comes with `start=`, as `tools=` comes with the call. To
 send a window without it, pass the slice as the history and leave `start` at 0.
 
 `History` never hands a file back. An image, audio or document shows as a line naming it, with its
@@ -1338,8 +1355,7 @@ tool's is, so `fingerprint.agent` covers it. A `.py` without its `.json` in a fo
 reaches, one with no `run` at its top level, an import of a script beside it that is no helper, and
 a helper named like a standard-library module, `_stat.py`, are a `ConfigurationError`, as for a tool
 ([Tools of the folder](#tools-of-the-folder)); a script or a helper may link anywhere inside the
-folder root. A route goes by a question
-whose options its JSON fixes, never by one a script fills
+folder root. A route goes by a question whose options its JSON fixes, never by one a script fills
 ([Both kinds together](#both-kinds-together)).
 
 Some answer spaces are known only when the run starts: the children of the node a walk chose last,
@@ -1416,13 +1432,13 @@ support:
 ```
 
 Each name is an agent of the file, generation or decision; a name the file does not hold, a voice
-agent and an agent that needs a mode are a `ConfigurationError` when the engine loads. The model calls it with an agent and an input; the child runs
-under the same scope and its reply — text for a generation agent; for a decision agent its answers,
-and the routed run's reply when it routed, as `engine.tool` returns them — comes back as the tool
-result. Its input comes from the model and is never read for `/name`, and the child takes no skill.
-The child's record is attached to the parent's `children`, and the
-step that called it carries the child's `run_id`. A decision agent used this way is how a
-generation agent asks a fast, calibrated question mid-run: is this destructive, which skill
+agent and an agent that needs a mode are a `ConfigurationError` when the engine loads. The model
+calls it with an agent and an input; the child runs under the same scope and its reply — text for a
+generation agent; for a decision agent its answers, and the routed run's reply when it routed, as
+`engine.tool` returns them — comes back as the tool result. Its input comes from the model and is
+never read for `/name`, and the child takes no skill. The child's record is attached to the parent's
+`children`, and the step that called it carries the child's `run_id`. A decision agent used this way
+is how a generation agent asks a fast, calibrated question mid-run: is this destructive, which skill
 applies, is the user done.
 
 The model can also give a decision agent `questions` it composes itself — ids to questions of the
@@ -2414,16 +2430,30 @@ GIT_AUTH_TOKEN=$(cat agents-token) docker build --secret id=GIT_AUTH_TOKEN -t su
 
 BuildKit reads the `GIT_AUTH_TOKEN` secret to fetch a private repository and leaves it out of the
 image, and `ADD` leaves out the repository's `.git`. Fetched at start instead, a `git clone` in the
-entrypoint takes the commit the deployment names, removes what holds the token, and hands over to
-the server without it:
+entrypoint takes the commit the deployment names. The image needs git, which `python:3.14-slim`
+does not have:
+
+```dockerfile
+FROM python:3.14-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY entrypoint.sh /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
+The token reaches git as configuration in its environment, never in its arguments, which `ps` shows
+to every user of the machine; the clone keeps no copy of it, and the server starts without it:
 
 ```sh
 #!/bin/sh
 set -eu
-git clone --quiet "https://token:${GIT_AUTH_TOKEN}@github.com/acme/agents.git" /srv/agents
+basic=$(printf 'x-access-token:%s' "$GIT_AUTH_TOKEN" | base64 | tr -d '\n')
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader
+export GIT_CONFIG_VALUE_0="Authorization: Basic $basic"
+git clone --quiet https://github.com/acme/agents.git /srv/agents
 git -C /srv/agents checkout --quiet --detach "$AGENTS_COMMIT"
 rm -rf /srv/agents/.git
-unset GIT_AUTH_TOKEN
+unset GIT_AUTH_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 basic
 exec "$@"
 ```
 
@@ -3285,8 +3315,8 @@ them yourself; every row carries its run's tags.
 
 Everything the package exports, by role.
 
-- **Run things:** `Engine`, `AgentInfo`, `ModelChoice`, `ModelEntry`, `Stop`, `HistoryLike`,
-  `VoiceStart`, `Spoken`, `SpokenLine`.
+- **Run things:** `Engine`, `AgentInfo`, `Provider`, `ModelChoice`, `ModelEntry`, `Stop`,
+  `HistoryLike`, `VoiceStart`, `Spoken`, `SpokenLine`.
 - **What a run returns:** `Generation`, `Decision`, `Voice`, `Run`, `Step`, `Fingerprint`; events
   `RunStarted`, `TextDelta`, `ReasoningDelta`, `MessagesTaken`, `ToolCallStarted`,
   `ToolResultReady`, `CommandOutput`, `Event`.
@@ -3297,7 +3327,7 @@ Everything the package exports, by role.
   `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by,
   `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
 - **Give models tools:** `Tool`, `Tools`, `EngineTools`, `current_call`, `CallInfo`, `Jail`,
-  `Workspace`, `Backend`, `Process`, `Local`.
+  `Workspace`, `JobInfo`, `Backend`, `Process`, `Local`.
 - **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Replay`,
   `Bucket`, `is_holdout`.
 - **Store:** `Storage`, `PostgresStorage`, `RunRow`, `LabelRow`.
@@ -3355,15 +3385,15 @@ values and parts, a workspace of another scope, a history that breaks a tool cal
 `start` outside the history or without one, tags outside their limits, runtime questions that do not
 fit, a runtime id the run already asks, questions for a generation agent, a skill for a decision
 agent, a run without a mode of an agent that needs one, a voice agent given to `engine.run` or
-`engine.tool` and another kind given to `engine.talk`, a run given a skill both by `skill=` and by an input that starts with a public `/name`
-(`engine: a run invokes one skill, by skill= or by an input that starts with /<name>; got
+`engine.tool` and another kind given to `engine.talk`, a run given a skill both by `skill=` and by
+an input that starts with a public `/name` (`engine: a run invokes one skill, by skill= or by an input that starts with /<name>; got
 skill='escalate' and /close`), a decision run with no question to ask, media the decision model does
 not declare, a media part with both or neither of `data` and `url`, a correction of the wrong shape
 or for a question the run was not asked, a `delete_runs` or `verify_absent` given both `run_ids` and
 `tags` or an empty one, a `delete_runs` given neither, an `export` or a `replay` given a
 `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or a `limit`, `concurrency` or
-`repeat` below 1, a tool called with bad arguments, arguments JSON cannot hold or a path outside its
-directory, and any use of an engine after `close()` (`engine: this engine was closed; build a new
+`repeat` below 1, a tool called with bad arguments, arguments JSON cannot hold or a path outside the
+folder, and any use of an engine after `close()` (`engine: this engine was closed; build a new
 Engine`). `ModelError` when an adapter breaks the contract — a result whose fields do not fit, a
 missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1,
 a score outside its levels — or a folder tool's result does not match its `output_schema`, or a
