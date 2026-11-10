@@ -56,6 +56,7 @@ def body_of(raw: str) -> str:
 
 
 _HEAD = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
+_DESCRIPTION_LINE = re.compile(r"^description:[ \t]+(?![|>])(.+)$", re.MULTILINE)
 
 
 _STARTED = (
@@ -120,12 +121,31 @@ def unreadable(exc: Exception, text: str, first_line: int = 2) -> tuple[str, str
     return place, problem, fix
 
 
-def described(path: Path) -> str | None:
+def _utf8(path: Path) -> str | None:
     try:
-        raw = path.read_bytes().decode("utf-8")
+        return path.read_bytes().decode("utf-8")
     except UnicodeDecodeError:
         return None
-    return description(raw, path)
+
+
+def described(path: Path) -> str | None:
+    raw = _utf8(path)
+    return None if raw is None else description(raw, path)
+
+
+def leniently_described(path: Path) -> str | None:
+    raw = _utf8(path)
+    return None if raw is None else lenient_description(raw, path)
+
+
+def _description_in(data: object, path: Path) -> str | None:
+    said = data.get("description") if isinstance(data, dict) else None
+    if said is not None and not isinstance(said, str):
+        raise ConfigurationError(
+            f"frontmatter: description must be a string in {path}; write it as one line of text"
+        )
+    collapsed = " ".join(said.split()) if said else ""
+    return collapsed or None
 
 
 def description(raw: str, path: Path) -> str | None:
@@ -139,13 +159,28 @@ def description(raw: str, path: Path) -> str | None:
         raise ConfigurationError(
             f"frontmatter: invalid YAML in {path}{place}: {problem}; {fix}"
         ) from exc
-    said = data.get("description") if isinstance(data, dict) else None
-    if said is not None and not isinstance(said, str):
-        raise ConfigurationError(
-            f"frontmatter: description must be a string in {path}; write it as one line of text"
-        )
-    collapsed = " ".join(said.split()) if said else ""
-    return collapsed or None
+    return _description_in(data, path)
+
+
+def _scanned_description(head: str) -> str | None:
+    found = _DESCRIPTION_LINE.search(head)
+    if found is None:
+        return None
+    value = found.group(1).strip()
+    if len(value) > 1 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    return " ".join(value.split()) or None
+
+
+def lenient_description(raw: str, path: Path) -> str | None:
+    match = _HEAD.match(raw.removeprefix("\ufeff"))
+    if match is None:
+        return None
+    try:
+        data = yaml.load(match.group(1), Loader=StrictLoader)
+    except YAML_FAILURES:
+        return _scanned_description(match.group(1))
+    return _description_in(data, path)
 
 
 def _said(message: str) -> str:

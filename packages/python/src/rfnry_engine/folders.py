@@ -10,7 +10,7 @@ from pathspec import GitIgnoreSpec
 from pathspec.patterns.gitignore.spec import _DIR_MARK
 
 from rfnry_engine.errors import InputError
-from rfnry_engine.frontmatter import described
+from rfnry_engine.frontmatter import described, leniently_described
 from rfnry_engine.jail import Jail
 
 logger = logging.getLogger(__name__)
@@ -243,13 +243,17 @@ def content(
     return _walk(folder, declared, inner, apart, within, ignored)[1]
 
 
-def _rendered(dirs: Iterable[str], files: Sequence[tuple[str, Path]]) -> list[str]:
+def _rendered(
+    dirs: Iterable[str],
+    files: Sequence[tuple[str, Path]],
+    describe: Callable[[Path], str | None],
+) -> list[str]:
     children: dict[str, list[tuple[str, str, bool]]] = {}
     for rel in dirs:
         parent, _, name = rel.rpartition("/")
         children.setdefault(parent, []).append((name, f"{name}/", True))
     for rel, path in files:
-        said = described(path) if path.suffix == ".md" else None
+        said = describe(path) if path.suffix == ".md" else None
         parent, _, name = rel.rpartition("/")
         children.setdefault(parent, []).append(
             (name, name if said is None else f"{name} — {said}", False)
@@ -272,7 +276,7 @@ def entries(
     apart: Collection[Path] = (),
     ignored: Callable[[Path], bool] | None = None,
 ) -> list[str]:
-    return _rendered(*_walk(folder, declared, apart=apart, ignored=ignored))
+    return _rendered(*_walk(folder, declared, apart=apart, ignored=ignored), described)
 
 
 def mapped(files: Sequence[tuple[str, Path]]) -> list[str]:
@@ -282,7 +286,7 @@ def mapped(files: Sequence[tuple[str, Path]]) -> list[str]:
         for parent in PurePosixPath(rel).parents
         if parent != PurePosixPath(".")
     }
-    return _rendered(folders, files)
+    return _rendered(folders, files, leniently_described)
 
 
 def joined(own: list[str], reads: Mapping[str, list[str]]) -> str:

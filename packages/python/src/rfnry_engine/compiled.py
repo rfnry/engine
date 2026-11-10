@@ -21,7 +21,7 @@ from rfnry_engine.folders import (
     shown_link,
     warns_once,
 )
-from rfnry_engine.frontmatter import body_of, description
+from rfnry_engine.frontmatter import body_of, lenient_description
 from rfnry_engine.jail import Jail
 from rfnry_engine.manifest import (
     MANIFEST,
@@ -48,6 +48,7 @@ from rfnry_engine.tree import (
     question_files,
     question_parts,
     read_questions,
+    skill_text,
     utf8_name,
 )
 from rfnry_engine.workers.pool import Script
@@ -95,7 +96,8 @@ class _Skills(NamedTuple):
 
 class _Chosen(NamedTuple):
     offered: frozenset[str]
-    preloaded: list[str]
+    excluded: frozenset[str]
+    preloaded: list[Skill]
     public: tuple[str, ...]
 
 
@@ -275,13 +277,21 @@ def _own_files(resolved: Resolved, also: Collection[str]) -> set[str]:
     return {PurePosixPath(resolved.instructions).as_posix(), *also}
 
 
-def _reach(root: Path, who: str, files: FilesSection, own: Collection[str]) -> _Reach:
+def _reach(
+    root: Path,
+    who: str,
+    files: FilesSection,
+    own: Collection[str],
+    in_skills: Mapping[str, Path],
+) -> _Reach:
     include = files.include or []
     preload = files.preload or []
     candidates = _in_reach(root, [*include, *preload], files.gitignore)
     included = _matching(who, "files.include", include, candidates)
     offered = _matching(who, "files.preload", preload, candidates)
-    excluded = _matching(who, "files.exclude", files.exclude or [], {**included, **offered})
+    excluded = _matching(
+        who, "files.exclude", files.exclude or [], {**included, **offered, **in_skills}
+    )
     left = {name: path for name, path in candidates.items() if name not in excluded}
     kept = {name: path for name, path in included.items() if name in left}
     preloaded = _matching(who, "files.preload", preload, left)
@@ -339,7 +349,7 @@ def _held_skill(root: Path, who: str, folder: str) -> _Held:
         Skill(
             path=written,
             place=root / folder,
-            description=description(text, root / written) or "",
+            description=lenient_description(text, root / written) or "",
             body=body_of(text),
         ),
         raw,
@@ -416,9 +426,39 @@ def _chosen_skills(
     _preload_left(who, section.preload or (), reached.preload, preloaded)
     return _Chosen(
         offered,
-        [held[name].skill.path for name in preloaded],
+        frozenset(excluded),
+        [held[name].skill for name in preloaded],
         _public_skills(who, section, offered),
     )
+
+
+def _left_in_skill(
+    name: str,
+    held: Mapping[str, _Held],
+    excluded: Collection[str],
+    taken_back: Collection[str],
+    found: Mapping[str, Path],
+) -> dict[str, Path]:
+    folder = _skill_folder(held[name])
+    inside = [
+        _skill_folder(held[other])
+        for other in excluded
+        if folder in _skill_folder(held[other]).parents
+    ]
+    written = held[name].skill.path
+    return {
+        written: held[name].skill.place / SKILL_FILE,
+        **{
+            path: place
+            for path, place in found.items()
+            if not any(pattern_covers(pattern, PurePosixPath(path)) for pattern in taken_back)
+            and not any(other in PurePosixPath(path).parents for other in inside)
+        },
+    }
+
+
+def _together(groups: Iterable[Mapping[str, Path]]) -> dict[str, Path]:
+    return {name: path for group in groups for name, path in group.items()}
 
 
 def _with_folders(root: Path, files: Iterable[Path]) -> set[Path]:
@@ -534,7 +574,7 @@ def _preloaded(
         return preload_parts(names, Jail(root, named=named), loadable)
     except InputError as exc:
         raise ConfigurationError(
-            f"compiled: {who} cannot preload: {exc}; fix that file, or drop it from preload"
+            f"compiled: {who} cannot preload: {exc}; fix that file, or drop it from files.preload"
         ) from exc
 
 
@@ -588,38 +628,44 @@ def _spec(
         )
         files[resolved.instructions] = root / resolved.instructions
         body = body_of(text)
-        said = said or description(text, root / resolved.instructions)
+        said = said or lenient_description(text, root / resolved.instructions)
     reached = skills.layers.get(mode)
     chosen = (
-        _Chosen(frozenset(), [], ())
+        _Chosen(frozenset(), frozenset(), [], ())
         if reached is None
         else _chosen_skills(who, resolved.skills, skills.held, reached)
     )
-    skill_files = {
-        name: {
-            one.skill.path: root / one.skill.path,
-            **_in_reach(root, [_skill_folder(one).as_posix()], resolved.files.gitignore),
-        }
+    in_folders = {
+        name: _in_reach(root, [_skill_folder(one).as_posix()], resolved.files.gitignore)
         for name, one in skills.held.items()
     }
-    offered_files = {
-        path: place for name in chosen.offered for path, place in skill_files[name].items()
+    skill_files = {
+        name: _left_in_skill(
+            name, skills.held, chosen.excluded, resolved.files.exclude or (), found
+        )
+        for name, found in in_folders.items()
     }
-    every_skill_file = {
-        path: place for held in skill_files.values() for path, place in held.items()
-    }
+    offered_files = _together(skill_files[name] for name in chosen.offered)
+    every_skill_file = _together(skill_files.values())
     reach = (
         _Reach({}, {}, [])
         if resolved.instructions is None
-        else _reach(root, who, resolved.files, _own_files(resolved, {*tool_files, *offered_files}))
+        else _reach(
+            root,
+            who,
+            resolved.files,
+            _own_files(resolved, {*tool_files, *offered_files}),
+            _together(in_folders.values()),
+        )
     )
     files |= {**reach.files, **every_skill_file}
     _check_what_it_reaches(root, who, files)
     keep = sorted({*picked.granted, *picked.names})
     named = _hidden_names(root, {**reach.files, **every_skill_file})
-    preload, loaded = _preloaded(
-        root, who, [*reach.preloaded, *chosen.preloaded], named, "Load" in keep
-    )
+    preload, loaded = _preloaded(root, who, reach.preloaded, named, "Load" in keep)
+    preload += [
+        skill_text(skill) for skill in chosen.preloaded if skill.path not in reach.preloaded
+    ]
     read |= {one.skill.path: one.raw for one in skills.held.values()} | loaded
     opened = {**reach.files, **offered_files}
     return AgentSpec(

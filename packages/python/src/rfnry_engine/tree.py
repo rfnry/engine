@@ -44,7 +44,7 @@ from rfnry_engine.frontmatter import (
 )
 from rfnry_engine.jail import Jail
 from rfnry_engine.manifest import Kind, RouteSpec
-from rfnry_engine.models import Check, Choice, Part, Question, Score
+from rfnry_engine.models import Check, Choice, Part, Question, Score, Text
 from rfnry_engine.tools.builtins import BUILTINS, preload_parts
 from rfnry_engine.tools.delegate import DELEGATE_TOOL
 from rfnry_engine.tools.folder import (
@@ -247,6 +247,10 @@ class Skill(BaseModel):
     shadowed: tuple[Path, ...] = ()
     description: str
     body: str
+
+
+def skill_text(skill: Skill) -> Text:
+    return Text(text=f"<<<SKILL {skill.path}>>>\n{skill.body}")
 
 
 class AgentSpec(BaseModel):

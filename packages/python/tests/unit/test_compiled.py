@@ -99,14 +99,36 @@ def test_the_description_falls_back_to_the_frontmatter(tmp_path: Path) -> None:
     assert agents["plain"].description == ""
 
 
-def test_frontmatter_is_read_only_for_a_description_the_file_lacks(tmp_path: Path) -> None:
-    broken = "---\ndescription: [never closed\n---\nBody\n"
+@pytest.mark.parametrize(
+    ("frontmatter", "said"),
+    [
+        (
+            "description: Reviews a pull request\nargument-hint: [pr-number] [priority] [assignee]",
+            "Reviews a pull request",
+        ),
+        ("description: Review code: find bugs", "Review code: find bugs"),
+        ("argument-hint: [pr-number] [priority] [assignee]", ""),
+    ],
+    ids=["a-line-that-does-not-parse", "a-colon-in-the-description", "no-description"],
+)
+def test_instructions_whose_frontmatter_does_not_parse_load(
+    tmp_path: Path, frontmatter: str, said: str
+) -> None:
     folder = write_folder(
-        tmp_path, {"a": {**GENERATION, "description": "Written"}}, files={"a.md": broken}
+        tmp_path, {"a": GENERATION}, files={"a.md": f"---\n{frontmatter}\n---\nBody\n"}
     )
-    assert load_folder(folder)["a"].body == "Body"
-    write_folder(folder, {"a": GENERATION}, files={"a.md": broken})
-    _refused(folder, r"^frontmatter: invalid YAML in .*a\.md")
+    spec = load_folder(folder)["a"]
+    assert spec.description == said
+    assert spec.body == "Body"
+
+
+def test_the_entrys_description_outranks_the_frontmatter(tmp_path: Path) -> None:
+    folder = write_folder(
+        tmp_path,
+        {"a": {**GENERATION, "description": "Written"}},
+        files={"a.md": "---\ndescription: Review code: find bugs\n---\nBody\n"},
+    )
+    assert load_folder(folder)["a"].description == "Written"
 
 
 async def test_a_decision_agent_answers_its_questions(tmp_path: Path) -> None:

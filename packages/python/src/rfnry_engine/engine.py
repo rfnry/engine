@@ -100,10 +100,12 @@ from rfnry_engine.tree import (
     OUTPUT_TOOL,
     TAKEN,
     AgentSpec,
+    Skill,
     as_question,
     foreign,
     load_tree,
     no_such_skill,
+    skill_text,
     validate_tree,
 )
 from rfnry_engine.workers.pool import Script, Workers
@@ -375,9 +377,9 @@ def _assistant(
     )
 
 
-def _invoked(path: str, body: str, said: Content) -> list[Part]:
+def _invoked(skill: Skill, said: Content) -> list[Part]:
     rest: list[Part] = said if isinstance(said, list) else [Text(text=said)] if said else []
-    return [Text(text=f"<<<SKILL {path}>>>\n{body}"), *rest]
+    return [skill_text(skill), *rest]
 
 
 def _skilled(spec: AgentSpec, skill: str | None) -> str | None:
@@ -1136,8 +1138,7 @@ class Engine:
         history = await chained.settle(options.history)
         opening = _content(input)
         if options.skill is not None:
-            skill = spec.skills[options.skill]
-            opening = _invoked(skill.path, skill.body, opening)
+            opening = _invoked(spec.skills[options.skill], opening)
         messages = [*history, Message(role="user", content=opening)]
         sent = list(messages)
         steps: list[Step] = []

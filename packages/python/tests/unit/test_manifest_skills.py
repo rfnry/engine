@@ -184,7 +184,7 @@ async def test_preload_sends_a_skills_text_that_the_list_does_not_offer(tmp_path
     assert spec.offered == {"tone"}
     assert list(spec.skills) == ["escalate", "tone"]
     run, model = await _ran(folder, "hi")
-    sent = [Text(text=f"<<<skills/escalate/SKILL.md>>>\n{ESCALATE}")]
+    sent = [Text(text="<<<SKILL skills/escalate/SKILL.md>>>\nHand it over.")]
     assert run.preload == sent
     assert model.calls[0][1][0].content == sent
     system = model.calls[0][0]
@@ -208,15 +208,38 @@ async def test_preload_and_files_preload_are_both_sent(tmp_path: Path) -> None:
     )
     assert _spec(folder).preload == [
         Text(text="<<<knowledge/refunds.md>>>\nA duplicate is refunded.\n"),
+        Text(text="<<<SKILL skills/tone/SKILL.md>>>\nBe warm."),
+    ]
+
+
+def test_a_preloaded_skill_sends_no_frontmatter(tmp_path: Path) -> None:
+    written = {
+        "skills/tone/SKILL.md": (
+            "---\nname: tone\ndescription: Keep it warm\nallowed-tools: Read, Grep\n"
+            "model: opus\n---\nBe warm.\n"
+        )
+    }
+    spec = _spec(_folder(tmp_path, {"preload": ["skills/tone"]}, written=written))
+    assert spec.preload == [Text(text="<<<SKILL skills/tone/SKILL.md>>>\nBe warm.")]
+
+
+def test_files_preload_of_a_skill_file_stays_raw_and_is_sent_once(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {"preload": ["skills/tone", "skills/escalate"]},
+        files={"preload": ["skills/tone/SKILL.md"]},
+    )
+    assert _spec(folder).preload == [
         Text(text=f"<<<skills/tone/SKILL.md>>>\n{TONE}"),
+        Text(text="<<<SKILL skills/escalate/SKILL.md>>>\nHand it over."),
     ]
 
 
 def test_exclude_narrows_preload(tmp_path: Path) -> None:
     folder = _folder(tmp_path, {"preload": ["skills/*"], "exclude": ["internal"]})
     assert [str(getattr(part, "text", "")).splitlines()[0] for part in _spec(folder).preload] == [
-        "<<<skills/escalate/SKILL.md>>>",
-        "<<<skills/tone/SKILL.md>>>",
+        "<<<SKILL skills/escalate/SKILL.md>>>",
+        "<<<SKILL skills/tone/SKILL.md>>>",
     ]
 
 
@@ -378,9 +401,11 @@ async def test_an_invoked_skills_other_files_are_reachable_on_that_run(tmp_path:
         "A duplicate is refunded.\n"
     )
     assert await _answer(surface, "Read", {"path": path}) == "Warm examples.\n"
-    _reads_as_missing(await _answer(_surface(folder), "Read", {"path": path}), path)
+    assert "Warm examples." in await _answer(surface, "Load", {"path": path})
     other = _surface(folder, invoked="escalate")
-    _reads_as_missing(await _answer(other, "Read", {"path": path}), path)
+    for closed in (_surface(folder), other):
+        for tool in ("Read", "Load"):
+            _reads_as_missing(await _answer(closed, tool, {"path": path}), path)
 
 
 async def test_an_offered_skills_files_are_open_on_every_run(tmp_path: Path) -> None:
@@ -442,8 +467,7 @@ async def test_a_hidden_skill_not_offered_opens_when_invoked(tmp_path: Path) -> 
     )
     path = ".claude/skills/close/notes.md"
     assert await _answer(_surface(folder, invoked="close"), "Read", {"path": path}) == "Notes.\n"
-    answer = await _answer(_surface(folder), "Read", {"path": path})
-    assert "Notes." not in answer
+    _reads_as_missing(await _answer(_surface(folder), "Read", {"path": path}), path)
 
 
 @pytest.mark.parametrize(
@@ -559,12 +583,143 @@ def test_skill_text_that_is_not_utf8_is_refused(tmp_path: Path) -> None:
     _refused(folder, r"^compiled: agent 'a' reads 'skills/tone/SKILL\.md', not UTF-8 text")
 
 
-def test_invalid_frontmatter_in_a_skill_is_refused(tmp_path: Path) -> None:
-    written = {"skills/bad/SKILL.md": "---\ndescription: [\n---\nBody.\n"}
+OTHER_HARNESS = {
+    ".claude/skills/review/SKILL.md": (
+        "---\nname: review\ndescription: Reviews a pull request\n"
+        "argument-hint: [pr-number] [priority] [assignee]\n---\nReview it.\n"
+    ),
+    ".claude/skills/colon/SKILL.md": "---\ndescription: Review code: find bugs\n---\nFind them.\n",
+    ".claude/skills/double/SKILL.md": (
+        '---\nargument-hint: [a] [b]\ndescription: "Quoted: yes"\n---\nDouble.\n'
+    ),
+    ".claude/skills/single/SKILL.md": (
+        "---\nargument-hint: [a] [b]\ndescription: 'Single'\n---\nSingle.\n"
+    ),
+    ".claude/skills/mismatched/SKILL.md": (
+        "---\nargument-hint: [a] [b]\ndescription: \"Half'\n---\nHalf.\n"
+    ),
+    ".claude/skills/nested/SKILL.md": (
+        "---\nmetadata:\n  description: Not this\nargument-hint: [a] [b]\n---\nNested.\n"
+    ),
+    ".claude/skills/block/SKILL.md": (
+        "---\nargument-hint: [a] [b]\ndescription: >-\n  Folded\n---\nBlock.\n"
+    ),
+    ".claude/skills/absent/SKILL.md": "---\nargument-hint: [a] [b]\n---\nAbsent.\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "said", "body"),
+    [
+        ("review", "Reviews a pull request", "Review it."),
+        ("colon", "Review code: find bugs", "Find them."),
+        ("double", "Quoted: yes", "Double."),
+        ("single", "Single", "Single."),
+        ("mismatched", "\"Half'", "Half."),
+        ("nested", "", "Nested."),
+        ("block", "", "Block."),
+        ("absent", "", "Absent."),
+    ],
+)
+def test_frontmatter_that_does_not_parse_is_read_for_its_description_line(
+    tmp_path: Path, name: str, said: str, body: str
+) -> None:
+    folder = _folder(tmp_path, {"include": [".claude/skills/*"]}, written=OTHER_HARNESS)
+    skill = _spec(folder).skills[name]
+    assert skill.description == said
+    assert skill.body == body
+
+
+def test_a_description_that_parses_and_is_no_string_is_still_refused(tmp_path: Path) -> None:
+    written = {"skills/bad/SKILL.md": "---\ndescription: [one, two]\n---\nBody.\n"}
     _refused(
         _folder(tmp_path, {"include": ["skills/*"]}, written=written),
-        r"^frontmatter: invalid YAML in .*skills/bad/SKILL\.md",
+        r"^frontmatter: description must be a string in .*skills/bad/SKILL\.md",
     )
+
+
+def test_a_file_on_the_map_with_frontmatter_that_does_not_parse_loads(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path, None, files={"include": [".claude/skills/colon"]}, written=OTHER_HARNESS
+    )
+    assert _spec(folder).listing.splitlines() == [
+        ".claude/",
+        "  skills/",
+        "    colon/",
+        "      SKILL.md — Review code: find bugs",
+    ]
+
+
+async def test_files_exclude_holds_inside_an_offered_skill(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {"include": ["skills/tone"]},
+        files={"include": ["skills/tone"], "exclude": ["skills/tone/refs/**"]},
+    )
+    surface = _surface(folder)
+    path = "skills/tone/refs/examples.md"
+    for tool in ("Read", "Load"):
+        _reads_as_missing(await _answer(surface, tool, {"path": path}), path)
+    assert await _answer(surface, "Read", {"path": "skills/tone/SKILL.md"}) == TONE
+
+
+async def test_files_exclude_holds_on_a_run_that_invokes_the_skill(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {"preload": ["skills/tone"]},
+        files={"include": ["skills/tone"], "exclude": ["skills/tone/refs/**"]},
+    )
+    path = "skills/tone/refs/examples.md"
+    _reads_as_missing(await _answer(_surface(folder, invoked="tone"), "Read", {"path": path}), path)
+
+
+async def test_files_exclude_may_reach_only_into_a_skill_folder(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path, {"include": ["skills/tone"]}, files={"exclude": ["skills/tone/refs/**"]}
+    )
+    path = "skills/tone/refs/examples.md"
+    _reads_as_missing(await _answer(_surface(folder), "Read", {"path": path}), path)
+
+
+async def test_files_exclude_leaves_a_listed_skills_own_file_open(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {"include": ["skills/tone"]},
+        files={"include": ["skills"], "exclude": ["skills/**"]},
+    )
+    surface = _surface(folder)
+    assert await _answer(surface, "Read", {"path": "skills/tone/SKILL.md"}) == TONE
+    path = "skills/tone/refs/examples.md"
+    _reads_as_missing(await _answer(surface, "Read", {"path": path}), path)
+
+
+NESTED = {"skills/tone/child/SKILL.md": "Child.\n", "skills/tone/child/notes.md": "Notes.\n"}
+
+
+async def test_an_excluded_nested_skill_stays_closed_through_its_parent(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"include": ["skills/**"], "exclude": ["child"]}, written=NESTED)
+    assert "child" not in _spec(folder).offered
+    closed = _surface(folder)
+    for path in ("skills/tone/child/SKILL.md", "skills/tone/child/notes.md"):
+        _reads_as_missing(await _answer(closed, "Read", {"path": path}), path)
+    assert await _answer(closed, "Read", {"path": "skills/tone/SKILL.md"}) == TONE
+    invoked = _surface(folder, invoked="tone")
+    path = "skills/tone/child/SKILL.md"
+    _reads_as_missing(await _answer(invoked, "Read", {"path": path}), path)
+
+
+async def test_an_excluded_nested_skill_opens_when_it_is_the_one_invoked(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"include": ["skills/**"], "exclude": ["child"]}, written=NESTED)
+    invoked = _surface(folder, invoked="child")
+    assert await _answer(invoked, "Read", {"path": "skills/tone/child/notes.md"}) == "Notes.\n"
+
+
+async def test_a_skill_offered_inside_an_excluded_one_stays_open(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"include": ["skills/**"], "exclude": ["tone"]}, written=NESTED)
+    surface = _surface(folder)
+    assert await _answer(surface, "Read", {"path": "skills/tone/child/notes.md"}) == "Notes.\n"
+    path = "skills/tone/refs/examples.md"
+    _reads_as_missing(await _answer(surface, "Read", {"path": path}), path)
 
 
 def test_a_skill_named_in_another_mode_is_in_the_fingerprint(tmp_path: Path) -> None:
