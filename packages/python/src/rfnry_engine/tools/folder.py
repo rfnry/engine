@@ -8,19 +8,21 @@ import sysconfig
 from collections.abc import Collection, Iterator, Mapping
 from functools import cache
 from importlib.machinery import FrozenImporter
-from pathlib import Path
-from typing import NamedTuple
+from pathlib import Path, PurePosixPath
+from typing import Any, NamedTuple
 
 import jsonschema_rs
 from pydantic import BaseModel, JsonValue
 
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.folders import declares, leads_out
+from rfnry_engine.manifest import ToolEntry
 from rfnry_engine.workers.pool import Helper, Script
 
 ENGINE = "rfnry_engine"
 KEYS = ("description", "input_schema", "output_schema")
 NESTED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+IMPORT_ERRORS = frozenset({"ImportError", "ModuleNotFoundError"})
 
 
 class ToolDef(BaseModel):
@@ -33,6 +35,8 @@ class ToolDef(BaseModel):
     key: str
     source: str
     helpers: dict[str, Helper]
+    function: str = "run"
+    timeout: float | None = None
 
 
 class Reach(NamedTuple):
@@ -43,6 +47,12 @@ class Reach(NamedTuple):
 class ToolFolder(NamedTuple):
     tools: dict[str, ToolDef]
     reach: Reach
+
+
+class _Schema(NamedTuple):
+    description: str
+    input_schema: dict[str, JsonValue]
+    output_schema: dict[str, JsonValue] | None
 
 
 NOWHERE = Reach({}, {})
@@ -127,9 +137,7 @@ def _compiled(path: Path, key: str, schema: dict[str, JsonValue]) -> None:
         ) from exc
 
 
-def _definition(
-    path: Path, script: Path, root: Path, sources: dict[Path, str], helpers: dict[str, Helper]
-) -> ToolDef:
+def _schema_file(path: Path, given: str | None) -> _Schema:
     try:
         data = json.loads(_text(path))
     except json.JSONDecodeError as exc:
@@ -145,8 +153,8 @@ def _definition(
         raise ConfigurationError(
             f"tools/folder: {path} has the unknown key {unknown[0]!r}; a tool's JSON takes description, input_schema and output_schema"
         )
-    description = data.get("description")
-    if not isinstance(description, str) or not description.strip():
+    said: Any = data.get("description")
+    if (given is None or "description" in data) and (not isinstance(said, str) or not said.strip()):
         raise ConfigurationError(
             f"tools/folder: {path} gives no description in text; write what the tool does and what it returns, since nothing else describes it to the model"
         )
@@ -167,11 +175,18 @@ def _definition(
         )
     if result is not None:
         _compiled(path, "output_schema", result)
+    return _Schema(given or said, arguments, result)
+
+
+def _definition(
+    path: Path, script: Path, root: Path, sources: dict[Path, str], helpers: dict[str, Helper]
+) -> ToolDef:
+    schema = _schema_file(path, None)
     return ToolDef(
         name=path.stem,
-        description=description,
-        input_schema=arguments,
-        output_schema=result,
+        description=schema.description,
+        input_schema=schema.input_schema,
+        output_schema=schema.output_schema,
         script=script,
         folder=path.parent,
         key=script_key(root, script),
@@ -180,13 +195,41 @@ def _definition(
     )
 
 
+def _catches_import_errors(handler: ast.ExceptHandler) -> bool:
+    caught = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return any(isinstance(kind, ast.Name) and kind.id in IMPORT_ERRORS for kind in caught)
+
+
+def _is_type_checking(test: ast.expr) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
+
+
+def _guarded_body(node: ast.AST) -> list[ast.stmt]:
+    if isinstance(node, ast.Try | ast.TryStar) and any(map(_catches_import_errors, node.handlers)):
+        return node.body
+    if isinstance(node, ast.If) and _is_type_checking(node.test):
+        return node.body
+    return []
+
+
 def _imports(
-    node: ast.AST, nested: bool = False
-) -> Iterator[tuple[ast.Import | ast.ImportFrom, bool]]:
+    node: ast.AST, nested: bool = False, guarded: bool = False
+) -> Iterator[tuple[ast.Import | ast.ImportFrom, bool, bool]]:
+    safe = _guarded_body(node)
     for child in ast.iter_child_nodes(node):
+        kept = guarded or child in safe
         if isinstance(child, ast.Import | ast.ImportFrom):
-            yield child, nested
-        yield from _imports(child, nested or isinstance(child, NESTED))
+            yield child, nested, kept
+        yield from _imports(child, nested or isinstance(child, NESTED), kept)
+
+
+def _tops(node: ast.Import | ast.ImportFrom) -> list[str]:
+    names = (
+        [node.module or ""] if isinstance(node, ast.ImportFrom) else [a.name for a in node.names]
+    )
+    return [name.partition(".")[0] for name in names]
 
 
 def _origins(name: str) -> list[Path]:
@@ -219,23 +262,29 @@ def _parsed(path: Path, source: str) -> ast.Module:
         ) from exc
 
 
-def _check_run(path: Path, module: ast.Module, what: str, given: str) -> None:
+def _check_run(
+    path: Path, module: ast.Module, what: str, given: str, function: str = "run"
+) -> None:
     if not any(
-        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "run"
+        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == function
         for node in module.body
     ):
         raise ConfigurationError(
-            f"tools/folder: {path} has no run at its top level; a {what} defines def run({given}, call) or async def run({given}, call)"
+            f"tools/folder: {path} has no {function} at its top level; a {what} defines def {function}({given}, call) or async def {function}({given}, call)"
         )
+
+
+def _standard(name: str) -> bool:
+    return (
+        name in sys.stdlib_module_names
+        or name in sys.builtin_module_names
+        or FrozenImporter.find_spec(name) is not None
+    )
 
 
 def _check_name(path: Path) -> None:
     name = path.stem
-    if (
-        name in sys.stdlib_module_names
-        or name in sys.builtin_module_names
-        or FrozenImporter.find_spec(name) is not None
-    ):
+    if _standard(name):
         raise ConfigurationError(
             f"tools/folder: {path} is named like the standard-library module {name!r}, and the worker can't load both; rename it"
         )
@@ -266,26 +315,27 @@ def _check_imports(
     beside: Collection[str],
     above: Mapping[str, Path],
     what: str,
+    declared: bool = False,
 ) -> None:
     held = f"{path.parent.name}/"
+    importable = "modules beside it" if declared else f"helpers of its {held} folder"
+    example = (
+        "a module beside it by its name, such as import shared"
+        if declared
+        else f"a helper of its {held} folder by its name, such as import _client"
+    )
     reach = (
         "the helpers of its tools/ folder and of those above it"
         if what == "tool"
         else "the helpers of its folder"
     )
-    for node, nested in _imports(module):
+    for node, nested, guarded in _imports(module):
         if isinstance(node, ast.ImportFrom) and node.level:
             shown = "." * node.level + (node.module or "")
             raise ConfigurationError(
-                f"tools/folder: {path} imports {shown!r} relatively; import a helper of its {held} folder by its name, such as import _client"
+                f"tools/folder: {path} imports {shown!r} relatively; import {example}"
             )
-        names = (
-            [node.module or ""]
-            if isinstance(node, ast.ImportFrom)
-            else [a.name for a in node.names]
-        )
-        for name in names:
-            top = name.partition(".")[0]
+        for top in _tops(node):
             if top == ENGINE:
                 raise ConfigurationError(
                     f"tools/folder: {path} imports {ENGINE!r}; a {what} never imports the engine, so keep what it needs in the {what} or a helper beside it"
@@ -314,10 +364,14 @@ def _check_imports(
                 raise ConfigurationError(
                     f"tools/folder: {path} imports {top!r}, which sits in the tools/ folder {higher} above it but is not a helper; a {what} reaches only {reach}, so move the shared code into a helper _{top}.py"
                 )
+            if declared and not origins and not guarded and not _standard(top):
+                raise ConfigurationError(
+                    f"tools/folder: {path} imports {top!r}, which resolves to nothing; a {what} reaches the standard library, installed packages and the single .py modules in its own folder, so install it, move it there as a .py file, or guard the import with try/except ImportError or if TYPE_CHECKING"
+                )
             for origin in origins:
                 if _owned(origin, project, folders):
                     raise ConfigurationError(
-                        f"tools/folder: {path} imports {top!r} from {origin}, the server's own code; a {what} imports the standard library, installed packages and helpers of its {held} folder"
+                        f"tools/folder: {path} imports {top!r} from {origin}, the server's own code; a {what} imports the standard library, installed packages and {importable}"
                     )
 
 
@@ -360,6 +414,74 @@ def load_tools(
         if path in scripts.values():
             _check_run(path, module, "tool", "args")
     return ToolFolder(tools, reach)
+
+
+def _file_of(root: Path, name: str, written: str, what: str) -> Path:
+    path = root / written
+    if not path.is_file():
+        raise ConfigurationError(
+            f"tools/folder: tool {name!r} names the {what} {written!r}, and the folder holds no such file; write its path from the folder root"
+        )
+    _held(path, root, "the folder root", "the whole folder")
+    return path
+
+
+def _with_its_modules(
+    script: Path, source: str, root: Path
+) -> tuple[dict[Path, ast.Module], dict[str, Helper]]:
+    parsed = {script: _parsed(script, source)}
+    helpers: dict[str, Helper] = {}
+    waiting = [parsed[script]]
+    while waiting:
+        for node, _, _ in _imports(waiting.pop()):
+            for top in _tops(node):
+                place = script.parent / f"{top}.py"
+                if top in helpers or not place.is_file():
+                    continue
+                _held(place, root, "the folder root", "the whole folder")
+                _check_name(place)
+                helpers[top] = Helper(place, _text(place))
+                parsed[place] = _parsed(place, helpers[top].source)
+                waiting.append(parsed[place])
+    return parsed, helpers
+
+
+def _schema_of(root: Path, name: str, entry: ToolEntry) -> _Schema:
+    if entry.schema_file is not None:
+        return _schema_file(_file_of(root, name, entry.schema_file, "schema"), entry.description)
+    if entry.description is None:
+        raise ConfigurationError(
+            f"tools/folder: tool {name!r} has no description; write description: on its entry or give it a schema file that has one, since nothing else describes it to the model"
+        )
+    return _Schema(entry.description, {"type": "object"}, None)
+
+
+def load_tool(root: Path, name: str, entry: ToolEntry, project: Path) -> ToolDef:
+    root, project = root.absolute(), project.resolve()
+    if PurePosixPath(entry.module).suffix != ".py":
+        raise ConfigurationError(
+            f"tools/folder: tool {name!r} has the module {entry.module!r}, which is not a .py file; the workers run Python, so write the path of a .py file from the folder root"
+        )
+    script = _file_of(root, name, entry.module, "module")
+    source = _text(script)
+    parsed, helpers = _with_its_modules(script, source, root)
+    for path, module in parsed.items():
+        _check_imports(path, module, project, (), helpers, (), {}, "tool", declared=True)
+    _check_run(script, parsed[script], "tool", "args", entry.function)
+    schema = _schema_of(root, name, entry)
+    return ToolDef(
+        name=name,
+        description=schema.description,
+        input_schema=schema.input_schema,
+        output_schema=schema.output_schema,
+        script=script,
+        folder=script.parent,
+        key=script_key(root, script),
+        source=source,
+        helpers=helpers,
+        function=entry.function,
+        timeout=entry.timeout,
+    )
 
 
 def load_scripts(

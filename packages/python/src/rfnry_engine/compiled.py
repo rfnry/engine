@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from collections.abc import Callable, Collection, Iterable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple
@@ -27,12 +28,19 @@ from rfnry_engine.manifest import (
     AgentEntry,
     FilesSection,
     Resolved,
+    ToolEntry,
+    ToolsSection,
     overlaid,
     read_manifest,
 )
 from rfnry_engine.models import Choice, Part, Question
 from rfnry_engine.tools.builtins import BUILTINS, preload_parts
+from rfnry_engine.tools.delegate import DELEGATE_TOOL
+from rfnry_engine.tools.folder import ToolDef, load_tool, project_of
+from rfnry_engine.tools.history import HISTORY_TOOL
+from rfnry_engine.tools.workspace import WORKSPACE_NAMES
 from rfnry_engine.tree import (
+    OUTPUT_TOOL,
     QUESTION_FILES,
     AgentSpec,
     Gitignores,
@@ -42,6 +50,8 @@ from rfnry_engine.tree import (
     utf8_name,
 )
 from rfnry_engine.workers.pool import Script
+
+ENGINE_TOOLS = frozenset({*BUILTINS, DELEGATE_TOOL, HISTORY_TOOL, OUTPUT_TOOL, *WORKSPACE_NAMES})
 
 
 class _Asked(NamedTuple):
@@ -54,6 +64,11 @@ class _Reach(NamedTuple):
     on_the_map: dict[str, Path]
     files: dict[str, Path]
     preloaded: list[str]
+
+
+class _Declared(NamedTuple):
+    entries: Mapping[str, ToolEntry]
+    tools: Mapping[str, ToolDef]
 
 
 def _who(agent: str, mode: str | None) -> str:
@@ -216,10 +231,10 @@ def _matching(
     return matched
 
 
-def _own_files(resolved: Resolved) -> set[str]:
+def _own_files(resolved: Resolved, tool_files: Collection[str]) -> set[str]:
     if resolved.instructions is None:
-        return set()
-    return {PurePosixPath(resolved.instructions).as_posix()}
+        return set(tool_files)
+    return {PurePosixPath(resolved.instructions).as_posix(), *tool_files}
 
 
 def _reach(root: Path, who: str, files: FilesSection, own: Collection[str]) -> _Reach:
@@ -277,6 +292,42 @@ def _file_tools(resolved: Resolved) -> list[str]:
     return sorted(BUILTINS - set(resolved.tools.exclude or ()))
 
 
+def _matching_names(pattern: str, names: Iterable[str]) -> list[str]:
+    shape = re.compile(".*".join(map(re.escape, pattern.split("*"))))
+    return [name for name in names if shape.fullmatch(name)]
+
+
+def _names(who: str, key: str, written: list[str] | None, declared: Collection[str]) -> list[str]:
+    names: list[str] = []
+    for entry in written or ():
+        if "*" not in entry:
+            names.append(entry)
+            continue
+        found = _matching_names(entry, declared)
+        if not found:
+            raise ConfigurationError(
+                f"compiled: {who} lists the pattern {entry!r} in tools.{key}, which matches no name under tools:; write one that matches a declared tool, or remove it"
+            )
+        names.extend(found)
+    return names
+
+
+def _picked_tools(who: str, tools: ToolsSection, declared: Collection[str]) -> list[str]:
+    dropped = set(_names(who, "exclude", tools.exclude, declared))
+    return [
+        name
+        for name in dict.fromkeys(_names(who, "include", tools.include, declared))
+        if name not in dropped
+    ]
+
+
+def _tool_files(root: Path, tool: ToolDef, entry: ToolEntry) -> dict[str, Path]:
+    paths = [tool.script, *(held.path for held in tool.helpers.values())]
+    if entry.schema_file is not None:
+        paths.append(root / entry.schema_file)
+    return {path.relative_to(root).as_posix(): path for path in paths}
+
+
 def _preloaded(
     root: Path, who: str, names: list[str], named: frozenset[Path], loadable: bool
 ) -> tuple[list[Part], dict[str, bytes]]:
@@ -293,12 +344,16 @@ def _fingerprint(
     agent: str,
     mode: str | None,
     resolved: Resolved,
+    tools: Mapping[str, ToolEntry],
     files: Mapping[str, Path],
     read: Mapping[str, bytes],
 ) -> str:
     entry = f"{MANIFEST}#{agent}" if mode is None else f"{MANIFEST}#{agent}:{mode}"
     canonical = json.dumps(
-        resolved.model_dump(mode="json"),
+        {
+            "agent": resolved.model_dump(mode="json"),
+            "tools": {name: tool.model_dump(mode="json") for name, tool in tools.items()},
+        },
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -308,11 +363,18 @@ def _fingerprint(
     )
 
 
-def _spec(root: Path, agent: str, entry: AgentEntry, mode: str | None) -> AgentSpec:
+def _spec(
+    root: Path, agent: str, entry: AgentEntry, mode: str | None, declared: _Declared
+) -> AgentSpec:
     resolved = overlaid(entry, mode)
     who = _who(agent, mode)
     asked = _questions(root, who, resolved.questions or [])
-    files = dict(asked.files)
+    picked = _picked_tools(who, resolved.tools, declared.entries)
+    folder_tools = {name: declared.tools[name] for name in picked if name in declared.tools}
+    tool_files: dict[str, Path] = {}
+    for name, tool in folder_tools.items():
+        tool_files |= _tool_files(root, tool, declared.entries[name])
+    files = {**asked.files, **tool_files}
     read: dict[str, bytes] = {}
     body = ""
     said = resolved.description
@@ -324,11 +386,11 @@ def _spec(root: Path, agent: str, entry: AgentEntry, mode: str | None) -> AgentS
     reach = (
         _Reach({}, {}, [])
         if resolved.instructions is None
-        else _reach(root, who, resolved.files, _own_files(resolved))
+        else _reach(root, who, resolved.files, _own_files(resolved, tool_files))
     )
     files |= reach.files
     _check_what_it_reaches(root, who, files)
-    keep = _file_tools(resolved)
+    keep = sorted({*_file_tools(resolved), *picked})
     named = _hidden_names(root, reach.files)
     preload, loaded = _preloaded(root, who, reach.preloaded, named, "Load" in keep)
     read |= loaded
@@ -344,11 +406,20 @@ def _spec(root: Path, agent: str, entry: AgentEntry, mode: str | None) -> AgentS
         route=resolved.orchestration.route,
         questions=asked.questions,
         keep=keep,
-        fingerprint=_fingerprint(root, agent, mode, resolved, files, read),
+        fingerprint=_fingerprint(
+            root,
+            agent,
+            mode,
+            resolved,
+            {name: declared.entries[name] for name in folder_tools},
+            files,
+            read,
+        ),
         workspace=bool(resolved.workspace),
         scripted=asked.scripted,
         preload=preload,
         preload_digest=preload_digest(preload),
+        folder_tools=dict(sorted(folder_tools.items())),
         listing="\n".join(mapped(sorted(reach.on_the_map.items()))),
         needs_mode=resolved.instructions is None,
         worker=resolved.worker or "default",
@@ -366,9 +437,9 @@ def _spec(root: Path, agent: str, entry: AgentEntry, mode: str | None) -> AgentS
     )
 
 
-def _agent(root: Path, name: str, entry: AgentEntry) -> AgentSpec:
-    spec = _spec(root, name, entry, None)
-    modes = {mode: _spec(root, name, entry, mode) for mode in entry.modes}
+def _agent(root: Path, name: str, entry: AgentEntry, declared: _Declared) -> AgentSpec:
+    spec = _spec(root, name, entry, None, declared)
+    modes = {mode: _spec(root, name, entry, mode, declared) for mode in entry.modes}
     return spec.model_copy(update={"modes": modes})
 
 
@@ -420,10 +491,42 @@ def _check_orchestration(agents: Mapping[str, AgentSpec]) -> None:
             _check_route(agents, who, spec)
 
 
+def _refuse_engine_names(tools: Iterable[str]) -> None:
+    for name in sorted(tools):
+        if name in ENGINE_TOOLS:
+            raise ConfigurationError(
+                f"compiled: tools.{name} in {MANIFEST} is named like a tool the engine gives; rename it, since the key is the name the model sees"
+            )
+
+
+def _refuse_loose_tools(agents: Mapping[str, AgentSpec], declared: Iterable[str]) -> None:
+    picked = {
+        name
+        for agent in agents.values()
+        for spec in (agent, *agent.modes.values())
+        for name in spec.folder_tools
+    }
+    loose = sorted(set(declared) - picked)
+    if loose:
+        raise ConfigurationError(
+            f"compiled: tools.{loose[0]} in {MANIFEST} is picked by nothing; pick it with tools.include on an agent or a mode, or remove it"
+        )
+
+
 @warns_once()
 def load_folder(root: Path) -> dict[str, AgentSpec]:
     root = Path(root).resolve()
     manifest = read_manifest(root)
-    agents = {name: _agent(root, name, manifest.agents[name]) for name in sorted(manifest.agents)}
+    _refuse_engine_names(manifest.tools)
+    project = project_of(root)
+    declared = _Declared(
+        manifest.tools,
+        {name: load_tool(root, name, entry, project) for name, entry in manifest.tools.items()},
+    )
+    agents = {
+        name: _agent(root, name, manifest.agents[name], declared)
+        for name in sorted(manifest.agents)
+    }
     _check_orchestration(agents)
+    _refuse_loose_tools(agents, manifest.tools)
     return agents

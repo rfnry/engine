@@ -846,7 +846,10 @@ async def test_a_worker_tells_its_pool_which_scripts_take_a_thread(tmp_path: Pat
     async with Engine(tmp_path, models={}) as engine:
         assert pid(await EngineTools(engine, agent="shop", scope="acme").dispatch("wait", {})) == 1
         [worker] = engine._workers.pool("shop")._workers
-        assert worker is not None and worker.threaded == {"tools/pid", "desk/questions/size"}
+        assert worker is not None and worker.threaded == {
+            "tools/pid:run",
+            "desk/questions/size:run",
+        }
 
 
 async def test_closing_the_engine_reports_no_worker_exit(

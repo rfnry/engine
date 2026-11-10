@@ -100,12 +100,13 @@ def _load(
     return loaded
 
 
-def _threaded(modules: dict[str, ModuleType | str]) -> list[str]:
+def _threaded(modules: dict[str, ModuleType | str], functions: dict[str, list[str]]) -> list[str]:
     return [
-        key
+        f"{key}:{function}"
         for key, loaded in modules.items()
         if isinstance(loaded, ModuleType)
-        and not inspect.iscoroutinefunction(getattr(loaded, "run", None))
+        for function in functions[key]
+        if not inspect.iscoroutinefunction(getattr(loaded, function, None))
     ]
 
 
@@ -123,6 +124,7 @@ def _read(requests: BinaryIO, loop: asyncio.AbstractEventLoop, lines: asyncio.Qu
 
 async def _serve(
     modules: dict[str, ModuleType | str],
+    functions: dict[str, list[str]],
     threads: int,
     limit: int | None,
     requests: BinaryIO,
@@ -133,23 +135,22 @@ async def _serve(
     tasks: dict[int, asyncio.Task[None]] = {}
     works: dict[int, Future[Any]] = {}
 
-    async def run(id: int, module: ModuleType, args: Any, call: Any) -> Any:
-        if inspect.iscoroutinefunction(module.run):
-            return await module.run(args, call)
-        work = pool.submit(module.run, args, call)
+    async def run(id: int, function: Any, args: Any, call: Any) -> Any:
+        if inspect.iscoroutinefunction(function):
+            return await function(args, call)
+        work = pool.submit(function, args, call)
         works[id] = work
         result = await asyncio.wrap_future(work)
         del works[id]
         return await result if inspect.isawaitable(result) else result
 
-    async def handle(id: int, key: str, args: Any, call: Any) -> None:
-        name = key.rsplit("/", 1)[-1]
+    async def handle(id: int, key: str, function: str, name: str, args: Any, call: Any) -> None:
         try:
             loaded = modules.get(key, f"workers/process: the worker has no tool {name}")
             if isinstance(loaded, str):
                 text = json.dumps({"id": id, "error": loaded})
             else:
-                result = await run(id, loaded, args, call)
+                result = await run(id, getattr(loaded, function), args, call)
                 text = json.dumps({"id": id, "result": result}, allow_nan=False)
         except asyncio.CancelledError:
             text = json.dumps({"id": id, "error": "CancelledError: the call was cancelled"})
@@ -162,7 +163,7 @@ async def _serve(
         works.pop(id, None)
         _write(replies, text)
 
-    _write(replies, json.dumps({"threaded": _threaded(modules)}))
+    _write(replies, json.dumps({"threaded": _threaded(modules, functions)}))
     lines: asyncio.Queue[bytes] = asyncio.Queue()
     threading.Thread(target=_read, args=(requests, loop, lines), daemon=True).start()
     while line := await lines.get():
@@ -175,7 +176,15 @@ async def _serve(
                 tasks[id].cancel()
             continue
         task = asyncio.create_task(
-            handle(id, message["key"], message["args"], message["call"]), eager_start=True
+            handle(
+                id,
+                message["key"],
+                message["function"],
+                message["name"],
+                message["args"],
+                message["call"],
+            ),
+            eager_start=True,
         )
         if not task.done():
             tasks[id] = task
@@ -201,7 +210,9 @@ def main() -> None:
     sys.stdout = sys.stderr
     start = json.loads(requests.readline())
     modules = _load(start["scripts"], start["helpers"])
-    asyncio.run(_serve(modules, start["threads"], start["limit"], requests, replies))
+    asyncio.run(
+        _serve(modules, start["functions"], start["threads"], start["limit"], requests, replies)
+    )
 
 
 if __name__ == "__main__":

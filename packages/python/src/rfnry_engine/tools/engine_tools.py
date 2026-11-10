@@ -8,7 +8,7 @@ from rfnry_engine.models import HistoryLike, ToolCall
 from rfnry_engine.records import EventHandler
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.builtins import BUILTINS, builtins, load_tool
-from rfnry_engine.tools.declared import chosen, described, folder_tool, picked
+from rfnry_engine.tools.declared import chosen, described, folder_tool, picked, smallest
 from rfnry_engine.tools.delegate import delegate_tool
 from rfnry_engine.tools.history import HISTORY_TOOL, history_tool
 from rfnry_engine.tools.tools import Tool, Tools, ToolsLike
@@ -89,6 +89,7 @@ class EngineTools(Tools):
             load_tool(spec.root, backend, media_types, reach, spec.ignored, withheld, spec.named),
         ]
         items: list[Tool | ToolsLike] = [tool for tool in files if picked(spec, tool.name)]
+        deadline = smallest(spec.tool_timeout, engine.tool_timeout)
         if history is not None and start > 0:
             items.append(
                 history_tool(
@@ -96,12 +97,12 @@ class EngineTools(Tools):
                     start,
                     walk=engine.history_walk,
                     chars=engine.history_chars,
-                    timeout=engine.tool_timeout,
+                    timeout=deadline,
                 )
             )
         pool = engine._workers.pool(agent)
         folder = [
-            folder_tool(definition, pool, engine.tool_timeout, scope, dict(tags or {}))
+            folder_tool(definition, pool, deadline, scope, dict(tags or {}))
             for name, definition in chosen(spec).items()
             if name not in given
         ]

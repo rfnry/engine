@@ -83,7 +83,7 @@ from rfnry_engine.records import (
     ToolResultReady,
 )
 from rfnry_engine.stop import Stop, Stopped, requested, wait
-from rfnry_engine.tools.declared import chosen
+from rfnry_engine.tools.declared import chosen, smallest
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
     AgentArgs,
@@ -1344,7 +1344,11 @@ class Engine:
                 elif call.name == DELEGATE_TOOL and spec.agents:
                     content, is_error, child_run_id, cut_short = await delegate(call)
                 else:
-                    limit = None if call.name in own_deadline else self.tool_timeout
+                    limit = (
+                        None
+                        if call.name in own_deadline
+                        else smallest(spec.tool_timeout, self.tool_timeout)
+                    )
                     deadline = asyncio.timeout(limit)
                     try:
                         async with deadline:

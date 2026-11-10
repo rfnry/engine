@@ -43,6 +43,7 @@ class Script(NamedTuple):
     path: Path
     source: str
     helpers: Mapping[str, Helper]
+    functions: frozenset[str] = frozenset({"run"})
 
 
 def _lines(pending: bytearray, data: bytes) -> list[bytes]:
@@ -239,6 +240,15 @@ def _logged(dropped: Future[None]) -> None:
         _log(error)
 
 
+def _helpers_by_folder(scripts: Sequence[Script]) -> dict[str, dict[str, list[str]]]:
+    folders: dict[str, dict[str, list[str]]] = {}
+    for script in scripts:
+        folders.setdefault(str(script.path.parent), {}).update(
+            {name: [str(held.path), held.source] for name, held in script.helpers.items()}
+        )
+    return folders
+
+
 def _load(worker: _Worker | None) -> int:
     return 0 if worker is None else len(worker.calls) + len(worker.held) + len(worker.cancelling)
 
@@ -254,15 +264,11 @@ class WorkerPool:
     ) -> None:
         self._scripts = {
             "scripts": [
-                {"key": key, "path": str(path), "source": source}
-                for key, path, source, _ in scripts
+                {"key": script.key, "path": str(script.path), "source": script.source}
+                for script in scripts
             ],
-            "helpers": {
-                str(path.parent): {
-                    name: [str(held.path), held.source] for name, held in helpers.items()
-                }
-                for _, path, _, helpers in scripts
-            },
+            "helpers": _helpers_by_folder(scripts),
+            "functions": {script.key: sorted(script.functions) for script in scripts},
             "threads": threads,
             "limit": limit,
         }
@@ -276,12 +282,27 @@ class WorkerPool:
         self._starting: _Worker | None = None
 
     async def call(
-        self, key: str, args: JsonValue, call: Mapping[str, JsonValue], timeout: float | None
+        self,
+        key: str,
+        args: JsonValue,
+        call: Mapping[str, JsonValue],
+        timeout: float | None,
+        function: str = "run",
+        tool: str | None = None,
     ) -> JsonValue:
-        name = key.rsplit("/", 1)[-1]
+        name = tool or key.rsplit("/", 1)[-1]
         id = next(self._ids)
         try:
-            text = json.dumps({"id": id, "key": key, "args": args, "call": dict(call)})
+            text = json.dumps(
+                {
+                    "id": id,
+                    "key": key,
+                    "function": function,
+                    "name": name,
+                    "args": args,
+                    "call": dict(call),
+                }
+            )
         except (TypeError, ValueError) as exc:
             raise InputError(
                 f"workers/pool: the arguments for {name} are not JSON: {exc}"
@@ -299,7 +320,8 @@ class WorkerPool:
             raise TimeoutError(f"workers/pool: {name} timed out after {timeout:g}s") from None
         finally:
             if worker is not None:
-                worker.abandon(id, held=key in worker.threaded, expired=deadline.expired())
+                held = f"{key}:{function}" in worker.threaded
+                worker.abandon(id, held=held, expired=deadline.expired())
 
     async def close(self) -> None:
         try:
@@ -427,6 +449,15 @@ def _group(path: str, groups: Collection[str]) -> str | None:
     return next((name for name in groups if path == name or path.startswith(f"{name}/")), None)
 
 
+def _gather(held: dict[str, Script], script: Script) -> None:
+    earlier = held.get(script.key)
+    held[script.key] = (
+        script
+        if earlier is None
+        else script._replace(functions=earlier.functions | script.functions)
+    )
+
+
 class Workers:
     def __init__(
         self,
@@ -440,9 +471,18 @@ class Workers:
         for name, spec in agents.items():
             own = scripts[self._groups[name]]
             for tool in spec.folder_tools.values():
-                own[tool.key] = Script(tool.key, tool.script, tool.source, tool.helpers)
+                _gather(
+                    own,
+                    Script(
+                        tool.key,
+                        tool.script,
+                        tool.source,
+                        tool.helpers,
+                        frozenset({tool.function}),
+                    ),
+                )
             for _, script in spec.scripted.values():
-                own[script.key] = script
+                _gather(own, script)
         self._pools = {
             group: WorkerPool(
                 [held[key] for key in sorted(held)],

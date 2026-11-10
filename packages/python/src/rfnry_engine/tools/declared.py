@@ -41,6 +41,10 @@ def chosen(spec: AgentSpec) -> dict[str, ToolDef]:
     return {name: tool for name, tool in spec.folder_tools.items() if picked(spec, name)}
 
 
+def smallest(*deadlines: float | None) -> float | None:
+    return min((deadline for deadline in deadlines if deadline is not None), default=None)
+
+
 def _call(scope: str, tags: Mapping[str, str]) -> dict[str, JsonValue]:
     held = current_call()
     if held is not None and held.scope == scope:
@@ -73,6 +77,7 @@ def folder_tool(
     name = definition.name
     arguments = _compiled(definition.input_schema)
     returns = None if definition.output_schema is None else _compiled(definition.output_schema)
+    limit = smallest(definition.timeout, timeout)
 
     async def body(args: dict[str, Any]) -> Result:
         try:
@@ -81,7 +86,14 @@ def folder_tool(
             raise InputError(
                 f"tools/declared: invalid arguments for {name}: {reason(exc)}"
             ) from exc
-        result = await pool.call(definition.key, args, _call(scope, tags), timeout)
+        result = await pool.call(
+            definition.key,
+            args,
+            _call(scope, tags),
+            limit,
+            function=definition.function,
+            tool=name,
+        )
         if returns is not None:
             try:
                 returns.validate(result)
