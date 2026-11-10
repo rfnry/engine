@@ -1,11 +1,11 @@
 import logging
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from rfnry_engine.errors import ConfigurationError
-from rfnry_engine.folders import content, entries, joined
+from rfnry_engine.folders import content, entries, joined, pattern_reaches
 from rfnry_engine.frontmatter import described
 
 
@@ -224,3 +224,33 @@ def test_an_unreadable_folder_is_named_in_a_warning_and_left_out(
     assert f"folders: cannot read {blocked}: [Errno 13] denied: '{blocked}'; it is left out" in (
         caplog.messages
     )
+
+
+@pytest.mark.parametrize(
+    ("pattern", "path", "reached"),
+    [
+        ("q/*.json", "q/a.json", True),
+        ("q/*.json", "r/a.json", False),
+        ("q/*.json", "q/.a.json", False),
+        ("q/.a.json", "q/.a.json", True),
+        (".x/*.json", ".x/a.json", True),
+        (".x/.x/*.json", ".x/.x/a.json", True),
+        (".x/**/*.json", ".x/a.json", True),
+        (".x/**/*.json", ".x/b/c/a.json", True),
+        (".x/**/*.json", ".x/.x/secret.json", False),
+        (".x/**/*.json", ".x/b/.x/secret.json", False),
+        ("**/.x/*.json", "b/c/.x/a.json", True),
+        ("**/.x/*.json", ".y/.x/a.json", False),
+        ("**/*.json", ".x/a.json", False),
+        ("a/**/**/b.json", "a/b.json", True),
+        ("a/**", "a/b/c", True),
+        ("**", ".x", False),
+        (".*/a.json", ".x/a.json", False),
+        ("?x/a.json", ".x/a.json", False),
+        ("[.]x/a.json", ".x/a.json", False),
+    ],
+)
+def test_a_pattern_reaches_a_hidden_name_only_where_it_spells_it(
+    pattern: str, path: str, reached: bool
+) -> None:
+    assert pattern_reaches(pattern, PurePosixPath(path)) is reached

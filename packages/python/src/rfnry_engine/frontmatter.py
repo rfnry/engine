@@ -50,8 +50,9 @@ def split_frontmatter(raw: str) -> tuple[str, str] | None:
 
 
 def body_of(raw: str) -> str:
-    split = split_frontmatter(raw.replace("\r\n", "\n"))
-    return (raw.removeprefix("\ufeff") if split is None else split[1]).strip()
+    text = raw.replace("\r\n", "\n")
+    split = split_frontmatter(text)
+    return (text.removeprefix("\ufeff") if split is None else split[1]).strip()
 
 
 _HEAD = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)

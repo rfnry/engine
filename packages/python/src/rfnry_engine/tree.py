@@ -4,7 +4,7 @@ import logging
 import os
 import posixpath
 import re
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Mapping
 from functools import cached_property
 from itertools import combinations
 from pathlib import Path
@@ -1209,20 +1209,14 @@ def load_tree(root: Path) -> dict[str, AgentSpec]:
     return dict(sorted(agents.items()))
 
 
-def _every_spec(agents: Mapping[str, AgentSpec]) -> Iterator[AgentSpec]:
-    for agent in agents.values():
-        yield agent
-        yield from agent.modes.values()
-
-
 def validate_tree(agents: dict[str, AgentSpec]) -> None:
-    for spec in _every_spec(agents):
+    for spec in agents.values():
         for name in spec.agents:
             if name not in agents:
                 raise ConfigurationError(
                     f"tree: agent {spec.name!r} names unknown agent {name!r}; agents: names agents of this tree: {', '.join(sorted(agents))}"
                 )
-        if spec.route is None or spec.needs_mode:
+        if spec.route is None:
             continue
         by = spec.route.by
         if by in spec.scripted:

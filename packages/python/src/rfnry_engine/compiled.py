@@ -1,6 +1,6 @@
 import json
 from collections.abc import Collection, Mapping
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import NamedTuple
 
 from pydantic import JsonValue
@@ -8,9 +8,10 @@ from pydantic import JsonValue
 from rfnry_engine.chain import preload_digest
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.fingerprint import folder_fingerprint
+from rfnry_engine.folders import pattern_reaches
 from rfnry_engine.frontmatter import body_of, description
 from rfnry_engine.manifest import MANIFEST, AgentEntry, Resolved, overlaid, read_manifest
-from rfnry_engine.models import Question
+from rfnry_engine.models import Choice, Question
 from rfnry_engine.tree import (
     QUESTION_FILES,
     AgentSpec,
@@ -18,7 +19,6 @@ from rfnry_engine.tree import (
     question_parts,
     read_questions,
     utf8_name,
-    validate_tree,
 )
 from rfnry_engine.workers.pool import Script
 
@@ -52,14 +52,13 @@ def _instructions(root: Path, who: str, written: str) -> tuple[bytes, str]:
 
 
 def _reached_by(root: Path, who: str, written: str) -> list[Path]:
-    named = {part for part in PurePosixPath(written).parts if part.startswith(".")}
     found = [
         path
         for path in root.glob(written)
         if path.is_file()
         and path.suffix in QUESTION_FILES
         and not path.name.startswith("_")
-        and all(part in named or not part.startswith(".") for part in path.relative_to(root).parts)
+        and pattern_reaches(written, path.relative_to(root))
     ]
     if not found:
         raise ConfigurationError(
@@ -99,7 +98,7 @@ def _questions(root: Path, who: str, written: list[str]) -> _Asked:
                     f"compiled: {who} asks {name!r} twice, in {held[name].relative_to(root)} and {path.relative_to(root)}; a question is named by its file, so rename one"
                 )
             held[name] = path
-        fixed, filled = read_questions(directory, definitions, scripts, root, (root,))
+        fixed, filled = read_questions(directory, definitions, scripts, root, ())
         questions |= fixed
         scripted |= filled
         reached.extend(definitions.values())
@@ -111,9 +110,14 @@ def _questions(root: Path, who: str, written: list[str]) -> _Asked:
 
 
 def _check_what_it_reaches(root: Path, who: str, files: Mapping[str, Path]) -> None:
+    manifest = (root / MANIFEST).resolve()
     for name, path in files.items():
         utf8_name(name, path)
         target = path.resolve()
+        if target == manifest:
+            raise ConfigurationError(
+                f"compiled: {who} reaches {name!r}, which is {MANIFEST}; a model never reads that file, so point at another"
+            )
         if not target.is_relative_to(root):
             raise ConfigurationError(
                 f"compiled: {who} reaches {name!r}, which links to {target}, outside the folder root; move the file into the folder"
@@ -187,27 +191,57 @@ def _agent(root: Path, name: str, entry: AgentEntry) -> AgentSpec:
     return spec.model_copy(update={"modes": modes})
 
 
-def _refuse_targets(agents: Mapping[str, AgentSpec]) -> None:
+def _refuse_targets(agents: Mapping[str, AgentSpec], who: str, spec: AgentSpec) -> None:
+    routed = spec.route.to.values() if spec.route is not None else ()
+    for name in (*spec.agents, *routed):
+        target = agents.get(name)
+        if target is None:
+            raise ConfigurationError(
+                f"compiled: {who} names {name!r} in delegate_to or route, and {MANIFEST} holds no such agent; its agents are {', '.join(sorted(agents))}"
+            )
+        if target.needs_mode:
+            raise ConfigurationError(
+                f"compiled: {who} reaches {name!r}, which needs a mode; a delegated or routed run takes none, so give {name!r} instructions on its entry or reach another agent"
+            )
+
+
+def _check_route(agents: Mapping[str, AgentSpec], who: str, spec: AgentSpec) -> None:
+    route = spec.route
+    if route is None or spec.needs_mode:
+        return
+    if route.by in spec.scripted:
+        script = spec.scripted[route.by][1].path.relative_to(spec.root).as_posix()
+        raise ConfigurationError(
+            f"compiled: {who} routes by {route.by!r}, whose options come from {script}; route by a question whose options are fixed"
+        )
+    question = spec.questions.get(route.by)
+    if not isinstance(question, Choice):
+        raise ConfigurationError(
+            f"compiled: {who} routes by {route.by!r}, which is not a choice question in its questions:; write by: as the name of a choice question it asks"
+        )
+    for option, name in route.to.items():
+        if option not in question.options:
+            raise ConfigurationError(
+                f"compiled: {who} routes the option {option!r}, which {route.by!r} does not have; its options are {', '.join(question.options)}"
+            )
+        target = agents[name]
+        if target.kind == "decision" and not target.questions and not target.scripted:
+            raise ConfigurationError(
+                f"compiled: {who} routes to decision agent {name!r}, which has no questions: to ask; give it questions: on its entry, since a routed run takes only the input and no mode"
+            )
+
+
+def _check_orchestration(agents: Mapping[str, AgentSpec]) -> None:
     for agent in agents.values():
         for spec in (agent, *agent.modes.values()):
             who = _who(agent.name, spec.mode)
-            routed = spec.route.to.values() if spec.route is not None else ()
-            for name in (*spec.agents, *routed):
-                target = agents.get(name)
-                if target is None:
-                    raise ConfigurationError(
-                        f"compiled: {who} names {name!r} in delegate_to or route, and {MANIFEST} holds no such agent; its agents are {', '.join(sorted(agents))}"
-                    )
-                if target.needs_mode:
-                    raise ConfigurationError(
-                        f"compiled: {who} reaches {name!r}, which needs a mode; a delegated or routed run takes none, so give {name!r} instructions on its entry or reach another agent"
-                    )
+            _refuse_targets(agents, who, spec)
+            _check_route(agents, who, spec)
 
 
 def load_folder(root: Path) -> dict[str, AgentSpec]:
     root = Path(root).resolve()
     manifest = read_manifest(root)
     agents = {name: _agent(root, name, manifest.agents[name]) for name in sorted(manifest.agents)}
-    _refuse_targets(agents)
-    validate_tree(agents)
+    _check_orchestration(agents)
     return agents

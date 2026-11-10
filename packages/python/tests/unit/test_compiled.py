@@ -165,7 +165,12 @@ def test_only_the_files_a_pattern_reaches_are_asked(tmp_path: Path) -> None:
 def test_a_pattern_skips_hidden_and_helper_files_unless_it_names_them(tmp_path: Path) -> None:
     folder = write_folder(
         tmp_path,
-        {"t": {**DECISION, "questions": ["q/*.json", "q/*/*.json", ".held/q/.named.json"]}},
+        {
+            "t": {
+                **DECISION,
+                "questions": ["q/*.json", "q/*/*.json", ".held/q/.named.json", ".held/**/*.json"],
+            }
+        },
         files={
             "a.md": "Sort.\n",
             "q/urgent.json": URGENT,
@@ -174,9 +179,11 @@ def test_a_pattern_skips_hidden_and_helper_files_unless_it_names_them(tmp_path: 
             "q/.sub/inner.json": "{",
             "q/sub/area.json": AREA,
             ".held/q/.named.json": URGENT.replace("urgent", "named"),
+            ".held/deep/pressing.json": URGENT,
+            ".held/.held/secret.json": "{",
         },
     )
-    assert sorted(load_folder(folder)["t"].questions) == [".named", "area", "urgent"]
+    assert sorted(load_folder(folder)["t"].questions) == [".named", "area", "pressing", "urgent"]
 
 
 @pytest.mark.parametrize("written", ["q/*.txt", "gone/*.json", "q", "q/gone.json"])
@@ -265,6 +272,46 @@ def test_a_link_inside_the_root_is_followed(tmp_path: Path) -> None:
     assert spec.body == "Real." and list(spec.questions) == ["urgent"]
 
 
+def test_a_question_script_cannot_import_the_servers_code_from_under_the_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    root = tmp_path / "agents"
+    root.mkdir()
+    folder = write_folder(
+        root,
+        {"t": {**DECISION, "questions": ["q/*.json"]}},
+        files={
+            "a.md": "Sort.\n",
+            "lib/shared_outside.py": "VALUE = 1\n",
+            "q/order.json": '{"type": "choice", "instructions": "Which order?"}',
+            "q/order.py": "import shared_outside\n\n\ndef run(input, call):\n    return {'options': {'a': 'A'}}\n",
+        },
+    )
+    monkeypatch.syspath_prepend(root / "lib")
+    _refused(
+        folder,
+        r"^tools/folder: .*order\.py imports 'shared_outside' from .*shared_outside\.py, the server's own code",
+    )
+
+
+@pytest.mark.parametrize("through", ["its name", "a link to it", "the file it links to"])
+def test_rfnry_yaml_is_never_a_models_to_read(tmp_path: Path, through: str) -> None:
+    written = {
+        "its name": "rfnry.yaml",
+        "a link to it": "b.md",
+        "the file it links to": "real.yaml",
+    }
+    folder = write_folder(tmp_path, {"a": {**GENERATION, "instructions": written[through]}})
+    if through == "a link to it":
+        (folder / "b.md").symlink_to(folder / "rfnry.yaml")
+    if through == "the file it links to":
+        (folder / "rfnry.yaml").rename(folder / "real.yaml")
+        (folder / "rfnry.yaml").symlink_to(folder / "real.yaml")
+    said = _refused(folder, r"^compiled: agent 'a' reaches '[^']+', which is rfnry\.yaml")
+    assert repr(written[through]) in said
+
+
 def test_a_file_name_that_is_not_utf8_is_refused(tmp_path: Path) -> None:
     folder = write_folder(
         tmp_path,
@@ -319,7 +366,53 @@ def test_a_route_on_an_entry_with_only_modes_is_checked_on_its_modes(tmp_path: P
     assert spec.needs_mode and spec.questions == {} and spec.body == ""
     assert list(spec.modes["x"].questions) == ["area"]
     write_folder(folder, {"t": triage("x", "z"), "b": GENERATION}, files=files)
-    _refused(folder, r"^tree: route of 't' must name a choice question")
+    _refused(folder, r"^compiled: mode 'z' of agent 't' routes by 'area', which is not a choice")
+
+
+@pytest.mark.parametrize("on_mode", [False, True], ids=["entry", "mode"])
+@pytest.mark.parametrize(
+    ("route", "said"),
+    [
+        (
+            {"by": "order", "to": {"a": "b"}},
+            r"routes by 'order', whose options come from q/order\.py; route by a question whose options are fixed",
+        ),
+        (
+            {"by": "urgent", "to": {"a": "b"}},
+            r"routes by 'urgent', which is not a choice question in its questions:",
+        ),
+        (
+            {"by": "gone", "to": {"a": "b"}},
+            r"routes by 'gone', which is not a choice question in its questions:",
+        ),
+        (
+            {"by": "area", "to": {"nope": "b"}},
+            r"routes the option 'nope', which 'area' does not have; its options are other, billing",
+        ),
+        (
+            {"by": "area", "to": {"billing": "empty"}},
+            r"routes to decision agent 'empty', which has no questions: to ask",
+        ),
+    ],
+    ids=["scripted", "not a choice", "no such question", "unknown option", "nothing to ask"],
+)
+def test_a_refused_route_names_its_layer_and_the_keys_of_the_file(
+    tmp_path: Path, route: dict[str, Any], said: str, on_mode: bool
+) -> None:
+    agent = {**DECISION, "questions": ["q/*.json"], "orchestration": {"route": route}}
+    folder = write_folder(
+        tmp_path,
+        {"t": _on_a_mode(agent) if on_mode else agent, "b": GENERATION, "empty": DECISION},
+        files={
+            **FILES,
+            "q/urgent.json": URGENT,
+            "q/order.json": '{"type": "choice", "instructions": "Which order?"}',
+            "q/order.py": "def run(input, call):\n    return {'options': {'a': 'A'}}\n",
+        },
+    )
+    who = "mode 'x' of agent 't'" if on_mode else "agent 't'"
+    message = _refused(folder, f"^compiled: {who} {said}")
+    assert "questions/" not in message
 
 
 def test_a_route_every_mode_replaces_still_names_agents_of_the_file(tmp_path: Path) -> None:
@@ -533,6 +626,49 @@ def test_every_file_an_agent_reaches_is_in_its_fingerprint(
     before = load_folder(folder)["t"].fingerprint
     (folder / path).write_text(text, encoding="utf-8")
     assert load_folder(folder)["t"].fingerprint != before
+
+
+@pytest.mark.parametrize(
+    ("path", "text"),
+    [
+        ("x.md", "Other.\n"),
+        ("r/area.json", AREA.replace("Which area?", "What area?")),
+        ("r/order.json", '{"type": "choice", "instructions": "Which one?"}'),
+        ("r/order.py", "def run(input, call):\n    return {'options': {'b': 'B'}}\n"),
+        ("r/_own.py", "NAME = 'other'\n"),
+    ],
+    ids=["instructions", "question", "scripted question", "script", "helper"],
+)
+def test_a_file_reached_only_through_a_mode_changes_only_that_mode(
+    tmp_path: Path, path: str, text: str
+) -> None:
+    agent = {
+        **DECISION,
+        "questions": ["q/*.json"],
+        "modes": {
+            "x": {"instructions": "x.md", "questions": ["r/*.json"]},
+            "y": {"description": "Stays"},
+        },
+    }
+    folder = write_folder(
+        tmp_path,
+        {"t": agent},
+        files={
+            "a.md": "Sort.\n",
+            "x.md": "Sort by mode.\n",
+            "q/urgent.json": URGENT,
+            "r/area.json": AREA,
+            "r/order.json": '{"type": "choice", "instructions": "Which?"}',
+            "r/order.py": "def run(input, call):\n    return {'options': {'a': 'A'}}\n",
+            "r/_own.py": "NAME = 'one'\n",
+        },
+    )
+    before = load_folder(folder)["t"]
+    (folder / path).write_text(text, encoding="utf-8")
+    after = load_folder(folder)["t"]
+    assert after.modes["x"].fingerprint != before.modes["x"].fingerprint
+    assert after.fingerprint == before.fingerprint
+    assert after.modes["y"].fingerprint == before.modes["y"].fingerprint
 
 
 @pytest.mark.parametrize("path", ["notes/other.md", "q/unasked.json", "b.md"])

@@ -52,3 +52,9 @@ def test_the_loader_parses_the_same_with_libyaml_and_without() -> None:
 def test_the_loader_is_libyaml_when_pyyaml_has_it() -> None:
     assert issubclass(frontmatter.StrictLoader, getattr(yaml, "CSafeLoader", yaml.SafeLoader))
     assert not issubclass(python_loader(), getattr(yaml, "CSafeLoader", ()))
+
+
+def test_a_crlf_body_reads_the_same_with_or_without_frontmatter() -> None:
+    assert frontmatter.body_of("a\r\nb\r\n") == "a\nb"
+    assert frontmatter.body_of("\ufeffa\r\nb\r\n") == "a\nb"
+    assert frontmatter.body_of("---\r\nx: 1\r\n---\r\na\r\nb\r\n") == "a\nb"

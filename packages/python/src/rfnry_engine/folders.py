@@ -1,10 +1,10 @@
 import logging
 import os
 import re
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 
 from pathspec import GitIgnoreSpec
 from pathspec.patterns.gitignore.spec import _DIR_MARK
@@ -39,6 +39,33 @@ def unwarned(place: str | Path) -> bool:
         return False
     seen.add(real)
     return True
+
+
+def _past_stars(segments: Sequence[str], states: Iterable[int]) -> set[int]:
+    passed = set()
+    for state in states:
+        passed.add(state)
+        while state < len(segments) and segments[state] == "**":
+            state += 1
+            passed.add(state)
+    return passed
+
+
+def pattern_reaches(pattern: str, path: PurePath) -> bool:
+    segments = PurePosixPath(pattern).parts
+    states = _past_stars(segments, {0})
+    for part in path.parts:
+        hidden = part.startswith(".")
+        moved = set()
+        for state in states - {len(segments)}:
+            segment = segments[state]
+            if segment == "**":
+                if not hidden:
+                    moved.add(state)
+            elif segment == part or (not hidden and PurePosixPath(part).full_match(segment)):
+                moved.add(state + 1)
+        states = _past_stars(segments, moved)
+    return len(segments) in states
 
 
 def declares(folder: Path) -> bool:
