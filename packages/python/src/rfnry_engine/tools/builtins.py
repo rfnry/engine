@@ -136,8 +136,12 @@ def _through_folders(jail: Jail, path: str) -> str:
     return path
 
 
+def _written_hidden(jail: Jail, path: str) -> bool:
+    return _hidden(jail, jail.root, Path(os.path.relpath(jail._joined(path), jail.root)))
+
+
 def _named(jail: Jail, path: str) -> str:
-    if _hides(jail, path):
+    if _hides(jail, path) and (_written_hidden(jail, path) or not jail._withholds(path)):
         raise InputError(
             f"tools/builtins: {path} is hidden; names starting with . and __pycache__ are not part of the agent's folder"
         )

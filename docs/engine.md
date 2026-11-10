@@ -278,7 +278,7 @@ class Fixed:
 
 A folder with an `rfnry.yaml` at its root is read from that file instead of from `AGENT.md` files: one entry per agent under `agents:`, whose `instructions` names any markdown file from the folder root, its frontmatter left out of the prompt, and whose `modes` each compile to a full agent when the engine loads.
 
-`files:` decides what a model may open, and every path in it, in the map and given to the file tools is written from the folder root, so an instructions file saying `knowledge/refunds.md` means that in every call. `include` lists folders, files or globs, `exclude` takes some back out, `preload` is sent with every model call and stays readable whether or not `include` reaches it, and `gitignore: true` leaves out what a `.gitignore` ignores. The map in the prompt holds what `include` reaches less `exclude` and less the agent's own instructions. A hidden name is reached only where a path in the file names it, as `.claude/agents` does, and hidden names below it stay hidden; `rfnry.yaml` is never readable; a link that leads out of the folder is left out, and one that stays inside is read under its own name. What is out of reach reads as missing to `Read`, `Load`, `LS`, `Grep` and `Glob`, which come with `files`, and `tools.exclude` drops any of them. A pattern that reaches nothing is a `ConfigurationError`, so a mistyped path cannot quietly shrink what a model sees.
+`files:` decides what a model may open, and every path in it, in the map and given to the file tools is written from the folder root, so an instructions file saying `knowledge/refunds.md` means that in every call. `include` lists folders, files or globs, `preload` is sent with every model call and stays readable whether or not `include` reaches it, `exclude` takes paths back out of both, so an excluded file is neither sent nor readable, and `gitignore: true` leaves out what a `.gitignore` ignores. The map in the prompt holds what `include` reaches less `exclude` and less the agent's own instructions. A hidden name is reached only where a path in the file names it, as `.claude/agents` does, and hidden names below it stay hidden; the file tools never open `rfnry.yaml`; a link that leads out of the folder is left out, and one that stays inside is read under its own name, a file link to a hidden file included. What is out of reach reads as missing to `Read`, `Load`, `LS`, `Grep` and `Glob`, which come with `files`, and `tools.exclude` drops any of them. Reach is fixed when the engine loads: a file added later reads as missing until a new `Engine` loads the folder. A pattern that reaches nothing is a `ConfigurationError`, so a mistyped path cannot quietly shrink what a model sees.
 
 ```
 agents/
@@ -1856,8 +1856,8 @@ the agent reads, or that its `files.include` names, is at `$RFNRY_TREE/<name>`. 
 for an unsandboxed `Local` the tree's own path. Commands started with `background=true` get the
 variables too; a `Shell` that code dispatches outside a run gets none. Cautions:
 
-- the shell sees every file under the mount, hidden ones and those `gitignore: true` leaves out
-  included, which the file tools refuse;
+- the shell sees every file under the mount, `rfnry.yaml`, hidden ones, those `gitignore: true`
+  leaves out and whatever `files` leaves out included, which the file tools refuse;
 - the fingerprint covers what the folder holds, not what a command reads;
 - a mount of the whole tree shows the other agents' folders; mount less to hide them;
 - `refinery.replay(candidate, workspace=)` needs a workspace whose sandbox mounts the candidate's

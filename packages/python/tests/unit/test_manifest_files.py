@@ -236,20 +236,37 @@ def test_an_included_preload_is_on_the_map_and_sent_once(tmp_path: Path) -> None
     ]
 
 
-async def test_an_excluded_preload_is_still_sent_and_readable(tmp_path: Path) -> None:
+def _preloaded_names(folder: Path) -> list[str]:
+    return [
+        str(getattr(part, "text", "")).splitlines()[0] for part in load_folder(folder)["a"].preload
+    ]
+
+
+async def test_exclude_narrows_a_preload_folder(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"exclude": ["knowledge/drafts/**"], "preload": ["knowledge"]})
+    assert _preloaded_names(folder) == ["<<<knowledge/rates.md>>>", "<<<knowledge/refunds.md>>>"]
+    surface = _surface(folder)
+    path = "knowledge/drafts/next.md"
+    _reads_as_missing(await _answer(surface, "Read", {"path": path}), path)
+    assert await surface.dispatch("Read", {"path": "knowledge/rates.md"}) == "Rates go up.\n"
+
+
+def test_exclude_narrows_a_preload_glob(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"exclude": ["knowledge/rates.md"], "preload": ["knowledge/r*.md"]})
+    assert _preloaded_names(folder) == ["<<<knowledge/refunds.md>>>"]
+
+
+@pytest.mark.parametrize("include", [{}, {"include": ["knowledge"]}], ids=["alone", "included"])
+def test_a_preload_exclude_leaves_with_nothing_is_refused(
+    tmp_path: Path, include: dict[str, Any]
+) -> None:
     folder = _folder(
         tmp_path,
-        {
-            "include": ["knowledge"],
-            "exclude": ["knowledge/refunds.md"],
-            "preload": ["knowledge/refunds.md"],
-        },
+        {**include, "exclude": ["knowledge/rates.md"], "preload": ["knowledge/rates.md"]},
     )
-    spec = load_folder(folder)["a"]
-    assert "  refunds.md" not in spec.listing.splitlines()
-    assert Text(text="<<<knowledge/refunds.md>>>\nA duplicate is refunded.\n") in spec.preload
-    assert await _surface(folder).dispatch("Read", {"path": "knowledge/refunds.md"}) == (
-        "A duplicate is refunded.\n"
+    _refused(
+        folder,
+        r"^compiled: agent 'a' lists 'knowledge/rates\.md' in files\.preload, which reaches nothing",
     )
 
 
@@ -570,6 +587,119 @@ def test_an_entry_every_mode_completes_is_checked_on_its_modes(tmp_path: Path) -
     agent = load_folder(write_folder(tmp_path, {"a": entry}, files=FILES))["a"]
     assert agent.needs_mode
     assert agent.modes["chat"].listing.splitlines() == ["knowledge/", "  rates.md", "  refunds.md"]
+
+
+async def _nothing_is_open(surface: EngineTools) -> None:
+    for tool in ("Read", "Load"):
+        for path in ("rfnry.yaml", "private/notes.md", "knowledge/refunds.md"):
+            _reads_as_missing(await _answer(surface, tool, {"path": path}), path)
+    assert await surface.dispatch("LS", {}) == "(empty)"
+    assert await surface.dispatch("Grep", {"pattern": "."}) == "no matches found"
+    assert await surface.dispatch("Glob", {"pattern": "**/*"}) == ""
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"include": ["knowledge"], "exclude": ["knowledge"]},
+        {"include": ["knowledge"], "exclude": ["knowledge/**"]},
+        {"include": ["knowledge/refunds.md"], "exclude": ["knowledge/refunds.md"]},
+    ],
+    ids=["folder", "glob", "file"],
+)
+async def test_excluding_everything_leaves_nothing_open(
+    tmp_path: Path, files: dict[str, Any]
+) -> None:
+    surface = _surface(_folder(tmp_path, files))
+    assert set(surface.names) >= FILE_TOOLS
+    await _nothing_is_open(surface)
+
+
+async def test_an_entry_without_instructions_opens_nothing_itself(tmp_path: Path) -> None:
+    entry = {
+        "kind": "generation",
+        "model": "m",
+        "files": {"include": ["knowledge"]},
+        "modes": {"chat": {"instructions": "a.md"}},
+    }
+    surface = _surface(write_folder(tmp_path, {"a": entry}, files=FILES))
+    assert set(surface.names) >= FILE_TOOLS
+    await _nothing_is_open(surface)
+
+
+async def test_reach_is_fixed_at_load(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"include": ["knowledge"]})
+    surface = _surface(folder)
+    (folder / "knowledge/later.md").write_text("A later refund.\n", encoding="utf-8")
+    path = "knowledge/later.md"
+    _reads_as_missing(await _answer(surface, "Read", {"path": path}), path)
+    assert "later" not in str(await surface.dispatch("LS", {"path": "knowledge"}))
+    assert "later" not in str(await surface.dispatch("Glob", {"pattern": "**/*"}))
+    assert "later" not in str(await surface.dispatch("Grep", {"pattern": "refund"}))
+    assert await _surface(folder).dispatch("Read", {"path": path}) == "A later refund.\n"
+
+
+async def test_a_file_link_to_a_hidden_file_reads_under_the_links_name(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"include": ["knowledge"]}, written={".env": "KEY=1\n"})
+    _link(folder / "knowledge/env", "../.env")
+    assert "  env" in _map(folder)
+    surface = _surface(folder)
+    assert await surface.dispatch("Read", {"path": "knowledge/env"}) == "KEY=1\n"
+    assert "KEY" not in await _answer(surface, "Read", {"path": ".env"})
+    assert await surface.dispatch("Glob", {"pattern": "*"}) == ""
+
+
+async def test_a_named_hidden_file_through_a_folder_link_is_as_the_map_shows(
+    tmp_path: Path,
+) -> None:
+    folder = _folder(tmp_path, {"include": ["alias/.h.md"]}, written={"real/.h.md": "Hello.\n"})
+    _link(folder / "alias", "real")
+    assert _map(folder) == ["alias/", "  .h.md"]
+    surface = _surface(folder)
+    assert await surface.dispatch("Read", {"path": "alias/.h.md"}) == "Hello.\n"
+    assert await surface.dispatch("LS", {"path": "alias"}) == ".h.md"
+    assert await surface.dispatch("Glob", {"pattern": "alias/*"}) == "alias/.h.md"
+    assert await surface.dispatch("Grep", {"pattern": "Hello", "path": "alias"}) == "alias/.h.md"
+    _reads_as_missing(await _answer(surface, "Read", {"path": "real/.h.md"}), "real/.h.md")
+
+
+def test_a_gitignore_beside_a_links_target_counts(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {"include": ["knowledge"], "gitignore": True},
+        written={"private/.gitignore": "notes.md\n", "private/deep/kept.md": "K.\n"},
+    )
+    _link(folder / "knowledge/note.md", "../private/notes.md")
+    _link(folder / "knowledge/kept.md", "../private/deep/kept.md")
+    shown = _map(folder)
+    assert "  note.md" not in shown
+    assert "  kept.md" in shown
+
+
+@pytest.mark.parametrize(
+    ("tool", "args"),
+    [
+        ("Read", {"path": "{}"}),
+        ("Load", {"path": "{}"}),
+        ("LS", {"path": "{}"}),
+        ("Grep", {"pattern": "K", "path": "{}"}),
+    ],
+    ids=["Read", "Load", "LS", "Grep"],
+)
+@pytest.mark.parametrize("place", ["private", "knowledge"])
+async def test_a_withheld_link_to_a_hidden_name_answers_as_an_absent_name(
+    tmp_path: Path, place: str, tool: str, args: dict[str, Any]
+) -> None:
+    folder = _folder(tmp_path, {"include": ["knowledge"]}, written={".keys/k.md": "K.\n"})
+    _link(folder / place / "hl", "../.keys")
+    surface = _surface(folder)
+
+    def at(name: str) -> dict[str, Any]:
+        return {key: value.format(f"{place}/{name}") for key, value in args.items()}
+
+    assert await _answer(surface, tool, at("hl")) == (
+        await _answer(surface, tool, at("absent"))
+    ).replace("absent", "hl")
 
 
 async def test_the_shell_is_told_where_the_included_folders_are(tmp_path: Path) -> None:

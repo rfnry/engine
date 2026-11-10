@@ -476,7 +476,8 @@ async def test_a_missing_section_gives_nothing(tmp_path: Path) -> None:
     folder = write_folder(tmp_path, {"a": GENERATION}, files=FILES)
     spec = load_folder(folder)["a"]
     assert spec.keep == [] and spec.folder_tools == {} and spec.skills == {}
-    assert spec.listing == "" and spec.preload == [] and spec.withheld is None
+    assert spec.listing == "" and spec.preload == []
+    assert spec.withheld is not None and spec.withheld(folder / "a.md")
     model = Scripted(text_reply("done"))
     given = Tool("given", "A tool of the run", body=None)
     await Engine(folder, models={"m": model}).run("a", "acme", "go", tools=Tools([given]))

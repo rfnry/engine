@@ -155,6 +155,15 @@ def _in_reach(root: Path, patterns: Collection[str], gitignore: bool) -> dict[st
     gitignored = Gitignored(root) if gitignore else None
     found: dict[str, Path] = {}
 
+    def ignored(path: Path, target: Path) -> bool:
+        if gitignored is None:
+            return False
+        if target != path:
+            for place in target.parents:
+                if place.is_relative_to(root):
+                    gitignores.held_in(place, gitignored)
+        return gitignored(path)
+
     def visit(folder: Path, rel: PurePosixPath, trail: frozenset[Path]) -> None:
         if gitignored is not None:
             gitignores.held_in(folder, gitignored)
@@ -166,7 +175,7 @@ def _in_reach(root: Path, patterns: Collection[str], gitignore: bool) -> dict[st
                 or target == manifest
                 or target in trail
                 or not target.is_relative_to(root)
-                or (gitignored is not None and gitignored(path))
+                or ignored(path, target)
             ):
                 continue
             if path.is_dir():
@@ -218,9 +227,11 @@ def _reach(root: Path, who: str, files: FilesSection, own: Collection[str]) -> _
     preload = files.preload or []
     candidates = _in_reach(root, [*include, *preload], files.gitignore)
     included = _matching(who, "files.include", include, candidates)
-    excluded = _matching(who, "files.exclude", files.exclude or [], included)
-    kept = {name: path for name, path in included.items() if name not in excluded}
-    preloaded = _matching(who, "files.preload", preload, candidates)
+    offered = _matching(who, "files.preload", preload, candidates)
+    excluded = _matching(who, "files.exclude", files.exclude or [], {**included, **offered})
+    left = {name: path for name, path in candidates.items() if name not in excluded}
+    kept = {name: path for name, path in included.items() if name in left}
+    preloaded = _matching(who, "files.preload", preload, left)
     return _Reach(
         on_the_map={name: path for name, path in kept.items() if name not in own},
         files={**kept, **preloaded},
@@ -248,15 +259,15 @@ def _outside(root: Path, reached: Mapping[str, Path]) -> Callable[[Path], bool]:
     return withheld
 
 
-def _hidden_names(root: Path, names: Iterable[str]) -> frozenset[Path]:
+def _hidden_names(root: Path, reached: Mapping[str, Path]) -> frozenset[Path]:
     held: set[Path] = set()
-    for name in names:
-        parts = PurePosixPath(name).parts
-        held.update(
-            root.joinpath(*parts[: depth + 1])
-            for depth, part in enumerate(parts)
-            if part.startswith(".")
-        )
+    for name, path in reached.items():
+        for parts in (PurePosixPath(name).parts, path.resolve().relative_to(root).parts):
+            held.update(
+                root.joinpath(*parts[: depth + 1])
+                for depth, part in enumerate(parts)
+                if part.startswith(".")
+            )
     return frozenset(held)
 
 
@@ -341,7 +352,7 @@ def _spec(root: Path, agent: str, entry: AgentEntry, mode: str | None) -> AgentS
         listing="\n".join(mapped(sorted(reach.on_the_map.items()))),
         needs_mode=resolved.instructions is None,
         worker=resolved.worker or "default",
-        withheld=_outside(root, reach.files) if reach.files else None,
+        withheld=_outside(root, reach.files),
         named=named,
         included_folders=[
             pattern for pattern in resolved.files.include or [] if (root / pattern).is_dir()
