@@ -591,7 +591,7 @@ def test_editing_another_entry_leaves_the_fingerprint_alone(tmp_path: Path) -> N
     ids=lambda edit: next(iter(edit)),
 )
 def test_editing_this_entry_changes_it(tmp_path: Path, edit: dict[str, Any]) -> None:
-    written = {**FILES, "k/x.md": "Kept.\n"}
+    written = {**FILES, "k/x.md": "Kept.\n", "s/SKILL.md": "Skill.\n"}
     folder = write_folder(tmp_path, {"a": GENERATION, "b": GENERATION}, files=written)
     before = load_folder(folder)
     write_folder(folder, {"a": {**GENERATION, **edit}, "b": GENERATION}, files=written)

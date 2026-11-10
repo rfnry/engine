@@ -279,6 +279,7 @@ class AgentSpec(BaseModel):
     needs_mode: bool = False
     worker: str = "default"
     withheld: Callable[[Path], bool] | None = None
+    withheld_when_invoked: dict[str, Callable[[Path], bool]] = Field(default_factory=dict)
     named: frozenset[Path] = frozenset()
     included_folders: list[str] = Field(default_factory=list)
     max_model_calls: int | None = None
@@ -290,11 +291,14 @@ class AgentSpec(BaseModel):
 
 
 def no_such_skill(spec: AgentSpec, skill: str) -> str:
-    have = (
-        f"its skills are {', '.join(spec.skills)}"
-        if spec.skills
-        else "it has no skills; a skill is skills/<name>.md or skills/<name>/SKILL.md in its folder or a folder above it"
-    )
+    if spec.skills:
+        have = f"its skills are {', '.join(spec.skills)}"
+    elif spec.withheld is not None:
+        have = (
+            "it has no skills; name a folder holding SKILL.md in skills.include or skills.preload"
+        )
+    else:
+        have = "it has no skills; a skill is skills/<name>.md or skills/<name>/SKILL.md in its folder or a folder above it"
     return f"agent {spec.name!r} has no skill {skill!r}; {have}"
 
 

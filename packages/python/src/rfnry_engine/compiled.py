@@ -28,6 +28,7 @@ from rfnry_engine.manifest import (
     AgentEntry,
     FilesSection,
     Resolved,
+    SkillsSection,
     ToolEntry,
     overlaid,
     read_manifest,
@@ -43,6 +44,7 @@ from rfnry_engine.tree import (
     QUESTION_FILES,
     AgentSpec,
     Gitignores,
+    Skill,
     question_files,
     question_parts,
     read_questions,
@@ -56,6 +58,7 @@ RUN_DECIDES = {
 }
 ENGINE_TOOLS = frozenset({*BUILTINS, DELEGATE_TOOL, *WORKSPACE_NAMES, *RUN_DECIDES})
 BACKGROUND_JOBS = frozenset({"Shell", "Job", "Jobs"})
+SKILL_FILE = "SKILL.md"
 
 
 class _Asked(NamedTuple):
@@ -75,6 +78,27 @@ class _Declared(NamedTuple):
     tools: Mapping[str, ToolDef]
 
 
+class _Held(NamedTuple):
+    skill: Skill
+    raw: bytes
+
+
+class _Reached(NamedTuple):
+    include: dict[str, str]
+    preload: dict[str, str]
+
+
+class _Skills(NamedTuple):
+    held: Mapping[str, _Held]
+    layers: Mapping[str | None, _Reached]
+
+
+class _Chosen(NamedTuple):
+    offered: frozenset[str]
+    preloaded: list[str]
+    public: tuple[str, ...]
+
+
 class _Grant(NamedTuple):
     section: str
     given: bool
@@ -89,19 +113,19 @@ def _who(agent: str, mode: str | None) -> str:
     return f"agent {agent!r}" if mode is None else f"mode {mode!r} of agent {agent!r}"
 
 
-def _instructions(root: Path, who: str, written: str) -> tuple[bytes, str]:
+def _text(root: Path, who: str, what: str, written: str) -> tuple[bytes, str]:
     try:
         raw = (root / written).read_bytes()
     except (OSError, ValueError) as exc:
         reason = getattr(exc, "strerror", None) or exc
         raise ConfigurationError(
-            f"compiled: {who} cannot read its instructions {written!r}: {reason}; write the path of a readable file from the folder root"
+            f"compiled: {who} cannot read {what} {written!r}: {reason}; write the path of a readable file from the folder root"
         ) from exc
     try:
         return raw, raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ConfigurationError(
-            f"compiled: {who} has instructions {written!r} that are not UTF-8 text; save the file as UTF-8"
+            f"compiled: {who} reads {written!r}, not UTF-8 text; save the file as UTF-8"
         ) from exc
 
 
@@ -245,10 +269,10 @@ def _matching(
     return matched
 
 
-def _own_files(resolved: Resolved, tool_files: Collection[str]) -> set[str]:
+def _own_files(resolved: Resolved, also: Collection[str]) -> set[str]:
     if resolved.instructions is None:
-        return set(tool_files)
-    return {PurePosixPath(resolved.instructions).as_posix(), *tool_files}
+        return set(also)
+    return {PurePosixPath(resolved.instructions).as_posix(), *also}
 
 
 def _reach(root: Path, who: str, files: FilesSection, own: Collection[str]) -> _Reach:
@@ -265,6 +289,135 @@ def _reach(root: Path, who: str, files: FilesSection, own: Collection[str]) -> _
         on_the_map={name: path for name, path in kept.items() if name not in own},
         files={**kept, **preloaded},
         preloaded=list(preloaded),
+    )
+
+
+def _skill_folders(root: Path, pattern: str, gitignore: bool) -> list[str]:
+    return [
+        file.parent.as_posix()
+        for file in map(PurePosixPath, _in_reach(root, [pattern], gitignore))
+        if file.name == SKILL_FILE and file.parent.name and pattern_reaches(pattern, file.parent)
+    ]
+
+
+def _hold_once(who: str, held: dict[str, str], folder: str) -> None:
+    name = PurePosixPath(folder).name
+    if held.setdefault(name, folder) != folder:
+        raise ConfigurationError(
+            f"compiled: {who} reaches two skills named {name!r}, {held[name]} and {folder}; a skill is named by its folder, so rename one"
+        )
+
+
+def _folders_reached(
+    root: Path, who: str, key: str, patterns: Iterable[str], gitignore: bool
+) -> dict[str, str]:
+    held: dict[str, str] = {}
+    for pattern in patterns:
+        folders = _skill_folders(root, pattern, gitignore)
+        if not folders:
+            raise ConfigurationError(
+                f"compiled: {who} lists {pattern!r} in {key}, which reaches no skill; a skill is a folder holding {SKILL_FILE}, so write such a folder or a glob from the folder root that reaches one, or remove it"
+            )
+        for folder in folders:
+            _hold_once(who, held, folder)
+    return held
+
+
+def _reached_skills(root: Path, who: str, resolved: Resolved) -> _Reached:
+    section, gitignore = resolved.skills, resolved.files.gitignore
+    return _Reached(
+        _folders_reached(root, who, "skills.include", section.include or (), gitignore),
+        _folders_reached(root, who, "skills.preload", section.preload or (), gitignore),
+    )
+
+
+def _held_skill(root: Path, who: str, folder: str) -> _Held:
+    written = f"{folder}/{SKILL_FILE}"
+    utf8_name(written, root / written)
+    raw, text = _text(root, who, "the skill", written)
+    return _Held(
+        Skill(
+            path=written,
+            place=root / folder,
+            description=description(text, root / written) or "",
+            body=body_of(text),
+        ),
+        raw,
+    )
+
+
+def _every_skill(root: Path, agent: str, entry: AgentEntry) -> _Skills:
+    who = _who(agent, None)
+    layers = {
+        mode: _reached_skills(root, _who(agent, mode), resolved)
+        for mode in (None, *entry.modes)
+        if (resolved := overlaid(entry, mode)).instructions is not None
+    }
+    folders: dict[str, str] = {}
+    for reached in layers.values():
+        for folder in (*reached.include.values(), *reached.preload.values()):
+            _hold_once(who, folders, folder)
+    return _Skills(
+        {name: _held_skill(root, who, folders[name]) for name in sorted(folders)}, layers
+    )
+
+
+def _skill_folder(held: _Held) -> PurePosixPath:
+    return PurePosixPath(held.skill.path).parent
+
+
+def _excluded_skills(who: str, written: Iterable[str], held: Mapping[str, _Held]) -> set[str]:
+    excluded: set[str] = set()
+    for entry in written:
+        found = {
+            name
+            for name, one in held.items()
+            if entry == name or pattern_reaches(entry, _skill_folder(one))
+        }
+        if not found:
+            raise ConfigurationError(
+                f"compiled: {who} lists {entry!r} in skills.exclude, which reaches no skill it names; write a skill's name, its folder or a glob from the folder root, or remove it"
+            )
+        excluded |= found
+    return excluded
+
+
+def _preload_left(
+    who: str, patterns: Iterable[str], reached: Mapping[str, str], left: Collection[str]
+) -> None:
+    for pattern in patterns:
+        if not any(pattern_reaches(pattern, PurePosixPath(reached[name])) for name in left):
+            raise ConfigurationError(
+                f"compiled: {who} lists {pattern!r} in skills.preload, which skills.exclude takes back out; take it out of one of the two"
+            )
+
+
+def _public_skills(who: str, section: SkillsSection, offered: Collection[str]) -> tuple[str, ...]:
+    names = sorted(offered if section.public == "all" else section.public or ())
+    for name in names:
+        if any(character.isspace() for character in name):
+            raise ConfigurationError(
+                f"compiled: {who} makes {name!r} public, and no one can type it with a space in it; rename the skill's folder to one word, or list only the skills people may call"
+            )
+        if name not in offered:
+            have = f"it offers {', '.join(sorted(offered))}" if offered else "it offers no skills"
+            raise ConfigurationError(
+                f"compiled: {who} lists {name!r} in skills.public, which it does not offer; {have}, so add it to skills.include or remove the name"
+            )
+    return tuple(names)
+
+
+def _chosen_skills(
+    who: str, section: SkillsSection, held: Mapping[str, _Held], reached: _Reached
+) -> _Chosen:
+    excluded = _excluded_skills(who, section.exclude or (), held)
+    offered = frozenset(reached.include) - excluded
+    preloaded = [name for name in reached.preload if name not in excluded]
+    _preload_left(who, section.preload or (), reached.preload, preloaded)
+    return _Chosen(
+        offered,
+        [held[name].skill.path for name in preloaded],
+        _public_skills(who, section, offered),
     )
 
 
@@ -301,9 +454,12 @@ def _hidden_names(root: Path, reached: Mapping[str, Path]) -> frozenset[Path]:
 
 
 def _grants(resolved: Resolved) -> dict[str, _Grant]:
-    opens_files = resolved.files.include is not None or resolved.files.preload is not None
+    opens_files = any(
+        section.include is not None or section.preload is not None
+        for section in (resolved.files, resolved.skills)
+    )
     return {
-        **dict.fromkeys(BUILTINS, _Grant("files", opens_files)),
+        **dict.fromkeys(BUILTINS, _Grant("files or skills", opens_files)),
         DELEGATE_TOOL: _Grant(
             "orchestration.delegate_to", bool(resolved.orchestration.delegate_to)
         ),
@@ -378,7 +534,7 @@ def _preloaded(
         return preload_parts(names, Jail(root, named=named), loadable)
     except InputError as exc:
         raise ConfigurationError(
-            f"compiled: {who} cannot preload: {exc}; fix that file, or drop it from files.preload"
+            f"compiled: {who} cannot preload: {exc}; fix that file, or drop it from preload"
         ) from exc
 
 
@@ -407,7 +563,12 @@ def _fingerprint(
 
 
 def _spec(
-    root: Path, agent: str, entry: AgentEntry, mode: str | None, declared: _Declared
+    root: Path,
+    agent: str,
+    entry: AgentEntry,
+    mode: str | None,
+    declared: _Declared,
+    skills: _Skills,
 ) -> AgentSpec:
     resolved = overlaid(entry, mode)
     who = _who(agent, mode)
@@ -422,21 +583,45 @@ def _spec(
     body = ""
     said = resolved.description
     if resolved.instructions is not None:
-        read[resolved.instructions], text = _instructions(root, who, resolved.instructions)
+        read[resolved.instructions], text = _text(
+            root, who, "its instructions", resolved.instructions
+        )
         files[resolved.instructions] = root / resolved.instructions
         body = body_of(text)
         said = said or description(text, root / resolved.instructions)
+    reached = skills.layers.get(mode)
+    chosen = (
+        _Chosen(frozenset(), [], ())
+        if reached is None
+        else _chosen_skills(who, resolved.skills, skills.held, reached)
+    )
+    skill_files = {
+        name: {
+            one.skill.path: root / one.skill.path,
+            **_in_reach(root, [_skill_folder(one).as_posix()], resolved.files.gitignore),
+        }
+        for name, one in skills.held.items()
+    }
+    offered_files = {
+        path: place for name in chosen.offered for path, place in skill_files[name].items()
+    }
+    every_skill_file = {
+        path: place for held in skill_files.values() for path, place in held.items()
+    }
     reach = (
         _Reach({}, {}, [])
         if resolved.instructions is None
-        else _reach(root, who, resolved.files, _own_files(resolved, tool_files))
+        else _reach(root, who, resolved.files, _own_files(resolved, {*tool_files, *offered_files}))
     )
-    files |= reach.files
+    files |= {**reach.files, **every_skill_file}
     _check_what_it_reaches(root, who, files)
     keep = sorted({*picked.granted, *picked.names})
-    named = _hidden_names(root, reach.files)
-    preload, loaded = _preloaded(root, who, reach.preloaded, named, "Load" in keep)
-    read |= loaded
+    named = _hidden_names(root, {**reach.files, **every_skill_file})
+    preload, loaded = _preloaded(
+        root, who, [*reach.preloaded, *chosen.preloaded], named, "Load" in keep
+    )
+    read |= {one.skill.path: one.raw for one in skills.held.values()} | loaded
+    opened = {**reach.files, **offered_files}
     return AgentSpec(
         root=root,
         name=agent,
@@ -465,11 +650,19 @@ def _spec(
         scripted=asked.scripted,
         preload=preload,
         preload_digest=preload_digest(preload),
+        skills={name: one.skill for name, one in skills.held.items()},
+        offered=chosen.offered,
+        public_skills=chosen.public,
         folder_tools=dict(sorted(folder_tools.items())),
         listing="\n".join(mapped(sorted(reach.on_the_map.items()))),
         needs_mode=resolved.instructions is None,
         worker=resolved.worker or "default",
-        withheld=_outside(root, reach.files),
+        withheld=_outside(root, opened),
+        withheld_when_invoked={
+            name: _outside(root, {**opened, **skill_files[name]})
+            for name in skills.held
+            if name not in chosen.offered
+        },
         named=named,
         included_folders=[
             pattern for pattern in resolved.files.include or [] if (root / pattern).is_dir()
@@ -484,8 +677,9 @@ def _spec(
 
 
 def _agent(root: Path, name: str, entry: AgentEntry, declared: _Declared) -> AgentSpec:
-    spec = _spec(root, name, entry, None, declared)
-    modes = {mode: _spec(root, name, entry, mode, declared) for mode in entry.modes}
+    skills = _every_skill(root, name, entry)
+    spec = _spec(root, name, entry, None, declared, skills)
+    modes = {mode: _spec(root, name, entry, mode, declared, skills) for mode in entry.modes}
     return spec.model_copy(update={"modes": modes})
 
 

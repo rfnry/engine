@@ -349,8 +349,8 @@ async def test_a_bare_name_files_grant_runs(tmp_path: Path) -> None:
         ("Shell", r"workspace: true"),
         ("Jobs", r"workspace: true"),
         ("Delegate", r"orchestration\.delegate_to"),
-        ("Read", r"files"),
-        ("Load", r"files"),
+        ("Read", r"files or skills"),
+        ("Load", r"files or skills"),
     ],
 )
 def test_an_engine_name_whose_section_is_missing_is_refused(
