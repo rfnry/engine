@@ -225,7 +225,7 @@ async def test_a_name_and_bytes_that_disagree_are_refused(tmp_path: Path) -> Non
 
 
 async def test_load_keeps_to_what_the_model_takes(media: Path) -> None:
-    tools = Tools([load_tool(media, media_types={"image/*", "application/pdf"})])
+    tools = Tools([load_tool(media, media_types=lambda: {"image/*", "application/pdf"})])
     assert await tools.dispatch("Load", {"path": "knowledge/photo.jpg"}) == [
         Image(media_type="image/jpeg", data=JPEG)
     ]

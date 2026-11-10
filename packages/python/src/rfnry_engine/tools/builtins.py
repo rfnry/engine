@@ -556,7 +556,7 @@ def builtins(
 def load_tool(
     folder: Path,
     workspace: Backend | None = None,
-    media_types: Collection[str] | None = None,
+    media_types: Callable[[], Collection[str] | None] | None = None,
     reads: Mapping[str, Path] | None = None,
     ignored: Callable[[Path], bool] | None = None,
     withheld: Callable[[Path], bool] | None = None,
@@ -567,16 +567,17 @@ def load_tool(
         'Load with where="workspace" loads from your workspace' if workspace is not None else ""
     )
 
-    def load(path: str) -> list[Part]:
+    def load(path: str, takes: Collection[str] | None) -> list[Part]:
         opened, data = _contents(jail, _named(jail, path), _LOAD_BYTES, missing)
-        return [_handed(opened, data, path, media_types)]
+        return [_handed(opened, data, path, takes)]
 
     async def body(args: dict[str, Any]) -> Result:
         a = LoadAnywhereArgs.model_validate(args)
+        takes = None if media_types is None else media_types()
         if a.where == "workspace" and workspace is not None:
             data = await workspace.read(a.path, _LOAD_BYTES)
-            return [_handed(Path(a.path), data, a.path, media_types)]
-        parts: list[Part] = await asyncio.to_thread(load, a.path)
+            return [_handed(Path(a.path), data, a.path, takes)]
+        parts: list[Part] = await asyncio.to_thread(load, a.path, takes)
         return parts
 
     if workspace is None:

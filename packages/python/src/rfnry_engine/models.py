@@ -411,7 +411,13 @@ class ModelChoice:
     effort: str | None = None
 
     def __post_init__(self) -> None:
-        if self.provider is None and self.model is None and self.effort is None:
+        said = {"provider": self.provider, "model": self.model, "effort": self.effort}
+        for name, value in said.items():
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise InputError(
+                    f"models: a ModelChoice's {name} must be non-blank text or left out; got {value!r}"
+                )
+        if all(value is None for value in said.values()):
             raise InputError(
                 "models: a ModelChoice says nothing; give it a provider, a model or an effort"
             )

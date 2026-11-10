@@ -1,5 +1,5 @@
 import json
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -99,7 +99,10 @@ class EngineTools(Tools):
             given = given.without(*(name for name in given.names if name not in spec.keep))
         room = workspace if spec.workspace else None
         merged = engine._run_models(models)
-        media_types = getattr(engine._built(merged.get(spec.model)), "media_types", None)
+
+        def media_types() -> Collection[str] | None:
+            return getattr(engine._built(merged.get(spec.model)), "media_types", None)
+
         backend = room.backend if room else None
         reach = from_agent(spec.path, {**spec.reads, **spec.skill_folders})
         withheld = _withheld_on(spec, invoked)

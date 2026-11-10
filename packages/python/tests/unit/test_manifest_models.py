@@ -1,15 +1,17 @@
 import asyncio
 import json
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from rfnry_engine.engine import Engine, check_folder
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.manifest import MANIFEST, ModelEntry, read_manifest
-from rfnry_engine.models import Message, ModelChoice, Reply, ToolSpec
+from rfnry_engine.models import Answer, Message, ModelChoice, QuestionLike, Reply, State, ToolSpec
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
@@ -83,6 +85,18 @@ class Lockstep:
         return self.replies.pop(0).model_copy(update={"model": self.name})
 
 
+class LockstepDecider(Answering):
+    def __init__(self, name: str, step: asyncio.Barrier) -> None:
+        super().__init__()
+        self.model, self.step = name, step
+
+    async def decide(
+        self, state: State, questions: Mapping[str, QuestionLike]
+    ) -> dict[str, Answer]:
+        await self.step.wait()
+        return await super().decide(state, questions)
+
+
 def _refused(root: Path, pattern: str) -> str:
     with pytest.raises(ConfigurationError) as raised:
         read_manifest(root)
@@ -112,6 +126,25 @@ def _crew(root: Path) -> Path:
         models={
             "m": {"provider": "p", "model": "file-lead"},
             "j": {"provider": "p", "model": "file-judge"},
+            "w": {"provider": "p", "model": "file-writer"},
+        },
+        files=FILES,
+    )
+
+
+def _pair(root: Path) -> Path:
+    return write_folder(
+        root,
+        {
+            "lead": {
+                **GENERATION,
+                "description": "Leads",
+                "orchestration": {"delegate_to": ["writer"]},
+            },
+            "writer": {**GENERATION, "model": "w"},
+        },
+        models={
+            "m": {"provider": "p", "model": "file-lead", "effort": "low"},
             "w": {"provider": "p", "model": "file-writer"},
         },
         files=FILES,
@@ -298,6 +331,17 @@ def test_engine_models_holds_the_entries(tmp_path: Path) -> None:
     assert dict(engine.models) == {"m": ModelEntry(provider="p", model="x")}
 
 
+async def test_an_entry_on_the_engine_cannot_be_changed(tmp_path: Path) -> None:
+    provider = Recording(Scripted(text_reply("ok")))
+    engine = Engine(_one(tmp_path, model="file"), providers={"p": provider})
+    entry = engine.models["m"]
+    assert isinstance(entry, ModelEntry)
+    with pytest.raises(ValidationError, match="frozen"):
+        entry.model = "changed"
+    await engine.run("a", "acme", "hi", models={"m": ModelChoice(effort="high")})
+    assert provider.calls == [("file", "high")]
+
+
 async def test_a_choice_replaces_only_what_it_says(tmp_path: Path) -> None:
     provider = Recording(*(Scripted(text_reply("ok")) for _ in range(3)))
     engine = Engine(_one(tmp_path, model="file", effort="low"), providers={"p": provider})
@@ -383,6 +427,25 @@ def test_an_empty_choice_is_refused() -> None:
         ModelChoice()
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("model", ""),
+        ("effort", "   "),
+        ("provider", ""),
+        ("provider", ["x"]),
+        ("model", 1),
+    ],
+)
+def test_a_field_of_a_choice_is_left_out_or_is_text(field: str, value: Any) -> None:
+    with pytest.raises(
+        InputError, match=rf"^models: a ModelChoice's {field} must be non-blank text or left out"
+    ):
+        ModelChoice(**{field: value})
+    with pytest.raises(InputError, match=rf"^models: a ModelChoice's {field} "):
+        ModelChoice(**{"model": "kept", "effort": "kept", field: value})
+
+
 async def test_a_run_refuses_a_name_no_agent_runs_on(tmp_path: Path) -> None:
     provider = Recording()
     engine = Engine(_one(tmp_path), providers={"p": provider})
@@ -392,6 +455,33 @@ async def test_a_run_refuses_a_name_no_agent_runs_on(tmp_path: Path) -> None:
     ):
         await engine.run("a", "acme", "hi", models={"fsat": ModelChoice(model="x")})
     assert provider.calls == []
+
+
+async def test_an_engine_tool_runs_on_a_choice(tmp_path: Path) -> None:
+    lead = Scripted(delegating("writer"), text_reply("done"))
+    provider = Recording(lead, Scripted(text_reply("drafted")))
+    tools = Engine(_pair(tmp_path), providers={"p": provider}).tool(
+        "lead",
+        scope="acme",
+        models={"m": ModelChoice(model="run-lead"), "w": ModelChoice(effort="high")},
+    )
+    assert provider.calls == []
+    assert await tools.dispatch("lead", {"input": "x"}) == "done"
+    assert provider.calls == [("run-lead", "low"), ("file-writer", "high")]
+
+
+async def test_engine_tools_delegate_on_a_choice(tmp_path: Path) -> None:
+    provider = Recording(Scripted(text_reply("drafted")))
+    surface = EngineTools(
+        Engine(_pair(tmp_path), providers={"p": provider}),
+        agent="lead",
+        scope="acme",
+        models={"w": ModelChoice(model="run-writer", effort="high")},
+    )
+    assert provider.calls == []
+    delegated = await surface.dispatch("Delegate", {"agent": "writer", "input": "x"})
+    assert delegated == "drafted"
+    assert provider.calls == [("run-writer", "high")]
 
 
 async def test_a_run_may_hand_an_adapter_for_a_name(tmp_path: Path) -> None:
@@ -418,31 +508,28 @@ async def test_two_runs_at_once_keep_their_own_choices(tmp_path: Path) -> None:
     step = asyncio.Barrier(2)
     built: list[tuple[str | None, str | None]] = []
 
-    def provider(model: str | None, effort: str | None, /) -> Lockstep:
+    def provider(model: str | None, effort: str | None, /) -> Lockstep | LockstepDecider:
         built.append((model, effort))
         assert model is not None
         who, name = model.split("-")
-        replies = (
-            [delegating("writer", name), text_reply(name)]
-            if who == "lead"
-            else [text_reply(f"drafted {name}")]
-        )
-        return Lockstep(model, step, *replies)
+        if who == "judge":
+            return LockstepDecider(model, step)
+        if who == "lead":
+            return Lockstep(
+                model,
+                step,
+                delegating("writer", name),
+                delegating("triage", name, call_id="d2"),
+                text_reply(name),
+            )
+        return Lockstep(model, step, text_reply(f"drafted {name}"))
 
-    folder = write_folder(
-        tmp_path,
-        {
-            "lead": {**GENERATION, "orchestration": {"delegate_to": ["writer"]}},
-            "writer": {**GENERATION, "model": "w"},
-        },
-        models={"m": {"provider": "p"}, "w": {"provider": "p"}},
-        files=FILES,
-    )
-    engine = Engine(folder, providers={"p": provider})
+    engine = Engine(_crew(tmp_path), providers={"p": provider})
 
     def own(name: str) -> dict[str, ModelChoice]:
         return {
             "m": ModelChoice(model=f"lead-{name}", effort=name),
+            "j": ModelChoice(model=f"judge-{name}", effort=name),
             "w": ModelChoice(model=f"writer-{name}", effort=name),
         }
 
@@ -453,14 +540,23 @@ async def test_two_runs_at_once_keep_their_own_choices(tmp_path: Path) -> None:
         )
     for run, name in zip(runs, ("one", "other"), strict=True):
         assert isinstance(run, Generation)
-        assert (run.reply, run.model) == (name, f"lead-{name}") and not run.steps[0].is_error
-        child = run.children[0]
-        assert isinstance(child, Generation)
-        assert (child.reply, child.model) == (f"drafted {name}", f"writer-{name}")
+        assert (run.reply, run.model) == (name, f"lead-{name}")
+        assert [step.is_error for step in run.steps] == [False, False]
+        delegated, routing = run.children
+        assert isinstance(delegated, Generation) and isinstance(routing, Decision)
+        assert (delegated.reply, delegated.model) == (f"drafted {name}", f"writer-{name}")
+        assert routing.model == f"judge-{name}"
+        routed = routing.routed_to
+        assert isinstance(routed, Generation)
+        assert (routed.reply, routed.model) == (f"drafted {name}", f"writer-{name}")
     assert sorted(built) == [
+        ("judge-one", "one"),
+        ("judge-other", "other"),
         ("lead-one", "one"),
         ("lead-other", "other"),
         ("writer-one", "one"),
+        ("writer-one", "one"),
+        ("writer-other", "other"),
         ("writer-other", "other"),
     ]
 
@@ -523,6 +619,36 @@ async def test_editing_models_leaves_the_fingerprint_alone(tmp_path: Path) -> No
     assert await fingerprint(model="one", effort="low") == await fingerprint(
         model="two", effort="high"
     )
+
+
+async def test_a_surface_builds_no_adapter_until_a_load_runs(tmp_path: Path) -> None:
+    folder = write_folder(
+        tmp_path,
+        {
+            "a": {
+                **GENERATION,
+                "files": {"include": ["diagram.png"]},
+                "tools": {"include": ["echo"]},
+            }
+        },
+        models=ONE_ENTRY,
+        tools={"echo": {"module": "tools/echo.py", "description": "Echo"}},
+        files={**FILES, "tools/echo.py": "def run(args, call):\n    return 'heard'\n"},
+    )
+    (folder / "diagram.png").write_bytes(PNG)
+    called: list[tuple[str | None, str | None]] = []
+
+    def provider(model: str | None, effort: str | None, /) -> Any:
+        called.append((model, effort))
+        raise KeyError("ANTHROPIC_API_KEY")
+
+    async with Engine(folder, providers={"p": provider}) as engine:
+        surface = EngineTools(engine, agent="a", scope="acme")
+        assert await surface.dispatch("echo", {}) == "heard"
+        assert called == []
+        with pytest.raises(KeyError, match="ANTHROPIC_API_KEY"):
+            await surface.dispatch("Load", {"path": "diagram.png"})
+        assert called == [(None, None)]
 
 
 async def test_engine_tools_read_what_the_provider_built(tmp_path: Path) -> None:

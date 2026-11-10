@@ -125,6 +125,8 @@ class Resolved(ModeEntry):
 
 
 class ModelEntry(_Closed):
+    model_config = ConfigDict(frozen=True)
+
     provider: str
     model: str | None = None
     effort: str | None = None
