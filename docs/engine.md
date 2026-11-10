@@ -284,6 +284,8 @@ A folder with an `rfnry.yaml` at its root is read from that file instead of from
 
 `tools:` beside `agents:` declares each tool once, and an agent's `tools.include` picks it by name; the key is the name the model sees, and neither the file's name nor the function's decides anything, so `CallInfo.tool` and a tool's error text say the key. `module` is a `.py` path from the folder root, because the workers run Python. `function` is what the worker calls as `function(args, call)`, `async def` or plain `def`, `run` when left out, so two tools may share a module, which loads once in a process, even when one tool names it and another imports it; the file is checked to hold it at its top level without being imported. `schema` is optional, the path of a JSON file taking `description`, `input_schema` and `output_schema` and no other key: without one a tool takes any JSON object, checks its own arguments, and its result goes unchecked. `description` comes from the entry, else from the schema file. `timeout` is seconds per call, and the smallest of the tool's, the agent's `tools.timeout` and `Engine(tool_timeout=)` applies; `tools.timeout` bounds the agent's other tools under `Engine(tool_timeout=)` the same way, and a `Workspace`'s own `timeout` still replaces both for `Shell`, `Job`, `Write` and `Edit`. An entry of `tools.include` or `tools.exclude` holding `*`, the only wildcard, is a pattern over the names under `tools:` and never reaches a built-in or a tool a run gives. An entry without one is a name: a declared tool, then a tool the entry's sections grant, then one the run gives through `tools=`, and a run that does not give it fails before any model call. The sections grant `Read`, `Grep`, `Glob`, `LS` and `Load` with `files`, `Delegate` with `orchestration.delegate_to`, and `Shell`, `Job`, `Jobs`, `Write` and `Edit` with `workspace: true`, whether or not `tools.include` names them. Naming one in `include` when its section is missing is a `ConfigurationError` naming the section, since no run can supply it. `Output` and `History` are the run's to decide, through `expect=` and through `history=` with `start=`, so either one in `include` or `exclude` is a `ConfigurationError`. `exclude` applies after `include`, across the entry and its mode, and drops exactly the tool it names, a tool a section grants included: `exclude: [Delegate]` takes delegation away, and `exclude: [Write]` leaves `Edit` and the rest. `Shell`, `Job` and `Jobs` go together or not at all, since `Shell` can start a job only `Job` and `Jobs` can read or stop, so excluding one or two of them is a `ConfigurationError`. A name in `exclude` that is neither declared nor engine-given is read as one the run gives, and that tool of the run is dropped, so a mistyped name there cannot be caught when the engine loads. A run's `tools=` replaces a declared tool of the same name, which is how a test or a replay stubs a real system; a tool of the run that `tools.include` does not name is not offered. A pattern that matches nothing, a declared tool that no entry or mode picks once `exclude` has applied, a declared tool named like one the engine gives (`Read`, `Grep`, `Glob`, `LS`, `Load`, `Shell`, `Job`, `Jobs`, `Write`, `Edit`, `Delegate`, `History`, `Output`) and a module, function or schema that is not there are `ConfigurationError`s when the engine loads.
 
+A mode is a named overlay on one agent, written under its `modes:` and holding only the differences: lists add to the entry's, single values replace them, and `exclude` wins over `include` wherever it was written. A run selects one with `mode=`, `engine.run("frontline", scope, message, mode="chat")`, and the record's `mode` says which. An unknown mode is a `NotFoundError` before any model is called, and an entry with no `instructions` needs a mode, so a run without one is an `InputError` naming its modes. Delegated and routed runs, and a run through `engine.tool`, take no mode: they run on the agent's entry. Each mode has its own fingerprint, and a replay runs on the mode the run recorded.
+
 A tool imports the standard library, installed packages and any module beside it, whatever the module is named. A module beside a tool is a `.py` file there: a package folder beside a tool is refused when the engine loads, as is an import of a name below such a file (`import shared.sub`), and installed packages import as usual. A module in a folder above is out of its reach, and an import that resolves to nothing is a `ConfigurationError`, unless it sits under `try/except ImportError` or `if TYPE_CHECKING`. A module beside it is imported at the top of the file, not inside a function, and is not named like a standard-library module. Only what `tools:` names and the modules those bring in by an `import` statement go to a worker and into the agent's fingerprint, along with the tool's entry, so a test file or a `conftest.py` beside a tool is just a file: nothing loads it, no worker receives it and nothing checks its imports. A tool's module runs under a name of its own, so a footer under `if __name__ == "__main__":` stays inert in a worker. The module, the schema and the modules beside it that a tool imports leave the map of an agent that picks it, as its instructions do; the rest of a folder `files.include` reaches stays on the map.
 
 ```
@@ -2228,7 +2230,10 @@ exported.keys, exported.rows, exported.watermark
 ```
 
 Keys are `{scope}/{agent}/{dataset}/{timestamp}.jsonl`, so repeated exports add files and never
-overwrite. `since` selects every run recorded or labeled after it, written in full with all its
+overwrite. A run in a mode goes under `{scope}/{agent}.{mode}/{dataset}/{timestamp}.jsonl`, since two
+modes may hold one question id with different wording; each row carries its `mode`, and
+`mode="chat"` exports only that mode. An agent named like a mode of another is refused at load, so
+a key still names one agent. `since` selects every run recorded or labeled after it, written in full with all its
 labels. A run that raised — its `error` set — is in no dataset; replay and label it like any other.
 A router whose routed run raised is the exception: it answered, so its decision rows are written.
 A run is recorded when it ends, so a long run still working at one export is in the next, whenever
@@ -2922,7 +2927,8 @@ short — stops the upgrade before anything changes, naming it: `refinery/migrat
 scope 'acme' holds a body no release of rfnry-engine recorded (KeyError: 'messages'); delete it
 or restore its body, then upgrade again`. The rewrite reads every row once, in pages of a thousand.
 The upgrade to schema version 4 drops `engine_runs.task` and rewrites each stored body without its
-`task`, the same way: a run records no task.
+`task`, the same way: a run records no task. The upgrade to schema version 5 adds the nullable
+`engine_runs.mode`; a run recorded before it has no mode.
 
 Tables made by `initialize()` in rfnry-engine 0.1.4 or earlier are adopted where they are:
 `rfnry-engine upgrade --schema <their schema>` records them, and gives a table from before 0.1.4 its
@@ -2980,7 +2986,7 @@ class Refinery:
     storage: Storage
     async def record(self, run: Run) -> None
 
-class RunRow(BaseModel):   scope, run_id, parent_run_id, agent, kind, at, recorded, duration_ms, model, body
+class RunRow(BaseModel):   scope, run_id, parent_run_id, agent, kind, at, recorded, duration_ms, model, mode, body
 class LabelRow(BaseModel): scope, label_id, run_id, source, at, body
 class Exported(BaseModel): keys, rows, watermark
 class Labeled(BaseModel):  judged, taught, errors

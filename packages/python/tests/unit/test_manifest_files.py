@@ -615,16 +615,19 @@ async def test_excluding_everything_leaves_nothing_open(
     await _nothing_is_open(surface)
 
 
-async def test_an_entry_without_instructions_opens_nothing_itself(tmp_path: Path) -> None:
+def test_an_entry_without_instructions_opens_nothing_itself(tmp_path: Path) -> None:
     entry = {
         "kind": "generation",
         "model": "m",
         "files": {"include": ["knowledge"]},
         "modes": {"chat": {"instructions": "a.md"}},
     }
-    surface = _surface(write_folder(tmp_path, {"a": entry}, files=FILES))
-    assert set(surface.names) >= FILE_TOOLS
-    await _nothing_is_open(surface)
+    folder = write_folder(tmp_path, {"a": entry}, files=FILES)
+    spec = load_folder(folder)["a"]
+    assert spec.needs_mode and spec.listing == "" and spec.preload == []
+    assert spec.withheld is not None and spec.withheld(spec.root / "knowledge/refunds.md")
+    with pytest.raises(InputError, match=r"^engine: agent 'a' needs a mode; its modes are chat$"):
+        _surface(folder)
 
 
 async def test_reach_is_fixed_at_load(tmp_path: Path) -> None:

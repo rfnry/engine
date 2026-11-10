@@ -176,6 +176,7 @@ class Generation(BaseModel):
     agent: str
     scope: str
     tags: dict[str, str] = Field(default_factory=dict)
+    mode: str | None = None
     skill: str | None = None
     context: str | None = None
     at: datetime
@@ -223,6 +224,7 @@ class Decision(BaseModel):
     agent: str
     scope: str
     tags: dict[str, str] = Field(default_factory=dict)
+    mode: str | None = None
     at: datetime
     duration_ms: int
     model: str | None

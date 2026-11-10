@@ -782,6 +782,18 @@ def _check_orchestration(
             _check_route(agents, who, spec)
 
 
+def _refuse_shared_export_names(agents: Mapping[str, AgentSpec]) -> None:
+    held = {name: _who(name, None) for name in agents}
+    for agent in agents.values():
+        for mode in agent.modes:
+            exported, who = f"{agent.name}.{mode}", _who(agent.name, mode)
+            if exported in held:
+                raise ConfigurationError(
+                    f"compiled: {held[exported]} and {who} would export under one key, {exported!r}; rename one"
+                )
+            held[exported] = who
+
+
 def _refuse_engine_names(tools: Iterable[str]) -> None:
     for name in sorted(tools):
         if name in ENGINE_TOOLS:
@@ -820,4 +832,5 @@ def load_folder(root: Path) -> dict[str, AgentSpec]:
     }
     _check_orchestration(agents, manifest.agents)
     _refuse_loose_tools(agents, manifest.tools)
+    _refuse_shared_export_names(agents)
     return agents

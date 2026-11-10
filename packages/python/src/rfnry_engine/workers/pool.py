@@ -470,19 +470,20 @@ class Workers:
         self._groups = {name: _group(spec.path, named) for name, spec in agents.items()}
         for name, spec in agents.items():
             own = scripts[self._groups[name]]
-            for tool in spec.folder_tools.values():
-                _gather(
-                    own,
-                    Script(
-                        tool.key,
-                        tool.script,
-                        tool.source,
-                        tool.helpers,
-                        frozenset({tool.function}),
-                    ),
-                )
-            for _, script in spec.scripted.values():
-                _gather(own, script)
+            for layer in (spec, *spec.modes.values()):
+                for tool in layer.folder_tools.values():
+                    _gather(
+                        own,
+                        Script(
+                            tool.key,
+                            tool.script,
+                            tool.source,
+                            tool.helpers,
+                            frozenset({tool.function}),
+                        ),
+                    )
+                for _, script in layer.scripted.values():
+                    _gather(own, script)
         self._pools = {
             group: WorkerPool(
                 [held[key] for key in sorted(held)],

@@ -83,6 +83,7 @@ async def test_erasure_is_provable_and_falsifiable(storage: Storage) -> None:
                 recorded=run.at,
                 duration_ms=0,
                 model=None,
+                mode=None,
                 body={},
             )
         ],

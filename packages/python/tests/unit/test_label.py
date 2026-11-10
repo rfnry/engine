@@ -225,6 +225,7 @@ def test_the_teacher_reads_what_yes_and_no_mean_for_a_check() -> None:
         recorded=now,
         duration_ms=0,
         model=None,
+        mode=None,
         body={
             "state": "It is down",
             "questions": {qid: q.model_dump(mode="json") for qid, q in questions.items()},
@@ -258,6 +259,7 @@ def test_the_teacher_reads_structure_as_compact_json_and_a_bare_option_as_its_ke
         recorded=now,
         duration_ms=0,
         model=None,
+        mode=None,
         body={
             "state": "Hi",
             "questions": {qid: q.model_dump(mode="json") for qid, q in questions.items()},

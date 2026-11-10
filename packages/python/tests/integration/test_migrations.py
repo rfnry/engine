@@ -698,6 +698,49 @@ async def test_upgrade_brings_every_run_and_label_a_release_recorded_to_this_ver
     assert (labeled.judged, labeled.taught, labeled.errors) == (2, 1, {})
 
 
+async def test_upgrade_to_schema_5_adds_a_nullable_mode_and_earlier_runs_have_none(
+    schemas: Schemas,
+) -> None:
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:4])
+        patched.setattr(migrations, "LATEST", 4)
+        name, pool = await created(schemas)
+    row = run("r1")
+    body = {key: value for key, value in row.body.items() if key != "mode"}
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO engine_runs (scope, run_id, agent, kind, at, recorded, duration_ms, "
+            "model, body, tags) VALUES ($1, $2, $3, $4, $5, $6, 1, 'm', $7::text::json, '{}')",
+            row.scope,
+            row.run_id,
+            row.agent,
+            row.kind,
+            row.at,
+            row.recorded,
+            json.dumps(body),
+        )
+    storage = PostgresStorage(pool)
+    with pytest.raises(
+        ConfigurationError,
+        match=f"^refinery/postgres: {name} is at version 4, this rfnry-engine needs 5 — "
+        f"run rfnry-engine upgrade --schema {name}$",
+    ):
+        await storage.check()
+    async with pool.acquire() as conn:
+        plan = await migrations.apply(conn, migrations.plan_upgrade)
+        column = await conn.fetchrow(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = $1 AND table_name = 'engine_runs' AND column_name = 'mode'",
+            name,
+        )
+    assert plan.steps == ["0005 mode"]
+    assert column is not None and tuple(column) == ("text", "YES")
+    await storage.check()
+    stored = await storage.get_run("acme", "r1")
+    assert stored is not None and stored.mode is None and stored.body == body
+    assert (await Refinery(storage).run("acme", "r1")).mode is None
+
+
 async def test_upgrade_to_schema_4_drops_the_task_column_and_every_body_s_task(
     schemas: Schemas,
 ) -> None:
@@ -711,7 +754,7 @@ async def test_upgrade_to_schema_4_drops_the_task_column_and_every_body_s_task(
         )
     with pytest.raises(
         ConfigurationError,
-        match=f"^refinery/postgres: {name} is at version 3, this rfnry-engine needs 4 — "
+        match=f"^refinery/postgres: {name} is at version 3, this rfnry-engine needs {NOW} — "
         f"run rfnry-engine upgrade --schema {name}$",
     ):
         await storage.check()
@@ -728,7 +771,7 @@ async def test_upgrade_to_schema_4_drops_the_task_column_and_every_body_s_task(
             for row in await conn.fetch("SELECT body::text AS body FROM engine_runs")
         ]
     assert "task" not in {row["column_name"] for row in columns}
-    assert version == 4
+    assert version == NOW
     assert len(bodies) == len(held["engine_runs"]) and all("task" not in b for b in bodies)
     lead = await Refinery(storage).run("acme", desk)
     assert isinstance(lead, Generation) and lead.input == "Where is A-1?"
@@ -746,7 +789,7 @@ async def test_a_body_already_in_this_version_s_shape_is_left_as_it_is(schemas: 
         await migrations.apply(conn, migrations.plan_upgrade)
         after = {row["run_id"]: row["x"] for row in await conn.fetch(written)}
     unchanged = {run_id for run_id in before if before[run_id] == after[run_id]}
-    assert unchanged == {recorded_by(held, "triage")["run_id"], current.run_id}
+    assert unchanged == {current.run_id}
 
 
 @pytest.mark.parametrize("table", ["engine_runs", "engine_labels"])

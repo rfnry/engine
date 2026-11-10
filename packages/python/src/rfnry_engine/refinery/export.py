@@ -9,8 +9,9 @@ class Bucket(Protocol):
     async def put(self, key: str, data: bytes) -> None: ...
 
 
-def export_key(scope: str, agent: str, dataset: str, stamp: str) -> str:
-    return f"{scope}/{agent}/{dataset}/{stamp}.jsonl"
+def export_key(scope: str, agent: str, dataset: str, stamp: str, mode: str | None = None) -> str:
+    folder = agent if mode is None else f"{agent}.{mode}"
+    return f"{scope}/{folder}/{dataset}/{stamp}.jsonl"
 
 
 def _messages(body: dict[str, Any]) -> list[Any]:
@@ -46,6 +47,7 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
         "call": body["call"],
         "holdout": holdout,
         "agent": row.agent,
+        "mode": row.mode,
         "skill": body["skill"],
         "context": body["context"],
         "tags": body["tags"],
@@ -75,6 +77,7 @@ def preference_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[
             "parent_run_id": row.parent_run_id,
             "call": row.body["call"],
             "holdout": holdout,
+            "mode": row.mode,
             "tags": row.body["tags"],
             "fingerprint": _fingerprint(row.body),
             "model": row.model,
@@ -147,6 +150,7 @@ def decision_rows(row: RunRow, labels: list[Label], *, holdout: bool) -> list[di
                 "call": body["call"],
                 "holdout": holdout,
                 "agent": row.agent,
+                "mode": row.mode,
                 "tags": body["tags"],
                 "at": row.at.isoformat(),
                 "model": row.model,

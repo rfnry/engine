@@ -63,6 +63,7 @@ def _run(
     at: datetime | None = None,
     recorded: datetime | None = None,
     parent: str | None = None,
+    mode: str | None = None,
 ) -> RunRow:
     at = at or datetime.now(UTC)
     return RunRow(
@@ -75,6 +76,7 @@ def _run(
         recorded=recorded or at,
         duration_ms=1,
         model="m",
+        mode=mode,
         body={"reply": run_id, "nested": {"n": [1, 2]}},
     )
 
@@ -100,6 +102,18 @@ async def test_put_get_upsert_roundtrip(storage: Storage) -> None:
     got = await storage.get_run("a", "r1")
     assert got is not None and got.agent == "billing"
     assert await storage.get_run("a", "ghost") is None
+
+
+async def test_engine_runs_mode_is_stored(storage: Storage) -> None:
+    await storage.put_runs("a", [_run("a", "r1", mode="chat"), _run("a", "r2")])
+    got = await storage.get_run("a", "r1")
+    assert got is not None and got.mode == "chat"
+    assert {row.run_id: row.mode for row in await storage.runs("a")} == {"r1": "chat", "r2": None}
+    tree = await storage.run_tree("a", run_ids=["r1", "r2"])
+    assert {row.run_id: row.mode for row in tree} == {"r1": "chat", "r2": None}
+    await storage.put_runs("a", [_run("a", "r1", mode="email")])
+    got = await storage.get_run("a", "r1")
+    assert got is not None and got.mode == "email"
 
 
 async def test_runs_filters_order_and_limit(storage: Storage) -> None:
@@ -297,6 +311,7 @@ async def test_a_body_with_parts_round_trips(storage: Storage) -> None:
                 recorded=datetime.now(UTC),
                 duration_ms=1,
                 model="m",
+                mode=None,
                 body=body,
             )
         ],
@@ -1152,7 +1167,7 @@ async def test_a_pool_whose_bytea_codec_takes_only_bytes_cannot_record(storage: 
         with pytest.raises(
             StorageError,
             match=r"^refinery/postgres: storage rejected put_runs: invalid input for query argument "
-            r"\$10: .*'_Encoded' object has no attribute 'hex'",
+            r"\$11: .*'_Encoded' object has no attribute 'hex'",
         ):
             await PostgresStorage(pool).put_runs("a", [_run("a", "r1")])
     finally:

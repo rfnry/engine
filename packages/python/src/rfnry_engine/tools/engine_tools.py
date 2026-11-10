@@ -41,6 +41,7 @@ class EngineTools(Tools):
         *,
         agent: str,
         scope: str,
+        mode: str | None = None,
         tools: ToolsLike | None = None,
         workspace: Workspace | None = None,
         tags: Mapping[str, str] | None = None,
@@ -68,7 +69,7 @@ class EngineTools(Tools):
                 raise InputError(
                     f"tools/engine_tools: start must be between 0 and {len(history)}; got {start}"
                 )
-        spec = engine._spec(agent)
+        spec = engine._spec(agent, mode)
         if invoked is not None and invoked not in spec.skills:
             raise NotFoundError(f"tools/engine_tools: {no_such_skill(spec, invoked)}")
         if spec.workspace and workspace is None:

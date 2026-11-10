@@ -97,6 +97,7 @@ async def test_export_writes_three_datasets_with_labels_and_holdout(storage: Sto
     )
     [preference_row] = _lines(bucket.objects[keys[2]])
     assert preference_row == {
+        "mode": None,
         "run_id": generation.run_id,
         "parent_run_id": None,
         "call": None,

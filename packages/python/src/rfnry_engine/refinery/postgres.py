@@ -8,7 +8,9 @@ from rfnry_engine.errors import ConfigurationError, StorageError
 from rfnry_engine.refinery import migrations
 from rfnry_engine.refinery.storage import LabelRow, RunRow
 
-_RUN_COLUMNS = "scope, run_id, parent_run_id, agent, kind, at, recorded, duration_ms, model, body"
+_RUN_COLUMNS = (
+    "scope, run_id, parent_run_id, agent, kind, at, recorded, duration_ms, model, mode, body"
+)
 _LABEL_COLUMNS = "scope, label_id, run_id, source, at, body"
 _RUN_READ = _RUN_COLUMNS.replace("body", "body::text AS body")
 _LABEL_READ = _LABEL_COLUMNS.replace("body", "body::text AS body")
@@ -25,6 +27,7 @@ def _run(record: Any) -> RunRow:
         recorded=record["recorded"],
         duration_ms=record["duration_ms"],
         model=record["model"],
+        mode=record["mode"],
         body=json.loads(record["body"]),
     )
 
@@ -120,11 +123,11 @@ class PostgresStorage:
         async with self._guard("put_runs"), self._pool.acquire() as conn, conn.transaction():
             for row in rows:
                 await conn.execute(
-                    f"INSERT INTO engine_runs ({_RUN_COLUMNS}, tags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, "
-                    "convert_from($10::bytea, 'UTF8')::json, $11::text::jsonb) "
+                    f"INSERT INTO engine_runs ({_RUN_COLUMNS}, tags) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, "
+                    "convert_from($11::bytea, 'UTF8')::json, $12::text::jsonb) "
                     "ON CONFLICT (scope, run_id) DO UPDATE SET parent_run_id = EXCLUDED.parent_run_id, agent = EXCLUDED.agent, "
                     "kind = EXCLUDED.kind, at = EXCLUDED.at, recorded = EXCLUDED.recorded, "
-                    "duration_ms = EXCLUDED.duration_ms, model = EXCLUDED.model, body = EXCLUDED.body, tags = EXCLUDED.tags",
+                    "duration_ms = EXCLUDED.duration_ms, model = EXCLUDED.model, mode = EXCLUDED.mode, body = EXCLUDED.body, tags = EXCLUDED.tags",
                     row.scope,
                     row.run_id,
                     row.parent_run_id,
@@ -134,6 +137,7 @@ class PostgresStorage:
                     row.recorded,
                     row.duration_ms,
                     row.model,
+                    row.mode,
                     _Encoded(row.body),
                     stored_tags(row.body),
                 )

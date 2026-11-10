@@ -121,7 +121,7 @@ async def _reshape_runs(conn: Any) -> None:
                 if calling is not None:
                     found = tags.get((row["scope"], calling), {})
                     held = {**body, "call": {**body["call"], "tags": found}}
-                shaped = reshaped(RunRow(**{**dict(row), "body": held}))
+                shaped = reshaped(RunRow(**{**dict(row), "mode": None, "body": held}))
             except _UNREAD as exc:
                 raise ConfigurationError(
                     f"refinery/migrations: run {row['run_id']!r} of scope {row['scope']!r} holds a "
@@ -194,11 +194,15 @@ _DROP_TASK: tuple[str | Call, ...] = (
 )
 
 
+_MODE: tuple[str | Call, ...] = ("ALTER TABLE engine_runs ADD COLUMN mode TEXT",)
+
+
 MIGRATIONS = [
     Migration(1, "create", _CREATE),
     Migration(2, "tags", _TAGS),
     Migration(3, "reshape", _RESHAPE),
     Migration(4, "drop task", _DROP_TASK),
+    Migration(5, "mode", _MODE),
 ]
 
 

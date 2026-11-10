@@ -674,10 +674,18 @@ class Engine:
             for name, spec in self._agents.items()
         }
 
-    def _spec(self, agent: str) -> AgentSpec:
+    def _spec(self, agent: str, mode: str | None = None) -> AgentSpec:
         spec = self._agents.get(agent)
         if spec is None:
             raise NotFoundError(f"engine: agent {agent!r} was not found")
+        modes = ", ".join(sorted(spec.modes))
+        if mode is not None:
+            if mode not in spec.modes:
+                have = f"its modes are {modes}" if modes else "it has no modes"
+                raise NotFoundError(f"engine: agent {agent!r} has no mode {mode!r}; {have}")
+            return spec.modes[mode]
+        if spec.needs_mode:
+            raise InputError(f"engine: agent {agent!r} needs a mode; its modes are {modes}")
         return spec
 
     async def run(
@@ -686,6 +694,7 @@ class Engine:
         scope: str,
         input: State,
         *,
+        mode: str | None = None,
         skill: str | None = None,
         history: Sequence[object] | HistoryLike | None = None,
         start: int = 0,
@@ -704,6 +713,7 @@ class Engine:
             agent,
             scope,
             input,
+            mode=mode,
             skill=skill,
             history=history,
             start=start,
@@ -726,6 +736,7 @@ class Engine:
         scope: str,
         input: State,
         *,
+        mode: str | None = None,
         questions: Mapping[str, QuestionLike] | None = None,
         skill: str | None = None,
         history: Sequence[object] | HistoryLike | None = None,
@@ -755,7 +766,7 @@ class Engine:
                 f"engine: input must be a string, a JSON object or a list; got {unfit}"
             )
         input = _given(input)
-        spec = self._spec(agent)
+        spec = self._spec(agent, mode)
         asked = _asked(spec, questions)
         slashed = _slashed(spec, input) if slash else None
         if slashed is not None:
@@ -934,6 +945,7 @@ class Engine:
                 agent=spec.name,
                 scope=scope,
                 tags=dict(options.tags),
+                mode=spec.mode,
                 at=at,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 model=(decided.model if decided is not None else None) or _declared(model_),
@@ -1078,6 +1090,7 @@ class Engine:
         surface = EngineTools(
             self,
             agent=spec.name,
+            mode=spec.mode,
             scope=scope,
             tools=options.tools,
             workspace=options.workspace,
@@ -1500,6 +1513,7 @@ class Engine:
                 agent=spec.name,
                 scope=scope,
                 tags=dict(options.tags),
+                mode=spec.mode,
                 skill=options.skill,
                 context=options.context,
                 at=at,

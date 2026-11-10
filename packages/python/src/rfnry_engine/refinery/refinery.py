@@ -69,6 +69,7 @@ def flatten(run: Run, recorded: datetime) -> list[RunRow]:
         recorded=recorded,
         duration_ms=run.duration_ms,
         model=run.model,
+        mode=run.mode,
         body=body,
     )
     rows = [row]
@@ -262,6 +263,7 @@ class Refinery:
         *,
         since: datetime | None = None,
         holdout_percent: int = HOLDOUT_PERCENT,
+        mode: str | None = None,
     ) -> Exported:
         if not scope:
             raise InputError("refinery: scope is required")
@@ -275,6 +277,8 @@ class Refinery:
             } - fresh
             if relabeled:
                 runs += await self.storage.runs(scope, run_ids=sorted(relabeled), limit=None)
+        if mode is not None:
+            runs = [run for run in runs if run.mode == mode]
         if not runs:
             return Exported(keys=[], rows={}, watermark=since)
         labels: dict[str, list[Label]] = {}
@@ -282,30 +286,32 @@ class Refinery:
         for row in await self.storage.labels(scope, run_ids=[r.run_id for r in runs]):
             labels.setdefault(row.run_id, []).append(label_of(row))
             stamps.append(row.at)
-        groups: dict[tuple[str, str], list[dict[str, object]]] = {}
+        groups: dict[tuple[str, str | None, str], list[dict[str, object]]] = {}
         for run in runs:
             if run.body["error"] is not None and not run.body.get("answers"):
                 continue
             holdout = is_holdout(run.run_id, holdout_percent=holdout_percent)
             own = labels.get(run.run_id, [])
             if run.kind == "generation":
-                groups.setdefault((run.agent, "generation"), []).append(
+                groups.setdefault((run.agent, run.mode, "generation"), []).append(
                     generation_row(run, own, holdout=holdout)
                 )
-                groups.setdefault((run.agent, "preference"), []).extend(
+                groups.setdefault((run.agent, run.mode, "preference"), []).extend(
                     preference_rows(run, own, holdout=holdout)
                 )
             else:
-                groups.setdefault((run.agent, "decision"), []).extend(
+                groups.setdefault((run.agent, run.mode, "decision"), []).extend(
                     decision_rows(run, own, holdout=holdout)
                 )
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         keys: list[str] = []
         counts: dict[str, int] = {}
-        for (agent, dataset), rows in sorted(groups.items()):
+        for (agent, ran_in, dataset), rows in sorted(
+            groups.items(), key=lambda group: (group[0][0], group[0][1] or "", group[0][2])
+        ):
             if not rows:
                 continue
-            key = export_key(scope, agent, dataset, stamp)
+            key = export_key(scope, agent, dataset, stamp, ran_in)
             await bucket.put(
                 key,
                 ("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n").encode("utf-8"),
@@ -437,6 +443,11 @@ class Refinery:
             raise NotFoundError(f"refinery: the candidate has no agent {agent!r}")
 
         async def rerun(recorded: Run) -> Run:
+            if recorded.mode is not None and recorded.mode not in candidate._agents[agent].modes:
+                raise InputError(
+                    f"refinery: run {recorded.run_id!r} ran in mode {recorded.mode!r}, "
+                    f"which agent {agent!r} of the candidate does not have"
+                )
             asked = (
                 {qid: recorded.questions[qid] for qid in recorded.runtime}
                 if isinstance(recorded, Decision) and recorded.runtime
@@ -450,6 +461,7 @@ class Refinery:
                     agent,
                     scope,
                     run.state,
+                    mode=recorded.mode,
                     questions=asked,
                     expect=expect,
                     approve=approve,
@@ -480,6 +492,7 @@ class Refinery:
                 agent,
                 scope,
                 sent if isinstance(sent, list) else run.input,
+                mode=recorded.mode,
                 skill=run.skill,
                 questions=asked,
                 history=history,
