@@ -142,15 +142,19 @@ class _Options:
 
 class AgentInfo(BaseModel):
     name: str
-    path: str
     kind: Kind
     model: str
     description: str
-    agents: list[str]
-    reads: list[str]
+    delegate_to: list[str]
+    files: list[str]
     tools: list[str]
     skills: dict[str, str]
     public_skills: dict[str, str]
+    worker: str
+    modes: dict[str, AgentInfo]
+
+
+MAX_WORKER_PROCESSES = 16
 
 
 class Recorder(Protocol):
@@ -583,6 +587,41 @@ def _check_models(
             _of_its_kind(spec, model)
 
 
+def _check_processes(workers: Workers, ceiling: int) -> None:
+    if workers.processes > ceiling:
+        raise ConfigurationError(
+            f"engine: the workers of this folder run {workers.processes} processes in all, over max_worker_processes={ceiling}; lower processes: under workers:, or raise Engine(max_worker_processes=)"
+        )
+
+
+def _info(name: str, spec: AgentSpec) -> AgentInfo:
+    return AgentInfo(
+        name=name,
+        kind=spec.kind,
+        model=spec.model,
+        description=spec.description,
+        delegate_to=list(spec.agents),
+        files=[*spec.reads, *spec.reachable],
+        tools=list(chosen(spec)),
+        skills={called: skill.description for called, skill in spec.skills.items()},
+        public_skills={called: spec.skills[called].description for called in spec.public_skills},
+        worker=spec.worker,
+        modes={mode: _info(name, one) for mode, one in spec.modes.items()},
+    )
+
+
+def infos(agents: Mapping[str, AgentSpec]) -> dict[str, AgentInfo]:
+    return {name: _info(name, spec) for name, spec in agents.items()}
+
+
+def check_folder(root: Path) -> dict[str, AgentInfo]:
+    root = Path(root).resolve()
+    manifest = read_manifest(root)
+    agents = compile_folder(root, manifest)
+    _check_processes(Workers(agents, manifest.workers, None), MAX_WORKER_PROCESSES)
+    return infos(agents)
+
+
 class Engine:
     def __init__(
         self,
@@ -593,7 +632,7 @@ class Engine:
         max_model_calls: int = 200,
         max_depth: int = 5,
         tool_timeout: float | None = 30.0,
-        max_worker_processes: int = 16,
+        max_worker_processes: int = MAX_WORKER_PROCESSES,
         worker_result_bytes: int | None = 33_554_432,
         history_walk: int = 10_000,
         history_chars: int = 100_000,
@@ -642,10 +681,7 @@ class Engine:
             validate_tree(self._agents)
         _check_models(self._agents, self._models)
         self._workers = Workers(self._agents, declared, worker_result_bytes)
-        if self._workers.processes > max_worker_processes:
-            raise ConfigurationError(
-                f"engine: the workers of this folder run {self._workers.processes} processes in all, over max_worker_processes={max_worker_processes}; lower processes: under workers:, or raise Engine(max_worker_processes=)"
-            )
+        _check_processes(self._workers, max_worker_processes)
         self._closed = False
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
 
@@ -669,23 +705,7 @@ class Engine:
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
-        return {
-            name: AgentInfo(
-                name=name,
-                path=spec.path,
-                kind=spec.kind,
-                model=spec.model,
-                description=spec.description,
-                agents=spec.agents,
-                reads=list(spec.reads),
-                tools=list(chosen(spec)),
-                skills={called: skill.description for called, skill in spec.skills.items()},
-                public_skills={
-                    called: spec.skills[called].description for called in spec.public_skills
-                },
-            )
-            for name, spec in self._agents.items()
-        }
+        return infos(self._agents)
 
     def _run_models(
         self, models: Mapping[str, GenerationModel | DecisionModel] | None

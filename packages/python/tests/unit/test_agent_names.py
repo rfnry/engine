@@ -21,7 +21,7 @@ def test_an_agent_is_named_by_its_frontmatter_not_its_folder(tmp_path: Path) -> 
     tree = load_tree(tmp_path)
     assert list(tree) == ["support"]
     info = Engine(tmp_path, models={}).agents["support"]
-    assert (info.name, info.model, info.path) == ("support", "strong", "support_v2")
+    assert (info.name, info.model) == ("support", "strong")
 
 
 @pytest.mark.parametrize(

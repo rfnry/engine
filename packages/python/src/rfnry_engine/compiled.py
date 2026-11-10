@@ -704,6 +704,7 @@ def _spec(
         listing="\n".join(mapped(sorted(reach.on_the_map.items()))),
         needs_mode=resolved.instructions is None,
         worker=resolved.worker or "default",
+        reachable=sorted(opened),
         withheld=_outside(root, opened),
         withheld_when_invoked={
             name: _outside(root, {**opened, **skill_files[name]})

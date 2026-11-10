@@ -1,8 +1,10 @@
 import argparse
 import asyncio
+import json
 import sys
 from functools import partial
 from importlib.util import find_spec
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -39,6 +41,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     upgrade.add_argument("--sql", action="store_true", help="print the statements and run nothing")
     upgrade.add_argument("--yes", action="store_true", help="run without asking")
+    folder = commands.add_parser(
+        "folder", help="check an agents folder", description="check an agents folder"
+    )
+    folders = folder.add_subparsers(dest="folder_command", required=True)
+    checked = folders.add_parser("check", help="load the folder and list its agents and modes")
+    checked.add_argument("path", nargs="?", default=".", help="the folder (default: .)")
+    folders.add_parser("schema", help="print the JSON Schema of rfnry.yaml")
     return parser
 
 
@@ -128,8 +137,31 @@ async def _run(args: argparse.Namespace) -> int:
         await conn.close()
 
 
+def _folder(args: argparse.Namespace) -> int:
+    from rfnry_engine.engine import check_folder
+    from rfnry_engine.errors import ConfigurationError
+    from rfnry_engine.manifest import Manifest
+
+    if args.folder_command == "schema":
+        print(json.dumps(Manifest.model_json_schema(by_alias=True), indent=2))
+        return 0
+    try:
+        found = check_folder(Path(args.path))
+    except ConfigurationError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    for name, info in found.items():
+        line = f"{name}  {info.kind}  {info.model}"
+        if info.modes:
+            line += f"  modes: {', '.join(info.modes)}"
+        print(line)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "folder":
+        return _folder(args)
     if args.schema in ("public", "information_schema") or args.schema.startswith("pg_"):
         print(
             f"cli: engine is not created in {args.schema!r} — name a schema of its own",

@@ -537,11 +537,7 @@ shared by every tenant: it holds how to do the work, never a tenant's data — t
 the input, the history or the workspace. An agent that reads `my_agents/acme/` reads it for every
 tenant.
 
-`engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its `path`
-— its folder from the root, `.` for the root agent — `kind`, `model`, `description`, the `agents` it
-may call, the folders it `reads`, the `tools` it gets from its folders, as its `tools:` narrows
-them, the `skills` it holds, the ones the code may invoke, and the `public_skills` people may call,
-[below](#skills). When the tree has loaded, the engine logs the names
+`engine.agents` lists the tree as the engine loaded it: each name to an `AgentInfo` with its `kind`, `model`, `description`, the agents it may `delegate_to`, the `files` its model may open, the `tools` it gets, as its `tools:` narrows them, the `skills` it holds, the ones the code may invoke, the `public_skills` people may call, its `worker` and its `modes`, each an `AgentInfo` of its own, [skills below](#skills). When the tree has loaded, the engine logs the names
 of its agents at INFO on the `rfnry_engine.engine` logger — `engine: agents loaded [lead, triage,
 writer]` — so a folder meant to be an agent that is not shows at start;
 `logging.basicConfig(level=logging.INFO)` shows it.
@@ -2944,6 +2940,15 @@ rfnry-engine upgrade --schema engine --sql    # what would run
 rfnry-engine upgrade --schema engine          # lists the steps, asks, runs them in one transaction
 rfnry-engine check --schema engine            # exits 0 when the schema fits this version
 ```
+
+An agents repository checks its own folder in CI with no database and no models:
+
+```sh
+rfnry-engine folder check agents      # lists each agent, its kind, model and modes; exits 1 on a ConfigurationError
+rfnry-engine folder schema > rfnry.schema.json    # the JSON Schema of rfnry.yaml, for an editor
+```
+
+`folder check` builds what `Engine(path)` builds, the default `max_worker_processes` included, and starts no worker.
 
 Take a snapshot and stop the app instances running the old version first: `upgrade` reminds you,
 asks before it runs unless `--yes`, and runs every pending step in one transaction under a lock.

@@ -486,18 +486,19 @@ Lets the current tool calls finish and ends the run before its next model call, 
 ```python
 class AgentInfo(BaseModel):
     name: str
-    path: str
     kind: Kind
     model: str
     description: str
-    agents: list[str]
-    reads: list[str]
+    delegate_to: list[str]
+    files: list[str]
     tools: list[str]
     skills: dict[str, str]
     public_skills: dict[str, str]
+    worker: str
+    modes: dict[str, AgentInfo]
 ```
 
-An agent as the engine loaded it, in `Engine.agents`: its name, its `path` — its folder from the root, `.` for the root agent — its kind, its `model` — the name its `AGENT.md` gives — its description, the agents it may call, the folders it reads, by their paths from the root, the `tools` it gets from its folders, those of its own `tools/` and of every folder above it, as its `tools:` keeps them, by name, and its `skills`, every skill it holds, those of its own `skills/` and of every folder above it, the nearest winning a name, the ones the code may invoke with `skill=`, offered to the model or not, each to its `description:` — `""` for one without; a decision agent has none — and its `public_skills`, those its `public_skills:` names — every skill the model is offered for `public_skills: all` — the ones people may call by typing `/name`, in name order, each to its `description:` — `{}` when there are none, the menu to show people. Each read of `Engine.agents` builds them anew, so changing one changes nothing the engine holds. For an agent of an `rfnry.yaml`, `skills` holds every skill its entry or a mode names and `public_skills` those its `skills.public` names. `Kind` is `Literal["generation", "decision"]`.
+An agent as the engine loaded it, in `Engine.agents`: its name, its kind, its `model` — the key its entry gives — its description, the agents it may `delegate_to`, the `files` its model may open, by their paths from the root (for an agent of an `AGENT.md` tree, the folders it reads), the `tools` it gets, as its `tools:` narrows them, by name, its `skills`, every skill it holds, each to its `description:` — `""` for one without; a decision agent has none — its `public_skills`, the ones people may call by typing `/name`, in name order, each to its `description:` — `{}` when there are none, its `worker`, and its `modes`, each mode's own `AgentInfo` by the mode's name, `{}` for a mode itself and for an agent without modes. Each read of `Engine.agents` builds them anew, so changing one changes nothing the engine holds. For an agent of an `rfnry.yaml`, `skills` holds every skill its entry or a mode names and `public_skills` those its `skills.public` names. `Kind` is `Literal["generation", "decision"]`.
 
 ### `Generation`
 

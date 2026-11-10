@@ -59,7 +59,7 @@ async def test_an_agent_reads_another_agent_s_folder_in_full(tmp_path: Path) -> 
     (tmp_path / "writing" / "skills").mkdir()
     (tmp_path / "writing" / "skills" / "draft.md").write_text("Draft it.\n")
     engine = Engine(tmp_path, models={"strong": Scripted()})
-    assert engine.agents["coding"].reads == ["writing"] and engine.agents["writing"].reads == []
+    assert engine.agents["coding"].files == ["writing"] and engine.agents["writing"].files == []
     tools = EngineTools(engine, agent="coding", scope="acme")
     assert "Hi" in await tools.dispatch("Read", {"path": "../writing/AGENT.md"})
     assert await tools.dispatch("Read", {"path": "../writing/skills/draft.md"}) == "Draft it.\n"

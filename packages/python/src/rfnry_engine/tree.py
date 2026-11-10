@@ -273,6 +273,7 @@ class AgentSpec(BaseModel):
     preload_digest: str
     listing: str = ""
     reads: dict[str, Path] = Field(default_factory=dict)
+    reachable: list[str] = Field(default_factory=list)
     skills: dict[str, Skill] = Field(default_factory=dict)
     offered: frozenset[str] = frozenset()
     public_skills: tuple[str, ...] = ()

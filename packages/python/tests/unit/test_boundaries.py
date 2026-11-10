@@ -323,8 +323,9 @@ async def test_what_the_engine_s_accessors_hand_out_cannot_change_the_engine(
     engine = Engine(fixtures, models={"strong": llm, "judge": Answering()})
     before = copy.deepcopy(engine.agents)
     info = engine.agents["support"]
-    info.agents.append("billing")
-    info.reads.append("billing")
+    info.delegate_to.append("billing")
+    info.files.append("billing")
+    info.modes["x"] = info
     info.tools.append("Write")
     info.skills["escalate"] = "MEDDLED"
     assert engine.agents == before

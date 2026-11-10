@@ -27,7 +27,7 @@ def test_reads_names_a_folder_by_its_path_from_the_agent_s_folder(tmp_path: Path
     spec = load_tree(books(tmp_path))["coding"]
     assert spec.reads == {"shared/books": (tmp_path / "shared/books").resolve()}
     assert "../shared/books/\n  python/\n    async.md — Async" in spec.listing
-    assert Engine(tmp_path, models={}).agents["coding"].reads == ["shared/books"]
+    assert Engine(tmp_path, models={}).agents["coding"].files == ["shared/books"]
 
 
 def test_a_bytecode_cache_is_no_folder_of_the_tree(tmp_path: Path) -> None:
