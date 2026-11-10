@@ -1,15 +1,24 @@
+import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
-from unit.fakes import MemoryBucket, Scripted, generation_record, text_reply
+from unit.fakes import (
+    Fixed,
+    MemoryBucket,
+    Scripted,
+    decision_record,
+    generation_record,
+    text_reply,
+)
 from unit.trees import provided, write_folder
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, NotFoundError
-from rfnry_engine.models import ToolSpec, Usage
+from rfnry_engine.models import CheckAnswer, Reply, ToolCall, ToolSpec, Usage
 from rfnry_engine.records import Spoken, SpokenLine, Voice, VoiceStart
 from rfnry_engine.refinery.labels import Exported, Outcome, Review
 from rfnry_engine.refinery.refinery import Refinery
@@ -63,8 +72,8 @@ async def dropping(start: VoiceStart) -> Spoken:
     raise RuntimeError("the line dropped")
 
 
-def voice_engine(root: Path, refinery: Refinery) -> Engine:
-    write_folder(root, {"voice": ENTRY}, files=FILES)
+def voice_engine(root: Path, refinery: Refinery, entry: dict[str, Any] = ENTRY) -> Engine:
+    write_folder(root, {"voice": entry}, files=FILES)
     return Engine(root, providers=provided({"live": Live()}), refinery=refinery)
 
 
@@ -109,6 +118,34 @@ async def test_a_voice_run_reads_back_equal(tmp_path: Path, storage: Storage) ->
     assert dropped.transcript == [] and [step.tool for step in dropped.steps] == ["lookup"]
 
 
+async def test_a_cancelled_call_reads_back_stopped(tmp_path: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
+    engine = voice_engine(tmp_path, refinery, {**ENTRY, "tools": {"include": ["slow"]}})
+    began = asyncio.Event()
+
+    async def slow(args: dict[str, Any]) -> Result:
+        began.set()
+        await asyncio.Event().wait()
+        return "never"
+
+    async def session(start: VoiceStart) -> Spoken:
+        call = asyncio.create_task(start.tools.dispatch("slow", {"q": "first"}))
+        await began.wait()
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        return Spoken(transcript=[SpokenLine(speaker="person", text="Never mind.")], model="live-1")
+
+    run = await engine.talk(
+        "voice", "acme", session, tools=Tools([Tool("slow", "Take a while", body=slow)])
+    )
+    read = await refinery.run("acme", run.run_id)
+    assert isinstance(read, Voice) and read == run
+    assert [(step.tool, step.is_error, step.stopped) for step in read.steps] == [
+        ("slow", True, True)
+    ]
+
+
 async def test_a_voice_run_stays_in_its_scope(tmp_path: Path, storage: Storage) -> None:
     refinery = Refinery(storage)
     engine = voice_engine(tmp_path, refinery)
@@ -132,7 +169,18 @@ async def test_a_voice_run_stays_in_its_scope(tmp_path: Path, storage: Storage) 
     assert [pair.recorded.run_id for pair in pairs] == [b.run_id]
     assert "MARKER-A" not in str(pairs)
 
-    assert await refinery.delete_scope("tenant-a") == 3
+    written = generation_record("tenant-b", reply="plain-b")
+    await refinery.record(written)
+    await refinery.record(generation_record("tenant-a", reply="MARKER-A"))
+    own = await storage.get_run("tenant-b", written.run_id)
+    assert own is not None
+    bucket = MemoryBucket()
+    exported = await refinery.export("tenant-b", bucket)
+    assert exported.rows == {"generation": 1} and exported.watermark == own.recorded
+    assert all(key.startswith("tenant-b/") for key in bucket.objects)
+    assert all(b"MARKER-A" not in data for data in bucket.objects.values())
+
+    assert await refinery.delete_scope("tenant-a") == 4
     assert await refinery.verify_absent("tenant-a")
     assert await refinery.run("tenant-b", b.run_id) == b
 
@@ -190,6 +238,48 @@ async def test_export_leaves_voice_runs_out(tmp_path: Path, storage: Storage) ->
     assert all(key.startswith("acme/support/generation/") for key in bucket.objects)
     assert len(bucket.objects) == 1
     assert all(b"MARKER-SPOKEN" not in data for data in bucket.objects.values())
+
+
+async def test_label_leaves_voice_runs_out(tmp_path: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
+    agents = {
+        "voice": ENTRY,
+        "judge": {
+            "kind": "decision",
+            "model": "judge",
+            "instructions": "voice.md",
+            "questions": ["q/*.json"],
+        },
+        "teacher": {"kind": "generation", "model": "strong", "instructions": "voice.md"},
+    }
+    grounded = json.dumps({"type": "check", "instructions": "Is the reply grounded?"})
+    write_folder(tmp_path, agents, files={**FILES, "q/grounded.json": grounded})
+    taught = ToolCall(
+        id="t1", name="Output", args={"answers": {"urgent": True}, "rationale": "It is down."}
+    )
+    adapters = {
+        "live": Live(),
+        "judge": Fixed({"grounded": CheckAnswer(probability=0.9)}),
+        "strong": Scripted(Reply(tool_calls=[taught], stop_reason="tool_use")),
+    }
+    engine = Engine(tmp_path, providers=provided(adapters), refinery=refinery)
+    spoken = await engine.talk("voice", "acme", saying("Hello"), tools=LOOKUP)
+
+    written = generation_record(reply="Refunded.")
+    await refinery.record(written)
+    judging = await refinery.label("acme", engine, judge="judge")
+    assert judging.judged == 1 and judging.errors == {}
+    [judged] = await storage.labels("acme", source="judge")
+    assert judged.run_id == written.run_id
+
+    decided = decision_record()
+    await refinery.record(decided)
+    teaching = await refinery.label("acme", engine, teacher="teacher")
+    assert teaching.taught == 1 and teaching.errors == {}
+    [learned] = await storage.labels("acme", source="teacher")
+    assert learned.run_id == decided.run_id
+
+    assert await storage.labels("acme", run_ids=[spoken.run_id]) == []
 
 
 async def test_replay_refuses_a_voice_run(tmp_path: Path, storage: Storage) -> None:

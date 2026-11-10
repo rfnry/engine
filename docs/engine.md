@@ -2309,9 +2309,10 @@ modes may hold one question id with different wording; each row carries its `mod
 export's watermark to an unfiltered one: the runs it did not cover, recorded before it, are skipped
 with no error. An agent named like a mode of another is refused at load, so a key still names one
 agent. `since` selects every run recorded or labeled after it, written in full with all its
-labels. A run that raised — its `error` set — is in no dataset; replay and label it like any other.
-A router whose routed run raised is the exception: it answered, so its decision rows are written.
-A voice run is in no dataset, and the watermark does not count it.
+labels. A generation or decision run that raised — its `error` set — is in no dataset; replay and
+label it like any other. A router whose routed run raised is the exception: it answered, so its
+decision rows are written. A voice run is in no dataset, whether it raised or not, and the watermark
+does not count it.
 A run is recorded when it ends, so a long run still working at one export is in the next, whenever
 it started; the watermark covers both, so a review of a run you already exported reaches the next
 export. Rows are keyed by `run_id`: when a run appears again, its latest row supersedes the earlier
