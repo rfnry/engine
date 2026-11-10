@@ -1620,6 +1620,12 @@ the host returns, the steps, the mode, the model and the fingerprint. Its `usage
 host has none, since live models report no tokens, and that is not zero cost. A failed session is
 recorded with its `error`; a cancelled one is not, as for any run.
 
+`refinery.run` reads the record back equal to what `talk` returned, `usage` `None` included, and
+`refinery.outcome` takes what happened. `refinery.review` takes a stance and a comment, and a
+correction is an `InputError`, since a conversation has no one reply to replace and no question to
+answer. `refinery.export` leaves voice runs out of every dataset, and `refinery.replay` refuses
+one, as a pair with `error` set, since a person's side of a conversation cannot be sent again.
+
 ### Orchestrating
 
 The library runs agents and records what they did. The order they run in is yours or the model's: your
@@ -2305,6 +2311,7 @@ with no error. An agent named like a mode of another is refused at load, so a ke
 agent. `since` selects every run recorded or labeled after it, written in full with all its
 labels. A run that raised — its `error` set — is in no dataset; replay and label it like any other.
 A router whose routed run raised is the exception: it answered, so its decision rows are written.
+A voice run is in no dataset, and the watermark does not count it.
 A run is recorded when it ends, so a long run still working at one export is in the next, whenever
 it started; the watermark covers both, so a review of a run you already exported reaches the next
 export. Rows are keyed by `run_id`: when a run appears again, its latest row supersedes the earlier

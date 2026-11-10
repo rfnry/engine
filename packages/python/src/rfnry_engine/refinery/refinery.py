@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from rfnry_engine.engine import Approve, Engine, _copied
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_engine.models import DecisionModel, GenerationModel, HistoryLike, ModelChoice
-from rfnry_engine.records import READ_BACK, Decision, Fingerprint, Generation, Run
+from rfnry_engine.records import READ_BACK, Decision, Fingerprint, Generation, Run, Voice
 from rfnry_engine.refinery.conflicts import find_conflicts
 from rfnry_engine.refinery.export import (
     Bucket,
@@ -98,13 +98,15 @@ def unflatten(row: RunRow, under: dict[str, list[RunRow]]) -> dict[str, Any]:
     if row.kind == "generation":
         body["messages"] = body["conversation"][: body.pop("sent")]
         body["children"] = nested
-    else:
+    elif row.kind == "decision":
         body["routed_to"] = nested[0] if nested else None
     return body
 
 
 def read_back(row: RunRow, under: dict[str, list[RunRow]]) -> Run:
     body = unflatten(row, under)
+    if row.kind == "voice":
+        return Voice.model_validate(body)
     if row.kind == "generation":
         return Generation.model_validate(body, context=READ_BACK)
     return Decision.model_validate(body, context=READ_BACK)
@@ -211,6 +213,8 @@ class Refinery:
             raise InputError("refinery: scope is required")
         label_id = as_label_id(label_id)
         row = await self._run_row(scope, run_id)
+        if row.kind == "voice" and review.correction is not None:
+            raise InputError("refinery: a voice run takes a stance and a comment, not a correction")
         if row.kind == "generation" and isinstance(review.correction, dict):
             raise InputError("refinery: a generation run takes a text correction")
         if row.kind == "decision" and isinstance(review.correction, str):
@@ -277,6 +281,7 @@ class Refinery:
             } - fresh
             if relabeled:
                 runs += await self.storage.runs(scope, run_ids=sorted(relabeled), limit=None)
+        runs = [run for run in runs if run.kind != "voice"]
         if mode is not None:
             runs = [run for run in runs if run.mode == mode]
         if not runs:
@@ -457,6 +462,10 @@ class Refinery:
         merged = candidate._run_models(models)
 
         async def rerun(recorded: Run) -> Run:
+            if isinstance(recorded, Voice):
+                raise InputError(
+                    f"refinery: run {recorded.run_id!r} is a voice run; a spoken conversation cannot be replayed"
+                )
             if recorded.mode is not None and recorded.mode not in candidate._agents[agent].modes:
                 raise InputError(
                     f"refinery: run {recorded.run_id!r} ran in mode {recorded.mode!r}, "
@@ -467,7 +476,7 @@ class Refinery:
                 if isinstance(recorded, Decision) and recorded.runtime
                 else None
             )
-            run = cast(Generation | Decision, recorded)
+            run = recorded
             while isinstance(run, Decision) and run.routed_to is not None:
                 run = run.routed_to
             if isinstance(run, Decision):
