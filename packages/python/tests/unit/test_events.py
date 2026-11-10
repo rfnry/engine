@@ -965,7 +965,7 @@ async def test_a_stop_on_the_last_allowed_turn_returns_the_run(
     calls = [ToolCall(id="c1", name="lookup", args={"order_id": "A-1"})]
     llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))
     run = await asyncio.wait_for(
-        Engine(make_tree(tmp_path), max_steps=1, models={"strong": llm}).run(
+        Engine(make_tree(tmp_path), max_model_calls=1, models={"strong": llm}).run(
             "lead", "acme", "Check A-1", tools=TOOLS, stop=stop, on_event=kill
         ),
         2,

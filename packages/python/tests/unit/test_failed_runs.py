@@ -270,13 +270,16 @@ async def test_a_runaway_run_is_recorded(fixtures: Path) -> None:
     async with Engine(
         fixtures,
         refinery=kept,
-        max_steps=2,
+        max_model_calls=2,
         models={"strong": Scripted(looked_up(), looked_up())},
     ) as engine:
         with pytest.raises(RunawayError):
             await engine.run("support", "acme", "Where is A-1?")
     [run] = kept.runs
-    assert isinstance(run, Generation) and run.error == "RunawayError: engine: run exceeded 2 steps"
+    assert (
+        isinstance(run, Generation)
+        and run.error == "RunawayError: engine: run exceeded 2 model calls"
+    )
     assert len(run.steps) == 2 and run.stop_reason == "tool_use"
 
 

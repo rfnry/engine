@@ -57,6 +57,9 @@ _stack: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
 _routes: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
     "delegation_routes", default=()
 )
+_reach: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "delegation_reach", default=None
+)
 
 
 class AgentArgs(BaseModel):
@@ -103,21 +106,33 @@ def permit(spec: AgentSpec, args: dict[str, Any]) -> DelegateArgs:
     return parsed
 
 
+def folder_reach(levels_below: int | None) -> int | None:
+    inherited = _reach.get()
+    if levels_below is None:
+        return inherited
+    own = len(_stack.get()) + levels_below + 1
+    return own if inherited is None else min(own, inherited)
+
+
 @asynccontextmanager
-async def enter(name: str, max_depth: int, *, routed: bool = False) -> AsyncIterator[None]:
+async def enter(
+    name: str, limit: int, reach: int | None = None, *, routed: bool = False
+) -> AsyncIterator[None]:
     stack = _stack.get()
     routes = _routes.get()
     if routed and name in routes:
         raise DelegationLoopError(f"tools/delegate: loop at {' -> '.join([*stack, name])}")
-    if len(stack) >= max_depth:
+    if len(stack) >= limit:
         raise DelegationDepthError(
-            f"tools/delegate: depth {max_depth} exceeded at {' -> '.join([*stack, name])}"
+            f"tools/delegate: depth {limit} exceeded at {' -> '.join([*stack, name])}"
         )
     stack_token = _stack.set((*stack, name))
     routes_token = _routes.set((*routes, name) if routed else (name,))
+    reach_token = _reach.set(reach)
     try:
         yield
     finally:
+        _reach.reset(reach_token)
         _routes.reset(routes_token)
         _stack.reset(stack_token)
 

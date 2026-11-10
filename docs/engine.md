@@ -303,6 +303,8 @@ A folder with an `rfnry.yaml` at its root is read from that file instead of from
 
 A mode is a named overlay on one agent, written under its `modes:` and holding only the differences: lists add to the entry's, single values replace them, and `exclude` wins over `include` wherever it was written. A run selects one with `mode=`, `engine.run("frontline", scope, message, mode="chat")`, and the record's `mode` says which. An unknown mode is a `NotFoundError` before any model is called, and an entry with no `instructions` needs a mode, so a run without one is an `InputError` naming its modes. Delegated and routed runs, and a run through `engine.tool`, take no mode: they run on the agent's entry, so `delegate_to` or `route` naming an agent that needs a mode is a `ConfigurationError` when the engine loads. Each mode has its own fingerprint, and a replay runs on the mode the run recorded.
 
+An entry's limits can lower what the `Engine` allows and never raise it, so a push to an agents repo cannot raise spend. `max_model_calls` bounds the model calls of one run, and a delegated run counts its own. `orchestration.max_depth` counts levels of delegation below the agent: with `max_depth: 1` it may delegate, and the agent it delegates to reads `DelegationDepthError` as a tool error if it delegates further; a child's own `max_depth` cannot widen what an agent above it allows. `Engine(max_model_calls=)`, `Engine(max_depth=)` and `Engine(tool_timeout=)` are the ceilings: the smaller value holds, `tool_timeout=None` leaves the entry's `tools.timeout`, and `Engine(max_depth=)` counts the whole stack, the first agent included, so `Engine(max_depth=1)` allows no delegation whatever an entry says. `tools.max_parallel` caps a run's tool calls at once and `orchestration.max_parallel` its `Delegate` calls, which `tools.max_parallel` does not count; without one, calls of that kind are not capped. Each run has its own slots. A call takes its slot after `approve`, so a call waiting on a person holds none, and its deadline starts once it has one. A call a command makes through the tool bridge takes a slot of `tools.max_parallel`, so a script's fan-out stays under the cap, and a `Shell` on a run with a bridge takes none, so a command never waits on a slot its own call holds.
+
 A tool imports the standard library, installed packages and any module beside it, whatever the module is named. A module beside a tool is a `.py` file there: a package folder beside a tool is refused when the engine loads, as is an import of a name below such a file (`import shared.sub`), and installed packages import as usual. A module in a folder above is out of its reach, and an import that resolves to nothing is a `ConfigurationError`, unless it sits under `try/except ImportError` or `if TYPE_CHECKING`. A module beside it is imported at the top of the file, not inside a function, and is not named like a standard-library module. Only what `tools:` names and the modules those bring in by an `import` statement go to a worker and into the agent's fingerprint, along with the tool's entry, so a test file or a `conftest.py` beside a tool is just a file: nothing loads it, no worker receives it and nothing checks its imports. A tool's module runs under a name of its own, so a footer under `if __name__ == "__main__":` stays inert in a worker. The module, the schema and the modules beside it that a tool imports leave the map of an agent that picks it, as its instructions do; the rest of a folder `files.include` reaches stays on the map.
 
 ```
@@ -884,7 +886,7 @@ as it found it. A run your own tool starts with `engine.run` is recorded unless 
 `record=False`.
 
 A run that raises instead of returning — the vendor refused the call, the adapter broke the
-contract (`ModelError`), the loop passed `max_steps` (`RunawayError`) — returns no record; the
+contract (`ModelError`), the loop passed `max_model_calls` (`RunawayError`) — returns no record; the
 exception is what you have, the same one the adapter or the engine raised. With a refinery
 attached, the run is recorded first, as far as it got: `error` says what ended it —
 `"ModelError: …"` — `reply` is `""` and `stop_reason` is its last reply's. When `on_event` raises
@@ -1981,10 +1983,10 @@ finish"}` line. The script may read that line or see a broken pipe or a connecti
 should retry on any of them. A `Shell` command of a delegated or routed run calls that run's tools,
 under its own `run_id`.
 
-Each call runs as the model's calls do — `ToolCallStarted`, `approve`, the deadline (`tool_timeout`,
-or a folder tool's own), the stop, `ToolResultReady` — and is recorded as a `Step` with `by`, the id
-of the `Shell` call whose command made it; its own id is `<Shell call id>.<n>`, n counting from 1 for
-each command. It finished first, so its step sits in `run.steps` before the `Shell` step that made
+Each call runs as the model's calls do — `ToolCallStarted`, `approve`, a slot of
+`tools.max_parallel`, the deadline (`tool_timeout`, or a folder tool's own), the stop,
+`ToolResultReady` — and is recorded as a `Step` with `by`, the id of the `Shell` call whose command
+made it; its own id is `<Shell call id>.<n>`, n counting from 1 for each command. It finished first, so its step sits in `run.steps` before the `Shell` step that made
 it, and the conversation holds no message for it: the model reads only the `Shell` result.
 `ToolCallStarted`, `ToolResultReady` and `CallInfo` carry the same `by`, so `approve` and a tool tell
 a call a script made from one the model made with `current_call().by`.
@@ -2728,7 +2730,7 @@ deadline is its worker's, above. `History` reads your storage under the same dea
 A run's tools are async and the deadline cancels them, so a body that runs blocking work in a thread
 must put its own limit on that work: cancelling the await does not stop the thread. A workspace's
 `Shell`, `Job`, `Write` and `Edit` keep the workspace's own `timeout` instead. `Delegate` has no
-deadline. The child run it starts is bounded by its own tool calls and `max_steps`.
+deadline. The child run it starts is bounded by its own tool calls and `max_model_calls`.
 
 The builtins are bounded whatever the deadline. `Read` returns UTF-8 text and refuses anything else
 with a pointer to `Load`; `offset` and `limit` select lines. `Load` takes any file up to 20 MB and
@@ -3132,7 +3134,7 @@ gives a decision agent nothing to ask, two tools of a run with one name or one n
 engine gives the agent, a run of an agent whose model was not given, or of a router whose target's
 model was not given, a missing workspace, a `Local` root that is not a directory, a `shell` that is
 not a list of strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and
-`write`, a `Workspace` without a scope, a `max_steps`, `max_depth`, `tool_timeout`, `history_walk`,
+`write`, a `Workspace` without a scope, a `max_model_calls`, `max_depth`, `tool_timeout`, `history_walk`,
 `history_chars`, `timeout` or `output_bytes` that is not positive, a `worker_result_bytes` that is
 neither a positive integer nor `None`, an `approve` that returns anything but `True` or `False`, a
 judge that is not a decision agent or a teacher that is not a generation agent. `NotFoundError` for
@@ -3156,7 +3158,7 @@ Engine`). `ModelError` when an adapter breaks the contract — a result whose fi
 missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1,
 a score outside its levels — or a folder tool's result does not match its `output_schema`, or a
 question's script returns anything but an object, a key its JSON sets or one its type does not take,
-or a question that does not fit. `RunawayError` when a loop exceeds `max_steps` (default 200).
+or a question that does not fit. `RunawayError` when a loop exceeds `max_model_calls` (default 200).
 `DelegationLoopError` for a route into an agent already in the same chain of routes;
 `DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
 `Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool or

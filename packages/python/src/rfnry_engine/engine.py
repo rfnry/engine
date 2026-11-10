@@ -5,6 +5,7 @@ import math
 import posixpath
 import time
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from fnmatch import fnmatch
@@ -89,6 +90,7 @@ from rfnry_engine.tools.delegate import (
     AgentArgs,
     child_result,
     enter,
+    folder_reach,
     permit,
     run_arguments,
     run_result,
@@ -502,6 +504,14 @@ def _settings(model: object) -> dict[str, JsonValue] | None:
         return None
 
 
+def _lowered(folder: int | None, ceiling: int) -> int:
+    return ceiling if folder is None else min(folder, ceiling)
+
+
+def _slots(cap: int | None) -> AbstractAsyncContextManager[Any]:
+    return nullcontext() if cap is None else asyncio.Semaphore(cap)
+
+
 def _not_given(spec: AgentSpec) -> NoReturn:
     raise ConfigurationError(
         f"engine: agent {spec.name!r} runs on model {spec.model!r}, which neither the engine nor the run was given"
@@ -612,7 +622,7 @@ class Engine:
         models: Mapping[str, GenerationModel | DecisionModel],
         workers: Mapping[str, int] | None = None,
         refinery: Recorder | None = None,
-        max_steps: int = 200,
+        max_model_calls: int = 200,
         max_depth: int = 5,
         tool_timeout: float | None = 30.0,
         worker_result_bytes: int | None = 33_554_432,
@@ -631,8 +641,8 @@ class Engine:
             raise ConfigurationError(
                 "engine: worker_result_bytes must be a positive number of bytes, or None for no limit"
             )
-        if max_steps <= 0:
-            raise ConfigurationError("engine: max_steps must be positive")
+        if max_model_calls <= 0:
+            raise ConfigurationError("engine: max_model_calls must be positive")
         if max_depth <= 0:
             raise ConfigurationError("engine: max_depth must be positive")
         if history_walk <= 0:
@@ -644,7 +654,7 @@ class Engine:
             raise ConfigurationError(f"engine: root is not a directory: {root}")
         self._models = MappingProxyType(_models(models))
         self.refinery = refinery
-        self.max_steps = max_steps
+        self.max_model_calls = max_model_calls
         self.max_depth = max_depth
         self.tool_timeout = tool_timeout
         self.worker_result_bytes = worker_result_bytes
@@ -936,7 +946,8 @@ class Engine:
         routed: bool = False,
     ) -> Run:
         self._open()
-        async with enter(spec.name, self.max_depth, routed=routed):
+        reach = folder_reach(spec.max_depth)
+        async with enter(spec.name, _lowered(reach, self.max_depth), reach, routed=routed):
             if spec.kind == "generation":
                 with taking(options.stop):
                     return await self._generation(spec, scope, input, options, parent_run_id)
@@ -1201,6 +1212,9 @@ class Engine:
         ran: list[tuple[ToolCall, Step]] = []
         approving: set[int] = set()
         foregrounds: dict[int, Foreground] = {}
+        tool_slots = _slots(spec.tool_parallel)
+        shell_slots = _slots(None) if bridging else tool_slots
+        delegate_slots = _slots(spec.delegate_parallel)
         asked: list[ToolCall] = []
         usage = Usage()
         calls = 0
@@ -1212,6 +1226,7 @@ class Engine:
         ended: StopReason | None = None
         runner = asyncio.current_task()
         calm = 0 if runner is None else runner.cancelling()
+        most_calls = _lowered(spec.max_model_calls, self.max_model_calls)
 
         async def emit(event: Any) -> None:
             if on_event is not None:
@@ -1397,26 +1412,28 @@ class Engine:
                 if approved is False:
                     content, is_error = f"NotApproved: {call.name} was not approved", True
                 elif call.name == DELEGATE_TOOL and spec.agents:
-                    content, is_error, child_run_id, cut_short = await delegate(call)
+                    async with delegate_slots:
+                        content, is_error, child_run_id, cut_short = await delegate(call)
                 else:
                     limit = (
                         None
                         if call.name in own_deadline
                         else smallest(spec.tool_timeout, self.tool_timeout)
                     )
-                    deadline = asyncio.timeout(limit)
-                    try:
-                        async with deadline:
-                            result = await surface.dispatch(call.name, _copied(call.args))
-                        content, is_error = _own(_content(result)), False
-                    except Exception as exc:
-                        if deadline.expired():
-                            content = (
-                                f"TimeoutError: engine: {call.name} timed out after {limit:g}s"
-                            )
-                        else:
-                            content = _failure(exc)
-                        is_error = True
+                    async with shell_slots if call.name == "Shell" else tool_slots:
+                        deadline = asyncio.timeout(limit)
+                        try:
+                            async with deadline:
+                                result = await surface.dispatch(call.name, _copied(call.args))
+                            content, is_error = _own(_content(result)), False
+                        except Exception as exc:
+                            if deadline.expired():
+                                content = (
+                                    f"TimeoutError: engine: {call.name} timed out after {limit:g}s"
+                                )
+                            else:
+                                content = _failure(exc)
+                            is_error = True
                     if here.stopped or here.pressed:
                         content, is_error, cut_short = STOPPED, True, True
             finally:
@@ -1581,7 +1598,7 @@ class Engine:
 
         try:
             await emit(RunStarted(run_id=run_id, agent=spec.name, call=CALL.get()))
-            for turn in range(self.max_steps):
+            for turn in range(most_calls):
                 mode = requested(stop)
                 if mode is not None:
                     return finish(said, mode)
@@ -1682,7 +1699,7 @@ class Engine:
             mode = requested(stop)
             if mode is not None:
                 return finish(said, mode)
-            raise RunawayError(f"engine: run exceeded {self.max_steps} steps")
+            raise RunawayError(f"engine: run exceeded {most_calls} model calls")
         except Exception as exc:
             for call in asked:
                 built = next((step for done, step in ran if done is call), None)

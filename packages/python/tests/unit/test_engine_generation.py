@@ -444,7 +444,7 @@ async def test_each_delta_names_its_turn_and_the_reply_is_the_last_turns_text(
 
 async def test_runaway_loop_raises(fixtures: Path) -> None:
     call = _tool_use(ToolCall(id="c", name="LS", args={}))
-    engine = engine_for(fixtures, Scripted(call, call, call), max_steps=2)
+    engine = engine_for(fixtures, Scripted(call, call, call), max_model_calls=2)
     with pytest.raises(RunawayError):
         await engine.run("support", "acme", "x")
 
@@ -462,7 +462,7 @@ async def test_a_run_that_raises_is_recorded_with_its_children(
         fixtures,
         models={"strong": llm, "judge": Fixed(triage)},
         refinery=Refinery(storage),
-        max_steps=2,
+        max_model_calls=2,
     )
     with pytest.raises(RunawayError):
         await engine.run("support", "acme", "x")
@@ -565,8 +565,8 @@ def test_the_worker_result_limit_is_a_positive_number_of_bytes_or_none(fixtures:
             engine_for(fixtures, Scripted(), worker_result_bytes=bad)
 
 
-def test_step_and_depth_caps_must_be_positive(fixtures: Path) -> None:
-    for name in ("max_steps", "max_depth"):
+def test_model_call_and_depth_caps_must_be_positive(fixtures: Path) -> None:
+    for name in ("max_model_calls", "max_depth"):
         for bad in (0, -1):
             with pytest.raises(ConfigurationError, match=f"^engine: {name} must be positive$"):
                 engine_for(fixtures, Scripted(), **{name: bad})
