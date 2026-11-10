@@ -134,7 +134,7 @@ def test_a_question_script_without_its_json_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "matcher/questions/order.py"
     write(path, ORDER)
     write(tmp_path / "matcher/questions/urgent.json", '{"type": "check", "instructions": "?"}')
-    message = f"tree: {path} has no order.json beside it; a question is order.json, and order.py fills it from data"
+    message = f"tree: {path} has no order.json beside it, and no script beside it imports it; a question is order.json, and order.py fills it from data"
     with pytest.raises(ConfigurationError) as raised:
         load_folder(tmp_path)
     assert str(raised.value) == message
@@ -414,7 +414,7 @@ def test_a_server_package_named_questions_is_the_server_s_code_to_a_question_scr
     with pytest.raises(ConfigurationError) as raised:
         load_folder(tmp_path / "agents")
     assert str(raised.value) == (
-        f"tools/folder: {tmp_path / 'agents/matcher/questions/order.py'} imports 'questions' from {tmp_path / 'src/questions/__init__.py'}, the server's own code; a question's script imports the standard library, installed packages and helpers of its questions/ folder"
+        f"tools/folder: {tmp_path / 'agents/matcher/questions/order.py'} imports 'questions' from {tmp_path / 'src/questions/__init__.py'}, the server's own code; a question's script imports the standard library, installed packages and modules beside it"
     )
 
 
@@ -696,15 +696,19 @@ def test_a_question_json_that_links_out_of_its_folder_is_refused(tmp_path: Path)
 
 
 @pytest.mark.parametrize("name", ["time", "math"])
-def test_a_question_script_named_like_a_built_in_standard_module_beside_one_that_imports_it_loads(
+def test_a_module_beside_a_question_script_named_like_the_standard_library_is_refused(
     tmp_path: Path, name: str
 ) -> None:
     matcher(tmp_path, f"import {name}\n" + ORDER)
     write(
         tmp_path / f"matcher/questions/{name}.json", '{"type": "choice", "instructions": "Which?"}'
     )
-    write(tmp_path / f"matcher/questions/{name}.py", f"import {name}\n" + ORDER)
-    assert sorted(load_folder(tmp_path)["matcher"].scripted) == sorted(["order", name])
+    write(tmp_path / f"matcher/questions/{name}.py", ORDER)
+    with pytest.raises(ConfigurationError) as raised:
+        load_folder(tmp_path)
+    assert str(raised.value) == (
+        f"tools/folder: {tmp_path / f'matcher/questions/{name}.py'} is named like the standard-library module {name!r}, and the worker can't load both; rename it"
+    )
 
 
 def test_a_question_helper_named_like_a_standard_library_module_is_refused(
@@ -750,27 +754,53 @@ async def test_a_question_script_or_helper_linked_from_elsewhere_in_the_root_loa
     assert isinstance(run, Decision) and options(run.questions) == ["a", "b"]
 
 
-@pytest.mark.parametrize(
-    ("imported", "written"),
-    [
-        (
-            "other",
-            {"other.py": ORDER, "other.json": '{"type": "choice", "instructions": "Which?"}'},
-        ),
-        ("pkg", {"pkg/__init__.py": ""}),
-    ],
-    ids=["a-sibling-script", "a-subfolder-package"],
+HELPED = (
+    "import orders\ndef run(input, call):\n    return {'options': orders.fetched(call['scope'])}\n"
 )
-def test_a_question_script_importing_what_is_not_a_helper_is_refused(
-    tmp_path: Path, imported: str, written: dict[str, str]
+
+
+async def test_a_question_scripts_helpers_are_the_modules_beside_it_that_it_imports(
+    tmp_path: Path,
 ) -> None:
-    matcher(tmp_path, f"import {imported}\n" + ORDER)
-    for name, text in written.items():
-        write(tmp_path / "matcher/questions" / name, text)
+    matcher(tmp_path, HELPED)
+    write(
+        tmp_path / "matcher/questions/orders.py",
+        "import shapes\ndef fetched(scope):\n    return {scope + '-1': shapes.FIRST, scope + '-2': 'Second'}\n",
+    )
+    write(tmp_path / "matcher/questions/shapes.py", "FIRST = 'First'\n")
+    script = load_folder(tmp_path)["matcher"].scripted["order"][1]
+    assert sorted(script.helpers) == ["orders", "shapes"]
+    async with Engine(tmp_path, providers=provided({"judge": Answering()})) as engine:
+        run = await engine.run("matcher", "acme", "my desk")
+    assert isinstance(run, Decision) and options(run.questions) == ["acme-1", "acme-2"]
+
+
+def test_a_py_beside_a_script_that_nothing_imports_is_still_refused(tmp_path: Path) -> None:
+    matcher(tmp_path, HELPED)
+    write(tmp_path / "matcher/questions/orders.py", "def fetched(scope):\n    return {}\n")
+    loose = tmp_path / "matcher/questions/loose.py"
+    write(loose, "X = 1\n")
     with pytest.raises(ConfigurationError) as raised:
         load_folder(tmp_path)
     assert str(raised.value) == (
-        f"tools/folder: {tmp_path / 'matcher/questions/order.py'} imports {imported!r}, which sits in its questions/ folder but is not a helper; a question's script reaches only the helpers of its folder, so move the shared code into a helper _{imported}.py"
+        f"tree: {loose} has no loose.json beside it, and no script beside it imports it; a question is loose.json, and loose.py fills it from data"
+    )
+
+
+async def test_a_question_script_may_import_another_question_s_script(tmp_path: Path) -> None:
+    matcher(tmp_path, "import other\n" + ORDER)
+    write(tmp_path / "matcher/questions/other.json", '{"type": "choice", "instructions": "Which?"}')
+    write(tmp_path / "matcher/questions/other.py", ORDER)
+    assert sorted(load_folder(tmp_path)["matcher"].scripted) == ["order", "other"]
+
+
+def test_a_package_folder_beside_a_question_script_is_refused(tmp_path: Path) -> None:
+    matcher(tmp_path, "import pkg\n" + ORDER)
+    write(tmp_path / "matcher/questions/pkg/__init__.py", "")
+    with pytest.raises(ConfigurationError) as raised:
+        load_folder(tmp_path)
+    assert str(raised.value) == (
+        f"tools/folder: {tmp_path / 'matcher/questions/order.py'} imports 'pkg', a package folder beside it; a module beside a question's script is a .py file there, so make it pkg.py, or install the package"
     )
 
 

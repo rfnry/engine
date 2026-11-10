@@ -149,10 +149,10 @@ async def _run(args: argparse.Namespace) -> int:
 def _folder(args: argparse.Namespace) -> int:
     from rfnry_engine.engine import check_folder
     from rfnry_engine.errors import ConfigurationError
-    from rfnry_engine.manifest import Manifest
+    from rfnry_engine.manifest import manifest_schema
 
     if args.folder_command == "schema":
-        print(json.dumps(Manifest.model_json_schema(by_alias=True), indent=2))
+        print(json.dumps(manifest_schema(), indent=2))
         return 0
     try:
         found = check_folder(Path(args.path), args.max_worker_processes)
@@ -163,6 +163,11 @@ def _folder(args: argparse.Namespace) -> int:
         line = f"{name}  {info.kind}  {info.model}"
         if info.modes:
             line += f"  modes: {', '.join(info.modes)}"
+        given = sorted(
+            {*info.run_tools, *(n for mode in info.modes.values() for n in mode.run_tools)}
+        )
+        if given:
+            line += f"  from the run: {', '.join(given)}"
         print(line)
     return 0
 

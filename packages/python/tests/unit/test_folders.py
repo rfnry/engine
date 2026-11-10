@@ -5,7 +5,6 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from rfnry_engine.compiled import load_folder
-from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.folders import pattern_reaches
 from rfnry_engine.frontmatter import leniently_described
 
@@ -55,18 +54,16 @@ def test_a_md_file_that_is_not_utf8_has_no_description(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "message"),
+    "text",
     [
-        ("---\ndescription: {a: 1}\n---\n", "description must be a string"),
-        ("---\ndescription: 12\n---\n", "description must be a string"),
+        "---\ndescription: {a: 1}\n---\n",
+        "---\ndescription: 12\n---\n",
+        "---\ndescription: [a]\n---\n",
     ],
 )
-def test_bad_frontmatter_is_refused_naming_the_file(
-    tmp_path: Path, text: str, message: str
-) -> None:
-    write(tmp_path / "bad.md", text)
-    with pytest.raises(ConfigurationError, match=rf"^frontmatter: {message} in .*bad\.md"):
-        leniently_described(tmp_path / "bad.md")
+def test_a_description_that_is_not_text_is_no_description(tmp_path: Path, text: str) -> None:
+    write(tmp_path / "a.md", text)
+    assert leniently_described(tmp_path / "a.md") is None
 
 
 def test_an_unreadable_folder_is_named_in_a_warning_and_left_out(

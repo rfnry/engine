@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import logging
 import math
@@ -153,6 +154,7 @@ class AgentInfo(BaseModel):
     delegate_to: list[str]
     files: list[str]
     tools: list[str]
+    run_tools: list[str]
     skills: dict[str, str]
     public: dict[str, str]
     worker: str
@@ -618,6 +620,7 @@ def _info(name: str, spec: AgentSpec) -> AgentInfo:
         delegate_to=list(spec.agents),
         files=list(spec.reachable),
         tools=list(chosen(spec)),
+        run_tools=sorted(spec.from_run),
         skills={called: skill.description for called, skill in spec.skills.items()},
         public={called: spec.skills[called].description for called in spec.public},
         worker=spec.worker,
@@ -635,7 +638,7 @@ class _ToolCalls:
     run_id: str
     scope: str
     tags: Mapping[str, str]
-    surface: ToolsLike
+    surface: Tools
     deadline: float | None
     own_deadline: frozenset[str]
     tool_slots: AbstractAsyncContextManager[Any]
@@ -738,7 +741,7 @@ class _ToolCalls:
         cut_short = False
         content: Content
         approved = None
-        if self.approve is not None:
+        if self.approve is not None and call.name in self.surface:
             asking = asyncio.ensure_future(self.approve(self.spec.name, _call(call)))
             self.approving.add(id(call))
             try:
@@ -988,9 +991,15 @@ class Engine:
         return merged
 
     def _built(self, held: RunModel | None) -> Any:
-        if isinstance(held, ModelChoice):
-            return self._providers[cast(str, held.provider)](held.model, held.effort)
-        return held
+        if not isinstance(held, ModelChoice):
+            return held
+        built = self._providers[cast(str, held.provider)](held.model, held.effort)
+        if inspect.iscoroutine(built):
+            built.close()
+            raise ConfigurationError(
+                f"engine: provider {held.provider!r} returned a coroutine; a provider is a plain function that returns an adapter, so write it with def, not async def"
+            )
+        return built
 
     def _adapter(
         self,
@@ -1162,6 +1171,7 @@ class Engine:
         agent: str,
         *,
         scope: str,
+        mode: str | None = None,
         name: str | None = None,
         context: str | None = None,
         tools: ToolsLike | None = None,
@@ -1179,7 +1189,7 @@ class Engine:
                 f"engine: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
             )
         self._refuse_voice(agent)
-        spec = self._spec(agent)
+        spec = self._spec(agent, mode)
         if not spec.description.strip():
             raise ConfigurationError(
                 f"engine: agent {agent!r} has no description; write description: on its entry in rfnry.yaml, or in its instructions file's frontmatter, to use it as a tool"
@@ -1193,6 +1203,7 @@ class Engine:
                 agent,
                 scope,
                 args["input"],
+                mode=mode,
                 questions=args.get("questions"),
                 context=context,
                 tools=tools,

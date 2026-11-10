@@ -98,6 +98,7 @@ class AgentSpec(BaseModel):
     offered: frozenset[str] = frozenset()
     public: tuple[str, ...] = ()
     folder_tools: dict[str, ToolDef] = Field(default_factory=dict)
+    from_run: list[str] = Field(default_factory=list)
     modes: dict[str, AgentSpec] = Field(default_factory=dict)
     needs_mode: bool = False
     worker: str = "default"
@@ -234,20 +235,27 @@ def question_files(directory: Path) -> list[Path]:
     ]
 
 
-def question_parts(directory: Path, files: Collection[Path]) -> tuple[dict[str, Path], list[str]]:
+def question_parts(files: Collection[Path]) -> tuple[dict[str, Path], list[str]]:
     for path in files:
         if path.suffix == ".md":
             raise ConfigurationError(
                 f"tree: question {path} is markdown; write it as {path.stem}.json with {SHAPE}"
             )
     definitions = {p.stem: p for p in files if p.suffix == ".json"}
-    scripts = [p.stem for p in files if p.suffix == ".py"]
-    for name in scripts:
-        if name not in definitions:
+    return definitions, [p.stem for p in files if p.suffix == ".py" and p.stem in definitions]
+
+
+def refuse_loose_scripts(directory: Path, imported: Collection[str]) -> None:
+    for path in question_files(directory):
+        name = path.stem
+        if (
+            path.suffix == ".py"
+            and name not in imported
+            and not path.with_suffix(".json").is_file()
+        ):
             raise ConfigurationError(
-                f"tree: {directory / name}.py has no {name}.json beside it; a question is {name}.json, and {name}.py fills it from data"
+                f"tree: {path} has no {name}.json beside it, and no script beside it imports it; a question is {name}.json, and {name}.py fills it from data"
             )
-    return definitions, scripts
 
 
 def read_questions(
@@ -258,8 +266,7 @@ def read_questions(
 ) -> tuple[dict[str, Question], dict[str, tuple[dict[str, JsonValue], Script]]]:
     fixed = {name: _question(path) for name, path in definitions.items() if name not in scripts}
     fronts = {name: _front(definitions[name]) for name in scripts}
-    held = {directory.resolve()}
-    loaded = load_scripts(directory, scripts, project_of(root), root, held) if scripts else {}
+    loaded = load_scripts(directory, scripts, project_of(root), root) if scripts else {}
     return fixed, {name: (fronts[name], loaded[name]) for name in scripts}
 
 

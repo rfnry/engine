@@ -65,26 +65,33 @@ REMOVED = (
 ENGINE_TAKES_NO = ("models", "workers")
 
 
-def _engine_calls(text: str) -> list[str]:
+def _engine_calls(text: str) -> list[tuple[str, bool]]:
     calls = []
     for found in re.finditer(r"(?<!\w)Engine\(", text):
         depth = 0
         for end in range(found.end() - 1, len(text)):
             depth += {"(": 1, ")": -1}.get(text[end], 0)
             if depth == 0:
-                calls.append(text[found.start() : end + 1])
+                calls.append((text[found.start() : end + 1], True))
                 break
+        else:
+            calls.append((text[found.start() :], False))
     return calls
 
 
 def _removed_in(text: str) -> list[str]:
     named = [pattern for pattern in REMOVED if re.search(rf"(?<!\w){pattern}", text)]
-    return named + [
-        f"Engine({key}=)"
-        for call in _engine_calls(text)
-        for key in ENGINE_TAKES_NO
-        if re.search(rf"\b{key}=", call)
-    ]
+    calls = _engine_calls(text)
+    return (
+        named
+        + [
+            f"Engine({key}=)"
+            for call, _ in calls
+            for key in ENGINE_TAKES_NO
+            if re.search(rf"\b{key}=", call)
+        ]
+        + [f"unbalanced: {call.splitlines()[0]}" for call, closed in calls if not closed]
+    )
 
 
 def test_the_docs_name_no_removed_way_of_writing_a_folder() -> None:
@@ -97,6 +104,13 @@ def test_the_guard_reads_an_engine_call_to_its_closing_parenthesis() -> None:
     assert _removed_in(called) == ["Engine(models=)"]
     assert _removed_in("Engine(root, workers={'a': 1})") == ["Engine(workers=)"]
     assert _removed_in("Engine(root, providers=provided(x))\nengine.run(models={})") == []
+
+
+def test_the_guard_reports_an_engine_call_whose_parentheses_do_not_close() -> None:
+    assert _removed_in("Engine(root, models={'strong': llm}\nrest of the page") == [
+        "Engine(models=)",
+        "unbalanced: Engine(root, models={'strong': llm}",
+    ]
 
 
 def test_the_evaluation_guide_compiles_and_names_real_verbs() -> None:

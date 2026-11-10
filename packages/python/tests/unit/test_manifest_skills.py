@@ -204,11 +204,20 @@ async def test_preload_sends_a_skills_text_that_the_list_does_not_offer(tmp_path
     assert "skills/escalate/SKILL.md" not in system
 
 
-async def test_a_preloaded_skill_not_offered_stays_closed_to_the_file_tools(
-    tmp_path: Path,
-) -> None:
-    surface = _surface(_folder(tmp_path, {"preload": ["skills/tone"]}))
-    path = "skills/tone/SKILL.md"
+async def test_a_preloaded_skills_folder_is_open_on_every_run(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {"preload": ["skills/tone"]},
+        files={"exclude": ["skills/tone/refs/kept.md"]},
+        written={"skills/tone/refs/kept.md": "Not for the model.\n"},
+    )
+    surface = _surface(folder)
+    assert await _answer(surface, "Read", {"path": "skills/tone/refs/examples.md"}) == (
+        "Warm examples.\n"
+    )
+    assert await _answer(surface, "Read", {"path": "skills/tone/SKILL.md"}) == TONE
+    assert _spec(folder).offered == frozenset()
+    path = "skills/tone/refs/kept.md"
     _reads_as_missing(await _answer(surface, "Read", {"path": path}), path)
 
 
@@ -398,8 +407,8 @@ def test_public_on_an_entry_that_needs_a_mode_is_checked_on_its_modes(tmp_path: 
 async def test_an_invoked_skills_other_files_are_reachable_on_that_run(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"preload": ["skills/tone"]},
-        modes={"m": {"skills": {"preload": ["skills/escalate"]}}},
+        {"preload": ["skills/escalate"]},
+        modes={"m": {"skills": {"preload": ["skills/tone"]}}},
         files={"include": ["knowledge"]},
     )
     path = "skills/tone/refs/examples.md"
@@ -644,12 +653,14 @@ def test_frontmatter_that_does_not_parse_is_read_for_its_description_line(
     assert skill.body == body
 
 
-def test_a_description_that_parses_and_is_no_string_is_still_refused(tmp_path: Path) -> None:
-    written = {"skills/bad/SKILL.md": "---\ndescription: [one, two]\n---\nBody.\n"}
-    _refused(
-        _folder(tmp_path, {"include": ["skills/*"]}, written=written),
-        r"^frontmatter: description must be a string in .*skills/bad/SKILL\.md",
-    )
+def test_a_description_that_parses_and_is_no_string_is_no_description(tmp_path: Path) -> None:
+    written = {
+        "a.md": "---\ndescription: 12\n---\nWork.\n",
+        "skills/bad/SKILL.md": "---\ndescription: [one, two]\n---\nBody.\n",
+    }
+    spec = _spec(_folder(tmp_path, {"include": ["skills/*"]}, written=written))
+    assert (spec.skills["bad"].description, spec.skills["bad"].body) == ("", "Body.")
+    assert (spec.description, spec.body) == ("", "Work.")
 
 
 def test_a_file_on_the_map_with_frontmatter_that_does_not_parse_loads(tmp_path: Path) -> None:

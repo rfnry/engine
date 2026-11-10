@@ -224,9 +224,9 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
         "<<<SKILLS>>>\nsupport/skills/escalate/SKILL.md — Hand a conversation to a person\n\n"
         "<<<TOOLS>>>\n"
         "- Read: Read a text file by its path in the FILES map or SKILLS. Optional offset/limit select lines. For an image, a PDF, audio or any other file, use Load.\n"
-        "- Grep: Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder from your own folder, as the map shows it; without it, your own folder is searched.\n"
-        "- Glob: Find files by glob pattern, e.g. '**/*.md'. Paths are from your own folder, as the map shows them.\n"
-        "- LS: List a folder by its path from your own folder, as the map shows it; without a path, your own folder.\n"
+        "- Grep: Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder from the folder of the agents, as the map shows it; without it, the whole folder of the agents is searched.\n"
+        "- Glob: Find files by glob pattern, e.g. '**/*.md'. Paths are from the folder of the agents, as the map shows them.\n"
+        "- LS: List a folder by its path from the folder of the agents, as the map shows it; without a path, the folder of the agents.\n"
         "- Load: Load a file of the FILES map or SKILLS as it is, such as an image, a PDF or audio, so you see or hear it yourself.\n"
         "- lookup_order: Fetch an order by id. Returns the order as JSON.\n"
         "- now: The current UTC time\n"
@@ -235,7 +235,7 @@ async def test_without_preload_the_model_is_sent_exactly_what_it_was_sent_before
         "<<<CONTEXT>>>\nAcme is on the enterprise plan."
     )
     assert messages == [*history, Message(role="user", content="Charged twice.")]
-    assert tools_fingerprint(tools) == "b777cb12c847fb73"
+    assert tools_fingerprint(tools) == "d9a2d0bcbaab9a04"
     assert [t.name for t in tools] == [
         "Read",
         "Grep",

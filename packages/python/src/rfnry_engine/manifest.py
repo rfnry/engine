@@ -4,6 +4,8 @@ from typing import Annotated, Any, Literal, get_args, get_origin
 
 import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
+from pydantic_core import core_schema
 
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.frontmatter import (
@@ -155,6 +157,33 @@ class Manifest(_Closed):
         return value
 
 
+class _SaysSomething(GenerateJsonSchema):
+    def nullable_schema(self, schema: core_schema.NullableSchema) -> JsonSchemaValue:
+        return self.generate_inner(schema["schema"])
+
+    def default_schema(self, schema: core_schema.WithDefaultSchema) -> JsonSchemaValue:
+        held = super().default_schema(schema)
+        if "default" in held and held["default"] is None:
+            del held["default"]
+        return held
+
+    def str_schema(self, schema: core_schema.StringSchema) -> JsonSchemaValue:
+        return {**super().str_schema(schema), "minLength": 1}
+
+    def list_schema(self, schema: core_schema.ListSchema) -> JsonSchemaValue:
+        return {**super().list_schema(schema), "minItems": 1}
+
+    def dict_schema(self, schema: core_schema.DictSchema) -> JsonSchemaValue:
+        return {**super().dict_schema(schema), "minProperties": 1}
+
+    def model_schema(self, schema: core_schema.ModelSchema) -> JsonSchemaValue:
+        return {**super().model_schema(schema), "minProperties": 1}
+
+
+def manifest_schema() -> dict[str, Any]:
+    return Manifest.model_json_schema(by_alias=True, schema_generator=_SaysSomething)
+
+
 _SECTIONS = ("files", "tools", "skills", "orchestration")
 _LEFT_OUT: dict[Kind, tuple[frozenset[str], str]] = {
     "generation": (
@@ -208,6 +237,14 @@ def _text_of(root: Path, path: Path) -> str:
     except FileNotFoundError as exc:
         raise ConfigurationError(
             f"manifest: {root} holds no {MANIFEST}; write one there, or point the engine at the folder that holds it"
+        ) from exc
+    except NotADirectoryError as exc:
+        if root.name == MANIFEST:
+            raise ConfigurationError(
+                f"manifest: {root} is the file itself; pass the folder that holds it, {root.parent}"
+            ) from exc
+        raise ConfigurationError(
+            f"manifest: {root} is a file, not a folder; pass the folder that holds {MANIFEST}"
         ) from exc
     except OSError as exc:
         raise ConfigurationError(f"manifest: cannot read {path}: {exc.strerror}") from exc

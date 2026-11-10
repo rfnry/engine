@@ -747,6 +747,49 @@ async def test_a_bare_name_the_run_does_not_give_fails_before_any_model_call(
     assert model.calls == []
 
 
+@pytest.mark.parametrize(
+    ("key", "written", "right"),
+    [
+        ("include", "read", "Read"),
+        ("include", "ONE", "one"),
+        ("exclude", "shell", "Shell"),
+        ("exclude", "One", "one"),
+    ],
+)
+def test_a_bare_name_differing_only_by_case_is_refused_naming_the_right_one(
+    tmp_path: Path, key: str, written: str, right: str
+) -> None:
+    picks = {"include": ["one", written]} if key == "include" else {"exclude": [written]}
+    folder = _folder(
+        tmp_path,
+        {"one": ONE},
+        {"tools/one.py": RUN},
+        include=picks.get("include", ["one"]),
+        section={key: picks[key]} if key == "exclude" else None,
+        files={"include": ["a.md"]},
+    )
+    with pytest.raises(ConfigurationError) as refused:
+        load_folder(folder)
+    assert str(refused.value) == (
+        f"compiled: agent 'a' lists {written!r} in tools.{key}; did you mean {right!r}? "
+        "A tool's name matches exactly, so write it as it is declared or as the engine gives it"
+    )
+
+
+def test_the_names_a_run_must_give_are_listed(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {"one": ONE},
+        {"tools/one.py": RUN},
+        include=["one", "Read", "handoff", "lookup_customer"],
+        files={"include": ["a.md"]},
+        modes={"chat": {"tools": {"include": ["verify"]}}},
+    )
+    spec = load_folder(folder)["a"]
+    assert spec.from_run == ["handoff", "lookup_customer"]
+    assert spec.modes["chat"].from_run == ["handoff", "lookup_customer", "verify"]
+
+
 async def test_a_run_tool_no_entry_names_stays_out(tmp_path: Path) -> None:
     folder = _folder(tmp_path, {"one": ONE}, {"tools/one.py": RUN})
     model = Scripted(text_reply("done"))
@@ -1087,7 +1130,10 @@ def test_a_tool_module_named_like_the_standard_library_is_refused(
     with pytest.raises(ConfigurationError) as raised:
         load_folder(folder)
     assert str(raised.value) == (
-        f"tools/folder: {folder / module} is named like the standard-library module {name!r}, and the worker can't load both; rename it"
+        f"tools/folder: {folder / module} is named like the standard-library module {name!r}, "
+        "which it would shadow for itself and everything it imports, since a shell run puts its "
+        "folder first on the import path; rename the file, and the tool's key under tools: can "
+        "stay as it is"
     )
 
 

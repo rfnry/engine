@@ -5,9 +5,9 @@ import os
 import stat
 import time
 from collections.abc import Callable, Collection, Iterator
-from fnmatch import fnmatch
+from fnmatch import fnmatch, fnmatchcase
 from itertools import islice
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import regex
@@ -321,6 +321,33 @@ class _Directory:
             yield from (here / name for name in names)
             yield from (here / name for name in filenames if not self.jail._withholds(here / name))
 
+    def _kept(self, here: Path) -> list[os.DirEntry[str]]:
+        try:
+            with os.scandir(here) as found:
+                return [entry for entry in found if not self.jail._withholds(entry.path)]
+        except OSError:
+            return []
+
+    def _matched(self, here: Path, parts: tuple[str, ...]) -> Iterator[Path]:
+        if not parts:
+            yield here
+            return
+        part, rest = parts[0], parts[1:]
+        if part == "**":
+            yield from self._matched(here, rest)
+            for entry in self._kept(here):
+                if entry.is_dir(follow_symlinks=False):
+                    yield from self._matched(Path(entry.path), parts)
+                elif not rest:
+                    yield Path(entry.path)
+        elif not any(sign in part for sign in "*?["):
+            if not self.jail._withholds(here / part):
+                yield from self._matched(here / part, rest)
+        else:
+            for entry in self._kept(here):
+                if fnmatchcase(entry.name, part) and (not rest or _is_folder(entry)):
+                    yield from self._matched(Path(entry.path), rest)
+
     def _files_under(self, base: Path, glob: str | None) -> tuple[list[Path], bool]:
         if base.is_file():
             return [base], False
@@ -420,9 +447,15 @@ class _Directory:
             raise InputError(
                 "tools/builtins: pattern must be relative and stay inside the folder of the agents"
             )
+        parts = PurePosixPath(pattern).parts
+        if not parts:
+            raise InputError(
+                f"tools/builtins: invalid glob pattern {a.pattern!r}: it names nothing below the folder"
+            )
+        if pattern.endswith("/"):
+            return ""
         try:
-            kept = (p for p in base.glob(pattern) if not self.jail._withholds(p))
-            entries = list(islice(kept, _MAX_WALK + 1))
+            entries = list(dict.fromkeys(islice(self._matched(base, parts), _MAX_WALK + 1)))
         except ValueError as exc:
             raise InputError(f"tools/builtins: invalid glob pattern {a.pattern!r}: {exc}") from exc
         truncated = len(entries) > _MAX_WALK
@@ -500,19 +533,19 @@ def builtins(
         ),
         Tool(
             "Grep",
-            "Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder from your own folder, as the map shows it; without it, your own folder is searched.",
+            "Search file contents with a regex. mode=files lists matching files; mode=content lists matching lines. path is a file or folder from the folder of the agents, as the map shows it; without it, the whole folder of the agents is searched.",
             body=threaded(directory.grep),
             args=GrepArgs,
         ),
         Tool(
             "Glob",
-            "Find files by glob pattern, e.g. '**/*.md'. Paths are from your own folder, as the map shows them.",
+            "Find files by glob pattern, e.g. '**/*.md'. Paths are from the folder of the agents, as the map shows them.",
             body=threaded(directory.glob),
             args=GlobArgs,
         ),
         Tool(
             "LS",
-            "List a folder by its path from your own folder, as the map shows it; without a path, your own folder.",
+            "List a folder by its path from the folder of the agents, as the map shows it; without a path, the folder of the agents.",
             body=threaded(directory.ls),
             args=LSArgs,
         ),

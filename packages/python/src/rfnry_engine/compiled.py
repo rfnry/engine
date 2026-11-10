@@ -50,6 +50,7 @@ from rfnry_engine.tree import (
     question_files,
     question_parts,
     read_questions,
+    refuse_loose_scripts,
     skill_text,
     utf8_name,
 )
@@ -101,6 +102,7 @@ class _Chosen(NamedTuple):
     excluded: frozenset[str]
     preloaded: list[Skill]
     public: tuple[str, ...]
+    opened: frozenset[str]
 
 
 class _Grant(NamedTuple):
@@ -152,12 +154,7 @@ def _reached_by(root: Path, who: str, written: str) -> list[Path]:
 def _beside(directory: Path, reached: Collection[Path]) -> list[Path]:
     stems = {path.stem for path in reached}
     return [
-        path
-        for path in question_files(directory)
-        if path.suffix != ".md"
-        and (
-            path.stem in stems or (path.suffix == ".py" and not path.with_suffix(".json").is_file())
-        )
+        path for path in question_files(directory) if path.suffix != ".md" and path.stem in stems
     ]
 
 
@@ -171,9 +168,7 @@ def _questions(root: Path, who: str, written: list[str]) -> _Asked:
     held: dict[str, Path] = {}
     reached: list[Path] = []
     for directory, paths in sorted(folders.items()):
-        definitions, scripts = question_parts(
-            directory, sorted({*paths, *_beside(directory, paths)})
-        )
+        definitions, scripts = question_parts(sorted({*paths, *_beside(directory, paths)}))
         for name, path in definitions.items():
             if name in held:
                 raise ConfigurationError(
@@ -181,6 +176,9 @@ def _questions(root: Path, who: str, written: list[str]) -> _Asked:
                 )
             held[name] = path
         fixed, filled = read_questions(directory, definitions, scripts, root)
+        refuse_loose_scripts(
+            directory, {name for _, script in filled.values() for name in script.helpers}
+        )
         questions |= fixed
         scripted |= filled
         reached.extend(definitions.values())
@@ -383,7 +381,7 @@ def _held_skill(root: Path, who: str, folder: str) -> _Held:
         Skill(
             path=written,
             place=root / folder,
-            description=lenient_description(text, root / written) or "",
+            description=lenient_description(text) or "",
             body=body_of(text),
         ),
         raw,
@@ -463,6 +461,7 @@ def _chosen_skills(
         frozenset(excluded),
         [held[name].skill for name in preloaded],
         _public(who, section, offered),
+        offered | frozenset(preloaded),
     )
 
 
@@ -564,6 +563,17 @@ def _matching_names(pattern: str, names: Iterable[str]) -> list[str]:
     return [name for name in names if shape.fullmatch(name)]
 
 
+def _refuse_near_miss(who: str, key: str, entry: str, declared: Collection[str]) -> None:
+    known = (ENGINE_TOOLS - RUN_DECIDES.keys()) | set(declared)
+    if entry in known:
+        return
+    right = sorted(name for name in known if name.casefold() == entry.casefold())
+    if right:
+        raise ConfigurationError(
+            f"compiled: {who} lists {entry!r} in tools.{key}; did you mean {' or '.join(map(repr, right))}? A tool's name matches exactly, so write it as it is declared or as the engine gives it"
+        )
+
+
 def _names(who: str, key: str, written: list[str] | None, declared: Collection[str]) -> list[str]:
     names: list[str] = []
     for entry in written or ():
@@ -572,6 +582,7 @@ def _names(who: str, key: str, written: list[str] | None, declared: Collection[s
                 f"compiled: {who} lists {entry!r} in tools.{key}; the run decides that tool through {RUN_DECIDES[entry]}, so leave it out"
             )
         if "*" not in entry:
+            _refuse_near_miss(who, key, entry, declared)
             names.append(entry)
             continue
         found = _matching_names(entry, declared)
@@ -686,10 +697,10 @@ def _spec(
         )
         files[resolved.instructions] = root / resolved.instructions
         body = body_of(text)
-        said = said or lenient_description(text, root / resolved.instructions)
+        said = said or lenient_description(text)
     reached = skills.layers.get(mode)
     chosen = (
-        _Chosen(frozenset(), frozenset(), [], ())
+        _Chosen(frozenset(), frozenset(), [], (), frozenset())
         if reached is None
         else _chosen_skills(who, resolved.skills, skills.held, reached)
     )
@@ -704,7 +715,8 @@ def _spec(
         for name, found in in_folders.items()
     }
     offered_files = _together(skill_files[name] for name in chosen.offered)
-    closed = [_skill_folder(one) for name, one in skills.held.items() if name not in chosen.offered]
+    open_files = _together(skill_files[name] for name in chosen.opened)
+    closed = [_skill_folder(one) for name, one in skills.held.items() if name not in chosen.opened]
     reach = (
         _Reach({}, {}, [])
         if resolved.instructions is None
@@ -715,11 +727,11 @@ def _spec(
             _own_files(resolved, {*tool_files, *offered_files}),
             _together(in_folders.values()),
             closed,
-            offered_files,
+            open_files,
         )
     )
-    skill_files = _open_in_skills(root, skill_files, closed, {*offered_files, *reach.files})
-    offered_files = _together(skill_files[name] for name in chosen.offered)
+    skill_files = _open_in_skills(root, skill_files, closed, {*open_files, *reach.files})
+    open_files = _together(skill_files[name] for name in chosen.opened)
     every_skill_file = _together(skill_files.values())
     files |= {**reach.files, **every_skill_file}
     _check_what_it_reaches(root, who, files)
@@ -730,7 +742,7 @@ def _spec(
         skill_text(skill) for skill in chosen.preloaded if skill.path not in reach.preloaded
     ]
     read |= {one.skill.path: one.raw for one in skills.held.values()} | loaded
-    opened = {**reach.files, **offered_files}
+    opened = {**reach.files, **open_files}
     return AgentSpec(
         root=root,
         name=agent,
@@ -762,6 +774,11 @@ def _spec(
         offered=chosen.offered,
         public=chosen.public,
         folder_tools=dict(sorted(folder_tools.items())),
+        from_run=[
+            name
+            for name in picked.names
+            if name not in ENGINE_TOOLS and name not in declared.entries
+        ],
         listing="\n".join(mapped(sorted(reach.on_the_map.items()))),
         needs_mode=resolved.instructions is None,
         worker=resolved.worker or "default",
@@ -770,7 +787,7 @@ def _spec(
         withheld_when_invoked={
             name: _outside(root, {**opened, **skill_files[name]})
             for name in skills.held
-            if name not in chosen.offered
+            if name not in chosen.opened
         },
         named=named,
         included_folders=[

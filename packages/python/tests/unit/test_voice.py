@@ -728,7 +728,9 @@ async def test_a_call_after_the_session_ended_raises_and_runs_nothing(tmp_path: 
     assert ran == [] and voice.steps == []
 
 
-async def test_a_tool_the_agent_was_not_offered_is_an_error_step(tmp_path: Path) -> None:
+async def test_a_tool_the_agent_was_not_offered_is_refused_before_approve_as_an_error_step(
+    tmp_path: Path,
+) -> None:
     with_tools(tmp_path, "quick")
     asked = list[str]()
 
@@ -745,10 +747,10 @@ async def test_a_tool_the_agent_was_not_offered_is_an_error_step(tmp_path: Path)
     voice = await engine_of(tmp_path).talk(
         "voice", "acme", session, tools=Tools([tool("quick")]), approve=gate
     )
-    assert asked == ["ghost", "quick"]
-    assert [(s.tool, s.args, s.is_error, s.result) for s in voice.steps] == [
-        ("ghost", {"a": 1}, True, "InputError: tools: unknown tool 'ghost'"),
-        ("quick", {}, False, "done"),
+    assert asked == ["quick"]
+    assert [(s.tool, s.args, s.is_error, s.result, s.approved) for s in voice.steps] == [
+        ("ghost", {"a": 1}, True, "InputError: tools: unknown tool 'ghost'", None),
+        ("quick", {}, False, "done", True),
     ]
 
 

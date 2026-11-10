@@ -634,8 +634,11 @@ def test_editing_this_entry_changes_it(tmp_path: Path, edit: dict[str, Any]) -> 
         ("a.md", "Other.\n"),
         ("q/urgent.json", URGENT.replace("urgent", "pressing")),
         ("q/filled.json", '{"type": "choice", "instructions": "Which one?"}'),
-        ("q/filled.py", "def run(input, call):\n    return {'options': {'b': 'B'}}\n"),
-        ("q/_shared.py", "NAME = 'other'\n"),
+        (
+            "q/filled.py",
+            "import shared\ndef run(input, call):\n    return {'options': {'b': 'B'}}\n",
+        ),
+        ("q/shared.py", "NAME = 'other'\n"),
     ],
     ids=["instructions", "question", "scripted question", "script", "helper"],
 )
@@ -649,8 +652,8 @@ def test_every_file_an_agent_reaches_is_in_its_fingerprint(
             "a.md": "Sort.\n",
             "q/urgent.json": URGENT,
             "q/filled.json": '{"type": "choice", "instructions": "Which?"}',
-            "q/filled.py": "def run(input, call):\n    return {'options': {'a': 'A'}}\n",
-            "q/_shared.py": "NAME = 'one'\n",
+            "q/filled.py": "import shared\ndef run(input, call):\n    return {'options': {'a': 'A'}}\n",
+            "q/shared.py": "NAME = 'one'\n",
         },
     )
     before = load_folder(folder)["t"].fingerprint
@@ -664,8 +667,8 @@ def test_every_file_an_agent_reaches_is_in_its_fingerprint(
         ("x.md", "Other.\n"),
         ("r/area.json", AREA.replace("Which area?", "What area?")),
         ("r/order.json", '{"type": "choice", "instructions": "Which one?"}'),
-        ("r/order.py", "def run(input, call):\n    return {'options': {'b': 'B'}}\n"),
-        ("r/_own.py", "NAME = 'other'\n"),
+        ("r/order.py", "import own\ndef run(input, call):\n    return {'options': {'b': 'B'}}\n"),
+        ("r/own.py", "NAME = 'other'\n"),
     ],
     ids=["instructions", "question", "scripted question", "script", "helper"],
 )
@@ -689,8 +692,8 @@ def test_a_file_reached_only_through_a_mode_changes_only_that_mode(
             "q/urgent.json": URGENT,
             "r/area.json": AREA,
             "r/order.json": '{"type": "choice", "instructions": "Which?"}',
-            "r/order.py": "def run(input, call):\n    return {'options': {'a': 'A'}}\n",
-            "r/_own.py": "NAME = 'one'\n",
+            "r/order.py": "import own\ndef run(input, call):\n    return {'options': {'a': 'A'}}\n",
+            "r/own.py": "NAME = 'one'\n",
         },
     )
     before = load_folder(folder)["t"]

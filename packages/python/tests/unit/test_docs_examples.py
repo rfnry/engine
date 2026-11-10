@@ -159,6 +159,7 @@ SETUPS = {
         replace={
             "approve=gate)": (
                 "approve=gate)\nassert run.mode == 'duplex' and run.model == 'live-1'\n"
+                "assert 'to be spoken' in llm.systems[-1] and 'desk' not in llm.systems[-1]\n"
                 "assert [s.tool for s in run.steps] == ['consult'] and run.steps[0].approved\n"
                 "assert [line.text for line in run.transcript] == ['Was I charged twice?', 'ok']"
             )
@@ -252,8 +253,10 @@ SETUPS = {
 class Model:
     def __init__(self, *replies: Reply) -> None:
         self.replies = list(replies)
+        self.systems: list[str] = []
 
     async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        self.systems.append(system)
         return self.replies.pop(0) if self.replies else Reply(text="ok")
 
 
@@ -366,6 +369,7 @@ AGENTS: dict[str, dict[str, Any]] = {
         skills={"include": ["support/skills/*"], "public": ["escalate"]},
         tools={"include": ["lookup_order"]},
         orchestration={"delegate_to": ["triage"]},
+        modes={"voice": {"instructions": "support/voice.md"}},
     ),
     "frontdesk": decision(
         "frontdesk",
@@ -414,6 +418,7 @@ def tree(root: Path) -> None:
             **{f"{name}/instructions.md": "" for name in AGENTS},
             "voice/instructions_duplex.md": "You run your own turns.\n",
             "support/instructions.md": "You are the support desk for Acme. Be brief, be exact, cite the rule you are applying.\n",
+            "support/voice.md": "Answer in one short sentence, to be spoken.\n",
             "support/knowledge/refunds.md": "---\ndescription: When a refund is owed\n---\nA double charge is refunded in full.\n",
             "support/tools/lookup_order.json": LOOKUP,
             "support/tools/lookup_order.py": SCRIPT,

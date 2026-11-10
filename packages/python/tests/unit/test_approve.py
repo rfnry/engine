@@ -147,6 +147,23 @@ async def test_a_refused_call_never_runs_and_the_model_reads_why(tmp_path: Path)
     assert llm.calls[1][1][-1].content == "NotApproved: refund was not approved"
 
 
+async def test_a_tool_the_agent_was_not_offered_is_refused_before_approve_is_asked(
+    tmp_path: Path,
+) -> None:
+    approver = Approver()
+    model = Scripted(use("ghost", amount=1), text_reply("done"))
+    run = await Engine(
+        make_tree(tmp_path), providers=provided({"strong": model, "judge": None})
+    ).run("desk", "acme", "go", approve=approver)
+    assert isinstance(run, Generation)
+    assert approver.asked == []
+    [step] = run.steps
+    assert (step.tool, step.is_error, step.approved) == ("ghost", True, None)
+    assert step.result == "InputError: tools: unknown tool 'ghost'"
+    [answer] = [message for message in model.calls[1][1] if message.role == "tool"]
+    assert answer.is_error and answer.content == "InputError: tools: unknown tool 'ghost'"
+
+
 async def test_waiting_for_approval_does_not_count_against_the_tool_timeout(tmp_path: Path) -> None:
     refunds = Refunds()
     engine = Engine(

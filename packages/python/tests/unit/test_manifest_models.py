@@ -1,9 +1,11 @@
 import asyncio
+import gc
 import json
 import re
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -562,6 +564,26 @@ async def test_a_providers_own_exception_reaches_the_caller(tmp_path: Path) -> N
     with pytest.raises(Unavailable) as raised:
         await Engine(_one(tmp_path), providers={"p": provider}).run("a", "acme", "hi")
     assert raised.value is problem
+
+
+async def test_an_async_provider_is_refused_saying_what_a_provider_is(tmp_path: Path) -> None:
+    async def provider(model: str | None, effort: str | None, /) -> Any:
+        return Scripted(text_reply("never"))
+
+    engine = Engine(_one(tmp_path), providers={"p": cast(Any, provider)})
+    said = ""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            await engine.run("a", "acme", "hi")
+        except ConfigurationError as exc:
+            said = str(exc)
+        gc.collect()
+    assert said == (
+        "engine: provider 'p' returned a coroutine; a provider is a plain function that returns "
+        "an adapter, so write it with def, not async def"
+    )
+    assert [str(warning.message) for warning in caught] == []
 
 
 async def test_the_record_says_what_the_model_reports(tmp_path: Path) -> None:

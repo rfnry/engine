@@ -248,7 +248,41 @@ async def test_an_agent_with_only_modes_runs_in_one(tmp_path: Path) -> None:
     assert run.mode == "email" and "Email instructions." in model.calls[0][0]
 
 
-async def test_delegated_routed_and_engine_tool_runs_take_no_mode(tmp_path: Path) -> None:
+async def test_engine_tool_runs_in_the_mode_it_is_built_with(tmp_path: Path) -> None:
+    folder = write_folder(
+        tmp_path,
+        {
+            "a": {
+                **AGENT,
+                "description": "Helps",
+                "modes": {**TWO_MODES, "voice": {"instructions": "voice.md"}},
+            }
+        },
+        files={**FILES, "voice.md": "Voice instructions.\n"},
+    )
+    model = Scripted(text_reply("Said."))
+    kept = _Kept()
+    async with Engine(folder, providers=provided({"m": model}), refinery=kept) as engine:
+        consult = engine.tool("a", scope="acme", name="consult", mode="voice")
+        assert await consult.dispatch("consult", {"input": "Hi"}) == "Said."
+    [system] = [call[0] for call in model.calls]
+    assert "Voice instructions." in system and "Entry instructions." not in system
+    [run] = kept.runs
+    assert run.agent == "a" and run.mode == "voice"
+
+
+async def test_engine_tool_refuses_an_unknown_mode_before_any_model_call(tmp_path: Path) -> None:
+    folder = write_folder(tmp_path, ONLY_MODES, files=FILES)
+    model = Scripted()
+    engine = Engine(folder, providers=provided({"m": model}))
+    with pytest.raises(
+        NotFoundError, match=r"^engine: agent 'a' has no mode 'ghost'; its modes are chat, email$"
+    ):
+        engine.tool("a", scope="acme", mode="ghost")
+    assert model.calls == []
+
+
+async def test_delegated_and_routed_runs_take_no_mode(tmp_path: Path) -> None:
     helper_modes = {"chat": {"instructions": "helper-chat.md"}}
     folder = write_folder(
         tmp_path,

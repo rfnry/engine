@@ -211,11 +211,9 @@ def _origins(name: str) -> list[Path]:
     return [Path(place) for place in spec.submodule_search_locations or []]
 
 
-def _owned(origin: Path, project: Path, folders: Collection[Path]) -> bool:
+def _owned(origin: Path, project: Path) -> bool:
     place = origin.resolve()
     if not place.is_relative_to(project):
-        return False
-    if any(place.is_relative_to(folder) for folder in folders):
         return False
     return not (_among(place, _installed()) or _among(place, _started()))
 
@@ -257,12 +255,12 @@ def _check_name(path: Path) -> None:
         )
 
 
-def _beside(folder: Path) -> frozenset[str]:
-    return frozenset(
-        p.stem if p.suffix == ".py" and not p.is_dir() else p.name
-        for p in folder.iterdir()
-        if not p.name.startswith((".", "_")) and (p.is_dir() or p.suffix == ".py")
-    )
+def _check_module_name(path: Path) -> None:
+    name = path.stem
+    if _standard(name):
+        raise ConfigurationError(
+            f"tools/folder: {path} is named like the standard-library module {name!r}, which it would shadow for itself and everything it imports, since a shell run puts its folder first on the import path; rename the file, and the tool's key under tools: can stay as it is"
+        )
 
 
 def _held(path: Path, folder: Path, named: str, whole: str) -> None:
@@ -274,22 +272,9 @@ def _held(path: Path, folder: Path, named: str, whole: str) -> None:
 
 
 def _check_imports(
-    path: Path,
-    module: ast.Module,
-    project: Path,
-    folders: Collection[Path],
-    helpers: Collection[str],
-    beside: Collection[str],
-    what: str,
-    declared: bool = False,
+    path: Path, module: ast.Module, project: Path, helpers: Collection[str], what: str
 ) -> None:
-    held = f"{path.parent.name}/"
-    importable = "modules beside it" if declared else f"helpers of its {held} folder"
-    example = (
-        "a module beside it by its name, such as import shared"
-        if declared
-        else f"a helper of its {held} folder by its name, such as import _client"
-    )
+    example = "a module beside it by its name, such as import shared"
     for node, nested, guarded in _imports(module):
         if isinstance(node, ast.ImportFrom) and node.level:
             shown = "." * node.level + (node.module or "")
@@ -302,37 +287,29 @@ def _check_imports(
                 raise ConfigurationError(
                     f"tools/folder: {path} imports {ENGINE!r}; a {what} never imports the engine, so keep what it needs in the {what} or a helper beside it"
                 )
-            if declared and (path.parent / top / "__init__.py").is_file():
+            if (path.parent / top / "__init__.py").is_file():
                 raise ConfigurationError(
-                    f"tools/folder: {path} imports {top!r}, a package folder beside it; a module beside a tool is a .py file there, so make it {top}.py, or install the package"
+                    f"tools/folder: {path} imports {top!r}, a package folder beside it; a module beside a {what} is a .py file there, so make it {top}.py, or install the package"
                 )
             if top in helpers:
                 if nested:
                     raise ConfigurationError(
                         f"tools/folder: {path} imports the helper {top!r} inside a function or class; import it at the top of the script, since a helper is reachable only while its folder's scripts load"
                     )
-                if declared and "." in name and not guarded:
+                if "." in name and not guarded:
                     raise ConfigurationError(
                         f"tools/folder: {path} imports {name!r}, and {top!r} beside it is a .py file with nothing below it; import {top} and use what it holds"
                     )
                 continue
             origins = _origins(top)
-            if (
-                top in beside
-                and top not in sys.stdlib_module_names
-                and all(path.parent.resolve() in o.resolve().parents for o in origins)
-            ):
-                raise ConfigurationError(
-                    f"tools/folder: {path} imports {top!r}, which sits in its {held} folder but is not a helper; a {what} reaches only the helpers of its folder, so move the shared code into a helper _{top}.py"
-                )
-            if declared and not origins and not guarded and not _standard(top):
+            if not origins and not guarded and not _standard(top):
                 raise ConfigurationError(
                     f"tools/folder: {path} imports {top!r}, which resolves to nothing; a module beside a {what} is a .py file there, and otherwise it reaches the standard library and installed packages, so install it, move it there as a .py file, or guard the import with try/except ImportError or if TYPE_CHECKING"
                 )
             for origin in origins:
-                if _owned(origin, project, folders):
+                if _owned(origin, project):
                     raise ConfigurationError(
-                        f"tools/folder: {path} imports {top!r} from {origin}, the server's own code; a {what} imports the standard library, installed packages and {importable}"
+                        f"tools/folder: {path} imports {top!r} from {origin}, the server's own code; a {what} imports the standard library, installed packages and modules beside it"
                     )
 
 
@@ -384,11 +361,11 @@ def load_tool(root: Path, name: str, entry: ToolEntry, project: Path) -> ToolDef
             f"tools/folder: tool {name!r} has the module {entry.module!r}, which is not a .py file; the workers run Python, so write the path of a .py file from the folder root"
         )
     script = _file_of(root, name, entry.module, "module")
-    _check_name(script)
+    _check_module_name(script)
     source = _text(script)
     parsed, helpers = _with_its_modules(script, source, root)
     for path, module in parsed.items():
-        _check_imports(path, module, project, (), helpers, (), "tool", declared=True)
+        _check_imports(path, module, project, helpers, "tool")
     _check_run(script, parsed[script], "tool", "args", entry.function)
     schema = _schema_of(root, name, entry)
     return ToolDef(
@@ -407,27 +384,18 @@ def load_tool(root: Path, name: str, entry: ToolEntry, project: Path) -> ToolDef
 
 
 def load_scripts(
-    folder: Path, names: Collection[str], project: Path, root: Path, folders: Collection[Path]
+    folder: Path, names: Collection[str], project: Path, root: Path
 ) -> dict[str, Script]:
     folder, root, project = folder.absolute(), root.absolute(), project.resolve()
-    helpers = sorted(
-        p for p in folder.iterdir() if p.is_file() and p.name.startswith("_") and p.suffix == ".py"
-    )
-    scripts = {name: folder / f"{name}.py" for name in names}
-    for path in [*scripts.values(), *helpers]:
-        _held(path, root, "the folder root", "the whole folder")
-    for path in helpers:
-        _check_name(path)
-    sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
-    shared = {p.stem: Helper(p, sources[p]) for p in helpers}
     what = "question's script"
-    beside = _beside(folder)
-    for path, source in sources.items():
-        module = _parsed(path, source)
-        _check_imports(path, module, project, folders, shared, beside, what)
-        if path in scripts.values():
-            _check_run(path, module, what, "input")
-    return {
-        name: Script(script_key(root, path), path, sources[path], shared)
-        for name, path in scripts.items()
-    }
+    loaded: dict[str, Script] = {}
+    for name in names:
+        script = folder / f"{name}.py"
+        _held(script, root, "the folder root", "the whole folder")
+        source = _text(script)
+        parsed, helpers = _with_its_modules(script, source, root)
+        for path, module in parsed.items():
+            _check_imports(path, module, project, helpers, what)
+        _check_run(script, parsed[script], what, "input")
+        loaded[name] = Script(script_key(root, script), script, source, helpers)
+    return loaded

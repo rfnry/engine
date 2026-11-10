@@ -486,7 +486,9 @@ class Workers:
                 for _, script in spec.scripted.values():
                     _gather(own, script)
         entries = {name: declared.get(name, WorkerEntry()) for name in held}
-        self.processes = sum(entry.processes for entry in entries.values())
+        self.processes = sum(
+            entry.processes for name, entry in entries.items() if name in declared or held[name]
+        )
         self._pools = {
             name: WorkerPool(
                 [own[key] for key in sorted(own)],

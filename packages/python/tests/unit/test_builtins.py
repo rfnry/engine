@@ -54,6 +54,28 @@ async def test_glob_and_ls() -> None:
     assert "rules/" in str(listing).splitlines() and "instructions.md" in str(listing).splitlines()
 
 
+async def test_glob_never_walks_into_a_withheld_folder(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    (root / "docs").mkdir()
+    (root / "docs" / "d.md").write_text("d", encoding="utf-8")
+    private = root / "private"
+    (private / "deep").mkdir(parents=True)
+    for number in range(50):
+        (private / "deep" / f"{number}.md").write_text("x", encoding="utf-8")
+    asked: list[Path] = []
+
+    def withheld(path: Path) -> bool:
+        asked.append(path)
+        return path == private or private in path.parents
+
+    tools = Tools(builtins(root, withheld=withheld))
+    for pattern in ("**/*.md", "*/*", "private/deep/*.md"):
+        assert await tools.dispatch("Glob", {"pattern": pattern}) == (
+            "" if pattern.startswith("private") else "docs/d.md"
+        )
+    assert [path for path in asked if private in path.parents] == []
+
+
 async def test_no_builtin_shows_a_bytecode_cache(tmp_path: Path) -> None:
     (tmp_path / "rules" / "__pycache__").mkdir(parents=True)
     (tmp_path / "rules" / "refunds.md").write_text("refund in full\n")

@@ -1770,9 +1770,10 @@ async def test_a_process_starts_on_the_first_tool_call(tmp_path: Path) -> None:
 def test_more_processes_than_the_ceiling_are_refused(tmp_path: Path) -> None:
     folder = write_folder(
         tmp_path,
-        {"a": {**GENERATION, "worker": "x"}, "b": GENERATION},
+        {"a": {**GENERATION, "worker": "x"}, "b": PICKS_PID},
         workers={"x": {"processes": 4}},
-        files={"a.md": "Work.\n"},
+        tools=PID_TOOL,
+        files=PID_FILES,
     )
     _engine(folder, max_worker_processes=5)
     with pytest.raises(ConfigurationError) as caught:
@@ -1799,6 +1800,34 @@ def test_the_default_ceiling_is_sixteen_processes(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigurationError, match="17 processes in all, over .*=16;"):
         _engine(over)
+
+
+@pytest.mark.parametrize(
+    ("idle", "fits"),
+    [
+        (
+            {"kind": "decision", "model": "m", "instructions": "a.md", "questions": ["q/*.json"]},
+            True,
+        ),
+        (PICKS_PID, False),
+    ],
+    ids=["a-tool-less-decision-agent", "an-agent-with-a-tool"],
+)
+def test_the_default_worker_counts_only_when_it_holds_a_tool_or_a_script(
+    tmp_path: Path, idle: dict[str, Any], fits: bool
+) -> None:
+    folder = write_folder(
+        tmp_path,
+        {"a": {**GENERATION, "worker": "x"}, "b": idle},
+        workers={"x": {"processes": 16}},
+        tools=PID_TOOL if idle is PICKS_PID else None,
+        files={**PID_FILES, "q/urgent.json": '{"type": "check", "instructions": "Urgent?"}'},
+    )
+    if fits:
+        assert list(_engine(folder).agents) == ["a", "b"]
+        return
+    with pytest.raises(ConfigurationError, match="17 processes in all, over .*=16;"):
+        _engine(folder)
 
 
 def test_an_entry_that_only_holds_modes_does_not_use_the_default_worker(tmp_path: Path) -> None:

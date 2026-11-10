@@ -5,8 +5,6 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from pydantic import ValidationError
 
-from rfnry_engine.errors import ConfigurationError
-
 _FRONTMATTER = re.compile(r"^---\n(?:(.*?)\n)?---[ \t]*(?:\n(.*))?\Z", re.DOTALL)
 _BOOL = "tag:yaml.org,2002:bool"
 MERGE_TAG = "tag:yaml.org,2002:merge"
@@ -130,17 +128,14 @@ def _utf8(path: Path) -> str | None:
 
 def leniently_described(path: Path) -> str | None:
     raw = _utf8(path)
-    return None if raw is None else lenient_description(raw, path)
+    return None if raw is None else lenient_description(raw)
 
 
-def _description_in(data: object, path: Path) -> str | None:
+def _description_in(data: object) -> str | None:
     said = data.get("description") if isinstance(data, dict) else None
-    if said is not None and not isinstance(said, str):
-        raise ConfigurationError(
-            f"frontmatter: description must be a string in {path}; write it as one line of text"
-        )
-    collapsed = " ".join(said.split()) if said else ""
-    return collapsed or None
+    if not isinstance(said, str):
+        return None
+    return " ".join(said.split()) or None
 
 
 def _scanned_description(head: str) -> str | None:
@@ -153,7 +148,7 @@ def _scanned_description(head: str) -> str | None:
     return " ".join(value.split()) or None
 
 
-def lenient_description(raw: str, path: Path) -> str | None:
+def lenient_description(raw: str) -> str | None:
     match = _HEAD.match(raw.removeprefix("\ufeff"))
     if match is None:
         return None
@@ -161,7 +156,7 @@ def lenient_description(raw: str, path: Path) -> str | None:
         data = yaml.load(match.group(1), Loader=StrictLoader)
     except YAML_FAILURES:
         return _scanned_description(match.group(1))
-    return _description_in(data, path)
+    return _description_in(data)
 
 
 def _said(message: str) -> str:

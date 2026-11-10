@@ -715,18 +715,25 @@ SKILLS = {"skills/close/SKILL.md": "Close it.\n", "skills/tone/SKILL.md": "Be wa
 
 
 @pytest.mark.parametrize(
-    "skills",
-    [{"include": ["skills/*"], "exclude": ["close"]}, {"preload": ["skills/close"]}],
-    ids=["excluded", "preloaded-only"],
+    ("skills", "modes"),
+    [
+        ({"include": ["skills/*"], "exclude": ["close"]}, {}),
+        (
+            {"preload": ["skills/tone"]},
+            {"modes": {"m": {"skills": {"preload": ["skills/close"]}}}},
+        ),
+    ],
+    ids=["excluded", "only-a-mode-names-it"],
 )
 async def test_a_link_into_a_skill_the_entry_does_not_open_reads_as_missing_and_is_not_preloaded(
-    tmp_path: Path, skills: dict[str, Any]
+    tmp_path: Path, skills: dict[str, Any], modes: dict[str, Any]
 ) -> None:
     folder = _folder(
         tmp_path,
         {"include": ["knowledge"], "preload": ["knowledge"]},
         written=SKILLS,
         skills=skills,
+        **modes,
     )
     _link(folder / "knowledge/sk.md", "../skills/close/SKILL.md")
     spec = load_folder(folder)["a"]
@@ -737,6 +744,15 @@ async def test_a_link_into_a_skill_the_entry_does_not_open_reads_as_missing_and_
         _reads_as_missing(
             await _answer(surface, tool, {"path": "knowledge/sk.md"}), "knowledge/sk.md"
         )
+
+
+async def test_a_link_into_a_preloaded_skill_reads_under_its_own_name(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path, {"include": ["knowledge"]}, written=SKILLS, skills={"preload": ["skills/close"]}
+    )
+    _link(folder / "knowledge/sk.md", "../skills/close/SKILL.md")
+    assert "  sk.md" in _map(folder)
+    assert await _surface(folder).dispatch("Read", {"path": "knowledge/sk.md"}) == "Close it.\n"
 
 
 async def test_a_link_inside_an_offered_skill_reaches_only_what_the_entry_opens(
