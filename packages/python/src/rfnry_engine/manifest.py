@@ -6,7 +6,13 @@ import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from rfnry_engine.errors import ConfigurationError
-from rfnry_engine.frontmatter import MERGE_TAG, StrictLoader, plainly, unreadable
+from rfnry_engine.frontmatter import (
+    MERGE_TAG,
+    YAML_FAILURES,
+    StrictLoader,
+    plainly,
+    unreadable,
+)
 
 MANIFEST = "rfnry.yaml"
 Kind = Literal["generation", "decision"]
@@ -92,6 +98,15 @@ class ModeEntry(_Closed):
     orchestration: Orchestration | None = None
     workspace: bool | None = None
     questions: list[_FolderPath] | None = None
+
+    @field_validator("model")
+    @classmethod
+    def _a_model_is_not_padded(cls, value: str | None) -> str | None:
+        if value is not None and value != value.strip():
+            raise ValueError(
+                f"manifest: model must not be padded, got {value!r}; write the name of a model the engine is given, such as model: strong"
+            )
+        return value
 
 
 class AgentEntry(ModeEntry):
@@ -186,18 +201,30 @@ def _parsed(text: str, path: Path) -> object:
             if isinstance(event, yaml.NodeEvent) and event.anchor is not None:
                 mark = event.start_mark
                 place = "" if mark is None else f" at line {mark.line + 1}"
+                quote = (
+                    "quote it if it is a pattern, or " if isinstance(event, yaml.AliasEvent) else ""
+                )
                 raise ConfigurationError(
-                    f"manifest: an anchor or alias in {path}{place} is refused; write the value out where it is used"
+                    f"manifest: an anchor or alias in {path}{place} is refused; {quote}write the value out where it is used"
                 )
         return yaml.load(text, Loader=_ManifestLoader)
-    except yaml.YAMLError as exc:
+    except YAML_FAILURES as exc:
         place, problem, fix = unreadable(exc, text, first_line=1)
         raise ConfigurationError(
             f"manifest: invalid YAML in {path}{place}: {problem}; {fix}"
         ) from exc
 
 
-def _refuse_what_says_nothing(held: object, at: str, path: Path) -> None:
+def _says_nothing(value: object) -> bool:
+    return (
+        value is None
+        or value == []
+        or value == {}
+        or (isinstance(value, str) and not value.strip())
+    )
+
+
+def _walk_for_nothing(held: object, at: str, path: Path) -> None:
     inner: Iterable[tuple[object, object]]
     if isinstance(held, dict):
         inner = held.items()
@@ -207,11 +234,20 @@ def _refuse_what_says_nothing(held: object, at: str, path: Path) -> None:
         return
     for key, value in inner:
         where = f"{at}.{key}" if at else str(key)
-        if value is None or value == "" or value == [] or value == {}:
+        if _says_nothing(value):
             raise ConfigurationError(
                 f"manifest: {where} in {path} says nothing; write what it holds, or remove the key"
             )
-        _refuse_what_says_nothing(value, where, path)
+        _walk_for_nothing(value, where, path)
+
+
+def _refuse_what_says_nothing(data: dict[Any, Any], path: Path) -> None:
+    try:
+        _walk_for_nothing(data, "", path)
+    except RecursionError as exc:
+        raise ConfigurationError(
+            f"manifest: {path} is nested too deeply; no key of this file holds that many levels"
+        ) from exc
 
 
 def _keys_at(loc: tuple[int | str, ...]) -> list[str]:
@@ -231,7 +267,7 @@ def _keys_at(loc: tuple[int | str, ...]) -> list[str]:
 
 def _validated(data: dict[Any, Any], path: Path) -> Manifest:
     try:
-        return Manifest.model_validate(data, strict=True)
+        manifest = Manifest.model_validate(data, strict=True)
     except ValidationError as exc:
         unknown = [error["loc"] for error in exc.errors() if error["type"] == "extra_forbidden"]
         if unknown:
@@ -240,7 +276,25 @@ def _validated(data: dict[Any, Any], path: Path) -> Manifest:
                 for loc in unknown
             )
             raise ConfigurationError(f"manifest: unknown key in {path}: {named}") from exc
+        _refuse_what_says_nothing(data, path)
         raise ConfigurationError(f"manifest: invalid {path}; {plainly(exc)}") from exc
+    _refuse_what_says_nothing(data, path)
+    return manifest
+
+
+def _refuse_names_that_are_not_plain(manifest: Manifest, path: Path) -> None:
+    maps: list[tuple[str, Iterable[str]]] = [
+        ("agents", manifest.agents),
+        ("workers", manifest.workers),
+        ("tools", manifest.tools),
+        *((f"agents.{name}.modes", agent.modes) for name, agent in manifest.agents.items()),
+    ]
+    for at, names in maps:
+        for name in names:
+            if not name or name != name.strip() or name.startswith(".") or "/" in name:
+                raise ConfigurationError(
+                    f"manifest: {at}.{name} in {path} is not a plain name, got {name!r}; write it with no blank, no padding, no leading . and no /"
+                )
 
 
 def _layers(name: str, agent: AgentEntry) -> Iterator[tuple[str, ModeEntry]]:
@@ -310,8 +364,8 @@ def read_manifest(root: Path) -> Manifest:
         raise ConfigurationError(
             f"manifest: {path} holds no keys; write version: 1 and agents: in it"
         )
-    _refuse_what_says_nothing(data, "", path)
     manifest = _validated(data, path)
+    _refuse_names_that_are_not_plain(manifest, path)
     for name, agent in manifest.agents.items():
         _refuse_what_its_kind_leaves_out(name, agent, path)
         _refuse_missing_instructions(name, agent, path)

@@ -76,13 +76,27 @@ _FIXES = (
     ),
     ("duplicate key", "remove one of them"),
     ("merge key", "write each key out where it is used"),
-    ("alphabetic or numeric character", 'quote a value that starts with *, such as "*"'),
+    ("alphabetic or numeric character", 'quote a value that starts with * or &, such as "*"'),
     ("did not find expected key", "line the key up with the keys around it"),
     ("expected <block end>", "line the key up with the keys around it"),
 )
 
 
-def unreadable(exc: yaml.YAMLError, text: str, first_line: int = 2) -> tuple[str, str, str]:
+YAML_FAILURES = (
+    yaml.YAMLError,
+    ValueError,
+    LookupError,
+    AttributeError,
+    TypeError,
+    RecursionError,
+)
+
+
+def unreadable(exc: Exception, text: str, first_line: int = 2) -> tuple[str, str, str]:
+    if isinstance(exc, RecursionError):
+        return "", "it is nested too deeply", "write it with fewer levels"
+    if not isinstance(exc, yaml.YAMLError):
+        return "", f"a value cannot be read: {exc}", "quote it to keep it as text, or correct it"
     problem = getattr(exc, "problem", None) or str(exc).splitlines()[0]
     context = getattr(exc, "context", None) or ""
     mark = getattr(exc, "problem_mark", None)
@@ -119,7 +133,7 @@ def description(raw: str, path: Path) -> str | None:
         return None
     try:
         data = yaml.load(match.group(1), Loader=StrictLoader)
-    except yaml.YAMLError as exc:
+    except YAML_FAILURES as exc:
         place, problem, fix = unreadable(exc, match.group(1))
         raise ConfigurationError(
             f"frontmatter: invalid YAML in {path}{place}: {problem}; {fix}"
@@ -162,7 +176,7 @@ def parse_frontmatter_doc[T: BaseModel](
     front_raw, body = split
     try:
         data = yaml.load(front_raw, Loader=StrictLoader) or {}
-    except yaml.YAMLError as exc:
+    except YAML_FAILURES as exc:
         place, problem, fix = unreadable(exc, front_raw)
         raise ConfigurationError(
             f"frontmatter: invalid YAML in {source}{place}: {problem}; {fix}"

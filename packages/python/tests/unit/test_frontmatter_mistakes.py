@@ -1,9 +1,10 @@
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from rfnry_engine.errors import ConfigurationError
-from rfnry_engine.frontmatter import described
+from rfnry_engine.frontmatter import described, description, parse_frontmatter_doc
 from rfnry_engine.tree import load_agent
 
 
@@ -133,3 +134,34 @@ def test_pure_pyyaml_mistakes_get_the_same_fixes(text: str, fix: str) -> None:
     with pytest.raises(yaml.YAMLError) as raised:
         yaml.load(text, Loader=yaml.SafeLoader)
     assert fix in unreadable(raised.value, text)[2]
+
+
+class _Front(BaseModel):
+    description: object = None
+
+
+DEEP_MERGES = "a: " + "{<<: " * 2000 + "{}" + "}" * 2000
+
+
+@pytest.mark.parametrize(
+    ("front", "said"),
+    [
+        ("description: 2026-13-45", "a value cannot be read"),
+        ("description: !!int nope", "a value cannot be read"),
+        ('description: !!int ""', "a value cannot be read"),
+        ("description: !!bool nope", "a value cannot be read"),
+        ("description: !!timestamp nope", "a value cannot be read"),
+        ("description: !!set [1]", "a value cannot be read"),
+        (DEEP_MERGES, "it is nested too deeply"),
+    ],
+)
+def test_what_yaml_cannot_build_is_invalid_yaml_in_frontmatter(
+    tmp_path: Path, front: str, said: str
+) -> None:
+    raw = f"---\n{front}\n---\nBody\n"
+    path = tmp_path / "x.md"
+    pattern = rf"frontmatter: invalid YAML in .*x\.md: {said}"
+    with pytest.raises(ConfigurationError, match=pattern):
+        description(raw, path)
+    with pytest.raises(ConfigurationError, match=pattern):
+        parse_frontmatter_doc(raw, model=_Front, source=path, label="file")

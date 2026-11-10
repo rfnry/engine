@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.manifest import (
@@ -104,10 +105,11 @@ def _file(root: Path, text: str) -> Path:
 
 
 def _refused(root: Path, pattern: str) -> str:
-    with pytest.raises(ConfigurationError, match=pattern) as raised:
+    with pytest.raises(ConfigurationError) as raised:
         read_manifest(root)
-    said = str(raised.value)
+    said = str(raised.value).replace(str(root), "<root>")
     assert said.startswith("manifest: ")
+    assert re.search(pattern, said), said
     return said
 
 
@@ -166,7 +168,7 @@ def test_the_example_of_the_design_parses_as_written(tmp_path: Path) -> None:
 
 
 def test_a_missing_file_names_the_root(tmp_path: Path) -> None:
-    _refused(tmp_path, f"manifest: {re.escape(str(tmp_path))} holds no rfnry.yaml; ")
+    _refused(tmp_path, "manifest: <root> holds no rfnry.yaml; ")
 
 
 def test_a_manifest_that_cannot_be_read_is_refused(tmp_path: Path) -> None:
@@ -176,7 +178,7 @@ def test_a_manifest_that_cannot_be_read_is_refused(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("text", ["", "# only a comment\n", "- a\n", "just words\n"])
 def test_a_file_that_holds_no_keys_is_refused(tmp_path: Path, text: str) -> None:
-    _refused(_file(tmp_path, text), "holds no keys")
+    _refused(_file(tmp_path, text), "manifest: <root>/rfnry.yaml holds no keys")
 
 
 @pytest.mark.parametrize(
@@ -193,14 +195,32 @@ def test_broken_yaml_names_the_line_of_the_file(tmp_path: Path, text: str, line:
 
 def test_an_unknown_key_names_its_path_and_what_is_allowed(tmp_path: Path) -> None:
     agent = {**GENERATION, "tools": {"exlude": ["x"]}}
-    said = _refused(write_folder(tmp_path, {"a": agent}), r"agents\.a\.tools\.exlude")
-    assert "include" in said
-    assert "max_parallel" in said
+    _refused(
+        write_folder(tmp_path, {"a": agent}),
+        r"agents\.a\.tools\.exlude \(it takes include, exclude, timeout, max_parallel\)",
+    )
+
+
+@pytest.mark.parametrize("empty", [[], None, "", "  "])
+def test_an_unknown_key_with_no_value_names_what_is_allowed(tmp_path: Path, empty: Any) -> None:
+    agent = {**GENERATION, "tools": {"exlude": empty}}
+    _refused(
+        write_folder(tmp_path, {"a": agent}),
+        r"agents\.a\.tools\.exlude \(it takes include, exclude, timeout, max_parallel\)",
+    )
+
+    tool = {"module": "tools/x.py", "timout": empty}
+    _refused(
+        write_folder(tmp_path, {"a": GENERATION}, tools={"x": tool}),
+        r"tools\.x\.timout \(it takes module, function, description, schema, timeout\)",
+    )
 
 
 def test_an_unknown_key_at_the_top_names_the_top_keys(tmp_path: Path) -> None:
-    said = _refused(_file(tmp_path, f"versoin: 1\n{MINIMAL}"), r"versoin")
-    assert "version, workers, tools, agents" in said
+    _refused(
+        _file(tmp_path, f"versoin: 1\n{MINIMAL}"),
+        r"versoin \(it takes version, workers, tools, agents\)",
+    )
 
 
 @pytest.mark.parametrize(
@@ -234,14 +254,12 @@ def test_an_unknown_key_at_the_top_names_the_top_keys(tmp_path: Path) -> None:
 def test_an_unknown_key_is_named_at_every_level(
     tmp_path: Path, agent: dict[str, Any], path: str, allowed: str
 ) -> None:
-    said = _refused(write_folder(tmp_path, {"a": agent}), path)
-    assert allowed in said
+    _refused(write_folder(tmp_path, {"a": agent}), rf"{path} \(it takes [^)]*\b{allowed}\b")
 
 
 def test_an_unknown_key_of_a_worker_names_the_keys_of_a_worker(tmp_path: Path) -> None:
     folder = write_folder(tmp_path, {"a": GENERATION}, workers={"default": {"proceses": 2}})
-    said = _refused(folder, r"workers\.default\.proceses")
-    assert "max_result_bytes" in said
+    _refused(folder, r"workers\.default\.proceses \(it takes [^)]*max_result_bytes")
 
 
 def test_every_unknown_key_is_named_at_once(tmp_path: Path) -> None:
@@ -289,7 +307,9 @@ def test_a_section_with_no_value_says_nothing(tmp_path: Path, key: str, empty: A
 def test_a_top_level_mapping_with_no_value_says_nothing(
     tmp_path: Path, key: str, empty: str
 ) -> None:
-    _refused(_file(tmp_path, f"{key}:{empty}\n{MINIMAL}"), rf"\b{key}\b.* says nothing")
+    _refused(
+        _file(tmp_path, f"{key}:{empty}\n{MINIMAL}"), rf"manifest: {key} in <root>.* says nothing"
+    )
 
 
 @pytest.mark.parametrize(
@@ -304,7 +324,9 @@ def test_a_top_level_mapping_with_no_value_says_nothing(
 )
 def test_a_value_that_says_nothing_is_refused(tmp_path: Path, dotted: str, value: Any) -> None:
     agent = {**GENERATION, **_nested(dotted, value)}
-    _refused(write_folder(tmp_path, {"a": agent}), re.escape(f"agents.a.{dotted}"))
+    _refused(
+        write_folder(tmp_path, {"a": agent}), re.escape(f"agents.a.{dotted}") + r".* says nothing"
+    )
 
 
 def test_a_mode_with_no_value_says_nothing(tmp_path: Path) -> None:
@@ -324,10 +346,27 @@ def test_a_mode_with_no_value_says_nothing(tmp_path: Path) -> None:
             "version: 1\nagents:\n  a:\n    kind: generation\n    <<: {model: m}\n    instructions: a.md\n",
             5,
         ),
+        ("version: 1\nagents:\n  &name a: {kind: generation, model: m, instructions: a.md}\n", 3),
+        (
+            "version: 1\nagents:\n  a: {kind: generation, model: m, instructions: a.md}\n  *name : {kind: generation, model: m, instructions: b.md}\n",
+            4,
+        ),
+        (
+            "version: 1\nagents:\n  a:\n    kind: generation\n    model: m\n    instructions: a.md\n    modes:\n      m:\n        <<: {model: n}\n",
+            9,
+        ),
+        (
+            "version: 1\ntools:\n  x:\n    <<: {module: x.py}\nagents:\n  a: {kind: generation, model: m, instructions: a.md}\n",
+            4,
+        ),
+        (
+            "version: 1\nworkers:\n  w:\n    <<: {processes: 1}\nagents:\n  a: {kind: generation, model: m, instructions: a.md, worker: w}\n",
+            4,
+        ),
     ],
 )
 def test_anchors_aliases_and_merge_keys_are_refused(tmp_path: Path, text: str, line: int) -> None:
-    _refused(_file(tmp_path, text), rf"line {line}\b")
+    _refused(_file(tmp_path, text), rf"at line {line}\b")
 
 
 def test_a_merge_key_says_to_write_the_keys_out(tmp_path: Path) -> None:
@@ -340,7 +379,7 @@ def test_an_anchored_list_item_is_refused(tmp_path: Path) -> None:
         "version: 1\nagents:\n  a:\n    kind: generation\n    model: m\n    instructions: a.md\n"
         "    tools:\n      include: [&one x]\n"
     )
-    _refused(_file(tmp_path, text), r"line 8\b")
+    _refused(_file(tmp_path, text), r"at line 8\b")
 
 
 def test_a_bare_star_starts_an_alias_and_is_refused(tmp_path: Path) -> None:
@@ -348,7 +387,27 @@ def test_a_bare_star_starts_an_alias_and_is_refused(tmp_path: Path) -> None:
         "version: 1\nagents:\n  a:\n    kind: generation\n    model: m\n    instructions: a.md\n"
         "    tools: {include: [*]}\n"
     )
-    _refused(_file(tmp_path, text), r"line 7\b.*quote a value")
+    _refused(_file(tmp_path, text), r"at line 7\b.*quote a value")
+
+
+def test_an_alias_says_to_quote_a_pattern(tmp_path: Path) -> None:
+    text = _with("tools: {include: [*_lookup]}")
+    _refused(_file(tmp_path, text), r"at line 3 is refused; quote it if it is a pattern")
+
+
+def test_an_anchor_says_nothing_of_patterns(tmp_path: Path) -> None:
+    said = _refused(
+        _file(tmp_path, _with("description: &x text")),
+        r"at line 3 is refused; write the value out where it is used",
+    )
+    assert "pattern" not in said
+
+
+def test_a_bare_ampersand_says_to_quote_it(tmp_path: Path) -> None:
+    _refused(
+        _file(tmp_path, _with("description: & more")),
+        r"at line 3\b.*quote a value that starts with \* or &",
+    )
 
 
 def test_a_quoted_star_is_a_pattern(tmp_path: Path) -> None:
@@ -385,6 +444,49 @@ def test_duplicate_keys_and_yes_no_booleans_stay_strict(
     _refused(_file(tmp_path, text), said)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-13-45",
+        "9" * 5000,
+        "!!int nope",
+        '!!int ""',
+        "!!float nope",
+        "!!bool nope",
+        "!!timestamp nope",
+        "!!set [1]",
+    ],
+)
+def test_a_value_yaml_cannot_build_is_invalid_yaml(tmp_path: Path, value: str) -> None:
+    _refused(
+        _file(tmp_path, _with(f"description: {value}")),
+        r"manifest: invalid YAML in <root>/rfnry\.yaml: a value cannot be read: .*; quote it",
+    )
+
+
+@pytest.mark.parametrize("innermost", ["x", ""])
+def test_deep_nesting_is_refused(tmp_path: Path, innermost: str) -> None:
+    deep = "[" * 3000 + innermost + "]" * 3000
+    _refused(
+        _file(tmp_path, _with(f"description: {deep}")), r"manifest: <root>.* nested too deeply"
+    )
+
+
+def test_deep_nesting_under_an_unknown_key_names_the_key(tmp_path: Path) -> None:
+    deep = "[" * 3000 + "x" + "]" * 3000
+    _refused(_file(tmp_path, _with(f"extra: {deep}")), r"agents\.a\.extra \(it takes")
+
+
+def test_a_document_too_deep_to_load_is_invalid_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def too_deep(*args: Any, **kwargs: Any) -> None:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(yaml, "load", too_deep)
+    _refused(_file(tmp_path, MINIMAL), r"manifest: invalid YAML in <root>.* nested too deeply")
+
+
 def test_true_and_false_are_the_booleans(tmp_path: Path) -> None:
     entry = read_manifest(
         _file(tmp_path, _with("workspace: true, files: {gitignore: false}"))
@@ -396,7 +498,7 @@ def test_true_and_false_are_the_booleans(tmp_path: Path) -> None:
 @pytest.mark.parametrize("version", ["2", '"1"', "true", "1.0", "0"])
 def test_the_version_must_be_1(tmp_path: Path, version: str) -> None:
     text = MINIMAL.replace("version: 1", f"version: {version}")
-    _refused(_file(tmp_path, text), r"version")
+    _refused(_file(tmp_path, text), r"version: write version: 1, got")
 
 
 def test_the_version_is_required(tmp_path: Path) -> None:
@@ -404,11 +506,15 @@ def test_the_version_is_required(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "text",
-    ["version: 1\n", "version: 1\nagents:\n", "version: 1\nagents: {}\n"],
+    ("text", "said"),
+    [
+        ("version: 1\n", r"agents: field required"),
+        ("version: 1\nagents:\n", r"manifest: agents in <root>.* says nothing"),
+        ("version: 1\nagents: {}\n", r"manifest: agents in <root>.* says nothing"),
+    ],
 )
-def test_at_least_one_agent_is_required(tmp_path: Path, text: str) -> None:
-    _refused(_file(tmp_path, text), r"agents")
+def test_at_least_one_agent_is_required(tmp_path: Path, text: str, said: str) -> None:
+    _refused(_file(tmp_path, text), said)
 
 
 DECISION_REFUSES: list[tuple[str, Any, str]] = [
@@ -519,6 +625,84 @@ def test_two_dots_inside_a_name_are_not_a_path_going_up(tmp_path: Path) -> None:
     assert entry.instructions == "a..b/c..d.md"
 
 
+def _with_name(root: Path, where: str, name: str) -> tuple[Path, str]:
+    if where == "agents":
+        return write_folder(root, {name: GENERATION}), f"agents.{name}"
+    if where == "workers":
+        return write_folder(
+            root, {"a": GENERATION}, workers={name: {"processes": 1}}
+        ), f"workers.{name}"
+    if where == "tools":
+        return write_folder(
+            root, {"a": GENERATION}, tools={name: {"module": "x.py"}}
+        ), f"tools.{name}"
+    agent = {**GENERATION, "modes": {name: {"model": "n"}}}
+    return write_folder(root, {"a": agent}), f"agents.a.modes.{name}"
+
+
+@pytest.mark.parametrize("bad", ["", " ", " a", "a ", ".a", "a/b"])
+@pytest.mark.parametrize("where", ["agents", "workers", "tools", "modes"])
+def test_a_name_is_one_plain_word(tmp_path: Path, where: str, bad: str) -> None:
+    folder, path = _with_name(tmp_path, where, bad)
+    said = _refused(folder, re.escape(f"manifest: {path} in <root>") + ".* is not a plain name")
+    assert repr(bad) in said
+
+
+@pytest.mark.parametrize("name", ["a", "a.b", "a-b", "a_b", "a b"])
+@pytest.mark.parametrize("where", ["agents", "tools", "modes"])
+def test_a_plain_name_loads(tmp_path: Path, where: str, name: str) -> None:
+    folder, _ = _with_name(tmp_path, where, name)
+    assert read_manifest(folder).version == 1
+
+
+@pytest.mark.parametrize("on_mode", [False, True])
+@pytest.mark.parametrize("model", [" m", "m ", " m "])
+def test_a_padded_model_is_refused(tmp_path: Path, model: str, on_mode: bool) -> None:
+    agent, path = _agent("model", model, on_mode, GENERATION)
+    _refused(write_folder(tmp_path, {"a": agent}), re.escape(path) + ": model must not be padded")
+
+
+@pytest.mark.parametrize("on_mode", [False, True])
+@pytest.mark.parametrize("model", ["", "  "])
+def test_a_blank_model_says_nothing(tmp_path: Path, model: str, on_mode: bool) -> None:
+    agent, path = _agent("model", model, on_mode, GENERATION)
+    _refused(write_folder(tmp_path, {"a": agent}), re.escape(path) + r" in <root>.* says nothing")
+
+
+@pytest.mark.parametrize(
+    ("dotted", "value", "base"),
+    [
+        ("instructions", "  ", GENERATION),
+        ("files.include", ["  "], GENERATION),
+        ("files.exclude", ["  "], GENERATION),
+        ("files.preload", ["  "], GENERATION),
+        ("skills.include", ["  "], GENERATION),
+        ("skills.exclude", ["  "], GENERATION),
+        ("skills.preload", ["  "], GENERATION),
+        ("skills.public", ["  "], GENERATION),
+        ("tools.include", ["  "], GENERATION),
+        ("tools.exclude", ["  "], GENERATION),
+        ("orchestration.delegate_to", ["  "], GENERATION),
+        ("worker", "  ", GENERATION),
+        ("questions", ["  "], DECISION),
+    ],
+)
+def test_a_whitespace_only_path_or_name_says_nothing(
+    tmp_path: Path, dotted: str, value: Any, base: dict[str, Any]
+) -> None:
+    agent = {**base, **_nested(dotted, value)}
+    _refused(
+        write_folder(tmp_path, {"a": agent}), re.escape(f"agents.a.{dotted}") + r".* says nothing"
+    )
+
+
+@pytest.mark.parametrize("key", ["module", "schema", "function"])
+def test_a_whitespace_only_field_of_a_tool_says_nothing(tmp_path: Path, key: str) -> None:
+    tool = {"module": "tools/x.py", key: "  "}
+    folder = write_folder(tmp_path, {"a": GENERATION}, tools={"x": tool})
+    _refused(folder, rf"tools\.x\.{key} in <root>.* says nothing")
+
+
 def test_a_tool_or_skill_name_is_not_a_path(tmp_path: Path) -> None:
     agent = {
         **GENERATION,
@@ -626,7 +810,8 @@ def test_a_tool_entry_takes_what_the_design_lists(tmp_path: Path) -> None:
         write_folder(tmp_path, {"a": GENERATION}, tools={"x": {"modul": "tools/x.py"}}),
         r"tools\.x\.modul\b",
     )
-    assert "schema" in said and "schema_file" not in said
+    assert "function, description, schema, timeout" in said
+    assert "schema_file" not in said
 
 
 def test_the_field_name_of_the_schema_is_not_a_key(tmp_path: Path) -> None:
