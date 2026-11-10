@@ -41,9 +41,9 @@ class Jail:
         try:
             target = self._joined(path).resolve()
         except (ValueError, OSError) as exc:
-            raise InputError(f"jail: path outside the agent directory: {path}") from exc
+            raise InputError(f"jail: path outside the folder: {path}") from exc
         if not any(target == place or place in target.parents for place in (self.root, *self.also)):
-            raise InputError(f"jail: path outside the agent directory: {path}")
+            raise InputError(f"jail: path outside the folder: {path}")
         return target
 
     def open(self, path: str | Path, flags: int = os.O_RDONLY, mode: int = 0o666) -> int:
@@ -56,7 +56,7 @@ class Jail:
         try:
             found = os.fstat(parent)
             if (found.st_dev, found.st_ino) != self._identities.get(place):
-                raise InputError(f"jail: path outside the agent directory: {path}")
+                raise InputError(f"jail: path outside the folder: {path}")
             for folder in folders:
                 if flags & os.O_CREAT:
                     with contextlib.suppress(FileExistsError):
@@ -81,7 +81,7 @@ def _at(path: str | Path, name: str, flags: int, mode: int, parent: int) -> int:
         return os.open(name, flags, mode, dir_fd=parent)
     except OSError as exc:
         if exc.errno in (errno.ELOOP, errno.ENOTDIR) and _link(name, parent):
-            raise InputError(f"jail: path outside the agent directory: {path}") from None
+            raise InputError(f"jail: path outside the folder: {path}") from None
         raise
 
 

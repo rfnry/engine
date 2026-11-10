@@ -50,7 +50,7 @@ def read(fd: int) -> bytes:
 
 
 def refused(path: str) -> str:
-    return f"^jail: path outside the agent directory: {re.escape(path)}$"
+    return f"^jail: path outside the folder: {re.escape(path)}$"
 
 
 def swap_after_the_check(monkeypatch: pytest.MonkeyPatch, swap: Callable[[], None]) -> None:
@@ -281,7 +281,7 @@ def test_preload_refuses_a_folder_swapped_for_a_link_between_check_and_open(
     with pytest.raises(
         ConfigurationError,
         match=r"^compiled: agent 'coding' cannot preload: "
-        r"jail: path outside the agent directory: notes/style\.md; fix that file, or drop it from files\.preload$",
+        r"jail: path outside the folder: notes/style\.md; fix that file, or drop it from files\.preload$",
     ):
         load_folder(coding)
     assert (coding / "notes").is_symlink()

@@ -702,8 +702,8 @@ async def test_a_delegated_run_that_does_not_offer_a_kept_name_is_a_tool_error_a
         calling(("Delegate", {"agent": "drafter", "input": "draft"})), text_reply("done")
     )
     said = (
-        "tools/engine_tools: agent 'drafter' keeps 'remember' in tools:, which this run does not "
-        "offer; its tools are Glob, Grep, LS, Load, Read"
+        "tools/engine_tools: agent 'drafter' lists 'remember' in tools.include, which this run "
+        "does not offer; its tools are Glob, Grep, LS, Load, Read"
     )
     async with Engine(
         tmp_path, providers=provided({"strong": llm, "judge": Answering()})

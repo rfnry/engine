@@ -5,13 +5,15 @@ import inspect
 import json
 import re
 import shutil
+import subprocess
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
+import yaml
 from pydantic import BaseModel, Field
 
 import rfnry_engine
@@ -25,6 +27,7 @@ from rfnry_engine import (
     Refinery,
     Reply,
     ScoreAnswer,
+    SpokenLine,
     State,
     Storage,
     Tool,
@@ -34,6 +37,7 @@ from rfnry_engine import (
     Workspace,
 )
 from rfnry_engine.compiled import load_folder
+from rfnry_engine.manifest import MANIFEST
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.engine_tools import EngineTools
 
@@ -44,8 +48,19 @@ BLOCKS: list[tuple[str, str]] = re.findall(
     r"```(\w*)\n(.*?)```", DOCS.read_text(encoding="utf-8"), re.S
 )
 PYTHON = [body for lang, body in BLOCKS if lang == "python"]
+YAML = [body for lang, body in BLOCKS if lang == "yaml"]
 LOOKUP = next(body for lang, body in BLOCKS if lang == "json" and "Fetch an order" in body)
 SCRIPT = next(body for body in PYTHON if body.startswith("import json\n"))
+REFUND_SCHEMA = next(
+    body for lang, body in BLOCKS if lang == "json" and "Refund one charge" in body
+)
+REFUND = next(body for body in PYTHON if body.startswith("import payments\n"))
+CLI = next(body for body in PYTHON if body.startswith("import argparse\n"))
+CONFTEST = next(body for body in PYTHON if "def check():" in body.splitlines())
+REFUND_TEST = next(
+    body for body in PYTHON if body.startswith("from types import SimpleNamespace\n")
+)
+DECLARED = next(body for body in YAML if "module: billing/tools/refund.py" in body)
 KINDS = ("choice", "score", "check")
 QUESTIONS = [
     body for lang, body in BLOCKS if lang == "json" and json.loads(body).get("type") in KINDS
@@ -73,15 +88,17 @@ def asked(start: str) -> str:
 
 
 ILLUSTRATIVE = {
-    "async def session(start: VoiceStart) -> Spoken:": "needs rfnry-senses and a live model; tests/unit/test_voice.py runs this path",
     "class Conversation:": "needs a database pool; a list stands in for it in the block above",
     "refinery = Refinery(PostgresStorage(pool))": "needs a Postgres pool; the integration tier runs PostgresStorage",
     'memory_pool = await asyncpg.create_pool(dsn, server_settings={"search_path": "memory, public"})': "needs a Postgres pool and rfnry-memory",
     'pool = await asyncpg.create_pool(dsn, server_settings={"search_path": "engine"})': "needs a Postgres pool; the integration tier runs the command and check()",
     "class PerRun:": "needs agents that declare `workspace: true`",
     "jobs = {}": "needs a model that calls start and then check",
-    "import json": "a tool script, which the test tree holds as support/tools/lookup_order.py",
-    "import _client": "a tool script, which runs in a worker beside its helper _client.py",
+    'ORDERS = os.environ["ORDERS_URL"]': "a tool script, which the test tree holds as support/tools/lookup_order.py",
+    "async def run(args, call):": "a tool script, which test_the_refund_tool_runs_in_a_worker_from_a_shell_and_under_its_tests runs",
+    "import argparse": "_cli.py, which the refund tool's footer runs from a shell",
+    "def check():": "a conftest.py beside the tools, which pytest runs with refund_test.py",
+    "from types import SimpleNamespace": "refund_test.py, which pytest runs beside the refund tool",
     "from json import load": "a question's script, which the test tree holds as matcher/questions/order.py",
     "import json, os, socket": "a script a workspace command runs, which the coder's Shell runs as solve.py",
 }
@@ -108,14 +125,23 @@ class Setup:
     replies: tuple[Reply, ...] = ()
     intent: str = "billing"
     replace: dict[str, str] = field(default_factory=dict)
+    amend: dict[str, dict[str, Any]] = field(default_factory=dict)
 
+
+MODELS = {
+    "strong": {"provider": "anthropic", "model": "claude-opus-5-5", "effort": "high"},
+    "fast": {"provider": "anthropic", "model": "claude-sonnet-5-5"},
+    "judge": {"provider": "classifier"},
+    "voice-live": {"provider": "live"},
+}
 
 SETUPS = {
-    'engine = Engine(root, providers={"strong": strong, "fast": fast, "judge": judge})': Setup(
+    "import os": Setup(
         replace={
-            '"judge": judge})': (
-                '"judge": judge})\nassert list(engine.models) == ["strong", "fast", "judge"]\n'
-                "assert (await engine.run('drafter', 'acme', 'x')).model == 'fast-1'"
+            '"live": live})': (
+                '"live": live})\nrun = await engine.run("drafter", "acme", "Draft it")\n'
+                'assert list(engine.models) == ["strong", "fast", "judge", "voice-live"]\n'
+                'assert run.model == "claude-sonnet-5-5" and anthropic.cache_info().currsize == 1'
             )
         }
     ),
@@ -123,9 +149,26 @@ SETUPS = {
         replace={
             'models={"fast": fast_llm})': (
                 'models={"fast": fast_llm})\n'
-                "assert run.model == 'fast-1' and list(engine.models) == ['strong', 'fast', 'judge']"
+                "assert run.model == 'fast-1' and list(engine.models) == list(MODELS)"
             )
         }
+    ),
+    "async def session(start: VoiceStart) -> Spoken:": Setup(
+        replace={
+            "approve=gate)": (
+                "approve=gate)\nassert run.mode == 'duplex' and run.model == 'live-1'\n"
+                "assert [s.tool for s in run.steps] == ['consult'] and run.steps[0].approved\n"
+                "assert [line.text for line in run.transcript] == ['Was I charged twice?', 'ok']"
+            )
+        }
+    ),
+    "class InvoiceArgs(BaseModel):": Setup(
+        amend={"support": {"tools": {"include": ["lookup_order", "fetch_invoice"]}}},
+        replace={
+            "tools=invoicing)": (
+                "tools=invoicing)\nassert 'fetch_invoice' in [tool.name for tool in run.tools]"
+            )
+        },
     ),
     "class Budget:": Setup(
         replies=(delegating("triage"),),
@@ -235,6 +278,40 @@ class Answering:
         return {qid: self.answer(qid, question) for qid, question in questions.items()}
 
 
+class Messages:
+    def __init__(self, key: str, *, model: str | None, effort: str | None) -> None:
+        self.key, self.model, self.effort = key, model, effort
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        return Reply(text="drafted", model=self.model)
+
+
+class Live:
+    model = "live-1"
+
+    async def open(self, *, tools: list[ToolSpec], instructions: str | None) -> object:
+        return object()
+
+
+class Session:
+    def __init__(self, transport: object, *, live: object, instructions: str) -> None:
+        self.live, self.instructions = live, instructions
+
+    async def start(self, tools: Tools) -> None:
+        self.heard = await tools.dispatch("consult", {"input": "Was I charged twice?"})
+
+
+async def until_it_ends(session: Session) -> list[SpokenLine]:
+    return [
+        SpokenLine(speaker="person", text="Was I charged twice?"),
+        SpokenLine(speaker="assistant", text=str(session.heard)),
+    ]
+
+
+async def gate(agent: str, call: ToolCall) -> bool:
+    return True
+
+
 def write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -260,7 +337,7 @@ def decision(name: str, **entry: Any) -> dict[str, Any]:
         "model": "judge",
         "description": f"The {name} agent",
         "instructions": f"{name}/instructions.md",
-        "questions": [f"{name}/questions/*.json"],
+        "questions": [f"{name}/*.json"],
         **entry,
     }
 
@@ -294,6 +371,14 @@ AGENTS: dict[str, dict[str, Any]] = {
     "triage": decision("triage"),
     "matcher": decision("matcher"),
     "judge": decision("judge"),
+    "voice": {
+        "kind": "voice",
+        "model": "voice-live",
+        "description": "Talks with a person and consults another agent for facts",
+        "instructions": "voice/instructions.md",
+        "tools": {"include": ["consult"]},
+        "modes": {"duplex": {"instructions": "voice/instructions_duplex.md"}},
+    },
 }
 
 
@@ -302,7 +387,7 @@ def tree(root: Path) -> None:
     write_folder(
         root,
         AGENTS,
-        models={name: {"provider": name} for name in ("strong", "fast", "judge")},
+        models=MODELS,
         tools={
             "lookup_order": {
                 "module": "support/tools/lookup_order.py",
@@ -311,21 +396,20 @@ def tree(root: Path) -> None:
         },
         files={
             **{f"{name}/instructions.md": "" for name in AGENTS},
+            "voice/instructions_duplex.md": "You run your own turns.\n",
             "support/instructions.md": "You are the support desk for Acme. Be brief, be exact, cite the rule you are applying.\n",
             "support/knowledge/refunds.md": "---\ndescription: When a refund is owed\n---\nA double charge is refunded in full.\n",
             "support/tools/lookup_order.json": LOOKUP,
             "support/tools/lookup_order.py": SCRIPT,
             "support/skills/escalate/SKILL.md": "---\ndescription: Hand a conversation to a person\n---\nSay so, then stop.\n",
-            "frontdesk/questions/intent.json": asked(
-                "Which department should handle this message?"
-            ),
-            "triage/questions/urgent.json": asked("Does the message need a person right now?"),
-            "triage/questions/severity.json": asked("How severe is the problem?"),
-            "matcher/questions/order.json": ORDER,
-            "matcher/questions/order.py": FILLS,
-            "judge/questions/grounded.json": question("check"),
-            "judge/questions/rule.json": question("check"),
-            "judge/questions/done.json": question(
+            "frontdesk/intent.json": asked("Which department should handle this message?"),
+            "triage/urgent.json": asked("Does the message need a person right now?"),
+            "triage/severity.json": asked("How severe is the problem?"),
+            "matcher/order.json": ORDER,
+            "matcher/order.py": FILLS,
+            "judge/grounded.json": question("check"),
+            "judge/rule.json": question("check"),
+            "judge/done.json": question(
                 "score", levels=["Not addressed", "Partly", "Fully", "Fully and confirmed"]
             ),
         },
@@ -348,6 +432,13 @@ async def ask_a_person(agent: str, call: ToolCall) -> bool:
     return call.name == "Shell" and call.args == {"command": "echo hi"}
 
 
+def providing(strong: Any, fast: Any, judge: Any, live: Any) -> dict[str, Any]:
+    def anthropic(model: str | None, effort: str | None, /) -> Any:
+        return fast if model == MODELS["fast"]["model"] else strong
+
+    return {"anthropic": anthropic, **provided({"classifier": judge, "live": live})}
+
+
 async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, Any]:
     root = tmp_path / "agents"
     tree(root)
@@ -356,27 +447,37 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
     refinery = Refinery(storage)
     recorded = Engine(
         root,
-        providers=provided({"strong": Model(), "fast": Model(), "judge": Answering("billing")}),
+        providers=providing(Model(), Model(), Answering("billing"), Live()),
         refinery=refinery,
     )
-    llm, dm = Model(*setup.replies), Answering(setup.intent)
+    run = await recorded.run("support", "acme", "My invoice was charged twice.")
+    decided = await recorded.run("frontdesk", "acme", "It is down")
+    for agent, sections in setup.amend.items():
+        amend(root, agent, **sections)
+    llm, dm, live_model = Model(*setup.replies), Answering(setup.intent), Live()
     fast_llm = Model(Reply(text="drafted", stop_reason="end_turn", model="fast-1"))
-    providers = provided({"strong": llm, "fast": fast_llm, "judge": dm})
+    providers = providing(llm, fast_llm, dm, live_model)
     return {
         **{name: getattr(rfnry_engine, name) for name in rfnry_engine.__all__},
         "Path": Path,
         "BaseModel": BaseModel,
         "Field": Field,
         "asyncio": asyncio,
+        "MODELS": MODELS,
         "root": root,
         "llm": llm,
         "strong_llm": llm,
         "fast_llm": fast_llm,
         "dm": dm,
+        "live_model": live_model,
         "providers": providers,
-        "strong": providers["strong"],
-        "fast": providers["fast"],
-        "judge": providers["judge"],
+        "classifier": providers["classifier"],
+        "live": providers["live"],
+        "Messages": Messages,
+        "Session": Session,
+        "transport": object(),
+        "until_it_ends": until_it_ends,
+        "gate": gate,
         "refinery": refinery,
         "engine": Engine(root, providers=providers, refinery=refinery),
         "invoices": Invoices(),
@@ -387,8 +488,8 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
         "message": "My invoice was charged twice.",
         "text": "It is down",
         "history": [],
-        "run": await recorded.run("support", "acme", "My invoice was charged twice."),
-        "decision": await recorded.run("frontdesk", "acme", "It is down"),
+        "run": run,
+        "decision": decided,
         "last_watermark": None,
         "ask_a_person": ask_a_person,
         "workspace": Workspace(Local(tmp_path / "work"), scope="acme"),
@@ -449,6 +550,7 @@ async def test_docs_example_runs(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ORDERS_URL", (tmp_path / "orders").as_uri())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a key of the test's")
     setup = SETUPS.get(first_line(block), Setup())
     for old, new in setup.replace.items():
         block = block.replace(old, new)
@@ -530,9 +632,7 @@ async def test_the_tool_of_getting_started_runs_in_its_worker_as_written(
     tree(root)
     write(tmp_path / "orders/acme/orders/A-1001", json.dumps({"status": "shipped"}))
     monkeypatch.setenv("ORDERS_URL", (tmp_path / "orders").as_uri())
-    async with Engine(
-        root, providers=provided({"strong": None, "fast": None, "judge": None})
-    ) as engine:
+    async with Engine(root, providers=providing(None, None, None, None)) as engine:
         surface = EngineTools(engine, agent="support", scope="acme")
         found = await surface.dispatch("lookup_order", {"order_id": "A-1001"})
     assert found == {"status": "shipped"}
@@ -554,7 +654,7 @@ async def test_the_bridge_client_of_the_docs_calls_a_tool_from_a_command_as_writ
     llm = Model(Reply(tool_calls=[solve], stop_reason="tool_use"))
     async with (
         Workspace(Local(work), scope="acme") as workspace,
-        Engine(root, providers=provided({"strong": llm, "fast": None, "judge": None})) as engine,
+        Engine(root, providers=providing(llm, None, None, None)) as engine,
     ):
         run = await engine.run(
             "coder",
@@ -569,3 +669,153 @@ async def test_the_bridge_client_of_the_docs_calls_a_tool_from_a_command_as_writ
     ]
     assert isinstance(run.steps[1].result, str)
     assert json.loads(run.steps[1].result)["stdout"] == "shipped\n"
+
+
+SECTIONS = {"version", "workers", "models", "tools", "agents"}
+
+
+def _layers(entry: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return [entry, *entry.get("modes", {}).values()]
+
+
+def _completed(written: Mapping[str, Any]) -> dict[str, Any]:
+    document: dict[str, Any] = (
+        dict(written) if set(written) <= SECTIONS else {"agents": dict(written)}
+    )
+    document.setdefault("version", 1)
+    agents = dict(document.get("agents", {}))
+    named = [
+        layer["model"] for entry in agents.values() for layer in _layers(entry) if "model" in layer
+    ]
+    models = document.setdefault("models", {name: {"provider": name} for name in named})
+    first = next(iter(models))
+    for name in models:
+        if name not in named:
+            agents[f"on-{name}"] = {
+                "kind": "generation",
+                "model": name,
+                "instructions": f"{name}.md",
+            }
+    reached = [
+        name
+        for entry in list(agents.values())
+        for layer in _layers(entry)
+        for orchestration in [layer.get("orchestration", {})]
+        for name in [
+            *orchestration.get("delegate_to", []),
+            *orchestration.get("route", {}).get("to", {}).values(),
+        ]
+    ]
+    for name in reached:
+        agents.setdefault(
+            name, {"kind": "generation", "model": first, "instructions": f"{name}.md"}
+        )
+    document["agents"] = agents
+    return document
+
+
+def _touch(root: Path, path: str, text: str) -> None:
+    if not (root / path).exists():
+        write(root / path, text)
+
+
+def _under(pattern: str) -> str:
+    parts = [part.replace("**", "x").replace("*", "x") for part in pattern.split("/")]
+    return "/".join(parts if PurePosixPath(parts[-1]).suffix else [*parts, "x.md"])
+
+
+def _stubbed(root: Path, document: Mapping[str, Any]) -> None:
+    for name, tool in document.get("tools", {}).items():
+        _touch(
+            root,
+            tool["module"],
+            f"def {tool.get('function', 'run')}(args, call):\n    return {{}}\n",
+        )
+        if "schema" in tool:
+            schema = {"description": f"The {name} tool", "input_schema": {"type": "object"}}
+            _touch(root, tool["schema"], json.dumps(schema))
+    for entry in document["agents"].values():
+        route = entry.get("orchestration", {}).get("route")
+        for layer in _layers(entry):
+            if "instructions" in layer:
+                _touch(root, layer["instructions"], "")
+            files = layer.get("files", {})
+            for pattern in [
+                *files.get("include", []),
+                *files.get("preload", []),
+                *files.get("exclude", []),
+            ]:
+                _touch(root, _under(pattern), "")
+            skills = layer.get("skills", {})
+            public = skills.get("public", [])
+            names = [*(public if isinstance(public, list) else []), *skills.get("exclude", [])]
+            for pattern in [*skills.get("include", []), *skills.get("preload", [])]:
+                folder, _, last = pattern.rpartition("/")
+                held = [last]
+                if "*" in last:
+                    held = [name for name in names if "/" not in name] or ["x"]
+                for name in held:
+                    _touch(root, f"{folder}/{name}/SKILL.md", "")
+            for pattern in layer.get("questions", []):
+                asked = route["by"] if route else "q"
+                options = {
+                    option: option for option in [*(route["to"] if route else ["a"]), "other"]
+                }
+                path = pattern.replace("*", asked)
+                _touch(
+                    root,
+                    path,
+                    json.dumps({"type": "choice", "instructions": "Which?", "options": options}),
+                )
+
+
+@pytest.mark.parametrize("block", YAML, ids=lambda block: block.splitlines()[0])
+def test_every_rfnry_yaml_of_the_docs_loads(block: str, tmp_path: Path) -> None:
+    written = yaml.safe_load(block)
+    document = _completed(written)
+    whole = document == written
+    write(tmp_path / MANIFEST, block if whole else yaml.safe_dump(document, sort_keys=False))
+    _stubbed(tmp_path, document)
+    agents = load_folder(tmp_path)
+    shown = written.get("agents", {}) if set(written) <= SECTIONS else written
+    assert set(shown) <= set(agents)
+
+
+async def test_the_refund_tool_runs_in_a_worker_from_a_shell_and_under_its_tests(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "agents"
+    tools = root / "billing/tools"
+    write(root / MANIFEST, DECLARED)
+    write(root / "billing/instructions.md", "Refund a duplicate charge.\n")
+    for name, text in {
+        "refund.json": REFUND_SCHEMA,
+        "refund.py": REFUND,
+        "_cli.py": CLI,
+        "conftest.py": CONFTEST,
+        "refund_test.py": REFUND_TEST,
+        "payments.py": (
+            "from types import SimpleNamespace\n\n\n"
+            "async def refund(scope, charge_id, reference=None):\n"
+            "    return SimpleNamespace(id='re_1', status='succeeded')\n"
+        ),
+    }.items():
+        write(tools / name, text)
+    refunded = {"refund_id": "re_1", "status": "succeeded"}
+    async with Engine(root, providers=provided({"anthropic": Model()})) as engine:
+        surface = EngineTools(engine, agent="billing", scope="acme")
+        assert await surface.dispatch("refund", {"charge_id": "ch_81"}) == refunded
+
+    def shell(*argv: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, *argv], cwd=root, capture_output=True, text=True, check=False
+        )
+
+    command = next(body for lang, body in BLOCKS if lang == "sh" and "refund.py" in body).split()
+    assert command[:2] == ["python", "billing/tools/refund.py"]
+    ran = shell("billing/tools/refund.py", '{"charge_id": "ch_81"}', "--call", '{"scope": "acme"}')
+    assert ran.returncode == 0 and json.loads(ran.stdout) == refunded, ran.stderr
+    refused = shell("billing/tools/refund.py", '{"charge_id": "ch_81"}', "--call", "acme")
+    assert refused.returncode != 0 and refused.stdout == ""
+    tested = shell("-m", "pytest", "-q", "-p", "no:cacheprovider", "billing/tools")
+    assert tested.returncode == 0 and "2 passed" in tested.stdout, tested.stdout

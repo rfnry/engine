@@ -36,7 +36,7 @@ def test_the_searching_tools_do_not_name_a_section_the_agent_may_not_have() -> N
 
 async def test_read_inside_and_outside() -> None:
     assert "refunded in full" in await _tools().dispatch("Read", {"path": "rules/refunds.md"})
-    with pytest.raises(InputError, match="outside the agent directory"):
+    with pytest.raises(InputError, match="outside the folder"):
         await _tools().dispatch("Read", {"path": "../billing/instructions.md"})
 
 
@@ -103,18 +103,18 @@ def test_the_jail_refuses_dotdot_absolute_and_symlink_paths(escape: Path) -> Non
         "link.md",
         "linked/secret.md",
     ]:
-        with pytest.raises(InputError, match="outside the agent directory"):
+        with pytest.raises(InputError, match="outside the folder"):
             jail.resolve(path)
 
 
 async def test_no_builtin_reaches_through_a_symlink(escape: Path) -> None:
     tools = Tools(builtins(escape))
     for path in ["link.md", "linked/secret.md", "/etc/passwd"]:
-        with pytest.raises(InputError, match="outside the agent directory"):
+        with pytest.raises(InputError, match="outside the folder"):
             await tools.dispatch("Read", {"path": path})
-    with pytest.raises(InputError, match="outside the agent directory"):
+    with pytest.raises(InputError, match="outside the folder"):
         await tools.dispatch("Grep", {"pattern": "secret", "path": "linked"})
-    with pytest.raises(InputError, match="outside the agent directory"):
+    with pytest.raises(InputError, match="outside the folder"):
         await tools.dispatch("LS", {"path": "linked"})
     assert await tools.dispatch("Grep", {"pattern": "secret"}) == "rules/inside.md"
     assert (
@@ -251,7 +251,7 @@ async def test_load_follows_the_jail(media: Path, tmp_path: Path) -> None:
     (media / "knowledge" / "link.pdf").symlink_to(outside)
     tools = Tools([load_tool(media)])
     for path in ["knowledge/link.pdf", "../outside.pdf", str(outside)]:
-        with pytest.raises(InputError, match="outside the agent directory"):
+        with pytest.raises(InputError, match="outside the folder"):
             await tools.dispatch("Load", {"path": path})
 
 
@@ -479,7 +479,7 @@ def test_the_jail_takes_more_places(shelf: Path) -> None:
     assert jail.resolve("../books/python/async.md") == (shelf / "books/python/async.md").resolve()
     assert jail.also == [(shelf / "books").resolve()]
     for path in ["../writing/voice.md", "..", "../books/../writing/voice.md"]:
-        with pytest.raises(InputError, match="^jail: path outside the agent directory"):
+        with pytest.raises(InputError, match="^jail: path outside the folder"):
             jail.resolve(path)
 
 
@@ -662,7 +662,7 @@ async def test_an_absolute_path_outside_the_folder_is_outside_not_hidden(hidden:
     other = hidden.parent / ".other" / "x.md"
     other.parent.mkdir(exist_ok=True)
     other.write_text("x", encoding="utf-8")
-    with pytest.raises(InputError, match="outside the agent directory"):
+    with pytest.raises(InputError, match="outside the folder"):
         await Tools(builtins(hidden)).dispatch("Read", {"path": str(other)})
 
 
@@ -701,7 +701,7 @@ async def test_an_absolute_path_through_a_linked_ancestor_is_judged_inside_the_f
     assert await tools.dispatch("Read", {"path": str(spelled / "plain.md")}) == "plain"
     assert await tools.dispatch("Read", {"path": str(spelled / ".secret/up/plain.md")}) == "plain"
     assert await tools.dispatch("Read", {"path": str(spelled / "shown.md")}) == "TOKEN=1"
-    with pytest.raises(InputError, match="outside the agent directory"):
+    with pytest.raises(InputError, match="outside the folder"):
         await tools.dispatch("Read", {"path": str(tmp_path / "link" / ".other" / "x.md")})
 
 
@@ -839,7 +839,7 @@ async def test_a_path_holding_a_nul_is_outside_the_folder(tmp_path: Path, spelle
         (tools, "Grep", {"pattern": "a", "path": path}),
         (tools, "LS", {"path": path}),
     ]:
-        with pytest.raises(InputError, match="^jail: path outside the agent directory: "):
+        with pytest.raises(InputError, match="^jail: path outside the folder: "):
             await tool.dispatch(name, args)
 
 
@@ -923,7 +923,7 @@ async def test_ls_hides_a_link_that_leads_outside_every_folder_as_glob_and_the_m
     assert await tools.dispatch("Glob", {"pattern": "*"}) == "a.md"
     assert await tools.dispatch("LS", {}) == "a.md"
     for path in ["out.md", "outdir/x.md"]:
-        with pytest.raises(InputError, match="^jail: path outside the agent directory: "):
+        with pytest.raises(InputError, match="^jail: path outside the folder: "):
             await tools.dispatch("Read", {"path": path})
 
 
@@ -1030,7 +1030,7 @@ async def test_a_link_inside_a_hidden_folder_that_leads_outside_reports_hidden(
         "../.other/x.md",
         str(tmp_path / ".other" / "x.md"),
     ]:
-        with pytest.raises(InputError, match="^jail: path outside the agent directory: "):
+        with pytest.raises(InputError, match="^jail: path outside the folder: "):
             await tools.dispatch("Read", {"path": path})
 
 

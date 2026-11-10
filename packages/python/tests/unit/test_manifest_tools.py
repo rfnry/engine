@@ -742,7 +742,7 @@ async def test_a_bare_name_the_run_does_not_give_fails_before_any_model_call(
     folder = _folder(tmp_path, {}, {}, include=["absent"])
     model = Scripted(text_reply("done"))
     async with Engine(folder, providers=provided({"m": model})) as engine:
-        with pytest.raises(ConfigurationError, match=r"keeps 'absent' in tools:"):
+        with pytest.raises(ConfigurationError, match=r"lists 'absent' in tools\.include"):
             await engine.run("a", "acme", "go")
     assert model.calls == []
 

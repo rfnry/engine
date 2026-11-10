@@ -306,7 +306,7 @@ async def test_a_bare_name_the_run_does_not_give_fails_before_the_session_opens(
     tmp_path: Path,
 ) -> None:
     with_tools(tmp_path, "consult")
-    with pytest.raises(ConfigurationError, match="keeps 'consult' in tools:"):
+    with pytest.raises(ConfigurationError, match=r"lists 'consult' in tools\.include"):
         await engine_of(tmp_path).talk("voice", "acme", never)
 
 

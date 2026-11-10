@@ -43,6 +43,27 @@ def test_the_guide_proposes_no_rules_folder_and_no_task() -> None:
         assert "task=" not in text, doc.name
 
 
+REMOVED = (
+    "AGENT.md",
+    "`reads:`",
+    "reads: [",
+    "public_skills",
+    "RFNRY_AGENT",
+    "tools/<",
+    "skills/<",
+    "questions/",
+    "agent directory",
+    "Engine(root, models=",
+)
+
+
+def test_the_docs_name_no_removed_way_of_writing_a_folder() -> None:
+    for doc in (DOCS, API, GUIDE):
+        text = doc.read_text(encoding="utf-8")
+        named = [word for word in REMOVED if re.search(rf"(?<!\w){re.escape(word)}", text)]
+        assert named == [], doc.name
+
+
 def test_the_evaluation_guide_compiles_and_names_real_verbs() -> None:
     blocks = re.findall(r"```python\n(.*?)```", GUIDE.read_text(encoding="utf-8"), re.S)
     blocks = [textwrap.dedent(block) for block in blocks]
