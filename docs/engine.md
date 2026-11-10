@@ -272,8 +272,9 @@ run = await engine.run("drafter", "acme", "Draft it", models={"fast": fast_llm})
 A run's mapping is checked like the engine's, and a key left out stays the engine's. The kind check
 runs when the run starts, for the run's agent; a delegated or routed run is checked when it starts.
 Runs at once each keep their own adapters. `run.model` records what the reply reports, else the
-adapter's `model` attribute. `engine.tool(models=)` and `refinery.replay(models=)` take the same
-mapping; a run does not lend its models to an `engine.tool` it calls.
+adapter's `model` attribute. `engine.tool(models=)`, `refinery.replay(models=)` and
+`refinery.label(models=)` take the same mapping; a run does not lend its models to an
+`engine.tool` it calls.
 
 Fakes are enough to run everything in tests:
 
@@ -3098,7 +3099,8 @@ holds whitespace, a `public_skills:` entry that holds whitespace, an `AGENT.md` 
 a `model:` in plain text, or whose
 `kind:` is neither `generation` nor `decision`, a `models` that is not a mapping of names to
 adapters, given to the engine or a run, a model neither an agent nor a mode runs on, an agent
-whose model has not its kind's method, two agents with one name, an agent in `agents:` or `route:` the tree does not have, an unknown key in the
+whose model has not its kind's method, two agents with one name, an agent in `agents:` or
+`route:` the tree does not have, an unknown key in the
 frontmatter of an `AGENT.md` (`frontmatter: unknown key 'route.min_confidance' in
 agents/frontdesk/AGENT.md`), frontmatter that is not valid YAML or a `description:` that is not a
 string in a file the map would show or a skill, a decision agent with `preload:`, `workspace: true`,

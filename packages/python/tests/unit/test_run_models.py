@@ -6,13 +6,23 @@ import pytest
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
-from rfnry_engine.models import Image, Message, Reply, Text, ToolCall, ToolSpec
+from rfnry_engine.models import (
+    Answer,
+    CheckAnswer,
+    Image,
+    Message,
+    Reply,
+    ScoreAnswer,
+    Text,
+    ToolCall,
+    ToolSpec,
+)
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
 
-from .fakes import Answering, Scripted, delegating, text_reply
+from .fakes import Answering, Fixed, Scripted, delegating, text_reply
 from .trees import write_folder
 
 PNG = b"\x89PNG\r\n\x1a\ndiagram"
@@ -25,6 +35,24 @@ UNFIT: list[Any] = [
     {1: Scripted()},
     {"strong": object()},
 ]
+JUDGEMENT: dict[str, Answer] = {
+    "grounded": CheckAnswer(probability=0.9),
+    "done": ScoreAnswer(score=2, probabilities=[0.0, 0.1, 0.9]),
+}
+TRIAGE: dict[str, Answer] = {
+    "urgent": CheckAnswer(probability=0.6),
+    "severity": ScoreAnswer(score=1, probabilities=[0.2, 0.5, 0.2, 0.1]),
+}
+TAUGHT = Reply(
+    tool_calls=[
+        ToolCall(
+            id="t1",
+            name="Output",
+            args={"answers": {"urgent": True, "severity": 3}, "rationale": "An outage is urgent."},
+        )
+    ],
+    stop_reason="tool_use",
+)
 LOAD = Reply(
     tool_calls=[ToolCall(id="l1", name="Load", args={"path": "diagram.png"})],
     stop_reason="tool_use",
@@ -341,6 +369,38 @@ async def test_replay_takes_models(tmp_path: Path, storage: Storage) -> None:
     assert kept.calls == [] and kept_judge.calls == []
 
 
+async def test_label_takes_models(fixtures: Path, storage: Storage) -> None:
+    refinery = Refinery(storage)
+    production = Engine(
+        fixtures,
+        refinery=refinery,
+        models={"strong": Scripted(text_reply("Refunded.")), "judge": Fixed(TRIAGE)},
+    )
+    generated = await production.run("billing", "acme", "Charged twice.")
+    decided = await production.run("triage", "acme", {"message": "It is down"})
+    engine = Engine(fixtures, models={})
+    bare = await refinery.label("acme", engine, judge="judge", teacher="teacher")
+    assert (bare.judged, bare.taught) == (0, 0)
+    assert set(bare.errors) == {generated.run_id, decided.run_id}
+    assert NOT_GIVEN in bare.errors[generated.run_id]
+    judge, teacher = Fixed(JUDGEMENT), Scripted(TAUGHT)
+    labeled = await refinery.label(
+        "acme",
+        engine,
+        judge="judge",
+        teacher="teacher",
+        models={"strong": teacher, "judge": judge},
+    )
+    assert (labeled.judged, labeled.taught, labeled.errors) == (1, 1, {})
+    assert len(judge.calls) == 1 and len(teacher.calls) == 1
+    assert [row.run_id for row in await storage.labels("acme", source="judge")] == [
+        generated.run_id
+    ]
+    assert [row.run_id for row in await storage.labels("acme", source="teacher")] == [
+        decided.run_id
+    ]
+
+
 async def test_a_model_only_a_mode_names_can_be_given_to_the_engine_or_the_run(
     tmp_path: Path,
 ) -> None:
@@ -386,6 +446,8 @@ async def test_models_that_do_not_fit_are_refused_where_they_are_given(
         EngineTools(engine, agent="lead", scope="acme", models=models)
     with pytest.raises(ConfigurationError, match="^engine: "):
         Refinery(storage).replay("acme", engine, agent="lead", models=models)
+    with pytest.raises(ConfigurationError, match="^engine: "):
+        await Refinery(storage).label("acme", engine, models=models)
 
 
 async def test_engine_tool_models_reach_its_run_and_what_it_delegates(tmp_path: Path) -> None:

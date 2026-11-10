@@ -328,6 +328,7 @@ class Refinery:
         judge: str | None = None,
         teacher: str | None = None,
         limit: int = 500,
+        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
     ) -> Labeled:
         if not scope:
             raise InputError("refinery: scope is required")
@@ -339,6 +340,7 @@ class Refinery:
                 raise NotFoundError(f"refinery: {role} {name!r} was not found")
             if agents[name].kind != kind:
                 raise ConfigurationError(f"refinery: {role} {name!r} must be a {kind} agent")
+        merged = engine._run_models(models)
         labelers = {name for name in (judge, teacher) if name is not None}
         result = Labeled()
         if judge is not None:
@@ -348,7 +350,9 @@ class Refinery:
                 if row.agent in labelers:
                     continue
                 try:
-                    run = await engine.run(judge, scope, judge_state(row), record=False)
+                    run = await engine.run(
+                        judge, scope, judge_state(row), record=False, models=merged
+                    )
                     if not isinstance(run, Decision):
                         raise ConfigurationError(
                             f"refinery: judge {judge!r} must be a decision agent"
@@ -376,7 +380,12 @@ class Refinery:
                     continue
                 try:
                     run = await engine.run(
-                        teacher, scope, teacher_prompt(row), expect=TeacherAnswers, record=False
+                        teacher,
+                        scope,
+                        teacher_prompt(row),
+                        expect=TeacherAnswers,
+                        record=False,
+                        models=merged,
                     )
                     if not isinstance(run, Generation):
                         raise ConfigurationError(
