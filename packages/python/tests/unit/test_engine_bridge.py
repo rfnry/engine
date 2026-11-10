@@ -646,6 +646,30 @@ async def test_a_delegated_child_s_command_calls_the_child_s_tools(
     assert bridged.run_id == child.run_id and bridged.call_id == "s.1" and bridged.by == "s"
 
 
+async def test_a_bridged_call_cut_when_the_command_exits_keeps_what_approve_answered(
+    tmp_path: Path, root: Path
+) -> None:
+    async def nap(args: dict[str, Any]) -> str:
+        (root / "napping").touch()
+        await asyncio.sleep(10)
+        return "rested"
+
+    async def allow(agent: str, call: ToolCall) -> bool:
+        return True
+
+    script(
+        root,
+        UNTIL
+        + 'threading.Thread(target=call, args=("nap",), daemon=True).start()\nuntil("napping")\n',
+    )
+    async with Workspace(Local(root), scope="acme") as work:
+        run, _, _ = await run_coder(
+            tmp_path, work, tools=[Tool("nap", "Rest", body=nap)], approve=allow
+        )
+    [napped] = [s for s in run.steps if s.tool == "nap"]
+    assert napped.stopped is True and napped.approved is True
+
+
 async def test_a_call_still_running_when_the_command_exits_is_cut(
     tmp_path: Path, root: Path
 ) -> None:

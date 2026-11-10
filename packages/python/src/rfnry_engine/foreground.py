@@ -28,6 +28,7 @@ class Foreground:
     lent: Lent | None = None
     failed: Exception | None = None
     result: Any = None
+    approved: bool | None = None
 
     def settle(self) -> None:
         if self.pressed and self.live == 0 and not self.over and self.task is not None:

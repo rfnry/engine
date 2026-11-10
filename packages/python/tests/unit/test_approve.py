@@ -209,6 +209,32 @@ async def test_each_press_cancels_a_wait_for_approval_once(tmp_path: Path, tool:
     assert step.tool == tool and step.stopped and step.approved is None
 
 
+async def test_a_call_a_stop_cut_keeps_what_approve_answered(tmp_path: Path) -> None:
+    stop, began = Stop(), asyncio.Event()
+
+    async def slow(args: dict[str, Any]) -> str:
+        began.set()
+        await asyncio.Event().wait()
+        return "never"
+
+    engine = Engine(make_tree(tmp_path), models={"strong": Scripted(use("slow"), text_reply("x"))})
+    running = asyncio.create_task(
+        engine.run(
+            "desk",
+            "acme",
+            "x",
+            tools=Tools([Tool("slow", "Slow", body=slow)]),
+            approve=Approver(),
+            stop=stop,
+        )
+    )
+    await asyncio.wait_for(began.wait(), 5)
+    stop.now()
+    run = await asyncio.wait_for(running, 5)
+    assert isinstance(run, Generation) and run.stopped == "now"
+    assert [(s.stopped, s.approved) for s in run.steps] == [(True, True)]
+
+
 async def test_delegated_children_are_asked_too(tmp_path: Path) -> None:
     refunds, approver = Refunds(), Approver()
     llm = Scripted(

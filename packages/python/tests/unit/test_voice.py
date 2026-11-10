@@ -1,7 +1,11 @@
 import asyncio
 import json
+import logging
 import os
+import time
+from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -44,6 +48,18 @@ SAID = Spoken(
     model="live-1",
 )
 PID = "import os\ndef run(args, call):\n    return {'pid': os.getpid(), 'run_id': call['run_id']}\n"
+SLOW_ASYNC = (
+    "import asyncio\n"
+    "from pathlib import Path\n"
+    "async def run(args, call):\n"
+    "    Path(args['began']).touch()\n"
+    "    try:\n"
+    "        await asyncio.sleep(60)\n"
+    "    except asyncio.CancelledError:\n"
+    "        Path(args['cancelled']).touch()\n"
+    "        raise\n"
+)
+ENDED = r"^engine: the session of agent 'voice' has ended; a tool call cannot start after it$"
 
 
 class Live:
@@ -93,6 +109,13 @@ def with_tools(root: Path, *names: str, **entry: Any) -> Path:
     return write_folder(
         root, {"voice": {**VOICE, "tools": {"include": list(names)}, **entry}}, files=FILES
     )
+
+
+async def until(check: Callable[[], bool], seconds: float = 3.0) -> None:
+    deadline = time.monotonic() + seconds
+    while not check():
+        assert time.monotonic() < deadline, "timed out"
+        await asyncio.sleep(0.01)
 
 
 async def spoke(start: VoiceStart) -> Spoken:
@@ -526,6 +549,210 @@ async def test_a_call_still_running_when_the_session_ends_is_cancelled_and_kept(
         await left[0]
 
 
+async def test_a_call_cancelled_in_its_result_handler_keeps_one_step(tmp_path: Path) -> None:
+    with_tools(tmp_path, "quick")
+    in_handler = asyncio.Event()
+    ready: list[ToolResultReady] = []
+
+    async def watch(event: Event) -> None:
+        if isinstance(event, ToolResultReady):
+            ready.append(event)
+            if len(ready) == 1:
+                in_handler.set()
+                await asyncio.Event().wait()
+
+    async def session(start: VoiceStart) -> Spoken:
+        call = asyncio.create_task(start.tools.dispatch("quick", {}))
+        await in_handler.wait()
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        return SAID
+
+    voice = await engine_of(tmp_path).talk(
+        "voice", "acme", session, tools=Tools([tool("quick")]), on_event=watch
+    )
+    assert [(s.tool, s.is_error, s.stopped, s.result) for s in voice.steps] == [
+        ("quick", False, False, "done")
+    ]
+    assert len(ready) == 1
+
+
+async def test_a_cancelled_call_cancels_an_async_tool_in_its_worker(tmp_path: Path) -> None:
+    write_folder(
+        tmp_path,
+        {"voice": {**VOICE, "tools": {"include": ["slow"]}}},
+        tools={"slow": {"module": "tools/slow.py", "description": "Slow"}},
+        files={**FILES, "tools/slow.py": SLOW_ASYNC},
+    )
+    began, cancelled = tmp_path / "began", tmp_path / "cancelled"
+
+    async def session(start: VoiceStart) -> Spoken:
+        call = asyncio.create_task(
+            start.tools.dispatch("slow", {"began": str(began), "cancelled": str(cancelled)})
+        )
+        await until(began.exists, 10.0)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        await until(cancelled.exists)
+        return SAID
+
+    async with engine_of(tmp_path) as engine:
+        voice = await engine.talk("voice", "acme", session)
+    [step] = voice.steps
+    assert step.tool == "slow" and step.stopped and step.is_error and cancelled.exists()
+
+
+async def test_a_cancelled_call_keeps_what_approve_answered(tmp_path: Path) -> None:
+    with_tools(tmp_path, "slow")
+    slow = Slow()
+
+    async def gate(agent: str, call: ToolCall) -> bool:
+        return True
+
+    async def session(start: VoiceStart) -> Spoken:
+        call = asyncio.create_task(start.tools.dispatch("slow", {}))
+        await slow.began.wait()
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        return SAID
+
+    voice = await engine_of(tmp_path).talk(
+        "voice", "acme", session, tools=Tools([tool("slow", slow)]), approve=gate
+    )
+    assert [(s.stopped, s.approved) for s in voice.steps] == [(True, True)]
+
+
+@pytest.mark.parametrize("fails", ["raises", "answers no bool"])
+async def test_an_approve_that_fails_leaves_an_error_step_and_reaches_the_session(
+    tmp_path: Path, fails: str
+) -> None:
+    with_tools(tmp_path, "quick")
+    ran = list[str]()
+
+    async def quick(args: dict[str, Any]) -> Result:
+        ran.append("quick")
+        return "done"
+
+    async def gate(agent: str, call: ToolCall) -> bool:
+        if fails == "raises":
+            raise RuntimeError("the gate is down")
+        return cast(bool, "yes")
+
+    expected: type[Exception] = RuntimeError if fails == "raises" else ConfigurationError
+    written = (
+        "RuntimeError: the gate is down"
+        if fails == "raises"
+        else "ConfigurationError: engine: approve must return True or False; got 'yes'"
+    )
+
+    async def session(start: VoiceStart) -> Spoken:
+        with pytest.raises(expected):
+            await start.tools.dispatch("quick", {"a": 1})
+        return SAID
+
+    voice = await engine_of(tmp_path).talk(
+        "voice", "acme", session, tools=Tools([tool("quick", quick)]), approve=gate
+    )
+    assert ran == [] and voice.error is None
+    assert [(s.tool, s.args, s.is_error, s.stopped, s.approved, s.result) for s in voice.steps] == [
+        ("quick", {"a": 1}, True, False, None, written)
+    ]
+
+
+async def test_a_result_handler_that_raises_reaches_the_session_and_leaves_one_step(
+    tmp_path: Path,
+) -> None:
+    with_tools(tmp_path, "quick")
+
+    async def watch(event: Event) -> None:
+        if isinstance(event, ToolResultReady):
+            raise RuntimeError("the handler broke")
+
+    async def session(start: VoiceStart) -> Spoken:
+        with pytest.raises(RuntimeError, match="the handler broke"):
+            await start.tools.dispatch("quick", {})
+        return SAID
+
+    voice = await engine_of(tmp_path).talk(
+        "voice", "acme", session, tools=Tools([tool("quick")]), on_event=watch
+    )
+    assert [(s.tool, s.is_error, s.result) for s in voice.steps] == [("quick", False, "done")]
+
+
+async def test_a_handler_that_raises_before_the_tool_leaves_an_error_step(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with_tools(tmp_path, "quick")
+
+    async def watch(event: Event) -> None:
+        raise RuntimeError("the handler broke")
+
+    async def session(start: VoiceStart) -> Spoken:
+        with pytest.raises(RuntimeError, match="the handler broke"):
+            await start.tools.dispatch("quick", {})
+        return SAID
+
+    with caplog.at_level(logging.ERROR, logger="rfnry_engine.engine"):
+        voice = await engine_of(tmp_path).talk(
+            "voice", "acme", session, tools=Tools([tool("quick")]), on_event=watch
+        )
+    assert [(s.tool, s.is_error, s.result) for s in voice.steps] == [
+        ("quick", True, "RuntimeError: the handler broke")
+    ]
+    assert "on_event failed on the last step" in caplog.text
+
+
+async def test_a_call_after_the_session_ended_raises_and_runs_nothing(tmp_path: Path) -> None:
+    with_tools(tmp_path, "quick")
+    ran = list[str]()
+    kept, pending = list[VoiceStart](), list[asyncio.Future[Any]]()
+
+    async def quick(args: dict[str, Any]) -> Result:
+        ran.append("quick")
+        return "done"
+
+    async def session(start: VoiceStart) -> Spoken:
+        kept.append(start)
+        pending.append(asyncio.ensure_future(start.tools.dispatch("quick", {})))
+        return SAID
+
+    voice = await engine_of(tmp_path).talk(
+        "voice", "acme", session, tools=Tools([tool("quick", quick)])
+    )
+    with pytest.raises(InputError, match=ENDED):
+        await pending[0]
+    with pytest.raises(InputError, match=ENDED):
+        await kept[0].tools.dispatch("quick", {})
+    assert ran == [] and voice.steps == []
+
+
+async def test_a_tool_the_agent_was_not_offered_is_an_error_step(tmp_path: Path) -> None:
+    with_tools(tmp_path, "quick")
+    asked = list[str]()
+
+    async def gate(agent: str, call: ToolCall) -> bool:
+        asked.append(call.name)
+        return True
+
+    async def session(start: VoiceStart) -> Spoken:
+        with pytest.raises(InputError, match=r"^engine: InputError: tools: unknown tool 'ghost'$"):
+            await start.tools.dispatch("ghost", {"a": 1})
+        assert await start.tools.only("quick").dispatch("quick", {}) == "done"
+        return SAID
+
+    voice = await engine_of(tmp_path).talk(
+        "voice", "acme", session, tools=Tools([tool("quick")]), approve=gate
+    )
+    assert asked == ["ghost", "quick"]
+    assert [(s.tool, s.args, s.is_error, s.result) for s in voice.steps] == [
+        ("ghost", {"a": 1}, True, "InputError: tools: unknown tool 'ghost'"),
+        ("quick", {}, False, "done"),
+    ]
+
+
 async def test_a_failed_session_is_recorded_and_raises(tmp_path: Path) -> None:
     with_tools(tmp_path, "quick")
     recording = Recording()
@@ -543,12 +770,19 @@ async def test_a_failed_session_is_recorded_and_raises(tmp_path: Path) -> None:
     assert run.transcript == [] and [step.tool for step in run.steps] == ["quick"]
 
 
-async def test_a_session_that_returns_no_spoken_is_a_failed_session(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "returned",
+    ["not a transcript", {"transcript": []}, SimpleNamespace(transcript=[])],
+    ids=["text", "dict", "lookalike"],
+)
+async def test_a_session_that_returns_no_spoken_is_a_failed_session(
+    tmp_path: Path, returned: object
+) -> None:
     write_folder(tmp_path, {"voice": VOICE}, files=FILES)
     recording = Recording()
 
     async def session(start: VoiceStart) -> Spoken:
-        return cast(Spoken, "not a transcript")
+        return cast(Spoken, returned)
 
     with pytest.raises(InputError, match=r"^engine: the session of agent 'voice' returned "):
         await engine_of(tmp_path, refinery=recording).talk("voice", "acme", session)

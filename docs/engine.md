@@ -1613,7 +1613,9 @@ run = await engine.talk("voice", scope, session, mode="duplex", tools=host_tools
 `start.instructions` is the mode's file with `context` appended. `start.tools` is one `Tools`, and
 every call through it passes `approve` and the timeout, becomes a `Step`, and is the same tool call
 a generation run makes; a bare name the run does not give fails before the session opens.
-Cancelling a call cancels its body and the session goes on. The record is a `Voice`: the transcript
+Cancelling a call cancels its body and the session goes on; a declared tool's plain `def run`
+goes on holding its worker's thread until it returns, since a thread cannot be cancelled, and its
+step reads `stopped` all the same. The record is a `Voice`: the transcript
 the host returns, the steps, the mode, the model and the fingerprint. Its `usage` is `None` when the
 host has none, since live models report no tokens, and that is not zero cost. A failed session is
 recorded with its `error`; a cancelled one is not, as for any run.

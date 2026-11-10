@@ -9,6 +9,7 @@ from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from fnmatch import fnmatch
+from functools import partial
 from itertools import count
 from pathlib import Path
 from types import MappingProxyType
@@ -674,6 +675,7 @@ class _ToolCalls:
     approving: set[int] = field(default_factory=set)
     foregrounds: dict[int, Foreground] = field(default_factory=dict)
     speaking: set[asyncio.Task[Result]] = field(default_factory=set)
+    over: bool = False
     runner: asyncio.Task[Any] | None = field(init=False)
     calm: int = field(init=False)
 
@@ -719,17 +721,24 @@ class _ToolCalls:
             CALL.reset(token)
         return step
 
-    def stopped(self, call: ToolCall, began: float, by: str | None = None) -> Step:
+    def ended(
+        self, call: ToolCall, began: float, result: str, by: str | None, *, stopped: bool
+    ) -> Step:
+        here = self.foregrounds.get(id(call))
         return Step(
             tool=call.name,
             args=call.args,
-            result=STOPPED,
+            result=result,
             is_error=True,
             at=_now(),
             duration_ms=int((time.monotonic() - began) * 1000),
-            stopped=True,
+            stopped=stopped,
+            approved=None if here is None else here.approved,
             by=by,
         )
+
+    def stopped(self, call: ToolCall, began: float, by: str | None = None) -> Step:
+        return self.ended(call, began, STOPPED, by, stopped=True)
 
     async def cut(self, call: ToolCall, began: float, by: str | None = None) -> Step:
         return await self.hand_over(call, self.stopped(call, began, by))
@@ -766,7 +775,7 @@ class _ToolCalls:
             approved = asking.result()
         if approved is not None and not isinstance(approved, bool):
             raise ConfigurationError(f"engine: approve must return True or False; got {approved!r}")
-        here = Foreground(self.stop, self.on_event, asyncio.current_task())
+        here = Foreground(self.stop, self.on_event, asyncio.current_task(), approved=approved)
         if self.lend is not None:
             self.lend(call, here)
         self.foregrounds[id(call)] = here
@@ -814,12 +823,28 @@ class _ToolCalls:
             raise here.failed
         return await self.hand_over(call, step)
 
-    async def _spoken_call(self, call: ToolCall) -> Result:
+    async def settle(self, call: ToolCall, step: Step) -> None:
+        if any(call is done for done, _ in self.ran):
+            return
+        try:
+            await self.hand_over(call, step)
+        except Exception:
+            logger.error(
+                "engine: on_event failed on the last step of call %s of run %s",
+                call.id,
+                self.run_id,
+                exc_info=True,
+            )
+
+    async def spoken_call(self, call: ToolCall) -> Result:
         began = time.monotonic()
         try:
             step = await self.run(call)
         except asyncio.CancelledError:
-            await self.cut(call, began)
+            await self.settle(call, self.stopped(call, began))
+            raise
+        except Exception as exc:
+            await self.settle(call, self.ended(call, began, _failure(exc), None, stopped=False))
             raise
         finally:
             here = self.foregrounds.pop(id(call), None)
@@ -827,29 +852,41 @@ class _ToolCalls:
             raise InputError(f"engine: {step.result}")
         return cast(Result, cast(Foreground, here).result)
 
-    def spoken_tools(self, specs: Sequence[ToolSpec]) -> Tools:
-        def offered(spec: ToolSpec) -> Tool:
-            async def body(args: dict[str, Any]) -> Result:
-                call = ToolCall(id=uuid4().hex, name=spec.name, args=_copied(args))
-                running = asyncio.ensure_future(self._spoken_call(call))
-                self.speaking.add(running)
-                running.add_done_callback(self.speaking.discard)
-                return await running
-
-            return Tool(
-                spec.name, spec.description, body=body, input_schema=_copied(spec.input_schema)
+    async def speak(self, name: str, args: dict[str, Any]) -> Result:
+        if self.over:
+            raise InputError(
+                f"engine: the session of agent {self.spec.name!r} has ended; a tool call cannot start after it"
             )
+        call = ToolCall(id=uuid4().hex, name=name, args=_copied(args))
+        running = asyncio.ensure_future(self.spoken_call(call))
+        self.speaking.add(running)
+        running.add_done_callback(self.speaking.discard)
+        return await running
 
-        return Tools(map(offered, specs))
+
+class _SpokenTools(Tools):
+    def __init__(self, calls: _ToolCalls, specs: Sequence[ToolSpec]) -> None:
+        super().__init__(
+            Tool(
+                spec.name,
+                spec.description,
+                body=partial(calls.speak, spec.name),
+                input_schema=_copied(spec.input_schema),
+            )
+            for spec in specs
+        )
+        self._speak = calls.speak
+
+    async def dispatch(self, name: str, args: dict[str, Any]) -> Result:
+        return await self._speak(name, args)
 
 
 def _spoken(agent: str, value: object) -> Spoken:
-    try:
-        return Spoken.model_validate(value, from_attributes=True)
-    except ValidationError as exc:
+    if not isinstance(value, Spoken):
         raise InputError(
-            f"engine: the session of agent {agent!r} returned what is not a Spoken: {exc.errors(include_url=False, include_input=False)}"
-        ) from exc
+            f"engine: the session of agent {agent!r} returned a value of type {type(value).__name__}, not a Spoken; return Spoken(transcript=...)"
+        )
+    return value
 
 
 def check_folder(
@@ -1312,7 +1349,7 @@ class Engine:
             run_id=run_id,
             model=model_,
             instructions=instructions,
-            tools=tool_calls.spoken_tools(specs),
+            tools=_SpokenTools(tool_calls, specs),
             mode=spec.mode,
         )
         recording = RECORDING.set(record)
@@ -1320,6 +1357,7 @@ class Engine:
             try:
                 spoken = _spoken(agent, await session(start))
             finally:
+                tool_calls.over = True
                 await cancel(tuple(tool_calls.speaking))
         except Exception as exc:
             if record:
@@ -1690,12 +1728,12 @@ class Engine:
                         own.pressed = True
                     elif not any(done is call for done, _ in ran):
                         calling.cancel()
+            cut_step = stopped(call, began, shell.id) if calling.cancelled() else None
             foregrounds.pop(id(call), None)
-            if calling.cancelled():
-                step = stopped(call, began, shell.id)
-                steps.append(step)
+            if cut_step is not None:
+                steps.append(cut_step)
                 try:
-                    await hand_over(call, step)
+                    await hand_over(call, cut_step)
                 except Exception as exc:
                     here.failed = here.failed or exc
                 return {"error": STOPPED}
