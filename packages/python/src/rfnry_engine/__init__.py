@@ -13,6 +13,7 @@ from rfnry_engine.errors import (
 )
 from rfnry_engine.foreground import current_call
 from rfnry_engine.jail import Jail
+from rfnry_engine.manifest import ModelEntry
 from rfnry_engine.models import (
     Answer,
     AnswerLike,
@@ -46,6 +47,7 @@ from rfnry_engine.models import (
     ToolCall,
     ToolSpec,
     Usage,
+    VoiceModel,
     confidence,
 )
 from rfnry_engine.records import (
@@ -59,10 +61,14 @@ from rfnry_engine.records import (
     ReasoningDelta,
     Run,
     RunStarted,
+    Spoken,
+    SpokenLine,
     Step,
     TextDelta,
     ToolCallStarted,
     ToolResultReady,
+    Voice,
+    VoiceStart,
 )
 from rfnry_engine.refinery.export import Bucket
 from rfnry_engine.refinery.holdout import is_holdout
@@ -122,6 +128,7 @@ __all__ = [
     "Message",
     "MessagesTaken",
     "ModelChoice",
+    "ModelEntry",
     "ModelError",
     "NotFoundError",
     "OnDelta",
@@ -142,6 +149,8 @@ __all__ = [
     "RunawayError",
     "Score",
     "ScoreAnswer",
+    "Spoken",
+    "SpokenLine",
     "State",
     "Step",
     "Stop",
@@ -156,6 +165,9 @@ __all__ = [
     "ToolSpec",
     "Tools",
     "Usage",
+    "Voice",
+    "VoiceModel",
+    "VoiceStart",
     "WorkerError",
     "Workspace",
     "Backend",

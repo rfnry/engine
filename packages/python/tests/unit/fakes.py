@@ -132,7 +132,7 @@ def generation_record(
     agent: str = "support",
     *,
     reply: str = "ok",
-    children: list[Run] | None = None,
+    children: list[Generation | Decision] | None = None,
     run_id: str | None = None,
 ) -> Generation:
     return Generation(
@@ -169,7 +169,7 @@ def decision_record(
     agent: str = "triage",
     *,
     probability: float = 0.8,
-    routed_to: Run | None = None,
+    routed_to: Generation | Decision | None = None,
     run_id: str | None = None,
 ) -> Decision:
     return Decision(

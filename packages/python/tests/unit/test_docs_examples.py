@@ -77,6 +77,7 @@ def asked(start: str) -> str:
 
 
 ILLUSTRATIVE = {
+    "async def session(start: VoiceStart) -> Spoken:": "needs rfnry-senses and a live model; tests/unit/test_voice.py runs this path",
     "class Conversation:": "needs a database pool; a list stands in for it in the block above",
     "refinery = Refinery(PostgresStorage(pool))": "needs a Postgres pool; the integration tier runs PostgresStorage",
     'memory_pool = await asyncpg.create_pool(dsn, server_settings={"search_path": "memory, public"})': "needs a Postgres pool and rfnry-memory",

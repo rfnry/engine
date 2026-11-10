@@ -1573,6 +1573,51 @@ agents and refuses the decision ones; given only `judge` the reverse, and a deci
 route reaches an agent whose model was not given is refused before its questions are asked. Nothing
 about an agent changes when a model is absent — only which agents you can run.
 
+### Voice agents
+
+A third kind of agent holds a spoken conversation with a person, on a live model that hears and
+speaks itself. It talks for as long as the person stays. `kind: voice` declares it in `rfnry.yaml`:
+
+```yaml
+voice:
+  kind: voice
+  model: voice-live
+  description: Talks with a person and consults another agent for facts
+  instructions: voice/instructions.md
+  tools:
+    include: [consult]
+  modes:
+    duplex:
+      instructions: voice/instructions_duplex.md
+```
+
+It takes `kind`, `model`, `description`, `instructions`, `worker`, `tools` and `modes`, and a
+`ConfigurationError` names any other key, since a live model's prompt is one string set when the
+session opens and it has no loop that opens a file or counts calls. `engine.talk` runs it and
+refuses any other kind. `engine.run`, `engine.tool`, `delegate_to` and `route` refuse it; it reaches
+other agents through its tools, such as a consult built with `engine.tool`.
+
+The engine declares the agent, resolves its mode, gates its tools and records the run. rfnry-senses
+moves the audio. Neither imports the other, and your function joins them:
+
+```python
+async def session(start: VoiceStart) -> Spoken:
+    talking = Session(transport, live=start.model, instructions=start.instructions)
+    await talking.start(start.tools)
+    lines = await until_it_ends(talking)
+    return Spoken(transcript=lines, model=model_id)
+
+run = await engine.talk("voice", scope, session, mode="duplex", tools=host_tools, models={"voice-live": live_model}, approve=gate)
+```
+
+`start.instructions` is the mode's file with `context` appended. `start.tools` is one `Tools`, and
+every call through it passes `approve` and the timeout, becomes a `Step`, and is the same tool call
+a generation run makes; a bare name the run does not give fails before the session opens.
+Cancelling a call cancels its body and the session goes on. The record is a `Voice`: the transcript
+the host returns, the steps, the mode, the model and the fingerprint. Its `usage` is `None` when the
+host has none, since live models report no tokens, and that is not zero cost. A failed session is
+recorded with its `error`; a cancelled one is not, as for any run.
+
 ### Orchestrating
 
 The library runs agents and records what they did. The order they run in is yours or the model's: your
@@ -3089,11 +3134,13 @@ them yourself; every row carries its run's tags.
 
 Everything the package exports, by role.
 
-- **Run things:** `Engine`, `AgentInfo`, `Stop`, `HistoryLike`.
-- **What a run returns:** `Generation`, `Decision`, `Run`, `Step`, `Fingerprint`; events
+- **Run things:** `Engine`, `AgentInfo`, `ModelChoice`, `ModelEntry`, `Stop`, `HistoryLike`,
+  `VoiceStart`, `Spoken`, `SpokenLine`.
+- **What a run returns:** `Generation`, `Decision`, `Voice`, `Run`, `Step`, `Fingerprint`; events
   `RunStarted`, `TextDelta`, `ReasoningDelta`, `MessagesTaken`, `ToolCallStarted`,
   `ToolResultReady`, `CommandOutput`, `Event`.
-- **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `OnDelta`, `DecisionModel`;
+- **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `OnDelta`, `DecisionModel`,
+  `VoiceModel`;
   `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`,
   `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`,
   `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by,

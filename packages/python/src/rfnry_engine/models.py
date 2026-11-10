@@ -404,6 +404,11 @@ class HistoryLike(Protocol):
     async def read(self, start: int, stop: int | None = None) -> Sequence[object]: ...
 
 
+@runtime_checkable
+class VoiceModel(Protocol):
+    async def open(self, *, tools: list[ToolSpec], instructions: str | None) -> Any: ...
+
+
 @dataclass(frozen=True)
 class ModelChoice:
     provider: str | None = None
@@ -423,4 +428,5 @@ class ModelChoice:
             )
 
 
-Provider = Callable[[str | None, str | None], Any]
+RunModel = GenerationModel | DecisionModel | VoiceModel | ModelChoice
+Provider = Callable[[str | None, str | None], GenerationModel | DecisionModel | VoiceModel]

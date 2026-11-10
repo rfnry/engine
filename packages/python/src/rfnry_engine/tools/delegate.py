@@ -9,7 +9,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from rfnry_engine.errors import DelegationDepthError, DelegationLoopError, InputError
 from rfnry_engine.foreground import RECORDING, hooks, returned
-from rfnry_engine.models import DecisionModel, GenerationModel, ModelChoice, ToolCall
+from rfnry_engine.models import RunModel, ToolCall
 from rfnry_engine.records import EventHandler, Generation
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, ToolsLike
@@ -187,7 +187,7 @@ def delegate_tool(
     approve: Callable[[str, ToolCall], Awaitable[bool]] | None = None,
     on_event: EventHandler | None = None,
     stop: Callable[[], Stop | None] | None = None,
-    models: Mapping[str, GenerationModel | DecisionModel | ModelChoice] | None = None,
+    models: Mapping[str, RunModel] | None = None,
 ) -> Tool:
     async def body(args: dict[str, Any]) -> str:
         parsed = permit(spec, args)

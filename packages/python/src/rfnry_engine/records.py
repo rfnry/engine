@@ -1,4 +1,5 @@
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Literal, Self
@@ -28,8 +29,10 @@ from rfnry_engine.models import (
     Text,
     ToolSpec,
     Usage,
+    VoiceModel,
 )
 from rfnry_engine.stop import Stopped
+from rfnry_engine.tools.tools import Tools
 
 PARTS = TypeAdapter(list[Part])
 READ_BACK = {"read_back": True}
@@ -195,7 +198,7 @@ class Generation(BaseModel):
     calls: int
     reply: str
     usage: Usage
-    children: list[Run] = Field(default_factory=list)
+    children: list[Generation | Decision] = Field(default_factory=list)
     stopped: Stopped | None = None
     stop_reason: StopReason | None = None
     error: str | None = None
@@ -235,7 +238,7 @@ class Decision(BaseModel):
     runtime: list[str] = Field(default_factory=list)
     answers: dict[str, Answer]
     usage: Usage
-    routed_to: Run | None = None
+    routed_to: Generation | Decision | None = None
     error: str | None = None
 
     @property
@@ -252,7 +255,49 @@ class Decision(BaseModel):
         return self
 
 
-Run = Generation | Decision
+class SpokenLine(BaseModel):
+    speaker: Literal["person", "assistant"]
+    text: str
+    at: datetime | None = None
+
+
+class Spoken(BaseModel):
+    transcript: list[SpokenLine]
+    model: str | None = None
+    usage: Usage | None = None
+
+
+@dataclass(frozen=True)
+class VoiceStart:
+    run_id: str
+    model: VoiceModel
+    instructions: str
+    tools: Tools
+    mode: str | None
+
+
+class Voice(BaseModel):
+    kind: Literal["voice"] = "voice"
+    run_id: str
+    parent_run_id: str | None = None
+    agent: str
+    scope: str
+    tags: dict[str, str] = Field(default_factory=dict)
+    mode: str | None = None
+    context: str | None = None
+    at: datetime
+    duration_ms: int
+    model: str | None
+    fingerprint: Fingerprint
+    instructions: str
+    tools: list[ToolSpec] = Field(default_factory=list)
+    steps: list[Step]
+    transcript: list[SpokenLine]
+    usage: Usage | None = None
+    error: str | None = None
+
+
+Run = Generation | Decision | Voice
 
 Generation.model_rebuild()
 Decision.model_rebuild()

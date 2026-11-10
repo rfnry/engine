@@ -19,6 +19,10 @@ EXPECTED = {
     "Replay",
     "Generation",
     "Decision",
+    "Voice",
+    "Spoken",
+    "SpokenLine",
+    "VoiceStart",
     "Run",
     "Step",
     "RunStarted",
@@ -57,6 +61,7 @@ EXPECTED = {
     "HistoryLike",
     "StreamingGenerationModel",
     "DecisionModel",
+    "VoiceModel",
     "Tool",
     "Tools",
     "EngineTools",
@@ -79,6 +84,7 @@ EXPECTED = {
     "NotFoundError",
     "InputError",
     "ModelChoice",
+    "ModelEntry",
     "ModelError",
     "RunawayError",
     "DelegationLoopError",
@@ -96,4 +102,4 @@ def test_public_names_are_exactly_these() -> None:
 
 def test_the_engine_shows_its_agents_and_hides_its_internals() -> None:
     public = {name for name in vars(rfnry_engine.Engine) if not name.startswith("_")}
-    assert public == {"agents", "close", "models", "run", "tool"}
+    assert public == {"agents", "close", "models", "run", "talk", "tool"}

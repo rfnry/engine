@@ -57,6 +57,7 @@ from rfnry_engine.models import (
     Question,
     QuestionLike,
     Reply,
+    RunModel,
     State,
     StopReason,
     StreamingGenerationModel,
@@ -64,6 +65,7 @@ from rfnry_engine.models import (
     ToolCall,
     ToolSpec,
     Usage,
+    VoiceModel,
     as_decided,
     as_reply,
     settle,
@@ -80,12 +82,15 @@ from rfnry_engine.records import (
     ReasoningDelta,
     Run,
     RunStarted,
+    Spoken,
     Step,
     TextDelta,
     ToolCallStarted,
     ToolResultReady,
+    Voice,
+    VoiceStart,
 )
-from rfnry_engine.stop import Stop, Stopped, requested, wait
+from rfnry_engine.stop import Stop, Stopped, cancel, requested, wait
 from rfnry_engine.tools.declared import chosen, smallest
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
@@ -130,7 +135,7 @@ class _Options:
     on_event: EventHandler | None
     tools: ToolsLike | None
     workspace: Workspace | None
-    models: Mapping[str, GenerationModel | DecisionModel | ModelChoice]
+    models: Mapping[str, RunModel]
     stop: Stop | None = None
     inbox: asyncio.Queue[Any] | None = None
     skill: str | None = None
@@ -139,7 +144,7 @@ class _Options:
     questions: Mapping[str, Question] = field(default_factory=dict)
     start: int = 0
     source: Sequence[object] | HistoryLike | None = None
-    failed: list[Run] = field(default_factory=list)
+    failed: list[Generation | Decision] = field(default_factory=list)
 
 
 class AgentInfo(BaseModel):
@@ -531,10 +536,10 @@ def _kind_clash(spec: AgentSpec, verb: str) -> NoReturn:
 
 
 def _models(
-    models: Mapping[str, GenerationModel | DecisionModel | ModelChoice],
+    models: Mapping[str, RunModel],
     *,
     choosing: bool = False,
-) -> dict[str, GenerationModel | DecisionModel | ModelChoice]:
+) -> dict[str, RunModel]:
     if not isinstance(models, Mapping):
         raise ConfigurationError("engine: models must be a mapping of model name to adapter")
     for name, model in models.items():
@@ -544,10 +549,10 @@ def _models(
             )
         if choosing and isinstance(model, ModelChoice):
             continue
-        if not isinstance(model, GenerationModel | DecisionModel):
+        if not isinstance(model, GenerationModel | DecisionModel | VoiceModel):
             also = ", or a ModelChoice" if choosing else ""
             raise ConfigurationError(
-                f"engine: model {name!r} has neither generate() nor decide(); pass an adapter that has one{also}"
+                f"engine: model {name!r} has none of generate(), decide() and open(); pass an adapter that has one{also}"
             )
     return dict(models)
 
@@ -588,6 +593,10 @@ def _of_its_kind(spec: AgentSpec, model: object) -> None:
         _kind_clash(spec, "generate")
     if spec.kind == "decision" and not isinstance(model, DecisionModel):
         _kind_clash(spec, "decide")
+    if spec.kind == "voice" and not isinstance(model, VoiceModel):
+        raise ConfigurationError(
+            f"engine: agent {spec.name!r} is a voice agent, which needs a live model, and model {spec.model!r} has no open()"
+        )
 
 
 def _with_modes(agents: Mapping[str, AgentSpec]) -> list[AgentSpec]:
@@ -596,7 +605,7 @@ def _with_modes(agents: Mapping[str, AgentSpec]) -> list[AgentSpec]:
 
 def _check_names(
     agents: Mapping[str, AgentSpec],
-    models: Mapping[str, GenerationModel | DecisionModel | ModelChoice],
+    models: Mapping[str, RunModel],
 ) -> None:
     used = sorted({spec.model for spec in _with_modes(agents)})
     for name in sorted(models):
@@ -608,7 +617,7 @@ def _check_names(
 
 def _check_models(
     agents: Mapping[str, AgentSpec],
-    models: Mapping[str, GenerationModel | DecisionModel | ModelChoice],
+    models: Mapping[str, RunModel],
 ) -> None:
     _check_names(agents, models)
     for spec in _with_modes(agents):
@@ -642,6 +651,205 @@ def _info(name: str, spec: AgentSpec) -> AgentInfo:
 
 def _infos(agents: Mapping[str, AgentSpec]) -> dict[str, AgentInfo]:
     return {name: _info(name, spec) for name, spec in agents.items()}
+
+
+@dataclass
+class _ToolCalls:
+    spec: AgentSpec
+    run_id: str
+    scope: str
+    tags: Mapping[str, str]
+    surface: ToolsLike
+    deadline: float | None
+    own_deadline: frozenset[str]
+    tool_slots: AbstractAsyncContextManager[Any]
+    approve: Approve | None
+    on_event: EventHandler | None
+    stop: Stop | None = None
+    shell_slots: AbstractAsyncContextManager[Any] = field(default_factory=nullcontext)
+    delegate_slots: AbstractAsyncContextManager[Any] = field(default_factory=nullcontext)
+    lend: Callable[[ToolCall, Foreground], None] | None = None
+    delegate: Callable[[ToolCall], Awaitable[tuple[Content, bool, str | None, bool]]] | None = None
+    ran: list[tuple[ToolCall, Step]] = field(default_factory=list)
+    approving: set[int] = field(default_factory=set)
+    foregrounds: dict[int, Foreground] = field(default_factory=dict)
+    speaking: set[asyncio.Task[Result]] = field(default_factory=set)
+    runner: asyncio.Task[Any] | None = field(init=False)
+    calm: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.runner = asyncio.current_task()
+        self.calm = 0 if self.runner is None else self.runner.cancelling()
+
+    async def emit(self, event: Any) -> None:
+        if self.on_event is not None:
+            await self.on_event(event)
+
+    def called(self, call: ToolCall, by: str | None = None) -> CallInfo:
+        return CallInfo(
+            run_id=self.run_id,
+            agent=self.spec.name,
+            scope=self.scope,
+            tool=call.name,
+            call_id=call.id,
+            by=by,
+            tags=self.tags,
+        )
+
+    async def hand_over(self, call: ToolCall, step: Step) -> Step:
+        if self.runner is not None and self.runner.cancelling() > self.calm:
+            raise asyncio.CancelledError("engine: the run was cancelled")
+        self.ran.append((call, step))
+        if self.on_event is None:
+            return step
+        token = CALL.set(self.called(call, step.by))
+        try:
+            await self.emit(
+                ToolResultReady(
+                    run_id=self.run_id,
+                    agent=self.spec.name,
+                    call_id=call.id,
+                    step=step.model_copy(
+                        update={"args": _copied(step.args), "result": _own(step.result)}
+                    ),
+                    by=step.by,
+                )
+            )
+        finally:
+            CALL.reset(token)
+        return step
+
+    def stopped(self, call: ToolCall, began: float, by: str | None = None) -> Step:
+        return Step(
+            tool=call.name,
+            args=call.args,
+            result=STOPPED,
+            is_error=True,
+            at=_now(),
+            duration_ms=int((time.monotonic() - began) * 1000),
+            stopped=True,
+            by=by,
+        )
+
+    async def cut(self, call: ToolCall, began: float, by: str | None = None) -> Step:
+        return await self.hand_over(call, self.stopped(call, began, by))
+
+    async def run(self, call: ToolCall, by: str | None = None) -> Step:
+        CALL.set(self.called(call, by))
+        if self.on_event is not None:
+            await self.emit(
+                ToolCallStarted(
+                    run_id=self.run_id,
+                    agent=self.spec.name,
+                    call_id=call.id,
+                    tool=call.name,
+                    args=_copied(call.args),
+                    by=by,
+                )
+            )
+        began = time.monotonic()
+        if requested(self.stop) == "now":
+            return await self.cut(call, began, by)
+        child_run_id: str | None = None
+        cut_short = False
+        content: Content
+        approved = None
+        if self.approve is not None:
+            asking = asyncio.ensure_future(self.approve(self.spec.name, _call(call)))
+            self.approving.add(id(call))
+            try:
+                pressed = await wait([asking], self.stop)
+            finally:
+                self.approving.discard(id(call))
+            if pressed:
+                return await self.cut(call, began, by)
+            approved = asking.result()
+        if approved is not None and not isinstance(approved, bool):
+            raise ConfigurationError(f"engine: approve must return True or False; got {approved!r}")
+        here = Foreground(self.stop, self.on_event, asyncio.current_task())
+        if self.lend is not None:
+            self.lend(call, here)
+        self.foregrounds[id(call)] = here
+        FOREGROUND.set(here)
+        try:
+            if approved is False:
+                content, is_error = f"NotApproved: {call.name} was not approved", True
+            elif call.name == DELEGATE_TOOL and self.delegate is not None:
+                async with self.delegate_slots:
+                    content, is_error, child_run_id, cut_short = await self.delegate(call)
+            else:
+                limit = None if call.name in self.own_deadline else self.deadline
+                async with self.shell_slots if call.name == "Shell" else self.tool_slots:
+                    deadline = asyncio.timeout(limit)
+                    try:
+                        async with deadline:
+                            here.result = await self.surface.dispatch(call.name, _copied(call.args))
+                        content, is_error = _own(_content(here.result)), False
+                    except Exception as exc:
+                        if deadline.expired():
+                            content = (
+                                f"TimeoutError: engine: {call.name} timed out after {limit:g}s"
+                            )
+                        else:
+                            content = _failure(exc)
+                        is_error = True
+                if here.stopped or here.pressed:
+                    content, is_error, cut_short = STOPPED, True, True
+        finally:
+            here.over = True
+        step = Step(
+            tool=call.name,
+            args=call.args,
+            result=content,
+            is_error=is_error,
+            at=_now(),
+            duration_ms=int((time.monotonic() - began) * 1000),
+            child_run_id=child_run_id,
+            stopped=cut_short,
+            approved=approved,
+            by=by,
+        )
+        if here.failed is not None:
+            self.ran.append((call, step))
+            raise here.failed
+        return await self.hand_over(call, step)
+
+    async def _spoken_call(self, call: ToolCall) -> Result:
+        began = time.monotonic()
+        try:
+            step = await self.run(call)
+        except asyncio.CancelledError:
+            await self.cut(call, began)
+            raise
+        finally:
+            here = self.foregrounds.pop(id(call), None)
+        if step.is_error:
+            raise InputError(f"engine: {step.result}")
+        return cast(Result, cast(Foreground, here).result)
+
+    def spoken_tools(self, specs: Sequence[ToolSpec]) -> Tools:
+        def offered(spec: ToolSpec) -> Tool:
+            async def body(args: dict[str, Any]) -> Result:
+                call = ToolCall(id=uuid4().hex, name=spec.name, args=_copied(args))
+                running = asyncio.ensure_future(self._spoken_call(call))
+                self.speaking.add(running)
+                running.add_done_callback(self.speaking.discard)
+                return await running
+
+            return Tool(
+                spec.name, spec.description, body=body, input_schema=_copied(spec.input_schema)
+            )
+
+        return Tools(map(offered, specs))
+
+
+def _spoken(agent: str, value: object) -> Spoken:
+    try:
+        return Spoken.model_validate(value, from_attributes=True)
+    except ValidationError as exc:
+        raise InputError(
+            f"engine: the session of agent {agent!r} returned what is not a Spoken: {exc.errors(include_url=False, include_input=False)}"
+        ) from exc
 
 
 def check_folder(
@@ -709,7 +917,7 @@ class Engine:
         self.history_chars = history_chars
         self._providers: Mapping[str, Provider] = MappingProxyType(_providers(providers))
         self._entries: Mapping[str, ModelEntry] = {}
-        self._models: Mapping[str, GenerationModel | DecisionModel | ModelChoice]
+        self._models: Mapping[str, RunModel]
         declared: Mapping[str, WorkerEntry] = {}
         if (self.root / MANIFEST).is_file():
             if models is not None:
@@ -763,9 +971,7 @@ class Engine:
     def agents(self) -> dict[str, AgentInfo]:
         return _infos(self._agents)
 
-    def _run_models(
-        self, models: Mapping[str, GenerationModel | DecisionModel | ModelChoice] | None
-    ) -> Mapping[str, GenerationModel | DecisionModel | ModelChoice]:
+    def _run_models(self, models: Mapping[str, RunModel] | None) -> Mapping[str, RunModel]:
         if models is None:
             return self._models
         given = _models(models, choosing=bool(self._entries))
@@ -775,9 +981,7 @@ class Engine:
             **{name: self._merged(name, value) for name, value in given.items()},
         }
 
-    def _merged(
-        self, name: str, value: GenerationModel | DecisionModel | ModelChoice
-    ) -> GenerationModel | DecisionModel | ModelChoice:
+    def _merged(self, name: str, value: RunModel) -> RunModel:
         if not isinstance(value, ModelChoice):
             return value
         entry = self._entries[name]
@@ -790,7 +994,7 @@ class Engine:
             _not_held(name, merged.provider, self._providers)
         return merged
 
-    def _built(self, held: GenerationModel | DecisionModel | ModelChoice | None) -> Any:
+    def _built(self, held: RunModel | None) -> Any:
         if isinstance(held, ModelChoice):
             return self._providers[cast(str, held.provider)](held.model, held.effort)
         return held
@@ -798,14 +1002,19 @@ class Engine:
     def _adapter(
         self,
         spec: AgentSpec,
-        models: Mapping[str, GenerationModel | DecisionModel | ModelChoice],
-    ) -> GenerationModel | DecisionModel:
+        models: Mapping[str, RunModel],
+    ) -> GenerationModel | DecisionModel | VoiceModel:
         held = models.get(spec.model)
         if held is None:
             _not_given(spec)
         model = self._built(held)
         _of_its_kind(spec, model)
-        return cast(GenerationModel | DecisionModel, model)
+        return cast(GenerationModel | DecisionModel | VoiceModel, model)
+
+    def _refuse_voice(self, agent: str) -> None:
+        held = self._agents.get(agent)
+        if held is not None and held.kind == "voice":
+            raise InputError(f"engine: agent {agent!r} is a voice agent; engine.talk runs it")
 
     def _spec(self, agent: str, mode: str | None = None) -> AgentSpec:
         spec = self._agents.get(agent)
@@ -842,7 +1051,7 @@ class Engine:
         tags: Mapping[str, str] | None = None,
         approve: Approve | None = None,
         models: Mapping[str, GenerationModel | DecisionModel | ModelChoice] | None = None,
-    ) -> Run:
+    ) -> Generation | Decision:
         return await self._start(
             agent,
             scope,
@@ -886,9 +1095,9 @@ class Engine:
         inbox: asyncio.Queue[Any] | None = None,
         tags: Mapping[str, str] | None = None,
         approve: Approve | None = None,
-        models: Mapping[str, GenerationModel | DecisionModel | ModelChoice] | None = None,
+        models: Mapping[str, RunModel] | None = None,
         slash: bool = False,
-    ) -> Run:
+    ) -> Generation | Decision:
         self._open()
         if not scope:
             raise InputError("engine: scope is required")
@@ -902,6 +1111,7 @@ class Engine:
                 f"engine: input must be a string, a JSON object or a list; got {unfit}"
             )
         input = _given(input)
+        self._refuse_voice(agent)
         spec = self._spec(agent, mode)
         asked = _asked(spec, questions)
         slashed = _slashed(spec, input) if slash else None
@@ -978,6 +1188,7 @@ class Engine:
             raise InputError(
                 f"engine: workspace belongs to scope {workspace.scope!r}, not {scope!r}"
             )
+        self._refuse_voice(agent)
         spec = self._spec(agent)
         if not spec.description.strip():
             raise ConfigurationError(
@@ -1026,6 +1237,101 @@ class Engine:
             ]
         )
 
+    async def talk(
+        self,
+        agent: str,
+        scope: str,
+        session: Callable[[VoiceStart], Awaitable[Spoken]],
+        *,
+        mode: str | None = None,
+        context: str | None = None,
+        tools: ToolsLike | None = None,
+        models: Mapping[str, VoiceModel | ModelChoice] | None = None,
+        tags: Mapping[str, str] | None = None,
+        approve: Approve | None = None,
+        on_event: EventHandler | None = None,
+        record: bool = True,
+    ) -> Voice:
+        self._open()
+        if not scope:
+            raise InputError("engine: scope is required")
+        held = self._agents.get(agent)
+        if held is not None and held.kind != "voice":
+            raise InputError(
+                f"engine: agent {agent!r} is a {held.kind} agent; engine.run runs it, and engine.talk only a voice agent"
+            )
+        spec = self._spec(agent, mode)
+        tagged = _tags(tags)
+        model_ = cast(VoiceModel, self._adapter(spec, self._run_models(models)))
+        surface = EngineTools(self, agent=agent, mode=mode, scope=scope, tools=tools, tags=tagged)
+        specs = [ToolSpec.model_validate(_copied(d)) for d in surface.definitions()]
+        fingerprint = Fingerprint(
+            agent=spec.fingerprint, tools=tools_fingerprint(specs), questions=None
+        )
+        extra = (context or "").strip()
+        instructions = f"{spec.body}\n\n<<<CONTEXT>>>\n{extra}" if extra else spec.body
+        run_id = uuid4().hex
+        started = time.monotonic()
+        at = _now()
+        tool_calls = _ToolCalls(
+            spec=spec,
+            run_id=run_id,
+            scope=scope,
+            tags=tagged,
+            surface=surface,
+            deadline=smallest(spec.tool_timeout, self.tool_timeout),
+            own_deadline=surface._in_workers,
+            tool_slots=_slots(spec.tool_parallel),
+            approve=approve,
+            on_event=on_event,
+        )
+
+        def voice(spoken: Spoken | None = None, error: Exception | None = None) -> Voice:
+            return Voice(
+                run_id=run_id,
+                agent=spec.name,
+                scope=scope,
+                tags=dict(tagged),
+                mode=spec.mode,
+                context=context,
+                at=at,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                model=(spoken.model if spoken is not None else None) or _declared(model_),
+                fingerprint=fingerprint,
+                instructions=instructions,
+                tools=specs,
+                steps=[step for _, step in tool_calls.ran],
+                transcript=[]
+                if spoken is None
+                else [line.model_copy() for line in spoken.transcript],
+                usage=None if spoken is None else spoken.usage,
+                error=None if error is None else _failure(error),
+            )
+
+        start = VoiceStart(
+            run_id=run_id,
+            model=model_,
+            instructions=instructions,
+            tools=tool_calls.spoken_tools(specs),
+            mode=spec.mode,
+        )
+        recording = RECORDING.set(record)
+        try:
+            try:
+                spoken = _spoken(agent, await session(start))
+            finally:
+                await cancel(tuple(tool_calls.speaking))
+        except Exception as exc:
+            if record:
+                await self._record(voice(error=exc))
+            raise
+        finally:
+            RECORDING.reset(recording)
+        run = voice(spoken)
+        if record:
+            await self._record(run)
+        return run
+
     async def _run(
         self,
         spec: AgentSpec,
@@ -1034,7 +1340,7 @@ class Engine:
         options: _Options,
         parent_run_id: str | None,
         routed: bool = False,
-    ) -> Run:
+    ) -> Generation | Decision:
         self._open()
         reach = folder_reach(spec.max_depth)
         async with enter(spec.name, _lowered(reach, self.max_depth), reach, routed=routed):
@@ -1073,8 +1379,8 @@ class Engine:
         at = _now()
         decided: Decided | None = None
         answers: dict[str, Answer] = {}
-        routed: Run | None = None
-        routing: list[Run] = []
+        routed: Generation | Decision | None = None
+        routing: list[Generation | Decision] = []
 
         def decision(error: Exception | None = None) -> Decision:
             return Decision(
@@ -1197,7 +1503,7 @@ class Engine:
         self,
         spec: AgentSpec,
         seen: set[str],
-        models: Mapping[str, GenerationModel | DecisionModel | ModelChoice],
+        models: Mapping[str, RunModel],
     ) -> None:
         seen.add(spec.name)
         for target in spec.route.to.values() if spec.route is not None else []:
@@ -1297,11 +1603,8 @@ class Engine:
         messages = [*history, Message(role="user", content=opening)]
         sent = list(messages)
         steps: list[Step] = []
-        children: list[Run] = []
-        delegated: dict[str, Run] = {}
-        ran: list[tuple[ToolCall, Step]] = []
-        approving: set[int] = set()
-        foregrounds: dict[int, Foreground] = {}
+        children: list[Generation | Decision] = []
+        delegated: dict[str, Generation | Decision] = {}
         tool_slots = _slots(spec.tool_parallel)
         shell_slots = _slots(None) if bridging else tool_slots
         delegate_slots = _slots(spec.delegate_parallel)
@@ -1314,24 +1617,7 @@ class Engine:
         streamed: list[str] = []
         said = ""
         ended: StopReason | None = None
-        runner = asyncio.current_task()
-        calm = 0 if runner is None else runner.cancelling()
         most_calls = _lowered(spec.max_model_calls, self.max_model_calls)
-
-        async def emit(event: Any) -> None:
-            if on_event is not None:
-                await on_event(event)
-
-        def called(call: ToolCall, by: str | None = None) -> CallInfo:
-            return CallInfo(
-                run_id=run_id,
-                agent=spec.name,
-                scope=scope,
-                tool=call.name,
-                call_id=call.id,
-                by=by,
-                tags=options.tags,
-            )
 
         async def show(call: ToolCall, here: Foreground, stream: Pipe, text: str) -> None:
             if here.failed is not None:
@@ -1345,29 +1631,6 @@ class Engine:
             except Exception as exc:
                 here.failed = exc
 
-        async def hand_over(call: ToolCall, step: Step) -> Step:
-            if runner is not None and runner.cancelling() > calm:
-                raise asyncio.CancelledError("engine: the run was cancelled")
-            ran.append((call, step))
-            if on_event is None:
-                return step
-            token = CALL.set(called(call, step.by))
-            try:
-                await emit(
-                    ToolResultReady(
-                        run_id=run_id,
-                        agent=spec.name,
-                        call_id=call.id,
-                        step=step.model_copy(
-                            update={"args": _copied(step.args), "result": _own(step.result)}
-                        ),
-                        by=step.by,
-                    )
-                )
-            finally:
-                CALL.reset(token)
-            return step
-
         async def delta(text: str, *, reasoning: bool = False) -> None:
             if reasoning:
                 await emit(ReasoningDelta(run_id=run_id, agent=spec.name, turn=turn, text=text))
@@ -1378,7 +1641,7 @@ class Engine:
         async def delegate(call: ToolCall) -> tuple[Content, bool, str | None, bool]:
             if requested(stop) == "now":
                 return STOPPED, True, None, True
-            failed: list[Run] = []
+            failed: list[Generation | Decision] = []
             try:
                 args = permit(spec, call.args)
                 target = self._agents[args.agent]
@@ -1450,100 +1713,51 @@ class Engine:
             )
             return {"error" if step.is_error else "result": shown}
 
-        async def call_tool(call: ToolCall, by: str | None = None) -> Step:
-            CALL.set(called(call, by))
-            if on_event is not None:
-                await emit(
-                    ToolCallStarted(
-                        run_id=run_id,
-                        agent=spec.name,
-                        call_id=call.id,
-                        tool=call.name,
-                        args=_copied(call.args),
-                        by=by,
-                    )
-                )
-            began = time.monotonic()
-            if requested(stop) == "now":
-                return await cut(call, began, by)
-            child_run_id: str | None = None
-            cut_short = False
-            content: Content
-            approved = None
-            if options.approve is not None:
-                asking = asyncio.ensure_future(options.approve(spec.name, _call(call)))
-                approving.add(id(call))
-                try:
-                    halted = await wait([asking], stop)
-                finally:
-                    approving.discard(id(call))
-                if halted:
-                    return await cut(call, began, by)
-                approved = asking.result()
-            if approved is not None and not isinstance(approved, bool):
-                raise ConfigurationError(
-                    f"engine: approve must return True or False; got {approved!r}"
-                )
-            here = Foreground(stop, on_event, asyncio.current_task())
-            if room is not None and call.name == "Shell":
-                numbers = count(1)
-                here.lent = Lent(
-                    env=variables,
-                    said=None
-                    if on_event is None
-                    else lambda stream, text: show(call, here, stream, text),
-                    call=(lambda name, args: bridged(call, here, numbers, name, args))
-                    if bridging
-                    else None,
-                )
-            foregrounds[id(call)] = here
-            FOREGROUND.set(here)
-            try:
-                if approved is False:
-                    content, is_error = f"NotApproved: {call.name} was not approved", True
-                elif call.name == DELEGATE_TOOL and spec.agents:
-                    async with delegate_slots:
-                        content, is_error, child_run_id, cut_short = await delegate(call)
-                else:
-                    limit = (
-                        None
-                        if call.name in own_deadline
-                        else smallest(spec.tool_timeout, self.tool_timeout)
-                    )
-                    async with shell_slots if call.name == "Shell" else tool_slots:
-                        deadline = asyncio.timeout(limit)
-                        try:
-                            async with deadline:
-                                result = await surface.dispatch(call.name, _copied(call.args))
-                            content, is_error = _own(_content(result)), False
-                        except Exception as exc:
-                            if deadline.expired():
-                                content = (
-                                    f"TimeoutError: engine: {call.name} timed out after {limit:g}s"
-                                )
-                            else:
-                                content = _failure(exc)
-                            is_error = True
-                    if here.stopped or here.pressed:
-                        content, is_error, cut_short = STOPPED, True, True
-            finally:
-                here.over = True
-            step = Step(
-                tool=call.name,
-                args=call.args,
-                result=content,
-                is_error=is_error,
-                at=_now(),
-                duration_ms=int((time.monotonic() - began) * 1000),
-                child_run_id=child_run_id,
-                stopped=cut_short,
-                approved=approved,
-                by=by,
+        def lend(call: ToolCall, here: Foreground) -> None:
+            if call.name != "Shell":
+                return
+            numbers = count(1)
+            here.lent = Lent(
+                env=variables,
+                said=None
+                if on_event is None
+                else lambda stream, text: show(call, here, stream, text),
+                call=(lambda name, args: bridged(call, here, numbers, name, args))
+                if bridging
+                else None,
             )
-            if here.failed is not None:
-                ran.append((call, step))
-                raise here.failed
-            return await hand_over(call, step)
+
+        tool_calls = _ToolCalls(
+            spec=spec,
+            run_id=run_id,
+            scope=scope,
+            tags=options.tags,
+            surface=surface,
+            deadline=smallest(spec.tool_timeout, self.tool_timeout),
+            own_deadline=own_deadline,
+            tool_slots=tool_slots,
+            approve=options.approve,
+            on_event=on_event,
+            stop=stop,
+            shell_slots=shell_slots,
+            delegate_slots=delegate_slots,
+            lend=lend if room is not None else None,
+            delegate=delegate if spec.agents else None,
+        )
+        emit, hand_over, stopped, cut, call_tool = (
+            tool_calls.emit,
+            tool_calls.hand_over,
+            tool_calls.stopped,
+            tool_calls.cut,
+            tool_calls.run,
+        )
+        ran, approving, foregrounds, runner, calm = (
+            tool_calls.ran,
+            tool_calls.approving,
+            tool_calls.foregrounds,
+            tool_calls.runner,
+            tool_calls.calm,
+        )
 
         def answer(call: ToolCall, step: Step) -> None:
             messages.append(
@@ -1567,21 +1781,6 @@ class Engine:
                     duration_ms=0,
                 ),
             )
-
-        def stopped(call: ToolCall, began: float, by: str | None = None) -> Step:
-            return Step(
-                tool=call.name,
-                args=call.args,
-                result=STOPPED,
-                is_error=True,
-                at=_now(),
-                duration_ms=int((time.monotonic() - began) * 1000),
-                stopped=True,
-                by=by,
-            )
-
-        async def cut(call: ToolCall, began: float, by: str | None = None) -> Step:
-            return await hand_over(call, stopped(call, began, by))
 
         async def answer_all(
             batch: list[ToolCall], tasks: Sequence[asyncio.Task[Step] | None], began: float

@@ -15,7 +15,7 @@ from rfnry_engine.frontmatter import (
 )
 
 MANIFEST = "rfnry.yaml"
-Kind = Literal["generation", "decision"]
+Kind = Literal["generation", "decision", "voice"]
 
 
 def _from_the_root(value: str) -> str:
@@ -175,6 +175,19 @@ _LEFT_OUT: dict[Kind, tuple[frozenset[str], str]] = {
             }
         ),
         "a decision agent takes only kind, model, description, instructions, worker, questions, orchestration.route and modes",
+    ),
+    "voice": (
+        frozenset(
+            {
+                "max_model_calls",
+                "files",
+                "skills",
+                "orchestration",
+                "workspace",
+                "questions",
+            }
+        ),
+        "a voice agent takes only kind, model, description, instructions, worker, tools and modes",
     ),
 }
 

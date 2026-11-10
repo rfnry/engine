@@ -322,7 +322,7 @@ async def test_a_folder_takes_providers_and_a_tree_models(tmp_path: Path) -> Non
     with pytest.raises(ConfigurationError, match="^engine: a folder with no rfnry"):
         Engine(tree)
     assert Engine(tree, models={}).agents["a"].model == "m"
-    with pytest.raises(ConfigurationError, match="has neither generate"):
+    with pytest.raises(ConfigurationError, match="has none of generate"):
         await Engine(tree, models={}).run("a", "acme", "x", models={"m": ModelChoice(model="x")})
 
 

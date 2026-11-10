@@ -3,7 +3,7 @@ import json
 from collections import deque
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -340,7 +340,10 @@ class Refinery:
                 raise NotFoundError(f"refinery: {role} {name!r} was not found")
             if agents[name].kind != kind:
                 raise ConfigurationError(f"refinery: {role} {name!r} must be a {kind} agent")
-        merged = engine._run_models(models)
+        merged = cast(
+            Mapping[str, GenerationModel | DecisionModel | ModelChoice],
+            engine._run_models(models),
+        )
         labelers = {name for name in (judge, teacher) if name is not None}
         result = Labeled()
         if judge is not None:
@@ -464,7 +467,7 @@ class Refinery:
                 if isinstance(recorded, Decision) and recorded.runtime
                 else None
             )
-            run = recorded
+            run = cast(Generation | Decision, recorded)
             while isinstance(run, Decision) and run.routed_to is not None:
                 run = run.routed_to
             if isinstance(run, Decision):

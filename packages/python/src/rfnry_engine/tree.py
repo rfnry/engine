@@ -89,7 +89,7 @@ class AgentFront(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    kind: Kind
+    kind: Literal["generation", "decision"]
     model: str
     description: str = ""
     agents: list[str] = Field(default_factory=list)

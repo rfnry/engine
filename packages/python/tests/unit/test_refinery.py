@@ -162,7 +162,7 @@ def desk(fixtures: Path, refinery: Refinery, customers: int) -> Engine:
     )
 
 
-def tree_ids(run: Run) -> set[str]:
+def tree_ids(run: Generation | Decision) -> set[str]:
     children = run.children if isinstance(run, Generation) else [run.routed_to]
     return {run.run_id}.union(*(tree_ids(child) for child in children if child is not None))
 
@@ -382,6 +382,7 @@ class Recorder:
 
 
 def every(run: Run) -> list[Run]:
+    assert isinstance(run, Generation | Decision)
     children = run.children if isinstance(run, Generation) else [run.routed_to]
     return [run, *(r for child in children if child is not None for r in every(child))]
 

@@ -27,6 +27,7 @@ from rfnry_engine.manifest import (
     MANIFEST,
     AgentEntry,
     FilesSection,
+    Kind,
     Manifest,
     Resolved,
     SkillsSection,
@@ -532,9 +533,15 @@ def _names(who: str, key: str, written: list[str] | None, declared: Collection[s
     return names
 
 
-def _check_sections(who: str, included: Iterable[str], grants: Mapping[str, _Grant]) -> None:
+def _check_sections(
+    who: str, included: Iterable[str], grants: Mapping[str, _Grant], kind: Kind
+) -> None:
     for name in included:
         if name in grants and not grants[name].given:
+            if kind == "voice":
+                raise ConfigurationError(
+                    f"compiled: {who} lists {name!r} in tools.include, which a voice agent has no section to grant; remove the name"
+                )
             raise ConfigurationError(
                 f"compiled: {who} lists {name!r} in tools.include, which comes with {grants[name].section}, and it has none; give it that section or remove the name"
             )
@@ -553,7 +560,7 @@ def _picked_tools(who: str, resolved: Resolved, declared: Collection[str]) -> _P
     dropped = set(_names(who, "exclude", resolved.tools.exclude, declared))
     included = _names(who, "include", resolved.tools.include, declared)
     if resolved.instructions is not None:
-        _check_sections(who, included, grants)
+        _check_sections(who, included, grants, resolved.kind)
         _check_jobs_go_together(who, dropped)
     return _Picked(
         [name for name in dict.fromkeys(included) if name not in dropped],
@@ -740,6 +747,10 @@ def _refuse_targets(
         if target is None:
             raise ConfigurationError(
                 f"compiled: {who} names {name!r} in delegate_to or route, and {MANIFEST} holds no such agent; its agents are {', '.join(sorted(agents))}"
+            )
+        if target.kind == "voice":
+            raise ConfigurationError(
+                f"compiled: {who} reaches {name!r}, a voice agent; only engine.talk runs one, so reach another agent"
             )
         if target.needs_mode:
             raise ConfigurationError(

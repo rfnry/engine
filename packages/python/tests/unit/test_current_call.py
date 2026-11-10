@@ -238,8 +238,9 @@ class Keeping:
     async def record(self, run: Run) -> None:
         self.runs.append(run)
 
-    def of(self, agent: str) -> Run:
+    def of(self, agent: str) -> Generation | Decision:
         [found] = [r for r in self.runs if r.agent == agent]
+        assert isinstance(found, Generation | Decision)
         return found
 
 
@@ -444,7 +445,7 @@ async def test_a_run_a_tool_body_starts_after_the_call_ended_records_that_call(
         text_reply("Done."),
         text_reply("Later."),
     )
-    spawned: list[asyncio.Task[Run]] = []
+    spawned: list[asyncio.Task[Generation | Decision]] = []
 
     async def spawn(args: dict[str, Any]) -> str:
         spawned.append(asyncio.create_task(engine.run("billing", "acme", "later")))
