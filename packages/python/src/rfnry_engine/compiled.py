@@ -1,20 +1,41 @@
 import json
-from collections.abc import Collection, Mapping
-from pathlib import Path
+import os
+from collections.abc import Callable, Collection, Iterable, Mapping
+from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
 from pydantic import JsonValue
 
 from rfnry_engine.chain import preload_digest
-from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.fingerprint import folder_fingerprint
-from rfnry_engine.folders import pattern_reaches
+from rfnry_engine.folders import (
+    Gitignored,
+    listed,
+    mapped,
+    pattern_covers,
+    pattern_leads_into,
+    pattern_reaches,
+    readable,
+    shown_link,
+    warns_once,
+)
 from rfnry_engine.frontmatter import body_of, description
-from rfnry_engine.manifest import MANIFEST, AgentEntry, Resolved, overlaid, read_manifest
-from rfnry_engine.models import Choice, Question
+from rfnry_engine.jail import Jail
+from rfnry_engine.manifest import (
+    MANIFEST,
+    AgentEntry,
+    FilesSection,
+    Resolved,
+    overlaid,
+    read_manifest,
+)
+from rfnry_engine.models import Choice, Part, Question
+from rfnry_engine.tools.builtins import BUILTINS, preload_parts
 from rfnry_engine.tree import (
     QUESTION_FILES,
     AgentSpec,
+    Gitignores,
     question_files,
     question_parts,
     read_questions,
@@ -22,13 +43,17 @@ from rfnry_engine.tree import (
 )
 from rfnry_engine.workers.pool import Script
 
-_NOTHING_PRELOADED = preload_digest([])
-
 
 class _Asked(NamedTuple):
     questions: dict[str, Question]
     scripted: dict[str, tuple[dict[str, JsonValue], Script]]
     files: dict[str, Path]
+
+
+class _Reach(NamedTuple):
+    on_the_map: dict[str, Path]
+    files: dict[str, Path]
+    preloaded: list[str]
 
 
 def _who(agent: str, mode: str | None) -> str:
@@ -124,6 +149,134 @@ def _check_what_it_reaches(root: Path, who: str, files: Mapping[str, Path]) -> N
             )
 
 
+def _in_reach(root: Path, patterns: Collection[str], gitignore: bool) -> dict[str, Path]:
+    manifest = (root / MANIFEST).resolve()
+    gitignores = Gitignores()
+    gitignored = Gitignored(root) if gitignore else None
+    found: dict[str, Path] = {}
+
+    def visit(folder: Path, rel: PurePosixPath, trail: frozenset[Path]) -> None:
+        if gitignored is not None:
+            gitignores.held_in(folder, gitignored)
+        for name in listed(folder):
+            path, below = folder / name, rel / name
+            target = Path(os.path.realpath(path))
+            if (
+                name == "__pycache__"
+                or target == manifest
+                or target in trail
+                or not target.is_relative_to(root)
+                or (gitignored is not None and gitignored(path))
+            ):
+                continue
+            if path.is_dir():
+                if shown_link(root, path) and any(
+                    pattern_leads_into(pattern, below) for pattern in patterns
+                ):
+                    visit(path, below, trail | {target})
+            elif (
+                any(pattern_covers(pattern, below) for pattern in patterns)
+                and path.is_file()
+                and readable(path)
+            ):
+                found[below.as_posix()] = path
+
+    visit(root, PurePosixPath("."), frozenset({root}))
+    return found
+
+
+def _matching(
+    who: str, key: str, patterns: Iterable[str], candidates: Mapping[str, Path]
+) -> dict[str, Path]:
+    matched: dict[str, Path] = {}
+    for pattern in patterns:
+        if PurePosixPath(pattern) == PurePosixPath(MANIFEST):
+            raise ConfigurationError(
+                f"compiled: {who} lists {pattern!r} in {key}, which is {MANIFEST}; a model never reads that file, so point at another"
+            )
+        found = {
+            name: path
+            for name, path in candidates.items()
+            if pattern_covers(pattern, PurePosixPath(name))
+        }
+        if not found:
+            raise ConfigurationError(
+                f"compiled: {who} lists {pattern!r} in {key}, which reaches nothing; write a folder, a file or a glob from the folder root that reaches a file, or remove it"
+            )
+        matched |= found
+    return matched
+
+
+def _own_files(resolved: Resolved) -> set[str]:
+    if resolved.instructions is None:
+        return set()
+    return {PurePosixPath(resolved.instructions).as_posix()}
+
+
+def _reach(root: Path, who: str, files: FilesSection, own: Collection[str]) -> _Reach:
+    include = files.include or []
+    preload = files.preload or []
+    candidates = _in_reach(root, [*include, *preload], files.gitignore)
+    included = _matching(who, "files.include", include, candidates)
+    excluded = _matching(who, "files.exclude", files.exclude or [], included)
+    kept = {name: path for name, path in included.items() if name not in excluded}
+    preloaded = _matching(who, "files.preload", preload, candidates)
+    return _Reach(
+        on_the_map={name: path for name, path in kept.items() if name not in own},
+        files={**kept, **preloaded},
+        preloaded=list(preloaded),
+    )
+
+
+def _with_folders(root: Path, files: Iterable[Path]) -> set[Path]:
+    held = {root}
+    for file in files:
+        held.add(file)
+        held.update(parent for parent in file.parents if parent.is_relative_to(root))
+    return held
+
+
+def _outside(root: Path, reached: Mapping[str, Path]) -> Callable[[Path], bool]:
+    spelled = _with_folders(root, (root / name for name in reached))
+    real = _with_folders(root, (path.resolve() for path in reached.values()))
+
+    def withheld(path: Path) -> bool:
+        return (
+            Path(os.path.normpath(path)) not in spelled or Path(os.path.realpath(path)) not in real
+        )
+
+    return withheld
+
+
+def _hidden_names(root: Path, names: Iterable[str]) -> frozenset[Path]:
+    held: set[Path] = set()
+    for name in names:
+        parts = PurePosixPath(name).parts
+        held.update(
+            root.joinpath(*parts[: depth + 1])
+            for depth, part in enumerate(parts)
+            if part.startswith(".")
+        )
+    return frozenset(held)
+
+
+def _file_tools(resolved: Resolved) -> list[str]:
+    if resolved.files.include is None and resolved.files.preload is None:
+        return []
+    return sorted(BUILTINS - set(resolved.tools.exclude or ()))
+
+
+def _preloaded(
+    root: Path, who: str, names: list[str], named: frozenset[Path], loadable: bool
+) -> tuple[list[Part], dict[str, bytes]]:
+    try:
+        return preload_parts(names, Jail(root, named=named), loadable)
+    except InputError as exc:
+        raise ConfigurationError(
+            f"compiled: {who} cannot preload: {exc}; fix that file, or drop it from files.preload"
+        ) from exc
+
+
 def _fingerprint(
     root: Path,
     agent: str,
@@ -157,7 +310,17 @@ def _spec(root: Path, agent: str, entry: AgentEntry, mode: str | None) -> AgentS
         files[resolved.instructions] = root / resolved.instructions
         body = body_of(text)
         said = said or description(text, root / resolved.instructions)
+    reach = (
+        _Reach({}, {}, [])
+        if resolved.instructions is None
+        else _reach(root, who, resolved.files, _own_files(resolved))
+    )
+    files |= reach.files
     _check_what_it_reaches(root, who, files)
+    keep = _file_tools(resolved)
+    named = _hidden_names(root, reach.files)
+    preload, loaded = _preloaded(root, who, reach.preloaded, named, "Load" in keep)
+    read |= loaded
     return AgentSpec(
         root=root,
         name=agent,
@@ -169,13 +332,20 @@ def _spec(root: Path, agent: str, entry: AgentEntry, mode: str | None) -> AgentS
         agents=resolved.orchestration.delegate_to or [],
         route=resolved.orchestration.route,
         questions=asked.questions,
-        keep=[],
+        keep=keep,
         fingerprint=_fingerprint(root, agent, mode, resolved, files, read),
         workspace=bool(resolved.workspace),
         scripted=asked.scripted,
-        preload_digest=_NOTHING_PRELOADED,
+        preload=preload,
+        preload_digest=preload_digest(preload),
+        listing="\n".join(mapped(sorted(reach.on_the_map.items()))),
         needs_mode=resolved.instructions is None,
         worker=resolved.worker or "default",
+        withheld=_outside(root, reach.files) if reach.files else None,
+        named=named,
+        included_folders=[
+            pattern for pattern in resolved.files.include or [] if (root / pattern).is_dir()
+        ],
         max_model_calls=resolved.max_model_calls,
         tool_timeout=resolved.tools.timeout,
         max_depth=resolved.orchestration.max_depth,
@@ -239,6 +409,7 @@ def _check_orchestration(agents: Mapping[str, AgentSpec]) -> None:
             _check_route(agents, who, spec)
 
 
+@warns_once()
 def load_folder(root: Path) -> dict[str, AgentSpec]:
     root = Path(root).resolve()
     manifest = read_manifest(root)

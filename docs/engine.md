@@ -278,6 +278,8 @@ class Fixed:
 
 A folder with an `rfnry.yaml` at its root is read from that file instead of from `AGENT.md` files: one entry per agent under `agents:`, whose `instructions` names any markdown file from the folder root, its frontmatter left out of the prompt, and whose `modes` each compile to a full agent when the engine loads.
 
+`files:` decides what a model may open, and every path in it, in the map and given to the file tools is written from the folder root, so an instructions file saying `knowledge/refunds.md` means that in every call. `include` lists folders, files or globs, `exclude` takes some back out, `preload` is sent with every model call and stays readable whether or not `include` reaches it, and `gitignore: true` leaves out what a `.gitignore` ignores. The map in the prompt holds what `include` reaches less `exclude` and less the agent's own instructions. A hidden name is reached only where a path in the file names it, as `.claude/agents` does, and hidden names below it stay hidden; `rfnry.yaml` is never readable; a link that leads out of the folder is left out, and one that stays inside is read under its own name. What is out of reach reads as missing to `Read`, `Load`, `LS`, `Grep` and `Glob`, which come with `files`, and `tools.exclude` drops any of them. A pattern that reaches nothing is a `ConfigurationError`, so a mistyped path cannot quietly shrink what a model sees.
+
 ```
 agents/
   support/
@@ -1848,7 +1850,7 @@ tree is mounted in the sandbox, as commands see it. The commands of a run then g
 tree as `posixpath.normpath` writes it, so `/srv/agents/` is `/srv/agents`, and `RFNRY_AGENT`, the
 running agent's folder in it. The `Shell` description tells the model that the folder is at
 `$RFNRY_AGENT`, read-only, with its files, skills and scripts to read and run, and that each folder
-the agent reads is at `$RFNRY_TREE/<name>`. A skill's script is run as
+the agent reads, or that its `files.include` names, is at `$RFNRY_TREE/<name>`. A skill's script is run as
 `python "$RFNRY_AGENT/skills/plot/run.py"`. The sandbox mounts the tree read-only at the same path:
 `--ro-bind /srv/agents /srv/agents` for bubblewrap, `-v /srv/agents:/srv/agents:ro` for Docker, and
 for an unsandboxed `Local` the tree's own path. Commands started with `background=true` get the

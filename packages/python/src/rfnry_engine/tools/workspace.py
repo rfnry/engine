@@ -805,7 +805,7 @@ class Workspace:
                 " scripts can be read and run from there."
             )
             if reads:
-                places = ", ".join(f"$RFNRY_TREE/{name}" for name in reads)
+                places = ", ".join(posixpath.normpath(f"$RFNRY_TREE/{name}") for name in reads)
                 told += f" The folders it reads are at {places}."
         if bridged:
             told += (

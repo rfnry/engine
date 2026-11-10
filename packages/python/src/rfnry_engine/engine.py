@@ -1102,7 +1102,7 @@ class Engine:
         )
         specs = [ToolSpec.model_validate(_copied(d)) for d in surface.definitions()]
         if room is not None:
-            told = room._told(list(spec.reads), bridging)
+            told = room._told([*spec.reads, *spec.included_folders], bridging)
             specs = [
                 s.model_copy(update={"description": s.description + told})
                 if s.name == "Shell"

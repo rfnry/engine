@@ -51,8 +51,7 @@ def _past_stars(segments: Sequence[str], states: Iterable[int]) -> set[int]:
     return passed
 
 
-def pattern_reaches(pattern: str, path: PurePath) -> bool:
-    segments = PurePosixPath(pattern).parts
+def _states(segments: Sequence[str], path: PurePath) -> set[int]:
     states = _past_stars(segments, {0})
     for part in path.parts:
         hidden = part.startswith(".")
@@ -65,7 +64,26 @@ def pattern_reaches(pattern: str, path: PurePath) -> bool:
             elif segment == part or (not hidden and PurePosixPath(part).full_match(segment)):
                 moved.add(state + 1)
         states = _past_stars(segments, moved)
-    return len(segments) in states
+    return states
+
+
+def pattern_reaches(pattern: str, path: PurePath) -> bool:
+    segments = PurePosixPath(pattern).parts
+    return len(segments) in _states(segments, path)
+
+
+def pattern_covers(pattern: str, path: PurePath) -> bool:
+    place = path
+    while not pattern_reaches(pattern, place):
+        if place.name.startswith(".") or place == place.parent:
+            return False
+        place = place.parent
+    return True
+
+
+def pattern_leads_into(pattern: str, folder: PurePath) -> bool:
+    segments = PurePosixPath(pattern).parts
+    return bool(_states(segments, folder) - {len(segments)}) or pattern_covers(pattern, folder)
 
 
 def declares(folder: Path) -> bool:
@@ -82,7 +100,7 @@ def _inside(jail: Jail, entry: Path) -> bool:
     return True
 
 
-def _shown(folder: Path, entry: Path) -> bool:
+def shown_link(folder: Path, entry: Path) -> bool:
     if not entry.is_symlink():
         return True
     parts = entry.resolve().relative_to(folder).parts
@@ -98,13 +116,21 @@ def _unreadable(exc: OSError) -> None:
         logger.warning("folders: cannot read %s: %s; it is left out", exc.filename, exc)
 
 
-def _readable(path: Path) -> bool:
+def readable(path: Path) -> bool:
     try:
         os.close(os.open(path, os.O_RDONLY))
     except OSError as exc:
         _unreadable(exc)
         return False
     return True
+
+
+def listed(folder: Path) -> list[str]:
+    try:
+        return sorted(os.listdir(folder))
+    except OSError as exc:
+        _unreadable(exc)
+        return []
 
 
 def _matches_itself(regex: re.Pattern[str], rel: str, is_folder: bool) -> bool:
@@ -187,7 +213,7 @@ def _walk(
             and here / name not in apart
             and (inner or not declares(here / name))
             and _inside(jail, here / name)
-            and _shown(holder, here / name)
+            and shown_link(holder, here / name)
             and not (ignored is not None and ignored(here / name))
         ]
         dirs += [name if top else f"{at}/{name}" for name in names]
@@ -201,7 +227,7 @@ def _walk(
                 continue
             if ignored is not None and ignored(path):
                 continue
-            if path.is_file() and _inside(jail, path) and _readable(path):
+            if path.is_file() and _inside(jail, path) and readable(path):
                 files.append((name if top else f"{at}/{name}", path))
     return sorted(dirs), sorted(files)
 
@@ -217,13 +243,7 @@ def content(
     return _walk(folder, declared, inner, apart, within, ignored)[1]
 
 
-def entries(
-    folder: Path,
-    declared: bool,
-    apart: Collection[Path] = (),
-    ignored: Callable[[Path], bool] | None = None,
-) -> list[str]:
-    dirs, files = _walk(folder, declared, apart=apart, ignored=ignored)
+def _rendered(dirs: Iterable[str], files: Sequence[tuple[str, Path]]) -> list[str]:
     children: dict[str, list[tuple[str, str, bool]]] = {}
     for rel in dirs:
         parent, _, name = rel.rpartition("/")
@@ -244,6 +264,25 @@ def entries(
 
     render("", 0)
     return lines
+
+
+def entries(
+    folder: Path,
+    declared: bool,
+    apart: Collection[Path] = (),
+    ignored: Callable[[Path], bool] | None = None,
+) -> list[str]:
+    return _rendered(*_walk(folder, declared, apart=apart, ignored=ignored))
+
+
+def mapped(files: Sequence[tuple[str, Path]]) -> list[str]:
+    folders = {
+        parent.as_posix()
+        for rel, _ in files
+        for parent in PurePosixPath(rel).parents
+        if parent != PurePosixPath(".")
+    }
+    return _rendered(folders, files)
 
 
 def joined(own: list[str], reads: Mapping[str, list[str]]) -> str:

@@ -68,9 +68,11 @@ class LSArgs(BaseModel):
     limit: int = Field(default=_HEAD_LIMIT, ge=1)
 
 
-def _hidden(rel: Path) -> bool:
+def _hidden(jail: Jail, root: Path, rel: Path) -> bool:
     return any(
-        (part.startswith(".") and part != "..") or part == "__pycache__" for part in rel.parts
+        ((part.startswith(".") and part != "..") or part == "__pycache__")
+        and root.joinpath(*rel.parts[: depth + 1]) not in jail.named
+        for depth, part in enumerate(rel.parts)
     )
 
 
@@ -97,15 +99,15 @@ def _hides(jail: Jail, path: str | Path) -> bool:
         for above in named.parents:
             held = _within(jail, above)
             if held is not None:
-                return _hidden(held[1] / named.relative_to(above).parts[0])
+                return _hidden(jail, held[0], held[1] / named.relative_to(above).parts[0])
         return False
     root, seen = place
     if os.path.isdir(named):
-        return _hidden(seen)
+        return _hidden(jail, root, seen)
     folder = _within(jail, named.parent)
     if folder is not None and folder[0] == root:
         seen = folder[1] / named.name
-    return _hidden(seen) or _hidden(Path(named.name))
+    return _hidden(jail, root, seen) or _hidden(jail, named.parent, Path(named.name))
 
 
 def _ignored(jail: Jail, path: str | Path) -> bool:
@@ -302,17 +304,24 @@ class _Directory:
         workspace: bool = False,
         ignored: Callable[[Path], bool] | None = None,
         withheld: Callable[[Path], bool] | None = None,
+        named: Collection[Path] = (),
     ) -> None:
         self.root = Path(root).resolve()
         self.workspace = workspace
         self.reads = {name: Path(folder).resolve() for name, folder in (reads or {}).items()}
-        self.jail = Jail(self.root, reach=self.reads, ignored=ignored, withheld=withheld)
+        self.jail = Jail(
+            self.root, reach=self.reads, ignored=ignored, withheld=withheld, named=named
+        )
 
     def _shown(self, path: Path) -> str:
         for name, folder in self.reads.items():
             if folder in path.parents:
                 return f"{name}/{path.relative_to(folder).as_posix()}"
         return path.relative_to(self.root).as_posix()
+
+    def _place(self, path: str) -> Path:
+        real = self.jail.resolve(path)
+        return self.jail._joined(path) if self.jail._withholds(real) else real
 
     def _inside(self, path: Path) -> bool:
         try:
@@ -345,7 +354,7 @@ class _Directory:
             rel = Path(self._shown(candidate))
             if (
                 not candidate.is_file()
-                or _hidden(rel)
+                or _hidden(self.jail, self.root, rel)
                 or _hides(self.jail, candidate)
                 or not self._inside(candidate)
             ):
@@ -374,11 +383,12 @@ class _Directory:
                     f"tools/builtins: pattern took longer than {budget:g}s; simplify it or narrow path and glob"
                 ) from exc
 
-        base = (
-            self.jail.resolve(_through_folders(self.jail, _named(self.jail, a.path)))
-            if a.path
-            else self.root
-        )
+        base = self.root
+        if a.path:
+            named = _through_folders(self.jail, _named(self.jail, a.path))
+            if self.jail._withholds(named):
+                return "no matches found"
+            base = self._place(named)
         lines: list[str] = []
         scanned = 0
         exhausted = False
@@ -448,7 +458,7 @@ class _Directory:
             self._shown(p)
             for p in entries[:_MAX_WALK]
             if p.is_file()
-            and not _hidden(Path(self._shown(p)))
+            and not _hidden(self.jail, self.root, Path(self._shown(p)))
             and not _hides(self.jail, p)
             and self._inside(p)
         )
@@ -458,16 +468,16 @@ class _Directory:
     def ls(self, args: dict[str, Any]) -> str:
         a = LSArgs.model_validate(args)
         path = _through_folders(self.jail, _named(self.jail, a.path or "."))
-        place = self.jail.resolve(path)
         try:
             fd = self.jail.open(path, os.O_RDONLY | os.O_DIRECTORY)
             try:
+                place = self._place(path)
                 with os.scandir(fd) as found:
                     entries = sorted(
                         (
                             e
                             for e in found
-                            if not _hidden(Path(e.name))
+                            if not _hidden(self.jail, place, Path(e.name))
                             and not _hides(self.jail, place / e.name)
                             and not _not_there(self.jail, place / e.name)
                             and self._inside(place / e.name)
@@ -497,8 +507,9 @@ def builtins(
     workspace: Backend | None = None,
     ignored: Callable[[Path], bool] | None = None,
     withheld: Callable[[Path], bool] | None = None,
+    named: Collection[Path] = (),
 ) -> list[Tool]:
-    directory = _Directory(root, reads, workspace is not None, ignored, withheld)
+    directory = _Directory(root, reads, workspace is not None, ignored, withheld, named)
 
     def threaded(handler: Any) -> Any:
         async def body(args: dict[str, Any]) -> Result:
@@ -545,8 +556,9 @@ def load_tool(
     reads: Mapping[str, Path] | None = None,
     ignored: Callable[[Path], bool] | None = None,
     withheld: Callable[[Path], bool] | None = None,
+    named: Collection[Path] = (),
 ) -> Tool:
-    jail = Jail(folder, reach=reads, ignored=ignored, withheld=withheld)
+    jail = Jail(folder, reach=reads, ignored=ignored, withheld=withheld, named=named)
     missing = (
         'Load with where="workspace" loads from your workspace' if workspace is not None else ""
     )

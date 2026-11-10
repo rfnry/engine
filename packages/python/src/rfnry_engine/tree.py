@@ -278,6 +278,8 @@ class AgentSpec(BaseModel):
     needs_mode: bool = False
     worker: str = "default"
     withheld: Callable[[Path], bool] | None = None
+    named: frozenset[Path] = frozenset()
+    included_folders: list[str] = Field(default_factory=list)
     max_model_calls: int | None = None
     tool_timeout: float | None = None
     max_depth: int | None = None
@@ -441,7 +443,7 @@ def _gitignore(path: Path) -> GitIgnoreSpec:
     return GitIgnoreSpec([pattern for pattern in compiled if pattern is not None])
 
 
-class _Gitignores:
+class Gitignores:
     def __init__(self) -> None:
         self._read: dict[Path, GitIgnoreSpec] = {}
         self._reached: dict[Path, Gitignored] = {}
@@ -451,14 +453,17 @@ class _Gitignores:
             self._read[path] = _gitignore(path)
         return self._read[path]
 
+    def held_in(self, here: Path, check: Gitignored) -> None:
+        gitignore = here / ".gitignore"
+        if gitignore.is_file() and not gitignore.is_symlink():
+            check.specs[here] = self._spec(gitignore)
+
     def reached(self, place: Path) -> Gitignored:
         if place not in self._reached:
             check = Gitignored(place)
             for directory, names, _ in os.walk(place):
                 here = Path(directory)
-                gitignore = here / ".gitignore"
-                if gitignore.is_file() and not gitignore.is_symlink():
-                    check.specs[here] = self._spec(gitignore)
+                self.held_in(here, check)
                 names[:] = [
                     name
                     for name in names
@@ -900,7 +905,7 @@ def _gives_skills(folder: Path) -> bool:
 
 
 def _skills_from(
-    tree: Path, prefix: str, path: str, gitignores: _Gitignores | None
+    tree: Path, prefix: str, path: str, gitignores: Gitignores | None
 ) -> dict[str, Skill]:
     place = (tree / prefix).resolve()
     folder = place / "skills"
@@ -967,7 +972,7 @@ def load_agent(
     tool_folders: Mapping[str, dict[str, ToolDef]] | None = None,
     script_folders: Collection[Path] = (),
     skill_prefixes: Collection[str] = (),
-    gitignores: _Gitignores | None = None,
+    gitignores: Gitignores | None = None,
 ) -> AgentSpec:
     front, body = _agent_front(directory)
     agent = front.name
@@ -975,7 +980,7 @@ def load_agent(
         raise ConfigurationError(
             f"tree: decision agent {agent!r} cannot declare gitignore:; a decision agent reads no files, so give it what it needs in its input or its questions"
         )
-    ignores = (gitignores or _Gitignores()) if front.gitignore else None
+    ignores = (gitignores or Gitignores()) if front.gitignore else None
     if front.kind == "generation" and question_files(directory / "questions"):
         raise ConfigurationError(
             f"tree: generation agent {agent!r} cannot declare questions/; questions are for decision agents, so make it kind: decision or move them to one"
@@ -1160,7 +1165,7 @@ def load_tree(root: Path) -> dict[str, AgentSpec]:
         )
     for path in paths:
         _own(root / path)
-    gitignores = _Gitignores()
+    gitignores = Gitignores()
     for path in paths:
         front = _agent_front(root / path)[0]
         if front.kind == "generation":
