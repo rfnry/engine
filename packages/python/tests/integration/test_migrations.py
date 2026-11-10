@@ -726,14 +726,18 @@ async def test_upgrade_to_schema_5_adds_a_nullable_mode_and_earlier_runs_have_no
         f"run rfnry-engine upgrade --schema {name}$",
     ):
         await storage.check()
+    written = "SELECT xmin::text FROM engine_runs WHERE run_id = 'r1'"
     async with pool.acquire() as conn:
+        before = await conn.fetchval(written)
         plan = await migrations.apply(conn, migrations.plan_upgrade)
+        after = await conn.fetchval(written)
         column = await conn.fetchrow(
             "SELECT data_type, is_nullable FROM information_schema.columns "
             "WHERE table_schema = $1 AND table_name = 'engine_runs' AND column_name = 'mode'",
             name,
         )
     assert plan.steps == ["0005 mode"]
+    assert after == before
     assert column is not None and tuple(column) == ("text", "YES")
     await storage.check()
     stored = await storage.get_run("acme", "r1")
@@ -780,6 +784,7 @@ async def test_upgrade_to_schema_4_drops_the_task_column_and_every_body_s_task(
 async def test_a_body_already_in_this_version_s_shape_is_left_as_it_is(schemas: Schemas) -> None:
     pool, held = await released(schemas, "0.1.8")
     [current] = flatten(generation_record(agent="desk"), AT)
+    triage = recorded_by(held, "triage")
     written = "SELECT run_id, xmin::text AS x FROM engine_runs ORDER BY run_id"
     async with pool.acquire() as conn:
         await written_as_released(
@@ -788,8 +793,12 @@ async def test_a_body_already_in_this_version_s_shape_is_left_as_it_is(schemas: 
         before = {row["run_id"]: row["x"] for row in await conn.fetch(written)}
         await migrations.apply(conn, migrations.plan_upgrade)
         after = {row["run_id"]: row["x"] for row in await conn.fetch(written)}
+        rewritten = await conn.fetchval(
+            "SELECT body::text FROM engine_runs WHERE run_id = $1", triage["run_id"]
+        )
     unchanged = {run_id for run_id in before if before[run_id] == after[run_id]}
     assert unchanged == {current.run_id}
+    assert json.loads(rewritten) == {**triage["body"], "mode": None}
 
 
 @pytest.mark.parametrize("table", ["engine_runs", "engine_labels"])
