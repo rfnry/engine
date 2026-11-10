@@ -430,6 +430,30 @@ async def test_a_link_inside_the_root_reads_by_its_own_name(tmp_path: Path) -> N
     )
 
 
+async def test_a_folder_holding_only_links_is_listed_searched_and_globbed(tmp_path: Path) -> None:
+    shared = {"shared/policy.md": "A shared policy.\n", "shared/rates.md": "Shared rates.\n"}
+    folder = _folder(tmp_path, {"include": ["linked"]}, written=shared)
+    _link(folder / "linked/policy.md", "../shared/policy.md")
+    _link(folder / "linked/rates.md", "../shared/rates.md")
+    assert _map(folder) == ["linked/", "  policy.md", "  rates.md"]
+    surface = _surface(folder)
+    both = "linked/policy.md\nlinked/rates.md"
+    for pattern, found in (
+        ("**/*.md", both),
+        ("linked/*", both),
+        ("linked/rates.md", "linked/rates.md"),
+    ):
+        assert await surface.dispatch("Glob", {"pattern": pattern}) == found
+    assert await surface.dispatch("Grep", {"pattern": "hared"}) == both
+    assert await surface.dispatch("LS", {}) == "linked/"
+    assert await surface.dispatch("LS", {"path": "linked"}) == "policy.md\nrates.md"
+    assert await surface.dispatch("Read", {"path": "linked/policy.md"}) == "A shared policy.\n"
+    _reads_as_missing(
+        await _answer(surface, "Read", {"path": "shared/policy.md"}), "shared/policy.md"
+    )
+    assert "shared/" not in str(await surface.dispatch("Glob", {"pattern": "*/*"}))
+
+
 def test_a_link_cycle_ends(tmp_path: Path) -> None:
     folder = _folder(tmp_path, {"include": ["knowledge"]})
     _link(folder / "knowledge/up", "..")

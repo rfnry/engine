@@ -1359,8 +1359,8 @@ packages and any `.py` module beside it, by its name, with no `_` needed, at the
 ([Tools of the folder](#tools-of-the-folder)). Its helpers are the modules beside it that it
 imports, another question's script among them, and it is read when the engine loads, as a tool's
 is, so `fingerprint.agent` covers it and its helpers. A `.py` in a folder `questions:` reaches that
-has no `.json` beside it and that no script there imports, one with no `run` at its top level, and
-what a tool may not import — a package folder beside it, a name below a module beside it, an import
+has no `.json` beside it and that no `.py` file there imports, whichever agent or mode asks the
+questions that import it, one with no `run` at its top level, and what a tool may not import — a package folder beside it, a name below a module beside it, an import
 that resolves to nothing, a helper named like a standard-library module, `stat.py` — are a
 `ConfigurationError`; a script or a helper may link anywhere inside the folder root. A route goes
 by a question whose options its JSON fixes, never by one a script fills
@@ -2712,24 +2712,25 @@ refund`). The sections grant `Read`, `Grep`, `Glob`, `LS` and `Load` with `files
 `workspace: true`, whether or not `include` names them; naming one when its section is missing is a
 `ConfigurationError` naming the section, since no run can supply it. `History` comes with a run whose
 `start=` is past the beginning of its history and `Output` with `expect=`: the run decides them, so
-either one in `include` or `exclude` is a `ConfigurationError`. `exclude` applies after `include`,
-across the entry and its mode, and drops exactly the tool it names, a tool a section grants
-included: `exclude: [Delegate]` takes delegation away, and `exclude: [Write]` leaves `Edit` and the
-rest. `Shell`, `Job` and `Jobs` go together or not at all, since `Shell` can start a job only `Job`
-and `Jobs` can read or stop, so excluding one or two of them is a `ConfigurationError`. A name in
-`include` or `exclude` that differs only by case from a declared tool or one the engine gives is a
-`ConfigurationError` naming the right one (`compiled: agent 'billing' lists 'read' in tools.include;
-did you mean 'Read'? ...`); any other name that is neither is read as one the run gives, so a name
-the run must give fails only at a run without it, and `rfnry-engine folder check` lists those names
-for each agent. In `exclude`, such a tool of the run is dropped. A run's
-`tools=` replaces a declared tool of the same name, which is how a test or a replay stubs a real
-system; a tool of the run that `include` does not name is not offered. A pattern that matches
-nothing, a declared tool that no entry or mode picks once `exclude` has applied, a declared tool named
-like one the engine gives (`Read`, `Grep`, `Glob`, `LS`, `Load`, `Shell`, `Job`, `Jobs`, `Write`,
-`Edit`, `Delegate`, `History`, `Output`), and a module, function or schema that is not there are
-`ConfigurationError`s when the engine loads. The smallest of the tool's own `timeout`, the entry's
-`tools.timeout` and `Engine(tool_timeout=)` bounds each call; a `Workspace`'s own `timeout` replaces
-them for `Shell`, `Job`, `Write` and `Edit`. `max_parallel` is one of the [limits](#limits).
+either one in `include` or `exclude`, in any case, is a `ConfigurationError`. `exclude` applies
+after `include`, across the entry and its mode, and drops exactly the tool it names, a tool a
+section grants included: `exclude: [Delegate]` takes delegation away, and `exclude: [Write]` leaves
+`Edit` and the rest. `Shell`, `Job` and `Jobs` go together or not at all, since `Shell` can start a
+job only `Job` and `Jobs` can read or stop, so excluding one or two of them is a
+`ConfigurationError`. A name in `include` or `exclude` that differs only by case from a declared
+tool or one the engine gives is a `ConfigurationError` naming the right one (`compiled: agent
+'billing' lists 'read' in tools.include; did you mean 'Read'? ...`); any other name that is neither
+is read as one the run gives, so a name the run must give fails only at a run without it, and
+`rfnry-engine folder check` lists those names for each agent. In `exclude`, such a tool of the run
+is dropped. A run's `tools=` replaces a declared tool of the same name, which is how a test or a
+replay stubs a real system; a tool of the run that `include` does not name is not offered. A
+pattern that matches nothing, a declared tool that no entry or mode picks once `exclude` has
+applied, a declared tool named like one the engine gives (`Read`, `Grep`, `Glob`, `LS`, `Load`,
+`Shell`, `Job`, `Jobs`, `Write`, `Edit`, `Delegate`, `History`, `Output`), and a module, function
+or schema that is not there are `ConfigurationError`s when the engine loads. The smallest of the
+tool's own `timeout`, the entry's `tools.timeout` and `Engine(tool_timeout=)` bounds each call; a
+`Workspace`'s own `timeout` replaces them for `Shell`, `Job`, `Write` and `Edit`. `max_parallel` is
+one of the [limits](#limits).
 
 ### From a shell, with its tests beside it
 

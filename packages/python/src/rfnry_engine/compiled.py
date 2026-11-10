@@ -176,9 +176,7 @@ def _questions(root: Path, who: str, written: list[str]) -> _Asked:
                 )
             held[name] = path
         fixed, filled = read_questions(directory, definitions, scripts, root)
-        refuse_loose_scripts(
-            directory, {name for _, script in filled.values() for name in script.helpers}
-        )
+        refuse_loose_scripts(directory)
         questions |= fixed
         scripted |= filled
         reached.extend(definitions.values())
@@ -523,6 +521,7 @@ def _with_folders(root: Path, files: Iterable[Path]) -> set[Path]:
 def _outside(root: Path, reached: Mapping[str, Path]) -> Callable[[Path], bool]:
     spelled = _with_folders(root, (root / name for name in reached))
     real = _with_folders(root, (path.resolve() for path in reached.values()))
+    real |= {Path(os.path.realpath(place)) for place in spelled}
 
     def withheld(path: Path) -> bool:
         return (
@@ -577,9 +576,10 @@ def _refuse_near_miss(who: str, key: str, entry: str, declared: Collection[str])
 def _names(who: str, key: str, written: list[str] | None, declared: Collection[str]) -> list[str]:
     names: list[str] = []
     for entry in written or ():
-        if entry in RUN_DECIDES:
+        decided = next((name for name in RUN_DECIDES if name.casefold() == entry.casefold()), None)
+        if decided is not None:
             raise ConfigurationError(
-                f"compiled: {who} lists {entry!r} in tools.{key}; the run decides that tool through {RUN_DECIDES[entry]}, so leave it out"
+                f"compiled: {who} lists {entry!r} in tools.{key}; the run decides that tool through {RUN_DECIDES[decided]}, so leave it out"
             )
         if "*" not in entry:
             _refuse_near_miss(who, key, entry, declared)

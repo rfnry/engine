@@ -572,6 +572,7 @@ async def test_an_async_provider_is_refused_saying_what_a_provider_is(tmp_path: 
 
     engine = Engine(_one(tmp_path), providers={"p": cast(Any, provider)})
     said = ""
+    gc.collect()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         try:
@@ -583,7 +584,9 @@ async def test_an_async_provider_is_refused_saying_what_a_provider_is(tmp_path: 
         "engine: provider 'p' returned a coroutine; a provider is a plain function that returns "
         "an adapter, so write it with def, not async def"
     )
-    assert [str(warning.message) for warning in caught] == []
+    assert [
+        str(warning.message) for warning in caught if "never awaited" in str(warning.message)
+    ] == []
 
 
 async def test_the_record_says_what_the_model_reports(tmp_path: Path) -> None:

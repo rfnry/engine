@@ -787,6 +787,54 @@ def test_a_py_beside_a_script_that_nothing_imports_is_still_refused(tmp_path: Pa
     )
 
 
+TRIAGE_FILES = {
+    "a.md": "Sort.\n",
+    "triage/urgency.json": '{"type": "check", "instructions": "Urgent?"}',
+    "triage/category.json": '{"type": "choice", "instructions": "Which?"}',
+    "triage/category.py": (
+        "import shapes\ndef run(input, call):\n    return {'options': shapes.OPTIONS}\n"
+    ),
+    "triage/shapes.py": "import _colors\nOPTIONS = {'b': _colors.BILLING, 's': 'Shipping'}\n",
+    "triage/_colors.py": "import tones\nBILLING = tones.BILLING\n",
+    "triage/tones.py": "BILLING = 'Billing'\n",
+}
+
+
+def _sorter(questions: list[str], **entry: Any) -> dict[str, Any]:
+    return {
+        "kind": "decision",
+        "model": "judge",
+        "instructions": "a.md",
+        "questions": questions,
+        **entry,
+    }
+
+
+def test_a_helper_of_a_script_only_a_mode_asks_does_not_refuse_the_entry(tmp_path: Path) -> None:
+    modes = {"full": {"questions": ["triage/category.json"]}}
+    write_folder(
+        tmp_path,
+        {"a": _sorter(["triage/urgency.json"], modes=modes)},
+        files=TRIAGE_FILES,
+    )
+    spec = load_folder(tmp_path)["a"]
+    assert (sorted(spec.questions), spec.scripted) == (["urgency"], {})
+    full = spec.modes["full"]
+    assert sorted(full.scripted) == ["category"]
+    assert sorted(full.scripted["category"][1].helpers) == ["_colors", "shapes", "tones"]
+
+
+def test_two_agents_asking_parts_of_one_folder_both_load(tmp_path: Path) -> None:
+    write_folder(
+        tmp_path,
+        {"a": _sorter(["triage/urgency.json"]), "b": _sorter(["triage/*.json"])},
+        files=TRIAGE_FILES,
+    )
+    loaded = load_folder(tmp_path)
+    assert sorted(loaded["a"].questions) == ["urgency"] and loaded["a"].scripted == {}
+    assert sorted(loaded["b"].scripted) == ["category"]
+
+
 async def test_a_question_script_may_import_another_question_s_script(tmp_path: Path) -> None:
     matcher(tmp_path, "import other\n" + ORDER)
     write(tmp_path / "matcher/questions/other.json", '{"type": "choice", "instructions": "Which?"}')

@@ -14,7 +14,7 @@ from rfnry_engine.folders import Gitignored
 from rfnry_engine.frontmatter import plainly
 from rfnry_engine.manifest import Kind, RouteSpec
 from rfnry_engine.models import Check, Choice, Part, Question, Score, Text
-from rfnry_engine.tools.folder import ToolDef, load_scripts, project_of
+from rfnry_engine.tools.folder import ToolDef, imported_beside, load_scripts, project_of
 from rfnry_engine.workers.pool import Script
 
 OUTPUT_TOOL = "Output"
@@ -245,7 +245,8 @@ def question_parts(files: Collection[Path]) -> tuple[dict[str, Path], list[str]]
     return definitions, [p.stem for p in files if p.suffix == ".py" and p.stem in definitions]
 
 
-def refuse_loose_scripts(directory: Path, imported: Collection[str]) -> None:
+def refuse_loose_scripts(directory: Path) -> None:
+    imported = imported_beside(directory)
     for path in question_files(directory):
         name = path.stem
         if (

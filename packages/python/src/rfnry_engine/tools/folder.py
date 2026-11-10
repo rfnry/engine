@@ -199,6 +199,22 @@ def _imported(node: ast.Import | ast.ImportFrom) -> list[str]:
     return [node.module or ""] if isinstance(node, ast.ImportFrom) else [a.name for a in node.names]
 
 
+def imported_beside(folder: Path) -> set[str]:
+    names: set[str] = set()
+    for path in folder.iterdir():
+        if path.suffix != ".py" or path.name.startswith(".") or not path.is_file():
+            continue
+        try:
+            module = ast.parse(path.read_text(encoding="utf-8"))
+        except OSError, UnicodeDecodeError, SyntaxError, ValueError:
+            continue
+        found = {
+            name.partition(".")[0] for node, _, _ in _imports(module) for name in _imported(node)
+        }
+        names |= found - {path.stem}
+    return names
+
+
 def _origins(name: str) -> list[Path]:
     try:
         spec = importlib.util.find_spec(name)
