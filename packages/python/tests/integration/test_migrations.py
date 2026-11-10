@@ -11,6 +11,7 @@ import asyncpg
 import pytest
 from database import URL, Schemas, admin, quoted
 from unit.fakes import Fixed, MemoryBucket, Scripted, generation_record
+from unit.trees import provided
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError, StorageError
@@ -693,7 +694,9 @@ async def test_upgrade_brings_every_run_and_label_a_release_recorded_to_this_ver
             "done": ScoreAnswer(score=2, probabilities=[0.0, 0.1, 0.9]),
         }
     )
-    async with Engine(AGENTS, models={"strong": Scripted(teaching), "judge": judging}) as engine:
+    async with Engine(
+        AGENTS, providers=provided({"strong": Scripted(teaching), "judge": judging})
+    ) as engine:
         labeled = await refinery.label("acme", engine, judge="judge", teacher="teacher")
     assert (labeled.judged, labeled.taught, labeled.errors) == (2, 1, {})
 

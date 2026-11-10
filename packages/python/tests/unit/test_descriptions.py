@@ -1,6 +1,7 @@
 import inspect
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import BaseModel, Field
@@ -13,6 +14,7 @@ from rfnry_engine.tools.declared import described
 from rfnry_engine.tools.workspace import Local, Workspace
 
 from .fakes import Scripted, text_reply
+from .trees import provided, write_folder
 
 
 class Verdict(BaseModel):
@@ -21,24 +23,24 @@ class Verdict(BaseModel):
     reason: str = Field(description="Why")
 
 
-def write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-
-
-def agent_md(name: str, kind: str = "generation", model: str = "strong", extra: str = "") -> str:
-    return f"---\nname: {name}\nkind: {kind}\nmodel: {model}\n{extra}---\nWork.\n"
+def agent(root: Path, name: str, description: str | None = None) -> Path:
+    entry: dict[str, Any] = {"kind": "generation", "model": "strong", "instructions": f"{name}.md"}
+    if description is not None:
+        entry["description"] = description
+    return write_folder(root, {name: entry}, files={f"{name}.md": "Work.\n"})
 
 
 async def test_an_expect_model_s_descriptions_reach_the_output_tool(tmp_path: Path) -> None:
-    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    agent(tmp_path, "a")
     llm = Scripted(
         Reply(
             tool_calls=[ToolCall(id="o", name="Output", args={"reason": "double charge"})],
             stop_reason="tool_use",
         )
     )
-    run = await Engine(tmp_path, models={"strong": llm}).run("a", "acme", "x", expect=Verdict)
+    run = await Engine(tmp_path, providers=provided({"strong": llm})).run(
+        "a", "acme", "x", expect=Verdict
+    )
     schema = next(t for t in llm.calls[0][2] if t.name == "Output").input_schema
     assert schema["description"] == "The verdict on the refund."
     assert schema["properties"]["reason"]["description"] == "Why"
@@ -49,13 +51,13 @@ async def test_an_expect_model_s_descriptions_reach_the_output_tool(tmp_path: Pa
 async def test_a_run_with_a_fresh_expect_model_does_not_grow_the_described_cache(
     tmp_path: Path,
 ) -> None:
-    write(tmp_path / "a/AGENT.md", agent_md("a"))
+    agent(tmp_path, "a")
 
     def fresh() -> type[BaseModel]:
         return type("Fresh", (BaseModel,), {"__annotations__": {"reason": str}})
 
     async def ask(model: type[BaseModel]) -> None:
-        engine = Engine(tmp_path, models={"strong": Scripted(text_reply("done"))})
+        engine = Engine(tmp_path, providers=provided({"strong": Scripted(text_reply("done"))}))
         await engine.run("a", "acme", "x", expect=model)
 
     await ask(fresh())
@@ -73,28 +75,17 @@ def test_run_takes_no_task() -> None:
     assert "task" not in inspect.signature(Engine.tool).parameters
 
 
-def test_engine_tool_is_described_by_the_agent_md(tmp_path: Path) -> None:
-    write(
-        tmp_path / "billing/AGENT.md",
-        agent_md("billing", extra="description: Answers billing questions\n"),
-    )
-    tool = Engine(tmp_path, models={}).tool("billing", scope="acme")
+def test_engine_tool_is_described_by_its_entry(tmp_path: Path) -> None:
+    agent(tmp_path, "billing", "Answers billing questions")
+    tool = Engine(tmp_path, providers=provided({"strong": None})).tool("billing", scope="acme")
     assert tool.definitions()[0]["description"] == "Answers billing questions"
     assert "description" not in inspect.signature(Engine.tool).parameters
 
 
 def test_engine_tool_on_an_agent_without_a_description_is_refused(tmp_path: Path) -> None:
-    write(tmp_path / "billing/AGENT.md", agent_md("billing"))
-    with pytest.raises(ConfigurationError, match="no description: in its AGENT.md"):
-        Engine(tmp_path, models={}).tool("billing", scope="acme")
-
-
-def test_engine_tool_on_an_agent_whose_description_is_only_whitespace_is_refused(
-    tmp_path: Path,
-) -> None:
-    write(tmp_path / "billing/AGENT.md", agent_md("billing", extra='description: "   "\n'))
-    with pytest.raises(ConfigurationError, match="no description: in its AGENT.md"):
-        Engine(tmp_path, models={}).tool("billing", scope="acme")
+    agent(tmp_path, "billing")
+    with pytest.raises(ConfigurationError, match="^engine: agent 'billing' has no description;"):
+        Engine(tmp_path, providers=provided({"strong": None})).tool("billing", scope="acme")
 
 
 def test_shell_says_nothing_a_backend_describes(tmp_path: Path) -> None:

@@ -28,6 +28,8 @@ from rfnry_engine.records import Decision, Fingerprint, Generation, Run, Step
 from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.storage import RunRow
 
+from .trees import write_folder
+
 NO_QUESTIONS = "engine: decision agent 'questionless' has no questions to ask; give it questions/, or ask it through Delegate"
 
 
@@ -245,9 +247,15 @@ def delegate_triage(call_id: str = "d1", text: str = "It is down") -> Reply:
     return Reply(tool_calls=[call], stop_reason="tool_use")
 
 
+SORTER_ENTRY: dict[str, Any] = {
+    "kind": "decision",
+    "model": "judge",
+    "instructions": "sorter/instructions.md",
+    "questions": ["sorter/questions/*.json"],
+}
 SORTER = {
-    "AGENT.md": "---\nname: sorter\nkind: decision\nmodel: judge\n---\n",
-    "questions/team.json": json.dumps(
+    "sorter/instructions.md": "",
+    "sorter/questions/team.json": json.dumps(
         {
             "type": "choice",
             "instructions": {"question": "Which team handles `ticket`?", "ticket": {"id": 7}},
@@ -262,14 +270,14 @@ SORTER = {
             },
         }
     ),
-    "questions/scope.json": json.dumps(
+    "sorter/questions/scope.json": json.dumps(
         {
             "type": "score",
             "instructions": "How focused is the change?",
             "levels": [{"summary": "One change", "signals": ["a single fix"]}, ["Several"], "Many"],
         }
     ),
-    "questions/creds.json": json.dumps(
+    "sorter/questions/creds.json": json.dumps(
         {
             "type": "check",
             "instructions": {
@@ -283,9 +291,7 @@ SORTER = {
 
 
 def sorter(root: Path) -> Fixed:
-    for name, text in SORTER.items():
-        (root / "sorter" / name).parent.mkdir(parents=True, exist_ok=True)
-        (root / "sorter" / name).write_text(text, encoding="utf-8")
+    write_folder(root, {"sorter": SORTER_ENTRY}, files=SORTER)
     return Fixed(
         {
             "team": ChoiceAnswer(
@@ -303,23 +309,45 @@ PICK: dict[str, Any] = {
     "options": {"billing": {"what": "Charges", "examples": ["charged twice"]}, "orders": None},
 }
 
+LEAD_ENTRIES: dict[str, dict[str, Any]] = {
+    "lead": {
+        "kind": "generation",
+        "model": "strong",
+        "description": "Leads the desk",
+        "instructions": "lead.md",
+        "orchestration": {"delegate_to": ["grader", "writer", "questionless"]},
+    },
+    "grader": {
+        "kind": "decision",
+        "model": "judge",
+        "description": "Grades replies",
+        "instructions": "grader.md",
+        "questions": ["grader/questions/*.json"],
+    },
+    "writer": {
+        "kind": "generation",
+        "model": "strong",
+        "description": "Writes replies",
+        "instructions": "writer.md",
+    },
+    "questionless": {
+        "kind": "decision",
+        "model": "judge",
+        "description": "Answers what it is asked",
+        "instructions": "questionless.md",
+    },
+}
 LEAD = {
-    "lead/AGENT.md": (
-        "---\nname: lead\nkind: generation\nmodel: strong\ndescription: Leads the desk\n"
-        "agents: [grader, writer, questionless]\n---\nLead the desk.\n"
-    ),
-    "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades replies\n---\n",
+    "lead.md": "Lead the desk.\n",
+    "grader.md": "",
     "grader/questions/urgent.json": '{"type": "check", "instructions": "Urgent?"}',
-    "writer/AGENT.md": "---\nname: writer\nkind: generation\nmodel: strong\ndescription: Writes replies\n---\nWrite.\n",
-    "questionless/AGENT.md": "---\nname: questionless\nkind: decision\nmodel: judge\ndescription: Answers what it is asked\n---\n",
+    "writer.md": "Write.\n",
+    "questionless.md": "",
 }
 
 
 def lead(root: Path) -> Path:
-    for name, text in LEAD.items():
-        (root / name).parent.mkdir(parents=True, exist_ok=True)
-        (root / name).write_text(text, encoding="utf-8")
-    return root
+    return write_folder(root, LEAD_ENTRIES, files=LEAD)
 
 
 def delegating(agent: str, text: str = "x", call_id: str = "d1", **extra: Any) -> Reply:

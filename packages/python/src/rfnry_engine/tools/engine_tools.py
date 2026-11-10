@@ -8,13 +8,13 @@ from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_engine.models import HistoryLike, RunModel, ToolCall
 from rfnry_engine.records import EventHandler
 from rfnry_engine.stop import Stop
-from rfnry_engine.tools.builtins import BUILTINS, builtins, load_tool
-from rfnry_engine.tools.declared import chosen, described, folder_tool, picked, smallest
+from rfnry_engine.tools.builtins import builtins, load_tool
+from rfnry_engine.tools.declared import chosen, described, folder_tool, smallest
 from rfnry_engine.tools.delegate import delegate_tool
 from rfnry_engine.tools.history import HISTORY_TOOL, history_tool
 from rfnry_engine.tools.tools import Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import Workspace
-from rfnry_engine.tree import AgentSpec, from_agent, no_such_skill, withheld_skills
+from rfnry_engine.tree import AgentSpec, no_such_skill
 
 if TYPE_CHECKING:
     from rfnry_engine.engine import Engine
@@ -26,9 +26,7 @@ def _own(item: Tool | ToolsLike) -> Tool | ToolsLike:
     return item
 
 
-def _withheld_on(spec: AgentSpec, invoked: str | None) -> Callable[[Path], bool] | None:
-    if spec.withheld is None:
-        return withheld_skills(spec.skills, {*spec.offered, invoked})
+def _withheld_on(spec: AgentSpec, invoked: str | None) -> Callable[[Path], bool]:
     if invoked is None:
         return spec.withheld
     return spec.withheld_when_invoked.get(invoked, spec.withheld)
@@ -82,15 +80,13 @@ class EngineTools(Tools):
             raise ConfigurationError(
                 f"tools/engine_tools: a tool named {HISTORY_TOOL!r} collides with the builtin"
             )
-        if spec.keep is not None:
-            engine_given = BUILTINS if spec.granted is None else spec.granted
-            offered = sorted({*engine_given, *spec.folder_tools, *given.names})
-            for name in spec.keep:
-                if name not in offered:
-                    raise ConfigurationError(
-                        f"tools/engine_tools: agent {agent!r} keeps {name!r} in tools:, which this run does not offer; its tools are {', '.join(offered) or 'none'}"
-                    )
-            given = given.without(*(name for name in given.names if name not in spec.keep))
+        offered = sorted({*spec.granted, *spec.folder_tools, *given.names})
+        for name in spec.keep:
+            if name not in offered:
+                raise ConfigurationError(
+                    f"tools/engine_tools: agent {agent!r} keeps {name!r} in tools:, which this run does not offer; its tools are {', '.join(offered) or 'none'}"
+                )
+        given = given.without(*(name for name in given.names if name not in spec.keep))
         room = workspace if spec.workspace else None
         merged = engine._run_models(models)
 
@@ -98,13 +94,12 @@ class EngineTools(Tools):
             return getattr(engine._built(merged.get(spec.model)), "media_types", None)
 
         backend = room.backend if room else None
-        reach = from_agent(spec.path, {**spec.reads, **spec.skill_folders})
         withheld = _withheld_on(spec, invoked)
         files = [
-            *builtins(spec.root, reach, backend, spec.ignored, withheld, spec.named),
-            load_tool(spec.root, backend, media_types, reach, spec.ignored, withheld, spec.named),
+            *builtins(spec.root, backend, withheld, spec.named),
+            load_tool(spec.root, backend, media_types, withheld, spec.named),
         ]
-        items: list[Tool | ToolsLike] = [tool for tool in files if picked(spec, tool.name)]
+        items: list[Tool | ToolsLike] = [tool for tool in files if tool.name in spec.keep]
         deadline = smallest(spec.tool_timeout, engine.tool_timeout)
         if history is not None and start > 0:
             items.append(
@@ -124,9 +119,7 @@ class EngineTools(Tools):
         ]
         items.extend(folder)
         if room is not None:
-            items.extend(
-                tool for tool in room.tools() if spec.granted is None or tool.name in spec.granted
-            )
+            items.extend(tool for tool in room.tools() if tool.name in spec.granted)
         if spec.agents:
             items.append(
                 delegate_tool(

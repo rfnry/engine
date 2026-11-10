@@ -12,6 +12,7 @@ from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 
 from .fakes import NO_QUESTIONS, Answering, Scripted, ask, delegate_triage, text_reply
+from .trees import deciding, provided
 
 AREA = Choice(
     instructions={"question": "Which area does `message` belong to?", "within": "orders"},
@@ -33,27 +34,19 @@ ANGRY = Check(
 RUNTIME: dict[str, Question] = {"area": AREA, "how_bad": HOW_BAD, "angry": ANGRY}
 
 
-def write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-
-
 def grader(root: Path) -> Path:
-    write(root / "grader/AGENT.md", "---\nname: grader\nkind: decision\nmodel: judge\n---\n")
-    write(
-        root / "grader/questions/urgent.json", '{"type": "check", "instructions": "Is it urgent?"}'
-    )
-    write(
-        root / "questionless/AGENT.md",
-        "---\nname: questionless\nkind: decision\nmodel: judge\n---\n",
-    )
-    return root
+    deciding(root, "grader", {"urgent": '{"type": "check", "instructions": "Is it urgent?"}'})
+    return deciding(root, "questionless", {})
 
 
 async def test_runtime_questions_are_asked_with_the_folder_s_in_one_call(fixtures: Path) -> None:
     dm = Answering()
     run = await ask(
-        Engine(fixtures, models={"judge": dm}), "triage", "acme", "It is down", questions=RUNTIME
+        Engine(fixtures, providers=provided({"judge": dm, "strong": None})),
+        "triage",
+        "acme",
+        "It is down",
+        questions=RUNTIME,
     )
     [(state, asked)] = dm.calls
     assert state == "It is down" and isinstance(run, Decision)
@@ -67,7 +60,9 @@ async def test_runtime_questions_are_asked_with_the_folder_s_in_one_call(fixture
 
 
 async def test_a_folder_only_run_marks_nothing_as_runtime(fixtures: Path) -> None:
-    run = await Engine(fixtures, models={"judge": Answering()}).run("triage", "acme", "x")
+    run = await Engine(fixtures, providers=provided({"judge": Answering(), "strong": None})).run(
+        "triage", "acme", "x"
+    )
     assert (
         isinstance(run, Decision)
         and run.runtime == []
@@ -84,7 +79,7 @@ async def test_a_runtime_id_that_is_already_in_the_folder_is_refused(fixtures: P
     message = "^engine: decision agent 'triage' already asks 'urgent', 'severity' from its folder$"
     with pytest.raises(InputError, match=message):
         await ask(
-            Engine(fixtures, models={"judge": dm}),
+            Engine(fixtures, providers=provided({"judge": dm, "strong": None})),
             "triage",
             "acme",
             "x",
@@ -98,7 +93,7 @@ async def test_a_decision_agent_with_no_questions_of_its_own_runs_on_runtime_one
 ) -> None:
     root = grader(tmp_path)
     dm = Answering()
-    engine = Engine(root, models={"judge": dm})
+    engine = Engine(root, providers=provided({"judge": dm, "strong": None}))
     run = await ask(
         engine, "questionless", "acme", {"message": "Where is it?"}, questions={"area": AREA}
     )
@@ -116,7 +111,7 @@ async def test_a_decision_agent_with_no_questions_of_its_own_runs_on_runtime_one
 
 async def test_a_generation_agent_takes_no_questions(fixtures: Path) -> None:
     llm = Scripted()
-    engine = Engine(fixtures, models={"strong": llm, "judge": Answering()})
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": Answering()}))
     for given in (RUNTIME, {}):
         with pytest.raises(
             InputError, match="^engine: generation agent 'support' takes no questions$"
@@ -150,7 +145,13 @@ async def test_a_runtime_question_that_does_not_fit_is_refused_before_the_model_
 ) -> None:
     dm = Answering()
     with pytest.raises(InputError, match=message):
-        await ask(Engine(fixtures, models={"judge": dm}), "triage", "acme", "x", questions=given)
+        await ask(
+            Engine(fixtures, providers=provided({"judge": dm, "strong": None})),
+            "triage",
+            "acme",
+            "x",
+            questions=given,
+        )
     assert dm.calls == []
 
 
@@ -164,7 +165,7 @@ async def test_a_runtime_question_is_read_by_its_shape(fixtures: Path) -> None:
     foreign = ForeignChoice(instructions={"question": "Which?"}, options={"a": None, "b": ["B"]})
     plain: Any = {"type": "check", "instructions": "Is it?"}
     run = await ask(
-        Engine(fixtures, models={"judge": Answering()}),
+        Engine(fixtures, providers=provided({"judge": Answering(), "strong": None})),
         "triage",
         "acme",
         "x",
@@ -182,7 +183,7 @@ async def test_a_route_is_by_a_folder_question_and_runtime_ones_stay_with_the_ro
 ) -> None:
     llm = Scripted(text_reply("Support here."))
     dm = Answering()
-    engine = Engine(fixtures, models={"strong": llm, "judge": dm})
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": dm}))
     with pytest.raises(
         InputError,
         match="^engine: decision agent 'frontdesk' already asks 'intent' from its folder$",
@@ -196,19 +197,20 @@ async def test_a_route_is_by_a_folder_question_and_runtime_ones_stay_with_the_ro
 
 
 async def test_a_routed_decision_run_asks_its_own_folder_only(tmp_path: Path) -> None:
-    write(
-        tmp_path / "desk/AGENT.md",
-        "---\nname: desk\nkind: decision\nmodel: judge\nroute: {by: team, to: {b: triage}}\n---\n",
+    deciding(
+        tmp_path,
+        "desk",
+        {"team": '{"type": "choice", "instructions": "?", "options": {"a": "A", "b": "B"}}'},
+        route={"by": "team", "to": {"b": "triage"}},
     )
-    write(
-        tmp_path / "desk/questions/team.json",
-        '{"type": "choice", "instructions": "?", "options": {"a": "A", "b": "B"}}',
-    )
-    write(tmp_path / "triage/AGENT.md", "---\nname: triage\nkind: decision\nmodel: judge\n---\n")
-    write(tmp_path / "triage/questions/urgent.json", '{"type": "check", "instructions": "Urgent?"}')
+    deciding(tmp_path, "triage", {"urgent": '{"type": "check", "instructions": "Urgent?"}'})
     dm = Answering()
     run = await ask(
-        Engine(tmp_path, models={"judge": dm}), "desk", "acme", "x", questions={"angry": ANGRY}
+        Engine(tmp_path, providers=provided({"judge": dm, "strong": None})),
+        "desk",
+        "acme",
+        "x",
+        questions={"angry": ANGRY},
     )
     assert isinstance(run, Decision) and isinstance(run.routed_to, Decision)
     assert run.routed_to.questions == {"urgent": Check(instructions="Urgent?")}
@@ -220,7 +222,7 @@ async def test_a_routed_decision_run_asks_its_own_folder_only(tmp_path: Path) ->
 
 async def test_a_delegated_decision_run_asks_its_folder(fixtures: Path) -> None:
     llm = Scripted(delegate_triage(), text_reply("Handled."))
-    run = await Engine(fixtures, models={"strong": llm, "judge": Answering()}).run(
+    run = await Engine(fixtures, providers=provided({"strong": llm, "judge": Answering()})).run(
         "support", "acme", "It is down"
     )
     assert isinstance(run, Generation)
@@ -234,7 +236,9 @@ async def test_runtime_questions_are_recorded_and_read_back(
 ) -> None:
     root = grader(tmp_path)
     refinery = Refinery(storage)
-    engine = Engine(root, refinery=refinery, models={"judge": Answering()})
+    engine = Engine(
+        root, refinery=refinery, providers=provided({"judge": Answering(), "strong": None})
+    )
     run = await ask(engine, "grader", "acme", "x", questions=RUNTIME)
     read = await refinery.run("acme", run.run_id)
     assert read == run and isinstance(read, Decision)

@@ -33,12 +33,8 @@ def _compiled(schema: dict[str, JsonValue]) -> jsonschema_rs.Validator:
     return _validator(json.dumps(schema, sort_keys=True))
 
 
-def picked(spec: AgentSpec, name: str) -> bool:
-    return spec.keep is None or name in spec.keep
-
-
 def chosen(spec: AgentSpec) -> dict[str, ToolDef]:
-    return {name: tool for name, tool in spec.folder_tools.items() if picked(spec, name)}
+    return {name: tool for name, tool in spec.folder_tools.items() if name in spec.keep}
 
 
 def smallest(*deadlines: float | None) -> float | None:

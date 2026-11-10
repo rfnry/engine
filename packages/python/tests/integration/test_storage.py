@@ -26,6 +26,7 @@ from unit.fakes import (
     sorter,
     text_reply,
 )
+from unit.trees import provided, write_folder
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import NotFoundError, StorageError
@@ -558,17 +559,21 @@ async def test_a_recorded_tree_reads_back_as_it_ran(storage: Storage) -> None:
     engine = Engine(
         FIXTURES,
         refinery=refinery,
-        models={
-            "strong": Scripted(
-                Reply(tool_calls=both, stop_reason="tool_use"),
-                Reply(
-                    tool_calls=[ToolCall(id="c1", name="lookup_order", args={"order_id": "😀"})],
-                    stop_reason="tool_use",
+        providers=provided(
+            {
+                "strong": Scripted(
+                    Reply(tool_calls=both, stop_reason="tool_use"),
+                    Reply(
+                        tool_calls=[
+                            ToolCall(id="c1", name="lookup_order", args={"order_id": "😀"})
+                        ],
+                        stop_reason="tool_use",
+                    ),
+                    text_reply("Continued."),
                 ),
-                text_reply("Continued."),
-            ),
-            "judge": Desk(),
-        },
+                "judge": Desk(),
+            }
+        ),
     )
     run = await engine.run(
         "frontdesk", "a", "It is down", tags={"customer": "c-81"}, stop=stop, tools=looking
@@ -594,7 +599,9 @@ async def test_a_tree_reads_back_with_its_one_record_stamp(storage: Storage) -> 
     engine = Engine(
         FIXTURES,
         refinery=refinery,
-        models={"strong": Scripted(delegate_triage(), text_reply("Handled.")), "judge": Desk()},
+        providers=provided(
+            {"strong": Scripted(delegate_triage(), text_reply("Handled.")), "judge": Desk()}
+        ),
     )
     run = await engine.run("frontdesk", "a", "It is down")
     rows = await storage.run_tree("a", run_ids=[run.run_id])
@@ -615,7 +622,9 @@ async def test_fingerprints_and_context_round_trip(
     engine = Engine(
         FIXTURES,
         refinery=refinery,
-        models={"strong": Scripted(delegate_triage(), text_reply("Handled.")), "judge": Desk()},
+        providers=provided(
+            {"strong": Scripted(delegate_triage(), text_reply("Handled.")), "judge": Desk()}
+        ),
     )
     run = await engine.run("frontdesk", "a", "It is down", context="Acme is enterprise.")
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
@@ -638,7 +647,9 @@ async def test_structured_questions_round_trip_through_the_record_and_the_export
 ) -> None:
     refinery = Refinery(storage)
     dm = sorter(tmp_path)
-    run = await Engine(tmp_path, refinery=refinery, models={"judge": dm}).run("sorter", "a", "Hi")
+    run = await Engine(tmp_path, refinery=refinery, providers=provided({"judge": dm})).run(
+        "sorter", "a", "Hi"
+    )
     assert isinstance(run, Decision)
     [(_, asked)] = dm.calls
     again = await refinery.run("a", run.run_id)
@@ -673,12 +684,14 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     recorder = Engine(
         FIXTURES,
         refinery=refinery,
-        models={
-            "strong": Scripted(
-                delegate_triage(), text_reply("Handled."), text_reply("Hi."), text_reply("Bye.")
-            ),
-            "judge": Desk(),
-        },
+        providers=provided(
+            {
+                "strong": Scripted(
+                    delegate_triage(), text_reply("Handled."), text_reply("Hi."), text_reply("Bye.")
+                ),
+                "judge": Desk(),
+            }
+        ),
     )
     parts: list[Part] = [
         Text(text="Charged twice?"),
@@ -699,7 +712,9 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     await refinery.outcome("a", third.run_id, Outcome(status="failed"))
     counted = await storage.count_scope("a")
     model = Seeing()
-    candidate = Engine(FIXTURES, refinery=refinery, models={"strong": model, "judge": Desk()})
+    candidate = Engine(
+        FIXTURES, refinery=refinery, providers=provided({"strong": model, "judge": Desk()})
+    )
 
     async def replayed(**selectors: Any) -> list[str]:
         pairs = [p async for p in refinery.replay("a", candidate, agent="support", **selectors)]
@@ -736,15 +751,27 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
     assert [p async for p in refinery.replay("b", candidate, agent="support")] == []
 
 
-def reviewing(root: Path, line: str) -> Path:
-    for path, text in {
-        "reviewer/AGENT.md": f"---\nname: reviewer\nkind: generation\nmodel: strong\n{line}---\nReview.\n",
-        "reviewer/skills/escalate.md": "Say so, then stop.\n",
-        "reviewer/skills/close.md": "Close it.\n",
-    }.items():
-        (root / path).parent.mkdir(parents=True, exist_ok=True)
-        (root / path).write_text(text, encoding="utf-8")
-    return root
+def reviewing(root: Path, public: list[str] | None = None) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    skills: dict[str, Any] = {"include": ["skills/*"]}
+    if public is not None:
+        skills["public"] = public
+    return write_folder(
+        root,
+        {
+            "reviewer": {
+                "kind": "generation",
+                "model": "strong",
+                "instructions": "reviewer.md",
+                "skills": skills,
+            }
+        },
+        files={
+            "reviewer.md": "Review.\n",
+            "skills/escalate/SKILL.md": "Say so, then stop.\n",
+            "skills/close/SKILL.md": "Close it.\n",
+        },
+    )
 
 
 async def test_a_recorded_slash_text_stays_text_on_a_candidate_that_made_it_public(
@@ -752,13 +779,13 @@ async def test_a_recorded_slash_text_stays_text_on_a_candidate_that_made_it_publ
 ) -> None:
     refinery = Refinery(storage)
     await Engine(
-        reviewing(tmp_path / "before", ""),
+        reviewing(tmp_path / "before"),
         refinery=refinery,
-        models={"strong": Scripted(text_reply("Done."))},
+        providers=provided({"strong": Scripted(text_reply("Done."))}),
     ).run("reviewer", "a", "/close x")
     seeing = Seeing()
     candidate = Engine(
-        reviewing(tmp_path / "after", "public_skills: [close]\n"), models={"strong": seeing}
+        reviewing(tmp_path / "after", ["close"]), providers=provided({"strong": seeing})
     )
     [pair] = [p async for p in refinery.replay("a", candidate, agent="reviewer")]
     assert pair.error is None
@@ -769,10 +796,10 @@ async def test_a_recorded_slash_text_stays_text_on_a_candidate_that_made_it_publ
 async def test_the_replay_of_a_slash_run_sends_skill_and_rest_and_reads_no_slash_again(
     storage: Storage, tmp_path: Path
 ) -> None:
-    reviewing(tmp_path, "public_skills: [escalate, close]\n")
+    reviewing(tmp_path, ["escalate", "close"])
     refinery = Refinery(storage)
     run = await Engine(
-        tmp_path, refinery=refinery, models={"strong": Scripted(text_reply("Done."))}
+        tmp_path, refinery=refinery, providers=provided({"strong": Scripted(text_reply("Done."))})
     ).run("reviewer", "a", "/escalate /close now")
     row = await storage.get_run("a", run.run_id)
     assert row is not None and row.body["skill"] == "escalate"
@@ -781,11 +808,11 @@ async def test_the_replay_of_a_slash_run_sends_skill_and_rest_and_reads_no_slash
     [pair] = [
         p
         async for p in refinery.replay(
-            "a", Engine(tmp_path, models={"strong": candidate}), agent="reviewer"
+            "a", Engine(tmp_path, providers=provided({"strong": candidate})), agent="reviewer"
         )
     ]
     assert pair.error is None
-    skill = Text(text="<<<SKILL skills/escalate.md>>>\nSay so, then stop.")
+    skill = Text(text="<<<SKILL skills/escalate/SKILL.md>>>\nSay so, then stop.")
     assert len(candidate.seen) == 1
     assert candidate.seen[0][-1].content == [skill, Text(text="/close now")]
     bucket = MemoryBucket()
@@ -802,20 +829,31 @@ AREA = Choice(
 
 
 def grader(root: Path, urgent: str = "Is it urgent?") -> Path:
-    for path, text in {
-        "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\n---\n",
-        "grader/questions/urgent.json": json.dumps({"type": "check", "instructions": urgent}),
-    }.items():
-        (root / path).parent.mkdir(parents=True, exist_ok=True)
-        (root / path).write_text(text, encoding="utf-8")
-    return root
+    root.mkdir(parents=True, exist_ok=True)
+    return write_folder(
+        root,
+        {
+            "grader": {
+                "kind": "decision",
+                "model": "judge",
+                "instructions": "grader/instructions.md",
+                "questions": ["grader/questions/*.json"],
+            }
+        },
+        files={
+            "grader/instructions.md": "",
+            "grader/questions/urgent.json": json.dumps({"type": "check", "instructions": urgent}),
+        },
+    )
 
 
 async def test_runtime_questions_and_the_questions_part_round_trip_and_replay(
     storage: Storage, tmp_path: Path
 ) -> None:
     refinery = Refinery(storage)
-    engine = Engine(grader(tmp_path / "old"), refinery=refinery, models={"judge": Answering()})
+    engine = Engine(
+        grader(tmp_path / "old"), refinery=refinery, providers=provided({"judge": Answering()})
+    )
     asked = await ask(engine, "grader", "a", "x", questions={"area": AREA})
     plain = await engine.run("grader", "a", "y")
     assert isinstance(asked, Decision)
@@ -839,7 +877,7 @@ async def test_runtime_questions_and_the_questions_part_round_trip_and_replay(
     assert all("task" not in r for r in mine)
     assert all(r["fingerprint"] == asked.fingerprint.model_dump() for r in mine)
     dm = Answering()
-    candidate = Engine(grader(tmp_path / "new", "Due today?"), models={"judge": dm})
+    candidate = Engine(grader(tmp_path / "new", "Due today?"), providers=provided({"judge": dm}))
     pairs = [
         p
         async for p in refinery.replay(
@@ -864,7 +902,9 @@ async def test_a_delegated_child_keeps_its_runtime_questions(
     engine = Engine(
         lead(tmp_path),
         refinery=refinery,
-        models={"strong": Scripted(asked, text_reply("Graded.")), "judge": Answering()},
+        providers=provided(
+            {"strong": Scripted(asked, text_reply("Graded.")), "judge": Answering()}
+        ),
     )
     run = await engine.run("lead", "a", "Grade this")
     assert isinstance(run, Generation)
@@ -922,7 +962,11 @@ async def test_a_generation_input_reads_back_as_it_was_given(
     storage: Storage, given: Any, skill: str | None
 ) -> None:
     refinery = Refinery(storage)
-    engine = Engine(FIXTURES, refinery=refinery, models={"strong": Scripted(text_reply("Seen."))})
+    engine = Engine(
+        FIXTURES,
+        refinery=refinery,
+        providers=provided({"strong": Scripted(text_reply("Seen.")), "judge": None}),
+    )
     run = await engine.run("support", "a", given, skill=skill)
     assert isinstance(run, Generation) and run.input == given
     assert [type(item) for item in run.input] == [type(item) for item in given]
@@ -940,7 +984,7 @@ async def test_a_state_of_parts_round_trips_as_parts_and_replays(
         Text(text="Urgent?"),
         Image(media_type="image/png", data=bytes(range(256))),
     ]
-    run = await Engine(root, refinery=refinery, models={"judge": Looking()}).run(
+    run = await Engine(root, refinery=refinery, providers=provided({"judge": Looking()})).run(
         "grader", "a", parts
     )
     again = await refinery.run("a", run.run_id)
@@ -948,7 +992,9 @@ async def test_a_state_of_parts_round_trips_as_parts_and_replays(
     looking = Looking()
     [pair] = [
         p
-        async for p in refinery.replay("a", Engine(root, models={"judge": looking}), agent="grader")
+        async for p in refinery.replay(
+            "a", Engine(root, providers=provided({"judge": looking})), agent="grader"
+        )
     ]
     assert pair.error is None and looking.calls[0][0] == parts
 
@@ -958,7 +1004,7 @@ async def test_a_decision_state_reads_back_as_it_was_given(
     storage: Storage, tmp_path: Path, given: Any
 ) -> None:
     refinery = Refinery(storage)
-    engine = Engine(grader(tmp_path), refinery=refinery, models={"judge": Looking()})
+    engine = Engine(grader(tmp_path), refinery=refinery, providers=provided({"judge": Looking()}))
     run = await engine.run("grader", "a", given)
     assert isinstance(run, Decision) and run.state == given
     assert [type(item) for item in run.state] == [type(item) for item in given]
@@ -1220,31 +1266,51 @@ async def test_a_row_without_tags_matches_no_tag_selector(storage: Storage) -> N
 
 
 async def test_a_recorded_call_reads_back(storage: Storage, tmp_path: Path) -> None:
-    for name, front in (
-        ("lead", "name: lead\nkind: generation\nmodel: strong\nagents: [child, triage]"),
-        ("child", "name: child\nkind: generation\nmodel: strong"),
-    ):
-        (tmp_path / name).mkdir()
-        (tmp_path / name / "AGENT.md").write_text(f"---\n{front}\n---\nYou are {name}.\n")
-    shutil.copytree(FIXTURES / "triage", tmp_path / "triage")
+    triage = FIXTURES / "triage"
+    write_folder(
+        tmp_path,
+        {
+            "lead": {
+                "kind": "generation",
+                "model": "strong",
+                "instructions": "lead.md",
+                "orchestration": {"delegate_to": ["child", "triage"]},
+            },
+            "child": {"kind": "generation", "model": "strong", "instructions": "child.md"},
+            "triage": {
+                "kind": "decision",
+                "model": "judge",
+                "instructions": "triage/instructions.md",
+                "questions": ["triage/questions/*.json"],
+            },
+        },
+        files={"lead.md": "You are lead.\n", "child.md": "You are child.\n"},
+    )
+    shutil.copytree(triage, tmp_path / "triage")
     refinery = Refinery(storage)
     engine = Engine(
         tmp_path,
         refinery=refinery,
-        models={
-            "strong": Scripted(
-                Reply(
-                    tool_calls=[
-                        ToolCall(id="g1", name="Delegate", args={"agent": "child", "input": "x"}),
-                        ToolCall(id="d1", name="Delegate", args={"agent": "triage", "input": "y"}),
-                    ],
-                    stop_reason="tool_use",
+        providers=provided(
+            {
+                "strong": Scripted(
+                    Reply(
+                        tool_calls=[
+                            ToolCall(
+                                id="g1", name="Delegate", args={"agent": "child", "input": "x"}
+                            ),
+                            ToolCall(
+                                id="d1", name="Delegate", args={"agent": "triage", "input": "y"}
+                            ),
+                        ],
+                        stop_reason="tool_use",
+                    ),
+                    text_reply("Billed."),
+                    text_reply("Done."),
                 ),
-                text_reply("Billed."),
-                text_reply("Done."),
-            ),
-            "judge": Desk(),
-        },
+                "judge": Desk(),
+            }
+        ),
     )
     run = await engine.run("lead", "a", "go")
     assert isinstance(run, Generation)

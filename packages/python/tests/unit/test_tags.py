@@ -21,6 +21,7 @@ from .fakes import (
     generation_record,
     text_reply,
 )
+from .trees import provided
 
 TRIAGE: dict[str, Answer] = {
     "urgent": CheckAnswer(probability=0.9),
@@ -53,7 +54,10 @@ def _technical(state: object) -> dict[str, Answer]:
 
 
 async def test_a_generation_run_carries_its_tags(fixtures: Path) -> None:
-    engine = Engine(fixtures, models={"strong": Scripted(text_reply("ok"), text_reply("ok"))})
+    engine = Engine(
+        fixtures,
+        providers=provided({"strong": Scripted(text_reply("ok"), text_reply("ok")), "judge": None}),
+    )
     run = await engine.run("billing", "acme", "x", tags=TAGS)
     assert isinstance(run, Generation) and run.tags == TAGS
     untagged = await engine.run("billing", "acme", "x")
@@ -61,7 +65,7 @@ async def test_a_generation_run_carries_its_tags(fixtures: Path) -> None:
 
 
 async def test_a_decision_run_carries_its_tags(fixtures: Path) -> None:
-    engine = Engine(fixtures, models={"judge": Fixed(TRIAGE)})
+    engine = Engine(fixtures, providers=provided({"judge": Fixed(TRIAGE), "strong": None}))
     run = await engine.run("triage", "acme", "It is down", tags=TAGS)
     assert isinstance(run, Decision) and run.tags == TAGS
     assert (await engine.run("triage", "acme", "It is down")).tags == {}
@@ -70,7 +74,7 @@ async def test_a_decision_run_carries_its_tags(fixtures: Path) -> None:
 async def test_tags_never_reach_a_model(fixtures: Path) -> None:
     llm = Scripted(_delegate("triage", "It is down"), text_reply("Escalating."))
     dm = Fixed(TRIAGE)
-    engine = Engine(fixtures, models={"strong": llm, "judge": dm})
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": dm}))
     await engine.run("support", "acme", "It is down", tags=TAGS)
     sent = json.dumps(
         [
@@ -91,10 +95,12 @@ async def test_tags_never_reach_a_model(fixtures: Path) -> None:
 async def test_delegated_children_inherit_the_tags(fixtures: Path) -> None:
     engine = Engine(
         fixtures,
-        models={
-            "strong": Scripted(_delegate("triage", "It is down"), text_reply("ok")),
-            "judge": Fixed(TRIAGE),
-        },
+        providers=provided(
+            {
+                "strong": Scripted(_delegate("triage", "It is down"), text_reply("ok")),
+                "judge": Fixed(TRIAGE),
+            }
+        ),
     )
     run = await engine.run("support", "acme", "It is down", tags=TAGS)
     assert isinstance(run, Generation)
@@ -106,7 +112,7 @@ async def test_routed_runs_and_their_children_inherit_the_tags(fixtures: Path) -
     answers: list[Any] = [_technical, lambda state: TRIAGE]
     dm = Fixed(lambda state: answers.pop(0)(state))
     llm = Scripted(_delegate("triage", "It is down"), text_reply("Handled."))
-    engine = Engine(fixtures, models={"strong": llm, "judge": dm})
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": dm}))
     run = await engine.run("frontdesk", "acme", "It is down", tags=TAGS)
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     assert run.tags == run.routed_to.tags == run.routed_to.children[0].tags == TAGS
@@ -117,7 +123,7 @@ async def test_an_agent_as_a_tool_tags_the_runs_it_starts(fixtures: Path) -> Non
     engine = Engine(
         fixtures,
         refinery=recorder,
-        models={"strong": Scripted(text_reply("Refunded."))},
+        providers=provided({"strong": Scripted(text_reply("Refunded.")), "judge": None}),
     )
     consult = engine.tool("billing", scope="acme", tags=TAGS)
     await consult.dispatch("billing", {"input": "Charged twice"})
@@ -132,7 +138,7 @@ async def test_engine_tools_tag_a_dispatched_delegate(fixtures: Path) -> None:
     engine = Engine(
         fixtures,
         refinery=recorder,
-        models={"strong": Scripted(text_reply("ok")), "judge": Fixed(TRIAGE)},
+        providers=provided({"strong": Scripted(text_reply("ok")), "judge": Fixed(TRIAGE)}),
     )
     surface = EngineTools(engine, agent="support", scope="acme", tags=TAGS)
     await surface.dispatch("Delegate", {"agent": "triage", "input": "It is down"})
@@ -163,7 +169,7 @@ async def test_engine_tools_tag_a_dispatched_delegate(fixtures: Path) -> None:
 )
 async def test_invalid_tags_are_refused_before_any_model_call(fixtures: Path, tags: Any) -> None:
     llm = Scripted()
-    engine = Engine(fixtures, models={"strong": llm})
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": None}))
     with pytest.raises(InputError, match="^engine: tags"):
         await engine.run("billing", "acme", "x", tags=tags)
     assert llm.calls == []
@@ -171,7 +177,9 @@ async def test_invalid_tags_are_refused_before_any_model_call(fixtures: Path, ta
 
 async def test_tags_at_the_limits_are_accepted(fixtures: Path) -> None:
     tags = {f"{i:02d}" + "k" * 62: "v" * 256 for i in range(32)}
-    engine = Engine(fixtures, models={"strong": Scripted(text_reply("ok"))})
+    engine = Engine(
+        fixtures, providers=provided({"strong": Scripted(text_reply("ok")), "judge": None})
+    )
     assert (await engine.run("billing", "acme", "x", tags=tags)).tags == tags
 
 

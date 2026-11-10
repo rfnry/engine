@@ -35,7 +35,8 @@ from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Backend, Local, Process, Workspace
 
 from .fakes import Ledger, Scripted, text_reply
-from .test_engine_workspace import make_tree, use
+from .test_engine_workspace import AGENTS, make_tree, use
+from .trees import provided
 
 CLIENT = """
 import json, os, socket
@@ -89,6 +90,13 @@ async def found(args: dict[str, Any]) -> str:
     return "found"
 
 
+def coding_tree(tmp_path: Path, *run_tools: str, **extra: dict[str, Any]) -> Path:
+    coder: dict[str, Any] = {**AGENTS["coder"], "files": {"include": ["coder.md"]}}
+    if run_tools:
+        coder["tools"] = {"include": list(run_tools)}
+    return make_tree(tmp_path, {"coder": coder, **extra})
+
+
 async def run_coder(
     tmp_path: Path,
     work: Workspace,
@@ -107,7 +115,9 @@ async def run_coder(
 
     llm = Scripted(use(shell(command)), text_reply("ok"))
     async with Engine(
-        tree or make_tree(tmp_path), models={"strong": llm}, tool_timeout=tool_timeout
+        tree or coding_tree(tmp_path, *(tool.name for tool in tools)),
+        providers=provided({"strong": llm, "judge": None}),
+        tool_timeout=tool_timeout,
     ) as engine:
         run = await engine.run(
             "coder",
@@ -126,19 +136,27 @@ async def run_coder(
 async def test_one_shell_call_reaches_a_run_tool_and_a_folder_tool(
     tmp_path: Path, root: Path
 ) -> None:
-    tree = make_tree(tmp_path)
-    (tree / "coder" / "tools").mkdir()
-    (tree / "coder" / "tools" / "double.json").write_text(
-        json.dumps(
-            {
-                "description": "Double a number",
-                "input_schema": {"type": "object", "properties": {"n": {"type": "integer"}}},
+    tree = make_tree(
+        tmp_path,
+        {
+            "coder": {
+                **AGENTS["coder"],
+                "files": {"include": ["coder.md"]},
+                "tools": {"include": ["double", "lookup"]},
             }
-        ),
-        encoding="utf-8",
-    )
-    (tree / "coder" / "tools" / "double.py").write_text(
-        "def run(args, call):\n    return args['n'] * 2\n", encoding="utf-8"
+        },
+        declared={
+            "double": {"module": "coder/tools/double.py", "schema": "coder/tools/double.json"}
+        },
+        written={
+            "coder/tools/double.json": json.dumps(
+                {
+                    "description": "Double a number",
+                    "input_schema": {"type": "object", "properties": {"n": {"type": "integer"}}},
+                }
+            ),
+            "coder/tools/double.py": "def run(args, call):\n    return args['n'] * 2\n",
+        },
     )
     seen: list[CallInfo | None] = []
 
@@ -221,7 +239,9 @@ async def test_two_commands_at_once_refuse_each_other_s_key(tmp_path: Path, root
     async with (
         asyncio.timeout(30),
         Workspace(Local(root), scope="acme") as work,
-        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+        Engine(
+            coding_tree(tmp_path, "lookup"), providers=provided({"strong": llm, "judge": None})
+        ) as engine,
     ):
         run = await engine.run(
             "coder", "acme", "x", workspace=work, tools=Tools([Tool("lookup", "Look", body=found)])
@@ -298,7 +318,11 @@ async def test_the_workspace_s_own_tools_and_delegate_are_not_offered(
     tree = make_tree(
         tmp_path,
         {
-            "coder": "name: coder\nkind: generation\nmodel: strong\ndescription: Writes and runs code\nworkspace: true\nagents: [chat]"
+            "coder": {
+                **AGENTS["coder"],
+                "files": {"include": ["coder.md"]},
+                "orchestration": {"delegate_to": ["chat"]},
+            }
         },
     )
     names = ["Shell", "Write", "Delegate", "Output", "Nope"]
@@ -309,31 +333,6 @@ async def test_the_workspace_s_own_tools_and_delegate_are_not_offered(
     assert printed == [{"error": f"InputError: tools: unknown tool {name!r}"} for name in names]
     assert [s.tool for s in run.steps] == ["Shell"]
     assert all(e.by is None for e in events if isinstance(e, ToolCallStarted | ToolResultReady))
-
-
-async def test_a_run_tool_named_output_is_the_model_s_but_not_a_script_s(
-    tmp_path: Path, root: Path
-) -> None:
-    names = ["Output", "Delegate"]
-    script(root, f"import json\nprint(json.dumps([call(name) for name in {names!r}]))\n")
-    llm = Scripted(use(ToolCall(id="o", name="Output", args={})), use(shell()), text_reply("ok"))
-    async with (
-        Workspace(Local(root), scope="acme") as work,
-        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
-    ):
-        run = await engine.run(
-            "coder",
-            "acme",
-            "x",
-            workspace=work,
-            tools=Tools([Tool(name, "Emit", body=found) for name in names]),
-        )
-    assert isinstance(run, Generation)
-    called, shelled = run.steps
-    assert (called.tool, called.result, called.is_error) == ("Output", "found", False)
-    assert json.loads(result(shelled)["stdout"]) == [
-        {"error": f"InputError: tools: unknown tool {name!r}"} for name in names
-    ]
 
 
 class Rootless:
@@ -397,7 +396,10 @@ async def test_no_bridge_without_the_switch_a_root_or_a_run(
     backend: Backend = Rootless(Local(root)) if without == "root" else Local(root)
     async with Workspace(backend, scope="acme", bridge=without != "switch") as work:
         if without == "run":
-            async with Engine(make_tree(tmp_path), models={"strong": Scripted()}) as engine:
+            async with Engine(
+                coding_tree(tmp_path, "lookup"),
+                providers=provided({"strong": Scripted(), "judge": None}),
+            ) as engine:
                 surface = EngineTools(
                     engine, agent="coder", scope="acme", workspace=work, tools=Tools(tools)
                 )
@@ -424,15 +426,21 @@ async def test_a_shell_inside_another_tool_call_gets_no_variables_and_no_bridge(
         "print(sorted(k for k in os.environ if k.startswith('RFNRY_')), len(glob.glob('.rfnry-*')))\n",
         encoding="utf-8",
     )
-    tree = make_tree(tmp_path)
+    tree = coding_tree(tmp_path, "nested")
     llm = Scripted(use(ToolCall(id="n", name="nested", args={})), use(shell()), text_reply("ok"))
     async with (
         Workspace(Local(root), scope="acme", tree="/srv/agents") as work,
-        Engine(tree, models={"strong": llm}) as engine,
+        Engine(tree, providers=provided({"strong": llm, "judge": None})) as engine,
     ):
 
         async def nested(args: dict[str, Any]) -> Any:
-            surface = EngineTools(engine, agent="coder", scope="acme", workspace=work)
+            surface = EngineTools(
+                engine,
+                agent="coder",
+                scope="acme",
+                workspace=work,
+                tools=Tools([Tool("nested", "Run a command from code", body=nested)]),
+            )
             return await surface.dispatch("Shell", {"command": f"{PY} script.py"})
 
         run = await engine.run(
@@ -446,26 +454,11 @@ async def test_a_shell_inside_another_tool_call_gets_no_variables_and_no_bridge(
     inner, outer = run.steps
     assert inner.tool == "nested" and isinstance(inner.result, str)
     assert json.loads(inner.result)["stdout"] == "[] 0\n"
-    assert result(outer)["stdout"] == (
-        "['RFNRY_AGENT', 'RFNRY_TOOLS', 'RFNRY_TOOLS_KEY', 'RFNRY_TREE'] 1\n"
-    )
+    assert result(outer)["stdout"] == ("['RFNRY_TOOLS', 'RFNRY_TOOLS_KEY', 'RFNRY_TREE'] 1\n")
 
 
 async def test_a_run_with_no_tool_to_offer_gets_no_bridge(tmp_path: Path, root: Path) -> None:
-    tree = make_tree(
-        tmp_path,
-        {
-            "coder": "name: coder\nkind: generation\nmodel: strong\ndescription: Writes and runs code\nworkspace: true\ntools: none"
-        },
-    )
-    (tree / "coder" / "tools").mkdir()
-    (tree / "coder" / "tools" / "double.json").write_text(
-        json.dumps({"description": "Double a number", "input_schema": {"type": "object"}}),
-        encoding="utf-8",
-    )
-    (tree / "coder" / "tools" / "double.py").write_text(
-        "def run(args, call):\n    return 2\n", encoding="utf-8"
-    )
+    tree = make_tree(tmp_path)
     script(root, SEEN)
     async with Workspace(Local(root), scope="acme") as work:
         run, _, llm = await run_coder(tmp_path, work, tree=tree)
@@ -560,7 +553,7 @@ async def test_a_call_in_flight_is_recorded_when_its_socket_cannot_be_removed(
 
 
 async def test_the_description_tells_the_bridge_without_a_path(tmp_path: Path) -> None:
-    tree = make_tree(tmp_path)
+    tree = coding_tree(tmp_path)
     prints: list[str] = []
     descriptions: list[str] = []
     for name in ("one", "two"):
@@ -569,7 +562,7 @@ async def test_the_description_tells_the_bridge_without_a_path(tmp_path: Path) -
         llm = Scripted(text_reply("ok"))
         async with (
             Workspace(Local(place), scope="acme") as work,
-            Engine(tree, models={"strong": llm}) as engine,
+            Engine(tree, providers=provided({"strong": llm, "judge": None})) as engine,
         ):
             run = await engine.run("coder", "acme", "x", workspace=work)
         description = described(llm)
@@ -626,7 +619,9 @@ async def test_a_delegated_child_s_command_calls_the_child_s_tools(
     )
     async with (
         Workspace(Local(root), scope="acme") as work,
-        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+        Engine(
+            coding_tree(tmp_path, "lookup"), providers=provided({"strong": llm, "judge": None})
+        ) as engine,
     ):
         run = await engine.run(
             "lead",
@@ -745,7 +740,9 @@ async def test_a_handler_that_raises_on_a_script_s_call_fails_the_run(
     llm = Scripted(use(shell()), text_reply("ok"))
     async with (
         Workspace(Local(root), scope="acme") as work,
-        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+        Engine(
+            coding_tree(tmp_path, "lookup"), providers=provided({"strong": llm, "judge": None})
+        ) as engine,
     ):
         with pytest.raises(RuntimeError, match="boom"):
             await engine.run(
@@ -782,7 +779,9 @@ async def test_a_handler_that_raises_on_a_cut_call_s_result_fails_the_run(
     with caplog.at_level(logging.DEBUG):
         async with (
             Workspace(Local(root), scope="acme") as work,
-            Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+            Engine(
+                coding_tree(tmp_path, "nap"), providers=provided({"strong": llm, "judge": None})
+            ) as engine,
         ):
             with pytest.raises(RuntimeError, match="boom"):
                 await engine.run(
@@ -816,8 +815,15 @@ class Waiting:
 async def test_a_consult_started_by_a_script_s_call_ends_with_the_command(
     tmp_path: Path, root: Path, storage: Storage
 ) -> None:
-    tree = make_tree(
-        tmp_path, {"chat": "name: chat\nkind: generation\nmodel: slow\ndescription: Talks"}
+    tree = coding_tree(
+        tmp_path,
+        "chat",
+        chat={
+            "kind": "generation",
+            "model": "slow",
+            "description": "Talks",
+            "instructions": "chat.md",
+        },
     )
     script(
         root,
@@ -829,7 +835,11 @@ async def test_a_consult_started_by_a_script_s_call_ends_with_the_command(
     waiting = Waiting(root)
     async with (
         Workspace(Local(root), scope="acme") as work,
-        Engine(tree, models={"strong": llm, "slow": waiting}, refinery=Refinery(storage)) as engine,
+        Engine(
+            tree,
+            providers=provided({"strong": llm, "slow": waiting, "judge": None}),
+            refinery=Refinery(storage),
+        ) as engine,
     ):
         run = await engine.run(
             "coder", "acme", "x", workspace=work, tools=engine.tool("chat", scope="acme")
@@ -859,8 +869,16 @@ def billing(tmp_path: Path, root: Path, talk: bool = False) -> Path:
         + 'threading.Thread(target=call, args=("billing",), kwargs={"input": "hi"}, daemon=True).start()\n'
         'until("asked")\ncall("halt")\n',
     )
-    return make_tree(
-        tmp_path, {"billing": "name: billing\nkind: generation\nmodel: slow\ndescription: Bills"}
+    return coding_tree(
+        tmp_path,
+        "billing",
+        "halt",
+        billing={
+            "kind": "generation",
+            "model": "slow",
+            "description": "Bills",
+            "instructions": "billing.md",
+        },
     )
 
 
@@ -884,7 +902,11 @@ async def test_a_consult_a_script_started_keeps_its_record_under_a_stop_with_slo
     async with (
         asyncio.timeout(10),
         Workspace(Local(root), scope="acme") as work,
-        Engine(tree, models={"strong": llm, "slow": waiting}, refinery=refinery) as engine,
+        Engine(
+            tree,
+            providers=provided({"strong": llm, "slow": waiting, "judge": None}),
+            refinery=refinery,
+        ) as engine,
     ):
         run = await engine.run(
             "coder", "acme", "x", workspace=work, tools=consults(engine, stop), stop=stop
@@ -917,7 +939,11 @@ async def test_a_consult_a_script_started_keeps_its_record_through_a_second_stop
     async with (
         asyncio.timeout(10),
         Workspace(Local(root), scope="acme") as work,
-        Engine(tree, models={"strong": llm, "slow": Waiting(root)}, refinery=refinery) as engine,
+        Engine(
+            tree,
+            providers=provided({"strong": llm, "slow": Waiting(root), "judge": None}),
+            refinery=refinery,
+        ) as engine,
     ):
         run = await engine.run(
             "coder",
@@ -958,7 +984,9 @@ async def test_a_cancel_of_the_run_cuts_the_record_write_of_a_consult_a_script_s
         asyncio.timeout(10),
         Workspace(Local(root), scope="acme") as work,
         Engine(
-            tree, models={"strong": llm, "slow": Waiting(root)}, refinery=Refinery(ledger)
+            tree,
+            providers=provided({"strong": llm, "slow": Waiting(root), "judge": None}),
+            refinery=Refinery(ledger),
         ) as engine,
     ):
         task = asyncio.ensure_future(
@@ -1005,7 +1033,11 @@ async def test_a_stop_during_a_bridged_consult_with_a_slow_output_handler_keeps_
     async with (
         asyncio.timeout(10),
         Workspace(Local(root), scope="acme") as work,
-        Engine(tree, models={"strong": llm, "slow": Waiting(root)}, refinery=refinery) as engine,
+        Engine(
+            tree,
+            providers=provided({"strong": llm, "slow": Waiting(root), "judge": None}),
+            refinery=refinery,
+        ) as engine,
     ):
         run = await engine.run(
             "coder",
@@ -1063,7 +1095,9 @@ async def test_a_cancel_of_the_run_during_a_bridged_consult_with_a_slow_output_h
         asyncio.timeout(10),
         Workspace(Local(root), scope="acme") as work,
         Engine(
-            tree, models={"strong": llm, "slow": Waiting(root)}, refinery=Refinery(ledger)
+            tree,
+            providers=provided({"strong": llm, "slow": Waiting(root), "judge": None}),
+            refinery=Refinery(ledger),
         ) as engine,
     ):
         task = asyncio.ensure_future(
@@ -1110,7 +1144,7 @@ async def test_a_tool_deadline_cuts_a_consult_a_script_started_whose_record_writ
             Workspace(Local(root), scope="acme") as work,
             Engine(
                 tree,
-                models={"strong": llm, "slow": Waiting(root)},
+                providers=provided({"strong": llm, "slow": Waiting(root), "judge": None}),
                 refinery=Refinery(ledger),
                 tool_timeout=0.2,
             ) as engine,
@@ -1180,7 +1214,9 @@ async def test_a_cancel_of_the_run_reaches_a_bridged_call_waiting_on_its_handler
     async with (
         asyncio.timeout(10),
         Workspace(Local(root), scope="acme") as work,
-        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+        Engine(
+            coding_tree(tmp_path, "look"), providers=provided({"strong": llm, "judge": None})
+        ) as engine,
     ):
         task = asyncio.ensure_future(
             engine.run(
@@ -1436,7 +1472,11 @@ async def test_a_call_whose_args_nest_past_the_depth_is_refused_and_leaves_no_st
     async with (
         asyncio.timeout(30),
         Workspace(Local(root), scope="acme", timeout=20) as work,
-        Engine(make_tree(tmp_path), models={"strong": llm}, refinery=refinery) as engine,
+        Engine(
+            coding_tree(tmp_path, "lookup"),
+            providers=provided({"strong": llm, "judge": None}),
+            refinery=refinery,
+        ) as engine,
     ):
         run = await engine.run(
             "coder",
@@ -1461,7 +1501,7 @@ async def test_the_description_states_a_command_s_budgets(tmp_path: Path, root: 
     llm = Scripted(text_reply("ok"))
     async with (
         Workspace(Local(root), scope="acme") as work,
-        Engine(make_tree(tmp_path), models={"strong": llm}) as engine,
+        Engine(coding_tree(tmp_path), providers=provided({"strong": llm, "judge": None})) as engine,
     ):
         await engine.run("coder", "acme", "x", workspace=work)
     assert (

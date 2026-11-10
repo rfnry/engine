@@ -4,35 +4,17 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from rfnry_engine.compiled import load_folder
 from rfnry_engine.errors import ConfigurationError
-from rfnry_engine.folders import content, entries, joined, pattern_reaches
-from rfnry_engine.frontmatter import described
+from rfnry_engine.folders import pattern_reaches
+from rfnry_engine.frontmatter import leniently_described
+
+from .trees import write_folder
 
 
 def write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
-
-
-def coding(root: Path) -> Path:
-    write(
-        root / "AGENT.md",
-        "---\nname: coding\nkind: generation\nmodel: strong\ndescription: Codes\n---\nHi\n",
-    )
-    write(root / "questions/q.json", '{"type": "check", "instructions": "Is it?"}')
-    write(root / "notes/style.md", "---\ndescription: The house style\n---\nTabs never.\n")
-    write(root / "notes/draft.md", "No frontmatter, so no description.\n")
-    write(root / "notes/.secret.md", "---\ndescription: Hidden\n---\n")
-    write(root / ".git/config", "[core]\n")
-    write(
-        root / "skills/pdf/SKILL.md",
-        "---\nname: pdf\ndescription: >\n  Fill and\n  read PDFs\n---\n",
-    )
-    write(root / "skills/pdf/reference.md", "---\ndescription: Field names\n---\n")
-    write(root / "README.md", "---\ndescription: Start here\n---\n")
-    write(root / "docs/tools/hammer.md", "---\ndescription: A deep tools folder is content\n---\n")
-    (root / "empty").mkdir()
-    return root
 
 
 def test_a_description_is_the_frontmatter_s_description_with_whitespace_collapsed(
@@ -42,7 +24,7 @@ def test_a_description_is_the_frontmatter_s_description_with_whitespace_collapse
         tmp_path / "a.md",
         "---\nname: a\ndescription: |\n  Refunds,  returns\n  and credits\nother: 1\n---\nBody\n",
     )
-    assert described(tmp_path / "a.md") == "Refunds, returns and credits"
+    assert leniently_described(tmp_path / "a.md") == "Refunds, returns and credits"
 
 
 @pytest.mark.parametrize(
@@ -57,25 +39,24 @@ def test_a_description_is_the_frontmatter_s_description_with_whitespace_collapse
 )
 def test_a_file_without_a_description_has_none(tmp_path: Path, text: str) -> None:
     write(tmp_path / "a.md", text)
-    assert described(tmp_path / "a.md") is None
+    assert leniently_described(tmp_path / "a.md") is None
 
 
 def test_crlf_and_a_missing_last_newline_still_describe(tmp_path: Path) -> None:
     (tmp_path / "a.md").write_bytes(b"---\r\ndescription: Windows\r\n---\r\nBody\r\n")
     (tmp_path / "b.md").write_bytes(b"---\ndescription: Bare\n---")
-    assert described(tmp_path / "a.md") == "Windows"
-    assert described(tmp_path / "b.md") == "Bare"
+    assert leniently_described(tmp_path / "a.md") == "Windows"
+    assert leniently_described(tmp_path / "b.md") == "Bare"
 
 
 def test_a_md_file_that_is_not_utf8_has_no_description(tmp_path: Path) -> None:
     (tmp_path / "a.md").write_bytes(b"---\ndescription: caf\xe9\n---\n\x00\x01")
-    assert described(tmp_path / "a.md") is None
+    assert leniently_described(tmp_path / "a.md") is None
 
 
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        ("---\ndescription: [unclosed\n---\n", "invalid YAML"),
         ("---\ndescription: {a: 1}\n---\n", "description must be a string"),
         ("---\ndescription: 12\n---\n", "description must be a string"),
     ],
@@ -85,142 +66,36 @@ def test_bad_frontmatter_is_refused_naming_the_file(
 ) -> None:
     write(tmp_path / "bad.md", text)
     with pytest.raises(ConfigurationError, match=rf"^frontmatter: {message} in .*bad\.md"):
-        described(tmp_path / "bad.md")
-
-
-def test_the_map_shows_every_folder_and_file_in_name_order_with_its_description(
-    tmp_path: Path,
-) -> None:
-    root = coding(tmp_path / "coding")
-    assert "\n".join(entries(root, True)) == (
-        "README.md — Start here\n"
-        "docs/\n"
-        "  tools/\n"
-        "    hammer.md — A deep tools folder is content\n"
-        "empty/\n"
-        "notes/\n"
-        "  draft.md\n"
-        "  style.md — The house style"
-    )
-
-
-def test_a_folder_without_agent_md_shows_its_declaration_folders_as_content(
-    tmp_path: Path,
-) -> None:
-    root = coding(tmp_path / "coding")
-    shown = entries(root, False)
-    assert "questions/" in shown and "  q.json" in shown
-
-
-def test_read_folders_follow_under_their_path_without_an_agent_s_declarations(
-    tmp_path: Path,
-) -> None:
-    own = tmp_path / "coding"
-    write(own / "AGENT.md", "---\nname: own\nkind: generation\nmodel: strong\n---\n")
-    write(own / "a.md", "---\ndescription: A\n---\n")
-    books = tmp_path / "books"
-    write(books / "python/async.md", "---\ndescription: Async\n---\n")
-    writing = tmp_path / "writing"
-    write(
-        writing / "AGENT.md",
-        "---\nname: writing\nkind: generation\nmodel: strong\ndescription: Writes\n---\n",
-    )
-    write(writing / "questions/x.json", '{"type": "check", "instructions": "Is it?"}')
-    write(writing / "voice.md", "---\ndescription: Voice\n---\n")
-    shown = {"../books": entries(books, False), "../writing": entries(writing, True)}
-    assert joined(entries(own, True), shown) == (
-        "a.md — A\n../books/\n  python/\n    async.md — Async\n../writing/\n  voice.md — Voice"
-    )
-
-
-def test_content_leaves_out_what_the_prompt_already_holds(tmp_path: Path) -> None:
-    root = coding(tmp_path / "coding")
-    assert [rel for rel, _ in content(root, True)] == [
-        "README.md",
-        "docs/tools/hammer.md",
-        "notes/draft.md",
-        "notes/style.md",
-    ]
-    plain = [rel for rel, _ in content(root, False)]
-    assert "AGENT.md" in plain
-    assert "questions/q.json" in plain
-    assert "skills/pdf/SKILL.md" in plain and "skills/pdf/reference.md" in plain
-
-
-def test_a_file_named_like_a_declaration_folder_is_content(tmp_path: Path) -> None:
-    write(tmp_path / "AGENT.md", "---\nname: root\nkind: generation\nmodel: strong\n---\n")
-    write(tmp_path / "questions", "a file, not a folder\n")
-    assert [rel for rel, _ in content(tmp_path, True)] == ["questions"]
-
-
-def test_a_link_out_of_the_folder_is_neither_mapped_nor_content(tmp_path: Path) -> None:
-    root = tmp_path / "agent"
-    outside = tmp_path / "outside"
-    write(outside / "secret.md", "---\ndescription: Secret\n---\n")
-    write(root / "AGENT.md", "---\nname: root\nkind: generation\nmodel: strong\n---\n")
-    (root / "linked").symlink_to(outside, target_is_directory=True)
-    (root / "secret.md").symlink_to(outside / "secret.md")
-    assert entries(root, True) == [] and content(root, True) == []
-
-
-def test_a_folder_link_to_a_hidden_folder_is_not_mapped_and_adds_no_content(
-    tmp_path: Path,
-) -> None:
-    write(tmp_path / ".secret/k.md", "k\n")
-    write(tmp_path / "docs/d.md", "d\n")
-    before = content(tmp_path, False, inner=True)
-    (tmp_path / "shown").symlink_to(".secret", target_is_directory=True)
-    (tmp_path / "d2").symlink_to(".secret", target_is_directory=True)
-    (tmp_path / "d1").symlink_to("d2", target_is_directory=True)
-    (tmp_path / "linked").symlink_to("docs", target_is_directory=True)
-    assert entries(tmp_path, False) == ["docs/", "  d.md", "linked/"]
-    assert content(tmp_path, False, inner=True) == before
-
-
-def test_a_file_named___pycache___is_neither_mapped_nor_content(tmp_path: Path) -> None:
-    write(tmp_path / "notes/a.md", "A.\n")
-    write(tmp_path / "notes/__pycache__", "a file, not a folder\n")
-    write(tmp_path / "__pycache__", "a file, not a folder\n")
-    assert entries(tmp_path, False) == ["notes/", "  a.md"]
-    assert [rel for rel, _ in content(tmp_path, False, inner=True)] == ["notes/a.md"]
-
-
-def test_a_bad_description_stops_the_map_naming_the_file(tmp_path: Path) -> None:
-    root = coding(tmp_path / "coding")
-    write(root / "notes/broken.md", "---\ndescription: [x\n---\n")
-    with pytest.raises(ConfigurationError, match=r"^frontmatter: invalid YAML in .*broken\.md"):
-        entries(root, True)
-
-
-def test_a_folder_holding_an_agent_md_below_the_top_is_left_out_unless_inner(
-    tmp_path: Path,
-) -> None:
-    root = coding(tmp_path / "coding")
-    write(root / "notes/inner/AGENT.md", "---\nname: inner\nkind: generation\nmodel: strong\n---\n")
-    write(root / "notes/inner/voice.md", "Warm.\n")
-    assert "notes/inner/voice.md" not in [rel for rel, _ in content(root, False)]
-    assert "notes/\n  draft.md\n  style.md — The house style" in "\n".join(entries(root, True))
-    inner = [rel for rel, _ in content(root, False, inner=True)]
-    assert "notes/inner/AGENT.md" in inner and "notes/inner/voice.md" in inner
+        leniently_described(tmp_path / "bad.md")
 
 
 def test_an_unreadable_folder_is_named_in_a_warning_and_left_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    write(tmp_path / "notes/a.md", "A.\n")
-    write(tmp_path / "lost/b.md", "B.\n")
-    blocked = (tmp_path / "lost").resolve()
-    real = os.scandir
+    root = write_folder(
+        tmp_path,
+        {
+            "a": {
+                "kind": "generation",
+                "model": "strong",
+                "instructions": "a.md",
+                "files": {"include": ["."]},
+            }
+        },
+        files={"a.md": "Work.\n", "notes/a.md": "A.\n", "lost/b.md": "B.\n"},
+    )
+    blocked = (root / "lost").resolve()
+    real = os.listdir
 
-    def scandir(path: object = ".") -> object:
+    def listdir(path: object = ".") -> object:
         if Path(str(path)) == blocked:
             raise PermissionError(13, "denied", str(path))
         return real(path)  # type: ignore[call-overload]
 
-    monkeypatch.setattr(os, "scandir", scandir)
+    monkeypatch.setattr(os, "listdir", listdir)
     with caplog.at_level(logging.WARNING, logger="rfnry_engine.folders"):
-        found = content(tmp_path, declared=False)
-    assert [rel for rel, _ in found] == ["notes/a.md"]
+        spec = load_folder(root)["a"]
+    assert spec.listing == "notes/\n  a.md"
     assert f"folders: cannot read {blocked}: [Errno 13] denied: '{blocked}'; it is left out" in (
         caplog.messages
     )

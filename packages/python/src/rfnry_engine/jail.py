@@ -2,7 +2,7 @@ import contextlib
 import errno
 import os
 import stat
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable
 from pathlib import Path
 
 from rfnry_engine.errors import InputError
@@ -17,24 +17,16 @@ class Jail:
         root: Path | str,
         *,
         also: Iterable[Path | str] = (),
-        reach: Mapping[str, Path | str] | None = None,
-        ignored: Callable[[Path], bool] | None = None,
         withheld: Callable[[Path], bool] | None = None,
         named: Collection[Path] = (),
     ) -> None:
         self.root = Path(root).resolve()
-        self.ignored = ignored
         self.withheld = withheld
         self.named = frozenset(named)
-        self._reach = {name: Path(place).resolve() for name, place in (reach or {}).items()}
-        self.also = [*(Path(place).resolve() for place in also), *self._reach.values()]
+        self.also = [Path(place).resolve() for place in also]
         self._identities = {place: _identity(place) for place in (self.root, *self.also)}
 
     def _joined(self, path: str | Path) -> Path:
-        written = str(path)
-        for name, place in self._reach.items():
-            if written == name or written.startswith(f"{name}/"):
-                return place / written[len(name) :].lstrip("/")
         return self.root / path
 
     def _withholds(self, path: str | Path) -> bool:

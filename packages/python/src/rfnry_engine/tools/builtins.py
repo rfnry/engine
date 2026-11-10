@@ -4,7 +4,7 @@ import mimetypes
 import os
 import stat
 import time
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator
 from fnmatch import fnmatch
 from itertools import islice
 from pathlib import Path
@@ -110,22 +110,6 @@ def _hides(jail: Jail, path: str | Path) -> bool:
     return _hidden(jail, root, seen) or _hidden(jail, named.parent, Path(named.name))
 
 
-def _ignored(jail: Jail, path: str | Path) -> bool:
-    if jail.ignored is None:
-        return False
-    joined = jail._joined(path)
-    try:
-        return jail.ignored(Path(os.path.normpath(joined))) or jail.ignored(
-            Path(os.path.realpath(joined))
-        )
-    except ValueError:
-        return False
-
-
-def _not_there(jail: Jail, path: str | Path) -> bool:
-    return _ignored(jail, path) or jail._withholds(path)
-
-
 def _through_folders(jail: Jail, path: str) -> str:
     parts = path.split("/")
     for n in range(1, len(parts)):
@@ -137,17 +121,13 @@ def _through_folders(jail: Jail, path: str) -> str:
 
 
 def _written_hidden(jail: Jail, path: str) -> bool:
-    return _hidden(jail, jail.root, Path(os.path.relpath(jail._joined(path), jail.root)))
+    return _hidden(jail, jail.root, Path(os.path.relpath(jail.root / path, jail.root)))
 
 
 def _named(jail: Jail, path: str) -> str:
     if _hides(jail, path) and (_written_hidden(jail, path) or not jail._withholds(path)):
         raise InputError(
             f"tools/builtins: {path} is hidden; names starting with . and __pycache__ are not part of the agent's folder"
-        )
-    if _ignored(jail, path):
-        raise InputError(
-            f"tools/builtins: {path} is ignored by a .gitignore; it is not part of the agent's folder"
         )
     return path
 
@@ -304,23 +284,15 @@ class _Directory:
     def __init__(
         self,
         root: Path,
-        reads: Mapping[str, Path] | None = None,
         workspace: bool = False,
-        ignored: Callable[[Path], bool] | None = None,
         withheld: Callable[[Path], bool] | None = None,
         named: Collection[Path] = (),
     ) -> None:
         self.root = Path(root).resolve()
         self.workspace = workspace
-        self.reads = {name: Path(folder).resolve() for name, folder in (reads or {}).items()}
-        self.jail = Jail(
-            self.root, reach=self.reads, ignored=ignored, withheld=withheld, named=named
-        )
+        self.jail = Jail(self.root, withheld=withheld, named=named)
 
     def _shown(self, path: Path) -> str:
-        for name, folder in self.reads.items():
-            if folder in path.parents:
-                return f"{name}/{path.relative_to(folder).as_posix()}"
         return path.relative_to(self.root).as_posix()
 
     def _place(self, path: str) -> Path:
@@ -340,14 +312,14 @@ class _Directory:
         return _lines(_contents(self.jail, _named(self.jail, a.path), _MAX_BYTES, missing)[1], a)
 
     def _below(self, base: Path) -> Iterator[Path]:
-        if self.jail.ignored is None and self.jail.withheld is None:
+        if self.jail.withheld is None:
             yield from base.rglob("*")
             return
         for directory, names, filenames in os.walk(base):
             here = Path(directory)
-            names[:] = [name for name in names if not _not_there(self.jail, here / name)]
+            names[:] = [name for name in names if not self.jail._withholds(here / name)]
             yield from (here / name for name in names)
-            yield from (here / name for name in filenames if not _not_there(self.jail, here / name))
+            yield from (here / name for name in filenames if not self.jail._withholds(here / name))
 
     def _files_under(self, base: Path, glob: str | None) -> tuple[list[Path], bool]:
         if base.is_file():
@@ -444,16 +416,12 @@ class _Directory:
     def glob(self, args: dict[str, Any]) -> str:
         a = GlobArgs.model_validate(args)
         base, pattern = self.root, a.pattern
-        for name, folder in self.reads.items():
-            if pattern.startswith(f"{name}/"):
-                base, pattern = folder, pattern[len(name) + 1 :]
-                break
         if not pattern or pattern.startswith("/") or ".." in pattern.split("/"):
             raise InputError(
-                "tools/builtins: pattern must be relative and stay inside the agent directory or a folder it reads"
+                "tools/builtins: pattern must be relative and stay inside the agent directory"
             )
         try:
-            kept = (p for p in base.glob(pattern) if not _not_there(self.jail, p))
+            kept = (p for p in base.glob(pattern) if not self.jail._withholds(p))
             entries = list(islice(kept, _MAX_WALK + 1))
         except ValueError as exc:
             raise InputError(f"tools/builtins: invalid glob pattern {a.pattern!r}: {exc}") from exc
@@ -483,7 +451,7 @@ class _Directory:
                             for e in found
                             if not _hidden(self.jail, place, Path(e.name))
                             and not _hides(self.jail, place / e.name)
-                            and not _not_there(self.jail, place / e.name)
+                            and not self.jail._withholds(place / e.name)
                             and self._inside(place / e.name)
                         ),
                         key=lambda e: e.name,
@@ -507,13 +475,11 @@ class _Directory:
 
 def builtins(
     root: Path,
-    reads: Mapping[str, Path] | None = None,
     workspace: Backend | None = None,
-    ignored: Callable[[Path], bool] | None = None,
     withheld: Callable[[Path], bool] | None = None,
     named: Collection[Path] = (),
 ) -> list[Tool]:
-    directory = _Directory(root, reads, workspace is not None, ignored, withheld, named)
+    directory = _Directory(root, workspace is not None, withheld, named)
 
     def threaded(handler: Any) -> Any:
         async def body(args: dict[str, Any]) -> Result:
@@ -557,12 +523,10 @@ def load_tool(
     folder: Path,
     workspace: Backend | None = None,
     media_types: Callable[[], Collection[str] | None] | None = None,
-    reads: Mapping[str, Path] | None = None,
-    ignored: Callable[[Path], bool] | None = None,
     withheld: Callable[[Path], bool] | None = None,
     named: Collection[Path] = (),
 ) -> Tool:
-    jail = Jail(folder, reach=reads, ignored=ignored, withheld=withheld, named=named)
+    jail = Jail(folder, withheld=withheld, named=named)
     missing = (
         'Load with where="workspace" loads from your workspace' if workspace is not None else ""
     )

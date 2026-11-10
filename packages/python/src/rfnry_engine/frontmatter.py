@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from rfnry_engine.errors import ConfigurationError
 
@@ -128,11 +128,6 @@ def _utf8(path: Path) -> str | None:
         return None
 
 
-def described(path: Path) -> str | None:
-    raw = _utf8(path)
-    return None if raw is None else description(raw, path)
-
-
 def leniently_described(path: Path) -> str | None:
     raw = _utf8(path)
     return None if raw is None else lenient_description(raw, path)
@@ -146,20 +141,6 @@ def _description_in(data: object, path: Path) -> str | None:
         )
     collapsed = " ".join(said.split()) if said else ""
     return collapsed or None
-
-
-def description(raw: str, path: Path) -> str | None:
-    match = _HEAD.match(raw.removeprefix("\ufeff"))
-    if match is None:
-        return None
-    try:
-        data = yaml.load(match.group(1), Loader=StrictLoader)
-    except YAML_FAILURES as exc:
-        place, problem, fix = unreadable(exc, match.group(1))
-        raise ConfigurationError(
-            f"frontmatter: invalid YAML in {path}{place}: {problem}; {fix}"
-        ) from exc
-    return _description_in(data, path)
 
 
 def _scanned_description(head: str) -> str | None:
@@ -195,48 +176,3 @@ def plainly(exc: ValidationError, whole: str = "the file") -> str:
         f"{'.'.join(map(str, error['loc'])) or whole}: {_said(error['msg'])}"
         for error in exc.errors(include_url=False)
     )
-
-
-def parse_frontmatter_doc[T: BaseModel](
-    raw: str,
-    *,
-    model: type[T],
-    source: Path | str,
-    label: str,
-) -> tuple[T, str]:
-    split = split_frontmatter(raw)
-    if split is None:
-        raise ConfigurationError(
-            f"frontmatter: missing in {source}; start the file with a block of YAML between two --- lines"
-        )
-    front_raw, body = split
-    try:
-        data = yaml.load(front_raw, Loader=StrictLoader) or {}
-    except YAML_FAILURES as exc:
-        place, problem, fix = unreadable(exc, front_raw)
-        raise ConfigurationError(
-            f"frontmatter: invalid YAML in {source}{place}: {problem}; {fix}"
-        ) from exc
-    if not isinstance(data, dict):
-        raise ConfigurationError(
-            f"frontmatter: {source} holds no keys between its --- lines; write key: value lines between the two --- lines, or start the file without ---"
-        )
-    try:
-        config = model.model_validate(data)
-    except ValidationError as exc:
-        unknown = [
-            ".".join(str(part) for part in error["loc"])
-            for error in exc.errors()
-            if error["type"] == "extra_forbidden"
-        ]
-        if unknown:
-            fix = (
-                "check its spelling"
-                if any("." in key for key in unknown)
-                else f"it takes {', '.join(model.model_fields)}"
-            )
-            raise ConfigurationError(
-                f"frontmatter: unknown key {', '.join(map(repr, unknown))} in {source}; {fix}"
-            ) from exc
-        raise ConfigurationError(f"frontmatter: invalid {label} {source}; {plainly(exc)}") from exc
-    return config, body.lstrip("\n")

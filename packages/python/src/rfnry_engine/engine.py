@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import math
-import posixpath
 import time
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
@@ -42,7 +41,7 @@ from rfnry_engine.foreground import (
     taking,
 )
 from rfnry_engine.frontmatter import plainly
-from rfnry_engine.manifest import MANIFEST, Kind, ModelEntry, WorkerEntry, read_manifest
+from rfnry_engine.manifest import Kind, ModelEntry, read_manifest
 from rfnry_engine.models import (
     Answer,
     ChoiceAnswer,
@@ -113,10 +112,8 @@ from rfnry_engine.tree import (
     Skill,
     as_question,
     foreign,
-    load_tree,
     no_such_skill,
     skill_text,
-    validate_tree,
 )
 from rfnry_engine.workers.pool import Script, Workers
 
@@ -157,7 +154,7 @@ class AgentInfo(BaseModel):
     files: list[str]
     tools: list[str]
     skills: dict[str, str]
-    public_skills: dict[str, str]
+    public: dict[str, str]
     worker: str
     modes: dict[str, AgentInfo]
 
@@ -413,7 +410,7 @@ def _command(spec: AgentSpec, text: str) -> tuple[str, str] | None:
     if not text.startswith("/"):
         return None
     word, *rest = text.split(maxsplit=1)
-    if word[1:] not in spec.public_skills:
+    if word[1:] not in spec.public:
         return None
     return word[1:], rest[0] if rest else ""
 
@@ -524,23 +521,13 @@ def _slots(cap: int | None) -> AbstractAsyncContextManager[Any]:
     return nullcontext() if cap is None else asyncio.Semaphore(cap)
 
 
-def _not_given(spec: AgentSpec) -> NoReturn:
-    raise ConfigurationError(
-        f"engine: agent {spec.name!r} runs on model {spec.model!r}, which neither the engine nor the run was given"
-    )
-
-
 def _kind_clash(spec: AgentSpec, verb: str) -> NoReturn:
     raise ConfigurationError(
         f"engine: agent {spec.name!r} is a {spec.kind} agent, and model {spec.model!r} has no {verb}()"
     )
 
 
-def _models(
-    models: Mapping[str, RunModel],
-    *,
-    choosing: bool = False,
-) -> dict[str, RunModel]:
+def _models(models: Mapping[str, RunModel]) -> dict[str, RunModel]:
     if not isinstance(models, Mapping):
         raise ConfigurationError("engine: models must be a mapping of model name to adapter")
     for name, model in models.items():
@@ -548,12 +535,11 @@ def _models(
             raise ConfigurationError(
                 f"engine: model name {name!r} must be non-blank text without padding"
             )
-        if choosing and isinstance(model, ModelChoice):
+        if isinstance(model, ModelChoice):
             continue
         if not isinstance(model, GenerationModel | DecisionModel | VoiceModel):
-            also = ", or a ModelChoice" if choosing else ""
             raise ConfigurationError(
-                f"engine: model {name!r} has none of generate(), decide() and open(); pass an adapter that has one{also}"
+                f"engine: model {name!r} has none of generate(), decide() and open(); pass an adapter that has one, or a ModelChoice"
             )
     return dict(models)
 
@@ -616,17 +602,6 @@ def _check_names(
             )
 
 
-def _check_models(
-    agents: Mapping[str, AgentSpec],
-    models: Mapping[str, RunModel],
-) -> None:
-    _check_names(agents, models)
-    for spec in _with_modes(agents):
-        model = models.get(spec.model)
-        if model is not None:
-            _of_its_kind(spec, model)
-
-
 def _check_processes(workers: Workers, ceiling: int, raise_it: str) -> None:
     if workers.processes > ceiling:
         raise ConfigurationError(
@@ -641,10 +616,10 @@ def _info(name: str, spec: AgentSpec) -> AgentInfo:
         model=spec.model,
         description=spec.description,
         delegate_to=list(spec.agents),
-        files=[*spec.reads, *spec.reachable],
+        files=list(spec.reachable),
         tools=list(chosen(spec)),
         skills={called: skill.description for called, skill in spec.skills.items()},
-        public_skills={called: spec.skills[called].description for called in spec.public_skills},
+        public={called: spec.skills[called].description for called in spec.public},
         worker=spec.worker,
         modes={mode: _info(name, one) for mode, one in spec.modes.items()},
     )
@@ -909,7 +884,6 @@ class Engine:
         root: Path | str,
         *,
         providers: Mapping[str, Provider] | None = None,
-        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
         refinery: Recorder | None = None,
         max_model_calls: int = 200,
         max_depth: int = 5,
@@ -953,35 +927,17 @@ class Engine:
         self.history_walk = history_walk
         self.history_chars = history_chars
         self._providers: Mapping[str, Provider] = MappingProxyType(_providers(providers))
-        self._entries: Mapping[str, ModelEntry] = {}
-        self._models: Mapping[str, RunModel]
-        declared: Mapping[str, WorkerEntry] = {}
-        if (self.root / MANIFEST).is_file():
-            if models is not None:
-                raise ConfigurationError(
-                    f"engine: a folder with {MANIFEST} takes providers=, not models=; declare each model under models: in the file, and pass Engine(providers=) to build them"
-                )
-            manifest = read_manifest(self.root)
-            self._agents = compile_folder(self.root, manifest)
-            declared = manifest.workers
-            _check_providers(manifest.models, self._providers)
-            self._entries = MappingProxyType(manifest.models)
-            self._models = MappingProxyType(
-                {
-                    name: ModelChoice(entry.provider, entry.model, entry.effort)
-                    for name, entry in manifest.models.items()
-                }
-            )
-        else:
-            if providers is not None or models is None:
-                raise ConfigurationError(
-                    f"engine: a folder with no {MANIFEST} takes models=, {{}} for none, not providers=; pass Engine(models=), or give the folder an {MANIFEST}"
-                )
-            self._agents = load_tree(self.root)
-            validate_tree(self._agents)
-            self._models = MappingProxyType(_models(models))
-            _check_models(self._agents, self._models)
-        self._workers = Workers(self._agents, declared, worker_result_bytes)
+        manifest = read_manifest(self.root)
+        self._agents = compile_folder(self.root, manifest)
+        _check_providers(manifest.models, self._providers)
+        self._entries: Mapping[str, ModelEntry] = MappingProxyType(manifest.models)
+        self._models: Mapping[str, RunModel] = MappingProxyType(
+            {
+                name: ModelChoice(entry.provider, entry.model, entry.effort)
+                for name, entry in manifest.models.items()
+            }
+        )
+        self._workers = Workers(self._agents, manifest.workers, worker_result_bytes)
         _check_processes(self._workers, max_worker_processes, "raise Engine(max_worker_processes=)")
         self._closed = False
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
@@ -1001,8 +957,8 @@ class Engine:
         await self.close()
 
     @property
-    def models(self) -> Mapping[str, GenerationModel | DecisionModel | ModelEntry]:
-        return self._entries or cast(Mapping[str, GenerationModel | DecisionModel], self._models)
+    def models(self) -> Mapping[str, ModelEntry]:
+        return self._entries
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
@@ -1011,7 +967,7 @@ class Engine:
     def _run_models(self, models: Mapping[str, RunModel] | None) -> Mapping[str, RunModel]:
         if models is None:
             return self._models
-        given = _models(models, choosing=bool(self._entries))
+        given = _models(models)
         _check_names(self._agents, given)
         return {
             **self._models,
@@ -1041,10 +997,7 @@ class Engine:
         spec: AgentSpec,
         models: Mapping[str, RunModel],
     ) -> GenerationModel | DecisionModel | VoiceModel:
-        held = models.get(spec.model)
-        if held is None:
-            _not_given(spec)
-        model = self._built(held)
+        model = self._built(models[spec.model])
         _of_its_kind(spec, model)
         return cast(GenerationModel | DecisionModel | VoiceModel, model)
 
@@ -1229,8 +1182,7 @@ class Engine:
         spec = self._spec(agent)
         if not spec.description.strip():
             raise ConfigurationError(
-                f"engine: agent {agent!r} has no description: in its AGENT.md; "
-                "add one to use it as a tool"
+                f"engine: agent {agent!r} has no description; write description: on its entry in rfnry.yaml, or in its instructions file's frontmatter, to use it as a tool"
             )
         tagged = _tags(tags)
         merged = self._run_models(models)
@@ -1397,7 +1349,6 @@ class Engine:
     ) -> Decision:
         caller = _caller(scope)
         model_ = cast(DecisionModel, self._adapter(spec, options.models))
-        self._check_routes(spec, set(), options.models)
         folder = {*spec.questions, *spec.scripted}
         clash = [qid for qid in options.questions if qid in folder]
         if clash:
@@ -1537,22 +1488,6 @@ class Engine:
             raise failed.exceptions[0] from None
         return {qid: task.result() for qid, task in filling.items()}
 
-    def _check_routes(
-        self,
-        spec: AgentSpec,
-        seen: set[str],
-        models: Mapping[str, RunModel],
-    ) -> None:
-        seen.add(spec.name)
-        for target in spec.route.to.values() if spec.route is not None else []:
-            routed = self._agents[target]
-            if routed.model not in models:
-                raise ConfigurationError(
-                    f"engine: agent {spec.name!r} routes to agent {target!r}, which runs on model {routed.model!r}, which neither the engine nor the run was given"
-                )
-            if routed.kind == "decision" and target not in seen:
-                self._check_routes(routed, seen, models)
-
     async def _generation(
         self,
         spec: AgentSpec,
@@ -1591,19 +1526,10 @@ class Engine:
         reachable = surface.without(*barred)
         bridging = room is not None and room._bridging and bool(reachable)
         own_deadline = surface._in_workers | (WORKSPACE_TOOLS if room is not None else frozenset())
-        variables = (
-            {
-                "RFNRY_TREE": room.tree,
-                "RFNRY_AGENT": room.tree
-                if spec.path == "."
-                else posixpath.join(room.tree, spec.path),
-            }
-            if room is not None and room.tree is not None
-            else {}
-        )
+        variables = {"RFNRY_TREE": room.tree} if room is not None and room.tree is not None else {}
         specs = [ToolSpec.model_validate(_copied(d)) for d in surface.definitions()]
         if room is not None:
-            told = room._told([*spec.reads, *spec.included_folders], bridging)
+            told = room._told(spec.included_folders, bridging)
             specs = [
                 s.model_copy(update={"description": s.description + told})
                 if s.name == "Shell"

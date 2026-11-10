@@ -1,7 +1,7 @@
 import logging
 import os
 import re
-from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path, PurePath, PurePosixPath
@@ -10,13 +10,10 @@ from pathspec import GitIgnoreSpec
 from pathspec.patterns.gitignore.spec import _DIR_MARK
 
 from rfnry_engine.errors import InputError
-from rfnry_engine.frontmatter import described, leniently_described
+from rfnry_engine.frontmatter import leniently_described
 from rfnry_engine.jail import Jail
 
 logger = logging.getLogger(__name__)
-
-DECLARED = frozenset({"tools", "questions", "skills"})
-DECLARATIONS = frozenset({"AGENT.md"})
 
 _warned: ContextVar[set[str] | None] = ContextVar("warned", default=None)
 
@@ -84,10 +81,6 @@ def pattern_covers(pattern: str, path: PurePath) -> bool:
 def pattern_leads_into(pattern: str, folder: PurePath) -> bool:
     segments = PurePosixPath(pattern).parts
     return bool(_states(segments, folder) - {len(segments)}) or pattern_covers(pattern, folder)
-
-
-def declares(folder: Path) -> bool:
-    return (folder / "AGENT.md").is_file()
 
 
 def _inside(jail: Jail, entry: Path) -> bool:
@@ -180,69 +173,6 @@ class Gitignored:
         return self._names(path) or (real != path and self._names(real))
 
 
-def any_ignores(checks: Collection[Callable[[Path], bool]]) -> Callable[[Path], bool]:
-    def ignored(path: Path) -> bool:
-        return any(check(path) for check in checks)
-
-    return ignored
-
-
-def _walk(
-    folder: Path,
-    declared: bool,
-    inner: bool = False,
-    apart: Collection[Path] = (),
-    within: Path | None = None,
-    ignored: Callable[[Path], bool] | None = None,
-) -> tuple[list[str], list[tuple[str, Path]]]:
-    folder = folder.resolve()
-    holder = folder if within is None else within.resolve()
-    jail = Jail(holder)
-    dirs: list[str] = []
-    files: list[tuple[str, Path]] = []
-    for directory, names, filenames in os.walk(folder, onerror=_unreadable):
-        here = Path(directory)
-        at = here.relative_to(folder).as_posix()
-        top = at == "."
-        names[:] = [
-            name
-            for name in names
-            if not name.startswith(".")
-            and name != "__pycache__"
-            and not (declared and top and name in DECLARED)
-            and here / name not in apart
-            and (inner or not declares(here / name))
-            and _inside(jail, here / name)
-            and shown_link(holder, here / name)
-            and not (ignored is not None and ignored(here / name))
-        ]
-        dirs += [name if top else f"{at}/{name}" for name in names]
-        for name in filenames:
-            path = here / name
-            if (
-                name.startswith(".")
-                or name == "__pycache__"
-                or (declared and top and name in DECLARATIONS)
-            ):
-                continue
-            if ignored is not None and ignored(path):
-                continue
-            if path.is_file() and _inside(jail, path) and readable(path):
-                files.append((name if top else f"{at}/{name}", path))
-    return sorted(dirs), sorted(files)
-
-
-def content(
-    folder: Path,
-    declared: bool,
-    inner: bool = False,
-    apart: Collection[Path] = (),
-    within: Path | None = None,
-    ignored: Callable[[Path], bool] | None = None,
-) -> list[tuple[str, Path]]:
-    return _walk(folder, declared, inner, apart, within, ignored)[1]
-
-
 def _rendered(
     dirs: Iterable[str],
     files: Sequence[tuple[str, Path]],
@@ -270,15 +200,6 @@ def _rendered(
     return lines
 
 
-def entries(
-    folder: Path,
-    declared: bool,
-    apart: Collection[Path] = (),
-    ignored: Callable[[Path], bool] | None = None,
-) -> list[str]:
-    return _rendered(*_walk(folder, declared, apart=apart, ignored=ignored), described)
-
-
 def mapped(files: Sequence[tuple[str, Path]]) -> list[str]:
     folders = {
         parent.as_posix()
@@ -287,10 +208,3 @@ def mapped(files: Sequence[tuple[str, Path]]) -> list[str]:
         if parent != PurePosixPath(".")
     }
     return _rendered(folders, files, leniently_described)
-
-
-def joined(own: list[str], reads: Mapping[str, list[str]]) -> str:
-    lines = list(own)
-    for name, shown in reads.items():
-        lines += [f"{name}/", *(f"  {line}" for line in shown)]
-    return "\n".join(lines)

@@ -5,7 +5,7 @@ import site
 import subprocess
 import sys
 import sysconfig
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Collection, Iterator
 from functools import cache
 from importlib.machinery import FrozenImporter
 from pathlib import Path, PurePosixPath
@@ -15,7 +15,7 @@ import jsonschema_rs
 from pydantic import BaseModel, JsonValue
 
 from rfnry_engine.errors import ConfigurationError
-from rfnry_engine.folders import declares, leads_out
+from rfnry_engine.folders import leads_out
 from rfnry_engine.manifest import ToolEntry
 from rfnry_engine.workers.pool import Helper, Script
 
@@ -39,23 +39,10 @@ class ToolDef(BaseModel):
     timeout: float | None = None
 
 
-class Reach(NamedTuple):
-    helpers: dict[str, Helper]
-    tools: dict[str, Path]
-
-
-class ToolFolder(NamedTuple):
-    tools: dict[str, ToolDef]
-    reach: Reach
-
-
 class _Schema(NamedTuple):
     description: str
     input_schema: dict[str, JsonValue]
     output_schema: dict[str, JsonValue] | None
-
-
-NOWHERE = Reach({}, {})
 
 
 def script_key(root: Path, script: Path) -> str:
@@ -178,23 +165,6 @@ def _schema_file(path: Path, given: str | None) -> _Schema:
     return _Schema(given or said, arguments, result)
 
 
-def _definition(
-    path: Path, script: Path, root: Path, sources: dict[Path, str], helpers: dict[str, Helper]
-) -> ToolDef:
-    schema = _schema_file(path, None)
-    return ToolDef(
-        name=path.stem,
-        description=schema.description,
-        input_schema=schema.input_schema,
-        output_schema=schema.output_schema,
-        script=script,
-        folder=path.parent,
-        key=script_key(root, script),
-        source=sources[script],
-        helpers=helpers,
-    )
-
-
 def _catches_import_errors(handler: ast.ExceptHandler) -> bool:
     caught = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
     return any(isinstance(kind, ast.Name) and kind.id in IMPORT_ERRORS for kind in caught)
@@ -310,7 +280,6 @@ def _check_imports(
     folders: Collection[Path],
     helpers: Collection[str],
     beside: Collection[str],
-    above: Mapping[str, Path],
     what: str,
     declared: bool = False,
 ) -> None:
@@ -320,11 +289,6 @@ def _check_imports(
         "a module beside it by its name, such as import shared"
         if declared
         else f"a helper of its {held} folder by its name, such as import _client"
-    )
-    reach = (
-        "the helpers of its tools/ folder and of those above it"
-        if what == "tool"
-        else "the helpers of its folder"
     )
     for node, nested, guarded in _imports(module):
         if isinstance(node, ast.ImportFrom) and node.level:
@@ -359,16 +323,7 @@ def _check_imports(
                 and all(path.parent.resolve() in o.resolve().parents for o in origins)
             ):
                 raise ConfigurationError(
-                    f"tools/folder: {path} imports {top!r}, which sits in its {held} folder but is not a helper; a {what} reaches only {reach}, so move the shared code into a helper _{top}.py"
-                )
-            higher = above.get(top)
-            if (
-                higher is not None
-                and top not in sys.stdlib_module_names
-                and all(higher.resolve() in o.resolve().parents for o in origins)
-            ):
-                raise ConfigurationError(
-                    f"tools/folder: {path} imports {top!r}, which sits in the tools/ folder {higher} above it but is not a helper; a {what} reaches only {reach}, so move the shared code into a helper _{top}.py"
+                    f"tools/folder: {path} imports {top!r}, which sits in its {held} folder but is not a helper; a {what} reaches only the helpers of its folder, so move the shared code into a helper _{top}.py"
                 )
             if declared and not origins and not guarded and not _standard(top):
                 raise ConfigurationError(
@@ -379,47 +334,6 @@ def _check_imports(
                     raise ConfigurationError(
                         f"tools/folder: {path} imports {top!r} from {origin}, the server's own code; a {what} imports the standard library, installed packages and {importable}"
                     )
-
-
-def load_tools(
-    folder: Path, project: Path, root: Path, folders: Collection[Path], above: Reach = NOWHERE
-) -> ToolFolder:
-    folder, root, project = folder.absolute(), root.absolute(), project.resolve()
-    files = sorted(p for p in folder.iterdir() if p.is_file() and not p.name.startswith("."))
-    named = [p for p in files if not p.name.startswith("_")]
-    helpers = [p for p in files if p.name.startswith("_") and p.suffix == ".py"]
-    definitions = {p.stem: p for p in named if p.suffix == ".json"}
-    scripts = {p.stem: p for p in named if p.suffix == ".py"}
-    whole = "the agent's whole folder" if declares(folder.parent) else "the whole tools/ folder"
-    for path in sorted([*definitions.values(), *scripts.values(), *helpers]):
-        _held(path, folder, "its folder", whole)
-    for path in helpers:
-        _check_name(path)
-    for name in sorted({*definitions, *scripts}):
-        if name not in scripts:
-            raise ConfigurationError(
-                f"tools/folder: {definitions[name]} has no {name}.py beside it; a tool is {name}.json and {name}.py in a tools/ folder"
-            )
-        if name not in definitions:
-            raise ConfigurationError(
-                f"tools/folder: {scripts[name]} has no {name}.json beside it; describe the tool in {name}.json, or name a helper _{name}.py"
-            )
-    sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
-    beside = _beside(folder)
-    reach = Reach(
-        {**above.helpers, **{p.stem: Helper(p, sources[p]) for p in helpers}},
-        {**above.tools, **dict.fromkeys(beside, folder)},
-    )
-    tools = {
-        name: _definition(definitions[name], scripts[name], root, sources, reach.helpers)
-        for name in sorted(scripts)
-    }
-    for path, source in sources.items():
-        module = _parsed(path, source)
-        _check_imports(path, module, project, folders, reach.helpers, beside, above.tools, "tool")
-        if path in scripts.values():
-            _check_run(path, module, "tool", "args")
-    return ToolFolder(tools, reach)
 
 
 def _file_of(root: Path, name: str, written: str, what: str) -> Path:
@@ -473,7 +387,7 @@ def load_tool(root: Path, name: str, entry: ToolEntry, project: Path) -> ToolDef
     source = _text(script)
     parsed, helpers = _with_its_modules(script, source, root)
     for path, module in parsed.items():
-        _check_imports(path, module, project, (), helpers, (), {}, "tool", declared=True)
+        _check_imports(path, module, project, (), helpers, (), "tool", declared=True)
     _check_run(script, parsed[script], "tool", "args", entry.function)
     schema = _schema_of(root, name, entry)
     return ToolDef(
@@ -500,7 +414,7 @@ def load_scripts(
     )
     scripts = {name: folder / f"{name}.py" for name in names}
     for path in [*scripts.values(), *helpers]:
-        _held(path, folder.parent, "the agent's folder", "the agent's whole folder")
+        _held(path, root, "the folder root", "the whole folder")
     for path in helpers:
         _check_name(path)
     sources = {path: _text(path) for path in [*scripts.values(), *helpers]}
@@ -509,7 +423,7 @@ def load_scripts(
     beside = _beside(folder)
     for path, source in sources.items():
         module = _parsed(path, source)
-        _check_imports(path, module, project, folders, shared, beside, {}, what)
+        _check_imports(path, module, project, folders, shared, beside, what)
         if path in scripts.values():
             _check_run(path, module, what, "input")
     return {

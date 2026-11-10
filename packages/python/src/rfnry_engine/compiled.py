@@ -180,7 +180,7 @@ def _questions(root: Path, who: str, written: list[str]) -> _Asked:
                     f"compiled: {who} asks {name!r} twice, in {held[name].relative_to(root)} and {path.relative_to(root)}; a question is named by its file, so rename one"
                 )
             held[name] = path
-        fixed, filled = read_questions(directory, definitions, scripts, root, ())
+        fixed, filled = read_questions(directory, definitions, scripts, root)
         questions |= fixed
         scripted |= filled
         reached.extend(definitions.values())
@@ -404,7 +404,7 @@ def _preload_left(
             )
 
 
-def _public_skills(who: str, section: SkillsSection, offered: Collection[str]) -> tuple[str, ...]:
+def _public(who: str, section: SkillsSection, offered: Collection[str]) -> tuple[str, ...]:
     names = sorted(offered if section.public == "all" else section.public or ())
     for name in names:
         if any(character.isspace() for character in name):
@@ -430,7 +430,7 @@ def _chosen_skills(
         offered,
         frozenset(excluded),
         [held[name].skill for name in preloaded],
-        _public_skills(who, section, offered),
+        _public(who, section, offered),
     )
 
 
@@ -679,7 +679,6 @@ def _spec(
     return AgentSpec(
         root=root,
         name=agent,
-        path=".",
         kind=resolved.kind,
         model=resolved.model,
         description=said or "",
@@ -706,7 +705,7 @@ def _spec(
         preload_digest=preload_digest(preload),
         skills={name: one.skill for name, one in skills.held.items()},
         offered=chosen.offered,
-        public_skills=chosen.public,
+        public=chosen.public,
         folder_tools=dict(sorted(folder_tools.items())),
         listing="\n".join(mapped(sorted(reach.on_the_map.items()))),
         needs_mode=resolved.instructions is None,

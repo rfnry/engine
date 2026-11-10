@@ -23,6 +23,7 @@ from rfnry_engine import (
 )
 
 from .fakes import Fixed
+from .trees import provided, write_folder
 
 DOCS = Path(__file__).parents[4] / "docs" / "engine.md"
 GUIDE = Path(__file__).parents[4] / "docs" / "evaluation.md"
@@ -70,16 +71,26 @@ async def test_the_holdout_replay_grades_the_candidate_on_what_each_run_was_give
     tmp_path: Path,
     storage: Storage,
 ) -> None:
-    for path, text in {
-        "support/AGENT.md": "---\nname: support\nkind: generation\nmodel: strong\n---\nYou help.\n",
-        "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\n---\n",
-        "grader/questions/matches.json": '{"type": "check", "instructions": "Does the reply match?"}',
-    }.items():
-        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / path).write_text(text, encoding="utf-8")
+    write_folder(
+        tmp_path,
+        {
+            "support": {"kind": "generation", "model": "strong", "instructions": "support.md"},
+            "grader": {
+                "kind": "decision",
+                "model": "judge",
+                "instructions": "grader.md",
+                "questions": ["grader/*.json"],
+            },
+        },
+        files={
+            "support.md": "You help.\n",
+            "grader.md": "",
+            "grader/matches.json": '{"type": "check", "instructions": "Does the reply match?"}',
+        },
+    )
     refinery = Refinery(storage)
     graded = Fixed({"matches": CheckAnswer(probability=0.9)})
-    engine = Engine(tmp_path, models={"strong": Seeing(), "judge": graded})
+    engine = Engine(tmp_path, providers=provided({"strong": Seeing(), "judge": graded}))
     held = [f"run-{i}" for i in range(200) if is_holdout(f"run-{i}")][:4]
     kept = next(f"run-{i}" for i in range(200) if not is_holdout(f"run-{i}"))
     parts = [Text(text="Charged twice?"), Image(media_type="image/png", data=b"\x89PNG\r\n\x1a\n")]
@@ -102,7 +113,9 @@ async def test_the_holdout_replay_grades_the_candidate_on_what_each_run_was_give
     namespace: dict[str, Any] = {
         "refinery": refinery,
         "engine": engine,
-        "candidate": Engine(tmp_path, models={"strong": candidate_model}),
+        "candidate": Engine(
+            tmp_path, providers=provided({"strong": candidate_model, "judge": graded})
+        ),
     }
     [block] = [
         textwrap.dedent(b)
@@ -130,13 +143,14 @@ class Wavering:
 async def test_the_noise_recipe_counts_what_moved_and_the_swing(
     tmp_path: Path, storage: Storage
 ) -> None:
-    (tmp_path / "support").mkdir()
-    (tmp_path / "support/AGENT.md").write_text(
-        "---\nname: support\nkind: generation\nmodel: strong\n---\nYou help.\n", encoding="utf-8"
+    write_folder(
+        tmp_path,
+        {"support": {"kind": "generation", "model": "strong", "instructions": "support.md"}},
+        files={"support.md": "You help.\n"},
     )
     refinery = Refinery(storage)
     held = [f"run-{i}" for i in range(200) if is_holdout(f"run-{i}")][:3]
-    recorder = Engine(tmp_path, models={"strong": Wavering("a", "b", "c")})
+    recorder = Engine(tmp_path, providers=provided({"strong": Wavering("a", "b", "c")}))
     for run_id in held:
         run = await recorder.run("support", "acme", "Charged twice?")
         await refinery.record(run.model_copy(update={"run_id": run_id}))
@@ -151,7 +165,7 @@ async def test_the_noise_recipe_counts_what_moved_and_the_swing(
 
     namespace: dict[str, Any] = {
         "refinery": refinery,
-        "engine": Engine(tmp_path, models={"strong": Wavering(*replies)}),
+        "engine": Engine(tmp_path, providers=provided({"strong": Wavering(*replies)})),
         "read_only": read_only,
         "passes": passes,
     }

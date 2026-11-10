@@ -300,32 +300,6 @@ def test_providers_that_do_not_fit_are_refused(tmp_path: Path, providers: Any) -
         Engine(_one(tmp_path), providers=providers)
 
 
-async def test_a_folder_takes_providers_and_a_tree_models(tmp_path: Path) -> None:
-    file, tree = tmp_path / "file", tmp_path / "tree"
-    file.mkdir()
-    (tree / "a").mkdir(parents=True)
-    (tree / "a/AGENT.md").write_text(
-        "---\nname: a\nkind: generation\nmodel: m\ndescription: Works\n---\nWork.\n",
-        encoding="utf-8",
-    )
-    _one(file)
-    with pytest.raises(
-        ConfigurationError,
-        match=r"^engine: a folder with rfnry\.yaml takes providers=, not models=",
-    ):
-        Engine(file, models={"m": Scripted()})
-    with pytest.raises(
-        ConfigurationError,
-        match=r"^engine: a folder with no rfnry\.yaml takes models=, \{\} for none, not providers=",
-    ):
-        Engine(tree, providers={"p": Recording()})
-    with pytest.raises(ConfigurationError, match="^engine: a folder with no rfnry"):
-        Engine(tree)
-    assert Engine(tree, models={}).agents["a"].model == "m"
-    with pytest.raises(ConfigurationError, match="has none of generate"):
-        await Engine(tree, models={}).run("a", "acme", "x", models={"m": ModelChoice(model="x")})
-
-
 def test_engine_models_holds_the_entries(tmp_path: Path) -> None:
     engine = Engine(_one(tmp_path, model="x"), providers={"p": Recording()})
     assert dict(engine.models) == {"m": ModelEntry(provider="p", model="x")}

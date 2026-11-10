@@ -26,7 +26,6 @@ from .fakes import Answering, Fixed, Scripted, delegating, text_reply
 from .trees import provided, write_folder
 
 PNG = b"\x89PNG\r\n\x1a\ndiagram"
-NOT_GIVEN = "which neither the engine nor the run was given"
 TEAM = '{"type": "choice", "instructions": "Which?", "options": {"other": "Other", "writing": "Writing"}}'
 UNFIT: list[Any] = [
     [("strong", 1)],
@@ -54,7 +53,7 @@ TAUGHT = Reply(
     stop_reason="tool_use",
 )
 LOAD = Reply(
-    tool_calls=[ToolCall(id="l1", name="Load", args={"path": "diagram.png"})],
+    tool_calls=[ToolCall(id="l1", name="Load", args={"path": "lead/diagram.png"})],
     stop_reason="tool_use",
 )
 
@@ -95,46 +94,74 @@ class Lockstep:
         return self.replies.pop(0).model_copy(update={"model": self.name})
 
 
-def write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-
-
-def agent_md(name: str, kind: str = "generation", model: str = "strong", extra: str = "") -> str:
-    return (
-        f"---\nname: {name}\nkind: {kind}\nmodel: {model}\ndescription: Works\n{extra}---\nWork.\n"
-    )
+LEAD: dict[str, Any] = {
+    "kind": "generation",
+    "model": "strong",
+    "description": "Works",
+    "instructions": "lead.md",
+}
+WRITER: dict[str, Any] = {
+    "kind": "generation",
+    "model": "fast",
+    "description": "Works",
+    "instructions": "writer.md",
+}
+BODIES = {"lead.md": "Work.\n", "writer.md": "Work.\n"}
 
 
 def pair(root: Path) -> Path:
-    write(root / "lead/AGENT.md", agent_md("lead", extra="agents: [writer]\n"))
-    write(root / "writer/AGENT.md", agent_md("writer", model="fast"))
-    return root
+    return write_folder(
+        root,
+        {"lead": {**LEAD, "orchestration": {"delegate_to": ["writer"]}}, "writer": WRITER},
+        files=BODIES,
+    )
 
 
 def crew(root: Path) -> Path:
-    write(root / "lead/AGENT.md", agent_md("lead", extra="agents: [triage, writer]\n"))
-    write(
-        root / "triage/AGENT.md",
-        agent_md(
-            "triage",
-            kind="decision",
-            model="judge",
-            extra="route:\n  by: team\n  to: {writing: writer}\n",
-        ),
+    return write_folder(
+        root,
+        {
+            "lead": {**LEAD, "orchestration": {"delegate_to": ["triage", "writer"]}},
+            "triage": {
+                "kind": "decision",
+                "model": "judge",
+                "description": "Works",
+                "instructions": "triage.md",
+                "questions": ["triage/*.json"],
+                "orchestration": {"route": {"by": "team", "to": {"writing": "writer"}}},
+            },
+            "writer": WRITER,
+        },
+        files={**BODIES, "triage.md": "", "triage/team.json": TEAM},
     )
-    write(root / "triage/questions/team.json", TEAM)
-    write(root / "writer/AGENT.md", agent_md("writer", model="fast"))
-    return root
 
 
 def with_picture(root: Path) -> Path:
-    write(root / "lead/AGENT.md", agent_md("lead", extra="agents: [writer]\n"))
+    (root / "lead").mkdir(parents=True, exist_ok=True)
     (root / "lead/diagram.png").write_bytes(PNG)
-    write(root / "writer/AGENT.md", agent_md("writer", model="fast"))
-    write(root / "grader/AGENT.md", agent_md("grader", kind="decision", model="judge"))
-    write(root / "grader/questions/urgent.json", '{"type": "check", "instructions": "Urgent?"}')
-    return root
+    return write_folder(
+        root,
+        {
+            "lead": {
+                **LEAD,
+                "files": {"include": ["lead/diagram.png"]},
+                "orchestration": {"delegate_to": ["writer"]},
+            },
+            "writer": WRITER,
+            "grader": {
+                "kind": "decision",
+                "model": "judge",
+                "description": "Works",
+                "instructions": "grader.md",
+                "questions": ["grader/*.json"],
+            },
+        },
+        files={
+            **BODIES,
+            "grader.md": "",
+            "grader/urgent.json": '{"type": "check", "instructions": "Urgent?"}',
+        },
+    )
 
 
 def with_a_mode(root: Path) -> Path:
@@ -154,7 +181,7 @@ def with_a_mode(root: Path) -> Path:
 
 async def test_run_models_win_over_the_engines_by_key(tmp_path: Path) -> None:
     kept, fast = Scripted(text_reply("the engine's")), Scripted(text_reply("drafted"))
-    engine = Engine(pair(tmp_path), models={"strong": kept, "fast": fast})
+    engine = Engine(pair(tmp_path), providers=provided({"strong": kept, "fast": fast}))
     brought = Scripted(delegating("writer"), text_reply("the run's", model="run-1"))
     run = await engine.run("lead", "acme", "x", models={"strong": brought})
     assert isinstance(run, Generation)
@@ -164,11 +191,10 @@ async def test_run_models_win_over_the_engines_by_key(tmp_path: Path) -> None:
     afterwards = await engine.run("lead", "acme", "x")
     assert isinstance(afterwards, Generation)
     assert afterwards.reply == "the engine's" and len(brought.calls) == 2
-    assert dict(engine.models) == {"strong": kept, "fast": fast}
 
 
 async def test_an_engine_given_no_models_runs_on_the_runs(tmp_path: Path) -> None:
-    run = await Engine(pair(tmp_path), models={}).run(
+    run = await Engine(pair(tmp_path), providers=provided({"strong": None, "fast": None})).run(
         "writer", "acme", "x", models={"fast": Scripted(text_reply("done"))}
     )
     assert isinstance(run, Generation) and run.reply == "done"
@@ -178,7 +204,7 @@ async def test_delegated_and_routed_runs_use_the_callers_models(tmp_path: Path) 
     engine_strong, engine_judge, engine_fast = Scripted(), Answering(), Scripted()
     engine = Engine(
         crew(tmp_path),
-        models={"strong": engine_strong, "judge": engine_judge, "fast": engine_fast},
+        providers=provided({"strong": engine_strong, "judge": engine_judge, "fast": engine_fast}),
     )
     lead = Scripted(
         delegating("writer"),
@@ -210,7 +236,9 @@ async def test_concurrent_runs_keep_their_own_models(tmp_path: Path) -> None:
         }
 
     engine_strong, engine_fast = Scripted(), Scripted()
-    engine = Engine(pair(tmp_path), models={"strong": engine_strong, "fast": engine_fast})
+    engine = Engine(
+        pair(tmp_path), providers=provided({"strong": engine_strong, "fast": engine_fast})
+    )
     one, other = own("one"), own("other")
     async with asyncio.timeout(5):
         runs = await asyncio.gather(
@@ -229,33 +257,10 @@ async def test_concurrent_runs_keep_their_own_models(tmp_path: Path) -> None:
     assert (engine_strong.calls, engine_fast.calls) == ([], [])
 
 
-async def test_a_key_given_nowhere_fails_before_any_model_call(tmp_path: Path) -> None:
-    given = Scripted()
-    engine = Engine(crew(tmp_path), models={})
-    with pytest.raises(
-        ConfigurationError, match=f"^engine: agent 'lead' runs on model 'strong', {NOT_GIVEN}$"
-    ):
-        await engine.run("lead", "acme", "x", models={"fast": given})
-    assert given.calls == []
-    judge = Answering()
-    with pytest.raises(
-        ConfigurationError,
-        match=f"^engine: agent 'triage' routes to agent 'writer', which runs on model 'fast', {NOT_GIVEN}$",
-    ):
-        await engine.run("triage", "acme", "x", models={"judge": judge})
-    assert judge.calls == []
-
-
-async def test_a_delegated_key_given_nowhere_reads_as_a_tool_error(tmp_path: Path) -> None:
-    lead = Scripted(delegating("writer"), text_reply("noted"))
-    run = await Engine(pair(tmp_path), models={}).run("lead", "acme", "x", models={"strong": lead})
-    assert isinstance(run, Generation)
-    assert run.steps[0].is_error
-    assert f"agent 'writer' runs on model 'fast', {NOT_GIVEN}" in str(run.steps[0].result)
-
-
 async def test_the_kind_is_checked_at_run_start(tmp_path: Path) -> None:
-    engine = Engine(crew(tmp_path), models={})
+    engine = Engine(
+        crew(tmp_path), providers=provided({"strong": None, "fast": None, "judge": None})
+    )
     decider = Answering()
     with pytest.raises(
         ConfigurationError,
@@ -273,7 +278,9 @@ async def test_the_kind_is_checked_at_run_start(tmp_path: Path) -> None:
 
 
 async def test_the_kind_is_checked_for_the_runs_agent_alone(tmp_path: Path) -> None:
-    run = await Engine(crew(tmp_path), models={}).run(
+    run = await Engine(
+        crew(tmp_path), providers=provided({"strong": None, "fast": None, "judge": None})
+    ).run(
         "lead",
         "acme",
         "x",
@@ -283,7 +290,9 @@ async def test_the_kind_is_checked_for_the_runs_agent_alone(tmp_path: Path) -> N
 
 
 async def test_a_delegated_or_routed_child_is_checked_at_its_own_start(tmp_path: Path) -> None:
-    engine = Engine(crew(tmp_path), models={})
+    engine = Engine(
+        crew(tmp_path), providers=provided({"strong": None, "fast": None, "judge": None})
+    )
     lead = Scripted(delegating("triage"), text_reply("noted"))
     run = await engine.run("lead", "acme", "x", models={"strong": lead, "judge": Scripted()})
     assert isinstance(run, Generation)
@@ -301,7 +310,12 @@ async def test_a_delegated_or_routed_child_is_checked_at_its_own_start(tmp_path:
 
 async def test_run_model_records_what_the_reply_reports(tmp_path: Path) -> None:
     root = with_picture(tmp_path)
-    engine = Engine(root, models={"fast": Named("engine-1"), "judge": NamedDecider("engine-2")})
+    engine = Engine(
+        root,
+        providers=provided(
+            {"strong": None, "fast": Named("engine-1"), "judge": NamedDecider("engine-2")}
+        ),
+    )
     reported = await engine.run(
         "writer",
         "acme",
@@ -319,24 +333,24 @@ async def test_run_model_records_what_the_reply_reports(tmp_path: Path) -> None:
 
 async def test_media_types_follow_the_runs_model(tmp_path: Path) -> None:
     root = with_picture(tmp_path)
-    taken = await Engine(root, models={"strong": Documents()}).run(
-        "lead", "acme", "x", models={"strong": Pictures(LOAD, text_reply("seen"))}
-    )
+    taken = await Engine(
+        root, providers=provided({"strong": Documents(), "fast": None, "judge": None})
+    ).run("lead", "acme", "x", models={"strong": Pictures(LOAD, text_reply("seen"))})
     assert isinstance(taken, Generation) and not taken.steps[0].is_error
-    refused = await Engine(root, models={"strong": Pictures()}).run(
-        "lead", "acme", "x", models={"strong": Documents(LOAD, text_reply("no"))}
-    )
+    refused = await Engine(
+        root, providers=provided({"strong": Pictures(), "fast": None, "judge": None})
+    ).run("lead", "acme", "x", models={"strong": Documents(LOAD, text_reply("no"))})
     assert isinstance(refused, Generation) and refused.steps[0].is_error
     assert "does not take image/png" in str(refused.steps[0].result)
     picture = [Image(media_type="image/png", data=PNG), Text(text="What is it?")]
-    seen = await Engine(root, models={"judge": Answering()}).run(
-        "grader", "acme", picture, models={"judge": Seeing()}
-    )
+    seen = await Engine(
+        root, providers=provided({"strong": None, "fast": None, "judge": Answering()})
+    ).run("grader", "acme", picture, models={"judge": Seeing()})
     assert isinstance(seen, Decision) and seen.state == picture
     with pytest.raises(InputError, match="takes text only; got image/png"):
-        await Engine(root, models={"judge": Seeing()}).run(
-            "grader", "acme", picture, models={"judge": Answering()}
-        )
+        await Engine(
+            root, providers=provided({"strong": None, "fast": None, "judge": Seeing()})
+        ).run("grader", "acme", picture, models={"judge": Answering()})
 
 
 async def test_replay_takes_models(tmp_path: Path, storage: Storage) -> None:
@@ -345,12 +359,16 @@ async def test_replay_takes_models(tmp_path: Path, storage: Storage) -> None:
     production = Engine(
         root,
         refinery=refinery,
-        models={"fast": Scripted(text_reply("recorded")), "judge": Answering()},
+        providers=provided(
+            {"strong": None, "fast": Scripted(text_reply("recorded")), "judge": Answering()}
+        ),
     )
     await production.run("writer", "acme", "Draft it")
     await production.run("grader", "acme", "Is it urgent?")
     kept, kept_judge = Scripted(), Answering()
-    candidate = Engine(root, models={"fast": kept, "judge": kept_judge})
+    candidate = Engine(
+        root, providers=provided({"strong": None, "fast": kept, "judge": kept_judge})
+    )
     fast = Scripted(text_reply("replayed", model="run-1"))
     judge = NamedDecider("run-2")
     generated = [
@@ -374,15 +392,15 @@ async def test_label_takes_models(fixtures: Path, storage: Storage) -> None:
     production = Engine(
         fixtures,
         refinery=refinery,
-        models={"strong": Scripted(text_reply("Refunded.")), "judge": Fixed(TRIAGE)},
+        providers=provided({"strong": Scripted(text_reply("Refunded.")), "judge": Fixed(TRIAGE)}),
     )
     generated = await production.run("billing", "acme", "Charged twice.")
     decided = await production.run("triage", "acme", {"message": "It is down"})
-    engine = Engine(fixtures, models={})
+    engine = Engine(fixtures, providers=provided({"strong": None, "judge": None}))
     bare = await refinery.label("acme", engine, judge="judge", teacher="teacher")
     assert (bare.judged, bare.taught) == (0, 0)
     assert set(bare.errors) == {generated.run_id, decided.run_id}
-    assert NOT_GIVEN in bare.errors[generated.run_id]
+    assert "has no decide()" in bare.errors[generated.run_id]
     judge, teacher = Fixed(JUDGEMENT), Scripted(TAUGHT)
     labeled = await refinery.label(
         "acme",
@@ -425,7 +443,7 @@ async def test_a_mode_on_a_model_of_the_other_kind_is_refused(tmp_path: Path) ->
 
 async def test_a_run_refuses_a_model_no_agent_runs_on(tmp_path: Path) -> None:
     llm = Scripted()
-    engine = Engine(pair(tmp_path), models={"strong": llm})
+    engine = Engine(pair(tmp_path), providers=provided({"strong": llm, "fast": None}))
     with pytest.raises(
         ConfigurationError,
         match="^engine: no agent runs on model 'fsat'; the tree's agents run on fast, strong$",
@@ -438,7 +456,7 @@ async def test_a_run_refuses_a_model_no_agent_runs_on(tmp_path: Path) -> None:
 async def test_models_that_do_not_fit_are_refused_where_they_are_given(
     tmp_path: Path, storage: Storage, models: Any
 ) -> None:
-    engine = Engine(pair(tmp_path), models={})
+    engine = Engine(pair(tmp_path), providers=provided({"strong": None, "fast": None}))
     with pytest.raises(ConfigurationError, match="^engine: "):
         await engine.run("lead", "acme", "x", models=models)
     with pytest.raises(ConfigurationError, match="^engine: "):
@@ -452,7 +470,7 @@ async def test_models_that_do_not_fit_are_refused_where_they_are_given(
 
 
 async def test_engine_tool_models_reach_its_run_and_what_it_delegates(tmp_path: Path) -> None:
-    engine = Engine(pair(tmp_path), models={"strong": Scripted(), "fast": Scripted()})
+    engine = Engine(pair(tmp_path), providers=provided({"strong": Scripted(), "fast": Scripted()}))
     lead = Scripted(delegating("writer"), text_reply("done"))
     fast = Scripted(text_reply("drafted"))
     tools = engine.tool("lead", scope="acme", models={"strong": lead, "fast": fast})
@@ -461,7 +479,14 @@ async def test_engine_tool_models_reach_its_run_and_what_it_delegates(tmp_path: 
 
 
 async def test_a_run_lends_no_models_to_an_engine_tool_it_calls(tmp_path: Path) -> None:
-    engine = Engine(pair(tmp_path), models={})
+    engine = Engine(
+        write_folder(
+            tmp_path,
+            {"lead": {**LEAD, "tools": {"include": ["consult"]}}, "writer": WRITER},
+            files=BODIES,
+        ),
+        providers=provided({"strong": None, "fast": None}),
+    )
     consult = engine.tool("writer", scope="acme", name="consult")
     lead = Scripted(
         Reply(
@@ -475,19 +500,24 @@ async def test_a_run_lends_no_models_to_an_engine_tool_it_calls(tmp_path: Path) 
         "lead", "acme", "x", tools=consult, models={"strong": lead, "fast": fast}
     )
     assert isinstance(run, Generation) and run.steps[0].is_error
-    assert f"agent 'writer' runs on model 'fast', {NOT_GIVEN}" in str(run.steps[0].result)
+    assert "agent 'writer' is a generation agent, and model 'fast' has no generate()" in str(
+        run.steps[0].result
+    )
     assert fast.calls == []
 
 
 async def test_engine_tools_follow_the_models_given(tmp_path: Path) -> None:
-    engine = Engine(with_picture(tmp_path), models={"strong": Documents()})
+    engine = Engine(
+        with_picture(tmp_path),
+        providers=provided({"strong": Documents(), "fast": None, "judge": None}),
+    )
     loaded = await EngineTools(
         engine, agent="lead", scope="acme", models={"strong": Pictures()}
-    ).dispatch("Load", {"path": "diagram.png"})
+    ).dispatch("Load", {"path": "lead/diagram.png"})
     assert loaded
     with pytest.raises(InputError, match="does not take image/png"):
         await EngineTools(engine, agent="lead", scope="acme").dispatch(
-            "Load", {"path": "diagram.png"}
+            "Load", {"path": "lead/diagram.png"}
         )
     fast = Scripted(text_reply("drafted"))
     delegated = await EngineTools(

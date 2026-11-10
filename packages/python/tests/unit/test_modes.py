@@ -225,21 +225,6 @@ async def test_an_agent_without_modes_has_no_mode_to_select(tmp_path: Path) -> N
     assert model.calls == []
 
 
-async def test_an_agent_of_the_old_loader_has_no_modes(tmp_path: Path) -> None:
-    place = tmp_path / "a" / "AGENT.md"
-    place.parent.mkdir()
-    place.write_text(
-        "---\nname: a\nkind: generation\nmodel: m\ndescription: Works\n---\nWork.\n",
-        encoding="utf-8",
-    )
-    model = Scripted()
-    with pytest.raises(
-        NotFoundError, match=r"^engine: agent 'a' has no mode 'chat'; it has no modes$"
-    ):
-        await Engine(tmp_path, models={"m": model}).run("a", "acme", "Hi", mode="chat")
-    assert model.calls == []
-
-
 async def test_an_agent_with_only_modes_needs_one(tmp_path: Path) -> None:
     folder = write_folder(tmp_path, ONLY_MODES, files=FILES)
     model = Scripted()

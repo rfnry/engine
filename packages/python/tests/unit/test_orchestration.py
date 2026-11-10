@@ -12,16 +12,10 @@ from rfnry_engine import Engine, Generation, Message, Reply, ToolCall, ToolSpec
 from rfnry_engine.models import Answer, CheckAnswer, ChoiceAnswer, Decided, Usage
 
 from .test_docs_examples import ILLUSTRATIVE, PYTHON, first_line
+from .trees import provided, write_folder
 
 COPY = "class PerRun:"
 BACKGROUND = "jobs = {}"
-
-
-def agents(root: Path, files: dict[str, str]) -> Path:
-    for name, text in files.items():
-        (root / name).parent.mkdir(parents=True, exist_ok=True)
-        (root / name).write_text(text, encoding="utf-8")
-    return root
 
 
 def calls(*made: tuple[str, str, dict[str, Any]]) -> Reply:
@@ -55,10 +49,23 @@ class Workers:
         return self.workers[str(messages[0].content)].pop(0)
 
 
-LEAD = {
-    "lead/AGENT.md": "---\nname: lead\nkind: generation\nmodel: strong\nagents: [worker]\nworkspace: true\n---\nLead.\n",
-    "worker/AGENT.md": "---\nname: worker\nkind: generation\nmodel: strong\nworkspace: true\n---\nWork.\n",
-}
+WORKSPACE: dict[str, Any] = {"kind": "generation", "model": "strong", "workspace": True}
+
+
+def lead_and_worker(root: Path) -> Path:
+    root.mkdir()
+    return write_folder(
+        root,
+        {
+            "lead": {
+                **WORKSPACE,
+                "instructions": "lead.md",
+                "orchestration": {"delegate_to": ["worker"]},
+            },
+            "worker": {**WORKSPACE, "instructions": "worker.md", "tools": {"include": ["claim"]}},
+        },
+        files={"lead.md": "Lead.\n", "worker.md": "Work.\n"},
+    )
 
 
 def delegates(*inputs: str) -> Reply:
@@ -84,7 +91,7 @@ async def test_the_copy_each_recipe_keeps_each_worker_apart(
         return [write, done(f"done {i}")]
 
     model = Workers([delegates("a", "b"), done("merged")], {"a": writing(1), "b": writing(2)})
-    engine = Engine(agents(tmp_path / "agents", LEAD), models={"strong": model})
+    engine = Engine(lead_and_worker(tmp_path / "agents"), providers=provided({"strong": model}))
     namespace = await execute(COPY, engine, message="go")
     run, backend = namespace["run"], namespace["backend"]
     assert isinstance(run, Generation)
@@ -104,7 +111,7 @@ async def test_the_claim_tool_gives_an_item_to_one_run(
     model = Workers(
         [delegates("a", "b"), done("done")], {"a": [take, done("a")], "b": [take, done("b")]}
     )
-    engine = Engine(agents(tmp_path / "agents", LEAD), models={"strong": model})
+    engine = Engine(lead_and_worker(tmp_path / "agents"), providers=provided({"strong": model}))
     namespace = await execute(COPY, engine, message="go")
     run = namespace["run"]
     results = [json.loads(str(child.steps[0].result)) for child in run.children]
@@ -129,11 +136,21 @@ async def test_the_background_recipe_returns_a_run_that_links_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    files = {
-        "boss/AGENT.md": "---\nname: boss\nkind: generation\nmodel: strong\n---\nBoss.\n",
-        "support/AGENT.md": "---\nname: support\nkind: generation\nmodel: strong\n---\nSupport.\n",
-    }
-    engine = Engine(agents(tmp_path / "agents", files), models={"strong": Boss()})
+    (tmp_path / "agents").mkdir()
+    root = write_folder(
+        tmp_path / "agents",
+        {
+            "boss": {
+                "kind": "generation",
+                "model": "strong",
+                "instructions": "boss.md",
+                "tools": {"include": ["start", "check"]},
+            },
+            "support": {"kind": "generation", "model": "strong", "instructions": "support.md"},
+        },
+        files={"boss.md": "Boss.\n", "support.md": "Support.\n"},
+    )
+    engine = Engine(root, providers=provided({"strong": Boss()}))
     namespace = await execute(BACKGROUND, engine, message="go")
     outer = namespace["outer"]
     finished = await namespace["jobs"]["0"]
@@ -165,23 +182,46 @@ class Counting:
 
 
 async def test_spent_sums_delegated_routed_and_decision_runs(tmp_path: Path) -> None:
-    files = {
-        "lead/AGENT.md": "---\nname: lead\nkind: generation\nmodel: strong\nagents: [worker, router, judge]\n---\nLead.\n",
-        "worker/AGENT.md": "---\nname: worker\nkind: generation\nmodel: strong\n---\nWork.\n",
-        "router/AGENT.md": "---\nname: router\nkind: decision\nmodel: judge\nroute:\n  by: pick\n  to: {go: worker}\n---\n",
-        "router/questions/pick.json": (
-            '{"type": "choice", "instructions": "Where to?", "options": {"go": "Go on", "stay": "Stay"}}'
-        ),
-        "judge/AGENT.md": "---\nname: judge\nkind: decision\nmodel: judge\n---\n",
-        "judge/questions/ok.json": '{"type": "check", "instructions": "Is it fine?"}',
-    }
+    root = write_folder(
+        tmp_path,
+        {
+            "lead": {
+                "kind": "generation",
+                "model": "strong",
+                "instructions": "lead.md",
+                "orchestration": {"delegate_to": ["worker", "router", "judge"]},
+            },
+            "worker": {"kind": "generation", "model": "strong", "instructions": "worker.md"},
+            "router": {
+                "kind": "decision",
+                "model": "judge",
+                "instructions": "router.md",
+                "questions": ["router/*.json"],
+                "orchestration": {"route": {"by": "pick", "to": {"go": "worker"}}},
+            },
+            "judge": {
+                "kind": "decision",
+                "model": "judge",
+                "instructions": "judge.md",
+                "questions": ["judge/*.json"],
+            },
+        },
+        files={
+            "lead.md": "Lead.\n",
+            "worker.md": "Work.\n",
+            "router.md": "",
+            "router/pick.json": '{"type": "choice", "instructions": "Where to?", "options": {"go": "Go on", "stay": "Stay"}}',
+            "judge.md": "",
+            "judge/ok.json": '{"type": "check", "instructions": "Is it fine?"}',
+        },
+    )
     delegating = calls(
         ("d0", "Delegate", {"agent": "worker", "input": "a"}),
         ("d1", "Delegate", {"agent": "router", "input": "b"}),
         ("d2", "Delegate", {"agent": "judge", "input": "c"}),
     )
     model = Counting([delegating, done("merged")])
-    engine = Engine(agents(tmp_path, files), models={"strong": model, "judge": model})
+    engine = Engine(root, providers=provided({"strong": model, "judge": model}))
     run = await engine.run("lead", "acme", "go")
     block = next(b for b in PYTHON if first_line(b) == "def spent(run):")
     namespace: dict[str, Any] = {name: getattr(rfnry_engine, name) for name in rfnry_engine.__all__}

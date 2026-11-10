@@ -303,8 +303,8 @@ async def test_public_all_is_every_offered_skill(tmp_path: Path) -> None:
             "public": "all",
         },
     )
-    assert _spec(folder).public_skills == ("escalate", "tone")
-    assert Engine(folder, providers=provided({"m": Scripted()})).agents["a"].public_skills == {
+    assert _spec(folder).public == ("escalate", "tone")
+    assert Engine(folder, providers=provided({"m": Scripted()})).agents["a"].public == {
         "escalate": "Hand over",
         "tone": "Keep it warm",
     }
@@ -315,7 +315,7 @@ async def test_public_all_is_every_offered_skill(tmp_path: Path) -> None:
 
 
 def test_public_all_with_nothing_offered_is_no_error(tmp_path: Path) -> None:
-    assert _spec(_folder(tmp_path, {"public": "all"})).public_skills == ()
+    assert _spec(_folder(tmp_path, {"public": "all"})).public == ()
 
 
 @pytest.mark.parametrize(
@@ -378,9 +378,9 @@ def test_public_on_an_entry_that_needs_a_mode_is_checked_on_its_modes(tmp_path: 
         },
     }
     spec = load_folder(write_folder(tmp_path, {"a": entry}, files=FILES))["a"]
-    assert spec.needs_mode and spec.public_skills == () and spec.offered == frozenset()
+    assert spec.needs_mode and spec.public == () and spec.offered == frozenset()
     assert list(spec.skills) == ["tone"]
-    assert spec.modes["m"].public_skills == ("tone",)
+    assert spec.modes["m"].public == ("tone",)
 
 
 async def test_an_invoked_skills_other_files_are_reachable_on_that_run(tmp_path: Path) -> None:

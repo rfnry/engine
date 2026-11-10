@@ -55,20 +55,38 @@ default scope and nothing reads across scopes. Multi-tenancy is the default.
 
 ```
 agents/
+  rfnry.yaml                  the agents, their models and their tools
   support/
-    AGENT.md                  who the agent is, the rules every run follows, its model
+    instructions.md           who the agent is, the rules every run follows
     knowledge/refunds.md      read when a question needs it
-    skills/escalate.md        how to do a thing: listed, and opened when it fits
+    skills/escalate/SKILL.md  how to do a thing: listed, and opened when it fits
     tools/lookup_order.json   a tool: what the model reads about it
     tools/lookup_order.py     what runs when the model calls it
 ```
 
+```yaml
+version: 1
+models:
+  strong:
+    provider: strong
+tools:
+  lookup_order:
+    module: support/tools/lookup_order.py
+    schema: support/tools/lookup_order.json
+agents:
+  support:
+    kind: generation
+    model: strong
+    instructions: support/instructions.md
+    files:
+      include: [support/knowledge]
+    skills:
+      include: [support/skills/*]
+    tools:
+      include: [lookup_order]
+```
+
 ```markdown
----
-name: support
-kind: generation
-model: strong
----
 You are the support desk for Acme. Be brief, be exact, cite the rule you are applying. Look an
 order up with lookup_order before you answer about it.
 ```
@@ -98,21 +116,22 @@ def run(args, call):
 ```
 
 ```python
-async with Engine(root=Path("agents"), models={"strong": llm}) as engine:
+async with Engine(root=Path("agents"), providers=providers) as engine:
     run = await engine.run("support", scope="acme", input="My invoice was charged twice.")
     print(run.reply)
 ```
 
-`llm` is your adapter to a generation model, under the name the agent's `model:` gives it
-([Models](#models)). `lookup_order` is the agent's own tool, two files in its `tools/` folder: the
-JSON is what the model reads about it — what it does, what it returns and the arguments it takes —
-and the script is what runs, `run(args, call)`, in a worker process the engine starts beside your
-server, so a tool that crashes takes down its worker, never your server; `call["scope"]` is the
-tenant of the run ([Tools](#tools)). `AGENT.md` holds the agent's persona and the rules every run
-follows — who it is, what it does, when to use which tool. The model receives `AGENT.md`, its tools,
-a map of its folder and the list of its skills, opens `knowledge/refunds.md` when the question needs
-it, and answers. One call runs an agent for a tenant and returns its record; leaving `async with`
-closes the engine, which stops its workers.
+`providers` maps each provider the file's `models:` names to a function of `(model, effort)` that
+builds your adapter to that model ([Models](#models)). `lookup_order` is the agent's tool, declared
+once under `tools:` and picked by the agent's `tools.include`: the JSON is what the model reads about
+it — what it does, what it returns and the arguments it takes — and the script is what runs,
+`run(args, call)`, in a worker process the engine starts beside your server, so a tool that crashes
+takes down its worker, never your server; `call["scope"]` is the tenant of the run
+([Tools](#tools)). The instructions file holds the agent's persona and the rules every run follows —
+who it is, what it does, when to use which tool. The model receives it, its tools, a map of what
+`files.include` reaches and the list of its skills, opens `support/knowledge/refunds.md` when the
+question needs it, and answers. One call runs an agent for a tenant and returns its record; leaving
+`async with` closes the engine, which stops its workers.
 
 An agent grows by its tree:
 
@@ -238,41 +257,38 @@ Choice(
 )
 ```
 
-An agent names its model in `AGENT.md` (`model: strong`), and the engine maps those names to
-adapters. The credentials, the endpoint and the vendor's model stay in the adapter you build; the
-tree only says which name an agent runs on, so one tree runs on different models in different
-environments:
+An agent names its model in `rfnry.yaml` (`model: strong`), an entry of the file's `models:`
+section, and the engine builds it with the function `providers` holds for that entry's `provider`,
+called with the entry's `model` and `effort`. The credentials, the endpoint and the vendor's client
+stay in the function you write; the file only says which model an agent runs on, so one folder runs
+on different models in different environments:
 
 ```python
-engine = Engine(root, models={"strong": strong_llm, "fast": fast_llm, "judge": dm})
+engine = Engine(root, providers={"strong": strong, "fast": fast, "judge": judge})
 ```
 
-A lead on `strong` delegating to a writer on `fast` is two lines in two `AGENT.md` files, and each
-runs on its own adapter, in one record that names the model of every run. `models` is required,
-and `{}` is allowed for a tree that is only read or whose runs bring their own. Its keys are plain
-names, like an agent's, and each value has `generate` or `decide`; anything else is a
-`ConfigurationError` when the engine is built. The mapping is checked against the tree then too: a
-model neither an agent nor a mode of one runs on is refused with the names the tree uses (`no agent
-runs on model 'fsat'; the tree's agents run on judge, strong`), and so is an agent or mode whose
-kind its model cannot serve (`agent 'writer' is a generation agent, and
-model 'judge' has no generate()`). An agent whose model was not given is not an error until it
-runs: the others run, and running it, delegating to it or routing to it is a `ConfigurationError`
-saying which model it needs (`agent 'writer' runs on model 'fast', which neither the engine nor
-the run was given`), before any model is called. `engine.models` holds the mapping given.
+A lead on `strong` delegating to a writer on `fast` is two entries of one file, and each runs on its
+own adapter, in one record that names the model of every run. An entry naming a provider that
+`providers` does not hold is a `ConfigurationError` when the engine is built (`engine: model 'strong'
+names provider 'anthropic', which Engine(providers=) does not hold; it holds typesafe`), and what a
+provider builds is checked against its agent's kind when that agent's run starts (`agent 'writer' is
+a generation agent, and model 'judge' has no generate()`), before any model is called.
+`engine.models` holds the file's entries.
 
-A run can bring its own models, over the engine's by key, for itself and every run it delegates or
-routes to. A consumer that lets people switch models then needs one engine and one worker pool, not
-one per model:
+A run can bring its own models, over the file's by name, for itself and every run it delegates or
+routes to: a `ModelChoice` that changes the entry's `provider`, `model` or `effort`, or a built
+adapter. A consumer that lets people switch models then needs one engine and one worker pool, not one
+per model:
 
 ```python
-engine = Engine(root, models={})
+engine = Engine(root, providers=providers)
 run = await engine.run("drafter", "acme", "Draft it", models={"fast": fast_llm})
 ```
 
-A run's mapping is checked like the engine's, and a key left out stays the engine's. The kind check
-runs when the run starts, for the run's agent; a delegated or routed run is checked when it starts.
-Runs at once each keep their own adapters. `run.model` records what the reply reports, else the
-adapter's `model` attribute. `engine.tool(models=)`, `refinery.replay(models=)` and
+A run's mapping refuses a name no agent runs on, and a name left out stays the file's. The kind
+check runs when the run starts, for the run's agent; a delegated or routed run is checked when it
+starts. Runs at once each keep their own adapters. `run.model` records what the reply reports, else
+the adapter's `model` attribute. `engine.tool(models=)`, `refinery.replay(models=)` and
 `refinery.label(models=)` take the same mapping; a run does not lend its models to an
 `engine.tool` it calls.
 
@@ -679,9 +695,7 @@ A `skills/` folder on an agent's path is a declaration, as the agent's own is: i
 map and of any folder `preload:` names, a folder another agent reads included, and `reads:` cannot
 name it; `Read`, `Load`, `Grep`, `Glob` and `LS` reach its files under the path the list shows,
 `../skills/plot/run.py` for a file a skill keeps, whether or not a folder on the way is a link, and
-a workspace command at `$RFNRY_TREE/desks/skills/plot/run.py`, or at
-`$RFNRY_AGENT/../skills/plot/run.py` when no folder on the agent's path is a link, since the shell
-follows a link before `..`; and its files count in the fingerprint of every agent that has its
+a workspace command at `$RFNRY_TREE/desks/skills/plot/run.py`; and its files count in the fingerprint of every agent that has its
 skills. A decision agent has no skills, so a `skills/` folder above it gives it none and leaves its
 fingerprint alone. A `skills/` folder above that is a link gives no skills: none is read through it,
 and it joins no fingerprint of the agents below it. A skill file in a `skills/` folder above that
@@ -1323,7 +1337,7 @@ markdown, `questions/<id>.md`, is one too, which says to write it as `<id>.json`
 Run it with a state: a string, an object or a list.
 
 ```python
-engine = Engine(root=Path("agents"), models={"judge": dm})
+engine = Engine(root=Path("agents"), providers=providers)
 
 run = await engine.run("triage", scope="acme", input={"message": text, "plan": "enterprise"})
 run.answers["urgent"].probability     # 0.91
@@ -1369,7 +1383,7 @@ def run(input, call):
 ```
 
 ```python
-async with Engine(root=Path("agents"), models={"judge": dm}) as engine:
+async with Engine(Path("agents"), providers=providers) as engine:
     run = await engine.run("matcher", scope="acme", input={"message": text, "customer": "c-17"})
     run.questions["order"].options      # {"A-1001": "Standing desk, shipped", ...}
     run.answers["order"].choice         # "A-1001"
@@ -1551,7 +1565,7 @@ everything the run was given — the same input, parts included, `history`, `con
 `tools`, `workspace`, `on_event`, `stop`, `inbox` and `tags` — and the routed run is attached:
 
 ```python
-engine = Engine(root, models={"strong": llm, "judge": dm})
+engine = Engine(Path("agents"), providers=providers)
 
 run = await engine.run("frontdesk", scope="acme", input=message, history=history)
 run.answers["intent"].choice            # "technical"
@@ -1916,7 +1930,7 @@ directory mounted at its own path and `timeout -s KILL <seconds>` before the com
 `docker` client passes SIGTERM on to the container, but SIGKILL stops only the client, so the limit
 inside is what ends a container whose command ignores SIGTERM. `env=` is then the client's
 environment, not the command's — the command's own variables go in with `-e`: a workspace with
-`tree=` needs `-e RFNRY_AGENT -e RFNRY_TREE`, and one with the tool bridge, below,
+`tree=` needs `-e RFNRY_TREE`, and one with the tool bridge, below,
 `-e RFNRY_TOOLS -e RFNRY_TOOLS_KEY` — and the client reads
 its configuration from `$HOME/.docker`, which `Local`'s default `HOME` puts in the workspace, where
 a command could write a `.docker/config.json` the next command's client obeys; point
@@ -1925,13 +1939,12 @@ needs a backend of yours: signals do not pass through `docker exec`, so its `kil
 command's processes inside the container itself — a tag in their environment that everything they
 start inherits, say, whose processes it signals.
 
-The folder in the shell. `Workspace(local, scope="acme", tree="/srv/agents")` says where the agent
-tree is mounted in the sandbox, as commands see it. The commands of a run then get `RFNRY_TREE`, the
-tree as `posixpath.normpath` writes it, so `/srv/agents/` is `/srv/agents`, and `RFNRY_AGENT`, the
-running agent's folder in it. The `Shell` description tells the model that the folder is at
-`$RFNRY_AGENT`, read-only, with its files, skills and scripts to read and run, and that each folder
-the agent reads, or that its `files.include` names, is at `$RFNRY_TREE/<name>`. A skill's script is run as
-`python "$RFNRY_AGENT/skills/plot/run.py"`. The sandbox mounts the tree read-only at the same path:
+The folder in the shell. `Workspace(local, scope="acme", tree="/srv/agents")` says where the agents
+folder is mounted in the sandbox, as commands see it. The commands of a run then get `RFNRY_TREE`,
+the folder as `posixpath.normpath` writes it, so `/srv/agents/` is `/srv/agents`. The `Shell`
+description tells the model that the folder is at `$RFNRY_TREE`, read-only, with its files, skills
+and scripts to read and run, and that each folder its `files.include` names is at
+`$RFNRY_TREE/<name>`. A skill's script is run as `python "$RFNRY_TREE/support/skills/plot/run.py"`. The sandbox mounts the tree read-only at the same path:
 `--ro-bind /srv/agents /srv/agents` for bubblewrap, `-v /srv/agents:/srv/agents:ro` for Docker, and
 for an unsandboxed `Local` the tree's own path. Commands started with `background=true` get the
 variables too; a `Shell` that code dispatches outside a run gets none. Cautions:
@@ -2230,7 +2243,7 @@ and no other, and as JSON otherwise.
 ```python
 refinery = Refinery(PostgresStorage(pool))
 await refinery.check()
-engine = Engine(root, models={"strong": llm, "judge": dm}, refinery=refinery)
+engine = Engine(root, providers=providers, refinery=refinery)
 ```
 
 Labels come from three places. A person reviews a run — the button under a reply, the correction a
@@ -2368,7 +2381,7 @@ Replay measures a candidate — a new folder, a new model, any `Engine` you buil
 recorded runs were given. Each pair holds the recorded run, its labels and the candidate's run:
 
 ```python
-candidate = Engine(root, models={"strong": llm, "judge": dm})
+candidate = Engine(root, providers=providers)
 
 async def read_only(agent, call):
     return call.name in {"Read", "Grep", "Glob", "LS", "Load", "Delegate", "lookup_order"}
@@ -2435,7 +2448,7 @@ own `name:`, so every commit keeps one name whatever folder it lands in. The che
 
 ```python
 def load(commit):
-    return commit, Engine(checkout(commit), models={"strong": llm, "judge": dm}, refinery=refinery)
+    return commit, Engine(checkout(commit), providers=providers, refinery=refinery)
 
 live = load("4f2c9e1")
 commit, engine = live
@@ -2848,7 +2861,7 @@ lists; the rest stay:
 ```python
 surface = EngineTools(engine, agent="support", scope="acme")
 surface.definitions()                                        # what the model would see
-await surface.dispatch("Read", {"path": "knowledge/refunds.md"})
+await surface.dispatch("Read", {"path": "support/knowledge/refunds.md"})
 await surface.dispatch("Delegate", {"agent": "triage", "input": "It is down"})
 
 combined = MemoryTools(memory, corpus_id="acme") + surface.only("Read", "Grep")

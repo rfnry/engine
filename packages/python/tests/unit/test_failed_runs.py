@@ -46,6 +46,7 @@ from .fakes import (
     text_reply,
 )
 from .test_engine_workspace import make_tree
+from .trees import provided, write_folder
 
 
 class Kept:
@@ -96,7 +97,9 @@ async def test_a_run_whose_model_call_fails_is_recorded_then_raised(fixtures: Pa
     error = too_long()
     kept = Kept()
     async with Engine(
-        fixtures, refinery=kept, models={"strong": Breaking(looked_up(), error=error)}
+        fixtures,
+        refinery=kept,
+        providers=provided({"strong": Breaking(looked_up(), error=error), "judge": None}),
     ) as engine:
         with pytest.raises(ModelError) as caught:
             await engine.run("support", "acme", "Where is A-1?")
@@ -111,7 +114,11 @@ async def test_a_run_whose_model_call_fails_is_recorded_then_raised(fixtures: Pa
 
 async def test_a_recorder_that_fails_never_hides_why_the_run_failed(fixtures: Path) -> None:
     error = too_long()
-    engine = Engine(fixtures, refinery=Down(), models={"strong": Breaking(error=error)})
+    engine = Engine(
+        fixtures,
+        refinery=Down(),
+        providers=provided({"strong": Breaking(error=error), "judge": None}),
+    )
     with pytest.raises(ModelError) as caught:
         await engine.run("support", "acme", "Where is A-1?")
     assert caught.value is error
@@ -119,7 +126,11 @@ async def test_a_recorder_that_fails_never_hides_why_the_run_failed(fixtures: Pa
 
 async def test_a_failed_run_is_not_recorded_with_record_false(fixtures: Path) -> None:
     kept = Kept()
-    engine = Engine(fixtures, refinery=kept, models={"strong": Breaking(error=too_long())})
+    engine = Engine(
+        fixtures,
+        refinery=kept,
+        providers=provided({"strong": Breaking(error=too_long()), "judge": None}),
+    )
     with pytest.raises(ModelError):
         await engine.run("support", "acme", "Where is A-1?", record=False)
     assert kept.runs == []
@@ -130,7 +141,9 @@ async def test_a_decision_run_whose_model_fails_is_recorded_without_answers(
 ) -> None:
     kept = Kept()
     engine = Engine(
-        fixtures, refinery=kept, models={"judge": Refusing(TimeoutError("decide timed out"))}
+        fixtures,
+        refinery=kept,
+        providers=provided({"judge": Refusing(TimeoutError("decide timed out")), "strong": None}),
     )
     with pytest.raises(TimeoutError):
         await engine.run("triage", "acme", {"message": "It is down"})
@@ -144,10 +157,12 @@ async def test_a_delegated_run_that_fails_stays_under_its_parent(fixtures: Path)
     engine = Engine(
         fixtures,
         refinery=kept,
-        models={
-            "strong": Scripted(delegate_triage(), text_reply("I could not triage it.")),
-            "judge": Refusing(TimeoutError("decide timed out")),
-        },
+        providers=provided(
+            {
+                "strong": Scripted(delegate_triage(), text_reply("I could not triage it.")),
+                "judge": Refusing(TimeoutError("decide timed out")),
+            }
+        ),
     )
     run = await engine.run("support", "acme", "It is down")
     assert isinstance(run, Generation) and run.error is None
@@ -167,7 +182,9 @@ async def test_a_routed_run_that_fails_fails_its_router_and_both_are_recorded(
     engine = Engine(
         fixtures,
         refinery=kept,
-        models={"strong": Breaking(error=ModelError("anthropic: overloaded")), "judge": Desk()},
+        providers=provided(
+            {"strong": Breaking(error=ModelError("anthropic: overloaded")), "judge": Desk()}
+        ),
     )
     with pytest.raises(ModelError):
         await engine.run("frontdesk", "acme", "It is down")
@@ -185,7 +202,9 @@ async def test_a_routed_run_refused_before_its_first_call_leaves_routed_to_none(
 ) -> None:
     kept = Kept()
     llm = Scripted()
-    engine = Engine(fixtures, refinery=kept, max_depth=1, models={"strong": llm, "judge": Desk()})
+    engine = Engine(
+        fixtures, refinery=kept, max_depth=1, providers=provided({"strong": llm, "judge": Desk()})
+    )
     with pytest.raises(DelegationDepthError):
         await engine.run("frontdesk", "acme", "It is down")
     [router] = kept.runs
@@ -199,7 +218,11 @@ async def test_an_approve_that_raises_fails_the_run_and_it_is_recorded(fixtures:
         raise PermissionError("approval service down")
 
     kept = Kept()
-    engine = Engine(fixtures, refinery=kept, models={"strong": Scripted(looked_up())})
+    engine = Engine(
+        fixtures,
+        refinery=kept,
+        providers=provided({"strong": Scripted(looked_up()), "judge": None}),
+    )
     with pytest.raises(PermissionError):
         await engine.run("support", "acme", "Where is A-1?", approve=approve)
     [run] = kept.runs
@@ -220,7 +243,7 @@ async def test_a_run_whose_task_is_cancelled_is_not_recorded(fixtures: Path) -> 
             return text_reply("late")
 
     kept = Kept()
-    engine = Engine(fixtures, refinery=kept, models={"strong": Slow()})
+    engine = Engine(fixtures, refinery=kept, providers=provided({"strong": Slow(), "judge": None}))
     task = asyncio.ensure_future(engine.run("support", "acme", "x"))
     await waiting.wait()
     task.cancel()
@@ -236,7 +259,9 @@ async def test_a_cancel_cuts_a_record_write_that_hangs(
     llm = Scripted(text_reply("done"))
     async with (
         asyncio.timeout(2),
-        Engine(fixtures, refinery=Refinery(ledger), models={"strong": llm}) as engine,
+        Engine(
+            fixtures, refinery=Refinery(ledger), providers=provided({"strong": llm, "judge": None})
+        ) as engine,
     ):
         task = asyncio.ensure_future(engine.run("support", "acme", "x"))
         try:
@@ -258,8 +283,8 @@ async def test_a_run_refused_before_its_first_model_call_is_not_recorded(
 
     kept = Kept()
     llm = Scripted()
-    engine = Engine(fixtures, refinery=kept, models={"strong": llm})
-    collide = Tools([Tool("Output", "Collides", body=lookup_order)])
+    engine = Engine(fixtures, refinery=kept, providers=provided({"strong": llm, "judge": None}))
+    collide = Tools([Tool("History", "Collides", body=lookup_order)])
     with pytest.raises(ConfigurationError):
         await engine.run("support", "acme", "x", expect=Verdict, tools=collide)
     assert kept.runs == [] and llm.calls == []
@@ -271,7 +296,7 @@ async def test_a_runaway_run_is_recorded(fixtures: Path) -> None:
         fixtures,
         refinery=kept,
         max_model_calls=2,
-        models={"strong": Scripted(looked_up(), looked_up())},
+        providers=provided({"strong": Scripted(looked_up(), looked_up()), "judge": None}),
     ) as engine:
         with pytest.raises(RunawayError):
             await engine.run("support", "acme", "Where is A-1?")
@@ -292,7 +317,9 @@ async def test_an_event_handler_that_raises_fails_the_run_and_it_is_recorded(
 
     kept = Kept()
     reply = text_reply("Done.", usage=Usage(input=10, output=5), model="m-1")
-    engine = Engine(fixtures, refinery=kept, models={"strong": Scripted(reply)})
+    engine = Engine(
+        fixtures, refinery=kept, providers=provided({"strong": Scripted(reply), "judge": None})
+    )
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "x", on_event=closed)
     [run] = kept.runs
@@ -309,7 +336,7 @@ async def test_a_handler_that_raises_on_the_start_fails_the_run_before_any_model
 
     kept = Kept()
     llm = Scripted(text_reply("Done."))
-    engine = Engine(fixtures, refinery=kept, models={"strong": llm})
+    engine = Engine(fixtures, refinery=kept, providers=provided({"strong": llm, "judge": None}))
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "x", on_event=closed)
     [run] = kept.runs
@@ -323,7 +350,11 @@ async def test_a_failed_run_keeps_the_step_of_a_tool_that_already_ran(fixtures: 
             raise ConnectionResetError("the socket closed")
 
     kept = Kept()
-    async with Engine(fixtures, refinery=kept, models={"strong": Scripted(looked_up())}) as engine:
+    async with Engine(
+        fixtures,
+        refinery=kept,
+        providers=provided({"strong": Scripted(looked_up()), "judge": None}),
+    ) as engine:
         with pytest.raises(ConnectionResetError):
             await engine.run("support", "acme", "Where is A-1?", on_event=closed)
     [run] = kept.runs
@@ -353,7 +384,9 @@ async def test_a_failed_batch_keeps_every_step_that_ran_in_the_order_asked(
     engine = Engine(
         fixtures,
         refinery=kept,
-        models={"strong": Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))},
+        providers=provided(
+            {"strong": Scripted(Reply(tool_calls=calls, stop_reason="tool_use")), "judge": None}
+        ),
     )
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "x", on_event=closed, tools=tools)
@@ -390,7 +423,9 @@ async def test_a_call_cut_by_a_stop_is_recorded_once_when_its_handler_raises(
     engine = Engine(
         fixtures,
         refinery=kept,
-        models={"strong": Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))},
+        providers=provided(
+            {"strong": Scripted(Reply(tool_calls=calls, stop_reason="tool_use")), "judge": None}
+        ),
     )
     with pytest.raises(ConnectionResetError):
         async with asyncio.timeout(10):
@@ -427,7 +462,9 @@ async def test_every_call_of_a_batch_is_answered_before_a_failure_is_raised(
     engine = Engine(
         fixtures,
         refinery=kept,
-        models={"strong": Scripted(Reply(tool_calls=calls, stop_reason="tool_use"))},
+        providers=provided(
+            {"strong": Scripted(Reply(tool_calls=calls, stop_reason="tool_use")), "judge": None}
+        ),
     )
     with pytest.raises(ConnectionResetError) as raised:
         async with asyncio.timeout(10):
@@ -459,7 +496,9 @@ async def test_a_stop_before_a_batch_answers_every_call_when_a_handler_raises(
 
     kept = Kept()
     reply = Reply(text="working", tool_calls=TWO, stop_reason="tool_use")
-    engine = Engine(fixtures, refinery=kept, models={"strong": Scripted(reply)})
+    engine = Engine(
+        fixtures, refinery=kept, providers=provided({"strong": Scripted(reply), "judge": None})
+    )
     with pytest.raises(ConnectionResetError, match="^c1$"):
         async with asyncio.timeout(10):
             await engine.run("support", "acme", "x", on_event=closed, tools=LOOKUP, stop=stop)
@@ -488,7 +527,9 @@ async def test_an_output_cut_answers_every_later_call_when_a_handler_raises(
     output = ToolCall(id="o", name="Output", args={"ok": True})
     reply = Reply(tool_calls=[first, output, second], stop_reason="tool_use")
     kept = Kept()
-    engine = Engine(fixtures, refinery=kept, models={"strong": Scripted(reply)})
+    engine = Engine(
+        fixtures, refinery=kept, providers=provided({"strong": Scripted(reply), "judge": None})
+    )
     with pytest.raises(ConnectionResetError, match="^o$"):
         async with asyncio.timeout(10):
             await engine.run(
@@ -518,7 +559,9 @@ async def test_a_further_failure_of_a_batch_is_logged_and_the_first_is_raised(
     engine = Engine(
         fixtures,
         refinery=kept,
-        models={"strong": Scripted(Reply(tool_calls=TWO, stop_reason="tool_use"))},
+        providers=provided(
+            {"strong": Scripted(Reply(tool_calls=TWO, stop_reason="tool_use")), "judge": None}
+        ),
     )
     with (
         caplog.at_level(logging.ERROR, logger="rfnry_engine.engine"),
@@ -572,7 +615,11 @@ async def test_a_raised_call_s_failure_wins_over_a_held_one_in_the_same_batch(
         async with (
             asyncio.timeout(10),
             Workspace(Local(root), scope="acme", bridge=False) as work,
-            Engine(make_tree(tmp_path), refinery=kept, models={"strong": llm}) as engine,
+            Engine(
+                make_tree(tmp_path, coder=["look"]),
+                refinery=kept,
+                providers=provided({"strong": llm, "judge": None}),
+            ) as engine,
         ):
             await engine.run(
                 "coder",
@@ -610,7 +657,11 @@ async def test_a_call_repeated_in_a_later_turn_is_recorded_in_each(fixtures: Pat
 
     again = looked_up()
     kept = Kept()
-    async with Engine(fixtures, refinery=kept, models={"strong": Scripted(again, again)}) as engine:
+    async with Engine(
+        fixtures,
+        refinery=kept,
+        providers=provided({"strong": Scripted(again, again), "judge": None}),
+    ) as engine:
         with pytest.raises(ConnectionResetError):
             await engine.run("support", "acme", "Where is A-1?", on_event=closed)
     [run] = kept.runs
@@ -629,7 +680,7 @@ async def test_a_failed_run_keeps_the_children_that_already_ran(fixtures: Path) 
     engine = Engine(
         fixtures,
         refinery=kept,
-        models={"strong": Scripted(delegate_triage()), "judge": Answering()},
+        providers=provided({"strong": Scripted(delegate_triage()), "judge": Answering()}),
     )
     with pytest.raises(ConnectionResetError):
         await engine.run("support", "acme", "It is down", on_event=closed)
@@ -641,11 +692,7 @@ async def test_a_failed_run_keeps_the_children_that_already_ran(fixtures: Path) 
     assert step.child_run_id == child.run_id
 
 
-CHAIN = {
-    "lead": "agents: [middle]",
-    "middle": "agents: [leaf]",
-    "leaf": "",
-}
+CHAIN = {"lead": "middle", "middle": "leaf", "leaf": ""}
 
 
 class Chained:
@@ -681,15 +728,23 @@ async def test_a_failed_run_keeps_its_unanswered_children_in_the_order_they_star
 
     monkeypatch.setattr("rfnry_engine.engine.child_result", unreadable)
     root = tmp_path / "chain"
-    for name, front in CHAIN.items():
-        (root / name).mkdir(parents=True)
-        (root / name / "AGENT.md").write_text(
-            f"---\nname: {name}\nkind: generation\nmodel: strong\n"
-            f"description: The {name}\n{front}\n---\nYou are {name}.\n",
-            encoding="utf-8",
-        )
+    root.mkdir()
+    write_folder(
+        root,
+        {
+            name: {
+                "kind": "generation",
+                "model": "strong",
+                "description": f"The {name}",
+                "instructions": f"{name}.md",
+                **({"orchestration": {"delegate_to": [delegate]}} if delegate else {}),
+            }
+            for name, delegate in CHAIN.items()
+        },
+        files={f"{name}.md": f"You are {name}.\n" for name in CHAIN},
+    )
     refinery = Refinery(storage)
-    async with Engine(root, refinery=refinery, models={"strong": Chained()}) as engine:
+    async with Engine(root, refinery=refinery, providers=provided({"strong": Chained()})) as engine:
         run = await engine.run("lead", "acme", "start")
     assert isinstance(run, Generation) and run.error is None
     assert await refinery.run("acme", run.run_id) == run

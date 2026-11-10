@@ -25,6 +25,7 @@ from .fakes import (
     said,
     text_reply,
 )
+from .trees import provided
 
 
 async def test_record_flattens_children_into_rows(storage: Storage) -> None:
@@ -158,7 +159,7 @@ def desk(fixtures: Path, refinery: Refinery, customers: int) -> Engine:
     return Engine(
         fixtures,
         refinery=refinery,
-        models={"strong": Scripted(*replies), "judge": Desk()},
+        providers=provided({"strong": Scripted(*replies), "judge": Desk()}),
     )
 
 
@@ -274,7 +275,9 @@ async def test_delegated_children_read_back_in_the_order_of_their_steps(
         Reply(tool_calls=calls[2:], stop_reason="tool_use"),
         text_reply("All triaged."),
     )
-    engine = Engine(fixtures, refinery=refinery, models={"strong": llm, "judge": Desk()})
+    engine = Engine(
+        fixtures, refinery=refinery, providers=provided({"strong": llm, "judge": Desk()})
+    )
     run = await engine.run("support", "acme", "Three tickets")
     assert isinstance(run, Generation) and len(run.children) == 3
     got = await refinery.run("acme", run.run_id)
@@ -297,7 +300,7 @@ async def test_a_stopped_run_read_back_continues_the_next_run(
     )
     refinery = Refinery(storage)
     tools = Tools([Tool("lookup_order", "Fetch an order", body=lookup)])
-    engine = Engine(fixtures, refinery=refinery, models={"strong": llm})
+    engine = Engine(fixtures, refinery=refinery, providers=provided({"strong": llm, "judge": None}))
     run = await engine.run("support", "acme", "Charged twice.", stop=stop, tools=tools)
     assert isinstance(run, Generation) and run.stopped == "after_step"
     last = await refinery.run("acme", run.run_id)
@@ -323,7 +326,9 @@ async def test_every_refinery_verb_needs_a_scope(fixtures: Path, storage: Storag
     refinery = Refinery(storage)
     run = generation_record()
     await refinery.record(run)
-    engine = Engine(fixtures, refinery=refinery, models={"strong": Scripted()})
+    engine = Engine(
+        fixtures, refinery=refinery, providers=provided({"strong": Scripted(), "judge": None})
+    )
     verbs = [
         refinery.record(generation_record(scope="")),
         refinery.review("", run.run_id, Review(stance="approval")),
@@ -348,7 +353,7 @@ async def test_a_stored_generation_holds_each_message_once(
 ) -> None:
     refinery = Refinery(storage)
     llm = Scripted(text_reply("Hello."), text_reply("Again."))
-    engine = Engine(fixtures, refinery=refinery, models={"strong": llm})
+    engine = Engine(fixtures, refinery=refinery, providers=provided({"strong": llm, "judge": None}))
     first = await engine.run("support", "acme", "Hi")
     assert isinstance(first, Generation)
     run = await engine.run("support", "acme", "And?", history=first.conversation)
@@ -401,7 +406,9 @@ async def test_messages_are_the_start_of_the_conversation_however_a_run_ends(
     tool_turn = Reply(tool_calls=[lookup], stop_reason="tool_use")
 
     def engine(llm: Scripted) -> Engine:
-        return Engine(fixtures, refinery=recorder, models={"strong": llm, "judge": Desk()})
+        return Engine(
+            fixtures, refinery=recorder, providers=provided({"strong": llm, "judge": Desk()})
+        )
 
     await engine(Scripted(text_reply("Done."))).run("support", "acme", "Hi")
     halting = Tools([Tool("lookup_order", "Fetch an order", body=halt)])
@@ -439,7 +446,9 @@ async def test_a_recorded_run_reads_back_with_its_settings(
 ) -> None:
     refinery = Refinery(storage)
     reply = text_reply("Handled.", settings={"effort": "high"})
-    engine = Engine(fixtures, refinery=refinery, models={"strong": Scripted(reply)})
+    engine = Engine(
+        fixtures, refinery=refinery, providers=provided({"strong": Scripted(reply), "judge": None})
+    )
     run = await engine.run("billing", "acme", "x")
     read = await refinery.run("acme", run.run_id)
     assert isinstance(read, Generation)

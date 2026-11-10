@@ -25,6 +25,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import Answering, Desk, Scripted, delegating, lead, said, text_reply
+from .trees import provided, write_folder
 
 BROKEN = (
     r"^engine: history breaks tool call 'c7' from its result at position {}; "
@@ -46,21 +47,23 @@ def looked_up(call_id: str = "c7") -> list[Message]:
 
 async def test_a_history_with_a_result_whose_call_is_cut_off_is_refused(fixtures: Path) -> None:
     llm = Scripted(text_reply("x"))
-    engine = Engine(fixtures, models={"strong": llm})
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": None}))
     with pytest.raises(InputError, match=BROKEN.format(0)):
         await engine.run("support", "acme", "And now?", history=looked_up()[2:])
     assert llm.calls == []
 
 
 async def test_a_history_with_a_call_whose_result_is_cut_off_is_refused(fixtures: Path) -> None:
-    engine = Engine(fixtures, models={"strong": Scripted(text_reply("x"))})
+    engine = Engine(
+        fixtures, providers=provided({"strong": Scripted(text_reply("x")), "judge": None})
+    )
     with pytest.raises(InputError, match=BROKEN.format(1)):
         await engine.run("support", "acme", "And now?", history=looked_up()[:2])
 
 
 async def test_a_history_cut_at_a_message_the_person_sent_runs(fixtures: Path) -> None:
     llm = Scripted(text_reply("Still on its way."))
-    engine = Engine(fixtures, models={"strong": llm})
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": None}))
     history = [*looked_up("c1"), *looked_up("c7")]
     run = await engine.run("support", "acme", "And now?", history=history[4:])
     assert isinstance(run, Generation) and run.reply == "Still on its way."
@@ -80,7 +83,9 @@ async def test_a_reply_that_repeats_a_call_id_is_closed_by_a_result_per_call(
         Message(role="tool", tool_call_id="c1", content='{"order": "A-2"}'),
         Message(role="assistant", content="Both are on their way."),
     ]
-    engine = Engine(fixtures, models={"strong": Scripted(text_reply("Still."))})
+    engine = Engine(
+        fixtures, providers=provided({"strong": Scripted(text_reply("Still.")), "judge": None})
+    )
     run = await engine.run("support", "acme", "And now?", history=twice)
     assert isinstance(run, Generation) and run.reply == "Still."
     with pytest.raises(InputError, match=BROKEN.replace("c7", "c1").format(1)):
@@ -119,7 +124,7 @@ def two() -> list[Message]:
 async def test_a_run_sends_its_history_from_start_and_says_what_it_added(fixtures: Path) -> None:
     llm = Scripted(text_reply("Still on its way."))
     conversation = two()
-    run = await Engine(fixtures, models={"strong": llm}).run(
+    run = await Engine(fixtures, providers=provided({"strong": llm, "judge": None})).run(
         "support", "acme", "And now?", history=conversation, start=4
     )
     asked = Message(role="user", content="And now?")
@@ -132,25 +137,25 @@ async def test_a_run_sends_its_history_from_start_and_says_what_it_added(fixture
 
 async def test_a_kept_conversation_is_read_from_start_only(fixtures: Path) -> None:
     kept = Kept(two())
-    run = await Engine(fixtures, models={"strong": Scripted(text_reply("ok"))}).run(
-        "support", "acme", "And now?", history=kept, start=4
-    )
+    run = await Engine(
+        fixtures, providers=provided({"strong": Scripted(text_reply("ok")), "judge": None})
+    ).run("support", "acme", "And now?", history=kept, start=4)
     assert isinstance(run, Generation)
     assert kept.reads == [(4, None)] and run.messages[:-1] == kept.messages[4:]
 
 
 async def test_a_kept_conversation_may_hand_back_rows(fixtures: Path) -> None:
     rows = Rows(two())
-    run = await Engine(fixtures, models={"strong": Scripted(text_reply("ok"))}).run(
-        "support", "acme", "And now?", history=rows, start=4
-    )
+    run = await Engine(
+        fixtures, providers=provided({"strong": Scripted(text_reply("ok")), "judge": None})
+    ).run("support", "acme", "And now?", history=rows, start=4)
     assert isinstance(run, Generation) and run.messages[:-1] == rows.messages[4:]
 
 
 async def test_a_start_at_the_end_sends_only_the_input(fixtures: Path) -> None:
     llm = Scripted(text_reply("Hello again."))
     conversation = looked_up()
-    run = await Engine(fixtures, models={"strong": llm}).run(
+    run = await Engine(fixtures, providers=provided({"strong": llm, "judge": None})).run(
         "support", "acme", "Hi again.", history=conversation, start=len(conversation)
     )
     assert isinstance(run, Generation) and run.start == 4
@@ -159,13 +164,13 @@ async def test_a_start_at_the_end_sends_only_the_input(fixtures: Path) -> None:
 
 @pytest.mark.parametrize("start", [9, -1])
 async def test_a_start_outside_a_list_is_refused(fixtures: Path, start: int) -> None:
-    engine = Engine(fixtures, models={"strong": Scripted()})
+    engine = Engine(fixtures, providers=provided({"strong": Scripted(), "judge": None}))
     with pytest.raises(InputError, match=rf"^engine: start must be between 0 and 8; got {start}$"):
         await engine.run("support", "acme", "x", history=two(), start=start)
 
 
 async def test_a_start_needs_a_history_and_never_goes_below_zero(fixtures: Path) -> None:
-    engine = Engine(fixtures, models={"strong": Scripted()})
+    engine = Engine(fixtures, providers=provided({"strong": Scripted(), "judge": None}))
     with pytest.raises(InputError, match=r"^engine: start needs a history$"):
         await engine.run("support", "acme", "x", start=2)
     with pytest.raises(InputError, match=r"^engine: start must not be negative; got -1$"):
@@ -173,7 +178,7 @@ async def test_a_start_needs_a_history_and_never_goes_below_zero(fixtures: Path)
 
 
 async def test_a_cut_at_start_names_its_position_in_the_conversation(fixtures: Path) -> None:
-    engine = Engine(fixtures, models={"strong": Scripted()})
+    engine = Engine(fixtures, providers=provided({"strong": Scripted(), "judge": None}))
     with pytest.raises(InputError, match=BROKEN.format(6)):
         await engine.run("support", "acme", "x", history=two(), start=6)
 
@@ -181,7 +186,7 @@ async def test_a_cut_at_start_names_its_position_in_the_conversation(fixtures: P
 async def test_a_kept_conversation_that_cannot_be_read_raises_as_it_is(fixtures: Path) -> None:
     llm = Scripted()
     with pytest.raises(ConnectionError, match="database is down"):
-        await Engine(fixtures, models={"strong": llm}).run(
+        await Engine(fixtures, providers=provided({"strong": llm, "judge": None})).run(
             "support", "acme", "x", history=Down(), start=2
         )
     assert llm.calls == []
@@ -189,7 +194,7 @@ async def test_a_kept_conversation_that_cannot_be_read_raises_as_it_is(fixtures:
 
 async def test_a_routed_run_is_given_the_history_and_start(fixtures: Path) -> None:
     llm = Scripted(text_reply("Restarted it."))
-    engine = Engine(fixtures, models={"strong": llm, "judge": Desk()})
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": Desk()}))
     conversation = two()
     run = await engine.run("frontdesk", "acme", "And now?", history=conversation, start=4)
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
@@ -199,13 +204,15 @@ async def test_a_routed_run_is_given_the_history_and_start(fixtures: Path) -> No
 
 
 async def test_a_decision_that_routed_nowhere_added_nothing(fixtures: Path) -> None:
-    run = await Engine(fixtures, models={"judge": Desk()}).run("triage", "acme", "It is down")
+    run = await Engine(fixtures, providers=provided({"judge": Desk(), "strong": None})).run(
+        "triage", "acme", "It is down"
+    )
     assert isinstance(run, Decision) and run.added == []
 
 
 async def test_a_delegated_run_starts_with_no_history(tmp_path: Path) -> None:
     llm = Scripted(delegating("writer", "Draft a reply"), text_reply("Draft."), text_reply("Sent."))
-    engine = Engine(lead(tmp_path), models={"strong": llm, "judge": Answering()})
+    engine = Engine(lead(tmp_path), providers=provided({"strong": llm, "judge": Answering()}))
     history = [Message(role="user", content="hi"), Message(role="assistant", content="hello")]
     run = await engine.run("lead", "acme", "Answer the customer.", history=history, start=1)
     assert isinstance(run, Generation) and run.start == 1
@@ -218,7 +225,11 @@ async def test_a_run_read_back_keeps_its_start_and_what_it_added(
     fixtures: Path, storage: Storage
 ) -> None:
     refinery = Refinery(storage)
-    engine = Engine(fixtures, refinery=refinery, models={"strong": Scripted(text_reply("ok"))})
+    engine = Engine(
+        fixtures,
+        refinery=refinery,
+        providers=provided({"strong": Scripted(text_reply("ok")), "judge": None}),
+    )
     run = await engine.run("support", "acme", "And now?", history=two(), start=4)
     back = await refinery.run("acme", run.run_id)
     assert isinstance(run, Generation) and isinstance(back, Generation)
@@ -231,7 +242,7 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 8
 def surface(
     fixtures: Path, history: Sequence[object] | HistoryLike | None, start: int, **kwargs: Any
 ) -> EngineTools:
-    engine = Engine(fixtures, **kwargs, models={"strong": Scripted()})
+    engine = Engine(fixtures, **kwargs, providers=provided({"strong": Scripted(), "judge": None}))
     return EngineTools(engine, agent="support", scope="acme", history=history, start=start)
 
 
@@ -250,7 +261,7 @@ def calling_history(**args: Any) -> Reply:
 
 async def test_history_is_offered_only_when_a_run_starts_past_the_beginning(fixtures: Path) -> None:
     llm = Scripted(text_reply("a"), text_reply("b"), text_reply("c"))
-    engine = Engine(fixtures, models={"strong": llm})
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": None}))
     whole = await engine.run("support", "acme", "x", history=two())
     cut = await engine.run("support", "acme", "x", history=two(), start=4)
     alone = await engine.run("support", "acme", "x")
@@ -263,13 +274,13 @@ async def test_a_routed_run_is_offered_history_and_a_delegated_one_is_not(
     fixtures: Path, tmp_path: Path
 ) -> None:
     llm = Scripted(text_reply("Restarted it."))
-    await Engine(fixtures, models={"strong": llm, "judge": Desk()}).run(
+    await Engine(fixtures, providers=provided({"strong": llm, "judge": Desk()})).run(
         "frontdesk", "acme", "And now?", history=two(), start=4
     )
     assert "History" in [spec.name for spec in llm.calls[0][2]]
     led = Scripted(delegating("writer", "Draft a reply"), text_reply("Draft."), text_reply("Sent."))
     history = [Message(role="user", content="hi"), Message(role="assistant", content="hello")]
-    await Engine(lead(tmp_path), models={"strong": led, "judge": Answering()}).run(
+    await Engine(lead(tmp_path), providers=provided({"strong": led, "judge": Answering()})).run(
         "lead", "acme", "Answer the customer.", history=history, start=1
     )
     assert "History" in [spec.name for spec in led.calls[0][2]]
@@ -402,7 +413,7 @@ async def test_a_source_that_fails_inside_history_is_a_tool_error(fixtures: Path
             return await super().read(start, stop)
 
     llm = Scripted(calling_history(), text_reply("I cannot see that far back."))
-    run = await Engine(fixtures, models={"strong": llm}).run(
+    run = await Engine(fixtures, providers=provided({"strong": llm, "judge": None})).run(
         "support", "acme", "x", history=Flaky(two()), start=4
     )
     assert isinstance(run, Generation) and run.steps[0].tool == "History"
@@ -417,7 +428,7 @@ async def test_a_slow_source_meets_the_tool_deadline(fixtures: Path) -> None:
             return await super().read(start, stop)
 
     llm = Scripted(calling_history(), text_reply("ok"))
-    engine = Engine(fixtures, tool_timeout=0.05, models={"strong": llm})
+    engine = Engine(fixtures, tool_timeout=0.05, providers=provided({"strong": llm, "judge": None}))
     run = await engine.run("support", "acme", "x", history=Slow(looked_up()), start=4)
     assert isinstance(run, Generation)
     assert run.steps[0].result == "TimeoutError: engine: History timed out after 0.05s"
@@ -432,7 +443,7 @@ def test_history_is_described_the_same_whatever_the_start(fixtures: Path) -> Non
 
 
 def test_engine_tools_refuse_a_start_they_cannot_use(fixtures: Path) -> None:
-    engine = Engine(fixtures, models={"strong": Scripted()})
+    engine = Engine(fixtures, providers=provided({"strong": Scripted(), "judge": None}))
     with pytest.raises(
         InputError, match=r"^tools/engine_tools: start must not be negative; got -1$"
     ):
@@ -446,7 +457,7 @@ def test_engine_tools_refuse_a_start_they_cannot_use(fixtures: Path) -> None:
 def test_history_bounds_must_be_positive(fixtures: Path, name: str) -> None:
     settings: dict[str, Any] = {name: 0}
     with pytest.raises(ConfigurationError, match=rf"^engine: {name} must be positive$"):
-        Engine(fixtures, **settings, models={"strong": Scripted()})
+        Engine(fixtures, **settings, providers=provided({"strong": Scripted(), "judge": None}))
 
 
 COLLIDES = r"^tools/engine_tools: a tool named 'History' collides with the builtin$"
@@ -457,19 +468,23 @@ async def mine(args: dict[str, Any]) -> str:
 
 
 async def test_a_tool_named_history_is_refused_on_every_run(fixtures: Path, tmp_path: Path) -> None:
-    engine = Engine(fixtures, models={"strong": Scripted(text_reply("x"))})
+    engine = Engine(
+        fixtures, providers=provided({"strong": Scripted(text_reply("x")), "judge": None})
+    )
     with pytest.raises(ConfigurationError, match=COLLIDES):
         await engine.run("support", "acme", "x", tools=Tools([Tool("History", "Mine", body=mine)]))
-    (tmp_path / "desk" / "tools").mkdir(parents=True)
-    (tmp_path / "desk" / "AGENT.md").write_text(
-        "---\nname: desk\nkind: generation\nmodel: strong\n---\nHelp.\n"
+    write_folder(
+        tmp_path,
+        {"desk": {"kind": "generation", "model": "strong", "instructions": "desk.md"}},
+        tools={"History": {"module": "t/History.py", "schema": "t/History.json"}},
+        files={
+            "desk.md": "Help.\n",
+            "t/History.json": '{"description": "Mine", "input_schema": {"type": "object"}}',
+            "t/History.py": "def run(args, call):\n    return 1\n",
+        },
     )
-    (tmp_path / "desk" / "tools" / "History.json").write_text(
-        '{"description": "Mine", "input_schema": {"type": "object"}}'
-    )
-    (tmp_path / "desk" / "tools" / "History.py").write_text("def run(args, call):\n    return 1\n")
-    with pytest.raises(ConfigurationError, match="named like 'History', a tool the engine gives"):
-        Engine(tmp_path, models={"strong": Scripted()})
+    with pytest.raises(ConfigurationError, match="named like a tool the engine gives"):
+        Engine(tmp_path, providers=provided({"strong": Scripted()}))
 
 
 async def test_history_never_shows_what_a_source_hands_back_past_stop(fixtures: Path) -> None:
@@ -545,7 +560,7 @@ async def test_a_history_given_as_a_generator_is_read_once(fixtures: Path) -> No
     ]
     llm = Scripted(calling_history(), text_reply("You said hi."))
     once = (message for message in chat)
-    run = await Engine(fixtures, models={"strong": llm}).run(
+    run = await Engine(fixtures, providers=provided({"strong": llm, "judge": None})).run(
         "support",
         "acme",
         "What did I say first?",
@@ -561,7 +576,7 @@ async def test_bad_tags_are_refused_before_the_history_is_read(fixtures: Path) -
         async def read(self, start: int, stop: int | None = None) -> Sequence[object]:
             raise ConnectionError("database is down")
 
-    engine = Engine(fixtures, models={"strong": Scripted()})
+    engine = Engine(fixtures, providers=provided({"strong": Scripted(), "judge": None}))
     with pytest.raises(InputError, match=r"^engine: tags need a key"):
         await engine.run("support", "acme", "x", history=Down(), start=2, tags={"": "x"})
 
@@ -594,7 +609,7 @@ def test_engine_tools_refuse_a_start_past_the_end_of_a_list(fixtures: Path) -> N
 async def test_a_history_that_breaks_a_pair_any_way_is_refused(
     fixtures: Path, history: list[Message], position: int, call_id: str
 ) -> None:
-    engine = Engine(fixtures, models={"strong": Scripted()})
+    engine = Engine(fixtures, providers=provided({"strong": Scripted(), "judge": None}))
     with pytest.raises(InputError) as caught:
         await engine.run("support", "acme", "x", history=history)
     assert str(caught.value) == (
@@ -616,13 +631,17 @@ async def test_a_pattern_that_runs_past_the_deadline_is_an_error_the_model_reads
 
 async def test_a_routed_run_reads_a_history_once(fixtures: Path) -> None:
     kept = Kept(looked_up())
-    engine = Engine(fixtures, models={"strong": Scripted(text_reply("ok")), "judge": Desk()})
+    engine = Engine(
+        fixtures, providers=provided({"strong": Scripted(text_reply("ok")), "judge": Desk()})
+    )
     await engine.run("frontdesk", "acme", "It is down", history=kept, start=4)
     assert kept.reads == [(4, None)]
 
 
 async def test_start_zero_reads_from_the_beginning(fixtures: Path) -> None:
     kept = Kept(looked_up())
-    engine = Engine(fixtures, models={"strong": Scripted(text_reply("ok"))})
+    engine = Engine(
+        fixtures, providers=provided({"strong": Scripted(text_reply("ok")), "judge": None})
+    )
     await engine.run("support", "acme", "x", history=kept)
     assert kept.reads == [(0, None)]

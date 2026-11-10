@@ -24,12 +24,23 @@ from rfnry_engine.stop import Stop
 from rfnry_engine.tools.workspace import Backend, Local, Process, Stream, Workspace
 
 from .fakes import Scripted, text_reply
+from .trees import provided, write_folder
 
 
 def worker(folder: Path) -> None:
     folder.mkdir()
-    (folder / "AGENT.md").write_text(
-        "---\nname: worker\nkind: generation\nmodel: strong\nworkspace: true\n---\nWork.\n"
+    write_folder(
+        folder,
+        {
+            "worker": {
+                "kind": "generation",
+                "model": "strong",
+                "instructions": "worker.md",
+                "workspace": True,
+                "files": {"include": ["worker.md"]},
+            }
+        },
+        files={"worker.md": "Work.\n"},
     )
 
 
@@ -830,7 +841,7 @@ async def test_a_workspace_read_or_load_past_the_tool_timeout_returns_once_its_t
     local = Gated(root, "read")
     call = ToolCall(id="1", name=name, args={"path": "notes.txt", "where": "workspace"})
     llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("ok"))
-    engine = Engine(tmp_path / "worker", tool_timeout=0.05, models={"strong": llm})
+    engine = Engine(tmp_path / "worker", tool_timeout=0.05, providers=provided({"strong": llm}))
     running = asyncio.create_task(
         engine.run("worker", "acme", "x", workspace=Workspace(local, scope="acme"))
     )
@@ -965,7 +976,7 @@ async def test_a_job_cut_while_it_starts_is_stopped_by_close(
     command = "sleep 30 & wait"
     call = ToolCall(id="1", name="Shell", args={"command": command, "background": True})
     llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("ok"))
-    engine = Engine(tmp_path / "worker", models={"strong": llm})
+    engine = Engine(tmp_path / "worker", providers=provided({"strong": llm}))
     stop = Stop()
     before = asyncio.all_tasks()
 

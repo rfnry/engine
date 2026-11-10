@@ -51,6 +51,7 @@ from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import Fixed, Scripted, Streaming, said, text_reply
+from .trees import provided, solo
 
 
 def _tool_use(*calls: ToolCall) -> Reply:
@@ -59,8 +60,12 @@ def _tool_use(*calls: ToolCall) -> Reply:
     )
 
 
+def billing(root: Path, *tools: str) -> Path:
+    return solo(root, name="billing", tools=tools)
+
+
 def engine_for(fixtures: Path, llm: Any, **kwargs: Any) -> Engine:
-    return Engine(fixtures, **kwargs, models={"strong": llm})
+    return Engine(fixtures, **kwargs, providers=provided({"strong": llm, "judge": None}))
 
 
 async def test_plain_reply_is_the_record(fixtures: Path) -> None:
@@ -113,9 +118,9 @@ async def test_a_reply_s_settings_win_over_the_ones_its_adapter_declares(fixture
 
 async def test_a_run_s_settings_are_those_of_its_last_call(fixtures: Path) -> None:
     llm = Configured(
-        _tool_use(ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})).model_copy(
-            update={"settings": {"effort": "high"}}
-        ),
+        _tool_use(
+            ToolCall(id="c1", name="Read", args={"path": "support/rules/refunds.md"})
+        ).model_copy(update={"settings": {"effort": "high"}}),
         text_reply("done"),
     )
     run = await engine_for(fixtures, llm).run("support", "acme", "x")
@@ -148,9 +153,9 @@ async def test_settings_that_are_not_a_json_object_are_ignored(fixtures: Path, o
 
 async def test_settings_never_reach_the_model(fixtures: Path) -> None:
     llm = Configured(
-        _tool_use(ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})).model_copy(
-            update={"settings": {"effort": "high"}}
-        ),
+        _tool_use(
+            ToolCall(id="c1", name="Read", args={"path": "support/rules/refunds.md"})
+        ).model_copy(update={"settings": {"effort": "high"}}),
         text_reply("done", settings={"effort": "high"}),
     )
     history = [
@@ -175,7 +180,7 @@ async def test_the_tree_decides_what_the_model_sees(fixtures: Path) -> None:
 
 async def test_tool_loop_runs_tools_and_feeds_results_back(fixtures: Path) -> None:
     llm = Scripted(
-        _tool_use(ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})),
+        _tool_use(ToolCall(id="c1", name="Read", args={"path": "support/rules/refunds.md"})),
         text_reply("Refund in full."),
     )
     run = await engine_for(fixtures, llm).run("support", "acme", "Charged twice.")
@@ -186,7 +191,7 @@ async def test_tool_loop_runs_tools_and_feeds_results_back(fixtures: Path) -> No
     assert second_messages[-1].role == "tool" and second_messages[-1].tool_call_id == "c1"
     assert said(second_messages)[-2] == Message(
         role="assistant",
-        tool_calls=[ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"})],
+        tool_calls=[ToolCall(id="c1", name="Read", args={"path": "support/rules/refunds.md"})],
     )
 
 
@@ -204,7 +209,7 @@ async def test_tool_messages_say_whether_the_step_failed(fixtures: Path) -> None
     llm = Scripted(
         _tool_use(
             ToolCall(id="g", name="Ghost", args={}),
-            ToolCall(id="r", name="Read", args={"path": "rules/refunds.md"}),
+            ToolCall(id="r", name="Read", args={"path": "support/rules/refunds.md"}),
         ),
         _tool_use(ToolCall(id="o", name="Output", args={})),
         _tool_use(ToolCall(id="o2", name="Output", args={"refund": True, "reason": "dup"})),
@@ -219,18 +224,17 @@ async def test_tool_messages_say_whether_the_step_failed(fixtures: Path) -> None
     assert Message(role="user", content="hi").is_error is False
 
 
-async def test_call_tools_reach_the_model_for_that_run_only(fixtures: Path) -> None:
+async def test_call_tools_reach_the_model_for_that_run_only(fixtures: Path, tmp_path: Path) -> None:
     async def ping(args: dict[str, Any]) -> str:
         return "pong"
 
     llm = Scripted(
         _tool_use(ToolCall(id="p", name="ping", args={})), text_reply("ok"), text_reply("ok")
     )
-    engine = engine_for(fixtures, llm)
+    engine = engine_for(billing(tmp_path, "ping"), llm)
     run = await engine.run("billing", "acme", "x", tools=Tools([Tool("ping", "Ping", body=ping)]))
     assert isinstance(run, Generation) and run.steps[0].result == "pong"
-    await engine.run("billing", "acme", "x")
-    assert "ping" not in [t.name for t in llm.calls[2][2]]
+    assert [t.name for t in llm.calls[1][2]] == ["ping"]
 
 
 class Verdict(BaseModel):
@@ -266,7 +270,7 @@ async def test_calls_after_an_accepted_output_are_answered_but_never_run(
             ToolCall(id="l", name="lookup_order", args={"order_id": "A-1"}),
         )
     )
-    engine = Engine(fixtures, models={"strong": llm})
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": None}))
     tools = Tools([Tool("lookup_order", "Fetch an order", body=lookup)])
     run = await engine.run("support", "acme", "x", expect=Verdict, tools=tools)
     assert isinstance(run, Generation) and looked == []
@@ -368,7 +372,7 @@ async def test_calls_in_a_reply_that_ran_out_of_room_are_answered_but_never_run(
         stop_reason="max_tokens",
     )
     llm = Scripted(cut, text_reply("It is on its way."))
-    engine = Engine(fixtures, models={"strong": llm})
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": None}))
     tools = Tools([Tool("lookup_order", "Fetch an order", body=lookup)])
     first = await engine.run("support", "acme", "Where is A-1?", tools=tools)
     assert isinstance(first, Generation) and first.reply == "Let me look" and looked == []
@@ -460,7 +464,7 @@ async def test_a_run_that_raises_is_recorded_with_its_children(
     llm = Scripted(_tool_use(delegate), _tool_use(ToolCall(id="c", name="LS", args={})))
     engine = Engine(
         fixtures,
-        models={"strong": llm, "judge": Fixed(triage)},
+        providers=provided({"strong": llm, "judge": Fixed(triage)}),
         refinery=Refinery(storage),
         max_model_calls=2,
     )
@@ -475,10 +479,6 @@ async def test_refusals(fixtures: Path) -> None:
         await engine.run("ghost", "acme", "x")
     with pytest.raises(InputError):
         await engine.run("billing", "", "x")
-    with pytest.raises(ConfigurationError, match="agent .triage. runs on model .judge., which"):
-        await engine.run("triage", "acme", "x")
-    with pytest.raises(ConfigurationError, match="agent .billing. runs on model .strong., which"):
-        await Engine(fixtures, models={}).run("billing", "acme", "x")
 
 
 async def test_recording_is_opt_in_per_run(fixtures: Path) -> None:
@@ -501,7 +501,9 @@ async def _slow(args: dict[str, Any]) -> str:
     return "never"
 
 
-async def test_a_slow_call_tool_times_out_and_the_run_continues(fixtures: Path) -> None:
+async def test_a_slow_call_tool_times_out_and_the_run_continues(
+    fixtures: Path, tmp_path: Path
+) -> None:
     async def ping(args: dict[str, Any]) -> str:
         return "pong"
 
@@ -509,7 +511,7 @@ async def test_a_slow_call_tool_times_out_and_the_run_continues(fixtures: Path) 
         _tool_use(ToolCall(id="s", name="slow", args={}), ToolCall(id="p", name="ping", args={})),
         text_reply("carried on"),
     )
-    engine = engine_for(fixtures, llm, tool_timeout=0.05)
+    engine = engine_for(billing(tmp_path, "slow", "ping"), llm, tool_timeout=0.05)
     started = time.monotonic()
     run = await engine.run(
         "billing",
@@ -527,25 +529,29 @@ async def test_a_slow_call_tool_times_out_and_the_run_continues(fixtures: Path) 
     assert llm.calls[1][1][-2].content == "TimeoutError: engine: slow timed out after 0.05s"
 
 
-async def test_a_tool_raising_its_own_timeout_is_not_the_deadline(fixtures: Path) -> None:
+async def test_a_tool_raising_its_own_timeout_is_not_the_deadline(
+    fixtures: Path, tmp_path: Path
+) -> None:
     async def gives_up(args: dict[str, Any]) -> str:
         raise TimeoutError("upstream gave up")
 
     llm = Scripted(_tool_use(ToolCall(id="g", name="gives_up", args={})), text_reply("ok"))
-    run = await engine_for(fixtures, llm).run(
+    run = await engine_for(billing(tmp_path, "gives_up"), llm).run(
         "billing", "acme", "x", tools=Tools([Tool("gives_up", "Gives up", body=gives_up)])
     )
     assert isinstance(run, Generation) and run.steps[0].result == "TimeoutError: upstream gave up"
 
 
-async def test_the_deadline_defaults_to_thirty_seconds_and_none_disables_it(fixtures: Path) -> None:
+async def test_the_deadline_defaults_to_thirty_seconds_and_none_disables_it(
+    fixtures: Path, tmp_path: Path
+) -> None:
     async def nap(args: dict[str, Any]) -> str:
         await asyncio.sleep(0.1)
         return "rested"
 
     assert engine_for(fixtures, Scripted()).tool_timeout == 30.0
     llm = Scripted(_tool_use(ToolCall(id="n", name="nap", args={})), text_reply("ok"))
-    run = await engine_for(fixtures, llm, tool_timeout=None).run(
+    run = await engine_for(billing(tmp_path, "nap"), llm, tool_timeout=None).run(
         "billing", "acme", "x", tools=Tools([Tool("nap", "Nap", body=nap)])
     )
     assert isinstance(run, Generation) and run.steps[0].result == "rested"
@@ -575,12 +581,12 @@ def test_model_call_depth_and_process_caps_must_be_positive_integers(fixtures: P
 
 
 def test_a_root_that_is_not_a_directory_is_refused_by_its_path(tmp_path: Path) -> None:
-    a_file = tmp_path / "AGENT.md"
-    a_file.write_text("---\nname: a\nkind: generation\nmodel: strong\n---\n", encoding="utf-8")
+    a_file = tmp_path / "rfnry.yaml"
+    a_file.write_text("version: 1\n", encoding="utf-8")
     for root in (tmp_path / "missing", a_file, str(tmp_path / "missing")):
         expected = f"^engine: root is not a directory: {re.escape(str(root))}$"
         with pytest.raises(ConfigurationError, match=expected):
-            Engine(root, models={"strong": Scripted()})
+            Engine(root, providers=provided({"strong": Scripted()}))
 
 
 class ForeignCall(BaseModel):
@@ -605,7 +611,9 @@ class ForeignReply(BaseModel):
 async def test_a_foreign_reply_is_accepted_by_its_fields(fixtures: Path) -> None:
     llm = Scripted(
         ForeignReply(
-            tool_calls=[ForeignCall(id="c1", name="Read", args={"path": "rules/refunds.md"})],
+            tool_calls=[
+                ForeignCall(id="c1", name="Read", args={"path": "support/rules/refunds.md"})
+            ],
             stop_reason="tool_use",
         ),  # type: ignore[arg-type]
         ForeignReply(text="done", usage=ForeignUsage(input=3, output=1), model="m9"),  # type: ignore[arg-type]
@@ -624,7 +632,7 @@ async def test_a_run_returns_the_conversation_to_continue_from(fixtures: Path) -
         Reply(
             text="Checking.",
             tool_calls=[
-                ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"}),
+                ToolCall(id="c1", name="Read", args={"path": "support/rules/refunds.md"}),
                 ToolCall(id="c2", name="Ghost", args={}),
             ],
             stop_reason="tool_use",
@@ -644,7 +652,7 @@ async def test_a_run_returns_the_conversation_to_continue_from(fixtures: Path) -
             role="assistant",
             content="Checking.",
             tool_calls=[
-                ToolCall(id="c1", name="Read", args={"path": "rules/refunds.md"}),
+                ToolCall(id="c1", name="Read", args={"path": "support/rules/refunds.md"}),
                 ToolCall(id="c2", name="Ghost"),
             ],
             reasoning={"thought": "read the rule"},
@@ -677,26 +685,6 @@ async def test_a_typed_run_closes_its_output_call_in_the_conversation(fixtures: 
     assert run.conversation[-1] == Message(role="tool", tool_call_id="o1", content="accepted")
 
 
-async def test_a_tool_named_output_collides_with_expect(fixtures: Path) -> None:
-    async def ping(args: dict[str, Any]) -> str:
-        return "pong"
-
-    class Verdict(BaseModel):
-        refund: bool
-
-    engine = engine_for(fixtures, Scripted(text_reply("x")))
-    with pytest.raises(
-        ConfigurationError, match="^engine: a tool named 'Output' collides with expect=$"
-    ):
-        await engine.run(
-            "billing",
-            "acme",
-            "x",
-            expect=Verdict,
-            tools=Tools([Tool("Output", "Clash", body=ping)]),
-        )
-
-
 async def test_a_failed_recording_is_logged_and_the_run_returned(
     fixtures: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -715,7 +703,11 @@ async def test_a_failed_recording_is_logged_and_the_run_returned(
     "levels", [254, 255, 2000], ids=["254-records", "255-unrecorded", "2000-unrecorded"]
 )
 async def test_a_run_whose_args_nest_past_254_levels_is_returned_and_logged_unrecorded(
-    fixtures: Path, storage: Storage, caplog: pytest.LogCaptureFixture, levels: int
+    fixtures: Path,
+    storage: Storage,
+    caplog: pytest.LogCaptureFixture,
+    levels: int,
+    tmp_path: Path,
 ) -> None:
     async def look(args: dict[str, Any]) -> str:
         return "seen"
@@ -726,7 +718,7 @@ async def test_a_run_whose_args_nest_past_254_levels_is_returned_and_logged_unre
     call = ToolCall(id="c1", name="look", args={"x": deep})
     refinery = Refinery(storage)
     llm = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("done"))
-    engine = engine_for(fixtures, llm, refinery=refinery)
+    engine = engine_for(billing(tmp_path, "look"), llm, refinery=refinery)
     with caplog.at_level("WARNING"):
         run = await engine.run(
             "billing", "acme", "x", tools=Tools([Tool("look", "Look", body=look)])
@@ -753,7 +745,9 @@ async def test_a_run_whose_args_nest_past_254_levels_is_returned_and_logged_unre
 
 
 async def test_a_tool_that_changes_its_args_leaves_the_record_as_the_model_sent_it(
-    fixtures: Path, storage: Storage
+    fixtures: Path,
+    storage: Storage,
+    tmp_path: Path,
 ) -> None:
     sent: dict[str, Any] = {"order": {"id": "A-1", "lines": [1]}}
     seen: list[dict[str, Any]] = []
@@ -779,7 +773,7 @@ async def test_a_tool_that_changes_its_args_leaves_the_record_as_the_model_sent_
     refinery = Refinery(storage)
     call = ToolCall(id="c1", name="lookup", args=copy.deepcopy(sent))
     llm = Scripted(_tool_use(call), text_reply("done"))
-    engine = engine_for(fixtures, llm, refinery=refinery)
+    engine = engine_for(billing(tmp_path, "lookup"), llm, refinery=refinery)
     run = await engine.run(
         "billing",
         "acme",
@@ -839,7 +833,9 @@ class Unpicklable:
 
 @pytest.mark.parametrize("handled", [True, False], ids=["with-on-event", "without"])
 async def test_args_holding_a_value_that_cannot_be_copied_still_run(
-    fixtures: Path, handled: bool
+    fixtures: Path,
+    handled: bool,
+    tmp_path: Path,
 ) -> None:
     leaf = Unpicklable()
     received: list[Any] = []
@@ -860,7 +856,7 @@ async def test_args_holding_a_value_that_cannot_be_copied_still_run(
 
     call = ToolCall(id="c1", name="lookup", args={"v": {"held": [leaf]}})
     llm = Scripted(_tool_use(call), text_reply("done"))
-    run = await engine_for(fixtures, llm).run(
+    run = await engine_for(billing(tmp_path, "lookup"), llm).run(
         "billing",
         "acme",
         "x",
@@ -912,6 +908,7 @@ class Meddling:
 
 async def test_what_a_handler_or_the_adapter_changes_leaves_the_record_and_the_next_call_alone(
     fixtures: Path,
+    tmp_path: Path,
 ) -> None:
     returned: list[Part] = [
         Text(text="the result"),
@@ -938,7 +935,7 @@ async def test_what_a_handler_or_the_adapter_changes_leaves_the_record_and_the_n
     )
     inbox: asyncio.Queue[Any] = asyncio.Queue()
     inbox.put_nowait([Text(text="also this")])
-    run = await Engine(fixtures, models={"strong": llm}).run(
+    run = await Engine(billing(tmp_path, "look"), providers=provided({"strong": llm})).run(
         "billing",
         "acme",
         [Text(text="look it up")],
@@ -1013,7 +1010,7 @@ async def test_an_input_that_is_not_a_state_is_refused_before_any_model_call(
 
     kept = Kept()
     llm, judge = Scripted(), Fixed({})
-    engine = Engine(fixtures, refinery=kept, models={"strong": llm, "judge": judge})
+    engine = Engine(fixtures, refinery=kept, providers=provided({"strong": llm, "judge": judge}))
     with pytest.raises(InputError) as caught:
         await engine.run(agent, "acme", given)
     assert str(caught.value) == (
@@ -1069,12 +1066,14 @@ async def test_parts_in_history_reach_the_model_as_they_are(fixtures: Path) -> N
     assert llm.calls[0][1][0] == history[0]
 
 
-async def test_a_tool_that_returns_parts_hands_them_to_the_model(fixtures: Path) -> None:
+async def test_a_tool_that_returns_parts_hands_them_to_the_model(
+    fixtures: Path, tmp_path: Path
+) -> None:
     async def photo(args: dict[str, Any]) -> list[Part]:
         return [Text(text="the photo"), Image(media_type="image/png", data=PNG)]
 
     llm = Scripted(_tool_use(ToolCall(id="p", name="photo", args={})), text_reply("A cat."))
-    run = await engine_for(fixtures, llm).run(
+    run = await engine_for(billing(tmp_path, "photo"), llm).run(
         "billing", "acme", "x", tools=Tools([Tool("photo", body=photo)])
     )
     assert isinstance(run, Generation)
@@ -1107,8 +1106,8 @@ async def test_load_hands_the_model_an_image_and_a_pdf_from_its_folder(
     (root / "billing" / "knowledge" / "rates.pdf").write_bytes(pdf)
     llm = Scripted(
         _tool_use(
-            ToolCall(id="i", name="Load", args={"path": "knowledge/diagram.png"}),
-            ToolCall(id="d", name="Load", args={"path": "knowledge/rates.pdf"}),
+            ToolCall(id="i", name="Load", args={"path": "billing/knowledge/diagram.png"}),
+            ToolCall(id="d", name="Load", args={"path": "billing/knowledge/rates.pdf"}),
         ),
         text_reply("Express is $25."),
     )
@@ -1137,13 +1136,13 @@ async def test_the_model_adapter_says_which_files_load_may_hand_it(
     (root / "billing" / "knowledge").mkdir()
     (root / "billing" / "knowledge" / "rates.pdf").write_bytes(b"%PDF-1.7 rates")
     llm = PicturesOnly(
-        _tool_use(ToolCall(id="d", name="Load", args={"path": "knowledge/rates.pdf"})),
+        _tool_use(ToolCall(id="d", name="Load", args={"path": "billing/knowledge/rates.pdf"})),
         text_reply("I cannot open that file."),
     )
     run = await engine_for(root, llm).run("billing", "acme", "What does express cost?")
     assert isinstance(run, Generation) and run.steps[0].is_error
     assert run.steps[0].result == (
-        "InputError: tools/builtins: the model does not take application/pdf files: knowledge/rates.pdf"
+        "InputError: tools/builtins: the model does not take application/pdf files: billing/knowledge/rates.pdf"
     )
 
 
@@ -1187,7 +1186,7 @@ async def test_a_run_that_calls_no_file_tool_never_uses_the_thread_pool(
     for i in range(5):
         history.append(Message(role="user", content=f"Question {i}."))
         history.append(Message(role="assistant", content=f"Answer {i}.", reasoning=thought))
-    read = ToolCall(id="r", name="Read", args={"path": "rules/refunds.md"})
+    read = ToolCall(id="r", name="Read", args={"path": "support/rules/refunds.md"})
     llm = Scripted(
         text_reply("Refund in full.", reasoning=thought), _tool_use(read), text_reply("Done.")
     )

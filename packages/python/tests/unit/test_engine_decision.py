@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import ConfigurationError, InputError, ModelError
+from rfnry_engine.errors import InputError, ModelError
 from rfnry_engine.models import (
     Answer,
     Audio,
@@ -32,6 +32,7 @@ from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import Answering, Fixed, MemoryBucket, Scripted, sorter, text_reply
+from .trees import deciding, provided, tooled
 
 
 def _intent(choice: str, p: float) -> dict[str, Any]:
@@ -51,7 +52,7 @@ async def test_decision_run_settles_answers(fixtures: Path) -> None:
             "severity": ScoreAnswer(score=2.4, probabilities=[0.0, 0.1, 0.4, 0.5]),
         }
     )
-    run = await Engine(fixtures, models={"judge": dm}).run(
+    run = await Engine(fixtures, providers=provided({"judge": dm, "strong": None})).run(
         "triage", "acme", {"message": "It is down"}
     )
     assert isinstance(run, Decision)
@@ -63,7 +64,9 @@ async def test_decision_run_settles_answers(fixtures: Path) -> None:
 
 async def test_route_runs_the_target_with_the_same_input(fixtures: Path) -> None:
     llm = Scripted(text_reply("Support here."))
-    engine = Engine(fixtures, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))})
+    engine = Engine(
+        fixtures, providers=provided({"strong": llm, "judge": Fixed(_intent("technical", 0.8))})
+    )
     run = await engine.run("frontdesk", "acme", "The app crashes", context="Team plan")
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     assert run.routed_to.agent == "support" and run.routed_to.reply == "Support here."
@@ -74,11 +77,13 @@ async def test_route_runs_the_target_with_the_same_input(fixtures: Path) -> None
 async def test_no_route_below_the_floor_or_for_an_unmapped_option(fixtures: Path) -> None:
     engine = Engine(
         fixtures,
-        models={"strong": Scripted(), "judge": Fixed(_intent("technical", 0.5))},
+        providers=provided({"strong": Scripted(), "judge": Fixed(_intent("technical", 0.5))}),
     )
     low = await engine.run("frontdesk", "acme", "x")
     assert isinstance(low, Decision) and low.routed_to is None
-    engine = Engine(fixtures, models={"strong": Scripted(), "judge": Fixed(_intent("other", 0.99))})
+    engine = Engine(
+        fixtures, providers=provided({"strong": Scripted(), "judge": Fixed(_intent("other", 0.99))})
+    )
     other = await engine.run("frontdesk", "acme", "x")
     assert isinstance(other, Decision) and other.routed_to is None
 
@@ -94,7 +99,9 @@ async def test_decided_carries_usage_and_model(fixtures: Path) -> None:
             model="d1",
         )
 
-    run = await Engine(fixtures, models={"judge": Fixed(decide)}).run("triage", "acme", "x")
+    run = await Engine(fixtures, providers=provided({"judge": Fixed(decide), "strong": None})).run(
+        "triage", "acme", "x"
+    )
     assert isinstance(run, Decision) and run.usage == Usage(input=40) and run.model == "d1"
 
 
@@ -109,12 +116,14 @@ async def test_a_decision_run_names_its_adapter_s_model_when_the_call_reports_no
         "urgent": CheckAnswer(probability=0.2),
         "severity": ScoreAnswer(score=0, probabilities=[1, 0, 0, 0]),
     }
-    engine = Engine(fixtures, models={"judge": Declaring(answers)})
+    engine = Engine(fixtures, providers=provided({"judge": Declaring(answers), "strong": None}))
     reported = Engine(
         fixtures,
-        models={"judge": Declaring(lambda _: Decided(answers=answers, model="d1"))},
+        providers=provided(
+            {"judge": Declaring(lambda _: Decided(answers=answers, model="d1")), "strong": None}
+        ),
     )
-    silent = Engine(fixtures, models={"judge": Fixed(answers)})
+    silent = Engine(fixtures, providers=provided({"judge": Fixed(answers), "strong": None}))
     models = [(await e.run("triage", "acme", "x")).model for e in (engine, reported, silent)]
     assert models == ["d", "d1", None]
 
@@ -132,7 +141,7 @@ async def test_a_decided_s_settings_win_over_the_ones_its_adapter_declares(
     }
     pending = [Decided(answers=answers, settings={"effort": "high"})]
     judge = Tuned(lambda _: pending.pop() if pending else Decided(answers=answers))
-    engine = Engine(fixtures, models={"judge": judge})
+    engine = Engine(fixtures, providers=provided({"judge": judge, "strong": None}))
     first = await engine.run("triage", "acme", "x")
     second = await engine.run("triage", "acme", "x")
     assert first.settings == {"effort": "high"} and second.settings == {"effort": "low"}
@@ -145,18 +154,10 @@ async def test_a_decision_only_engine_runs_a_mixed_tree(fixtures: Path) -> None:
             "severity": ScoreAnswer(score=1, probabilities=[0, 1, 0, 0]),
         }
     )
-    run = await Engine(fixtures, models={"judge": dm}).run("triage", "acme", "x")
+    run = await Engine(fixtures, providers=provided({"judge": dm, "strong": None})).run(
+        "triage", "acme", "x"
+    )
     assert isinstance(run, Decision)
-
-
-async def test_a_route_to_an_agent_without_its_model_is_refused_before_the_decision(
-    fixtures: Path,
-) -> None:
-    dm = Fixed(_intent("other", 0.9))
-    message = "^engine: agent 'frontdesk' routes to agent 'billing', which runs on model 'strong', which neither the engine nor the run was given$"
-    with pytest.raises(ConfigurationError, match=message):
-        await Engine(fixtures, models={"judge": dm}).run("frontdesk", "acme", "x")
-    assert dm.calls == []
 
 
 class ForeignUsage(BaseModel):
@@ -194,7 +195,9 @@ async def test_a_foreign_decided_is_accepted_by_its_fields(fixtures: Path) -> No
     def decide(state: State) -> Any:
         return ForeignDecided(answers=_foreign(0.9), usage=ForeignUsage(input=7), model="d2")
 
-    run = await Engine(fixtures, models={"judge": Fixed(decide)}).run("triage", "acme", "x")
+    run = await Engine(fixtures, providers=provided({"judge": Fixed(decide), "strong": None})).run(
+        "triage", "acme", "x"
+    )
     assert isinstance(run, Decision) and run.usage == Usage(input=7) and run.model == "d2"
     assert isinstance(run.answers["urgent"], CheckAnswer) and run.answers[
         "urgent"
@@ -203,19 +206,25 @@ async def test_a_foreign_decided_is_accepted_by_its_fields(fixtures: Path) -> No
 
 
 async def test_foreign_answers_alone_are_accepted_and_still_validated(fixtures: Path) -> None:
-    run = await Engine(fixtures, models={"judge": Fixed(_foreign(0.9))}).run("triage", "acme", "x")
+    run = await Engine(
+        fixtures, providers=provided({"judge": Fixed(_foreign(0.9)), "strong": None})
+    ).run("triage", "acme", "x")
     assert isinstance(run, Decision) and isinstance(run.answers["urgent"], CheckAnswer)
     with pytest.raises(
         ModelError, match="^models: the decision model's answers do not fit the contract"
     ):
-        await Engine(fixtures, models={"judge": Fixed(_foreign(1.5))}).run("triage", "acme", "x")
+        await Engine(
+            fixtures, providers=provided({"judge": Fixed(_foreign(1.5)), "strong": None})
+        ).run("triage", "acme", "x")
 
 
 class Verdict(BaseModel):
     refund: bool
 
 
-async def test_a_route_forwards_everything_the_run_was_given(fixtures: Path) -> None:
+async def test_a_route_forwards_everything_the_run_was_given(
+    fixtures: Path, tmp_path: Path
+) -> None:
     async def ping(args: dict[str, Any]) -> str:
         return "pong"
 
@@ -227,7 +236,10 @@ async def test_a_route_forwards_everything_the_run_was_given(fixtures: Path) -> 
     async def on_event(event: Any) -> None:
         events.append(event)
 
-    engine = Engine(fixtures, models={"strong": llm, "judge": Fixed(_intent("technical", 0.9))})
+    engine = Engine(
+        tooled(fixtures, tmp_path, "support", "ping"),
+        providers=provided({"strong": llm, "judge": Fixed(_intent("technical", 0.9))}),
+    )
     history = [Message(role="user", content="earlier"), Message(role="assistant", content="noted")]
     run = await engine.run(
         "frontdesk",
@@ -258,7 +270,7 @@ async def test_a_decision_agent_refuses_media_before_the_model_is_called(fixture
             "severity": ScoreAnswer(score=1, probabilities=[0, 1, 0, 0]),
         }
     )
-    engine = Engine(fixtures, models={"judge": dm})
+    engine = Engine(fixtures, providers=provided({"judge": dm, "strong": None}))
     parts = [Text(text="Is this down?"), Image(media_type="image/png", url="https://x/screen.png")]
     with pytest.raises(
         InputError, match="^engine: decision agent 'triage' takes text only; got image/png$"
@@ -274,7 +286,7 @@ async def test_a_decision_agent_joins_text_parts_into_its_state(fixtures: Path) 
             "severity": ScoreAnswer(score=1, probabilities=[0, 1, 0, 0]),
         }
     )
-    run = await Engine(fixtures, models={"judge": dm}).run(
+    run = await Engine(fixtures, providers=provided({"judge": dm, "strong": None})).run(
         "triage", "acme", [Text(text="It is down."), Text(text="Since noon.")]
     )
     assert isinstance(run, Decision) and run.state == "It is down.\nSince noon."
@@ -283,7 +295,9 @@ async def test_a_decision_agent_joins_text_parts_into_its_state(fixtures: Path) 
 
 async def test_a_route_forwards_the_parts_to_its_target(fixtures: Path) -> None:
     llm = Scripted(text_reply("Support here."))
-    engine = Engine(fixtures, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))})
+    engine = Engine(
+        fixtures, providers=provided({"strong": llm, "judge": Fixed(_intent("technical", 0.8))})
+    )
     parts: list[Part] = [Text(text="The app crashes"), Text(text="on login")]
     run = await engine.run("frontdesk", "acme", parts)
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
@@ -292,22 +306,24 @@ async def test_a_route_forwards_the_parts_to_its_target(fixtures: Path) -> None:
 
 
 async def test_a_checks_yes_and_no_reach_the_decision_model(tmp_path: Path) -> None:
-    (tmp_path / "triage" / "questions").mkdir(parents=True)
-    (tmp_path / "triage" / "AGENT.md").write_text(
-        "---\nname: triage\nkind: decision\nmodel: judge\n---\n"
-    )
-    (tmp_path / "triage" / "questions" / "urgent.json").write_text(
-        json.dumps(
-            {
-                "type": "check",
-                "instructions": "Does the message need a person right now?",
-                "yes": "The service is down or data is at risk",
-                "no": "A question, a request, or a problem with a workaround",
-            }
-        )
+    deciding(
+        tmp_path,
+        "triage",
+        {
+            "urgent": json.dumps(
+                {
+                    "type": "check",
+                    "instructions": "Does the message need a person right now?",
+                    "yes": "The service is down or data is at risk",
+                    "no": "A question, a request, or a problem with a workaround",
+                }
+            )
+        },
     )
     dm = Fixed({"urgent": CheckAnswer(probability=0.9)})
-    await Engine(tmp_path, models={"judge": dm}).run("triage", "acme", "It is down")
+    await Engine(tmp_path, providers=provided({"judge": dm, "strong": None})).run(
+        "triage", "acme", "It is down"
+    )
     [(_, questions)] = dm.calls
     assert questions["urgent"] == Check(
         instructions="Does the message need a person right now?",
@@ -322,9 +338,9 @@ async def test_structured_questions_reach_the_model_the_record_and_the_export_as
 ) -> None:
     dm = sorter(tmp_path)
     refinery = Refinery(storage)
-    run = await Engine(tmp_path, refinery=refinery, models={"judge": dm}).run(
-        "sorter", "acme", "Hi"
-    )
+    run = await Engine(
+        tmp_path, refinery=refinery, providers=provided({"judge": dm, "strong": None})
+    ).run("sorter", "acme", "Hi")
     [(_, asked)] = dm.calls
     assert isinstance(run, Decision) and run.questions == asked
     assert run.questions["team"] == Choice(
@@ -368,7 +384,9 @@ async def test_media_the_decision_model_declares_is_passed_as_the_state_as_parts
     sorter(tmp_path)
     seeing = Seeing()
     refinery = Refinery(storage)
-    engine = Engine(tmp_path, refinery=refinery, models={"judge": seeing})
+    engine = Engine(
+        tmp_path, refinery=refinery, providers=provided({"judge": seeing, "strong": None})
+    )
     parts: list[Part] = [
         Text(text="Which team handles this screenshot?"),
         Image(media_type="image/png", data=b"\x89PNG\r\n\x1a\n"),
@@ -389,7 +407,9 @@ async def test_a_list_state_without_media_reads_back_as_it_was_given(
 ) -> None:
     sorter(tmp_path)
     refinery = Refinery(storage)
-    engine = Engine(tmp_path, refinery=refinery, models={"judge": Seeing()})
+    engine = Engine(
+        tmp_path, refinery=refinery, providers=provided({"judge": Seeing(), "strong": None})
+    )
     given: list[Any] = [{"type": "text", "text": "a dict, not a part"}, 1]
     shaped: list[Any] = [{"type": "text", "text": "a dict shaped like a part"}]
     for state in (given, shaped):
@@ -424,7 +444,7 @@ async def test_media_the_decision_model_does_not_declare_is_refused_naming_what_
 ) -> None:
     sorter(tmp_path)
     with pytest.raises(InputError, match=message):
-        await Engine(tmp_path, models={"judge": model}).run(
+        await Engine(tmp_path, providers=provided({"judge": model, "strong": None})).run(
             "sorter", "acme", [Text(text="x"), part]
         )
     assert model.calls == []

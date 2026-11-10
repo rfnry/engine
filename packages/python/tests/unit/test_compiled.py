@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from collections.abc import Callable
@@ -7,6 +8,7 @@ from typing import Any
 
 import pytest
 
+import rfnry_engine
 from rfnry_engine.compiled import load_folder
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError
@@ -537,7 +539,7 @@ def test_each_entry_and_mode_compiles_to_a_full_agent(tmp_path: Path) -> None:
     agents = load_folder(folder)
     spec = agents["a"]
     assert list(agents) == ["a", "b", "c"]
-    assert (spec.root, spec.path, spec.reads, spec.skill_folders) == (folder.resolve(), ".", {}, {})
+    assert spec.root == folder.resolve()
     assert (spec.name, spec.kind, spec.model, spec.body) == ("a", "generation", "m", "Entry body.")
     assert (spec.needs_mode, spec.mode, spec.worker, spec.workspace) == (False, None, "w", False)
     assert (spec.max_model_calls, spec.tool_timeout, spec.tool_parallel) == (9, 3.0, 2)
@@ -546,7 +548,7 @@ def test_each_entry_and_mode_compiles_to_a_full_agent(tmp_path: Path) -> None:
     assert (mode.name, mode.mode, mode.model, mode.body) == ("a", "x", "n", "Mode body.")
     assert (mode.workspace, mode.max_model_calls, mode.worker) == (True, 5, "w")
     assert (mode.agents, mode.tool_timeout, mode.max_depth) == (["b", "c"], 3.0, 1)
-    assert (mode.root, mode.path, mode.modes, mode.needs_mode) == (folder.resolve(), ".", {}, False)
+    assert (mode.root, mode.modes, mode.needs_mode) == (folder.resolve(), {}, False)
     assert agents["b"].worker == "default" and agents["b"].max_model_calls is None
 
 
@@ -718,3 +720,41 @@ def test_a_file_it_does_not_reach_leaves_the_fingerprint_alone(tmp_path: Path, p
     before = load_folder(folder)["t"].fingerprint
     (folder / path).write_text('{"type": "check", "instructions": "Other?"}', encoding="utf-8")
     assert load_folder(folder)["t"].fingerprint == before
+
+
+REMOVED = ("AGENT.md", "public_skills", "RFNRY_AGENT")
+
+
+def test_a_folder_without_rfnry_yaml_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "support").mkdir()
+    (tmp_path / "support/AGENT.md").write_text(
+        "---\nname: support\nkind: generation\nmodel: strong\npublic_skills: [escalate]\n---\nYou help.\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError) as refused:
+        Engine(tmp_path, providers=provided({"strong": Scripted()}))
+    said = str(refused.value)
+    assert said == (
+        f"manifest: {tmp_path.resolve()} holds no rfnry.yaml; write one there, or point the engine at the folder that holds it"
+    )
+    assert not any(removed in said for removed in REMOVED)
+
+
+def test_no_source_names_a_removed_feature() -> None:
+    source = Path(rfnry_engine.__file__).parent
+    named = sorted(
+        f"{path.relative_to(source)}: {removed}"
+        for path in source.rglob("*.py")
+        for removed in REMOVED
+        if removed in path.read_text(encoding="utf-8")
+    )
+    assert named == []
+
+
+def test_the_engine_logs_the_names_of_the_agents_it_loaded(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    folder = write_folder(tmp_path, {"writer": GENERATION, "lead": GENERATION}, files=FILES)
+    with caplog.at_level(logging.INFO, logger="rfnry_engine"):
+        Engine(folder, providers=provided({"m": Scripted()}))
+    assert [r.getMessage() for r in caplog.records] == ["engine: agents loaded [lead, writer]"]

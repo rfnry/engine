@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from rfnry_engine.engine import Engine
+from rfnry_engine.manifest import ModelEntry
 from rfnry_engine.models import (
     Answer,
     Check,
@@ -34,21 +35,42 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Local, Process, Workspace
 
-from .fakes import Answering, Desk, Scripted, answer_to, ask, delegating, lead, sorter, text_reply
+from .fakes import (
+    SORTER,
+    SORTER_ENTRY,
+    Answering,
+    Desk,
+    Scripted,
+    answer_to,
+    ask,
+    delegating,
+    lead,
+    sorter,
+    text_reply,
+)
 from .test_engine_workspace import make_tree, use
+from .trees import provided, tooled, write_folder
 
-GENERATION = {
-    "g/AGENT.md": "---\nname: g\nkind: generation\nmodel: strong\ndescription: G\npreload: ['.']\n---\nYou are g.\n",
-    "g/kb.md": "the preloaded knowledge\n",
+GENERATION: dict[str, Any] = {
+    "kind": "generation",
+    "model": "strong",
+    "description": "G",
+    "instructions": "g.md",
+    "files": {"preload": ["g"]},
 }
+FILES = {"g.md": "You are g.\n", "g/kb.md": "the preloaded knowledge\n"}
 SCHEMA: dict[str, Any] = {"type": "object", "properties": {"q": {"type": "object"}}}
+EDIT = {
+    "tools/edit.json": json.dumps({"description": "Edit", "input_schema": SCHEMA}),
+    "tools/edit.py": "def run(args, call):\n    args['q']['deep'].append(2)\n    args['added'] = True\n    return args\n",
+}
 
 
-def _tree(root: Path, files: Mapping[str, str] = GENERATION) -> Path:
-    for name, text in files.items():
-        (root / name).parent.mkdir(parents=True, exist_ok=True)
-        (root / name).write_text(text, encoding="utf-8")
-    return root
+def _tree(root: Path, *run_tools: str) -> Path:
+    tools = {"include": list(run_tools)} if run_tools else {}
+    return write_folder(
+        root, {"g": {**GENERATION, **({"tools": tools} if tools else {})}}, files=FILES
+    )
 
 
 def _scribble(value: Any) -> None:
@@ -118,7 +140,7 @@ async def _converse(root: Path, meddle: bool) -> tuple[Generation, Meddler]:
     async def find(args: dict[str, Any]) -> list[Part]:
         return [Text(text="found"), Image(media_type="image/png", url="https://x/f.png")]
 
-    run = await Engine(root, models={"strong": llm}).run(
+    run = await Engine(root, providers=provided({"strong": llm})).run(
         "g",
         "acme",
         [Text(text="look it up"), Image(media_type="image/png", url="https://x/a.png")],
@@ -140,7 +162,7 @@ def _recorded(run: Generation) -> dict[str, Any]:
 async def test_what_the_generation_adapter_changes_reaches_neither_the_record_nor_the_next_call(
     tmp_path: Path,
 ) -> None:
-    root = _tree(tmp_path)
+    root = _tree(tmp_path, "find")
     plain, kept = await _converse(root, meddle=False)
     meddled, meddler = await _converse(root, meddle=True)
     assert plain.preload and plain.conversation[1].reasoning is not None
@@ -151,7 +173,7 @@ async def test_what_the_generation_adapter_changes_reaches_neither_the_record_no
 async def test_what_consumer_code_handed_a_run_and_changes_later_leaves_its_record_alone(
     tmp_path: Path,
 ) -> None:
-    root = _tree(tmp_path)
+    root = _tree(tmp_path, "find")
     given = [Text(text="look it up"), Image(media_type="image/png", url="https://x/a.png")]
     returned: list[Part] = [Text(text="found")]
     schema = copy.deepcopy(SCHEMA)
@@ -175,7 +197,7 @@ async def test_what_consumer_code_handed_a_run_and_changes_later_leaves_its_reco
     tools = Tools([Tool("find", "Find", body=find, input_schema=schema)])
     taken: list[Part] = [Text(text="also this")]
     inbox: asyncio.Queue[Any] = asyncio.Queue()
-    engine = Engine(root, models={"strong": Scripted(*replies)})
+    engine = Engine(root, providers=provided({"strong": Scripted(*replies)}))
     first = await engine.run("g", "acme", [Text(text="earlier")], tools=tools)
     assert isinstance(first, Generation)
     inbox.put_nowait(taken)
@@ -241,9 +263,9 @@ async def test_what_the_decision_adapter_changes_reaches_neither_the_record_the_
     tmp_path: Path, given: State
 ) -> None:
     sorter(tmp_path)
-    asked = Engine(tmp_path, models={"judge": Answering()})._agents["sorter"].questions
+    asked = Engine(tmp_path, providers=provided({"judge": Answering()}))._agents["sorter"].questions
     judge = Judging()
-    engine = Engine(tmp_path, models={"judge": judge})
+    engine = Engine(tmp_path, providers=provided({"judge": judge}))
     held = copy.deepcopy(given)
     first = await engine.run("sorter", "tenant-a", given)
     judge.meddle = False
@@ -259,7 +281,7 @@ async def test_what_consumer_code_handed_a_decision_and_changes_later_leaves_its
 ) -> None:
     judge = sorter(tmp_path)
     given = {"ticket": {"lines": ["charged twice"]}}
-    run = await Engine(tmp_path, models={"judge": judge}).run("sorter", "acme", given)
+    run = await Engine(tmp_path, providers=provided({"judge": judge})).run("sorter", "acme", given)
     held = run.model_dump()
     _scribble(given)
     assert not callable(judge.answers)
@@ -280,9 +302,9 @@ async def test_a_handler_cannot_change_the_call_an_event_names(tmp_path: Path) -
                 refused.append(True)
 
     llm = Scripted(delegating("writer"), text_reply("written"), text_reply("ok"))
-    run = await Engine(lead(tmp_path), models={"strong": llm, "judge": Answering()}).run(
-        "lead", "acme", "x", on_event=watch
-    )
+    run = await Engine(
+        lead(tmp_path), providers=provided({"strong": llm, "judge": Answering()})
+    ).run("lead", "acme", "x", on_event=watch)
     assert isinstance(run, Generation)
     [child] = run.children
     assert refused == [True] and child.call is not None and child.call.scope == "acme"
@@ -306,7 +328,9 @@ async def test_a_storage_that_changes_the_rows_it_is_handed_changes_no_record(
         text_reply("done"),
     )
     refinery = Refinery(Scribbling(pool))
-    run = await Engine(fixtures, refinery=refinery, models={"strong": llm}).run(
+    run = await Engine(
+        fixtures, refinery=refinery, providers=provided({"strong": llm, "judge": None})
+    ).run(
         "billing",
         "acme",
         {"ask": {"why": ["charged"]}},
@@ -320,7 +344,7 @@ async def test_what_the_engine_s_accessors_hand_out_cannot_change_the_engine(
     fixtures: Path,
 ) -> None:
     llm = Scripted(text_reply("ok"))
-    engine = Engine(fixtures, models={"strong": llm, "judge": Answering()})
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": Answering()}))
     before = copy.deepcopy(engine.agents)
     info = engine.agents["support"]
     info.delegate_to.append("billing")
@@ -331,7 +355,7 @@ async def test_what_the_engine_s_accessors_hand_out_cannot_change_the_engine(
     assert engine.agents == before
     with pytest.raises(TypeError):
         cast(dict[str, Any], engine.models)["strong"] = Scripted()
-    assert engine.models["strong"] is llm
+    assert engine.models["strong"] == ModelEntry(provider="strong")
 
 
 async def test_a_backend_that_changes_the_env_it_is_handed_changes_no_later_command(
@@ -354,7 +378,9 @@ async def test_a_backend_that_changes_the_env_it_is_handed_changes_no_later_comm
         text_reply("ok"),
     )
     work = Workspace(Changing(room), scope="acme", tree=str(tree), bridge=False)
-    run = await Engine(tree, models={"strong": llm}).run("coder", "acme", "x", workspace=work)
+    run = await Engine(tree, providers=provided({"strong": llm, "judge": None})).run(
+        "coder", "acme", "x", workspace=work
+    )
     assert isinstance(run, Generation) and not any(step.is_error for step in run.steps)
     assert len(seen) == 2 and seen[1] == seen[0] and seen[0]["RFNRY_TREE"] == str(tree)
 
@@ -362,19 +388,17 @@ async def test_a_backend_that_changes_the_env_it_is_handed_changes_no_later_comm
 async def test_a_folder_tool_that_changes_its_args_leaves_the_record_as_the_model_sent_it(
     tmp_path: Path,
 ) -> None:
-    root = _tree(
+    root = write_folder(
         tmp_path,
-        {
-            **GENERATION,
-            "g/tools/edit.json": json.dumps({"description": "Edit", "input_schema": SCHEMA}),
-            "g/tools/edit.py": "def run(args, call):\n    args['q']['deep'].append(2)\n    args['added'] = True\n    return args\n",
-        },
+        {"g": {**GENERATION, "tools": {"include": ["edit"]}}},
+        tools={"edit": {"module": "tools/edit.py", "schema": "tools/edit.json"}},
+        files={**FILES, **EDIT},
     )
     sent = {"q": {"deep": [1]}}
     llm = Scripted(
         _tool_use(ToolCall(id="c1", name="edit", args=copy.deepcopy(sent))), text_reply("done")
     )
-    async with Engine(root, models={"strong": llm}) as engine:
+    async with Engine(root, providers=provided({"strong": llm})) as engine:
         run = await engine.run("g", "acme", "x")
     assert isinstance(run, Generation) and run.reply == "done"
     [step] = run.steps
@@ -388,17 +412,25 @@ async def test_a_folder_tool_that_changes_its_args_leaves_the_record_as_the_mode
 async def test_what_engine_tools_hand_out_changes_no_other_instance_and_no_run(
     tmp_path: Path,
 ) -> None:
-    root = _tree(
+    root = write_folder(
         tmp_path,
         {
-            "g/AGENT.md": "---\nname: g\nkind: generation\nmodel: strong\ndescription: G\nagents: [sorter]\n---\nYou are g.\n",
-            "g/tools/edit.json": json.dumps({"description": "Edit", "input_schema": SCHEMA}),
-            "g/tools/edit.py": "def run(args, call):\n    return 'edited'\n",
+            "g": {
+                "kind": "generation",
+                "model": "strong",
+                "description": "G",
+                "instructions": "g.md",
+                "files": {"include": ["g.md"]},
+                "orchestration": {"delegate_to": ["sorter"]},
+                "tools": {"include": ["edit"]},
+            },
+            "sorter": SORTER_ENTRY,
         },
+        tools={"edit": {"module": "tools/edit.py", "schema": "tools/edit.json"}},
+        files={"g.md": "You are g.\n", **SORTER, **EDIT},
     )
-    sorter(root)
     llm = Scripted(text_reply("ok"))
-    async with Engine(root, models={"strong": llm, "judge": Answering()}) as engine:
+    async with Engine(root, providers=provided({"strong": llm, "judge": Answering()})) as engine:
         given = EngineTools(engine, agent="g", scope="acme").definitions()
         consult = engine.tool("g", scope="acme").definitions()
         pristine = copy.deepcopy([given, consult])
@@ -436,7 +468,10 @@ class Keeping(PostgresStorage):
 
 
 async def test_what_the_refinery_reads_back_shares_nothing_with_the_rows_its_storage_holds(
-    fixtures: Path, storage: Storage, pool: Any
+    fixtures: Path,
+    storage: Storage,
+    pool: Any,
+    tmp_path: Path,
 ) -> None:
     async def lookup(args: dict[str, Any]) -> str:
         return "found"
@@ -447,7 +482,11 @@ async def test_what_the_refinery_reads_back_shares_nothing_with_the_rows_its_sto
         _tool_use(ToolCall(id="c1", name="lookup", args={"order": {"lines": [1]}})),
         text_reply("done"),
     )
-    engine = Engine(fixtures, refinery=refinery, models={"strong": llm, "judge": Desk()})
+    engine = Engine(
+        tooled(fixtures, tmp_path, "billing", "lookup"),
+        refinery=refinery,
+        providers=provided({"strong": llm, "judge": Desk()}),
+    )
     run = await engine.run(
         "billing",
         "acme",
@@ -469,11 +508,25 @@ async def test_what_the_refinery_reads_back_shares_nothing_with_the_rows_its_sto
     assert await refinery.run("acme", run.run_id) == run
 
 
-GRADER = {
-    "grader/AGENT.md": "---\nname: grader\nkind: decision\nmodel: judge\ndescription: Grades\n---\n",
-    "grader/questions/urgent.json": '{"type": "check", "instructions": "Urgent?"}',
-    "lead/AGENT.md": "---\nname: lead\nkind: generation\nmodel: strong\ndescription: L\nagents: [grader]\n---\nLead.\n",
-}
+def _graded(root: Path) -> Path:
+    grader = {"kind": "decision", "model": "judge", "description": "Grades"}
+    lead = {"kind": "generation", "model": "strong", "description": "L"}
+    return write_folder(
+        root,
+        {
+            "grader": {**grader, "instructions": "grader.md", "questions": ["q/*.json"]},
+            "lead": {
+                **lead,
+                "instructions": "lead.md",
+                "orchestration": {"delegate_to": ["grader"]},
+            },
+        },
+        files={
+            "grader.md": "",
+            "q/urgent.json": '{"type": "check", "instructions": "Urgent?"}',
+            "lead.md": "Lead.\n",
+        },
+    )
 
 
 async def test_a_question_asked_at_run_time_is_the_record_s_own(tmp_path: Path) -> None:
@@ -489,7 +542,9 @@ async def test_a_question_asked_at_run_time_is_the_record_s_own(tmp_path: Path) 
     )
     kept = Kept()
     engine = Engine(
-        _tree(tmp_path, GRADER), refinery=kept, models={"judge": Answering(), "strong": Scripted()}
+        _graded(tmp_path),
+        refinery=kept,
+        providers=provided({"judge": Answering(), "strong": Scripted()}),
     )
     await EngineTools(engine, agent="lead", scope="acme").dispatch(
         "Delegate", {"agent": "grader", "input": "x", "questions": {"area": area}}
@@ -515,9 +570,9 @@ async def test_a_question_asked_at_run_time_is_the_record_s_own(tmp_path: Path) 
 async def test_an_agent_used_as_a_tool_takes_a_question_object_as_it_takes_its_dict(
     tmp_path: Path, asked: Question
 ) -> None:
-    root = _tree(tmp_path, GRADER)
+    root = _graded(tmp_path)
     judge = Answering()
-    consult = Engine(root, models={"judge": judge, "strong": Scripted()}).tool(
+    consult = Engine(root, providers=provided({"judge": judge, "strong": Scripted()})).tool(
         "grader", scope="acme"
     )
     by_object = await consult.dispatch("grader", {"input": "x", "questions": {"asked": asked}})
@@ -544,15 +599,32 @@ class Seeing(Answering):
 async def test_a_routed_run_s_input_is_its_own_and_not_its_router_s_state(
     tmp_path: Path, given: State
 ) -> None:
-    root = _tree(
+    root = write_folder(
         tmp_path,
         {
-            "desk/AGENT.md": "---\nname: desk\nkind: decision\nmodel: judge\nroute: {by: team, to: {b: writer}}\n---\n",
-            "desk/questions/team.json": '{"type": "choice", "instructions": "Which?", "options": {"a": null, "b": null}}',
-            "writer/AGENT.md": "---\nname: writer\nkind: generation\nmodel: strong\ndescription: W\n---\nWrite.\n",
+            "desk": {
+                "kind": "decision",
+                "model": "judge",
+                "instructions": "desk.md",
+                "questions": ["q/*.json"],
+                "orchestration": {"route": {"by": "team", "to": {"b": "writer"}}},
+            },
+            "writer": {
+                "kind": "generation",
+                "model": "strong",
+                "description": "W",
+                "instructions": "writer.md",
+            },
+        },
+        files={
+            "desk.md": "",
+            "q/team.json": '{"type": "choice", "instructions": "Which?", "options": {"a": null, "b": null}}',
+            "writer.md": "Write.\n",
         },
     )
-    engine = Engine(root, models={"judge": Seeing(), "strong": Scripted(text_reply("w"))})
+    engine = Engine(
+        root, providers=provided({"judge": Seeing(), "strong": Scripted(text_reply("w"))})
+    )
     run = await engine.run("desk", "acme", copy.deepcopy(given))
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     child = run.routed_to

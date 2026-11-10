@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -18,15 +19,24 @@ from rfnry_engine.records import (
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import Answering, Scripted, text_reply
+from .trees import add_agent, provided
 
 
-def tree(root: Path, **agents: str) -> Path:
-    for name, front in agents.items():
-        (root / name).mkdir(parents=True)
-        (root / name / "AGENT.md").write_text(
-            f"---\nname: {name}\nkind: generation\nmodel: strong\ndescription: {name.title()}\n{front}---\nYou are {name}.\n",
-            encoding="utf-8",
-        )
+def tree(
+    root: Path, *, run_tools: Mapping[str, list[str]] | None = None, **delegates: list[str]
+) -> Path:
+    for name, targets in delegates.items():
+        entry: dict[str, Any] = {
+            "kind": "generation",
+            "model": "strong",
+            "description": name.title(),
+            "instructions": f"{name}.md",
+        }
+        if targets:
+            entry["orchestration"] = {"delegate_to": targets}
+        if run_tools and name in run_tools:
+            entry["tools"] = {"include": run_tools[name]}
+        add_agent(root, name, entry, files={f"{name}.md": f"You are {name}.\n"})
     return root
 
 
@@ -70,7 +80,10 @@ async def test_a_body_learns_the_call_it_serves(tmp_path: Path) -> None:
         use(ToolCall(id="p1", name="probe", args={}), ToolCall(id="p2", name="probe", args={})),
         text_reply("Done."),
     )
-    engine = Engine(tree(tmp_path, desk=""), models={"strong": llm})
+    engine = Engine(
+        tree(tmp_path, desk=[], run_tools={"desk": ["probe"]}),
+        providers=provided({"strong": llm, "judge": None}),
+    )
     run = await engine.run("desk", "acme", "x", tools=seen.tools(), approve=approve, on_event=watch)
     assert isinstance(run, Generation)
     expected = {
@@ -89,7 +102,10 @@ async def test_a_delegated_run_s_call_names_the_delegated_run(tmp_path: Path) ->
         text_reply("child done"),
         text_reply("lead done"),
     )
-    engine = Engine(tree(tmp_path, lead="agents: [child]\n", child=""), models={"strong": llm})
+    engine = Engine(
+        tree(tmp_path, lead=["child"], child=[], run_tools={"child": ["probe"]}),
+        providers=provided({"strong": llm, "judge": None}),
+    )
     run = await engine.run("lead", "acme", "x", tools=seen.tools())
     assert isinstance(run, Generation)
     [child] = run.children
@@ -101,10 +117,15 @@ async def test_a_delegated_run_s_call_names_the_delegated_run(tmp_path: Path) ->
 async def test_a_consult_s_call_names_the_consult_and_its_body_the_caller(tmp_path: Path) -> None:
     inner = Seen()
     back = Engine(
-        tree(tmp_path / "back", billing=""),
-        models={
-            "strong": Scripted(use(ToolCall(id="i1", name="probe", args={})), text_reply("Paid."))
-        },
+        tree(tmp_path / "back", billing=[], run_tools={"billing": ["probe"]}),
+        providers=provided(
+            {
+                "strong": Scripted(
+                    use(ToolCall(id="i1", name="probe", args={})), text_reply("Paid.")
+                ),
+                "judge": None,
+            }
+        ),
     )
     consult = back.tool("billing", scope="acme", tools=inner.tools())
     outer: list[CallInfo | None] = []
@@ -114,10 +135,15 @@ async def test_a_consult_s_call_names_the_consult_and_its_body_the_caller(tmp_pa
         return await consult.dispatch("billing", {"input": "Was it paid?"})
 
     front = Engine(
-        tree(tmp_path / "front", support=""),
-        models={
-            "strong": Scripted(use(ToolCall(id="o1", name="ask", args={})), text_reply("Done."))
-        },
+        tree(tmp_path / "front", support=[], run_tools={"support": ["ask"]}),
+        providers=provided(
+            {
+                "strong": Scripted(
+                    use(ToolCall(id="o1", name="ask", args={})), text_reply("Done.")
+                ),
+                "judge": None,
+            }
+        ),
     )
     run = await front.run("support", "acme", "x", tools=Tools([Tool("ask", "Ask", body=asking)]))
     assert isinstance(run, Generation)
@@ -135,7 +161,8 @@ async def test_outside_a_run_there_is_no_call(tmp_path: Path) -> None:
     assert current_call() is None
     await seen.tools().dispatch("probe", {})
     engine = Engine(
-        tree(tmp_path, desk="agents: [desk]\n"), models={"strong": Scripted(text_reply("x"))}
+        tree(tmp_path, desk=["desk"], run_tools={"desk": ["probe"]}),
+        providers=provided({"strong": Scripted(text_reply("x")), "judge": None}),
     )
     surface = EngineTools(engine, agent="desk", scope="acme", tools=seen.tools())
     await surface.dispatch("probe", {})
@@ -163,9 +190,10 @@ async def ping(args: dict[str, Any]) -> str:
 
 async def test_a_consult_from_approve_stays_out_of_the_run_s_stop(tmp_path: Path) -> None:
     notifier = Slow(0.3)
-    notify = Engine(tree(tmp_path / "back", notifier=""), models={"strong": notifier}).tool(
-        "notifier", scope="acme", tools=Tools([Tool("ping", "Ping", body=ping)])
-    )
+    notify = Engine(
+        tree(tmp_path / "back", notifier=[], run_tools={"notifier": ["ping"]}),
+        providers=provided({"strong": notifier, "judge": None}),
+    ).tool("notifier", scope="acme", tools=Tools([Tool("ping", "Ping", body=ping)]))
 
     async def approve(agent: str, call: ToolCall) -> bool:
         await notify.dispatch("notifier", {"input": "May it refund?"})
@@ -175,7 +203,10 @@ async def test_a_consult_from_approve_stays_out_of_the_run_s_stop(tmp_path: Path
         return {"refunded": "R-1"}
 
     llm = Scripted(use(ToolCall(id="r1", name="refund", args={})), text_reply("never"))
-    engine = Engine(tree(tmp_path / "front", desk=""), models={"strong": llm})
+    engine = Engine(
+        tree(tmp_path / "front", desk=[], run_tools={"desk": ["refund"]}),
+        providers=provided({"strong": llm, "judge": None}),
+    )
     stop = Stop()
     task = asyncio.create_task(
         engine.run(
@@ -210,7 +241,10 @@ async def test_a_cut_call_s_result_handler_sees_the_call(tmp_path: Path) -> None
             finished.append(current_call())
 
     llm = Scripted(use(ToolCall(id="s1", name="slow", args={})), text_reply("never"))
-    engine = Engine(tree(tmp_path, desk=""), models={"strong": llm})
+    engine = Engine(
+        tree(tmp_path, desk=[], run_tools={"desk": ["slow"]}),
+        providers=provided({"strong": llm, "judge": None}),
+    )
     stop = Stop()
     task = asyncio.create_task(
         engine.run(
@@ -245,12 +279,20 @@ class Keeping:
 
 
 def router(root: Path, name: str, target: str) -> None:
-    (root / name / "questions").mkdir(parents=True)
-    (root / name / "AGENT.md").write_text(
-        f"---\nname: {name}\nkind: decision\nmodel: judge\nroute: {{by: go, to: {{next: {target}}}}}\n---\n"
-    )
-    (root / name / "questions" / "go.json").write_text(
-        '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep it", "next": "Pass it on"}}'
+    add_agent(
+        root,
+        name,
+        {
+            "kind": "decision",
+            "model": "judge",
+            "instructions": f"{name}.md",
+            "questions": [f"{name}/*.json"],
+            "orchestration": {"route": {"by": "go", "to": {"next": target}}},
+        },
+        files={
+            f"{name}.md": "",
+            f"{name}/go.json": '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep it", "next": "Pass it on"}}',
+        },
     )
 
 
@@ -261,7 +303,9 @@ def delegate(agent: str, call_id: str) -> ToolCall:
 async def test_a_run_outside_any_call_records_none(tmp_path: Path) -> None:
     keeping = Keeping()
     engine = Engine(
-        tree(tmp_path, desk=""), refinery=keeping, models={"strong": Scripted(text_reply("x"))}
+        tree(tmp_path, desk=[]),
+        refinery=keeping,
+        providers=provided({"strong": Scripted(text_reply("x")), "judge": None}),
     )
     run = await engine.run("desk", "acme", "x")
     assert run.call is None
@@ -278,7 +322,9 @@ async def parallel(tmp_path: Path, events: list[Event] | None = None) -> Generat
         text_reply("two"),
         text_reply("done"),
     )
-    engine = Engine(tree(tmp_path, lead="agents: [child]\n", child=""), models={"strong": llm})
+    engine = Engine(
+        tree(tmp_path, lead=["child"], child=[]), providers=provided({"strong": llm, "judge": None})
+    )
     run = await engine.run("lead", "acme", "x", on_event=watch)
     assert isinstance(run, Generation)
     return run
@@ -303,10 +349,10 @@ async def test_call_matches_run_started_wherever_both_exist(tmp_path: Path) -> N
 
 
 async def test_a_routed_run_records_the_call_its_router_worked_for(tmp_path: Path) -> None:
-    tree(tmp_path, lead="agents: [r]\n", target="")
+    tree(tmp_path, lead=["r"], target=[])
     router(tmp_path, "r", "target")
     llm = Scripted(use(delegate("r", "d1")), text_reply("routed"), text_reply("done"))
-    engine = Engine(tmp_path, models={"strong": llm, "judge": Answering()})
+    engine = Engine(tmp_path, providers=provided({"strong": llm, "judge": Answering()}))
     run = await engine.run("lead", "acme", "x")
     assert isinstance(run, Generation)
     [routing] = run.children
@@ -315,11 +361,13 @@ async def test_a_routed_run_records_the_call_its_router_worked_for(tmp_path: Pat
     assert routing.routed_to.call == routing.call
 
 
-def consulting(tmp_path: Path, keeping: Keeping, *replies: Reply) -> Engine:
+def consulting(
+    tmp_path: Path, keeping: Keeping, *replies: Reply, tool: str | None = "billing"
+) -> Engine:
     return Engine(
-        tree(tmp_path, support="", billing=""),
+        tree(tmp_path, support=[], billing=[], run_tools={"support": [tool]} if tool else None),
         refinery=keeping,
-        models={"strong": Scripted(*replies)},
+        providers=provided({"strong": Scripted(*replies), "judge": None}),
     )
 
 
@@ -361,22 +409,25 @@ async def test_a_delegate_through_engine_tools_inside_a_run_that_is_not_recorded
 ) -> None:
     keeping = Keeping()
     engine = Engine(
-        tree(tmp_path, support="agents: [billing]\n", billing=""),
+        tree(tmp_path, support=["billing"], billing=[], run_tools={"support": ["ask"]}),
         refinery=keeping,
-        models={
-            "strong": Scripted(
-                use(ToolCall(id="a1", name="ask", args={})),
-                text_reply("Paid."),
-                text_reply("Done."),
-            )
-        },
+        providers=provided(
+            {
+                "strong": Scripted(
+                    use(ToolCall(id="a1", name="ask", args={})),
+                    text_reply("Paid."),
+                    text_reply("Done."),
+                ),
+                "judge": None,
+            }
+        ),
     )
-    surface = EngineTools(engine, agent="support", scope="acme")
 
     async def ask(args: dict[str, Any]) -> Any:
         return await surface.dispatch("Delegate", {"agent": "billing", "input": "paid?"})
 
     tools = Tools([Tool("ask", "Asks billing", body=ask)])
+    surface = EngineTools(engine, agent="support", scope="acme", tools=tools)
     run = await engine.run("support", "acme", "x", tools=tools, record=False)
     assert isinstance(run, Generation) and run.steps[0].result == "Paid."
     assert keeping.runs == []
@@ -390,6 +441,7 @@ async def test_a_run_asked_to_record_inside_one_that_is_not_records(tmp_path: Pa
         use(ToolCall(id="b1", name="recorded", args={})),
         text_reply("Paid."),
         text_reply("Done."),
+        tool="recorded",
     )
 
     async def recorded(args: dict[str, Any]) -> str:
@@ -404,7 +456,7 @@ async def test_a_run_asked_to_record_inside_one_that_is_not_records(tmp_path: Pa
 
 async def test_a_consult_outside_any_run_records_none(tmp_path: Path) -> None:
     keeping = Keeping()
-    engine = consulting(tmp_path, keeping, text_reply("Paid."))
+    engine = consulting(tmp_path, keeping, text_reply("Paid."), tool=None)
     await engine.tool("billing", scope="acme").dispatch("billing", {"input": "x"})
     assert keeping.of("billing").call is None
 
@@ -444,6 +496,7 @@ async def test_a_run_a_tool_body_starts_after_the_call_ended_records_that_call(
         use(ToolCall(id="t1", name="spawn", args={})),
         text_reply("Done."),
         text_reply("Later."),
+        tool="spawn",
     )
     spawned: list[asyncio.Task[Generation | Decision]] = []
 
@@ -463,16 +516,20 @@ class Failing:
 
 
 async def test_a_failed_decision_run_keeps_its_call(tmp_path: Path) -> None:
-    (tmp_path / "judge" / "questions").mkdir(parents=True)
-    (tmp_path / "judge" / "AGENT.md").write_text(
-        "---\nname: judge\nkind: decision\nmodel: judge\n---\n"
+    add_agent(
+        tmp_path,
+        "judge",
+        {
+            "kind": "decision",
+            "model": "judge",
+            "instructions": "judge.md",
+            "questions": ["judge/*.json"],
+        },
+        files={"judge.md": "", "judge/ok.json": '{"type": "check", "instructions": "Ok?"}'},
     )
-    (tmp_path / "judge" / "questions" / "ok.json").write_text(
-        '{"type": "check", "instructions": "Ok?"}'
-    )
-    tree(tmp_path, lead="agents: [judge]\n")
+    tree(tmp_path, lead=["judge"])
     llm = Scripted(use(delegate("judge", "d1")), text_reply("done"))
-    engine = Engine(tmp_path, models={"strong": llm, "judge": Failing()})
+    engine = Engine(tmp_path, providers=provided({"strong": llm, "judge": Failing()}))
     run = await engine.run("lead", "acme", "x")
     assert isinstance(run, Generation)
     [child] = run.children
@@ -494,7 +551,10 @@ async def test_a_call_carries_the_tags_of_the_run_it_serves(tmp_path: Path) -> N
         text_reply("child done"),
         text_reply("lead done"),
     )
-    engine = Engine(tree(tmp_path, lead="agents: [child]\n", child=""), models={"strong": llm})
+    engine = Engine(
+        tree(tmp_path, lead=["child"], child=[], run_tools={"lead": ["probe"], "child": ["probe"]}),
+        providers=provided({"strong": llm, "judge": None}),
+    )
     run = await engine.run(
         "lead", "acme", "x", tools=seen.tools(), tags={"ticket": "T-7"}, on_event=watch
     )

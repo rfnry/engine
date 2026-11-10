@@ -14,8 +14,6 @@ _WARNING = "take a snapshot of the database and stop app instances running the o
 
 
 def _parser() -> argparse.ArgumentParser:
-    from rfnry_engine.engine import MAX_WORKER_PROCESSES
-
     parser = argparse.ArgumentParser(
         prog="rfnry-engine",
         description="prepare and upgrade the database rfnry-engine records in, and check an agents folder",
@@ -53,8 +51,8 @@ def _parser() -> argparse.ArgumentParser:
     checked.add_argument(
         "--max-worker-processes",
         type=int,
-        default=MAX_WORKER_PROCESSES,
-        help=f"the ceiling on the processes of all the workers (default: {MAX_WORKER_PROCESSES})",
+        default=None,
+        help="the ceiling on the processes of all the workers (default: the engine's own)",
     )
     folders.add_parser("schema", help="print the JSON Schema of rfnry.yaml")
     return parser
@@ -147,15 +145,18 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def _folder(args: argparse.Namespace) -> int:
-    from rfnry_engine.engine import check_folder
+    from rfnry_engine.engine import MAX_WORKER_PROCESSES, check_folder
     from rfnry_engine.errors import ConfigurationError
     from rfnry_engine.manifest import Manifest
 
     if args.folder_command == "schema":
         print(json.dumps(Manifest.model_json_schema(by_alias=True), indent=2))
         return 0
+    ceiling = (
+        MAX_WORKER_PROCESSES if args.max_worker_processes is None else args.max_worker_processes
+    )
     try:
-        found = check_folder(Path(args.path), args.max_worker_processes)
+        found = check_folder(Path(args.path), ceiling)
     except ConfigurationError as exc:
         print(exc, file=sys.stderr)
         return 1

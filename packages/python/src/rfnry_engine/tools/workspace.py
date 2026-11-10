@@ -801,7 +801,7 @@ class Workspace:
         told = ""
         if self.tree is not None:
             told += (
-                " The agent's own folder is at $RFNRY_AGENT, read-only: its files, skills and"
+                " The folder of the agents is at $RFNRY_TREE, read-only: its files, skills and"
                 " scripts can be read and run from there."
             )
             if reads:

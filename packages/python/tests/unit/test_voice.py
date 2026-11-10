@@ -28,7 +28,6 @@ from rfnry_engine.records import (
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Result, Tool, Tools
-from rfnry_engine.tree import load_tree
 
 from .fakes import Scripted, text_reply
 from .trees import provided, write_folder
@@ -838,12 +837,6 @@ async def test_record_false_records_nothing(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError):
         await engine.talk("voice", "acme", failing, tools=consult, record=False)
     assert voice.error is None and recording.runs == [] and consult_runs.runs == []
-
-
-def test_an_agent_md_cannot_declare_voice(tmp_path: Path) -> None:
-    (tmp_path / "AGENT.md").write_text("---\nname: v\nkind: voice\nmodel: m\n---\nBody\n")
-    with pytest.raises(ConfigurationError, match="kind"):
-        load_tree(tmp_path)
 
 
 async def test_the_record_keeps_its_own_transcript(tmp_path: Path) -> None:

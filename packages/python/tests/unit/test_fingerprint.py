@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from rfnry_engine.compiled import load_folder
 from rfnry_engine.engine import Engine
 from rfnry_engine.models import Check, Choice, Message, Question, Reply, Score, ToolCall
 from rfnry_engine.records import Decision, Fingerprint, Generation, Run
@@ -21,13 +22,13 @@ from .fakes import (
     MemoryBucket,
     Scripted,
     ask,
-    by_hand,
     decision_record,
     delegate_triage,
     generation_record,
     now,
     text_reply,
 )
+from .trees import amend, provided, tooled, write_folder
 
 NO_TOOLS = hashlib.sha256(b"[]").hexdigest()[:16]
 
@@ -46,7 +47,7 @@ def tree(fixtures: Path, tmp_path: Path) -> Path:
 
 def engine(root: Path, *replies: Any, **kwargs: Any) -> Engine:
     llm = Scripted(*(replies or [text_reply("ok")]))
-    return Engine(root, **kwargs, models={"strong": llm, "judge": Desk()})
+    return Engine(root, **kwargs, providers=provided({"strong": llm, "judge": Desk()}))
 
 
 async def generation(root: Path, **kwargs: Any) -> Generation:
@@ -66,7 +67,7 @@ async def test_the_agent_fingerprint_is_every_file_of_its_folder_by_path_and_con
 ) -> None:
     root = tree(fixtures, tmp_path)
     run = await generation(root)
-    assert run.fingerprint.agent == by_hand(root / "support")
+    assert run.fingerprint.agent == load_folder(root)["support"].fingerprint
     assert len(run.fingerprint.agent) == 16 and len(run.fingerprint.tools) == 16
     specs = sorted((spec.model_dump(mode="json") for spec in run.tools), key=lambda t: t["name"])
     canonical = json.dumps(specs, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -198,14 +199,14 @@ async def test_the_order_an_agent_keeps_tools_in_changes_its_fingerprint_and_not
 ) -> None:
     listed = tree(fixtures, tmp_path / "listed")
     flipped = tree(fixtures, tmp_path / "flipped")
-    for root, kept in ((listed, "[lookup_order, now]"), (flipped, "[now, lookup_order]")):
-        edit(root / "support/AGENT.md", "agents: [triage]\n", f"agents: [triage]\ntools: {kept}\n")
+    for root, kept in ((listed, ["lookup_order", "now"]), (flipped, ["now", "lookup_order"])):
+        amend(root, "support", tools={"include": kept})
     llm = Scripted(text_reply("ok"))
-    run = await Engine(flipped, models={"strong": llm, "judge": Desk()}).run(
+    run = await Engine(flipped, providers=provided({"strong": llm, "judge": Desk()})).run(
         "support", "acme", "hi"
     )
     assert isinstance(run, Generation)
-    assert [t.name for t in llm.calls[0][2]] == ["lookup_order", "now", "Delegate"]
+    assert [t.name for t in llm.calls[0][2]][-3:] == ["lookup_order", "now", "Delegate"]
     original = await generation(listed)
     assert run.fingerprint.tools == original.fingerprint.tools
     assert run.fingerprint.agent != original.fingerprint.agent
@@ -231,12 +232,14 @@ class Verdict(BaseModel):
 
 
 async def test_the_tools_a_run_is_offered_are_the_tools_it_is_fingerprinted_by(
-    fixtures: Path,
+    fixtures: Path, tmp_path: Path
 ) -> None:
-    plain = await generation(fixtures)
-    expecting = await generation(fixtures, expect=Verdict)
+    folder = tooled(fixtures, tmp_path, "support", "recall")
     recall = Tools([Tool("recall", "Recall a fact", body=now)])
-    mounted = await engine(fixtures).run("support", "acme", "hi", tools=recall)
+    plain = await generation(folder, tools=recall)
+    expecting = await generation(folder, expect=Verdict, tools=recall)
+    other = Tools([Tool("recall", "Recall another fact", body=now)])
+    mounted = await engine(folder).run("support", "acme", "hi", tools=other)
     assert isinstance(mounted, Generation) and "recall" in {t.name for t in mounted.tools}
     prints = [run.fingerprint for run in (plain, expecting, mounted)]
     assert len({p.tools for p in prints}) == 3
@@ -249,13 +252,14 @@ async def test_a_decision_run_and_every_nested_run_carry_their_own(fixtures: Pat
     assert isinstance(parent, Generation)
     [child] = parent.children
     assert isinstance(child, Decision)
+    agents = load_folder(fixtures)
     assert child.fingerprint == Fingerprint(
-        agent=by_hand(fixtures / "triage"), tools=NO_TOOLS, questions=asked(child.questions)
+        agent=agents["triage"].fingerprint, tools=NO_TOOLS, questions=asked(child.questions)
     )
-    assert parent.fingerprint.agent == by_hand(fixtures / "support")
+    assert parent.fingerprint.agent == agents["support"].fingerprint
     routed = await engine(fixtures).run("frontdesk", "acme", "It is down")
     assert isinstance(routed, Decision)
-    assert routed.fingerprint.agent == by_hand(fixtures / "frontdesk")
+    assert routed.fingerprint.agent == agents["frontdesk"].fingerprint
     assert routed.routed_to is not None
     assert routed.routed_to.fingerprint.agent == parent.fingerprint.agent
 
@@ -317,7 +321,7 @@ AREA = Choice(
 
 
 def triage(fixtures: Path, root: Path | None = None) -> Engine:
-    return Engine(root or fixtures, models={"judge": Answering()})
+    return Engine(root or fixtures, providers=provided({"judge": Answering(), "strong": None}))
 
 
 async def test_a_decision_run_s_questions_part_is_the_questions_it_asked(fixtures: Path) -> None:
@@ -398,9 +402,9 @@ async def test_the_questions_part_is_recorded_exported(
     storage: Storage,
 ) -> None:
     refinery = Refinery(storage)
-    run = await Engine(fixtures, refinery=refinery, models={"judge": Desk()}).run(
-        "triage", "acme", "x"
-    )
+    run = await Engine(
+        fixtures, refinery=refinery, providers=provided({"judge": Desk(), "strong": None})
+    ).run("triage", "acme", "x")
     assert isinstance(run, Decision)
     assert (await refinery.run("acme", run.run_id)).fingerprint == run.fingerprint
     bucket = MemoryBucket()
@@ -420,17 +424,25 @@ async def test_the_questions_part_is_recorded_exported(
 async def test_an_edit_to_a_read_folder_changes_the_fingerprint_of_every_agent_reading_it(
     tmp_path: Path,
 ) -> None:
-    for name in ("coding", "writing", "other"):
-        (tmp_path / name).mkdir()
-        front = "reads: ['../books']\n" if name != "other" else ""
-        (tmp_path / name / "AGENT.md").write_text(
-            f"---\nname: {name}\nkind: generation\nmodel: strong\n{front}---\nHi\n"
-        )
-    (tmp_path / "books").mkdir()
-    (tmp_path / "books" / "a.md").write_text("one\n")
-    before = Engine(tmp_path, models={"strong": Scripted()})
+    agent = {"kind": "generation", "model": "strong"}
+    reading = {**agent, "files": {"include": ["books"]}}
+    folder = write_folder(
+        tmp_path,
+        {
+            "coding": {**reading, "instructions": "coding.md"},
+            "writing": {**reading, "instructions": "writing.md"},
+            "other": {**agent, "instructions": "other.md"},
+        },
+        files={
+            "coding.md": "Hi\n",
+            "writing.md": "Hi\n",
+            "other.md": "Hi\n",
+            "books/a.md": "one\n",
+        },
+    )
+    before = Engine(folder, providers=provided({"strong": Scripted()}))
     (tmp_path / "books" / "a.md").write_text("two\n")
-    after = Engine(tmp_path, models={"strong": Scripted()})
+    after = Engine(folder, providers=provided({"strong": Scripted()}))
     for name in ("coding", "writing"):
         assert before._spec(name).fingerprint != after._spec(name).fingerprint
     assert before._spec("other").fingerprint == after._spec("other").fingerprint

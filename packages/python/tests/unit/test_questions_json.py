@@ -3,20 +3,21 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from rfnry_engine import Engine
+from rfnry_engine.compiled import load_folder
 from rfnry_engine.errors import ConfigurationError, InputError, ModelError, WorkerError
 from rfnry_engine.models import Check, Choice, Image, Question, QuestionLike, Score, Text
 from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
-from rfnry_engine.tree import load_tree
 
 from .fakes import Answering, Scripted, delegating, text_reply
-from .trees import provided, write_folder
+from .trees import add_agent, provided, write_folder
 
 ORDER = (
     "def run(input, call):\n"
@@ -29,14 +30,25 @@ def write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def agent_md(name: str, kind: str = "generation", model: str = "strong", extra: str = "") -> str:
-    return f"---\nname: {name}\nkind: {kind}\nmodel: {model}\n{extra}---\nWork.\n"
-
-
-def matcher(root: Path, script: str = ORDER, extra: str = "") -> Path:
-    write(
-        root / "matcher/AGENT.md", agent_md("matcher", kind="decision", model="judge", extra=extra)
+def asking(root: Path, name: str, *more: str, **section: Any) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    return write_folder(
+        root,
+        {
+            name: {
+                "kind": "decision",
+                "model": "judge",
+                "instructions": f"{name}.md",
+                "questions": [f"{name}/questions/*.json", *more],
+                **section,
+            }
+        },
+        files={f"{name}.md": "Work.\n"},
     )
+
+
+def matcher(root: Path, script: str = ORDER, **section: Any) -> Path:
+    asking(root, "matcher", **section)
     write(
         root / "matcher/questions/order.json", '{"type": "choice", "instructions": "Which order?"}'
     )
@@ -70,7 +82,7 @@ def sent(run: Run, key: str) -> object:
 
 
 async def test_a_question_script_fills_options_per_tenant(tmp_path: Path) -> None:
-    write(tmp_path / "matcher/AGENT.md", agent_md("matcher", kind="decision", model="judge"))
+    asking(tmp_path, "matcher")
     write(
         tmp_path / "matcher/questions/order.json",
         '{"type": "choice", "instructions": "Which order?"}',
@@ -80,7 +92,7 @@ async def test_a_question_script_fills_options_per_tenant(tmp_path: Path) -> Non
         "def run(input, call):\n    return {'options': {call['scope'] + '-1': 'First', call['scope'] + '-2': 'Second'}}\n",
     )
     judge = Answering()
-    async with Engine(tmp_path, models={"judge": judge}) as engine:
+    async with Engine(tmp_path, providers=provided({"judge": judge, "strong": None})) as engine:
         run = await engine.run("matcher", "acme", "my desk")
         other = await engine.run("matcher", "globex", "my desk")
     assert isinstance(run, Decision) and isinstance(other, Decision)
@@ -90,7 +102,7 @@ async def test_a_question_script_fills_options_per_tenant(tmp_path: Path) -> Non
 
 
 async def test_a_fixed_json_question_is_asked_on_every_run(tmp_path: Path) -> None:
-    write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
+    asking(tmp_path, "triage")
     write(
         tmp_path / "triage/questions/urgent.json",
         '{"type": "check", "instructions": "Urgent?", "yes": {"what": "Down"}}',
@@ -104,7 +116,7 @@ async def test_a_fixed_json_question_is_asked_on_every_run(tmp_path: Path) -> No
         '{"type": "choice", "instructions": "Who?", "options": {"billing": "Charges", "other": null}}',
     )
     judge = Answering()
-    async with Engine(tmp_path, models={"judge": judge}) as engine:
+    async with Engine(tmp_path, providers=provided({"judge": judge, "strong": None})) as engine:
         runs = [await engine.run("triage", "acme", "x") for _ in range(2)]
     expected: dict[str, Question] = {
         "severity": Score(instructions={"question": "How bad?"}, levels=["Mild", ["Severe"]]),
@@ -117,32 +129,28 @@ async def test_a_fixed_json_question_is_asked_on_every_run(tmp_path: Path) -> No
     assert [dict(asked) for _, asked in judge.calls] == [expected, expected]
 
 
-def test_a_markdown_question_is_refused(tmp_path: Path) -> None:
-    write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
-    path = tmp_path / "triage/questions/urgent.md"
-    write(path, "---\ntype: check\n---\nUrgent?\n")
-    message = f"tree: question {path} is markdown; write it as urgent.json with type, instructions and its options, levels or yes and no"
-    with pytest.raises(ConfigurationError) as raised:
-        load_tree(tmp_path)
-    assert str(raised.value) == message
-
-
 def test_a_question_script_without_its_json_is_refused(tmp_path: Path) -> None:
-    write(tmp_path / "matcher/AGENT.md", agent_md("matcher", kind="decision", model="judge"))
+    asking(tmp_path, "matcher")
     path = tmp_path / "matcher/questions/order.py"
     write(path, ORDER)
+    write(tmp_path / "matcher/questions/urgent.json", '{"type": "check", "instructions": "?"}')
     message = f"tree: {path} has no order.json beside it; a question is order.json, and order.py fills it from data"
     with pytest.raises(ConfigurationError) as raised:
-        load_tree(tmp_path)
+        load_folder(tmp_path)
     assert str(raised.value) == message
 
 
 def test_a_route_by_a_scripted_question_is_refused(tmp_path: Path) -> None:
-    matcher(tmp_path, extra="route: {by: order, to: {acme-1: writer}}\n")
-    write(tmp_path / "writer/AGENT.md", agent_md("writer"))
-    message = "tree: route of 'matcher' is by 'order', whose options come from order.py; route by a question whose options are fixed"
+    matcher(tmp_path, orchestration={"route": {"by": "order", "to": {"acme-1": "writer"}}})
+    add_agent(
+        tmp_path,
+        "writer",
+        {"kind": "generation", "model": "strong", "instructions": "writer.md"},
+        files={"writer.md": "Work.\n"},
+    )
+    message = "compiled: agent 'matcher' routes by 'order', whose options come from matcher/questions/order.py; route by a question whose options are fixed"
     with pytest.raises(ConfigurationError) as raised:
-        Engine(tmp_path, models={"judge": Answering(), "strong": Scripted()})
+        Engine(tmp_path, providers=provided({"judge": Answering(), "strong": Scripted()}))
     assert str(raised.value) == message
 
 
@@ -179,11 +187,11 @@ def test_a_route_by_a_scripted_question_is_refused(tmp_path: Path) -> None:
 def test_a_fixed_question_that_does_not_fit_is_refused_when_the_tree_loads(
     tmp_path: Path, text: str, message: str
 ) -> None:
-    write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
+    asking(tmp_path, "triage")
     path = tmp_path / "triage/questions/urgent.json"
     write(path, text)
     with pytest.raises(ConfigurationError) as raised:
-        load_tree(tmp_path)
+        load_folder(tmp_path)
     assert str(raised.value) == message.format(path=path)
 
 
@@ -196,7 +204,9 @@ async def test_a_script_that_raises_fails_the_run_before_the_decision_model_is_c
     judge = Answering()
     recorded = Recorded()
     said = "engine: order.py of decision agent 'matcher' could not fill question 'order': ValueError: no orders for acme"
-    async with Engine(tmp_path, models={"judge": judge}, refinery=recorded) as engine:
+    async with Engine(
+        tmp_path, providers=provided({"judge": judge, "strong": None}), refinery=recorded
+    ) as engine:
         with pytest.raises(WorkerError) as raised:
             await engine.run("matcher", "acme", "my desk")
     assert str(raised.value) == said
@@ -210,7 +220,9 @@ async def test_a_script_whose_worker_stops_names_the_question_it_was_filling(
     tmp_path: Path,
 ) -> None:
     matcher(tmp_path, "import os\ndef run(input, call):\n    os._exit(3)\n")
-    async with Engine(tmp_path, models={"judge": Answering()}) as engine:
+    async with Engine(
+        tmp_path, providers=provided({"judge": Answering(), "strong": None})
+    ) as engine:
         with pytest.raises(WorkerError) as raised:
             await engine.run("matcher", "acme", "my desk")
     assert str(raised.value) == (
@@ -273,7 +285,9 @@ async def test_a_filled_question_that_does_not_fit_fails_the_run_before_the_mode
     matcher(tmp_path, script)
     judge = Answering()
     recorded = Recorded()
-    async with Engine(tmp_path, models={"judge": judge}, refinery=recorded) as engine:
+    async with Engine(
+        tmp_path, providers=provided({"judge": judge, "strong": None}), refinery=recorded
+    ) as engine:
         with pytest.raises(ModelError, match=message):
             await engine.run("matcher", "acme", "my desk")
     assert judge.calls == []
@@ -287,7 +301,9 @@ async def test_a_script_whose_result_is_over_the_limit_fails_the_run(tmp_path: P
         tmp_path, "def run(input, call):\n    return {'options': {'a': 'x' * 5000, 'b': 'B'}}\n"
     )
     judge = Answering()
-    async with Engine(tmp_path, models={"judge": judge}, worker_result_bytes=1000) as engine:
+    async with Engine(
+        tmp_path, providers=provided({"judge": judge, "strong": None}), worker_result_bytes=1000
+    ) as engine:
         with pytest.raises(WorkerError) as raised:
             await engine.run("matcher", "acme", "my desk")
     assert re.fullmatch(
@@ -301,7 +317,9 @@ async def test_a_script_whose_result_is_over_the_limit_fails_the_run(tmp_path: P
 async def test_a_script_past_the_tool_timeout_fails_the_run(tmp_path: Path) -> None:
     matcher(tmp_path, "import time\ndef run(input, call):\n    time.sleep(5)\n")
     judge = Answering()
-    async with Engine(tmp_path, models={"judge": judge}, tool_timeout=0.3) as engine:
+    async with Engine(
+        tmp_path, providers=provided({"judge": judge, "strong": None}), tool_timeout=0.3
+    ) as engine:
         with pytest.raises(TimeoutError, match="^workers/pool: order timed out after 0.3s$"):
             await engine.run("matcher", "acme", "my desk")
     assert judge.calls == []
@@ -315,7 +333,7 @@ async def test_a_script_reads_the_state_and_the_call(tmp_path: Path) -> None:
         "    return {'options': {'input': json.dumps(input), 'call': json.dumps(call)}}\n",
     )
     judge = Seeing()
-    async with Engine(tmp_path, models={"judge": judge}) as engine:
+    async with Engine(tmp_path, providers=provided({"judge": judge, "strong": None})) as engine:
         given = await engine.run("matcher", "acme", {"message": "my desk", "plan": "team"})
         parts = await engine.run(
             "matcher",
@@ -352,7 +370,7 @@ async def test_a_script_reads_the_state_and_the_call(tmp_path: Path) -> None:
 
 
 async def test_several_scripted_questions_run_at_once(tmp_path: Path) -> None:
-    write(tmp_path / "matcher/AGENT.md", agent_md("matcher", kind="decision", model="judge"))
+    asking(tmp_path, "matcher")
     write(
         tmp_path / "matcher/questions/_meet.py", "import threading\nBOTH = threading.Barrier(2)\n"
     )
@@ -368,7 +386,9 @@ async def test_several_scripted_questions_run_at_once(tmp_path: Path) -> None:
             "    _meet.BOTH.wait(timeout=5)\n"
             "    return {'options': {call['question'] + '-a': 'A', call['question'] + '-b': 'B'}}\n",
         )
-    async with Engine(tmp_path, models={"judge": Answering()}) as engine:
+    async with Engine(
+        tmp_path, providers=provided({"judge": Answering(), "strong": None})
+    ) as engine:
         run = await engine.run("matcher", "acme", "x")
     assert isinstance(run, Decision) and list(run.questions) == ["item", "order"]
     assert options(run.questions, "item") == ["item-a", "item-b"]
@@ -378,7 +398,7 @@ def test_a_question_script_without_a_run_at_its_top_level_is_refused(tmp_path: P
     matcher(tmp_path, "def fill(input, call):\n    return {}\n")
     write(tmp_path / "matcher/questions/_orders.py", "ORDERS = {}\n")
     with pytest.raises(ConfigurationError) as raised:
-        load_tree(tmp_path)
+        load_folder(tmp_path)
     assert str(raised.value) == (
         f"tools/folder: {tmp_path / 'matcher/questions/order.py'} has no run at its top level; a question's script defines def run(input, call) or async def run(input, call)"
     )
@@ -392,7 +412,7 @@ def test_a_server_package_named_questions_is_the_server_s_code_to_a_question_scr
     write(tmp_path / "src/questions/__init__.py", "")
     matcher(tmp_path / "agents", "import questions\n" + ORDER)
     with pytest.raises(ConfigurationError) as raised:
-        load_tree(tmp_path / "agents")
+        load_folder(tmp_path / "agents")
     assert str(raised.value) == (
         f"tools/folder: {tmp_path / 'agents/matcher/questions/order.py'} imports 'questions' from {tmp_path / 'src/questions/__init__.py'}, the server's own code; a question's script imports the standard library, installed packages and helpers of its questions/ folder"
     )
@@ -402,7 +422,7 @@ def test_a_question_script_that_imports_the_engine_is_refused(tmp_path: Path) ->
     matcher(tmp_path, "import rfnry_engine\ndef run(input, call):\n    return {}\n")
     path = tmp_path / "matcher/questions/order.py"
     with pytest.raises(ConfigurationError, match="^tools/folder: ") as raised:
-        load_tree(tmp_path)
+        load_folder(tmp_path)
     assert str(raised.value).startswith(f"tools/folder: {path} imports 'rfnry_engine'; ")
 
 
@@ -488,20 +508,30 @@ async def test_a_mode_s_question_script_runs_in_the_mode_s_worker(tmp_path: Path
 
 def test_a_question_script_is_part_of_the_agent_fingerprint(tmp_path: Path) -> None:
     matcher(tmp_path)
-    before = load_tree(tmp_path)["matcher"].fingerprint
+    before = load_folder(tmp_path)["matcher"].fingerprint
     write(tmp_path / "matcher/questions/order.py", ORDER.replace("First", "Earliest"))
-    assert load_tree(tmp_path)["matcher"].fingerprint != before
+    assert load_folder(tmp_path)["matcher"].fingerprint != before
 
 
 async def test_questions_a_model_composes_reach_a_scripted_decision_agent(tmp_path: Path) -> None:
     matcher(tmp_path)
-    write(tmp_path / "lead/AGENT.md", agent_md("lead", extra="agents: [matcher]\n"))
+    add_agent(
+        tmp_path,
+        "lead",
+        {
+            "kind": "generation",
+            "model": "strong",
+            "instructions": "lead.md",
+            "orchestration": {"delegate_to": ["matcher"]},
+        },
+        files={"lead.md": "Work.\n"},
+    )
     angry = {"type": "check", "instructions": "Is the customer angry?"}
     llm = Scripted(
         delegating("matcher", "my desk", questions={"angry": angry}), text_reply("Done.")
     )
     judge = Answering()
-    async with Engine(tmp_path, models={"judge": judge, "strong": llm}) as engine:
+    async with Engine(tmp_path, providers=provided({"judge": judge, "strong": llm})) as engine:
         run = await engine.run("lead", "acme", "Which order?")
     assert isinstance(run, Generation)
     [child] = run.children
@@ -514,7 +544,7 @@ async def test_questions_a_model_composes_reach_a_scripted_decision_agent(tmp_pa
 async def test_a_runtime_id_may_not_repeat_a_scripted_one(tmp_path: Path) -> None:
     matcher(tmp_path)
     judge = Answering()
-    async with Engine(tmp_path, models={"judge": judge}) as engine:
+    async with Engine(tmp_path, providers=provided({"judge": judge, "strong": None})) as engine:
         with pytest.raises(
             InputError,
             match="^engine: decision agent 'matcher' already asks 'order' from its folder$",
@@ -530,7 +560,9 @@ async def test_the_recorded_questions_hold_the_script_filled_options(
 ) -> None:
     matcher(tmp_path)
     refinery = Refinery(storage)
-    async with Engine(tmp_path, models={"judge": Answering()}, refinery=refinery) as engine:
+    async with Engine(
+        tmp_path, providers=provided({"judge": Answering(), "strong": None}), refinery=refinery
+    ) as engine:
         run = await engine.run("matcher", "acme", "my desk")
     read = await refinery.run("acme", run.run_id)
     assert isinstance(read, Decision) and read == run
@@ -553,7 +585,7 @@ async def test_a_script_fills_its_question_per_tenant_and_never_changes_its_shap
         "    return {'options': {call['scope'] + '-1': 'First', call['scope'] + '-2': 'Second'}}\n",
     )
     judge = Answering()
-    async with Engine(tmp_path, models={"judge": judge}) as engine:
+    async with Engine(tmp_path, providers=provided({"judge": judge, "strong": None})) as engine:
         acme = await engine.run("matcher", "acme", "my desk")
         again = await engine.run("matcher", "acme", "my desk")
         globex = await engine.run("matcher", "globex", "my desk")
@@ -597,13 +629,13 @@ async def test_a_script_fills_its_question_per_tenant_and_never_changes_its_shap
 def test_a_question_holding_a_field_of_another_type_is_refused_naming_its_file(
     tmp_path: Path, text: str, kind: str, key: str, script: bool
 ) -> None:
-    write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
+    asking(tmp_path, "triage")
     path = tmp_path / "triage/questions/q.json"
     write(path, text)
     if script:
         write(tmp_path / "triage/questions/q.py", ORDER)
     with pytest.raises(ConfigurationError) as raised:
-        load_tree(tmp_path)
+        load_folder(tmp_path)
     assert str(raised.value) == (
         f"tree: {path} is a {kind} question holding {key!r}; a choice takes options, a score levels and a check yes and no, so drop {key!r} or change its type"
     )
@@ -629,59 +661,38 @@ def test_a_question_holding_a_field_of_another_type_is_refused_naming_its_file(
 def test_a_scripted_question_s_json_that_does_not_fit_is_refused_beside_its_script(
     tmp_path: Path, text: str, message: str
 ) -> None:
-    write(tmp_path / "triage/AGENT.md", agent_md("triage", kind="decision", model="judge"))
+    asking(tmp_path, "triage")
     path = tmp_path / "triage/questions/q.json"
     write(path, text)
     write(tmp_path / "triage/questions/q.py", ORDER)
     with pytest.raises(ConfigurationError) as raised:
-        load_tree(tmp_path)
+        load_folder(tmp_path)
     assert str(raised.value) == message.format(path=path)
 
 
-@pytest.mark.parametrize(
-    "files",
-    [{"x.md": "---\ntype: check\n---\nUrgent?\n"}, {"x.py": ORDER}, {"x.json": "{"}],
-)
-def test_a_generation_agent_with_questions_is_told_its_kind_before_anything_in_them(
-    tmp_path: Path, files: dict[str, str]
-) -> None:
-    write(tmp_path / "a/AGENT.md", agent_md("a"))
-    for name, text in files.items():
-        write(tmp_path / "a/questions" / name, text)
-    with pytest.raises(ConfigurationError) as raised:
-        load_tree(tmp_path)
-    assert str(raised.value) == (
-        "tree: generation agent 'a' cannot declare questions/; questions are for decision agents, so make it kind: decision or move them to one"
-    )
-
-
-def test_a_generation_agent_s_questions_folder_without_questions_loads(tmp_path: Path) -> None:
-    write(tmp_path / "a/AGENT.md", agent_md("a"))
-    write(tmp_path / "a/questions/notes.txt", "Ideas for later.\n")
-    write(tmp_path / "a/questions/_draft.json", "{")
-    assert load_tree(tmp_path)["a"].questions == {}
-
-
 def test_a_question_script_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
-    matcher(tmp_path)
-    (tmp_path / "matcher/questions/order.py").unlink()
+    root = tmp_path / "agents"
+    matcher(root)
+    (root / "matcher/questions/order.py").unlink()
     write(tmp_path / "elsewhere.py", ORDER)
-    (tmp_path / "matcher/questions/order.py").symlink_to(tmp_path / "elsewhere.py")
+    (root / "matcher/questions/order.py").symlink_to(tmp_path / "elsewhere.py")
     with pytest.raises(ConfigurationError) as caught:
-        load_tree(tmp_path)
+        load_folder(root)
     assert str(caught.value) == (
-        f"tools/folder: {tmp_path / 'matcher/questions/order.py'} links to {tmp_path / 'elsewhere.py'}, outside the agent's folder; move the file into the agent's folder, or link the agent's whole folder"
+        f"tools/folder: {root / 'matcher/questions/order.py'} links to {tmp_path / 'elsewhere.py'}, outside the folder root; move the file into the folder root, or link the whole folder"
     )
 
 
 def test_a_question_json_that_links_out_of_its_folder_is_refused(tmp_path: Path) -> None:
-    matcher(tmp_path)
-    (tmp_path / "matcher/questions/order.json").replace(tmp_path / "elsewhere.json")
-    (tmp_path / "matcher/questions/order.json").symlink_to(tmp_path / "elsewhere.json")
+    root = tmp_path / "agents"
+    matcher(root)
+    (root / "matcher/questions/order.json").replace(tmp_path / "elsewhere.json")
+    (root / "matcher/questions/order.json").symlink_to(tmp_path / "elsewhere.json")
     with pytest.raises(
-        ConfigurationError, match="^tree: .*order.json links to .*, outside the agent's folder;"
+        ConfigurationError,
+        match="^compiled: agent 'matcher' reaches 'matcher/questions/order.json', which links to .*, outside the folder root;",
     ):
-        load_tree(tmp_path)
+        load_folder(root)
 
 
 @pytest.mark.parametrize("name", ["time", "math"])
@@ -693,7 +704,7 @@ def test_a_question_script_named_like_a_built_in_standard_module_beside_one_that
         tmp_path / f"matcher/questions/{name}.json", '{"type": "choice", "instructions": "Which?"}'
     )
     write(tmp_path / f"matcher/questions/{name}.py", f"import {name}\n" + ORDER)
-    assert sorted(load_tree(tmp_path)["matcher"].scripted) == sorted(["order", name])
+    assert sorted(load_folder(tmp_path)["matcher"].scripted) == sorted(["order", name])
 
 
 def test_a_question_helper_named_like_a_standard_library_module_is_refused(
@@ -702,7 +713,7 @@ def test_a_question_helper_named_like_a_standard_library_module_is_refused(
     matcher(tmp_path, "import _stat\n" + ORDER)
     write(tmp_path / "matcher/questions/_stat.py", "X = 1\n")
     with pytest.raises(ConfigurationError) as raised:
-        load_tree(tmp_path)
+        load_folder(tmp_path)
     assert str(raised.value) == (
         f"tools/folder: {tmp_path / 'matcher/questions/_stat.py'} is named like the standard-library module '_stat', and the worker can't load both; rename it"
     )
@@ -715,4 +726,4 @@ def test_a_question_file_that_links_elsewhere_in_the_agent_s_folder_loads(
     matcher(tmp_path)
     (tmp_path / f"matcher/questions/order{suffix}").replace(tmp_path / f"matcher/kept{suffix}")
     (tmp_path / f"matcher/questions/order{suffix}").symlink_to(f"../kept{suffix}")
-    assert list(load_tree(tmp_path)["matcher"].scripted) == ["order"]
+    assert list(load_folder(tmp_path)["matcher"].scripted) == ["order"]

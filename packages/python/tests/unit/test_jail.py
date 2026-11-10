@@ -8,10 +8,12 @@ from pathlib import Path
 import pytest
 
 from rfnry_engine import Jail
+from rfnry_engine.compiled import load_folder
 from rfnry_engine.errors import ConfigurationError, InputError
 from rfnry_engine.tools.builtins import builtins, load_tool
 from rfnry_engine.tools.tools import Tools
-from rfnry_engine.tree import load_agent
+
+from .trees import write_folder
 
 WRITE = os.O_WRONLY | os.O_CREAT
 
@@ -263,14 +265,23 @@ def test_preload_refuses_a_folder_swapped_for_a_link_between_check_and_open(
     shelf: Path, outside: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     coding = shelf / "coding"
-    (coding / "AGENT.md").write_text(
-        "---\nname: coding\nkind: generation\nmodel: strong\npreload: ['.']\n---\nYou code.\n"
+    write_folder(
+        coding,
+        {
+            "coding": {
+                "kind": "generation",
+                "model": "strong",
+                "instructions": "coding.md",
+                "files": {"preload": ["notes"]},
+            }
+        },
+        files={"coding.md": "You code.\n"},
     )
     swap_after_the_check(monkeypatch, linked(coding / "notes", outside))
     with pytest.raises(
         ConfigurationError,
-        match=r"^tree: agent 'coding' cannot preload: "
-        r"jail: path outside the agent directory: notes/style\.md; fix that file, or drop it from preload:$",
+        match=r"^compiled: agent 'coding' cannot preload: "
+        r"jail: path outside the agent directory: notes/style\.md; fix that file, or drop it from files\.preload$",
     ):
-        load_agent(coding)
+        load_folder(coding)
     assert (coding / "notes").is_symlink()

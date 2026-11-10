@@ -26,6 +26,7 @@ from .fakes import (
     generation_record,
     text_reply,
 )
+from .trees import provided
 
 
 def test_holdout_is_derived_deterministic_and_roughly_twenty_percent() -> None:
@@ -151,7 +152,9 @@ async def test_a_run_still_working_at_an_export_is_in_the_next_one(
             return text_reply("answer")
 
     refinery = Refinery(storage)
-    engine = Engine(fixtures, refinery=refinery, models={"strong": Model()})
+    engine = Engine(
+        fixtures, refinery=refinery, providers=provided({"strong": Model(), "judge": None})
+    )
     gated = Tools([Tool("now", "The current time", body=slow)])
     long = asyncio.create_task(engine.run("support", "acme", "long", tools=gated))
     await started.wait()
@@ -321,7 +324,9 @@ async def test_a_generation_row_carries_the_tools_offered_and_the_conversation_i
         text_reply("Refunded."),
     )
     refinery = Refinery(storage)
-    async with Engine(fixtures, refinery=refinery, models={"strong": llm}) as engine:
+    async with Engine(
+        fixtures, refinery=refinery, providers=provided({"strong": llm, "judge": None})
+    ) as engine:
         run = await engine.run(
             "support",
             "acme",

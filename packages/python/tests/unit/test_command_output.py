@@ -24,6 +24,7 @@ from rfnry_engine.tools.workspace import BACKLOG, Local, Workspace, _Told
 
 from .fakes import Scripted, text_reply
 from .test_engine_workspace import make_tree, use
+from .trees import provided
 
 
 @pytest.fixture
@@ -54,7 +55,9 @@ async def go(
     stop: Stop | None = None,
 ) -> Generation:
     llm = Scripted(use(call), text_reply("ok"))
-    engine = Engine(make_tree(tmp_path), models={"strong": llm}, refinery=kept)
+    engine = Engine(
+        make_tree(tmp_path), providers=provided({"strong": llm, "judge": None}), refinery=kept
+    )
     run = await engine.run(
         "coder",
         "acme",
@@ -386,7 +389,7 @@ async def test_a_background_job_sends_no_command_output(tmp_path: Path, root: Pa
 
     llm = Scripted(use(job), use(wait), text_reply("ok"))
     try:
-        await Engine(make_tree(tmp_path), models={"strong": llm}).run(
+        await Engine(make_tree(tmp_path), providers=provided({"strong": llm, "judge": None})).run(
             "coder", "acme", "x", workspace=work, on_event=handler
         )
     finally:

@@ -20,6 +20,7 @@ from rfnry_engine.tools.delegate import QUESTION, child_result
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import NO_QUESTIONS, PICK, Answering, Fixed, Scripted, lead, text_reply
+from .trees import add_agent, deciding, provided, tooled
 
 TRIAGE: dict[str, Answer] = {
     "urgent": CheckAnswer(probability=0.9),
@@ -44,7 +45,7 @@ def calling(name: str, text: str) -> Reply:
 async def test_a_generation_agent_as_a_tool_replies_and_records(fixtures: Path) -> None:
     llm = Scripted(text_reply("Refunded."))
     recorder = Recorded()
-    engine = Engine(fixtures, refinery=recorder, models={"strong": llm})
+    engine = Engine(fixtures, refinery=recorder, providers=provided({"strong": llm, "judge": None}))
     billing = engine.tool("billing", scope="acme", context="Acme is on the enterprise plan.")
     [definition] = billing.definitions()
     assert (
@@ -59,7 +60,7 @@ async def test_a_generation_agent_as_a_tool_replies_and_records(fixtures: Path) 
 
 
 async def test_a_decision_agent_as_a_tool_returns_its_answers(fixtures: Path) -> None:
-    engine = Engine(fixtures, models={"judge": Fixed(TRIAGE)})
+    engine = Engine(fixtures, providers=provided({"judge": Fixed(TRIAGE), "strong": None}))
     judge = engine.tool("triage", scope="acme", name="judge")
     assert judge.names == ["judge"]
     result = await judge.dispatch("judge", {"input": "It is down"})
@@ -70,7 +71,7 @@ async def test_a_decision_agent_as_a_tool_returns_its_answers(fixtures: Path) ->
 
 
 async def test_the_tool_composes_and_refuses_bad_calls(fixtures: Path) -> None:
-    engine = Engine(fixtures, models={"strong": Scripted()})
+    engine = Engine(fixtures, providers=provided({"strong": Scripted(), "judge": None}))
 
     async def ping(args: dict[str, Any]) -> str:
         return "pong"
@@ -89,12 +90,13 @@ async def test_the_tool_composes_and_refuses_bad_calls(fixtures: Path) -> None:
         engine.tool("ghost", scope="acme")
 
 
-async def test_inside_a_run_it_is_its_own_top_level_run(fixtures: Path) -> None:
+async def test_inside_a_run_it_is_its_own_top_level_run(fixtures: Path, tmp_path: Path) -> None:
     llm = Scripted(
         calling("consult", "Charged twice"), text_reply("Refunded."), text_reply("Done.")
     )
     recorder = Recorded()
-    engine = Engine(fixtures, refinery=recorder, models={"strong": llm})
+    folder = tooled(fixtures, tmp_path, "support", "consult")
+    engine = Engine(folder, refinery=recorder, providers=provided({"strong": llm, "judge": None}))
     run = await engine.run(
         "support", "acme", "Help", tools=engine.tool("billing", scope="acme", name="consult")
     )
@@ -104,9 +106,10 @@ async def test_inside_a_run_it_is_its_own_top_level_run(fixtures: Path) -> None:
     assert recorder.runs[0].parent_run_id is None
 
 
-async def test_the_depth_guard_holds_across_the_tool(fixtures: Path) -> None:
+async def test_the_depth_guard_holds_across_the_tool(fixtures: Path, tmp_path: Path) -> None:
     llm = Scripted(calling("billing", "again"), text_reply("done"))
-    engine = Engine(fixtures, max_depth=1, models={"strong": llm})
+    folder = tooled(fixtures, tmp_path, "billing", "billing")
+    engine = Engine(folder, max_depth=1, providers=provided({"strong": llm, "judge": None}))
     run = await engine.run("billing", "acme", "hi", tools=engine.tool("billing", scope="acme"))
     assert isinstance(run, Generation) and run.steps[0].is_error
     assert run.steps[0].result == (
@@ -115,20 +118,30 @@ async def test_the_depth_guard_holds_across_the_tool(fixtures: Path) -> None:
 
 
 async def test_a_call_through_the_tool_resets_the_route_chain(tmp_path: Path) -> None:
-    (tmp_path / "r" / "questions").mkdir(parents=True)
-    (tmp_path / "r" / "AGENT.md").write_text(
-        "---\nname: r\nkind: decision\nmodel: judge\ndescription: Passes it on\nroute: {by: go, to: {next: g}}\n---\n"
+    deciding(
+        tmp_path,
+        "r",
+        {
+            "go": '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep it", "next": "Pass it on"}}'
+        },
+        route={"by": "go", "to": {"next": "g"}},
+        description="Passes it on",
     )
-    (tmp_path / "r" / "questions" / "go.json").write_text(
-        '{"type": "choice", "instructions": "Where?", "options": {"stay": "Keep it", "next": "Pass it on"}}'
-    )
-    (tmp_path / "g").mkdir()
-    (tmp_path / "g" / "AGENT.md").write_text(
-        "---\nname: g\nkind: generation\nmodel: strong\n---\nhi\n"
+    add_agent(
+        tmp_path,
+        "g",
+        {
+            "kind": "generation",
+            "model": "strong",
+            "instructions": "g.md",
+            "tools": {"include": ["r"]},
+        },
+        files={"g.md": "hi\n"},
     )
     llm = Scripted(calling("r", "again"), text_reply("inner done"), text_reply("outer done"))
-    engine = Engine(tmp_path, models={"strong": llm, "judge": Answering()})
-    run = await engine.run("r", "acme", "start", tools=engine.tool("r", scope="acme"))
+    engine = Engine(tmp_path, providers=provided({"strong": llm, "judge": Answering()}))
+    inner = engine.tool("r", scope="acme")
+    run = await engine.run("r", "acme", "start", tools=engine.tool("r", scope="acme", tools=inner))
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     [step] = run.routed_to.steps
     assert not step.is_error and run.routed_to.reply == "outer done"
@@ -140,7 +153,11 @@ async def test_a_decision_agent_as_a_tool_takes_questions_of_the_caller(
     tmp_path: Path,
 ) -> None:
     recorder = Recorded()
-    engine = Engine(lead(tmp_path), refinery=recorder, models={"judge": Answering()})
+    engine = Engine(
+        lead(tmp_path),
+        refinery=recorder,
+        providers=provided({"judge": Answering(), "strong": None}),
+    )
     grader = engine.tool("grader", scope="acme")
     [definition] = grader.definitions()
     schema = definition["input_schema"]
@@ -176,7 +193,9 @@ async def test_a_decision_agent_as_a_tool_takes_questions_of_the_caller(
 async def test_a_generation_agent_as_a_tool_takes_only_its_input(tmp_path: Path) -> None:
     llm = Scripted(text_reply("Sorry, it is late."))
     recorder = Recorded()
-    engine = Engine(lead(tmp_path), refinery=recorder, models={"strong": llm, "judge": Answering()})
+    engine = Engine(
+        lead(tmp_path), refinery=recorder, providers=provided({"strong": llm, "judge": Answering()})
+    )
     writer = engine.tool("writer", scope="acme")
     assert list(writer.definitions()[0]["input_schema"]["properties"]) == ["input"]
     assert await writer.dispatch("writer", {"input": "Late parcel"}) == "Sorry, it is late."
@@ -199,7 +218,9 @@ def _intent(choice: str, p: float) -> dict[str, Answer]:
 
 async def test_a_routing_agent_as_a_tool_returns_the_reply_it_routed_to(fixtures: Path) -> None:
     llm = Scripted(text_reply("Support here."))
-    engine = Engine(fixtures, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))})
+    engine = Engine(
+        fixtures, providers=provided({"strong": llm, "judge": Fixed(_intent("technical", 0.8))})
+    )
     result = await engine.tool("frontdesk", scope="acme").dispatch(
         "frontdesk", {"input": "The app crashes"}
     )
@@ -210,7 +231,7 @@ async def test_a_routing_agent_as_a_tool_returns_the_reply_it_routed_to(fixtures
 async def test_a_routing_agent_that_did_not_route_returns_its_answers_only(fixtures: Path) -> None:
     engine = Engine(
         fixtures,
-        models={"strong": Scripted(), "judge": Fixed(_intent("technical", 0.5))},
+        providers=provided({"strong": Scripted(), "judge": Fixed(_intent("technical", 0.5))}),
     )
     result = await engine.tool("frontdesk", scope="acme").dispatch("frontdesk", {"input": "x"})
     assert isinstance(result, dict) and list(result) == ["answers"]
@@ -218,7 +239,9 @@ async def test_a_routing_agent_that_did_not_route_returns_its_answers_only(fixtu
 
 async def test_a_delegated_routing_agent_hands_back_the_reply_it_routed_to(fixtures: Path) -> None:
     llm = Scripted(text_reply("Support here."))
-    engine = Engine(fixtures, models={"strong": llm, "judge": Fixed(_intent("technical", 0.8))})
+    engine = Engine(
+        fixtures, providers=provided({"strong": llm, "judge": Fixed(_intent("technical", 0.8))})
+    )
     run = await engine.run("frontdesk", "acme", "The app crashes")
     handed = json.loads(child_result(run))
     assert handed["answers"]["intent"]["choice"] == "technical"
