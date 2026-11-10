@@ -43,6 +43,7 @@ from rfnry_engine.frontmatter import (
     plainly,
 )
 from rfnry_engine.jail import Jail
+from rfnry_engine.manifest import Kind, RouteSpec
 from rfnry_engine.models import Check, Choice, Part, Question, Score
 from rfnry_engine.tools.builtins import BUILTINS, preload_parts
 from rfnry_engine.tools.delegate import DELEGATE_TOOL
@@ -60,17 +61,8 @@ from rfnry_engine.workers.pool import Script
 
 logger = logging.getLogger(__name__)
 
-Kind = Literal["generation", "decision"]
 OUTPUT_TOOL = "Output"
 HANDED_DOWN = frozenset({"skills", "tools"})
-
-
-class RouteSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    by: str
-    to: dict[str, str]
-    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 def _each_skill_once(value: list[str], wanted: str) -> list[str]:

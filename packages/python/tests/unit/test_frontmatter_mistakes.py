@@ -128,8 +128,8 @@ def test_a_control_character_is_placed_past_wide_characters(tmp_path: Path) -> N
 def test_pure_pyyaml_mistakes_get_the_same_fixes(text: str, fix: str) -> None:
     import yaml
 
-    from rfnry_engine.frontmatter import _unreadable
+    from rfnry_engine.frontmatter import unreadable
 
     with pytest.raises(yaml.YAMLError) as raised:
         yaml.load(text, Loader=yaml.SafeLoader)
-    assert fix in _unreadable(raised.value, text)[2]
+    assert fix in unreadable(raised.value, text)[2]

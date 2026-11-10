@@ -39,6 +39,7 @@ from rfnry_engine.foreground import (
     taking,
 )
 from rfnry_engine.frontmatter import plainly
+from rfnry_engine.manifest import Kind
 from rfnry_engine.models import (
     Answer,
     ChoiceAnswer,
@@ -98,7 +99,6 @@ from rfnry_engine.tree import (
     OUTPUT_TOOL,
     TAKEN,
     AgentSpec,
-    Kind,
     as_question,
     foreign,
     load_tree,

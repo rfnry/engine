@@ -9,7 +9,7 @@ from rfnry_engine.errors import ConfigurationError
 
 _FRONTMATTER = re.compile(r"^---\n(?:(.*?)\n)?---[ \t]*(?:\n(.*))?\Z", re.DOTALL)
 _BOOL = "tag:yaml.org,2002:bool"
-_MERGE = "tag:yaml.org,2002:merge"
+MERGE_TAG = "tag:yaml.org,2002:merge"
 
 
 if TYPE_CHECKING:
@@ -18,11 +18,11 @@ else:
     _Base = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 
-class _Loader(_Base):
+class StrictLoader(_Base):
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
         seen: list[Any] = []
         for key_node, _ in node.value:
-            if key_node.tag == _MERGE:
+            if key_node.tag == MERGE_TAG:
                 continue
             key = self.construct_object(key_node, deep=deep)
             if key in seen:
@@ -33,11 +33,11 @@ class _Loader(_Base):
         return super().construct_mapping(node, deep=deep)
 
 
-_Loader.yaml_implicit_resolvers = {
+StrictLoader.yaml_implicit_resolvers = {
     first: [(tag, pattern) for tag, pattern in resolvers if tag != _BOOL]
     for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
 }
-_Loader.add_implicit_resolver(
+StrictLoader.add_implicit_resolver(
     _BOOL, re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"), list("tTfF")
 )
 
@@ -75,12 +75,14 @@ _FIXES = (
         "quote a value that holds ': ', or line the key up with the keys above it",
     ),
     ("duplicate key", "remove one of them"),
+    ("merge key", "write each key out where it is used"),
+    ("alphabetic or numeric character", 'quote a value that starts with *, such as "*"'),
     ("did not find expected key", "line the key up with the keys around it"),
     ("expected <block end>", "line the key up with the keys around it"),
 )
 
 
-def _unreadable(exc: yaml.YAMLError, text: str) -> tuple[str, str, str]:
+def unreadable(exc: yaml.YAMLError, text: str, first_line: int = 2) -> tuple[str, str, str]:
     problem = getattr(exc, "problem", None) or str(exc).splitlines()[0]
     context = getattr(exc, "context", None) or ""
     mark = getattr(exc, "problem_mark", None)
@@ -95,7 +97,7 @@ def _unreadable(exc: yaml.YAMLError, text: str) -> tuple[str, str, str]:
         column = position - (text.rfind("\n", 0, position) + 1)
     else:
         line = column = -1
-    place = "" if line < 0 else f" at line {line + 2}, column {column + 1}"
+    place = "" if line < 0 else f" at line {line + first_line}, column {column + 1}"
     lines = text.split("\n")
     at = lines[line][column : column + 1] if 0 <= line < len(lines) else ""
     said = "tab character" if at == "\t" else f"{problem} {context}"
@@ -116,9 +118,9 @@ def description(raw: str, path: Path) -> str | None:
     if match is None:
         return None
     try:
-        data = yaml.load(match.group(1), Loader=_Loader)
+        data = yaml.load(match.group(1), Loader=StrictLoader)
     except yaml.YAMLError as exc:
-        place, problem, fix = _unreadable(exc, match.group(1))
+        place, problem, fix = unreadable(exc, match.group(1))
         raise ConfigurationError(
             f"frontmatter: invalid YAML in {path}{place}: {problem}; {fix}"
         ) from exc
@@ -132,7 +134,9 @@ def description(raw: str, path: Path) -> str | None:
 
 
 def _said(message: str) -> str:
-    message = message.removeprefix("Value error, ").removeprefix("tree: ")
+    message = (
+        message.removeprefix("Value error, ").removeprefix("tree: ").removeprefix("manifest: ")
+    )
     return message[:1].lower() + message[1:]
 
 
@@ -157,9 +161,9 @@ def parse_frontmatter_doc[T: BaseModel](
         )
     front_raw, body = split
     try:
-        data = yaml.load(front_raw, Loader=_Loader) or {}
+        data = yaml.load(front_raw, Loader=StrictLoader) or {}
     except yaml.YAMLError as exc:
-        place, problem, fix = _unreadable(exc, front_raw)
+        place, problem, fix = unreadable(exc, front_raw)
         raise ConfigurationError(
             f"frontmatter: invalid YAML in {source}{place}: {problem}; {fix}"
         ) from exc

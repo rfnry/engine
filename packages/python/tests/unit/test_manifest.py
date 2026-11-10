@@ -1,0 +1,878 @@
+import re
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from rfnry_engine.errors import ConfigurationError
+from rfnry_engine.manifest import (
+    MANIFEST,
+    FilesSection,
+    Orchestration,
+    SkillsSection,
+    ToolsSection,
+    overlaid,
+    read_manifest,
+)
+
+from .trees import write_folder
+
+GENERATION: dict[str, Any] = {"kind": "generation", "model": "m", "instructions": "a.md"}
+DECISION: dict[str, Any] = {"kind": "decision", "model": "m", "instructions": "a.md"}
+MINIMAL = "version: 1\nagents:\n  a: {kind: generation, model: m, instructions: a.md}\n"
+ROUTE: dict[str, Any] = {"by": "category", "to": {"billing": "support"}}
+
+DESIGN_EXAMPLE = """\
+version: 1
+
+workers:                              # optional; without it, one shared worker of one process
+  customers:
+    processes: 2                      # tool processes of this worker
+    threads: 32                       # plain `def run` calls at once, per process
+    max_result_bytes: 33554432        # the largest result a tool may send back
+  live:
+    processes: 1
+
+tools:                                # each tool once; agents pick them by name
+  lookup_order:                       # the name the model sees; the file can be called anything
+    module: tools/lookup_order.py     # required: the Python file, from the folder root
+    function: run                     # optional; run is the default
+    description: Finds an order       # else the description in the schema file
+    schema: tools/lookup_order.json   # optional: description, input_schema, output_schema
+    timeout: 20                       # optional: seconds per call
+  refund: {module: tools/refund.py, schema: tools/refund.json}
+
+agents:
+  support:
+    kind: generation                  # required: generation, decision or voice_live
+    model: strong                     # required: a key the host maps to a model
+    description: Handles support      # else the description: in the instructions file's frontmatter
+    instructions: support/support.md  # any markdown file; frontmatter is stripped
+    max_model_calls: 24               # per run; a delegated run counts its own
+    worker: customers                 # which worker runs its tools
+
+    files:
+      include: [knowledge]            # what the model may open: folders, files or globs
+      exclude: [knowledge/drafts/**]  # taken back out
+      preload: [support/rules]        # sent with every model call; also readable
+      gitignore: true                 # what a .gitignore ignores is not there
+
+    tools:
+      include: ["*", handoff]         # names or patterns: declared above, built in, or given by the run
+      exclude: [refund]
+      timeout: 30                     # seconds per call
+      max_parallel: 4                 # tool calls of one run at once; absent means no cap
+
+    skills:
+      include: [support/skills/*]     # listed for the model to open
+      exclude: [internal]
+      preload: [support/skills/tone]  # full text sent with every model call
+      public: [escalate]              # people may type /escalate; a list or the word all
+
+    orchestration:
+      delegate_to: [drafter]          # agents the Delegate tool may reach; one way
+      max_depth: 1                    # levels of delegation below this agent
+      max_parallel: 2                 # Delegate calls of one run at once; absent means no cap
+
+    workspace: true                   # gives a shell and writable files; the host passes a Workspace
+
+    modes:
+      email:
+        skills:
+          preload: [support/channels/email]
+      chat:
+        worker: live
+        tools:
+          include: [verify_customer]
+        skills:
+          preload: [support/channels/live, support/channels/chat]
+
+  triage:
+    kind: decision
+    model: decision
+    modes:
+      email: {instructions: triage/email.md, questions: [triage/email/*.json]}
+      chat: {instructions: triage/chat.md, questions: [triage/chat/*.json]}
+    orchestration:
+      route: {by: category, to: {billing: support}, min_confidence: 0.7}
+"""
+
+
+def _file(root: Path, text: str) -> Path:
+    (root / MANIFEST).write_text(text, encoding="utf-8")
+    return root
+
+
+def _refused(root: Path, pattern: str) -> str:
+    with pytest.raises(ConfigurationError, match=pattern) as raised:
+        read_manifest(root)
+    said = str(raised.value)
+    assert said.startswith("manifest: ")
+    return said
+
+
+def _nested(dotted: str, value: Any) -> dict[str, Any]:
+    held = value
+    for part in reversed(dotted.split(".")):
+        held = {part: held}
+    return dict(held)
+
+
+def _agent(dotted: str, value: Any, on_mode: bool, base: dict[str, Any]) -> tuple[Any, str]:
+    if on_mode:
+        return (
+            {**base, "modes": {"m": _nested(dotted, value)}},
+            f"agents.a.modes.m.{dotted}",
+        )
+    return ({**base, **_nested(dotted, value)}, f"agents.a.{dotted}")
+
+
+def test_a_minimal_file_loads(tmp_path: Path) -> None:
+    manifest = read_manifest(write_folder(tmp_path, {"a": GENERATION}))
+    assert manifest.version == 1
+    assert list(manifest.agents) == ["a"]
+    assert manifest.agents["a"].kind == "generation"
+    assert manifest.workers == {}
+    assert manifest.tools == {}
+    assert manifest.agents["a"].modes == {}
+
+
+def test_write_folder_writes_no_aliases_for_a_shared_entry(tmp_path: Path) -> None:
+    assert list(
+        read_manifest(write_folder(tmp_path, {"a": GENERATION, "b": GENERATION})).agents
+    ) == ["a", "b"]
+
+
+def test_the_example_of_the_design_parses_as_written(tmp_path: Path) -> None:
+    manifest = read_manifest(_file(tmp_path, DESIGN_EXAMPLE))
+    assert manifest.workers["customers"].processes == 2
+    assert manifest.workers["customers"].max_result_bytes == 33554432
+    assert manifest.workers["live"].threads == 32
+    assert manifest.tools["lookup_order"].schema_file == "tools/lookup_order.json"
+    assert manifest.tools["lookup_order"].timeout == 20
+    assert manifest.tools["refund"].function == "run"
+    support = manifest.agents["support"]
+    assert support.files is not None and support.files.gitignore is True
+    assert support.tools is not None and support.tools.include == ["*", "handoff"]
+    assert support.skills is not None and support.skills.public == ["escalate"]
+    assert support.orchestration is not None and support.orchestration.delegate_to == ["drafter"]
+    assert support.workspace is True
+    assert overlaid(support, "chat").worker == "live"
+    assert overlaid(support, "chat").tools.include == ["*", "handoff", "verify_customer"]
+    triage = manifest.agents["triage"]
+    assert triage.orchestration is not None and triage.orchestration.route is not None
+    assert triage.orchestration.route.min_confidence == 0.7
+    assert triage.modes["email"].questions == ["triage/email/*.json"]
+
+
+def test_a_missing_file_names_the_root(tmp_path: Path) -> None:
+    _refused(tmp_path, f"manifest: {re.escape(str(tmp_path))} holds no rfnry.yaml; ")
+
+
+def test_a_manifest_that_cannot_be_read_is_refused(tmp_path: Path) -> None:
+    (tmp_path / MANIFEST).mkdir()
+    _refused(tmp_path, "cannot read")
+
+
+@pytest.mark.parametrize("text", ["", "# only a comment\n", "- a\n", "just words\n"])
+def test_a_file_that_holds_no_keys_is_refused(tmp_path: Path, text: str) -> None:
+    _refused(_file(tmp_path, text), "holds no keys")
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("version: 1\nagents:\n\ta: 1\n", 3),
+        ("version: 1\nagents: [\n", 3),
+        ('version: 1\nagents: "open\n', 2),
+    ],
+)
+def test_broken_yaml_names_the_line_of_the_file(tmp_path: Path, text: str, line: int) -> None:
+    _refused(_file(tmp_path, text), rf"manifest: invalid YAML in .* at line {line}\b")
+
+
+def test_an_unknown_key_names_its_path_and_what_is_allowed(tmp_path: Path) -> None:
+    agent = {**GENERATION, "tools": {"exlude": ["x"]}}
+    said = _refused(write_folder(tmp_path, {"a": agent}), r"agents\.a\.tools\.exlude")
+    assert "include" in said
+    assert "max_parallel" in said
+
+
+def test_an_unknown_key_at_the_top_names_the_top_keys(tmp_path: Path) -> None:
+    said = _refused(_file(tmp_path, f"versoin: 1\n{MINIMAL}"), r"versoin")
+    assert "version, workers, tools, agents" in said
+
+
+@pytest.mark.parametrize(
+    ("agent", "path", "allowed"),
+    [
+        ({**GENERATION, "exlude": 1}, r"agents\.a\.exlude", "kind"),
+        (
+            {**GENERATION, "modes": {"m": {"tools": {"exlude": ["x"]}}}},
+            r"agents\.a\.modes\.m\.tools\.exlude",
+            "include",
+        ),
+        (
+            {**GENERATION, "modes": {"m": {"kind": "decision"}}},
+            r"agents\.a\.modes\.m\.kind",
+            "questions",
+        ),
+        ({**GENERATION, "files": {"inclde": ["x"]}}, r"agents\.a\.files\.inclde", "gitignore"),
+        ({**GENERATION, "skills": {"publik": ["x"]}}, r"agents\.a\.skills\.publik", "public"),
+        (
+            {**DECISION, "orchestration": {"rout": ROUTE}},
+            r"agents\.a\.orchestration\.rout",
+            "delegate_to",
+        ),
+        (
+            {**DECISION, "orchestration": {"route": {**ROUTE, "minimum": 1}}},
+            r"agents\.a\.orchestration\.route\.minimum",
+            "min_confidence",
+        ),
+    ],
+)
+def test_an_unknown_key_is_named_at_every_level(
+    tmp_path: Path, agent: dict[str, Any], path: str, allowed: str
+) -> None:
+    said = _refused(write_folder(tmp_path, {"a": agent}), path)
+    assert allowed in said
+
+
+def test_an_unknown_key_of_a_worker_names_the_keys_of_a_worker(tmp_path: Path) -> None:
+    folder = write_folder(tmp_path, {"a": GENERATION}, workers={"default": {"proceses": 2}})
+    said = _refused(folder, r"workers\.default\.proceses")
+    assert "max_result_bytes" in said
+
+
+def test_every_unknown_key_is_named_at_once(tmp_path: Path) -> None:
+    agent = {**GENERATION, "exlude": 1, "tools": {"exlude": ["x"]}}
+    said = _refused(write_folder(tmp_path, {"a": agent}), r"agents\.a\.exlude")
+    assert "agents.a.tools.exlude" in said
+
+
+GENERATION_LISTS = [
+    "files.include",
+    "files.exclude",
+    "files.preload",
+    "tools.include",
+    "tools.exclude",
+    "skills.include",
+    "skills.exclude",
+    "skills.preload",
+    "skills.public",
+    "orchestration.delegate_to",
+]
+
+
+@pytest.mark.parametrize("on_mode", [False, True])
+@pytest.mark.parametrize("empty", [[], None])
+@pytest.mark.parametrize(
+    ("key", "base"),
+    [*((key, GENERATION) for key in GENERATION_LISTS), ("questions", DECISION)],
+)
+def test_an_empty_list_says_nothing(
+    tmp_path: Path, key: str, base: dict[str, Any], empty: Any, on_mode: bool
+) -> None:
+    agent, path = _agent(key, empty, on_mode, base)
+    _refused(write_folder(tmp_path, {"a": agent}), re.escape(path) + ".* says nothing")
+
+
+@pytest.mark.parametrize("empty", [None, {}])
+@pytest.mark.parametrize("key", ["files", "tools", "skills", "orchestration", "modes"])
+def test_a_section_with_no_value_says_nothing(tmp_path: Path, key: str, empty: Any) -> None:
+    agent = {**GENERATION, key: empty}
+    _refused(write_folder(tmp_path, {"a": agent}), rf"agents\.a\.{key}\b.* says nothing")
+
+
+@pytest.mark.parametrize("empty", ["", " {}"])
+@pytest.mark.parametrize("key", ["workers", "tools"])
+def test_a_top_level_mapping_with_no_value_says_nothing(
+    tmp_path: Path, key: str, empty: str
+) -> None:
+    _refused(_file(tmp_path, f"{key}:{empty}\n{MINIMAL}"), rf"\b{key}\b.* says nothing")
+
+
+@pytest.mark.parametrize(
+    ("dotted", "value"),
+    [
+        ("model", None),
+        ("description", ""),
+        ("instructions", ""),
+        ("files.include", [""]),
+        ("files.include", [None]),
+    ],
+)
+def test_a_value_that_says_nothing_is_refused(tmp_path: Path, dotted: str, value: Any) -> None:
+    agent = {**GENERATION, **_nested(dotted, value)}
+    _refused(write_folder(tmp_path, {"a": agent}), re.escape(f"agents.a.{dotted}"))
+
+
+def test_a_mode_with_no_value_says_nothing(tmp_path: Path) -> None:
+    agent = {**GENERATION, "modes": {"m": None}}
+    _refused(write_folder(tmp_path, {"a": agent}), r"agents\.a\.modes\.m\b.* says nothing")
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("version: 1\nagents:\n  a: &base {kind: generation, model: m, instructions: a.md}\n", 3),
+        (
+            "version: 1\nagents:\n  a: {kind: generation, model: m, instructions: a.md}\n  b: *base\n",
+            4,
+        ),
+        (
+            "version: 1\nagents:\n  a:\n    kind: generation\n    <<: {model: m}\n    instructions: a.md\n",
+            5,
+        ),
+    ],
+)
+def test_anchors_aliases_and_merge_keys_are_refused(tmp_path: Path, text: str, line: int) -> None:
+    _refused(_file(tmp_path, text), rf"line {line}\b")
+
+
+def test_a_merge_key_says_to_write_the_keys_out(tmp_path: Path) -> None:
+    text = "version: 1\nagents:\n  a:\n    <<: {kind: generation}\n"
+    _refused(_file(tmp_path, text), "merge key.*write each key out")
+
+
+def test_an_anchored_list_item_is_refused(tmp_path: Path) -> None:
+    text = (
+        "version: 1\nagents:\n  a:\n    kind: generation\n    model: m\n    instructions: a.md\n"
+        "    tools:\n      include: [&one x]\n"
+    )
+    _refused(_file(tmp_path, text), r"line 8\b")
+
+
+def test_a_bare_star_starts_an_alias_and_is_refused(tmp_path: Path) -> None:
+    text = (
+        "version: 1\nagents:\n  a:\n    kind: generation\n    model: m\n    instructions: a.md\n"
+        "    tools: {include: [*]}\n"
+    )
+    _refused(_file(tmp_path, text), r"line 7\b.*quote a value")
+
+
+def test_a_quoted_star_is_a_pattern(tmp_path: Path) -> None:
+    text = (
+        "version: 1\nagents:\n  a:\n    kind: generation\n    model: m\n    instructions: a.md\n"
+        '    tools: {include: ["*"]}\n'
+    )
+    tools = read_manifest(_file(tmp_path, text)).agents["a"].tools
+    assert tools is not None and tools.include == ["*"]
+
+
+def _with(keys: str) -> str:
+    return f"version: 1\nagents:\n  a: {{kind: generation, model: m, instructions: a.md, {keys}}}\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        (
+            "version: 1\nagents:\n  a: {kind: generation, model: m, instructions: a.md}\n  a: {kind: generation, model: m, instructions: b.md}\n",
+            r"duplicate key .* remove one of them",
+        ),
+        (f"version: 1\n{MINIMAL}", r"duplicate key .* remove one of them"),
+        (_with("kind: decision"), r"duplicate key .* remove one of them"),
+        (_with("workspace: yes"), r"agents\.a\.workspace"),
+        (_with("workspace: no"), r"agents\.a\.workspace"),
+        (_with("workspace: on"), r"agents\.a\.workspace"),
+        (_with("files: {gitignore: off}"), r"agents\.a\.files\.gitignore"),
+    ],
+)
+def test_duplicate_keys_and_yes_no_booleans_stay_strict(
+    tmp_path: Path, text: str, said: str
+) -> None:
+    _refused(_file(tmp_path, text), said)
+
+
+def test_true_and_false_are_the_booleans(tmp_path: Path) -> None:
+    entry = read_manifest(
+        _file(tmp_path, _with("workspace: true, files: {gitignore: false}"))
+    ).agents["a"]
+    assert entry.workspace is True
+    assert entry.files is not None and entry.files.gitignore is False
+
+
+@pytest.mark.parametrize("version", ["2", '"1"', "true", "1.0", "0"])
+def test_the_version_must_be_1(tmp_path: Path, version: str) -> None:
+    text = MINIMAL.replace("version: 1", f"version: {version}")
+    _refused(_file(tmp_path, text), r"version")
+
+
+def test_the_version_is_required(tmp_path: Path) -> None:
+    _refused(_file(tmp_path, MINIMAL.replace("version: 1\n", "")), r"version: field required")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["version: 1\n", "version: 1\nagents:\n", "version: 1\nagents: {}\n"],
+)
+def test_at_least_one_agent_is_required(tmp_path: Path, text: str) -> None:
+    _refused(_file(tmp_path, text), r"agents")
+
+
+DECISION_REFUSES: list[tuple[str, Any, str]] = [
+    ("files.include", ["x"], "files"),
+    ("files.gitignore", True, "files"),
+    ("tools.include", ["x"], "tools"),
+    ("skills.include", ["x"], "skills"),
+    ("max_model_calls", 3, "max_model_calls"),
+    ("workspace", True, "workspace"),
+    ("orchestration.delegate_to", ["x"], "orchestration.delegate_to"),
+    ("orchestration.max_depth", 1, "orchestration.max_depth"),
+    ("orchestration.max_parallel", 1, "orchestration.max_parallel"),
+]
+
+
+@pytest.mark.parametrize("on_mode", [False, True])
+@pytest.mark.parametrize(("key", "value", "refused"), DECISION_REFUSES)
+def test_decision_agents_take_no_files_tools_or_skills(
+    tmp_path: Path, key: str, value: Any, refused: str, on_mode: bool
+) -> None:
+    agent, _ = _agent(key, value, on_mode, DECISION)
+    at = "agents.a.modes.m" if on_mode else "agents.a"
+    said = _refused(write_folder(tmp_path, {"a": agent}), re.escape(f"{at}.{refused} in "))
+    assert "a decision agent takes only" in said
+    assert "orchestration.route" in said
+
+
+@pytest.mark.parametrize("on_mode", [False, True])
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("questions", ["q.json"]), ("orchestration.route", ROUTE)],
+)
+def test_generation_agents_take_no_questions_or_route(
+    tmp_path: Path, key: str, value: Any, on_mode: bool
+) -> None:
+    agent, path = _agent(key, value, on_mode, GENERATION)
+    said = _refused(write_folder(tmp_path, {"a": agent}), re.escape(path))
+    assert "a generation agent takes everything but" in said
+
+
+def test_a_decision_agent_takes_its_questions_and_a_route(tmp_path: Path) -> None:
+    agent = {**DECISION, "questions": ["q/*.json"], "orchestration": {"route": ROUTE}}
+    entry = read_manifest(write_folder(tmp_path, {"a": agent})).agents["a"]
+    assert entry.questions == ["q/*.json"]
+    assert entry.orchestration is not None
+    assert entry.orchestration.route is not None
+    assert entry.orchestration.route.by == "category"
+
+
+def test_instructions_are_required_on_the_entry_or_every_mode(tmp_path: Path) -> None:
+    bare = {"kind": "generation", "model": "m"}
+    _refused(write_folder(tmp_path, {"a": bare}), r"agents\.a\.instructions")
+
+    partly = {**bare, "modes": {"one": {"instructions": "o.md"}, "two": {"model": "n"}}}
+    said = _refused(write_folder(tmp_path, {"a": partly}), r"agents\.a\.modes\.two\.instructions")
+    assert "agents.a.modes.one" not in said
+
+    whole = {**bare, "modes": {"one": {"instructions": "o.md"}, "two": {"instructions": "t.md"}}}
+    entry = read_manifest(write_folder(tmp_path, {"a": whole})).agents["a"]
+    assert entry.instructions is None
+    assert overlaid(entry, "two").instructions == "t.md"
+
+
+def test_instructions_on_the_entry_serve_every_mode(tmp_path: Path) -> None:
+    agent = {**GENERATION, "modes": {"m": {"model": "n"}}}
+    entry = read_manifest(write_folder(tmp_path, {"a": agent})).agents["a"]
+    assert overlaid(entry, "m").instructions == "a.md"
+
+
+def test_a_model_is_required_on_the_entry(tmp_path: Path) -> None:
+    agent = {"kind": "generation", "instructions": "a.md", "modes": {"m": {"model": "n"}}}
+    _refused(write_folder(tmp_path, {"a": agent}), r"agents\.a\.model: field required")
+
+
+PATHS: list[tuple[str, dict[str, Any]]] = [
+    ("instructions", GENERATION),
+    ("files.include", GENERATION),
+    ("files.exclude", GENERATION),
+    ("files.preload", GENERATION),
+    ("skills.include", GENERATION),
+    ("skills.exclude", GENERATION),
+    ("skills.preload", GENERATION),
+    ("questions", DECISION),
+]
+
+
+@pytest.mark.parametrize("bad", ["/x", "a/../b", "../x", "a\\b"])
+@pytest.mark.parametrize(("key", "base"), PATHS)
+def test_a_path_is_written_from_the_root(
+    tmp_path: Path, key: str, base: dict[str, Any], bad: str
+) -> None:
+    value = bad if key == "instructions" else [bad]
+    agent, path = _agent(key, value, False, base)
+    said = _refused(write_folder(tmp_path, {"a": agent}), re.escape(path))
+    assert "from the folder root" in said
+    assert "manifest: " not in said.removeprefix("manifest: ")
+
+
+@pytest.mark.parametrize("bad", ["/x", "a/../b", "a\\b"])
+def test_a_path_on_a_mode_is_written_from_the_root(tmp_path: Path, bad: str) -> None:
+    agent = {**GENERATION, "modes": {"m": {"instructions": bad}}}
+    _refused(write_folder(tmp_path, {"a": agent}), r"agents\.a\.modes\.m\.instructions")
+
+
+def test_two_dots_inside_a_name_are_not_a_path_going_up(tmp_path: Path) -> None:
+    agent = {**GENERATION, "instructions": "a..b/c..d.md", "files": {"include": ["x/**"]}}
+    entry = read_manifest(write_folder(tmp_path, {"a": agent})).agents["a"]
+    assert entry.instructions == "a..b/c..d.md"
+
+
+def test_a_tool_or_skill_name_is_not_a_path(tmp_path: Path) -> None:
+    agent = {
+        **GENERATION,
+        "tools": {"include": ["a/../b"], "exclude": ["/x"]},
+        "skills": {"public": ["a\\b"]},
+    }
+    entry = read_manifest(write_folder(tmp_path, {"a": agent})).agents["a"]
+    assert entry.tools is not None and entry.tools.exclude == ["/x"]
+    assert entry.skills is not None and entry.skills.public == ["a\\b"]
+
+
+@pytest.mark.parametrize("on_mode", [False, True])
+@pytest.mark.parametrize("picked", ["x", "default"])
+def test_a_worker_nothing_declares_is_refused(tmp_path: Path, picked: str, on_mode: bool) -> None:
+    agent, path = _agent("worker", picked, on_mode, GENERATION)
+    said = _refused(write_folder(tmp_path, {"a": agent}), re.escape(path))
+    assert repr(picked) in said
+
+
+def test_a_worker_nothing_declares_is_refused_beside_declared_ones(tmp_path: Path) -> None:
+    agents = {"a": {**GENERATION, "worker": "x"}, "b": {**GENERATION, "worker": "y"}}
+    said = _refused(
+        write_folder(tmp_path, agents, workers={"x": {"processes": 1}}), r"agents\.b\.worker"
+    )
+    assert "'y'" in said
+
+
+def test_a_declared_worker_nothing_picks_is_refused(tmp_path: Path) -> None:
+    folder = write_folder(tmp_path, {"a": GENERATION}, workers={"spare": {"processes": 1}})
+    _refused(folder, r"workers\.spare")
+
+
+def test_a_worker_picked_by_a_mode_is_used(tmp_path: Path) -> None:
+    agent, _ = _agent("worker", "x", True, GENERATION)
+    manifest = read_manifest(write_folder(tmp_path, {"a": agent}, workers={"x": {"threads": 4}}))
+    assert overlaid(manifest.agents["a"], "m").worker == "x"
+    assert overlaid(manifest.agents["a"], None).worker is None
+
+
+def test_an_agent_with_none_runs_beside_declared_workers(tmp_path: Path) -> None:
+    agents = {"a": {**GENERATION, "worker": "x"}, "b": GENERATION}
+    manifest = read_manifest(write_folder(tmp_path, agents, workers={"x": {"processes": 2}}))
+    assert manifest.agents["b"].worker is None
+
+
+def test_a_declared_default_is_used_implicitly(tmp_path: Path) -> None:
+    folder = write_folder(tmp_path, {"a": GENERATION}, workers={"default": {"processes": 3}})
+    assert read_manifest(folder).workers["default"].processes == 3
+
+
+def test_a_declared_default_a_mode_without_a_worker_uses_is_kept(tmp_path: Path) -> None:
+    agent = {
+        "kind": "generation",
+        "model": "m",
+        "modes": {
+            "one": {"instructions": "o.md", "worker": "x"},
+            "two": {"instructions": "t.md"},
+        },
+    }
+    workers = {"default": {"processes": 2}, "x": {"processes": 1}}
+    assert read_manifest(write_folder(tmp_path, {"a": agent}, workers=workers)).workers
+
+
+def test_a_declared_default_everything_names_past_is_refused(tmp_path: Path) -> None:
+    workers = {"default": {"processes": 2}, "x": {"processes": 1}}
+    folder = write_folder(tmp_path, {"a": {**GENERATION, "worker": "x"}}, workers=workers)
+    _refused(folder, r"workers\.default")
+
+
+def test_a_declared_default_no_run_can_reach_is_refused(tmp_path: Path) -> None:
+    agent = {
+        "kind": "generation",
+        "model": "m",
+        "modes": {"one": {"instructions": "o.md", "worker": "x"}},
+    }
+    workers = {"default": {"processes": 2}, "x": {"processes": 1}}
+    _refused(write_folder(tmp_path, {"a": agent}, workers=workers), r"workers\.default")
+
+
+def test_a_tool_entry_takes_what_the_design_lists(tmp_path: Path) -> None:
+    manifest = read_manifest(
+        write_folder(tmp_path, {"a": GENERATION}, tools={"x": {"module": "tools/x.py"}})
+    )
+    entry = manifest.tools["x"]
+    assert (entry.module, entry.function) == ("tools/x.py", "run")
+    assert (entry.description, entry.schema_file, entry.timeout) == (None, None, None)
+
+    full = {
+        "module": "tools/x.py",
+        "function": "find",
+        "description": "Finds",
+        "schema": "tools/x.json",
+        "timeout": 20,
+    }
+    entry = read_manifest(write_folder(tmp_path, {"a": GENERATION}, tools={"x": full})).tools["x"]
+    assert (entry.function, entry.description) == ("find", "Finds")
+    assert (entry.schema_file, entry.timeout) == ("tools/x.json", 20.0)
+
+    _refused(
+        write_folder(tmp_path, {"a": GENERATION}, tools={"x": {"function": "f"}}),
+        r"tools\.x\.module",
+    )
+
+    said = _refused(
+        write_folder(tmp_path, {"a": GENERATION}, tools={"x": {"modul": "tools/x.py"}}),
+        r"tools\.x\.modul\b",
+    )
+    assert "schema" in said and "schema_file" not in said
+
+
+def test_the_field_name_of_the_schema_is_not_a_key(tmp_path: Path) -> None:
+    tool = {"module": "tools/x.py", "schema_file": "tools/x.json"}
+    folder = write_folder(tmp_path, {"a": GENERATION}, tools={"x": tool})
+    _refused(folder, r"tools\.x\.schema_file")
+
+
+@pytest.mark.parametrize("bad", ["/x.py", "a/../b.py", "a\\b.py"])
+@pytest.mark.parametrize("key", ["module", "schema"])
+def test_a_tools_paths_are_written_from_the_root(tmp_path: Path, key: str, bad: str) -> None:
+    tool = {"module": "tools/x.py", key: bad}
+    folder = write_folder(tmp_path, {"a": GENERATION}, tools={"x": tool})
+    _refused(folder, rf"tools\.x\.{key}: .*from the folder root")
+
+
+def test_a_bom_is_accepted_and_non_utf8_is_refused(tmp_path: Path) -> None:
+    (tmp_path / MANIFEST).write_bytes(b"\xef\xbb\xbf" + MINIMAL.encode())
+    assert read_manifest(tmp_path).agents["a"].kind == "generation"
+
+    (tmp_path / MANIFEST).write_bytes(b"version: 1\n# caf\xe9\n")
+    _refused(tmp_path, "UTF-8")
+
+
+@pytest.mark.parametrize(
+    ("dotted", "value"),
+    [
+        ("max_model_calls", "5"),
+        ("max_model_calls", True),
+        ("tools.timeout", "3"),
+        ("tools.max_parallel", 1.5),
+        ("orchestration.max_depth", "1"),
+        ("description", 3),
+        ("instructions", ["a.md"]),
+    ],
+)
+def test_a_value_of_the_wrong_type_is_refused_by_its_path(
+    tmp_path: Path, dotted: str, value: Any
+) -> None:
+    agent = {**GENERATION, **_nested(dotted, value)}
+    _refused(write_folder(tmp_path, {"a": agent}), re.escape(f"agents.a.{dotted}"))
+
+
+@pytest.mark.parametrize("value", [True, "2"])
+def test_a_worker_takes_numbers(tmp_path: Path, value: Any) -> None:
+    agent = {**GENERATION, "worker": "x"}
+    folder = write_folder(tmp_path, {"a": agent}, workers={"x": {"processes": value}})
+    _refused(folder, r"workers\.x\.processes")
+
+
+@pytest.mark.parametrize(
+    ("dotted", "value"),
+    [
+        ("max_model_calls", 0),
+        ("tools.timeout", 0),
+        ("tools.timeout", -1),
+        ("tools.max_parallel", 0),
+        ("orchestration.max_depth", 0),
+        ("orchestration.max_parallel", 0),
+    ],
+)
+def test_a_limit_on_an_agent_is_positive(tmp_path: Path, dotted: str, value: Any) -> None:
+    agent = {**GENERATION, **_nested(dotted, value)}
+    _refused(write_folder(tmp_path, {"a": agent}), re.escape(f"agents.a.{dotted}"))
+
+
+@pytest.mark.parametrize("key", ["processes", "threads", "max_result_bytes"])
+def test_a_limit_on_a_worker_is_positive(tmp_path: Path, key: str) -> None:
+    agent = {**GENERATION, "worker": "x"}
+    folder = write_folder(tmp_path, {"a": agent}, workers={"x": {key: 0}})
+    _refused(folder, rf"workers\.x\.{key}")
+
+
+def test_a_timeout_on_a_tool_is_positive(tmp_path: Path) -> None:
+    tool = {"module": "tools/x.py", "timeout": 0}
+    _refused(write_folder(tmp_path, {"a": GENERATION}, tools={"x": tool}), r"tools\.x\.timeout")
+
+
+@pytest.mark.parametrize("value", ["some", 5, [1], True])
+def test_public_is_all_or_a_list_of_names(tmp_path: Path, value: Any) -> None:
+    agent = {**GENERATION, "skills": {"public": value}}
+    said = _refused(write_folder(tmp_path, {"a": agent}), r"agents\.a\.skills\.public: write all")
+    assert "list[str]" not in said
+
+
+def test_public_takes_the_word_all(tmp_path: Path) -> None:
+    agent = {**GENERATION, "skills": {"public": "all"}}
+    skills = read_manifest(write_folder(tmp_path, {"a": agent})).agents["a"].skills
+    assert skills is not None and skills.public == "all"
+
+
+def _entry(tmp_path: Path, agent: dict[str, Any]) -> Any:
+    return read_manifest(write_folder(tmp_path, {"a": agent})).agents["a"]
+
+
+def test_a_mode_adds_to_lists_and_replaces_single_values(tmp_path: Path) -> None:
+    agent = {
+        **GENERATION,
+        "tools": {"exclude": ["a"]},
+        "modes": {"m": {"model": "m2", "tools": {"exclude": ["b"]}}},
+    }
+    resolved = overlaid(_entry(tmp_path, agent), "m")
+    assert resolved.tools.exclude == ["a", "b"]
+    assert resolved.model == "m2"
+    assert resolved.kind == "generation"
+
+
+def test_a_list_is_added_once_in_entry_then_mode_order(tmp_path: Path) -> None:
+    agent = {
+        **GENERATION,
+        "files": {"include": ["b", "a"]},
+        "modes": {"m": {"files": {"include": ["a", "c"]}}},
+    }
+    assert overlaid(_entry(tmp_path, agent), "m").files.include == ["b", "a", "c"]
+
+
+def test_every_list_field_adds(tmp_path: Path) -> None:
+    decision = {
+        **DECISION,
+        "questions": ["q/one.json"],
+        "modes": {"m": {"questions": ["q/two.json"]}},
+    }
+    assert overlaid(_entry(tmp_path, decision), "m").questions == ["q/one.json", "q/two.json"]
+
+    generation = {
+        **GENERATION,
+        "orchestration": {"delegate_to": ["x"]},
+        "skills": {"preload": ["p/1"], "public": ["one"]},
+        "modes": {
+            "m": {
+                "orchestration": {"delegate_to": ["y"]},
+                "skills": {"preload": ["p/2"], "public": ["two"]},
+            }
+        },
+    }
+    resolved = overlaid(_entry(tmp_path, generation), "m")
+    assert resolved.orchestration.delegate_to == ["x", "y"]
+    assert resolved.skills.preload == ["p/1", "p/2"]
+    assert resolved.skills.public == ["one", "two"]
+
+
+def test_no_mode_is_the_entry_with_every_section_present(tmp_path: Path) -> None:
+    resolved = overlaid(_entry(tmp_path, GENERATION), None)
+    assert resolved.kind == "generation"
+    assert resolved.instructions == "a.md"
+    assert resolved.files == FilesSection()
+    assert resolved.tools == ToolsSection()
+    assert resolved.skills == SkillsSection()
+    assert resolved.orchestration == Orchestration()
+
+
+def test_a_mode_with_no_section_keeps_the_entrys(tmp_path: Path) -> None:
+    agent = {
+        **GENERATION,
+        "files": {"include": ["k"], "gitignore": True},
+        "tools": {"timeout": 9},
+        "modes": {"m": {"description": "Other"}},
+    }
+    resolved = overlaid(_entry(tmp_path, agent), "m")
+    assert resolved.files.include == ["k"]
+    assert resolved.files.gitignore is True
+    assert resolved.tools.timeout == 9
+    assert resolved.description == "Other"
+
+
+def test_a_section_only_on_the_mode_is_taken_whole(tmp_path: Path) -> None:
+    agent = {**GENERATION, "modes": {"m": {"tools": {"include": ["x"], "max_parallel": 2}}}}
+    resolved = overlaid(_entry(tmp_path, agent), "m")
+    assert resolved.tools.include == ["x"]
+    assert resolved.tools.max_parallel == 2
+
+
+def test_a_mode_that_says_nothing_of_gitignore_leaves_it(tmp_path: Path) -> None:
+    agent = {
+        **GENERATION,
+        "files": {"gitignore": True},
+        "modes": {"m": {"files": {"include": ["x"]}}},
+    }
+    assert overlaid(_entry(tmp_path, agent), "m").files.gitignore is True
+
+
+def test_a_mode_can_turn_off_what_the_entry_turned_on(tmp_path: Path) -> None:
+    agent = {
+        **GENERATION,
+        "workspace": True,
+        "files": {"gitignore": True},
+        "modes": {"m": {"workspace": False, "files": {"gitignore": False}}},
+    }
+    resolved = overlaid(_entry(tmp_path, agent), "m")
+    assert resolved.workspace is False
+    assert resolved.files.gitignore is False
+
+
+def test_single_values_of_a_section_are_replaced(tmp_path: Path) -> None:
+    agent = {
+        **GENERATION,
+        "tools": {"timeout": 30, "max_parallel": 4},
+        "modes": {"m": {"tools": {"timeout": 5}}},
+    }
+    resolved = overlaid(_entry(tmp_path, agent), "m")
+    assert resolved.tools.timeout == 5
+    assert resolved.tools.max_parallel == 4
+
+
+def test_a_route_is_a_single_value_and_is_replaced_whole(tmp_path: Path) -> None:
+    agent = {
+        **DECISION,
+        "orchestration": {"route": {**ROUTE, "min_confidence": 0.7}},
+        "modes": {"m": {"orchestration": {"route": {"by": "other", "to": {"x": "y"}}}}},
+    }
+    route = overlaid(_entry(tmp_path, agent), "m").orchestration.route
+    assert route is not None
+    assert (route.by, route.to, route.min_confidence) == ("other", {"x": "y"}, None)
+
+
+@pytest.mark.parametrize(
+    ("entry_public", "mode_public", "resolved"),
+    [
+        (["x"], "all", "all"),
+        ("all", ["x"], "all"),
+        ("all", "all", "all"),
+    ],
+)
+def test_public_all_is_never_narrowed(
+    tmp_path: Path, entry_public: Any, mode_public: Any, resolved: Any
+) -> None:
+    agent = {
+        **GENERATION,
+        "skills": {"public": entry_public},
+        "modes": {"m": {"skills": {"public": mode_public}}},
+    }
+    assert overlaid(_entry(tmp_path, agent), "m").skills.public == resolved
+
+
+def test_a_text_that_reads_all_is_an_ordinary_single_value(tmp_path: Path) -> None:
+    agent = {**GENERATION, "description": "all", "modes": {"m": {"description": "some"}}}
+    assert overlaid(_entry(tmp_path, agent), "m").description == "some"
+
+
+def test_overlaying_leaves_the_entry_as_it_was(tmp_path: Path) -> None:
+    agent = {
+        **GENERATION,
+        "tools": {"exclude": ["a"]},
+        "modes": {"m": {"tools": {"exclude": ["b"]}}},
+    }
+    entry = _entry(tmp_path, agent)
+    overlaid(entry, "m")
+    assert entry.tools is not None and entry.tools.exclude == ["a"]
+    assert entry.modes["m"].tools is not None and entry.modes["m"].tools.exclude == ["b"]
