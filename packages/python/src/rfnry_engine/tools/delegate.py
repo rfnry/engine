@@ -116,7 +116,7 @@ def folder_reach(levels_below: int | None) -> int | None:
 
 @asynccontextmanager
 async def enter(
-    name: str, limit: int, reach: int | None = None, *, routed: bool = False
+    name: str, limit: int, reach: int | None, *, routed: bool = False
 ) -> AsyncIterator[None]:
     stack = _stack.get()
     routes = _routes.get()

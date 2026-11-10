@@ -565,10 +565,12 @@ def test_the_worker_result_limit_is_a_positive_number_of_bytes_or_none(fixtures:
             engine_for(fixtures, Scripted(), worker_result_bytes=bad)
 
 
-def test_model_call_and_depth_caps_must_be_positive(fixtures: Path) -> None:
+def test_model_call_and_depth_caps_must_be_positive_integers(fixtures: Path) -> None:
     for name in ("max_model_calls", "max_depth"):
-        for bad in (0, -1):
-            with pytest.raises(ConfigurationError, match=f"^engine: {name} must be positive$"):
+        for bad in (0, -1, 1.5, True, "10", None):
+            with pytest.raises(
+                ConfigurationError, match=f"^engine: {name} must be a positive integer$"
+            ):
                 engine_for(fixtures, Scripted(), **{name: bad})
 
 

@@ -641,10 +641,9 @@ class Engine:
             raise ConfigurationError(
                 "engine: worker_result_bytes must be a positive number of bytes, or None for no limit"
             )
-        if max_model_calls <= 0:
-            raise ConfigurationError("engine: max_model_calls must be positive")
-        if max_depth <= 0:
-            raise ConfigurationError("engine: max_depth must be positive")
+        for name, cap in (("max_model_calls", max_model_calls), ("max_depth", max_depth)):
+            if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
+                raise ConfigurationError(f"engine: {name} must be a positive integer")
         if history_walk <= 0:
             raise ConfigurationError("engine: history_walk must be positive")
         if history_chars <= 0:

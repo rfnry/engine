@@ -29,9 +29,6 @@ for thread in threads:
 for thread in threads:
     thread.join()
 """
-WAITS_FOR_SECOND = (
-    "i=0; while [ $i -lt 10 ]; do [ -f second ] && exit 0; sleep 0.05; i=$((i+1)); done; exit 7"
-)
 
 
 class Gauge:
@@ -44,6 +41,21 @@ class Gauge:
         self.peak = max(self.peak, self.now)
         await asyncio.sleep(0.1)
         self.now -= 1
+
+
+class Relaying:
+    def __init__(self, to: str, together: asyncio.Barrier | None = None) -> None:
+        self.to = to
+        self.together = together
+        self.heard: list[Any] = []
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        if messages[-1].role == "tool":
+            self.heard.append(messages[-1].content)
+            return text_reply("relayed")
+        if self.together is not None:
+            await self.together.wait()
+        return delegating(self.to)
 
 
 class Measured:
@@ -230,6 +242,74 @@ async def test_max_depth_counts_levels_below_the_agent(
     )
 
 
+async def test_the_limits_of_two_delegates_at_once_stay_apart(tmp_path: Path) -> None:
+    together = asyncio.Barrier(2)
+    leaf = Scripted(text_reply("c done"))
+    root = folder(
+        tmp_path,
+        {
+            "p": agent(model="p", orchestration={"delegate_to": ["tight", "wide"]}),
+            "tight": agent(model="tight", orchestration={"delegate_to": ["b"], "max_depth": 1}),
+            "wide": agent(model="wide", orchestration={"delegate_to": ["b"], "max_depth": 3}),
+            "b": agent(model="b", orchestration={"delegate_to": ["c"]}),
+            "c": agent(model="c"),
+        },
+    )
+    async with asyncio.timeout(5):
+        run = await Engine(
+            root,
+            models={
+                "p": Scripted(fanning_out("tight", "wide"), text_reply("done")),
+                "tight": Relaying("b", together),
+                "wide": Relaying("b", together),
+                "b": Relaying("c"),
+                "c": leaf,
+            },
+        ).run("p", "acme", "go")
+    tight, wide = worked(run).children
+    assert isinstance(tight, Generation) and isinstance(wide, Generation)
+    below_tight, below_wide = tight.children[0], wide.children[0]
+    assert isinstance(below_tight, Generation) and isinstance(below_wide, Generation)
+    assert below_tight.steps[0].result == (
+        "DelegationDepthError: tools/delegate: depth 3 exceeded at p -> tight -> b -> c"
+    )
+    assert below_wide.steps[0].result == "c done"
+
+
+@pytest.mark.parametrize(
+    ("written", "ceiling", "heard"),
+    [
+        pytest.param(1, 5, TOO_DEEP, id="the-folder-limit-follows"),
+        pytest.param(None, 2, "c done", id="the-ceiling-stays-with-its-engine"),
+    ],
+)
+async def test_limits_across_engine_tool_of_another_engine(
+    tmp_path: Path, written: int | None, ceiling: int, heard: str
+) -> None:
+    (tmp_path / "outer").mkdir()
+    (tmp_path / "inner").mkdir()
+    limit = {} if written is None else {"orchestration": {"max_depth": written}}
+    outer = folder(tmp_path / "outer", {"a": agent(tools={"include": ["b"]}, **limit)})
+    inner = folder(
+        tmp_path / "inner",
+        {
+            "b": agent(model="b", orchestration={"delegate_to": ["c"]}),
+            "c": agent(model="c"),
+        },
+    )
+    relay = Relaying("c")
+    consult = Reply(
+        tool_calls=[ToolCall(id="t", name="b", args={"input": "go"})], stop_reason="tool_use"
+    )
+    other = Engine(inner, models={"b": relay, "c": Scripted(text_reply("c done"))})
+    model = Scripted(consult, text_reply("done"))
+    run = await Engine(outer, models={"m": model}, max_depth=ceiling).run(
+        "a", "acme", "go", tools=other.tool("b", scope="acme")
+    )
+    assert worked(run).reply == "done"
+    assert relay.heard == [heard]
+
+
 async def peak_of_tool_calls(tmp_path: Path, section: Mapping[str, Any]) -> int:
     gauge = Gauge()
 
@@ -363,6 +443,7 @@ async def run_commands(
     cap: int,
     tools: Tools = PROBE,
     bridge: bool = True,
+    timeout: float = 5,
 ) -> Generation:
     root = folder(
         tmp_path,
@@ -375,7 +456,7 @@ async def run_commands(
     )
     model = Scripted(reply, text_reply("done"))
     async with (
-        Workspace(Local(work), scope="acme", timeout=5, bridge=bridge) as room,
+        Workspace(Local(work), scope="acme", timeout=timeout, bridge=bridge) as room,
         Engine(root, models={"m": model}) as engine,
     ):
         run = await engine.run("a", "acme", "go", workspace=room, tools=tools)
@@ -410,12 +491,13 @@ async def test_calls_through_the_bridge_stay_under_the_cap(
     assert gauge.peak == 2
 
 
-@pytest.mark.parametrize(("bridge", "exit_code"), [(True, 0), (False, 7)])
+@pytest.mark.parametrize(("bridge", "polls", "exit_code"), [(True, 200, 0), (False, 10, 7)])
 async def test_a_shell_takes_a_slot_only_on_a_run_without_a_bridge(
-    tmp_path: Path, short_root: Path, bridge: bool, exit_code: int
+    tmp_path: Path, short_root: Path, bridge: bool, polls: int, exit_code: int
 ) -> None:
-    both = use(shell(WAITS_FOR_SECOND, "1"), shell("touch second", "2"))
-    run = await run_commands(tmp_path, short_root, both, cap=1, bridge=bridge)
+    waits = f"i=0; while [ $i -lt {polls} ]; do [ -f second ] && exit 0; sleep 0.05; i=$((i+1)); done; exit 7"
+    both = use(shell(waits, "1"), shell("touch second", "2"))
+    run = await run_commands(tmp_path, short_root, both, cap=1, bridge=bridge, timeout=15)
     assert json.loads(str(run.steps[0].result))["exit_code"] == exit_code
 
 
