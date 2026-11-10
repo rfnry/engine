@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
 from rfnry_engine.bundle import build_bundle
+from rfnry_engine.compiled import load_folder
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
@@ -39,7 +40,7 @@ from rfnry_engine.foreground import (
     taking,
 )
 from rfnry_engine.frontmatter import plainly
-from rfnry_engine.manifest import Kind
+from rfnry_engine.manifest import MANIFEST, Kind
 from rfnry_engine.models import (
     Answer,
     ChoiceAnswer,
@@ -623,8 +624,11 @@ class Engine:
         self.worker_result_bytes = worker_result_bytes
         self.history_walk = history_walk
         self.history_chars = history_chars
-        self._agents = load_tree(self.root)
-        validate_tree(self._agents)
+        if (self.root / MANIFEST).is_file():
+            self._agents = load_folder(self.root)
+        else:
+            self._agents = load_tree(self.root)
+            validate_tree(self._agents)
         _check_models(self._agents, self._models)
         self._workers = Workers(self._agents, _groups(self._agents, workers), worker_result_bytes)
         self._closed = False

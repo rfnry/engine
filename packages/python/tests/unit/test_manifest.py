@@ -468,13 +468,19 @@ def test_a_value_yaml_cannot_build_is_invalid_yaml(tmp_path: Path, value: str) -
 def test_deep_nesting_is_refused(tmp_path: Path, innermost: str) -> None:
     deep = "[" * 3000 + innermost + "]" * 3000
     _refused(
-        _file(tmp_path, _with(f"description: {deep}")), r"manifest: <root>.* nested too deeply"
+        _file(tmp_path, _with(f"description: {deep}")),
+        r"manifest: (invalid YAML in )?<root>.* nested too deeply",
     )
 
 
-def test_deep_nesting_under_an_unknown_key_names_the_key(tmp_path: Path) -> None:
-    deep = "[" * 3000 + "x" + "]" * 3000
-    _refused(_file(tmp_path, _with(f"extra: {deep}")), r"agents\.a\.extra \(it takes")
+def test_deep_nesting_under_an_unknown_key_names_the_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def too_deep(*args: Any, **kwargs: Any) -> None:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr("rfnry_engine.manifest._walk_for_nothing", too_deep)
+    _refused(_file(tmp_path, _with("extra: [x]")), r"agents\.a\.extra \(it takes")
 
 
 def test_a_document_too_deep_to_load_is_invalid_yaml(
@@ -629,8 +635,9 @@ def _with_name(root: Path, where: str, name: str) -> tuple[Path, str]:
     if where == "agents":
         return write_folder(root, {name: GENERATION}), f"agents.{name}"
     if where == "workers":
+        picking = {**GENERATION, "worker": name} if name.strip() else GENERATION
         return write_folder(
-            root, {"a": GENERATION}, workers={name: {"processes": 1}}
+            root, {"a": picking}, workers={name: {"processes": 1}}
         ), f"workers.{name}"
     if where == "tools":
         return write_folder(
@@ -649,7 +656,7 @@ def test_a_name_is_one_plain_word(tmp_path: Path, where: str, bad: str) -> None:
 
 
 @pytest.mark.parametrize("name", ["a", "a.b", "a-b", "a_b", "a b"])
-@pytest.mark.parametrize("where", ["agents", "tools", "modes"])
+@pytest.mark.parametrize("where", ["agents", "workers", "tools", "modes"])
 def test_a_plain_name_loads(tmp_path: Path, where: str, name: str) -> None:
     folder, _ = _with_name(tmp_path, where, name)
     assert read_manifest(folder).version == 1

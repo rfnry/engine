@@ -276,6 +276,8 @@ class Fixed:
 
 ### An agent is a directory
 
+A folder with an `rfnry.yaml` at its root is read from that file instead of from `AGENT.md` files: one entry per agent under `agents:`, whose `instructions` names any markdown file from the folder root, its frontmatter left out of the prompt, and whose `modes` each compile to a full agent when the engine loads.
+
 ```
 agents/
   support/

@@ -4,7 +4,7 @@ import logging
 import os
 import posixpath
 import re
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from functools import cached_property
 from itertools import combinations
 from pathlib import Path
@@ -274,6 +274,16 @@ class AgentSpec(BaseModel):
     skill_folders: dict[str, Path] = Field(default_factory=dict)
     folder_tools: dict[str, ToolDef] = Field(default_factory=dict)
     ignored: Callable[[Path], bool] | None = None
+    modes: dict[str, AgentSpec] = Field(default_factory=dict)
+    needs_mode: bool = False
+    worker: str = "default"
+    withheld: Callable[[Path], bool] | None = None
+    max_model_calls: int | None = None
+    tool_timeout: float | None = None
+    max_depth: int | None = None
+    tool_parallel: int | None = None
+    delegate_parallel: int | None = None
+    mode: str | None = None
 
 
 def no_such_skill(spec: AgentSpec, skill: str) -> str:
@@ -491,7 +501,7 @@ def _skills_in(
     return dict(sorted(found.items()))
 
 
-def _question_files(directory: Path) -> list[Path]:
+def question_files(directory: Path) -> list[Path]:
     if not directory.is_dir():
         return []
     return [
@@ -501,12 +511,7 @@ def _question_files(directory: Path) -> list[Path]:
     ]
 
 
-def _questions(
-    directory: Path, root: Path, script_folders: Collection[Path]
-) -> tuple[dict[str, Question], dict[str, tuple[dict[str, JsonValue], Script]]]:
-    files = _question_files(directory)
-    if not files:
-        return {}, {}
+def question_parts(directory: Path, files: Collection[Path]) -> tuple[dict[str, Path], list[str]]:
     for path in files:
         if path.suffix == ".md":
             raise ConfigurationError(
@@ -519,13 +524,33 @@ def _questions(
             raise ConfigurationError(
                 f"tree: {directory / name}.py has no {name}.json beside it; a question is {name}.json, and {name}.py fills it from data"
             )
-    for path in definitions.values():
-        _held(path, directory.parent)
+    return definitions, scripts
+
+
+def read_questions(
+    directory: Path,
+    definitions: Mapping[str, Path],
+    scripts: Collection[str],
+    root: Path,
+    script_folders: Collection[Path],
+) -> tuple[dict[str, Question], dict[str, tuple[dict[str, JsonValue], Script]]]:
     fixed = {name: _question(path) for name, path in definitions.items() if name not in scripts}
     fronts = {name: _front(definitions[name]) for name in scripts}
     folders = {*script_folders, directory.resolve()}
     loaded = load_scripts(directory, scripts, project_of(root), root, folders) if scripts else {}
     return fixed, {name: (fronts[name], loaded[name]) for name in scripts}
+
+
+def _questions(
+    directory: Path, root: Path, script_folders: Collection[Path]
+) -> tuple[dict[str, Question], dict[str, tuple[dict[str, JsonValue], Script]]]:
+    files = question_files(directory)
+    if not files:
+        return {}, {}
+    definitions, scripts = question_parts(directory, files)
+    for path in definitions.values():
+        _held(path, directory.parent)
+    return read_questions(directory, definitions, scripts, root, script_folders)
 
 
 class _Folder:
@@ -583,7 +608,7 @@ def _subfolders(folder: Path) -> list[Path]:
         return []
 
 
-def _utf8(name: str, path: Path) -> None:
+def utf8_name(name: str, path: Path) -> None:
     try:
         name.encode("utf-8")
     except UnicodeEncodeError:
@@ -616,7 +641,7 @@ def _tree_folders(root: Path) -> tuple[dict[str, Path], dict[str, Path]]:
                 or (holds and child.name in DECLARED)
             ):
                 continue
-            _utf8(child.name, child)
+            utf8_name(child.name, child)
             place = child.resolve()
             key = f"{at}/{child.name}" if at else child.name
             if child.is_symlink():
@@ -951,7 +976,7 @@ def load_agent(
             f"tree: decision agent {agent!r} cannot declare gitignore:; a decision agent reads no files, so give it what it needs in its input or its questions"
         )
     ignores = (gitignores or _Gitignores()) if front.gitignore else None
-    if front.kind == "generation" and _question_files(directory / "questions"):
+    if front.kind == "generation" and question_files(directory / "questions"):
         raise ConfigurationError(
             f"tree: generation agent {agent!r} cannot declare questions/; questions are for decision agents, so make it kind: decision or move them to one"
         )
@@ -1073,7 +1098,7 @@ def load_agent(
     hashed = None if ignored is None else _except_what_runs(root, ignored)
     files = sorted([*content(root, False, inner=True, ignored=hashed), *_under(reads), *above])
     for rel, file in files:
-        _utf8(rel, file)
+        utf8_name(rel, file)
     jail = Jail(root, reach=from_agent(path, {**read_places, **skill_folders}), ignored=ignored)
     try:
         names = _preload_names(
@@ -1184,14 +1209,20 @@ def load_tree(root: Path) -> dict[str, AgentSpec]:
     return dict(sorted(agents.items()))
 
 
+def _every_spec(agents: Mapping[str, AgentSpec]) -> Iterator[AgentSpec]:
+    for agent in agents.values():
+        yield agent
+        yield from agent.modes.values()
+
+
 def validate_tree(agents: dict[str, AgentSpec]) -> None:
-    for spec in agents.values():
+    for spec in _every_spec(agents):
         for name in spec.agents:
             if name not in agents:
                 raise ConfigurationError(
                     f"tree: agent {spec.name!r} names unknown agent {name!r}; agents: names agents of this tree: {', '.join(sorted(agents))}"
                 )
-        if spec.route is None:
+        if spec.route is None or spec.needs_mode:
             continue
         by = spec.route.by
         if by in spec.scripted:

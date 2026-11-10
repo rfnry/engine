@@ -50,7 +50,7 @@ def split_frontmatter(raw: str) -> tuple[str, str] | None:
 
 
 def body_of(raw: str) -> str:
-    split = split_frontmatter(raw)
+    split = split_frontmatter(raw.replace("\r\n", "\n"))
     return (raw.removeprefix("\ufeff") if split is None else split[1]).strip()
 
 
