@@ -587,10 +587,10 @@ def _check_models(
             _of_its_kind(spec, model)
 
 
-def _check_processes(workers: Workers, ceiling: int) -> None:
+def _check_processes(workers: Workers, ceiling: int, raise_it: str) -> None:
     if workers.processes > ceiling:
         raise ConfigurationError(
-            f"engine: the workers of this folder run {workers.processes} processes in all, over max_worker_processes={ceiling}; lower processes: under workers:, or raise Engine(max_worker_processes=)"
+            f"engine: the workers of this folder run {workers.processes} processes in all, over max_worker_processes={ceiling}; lower processes: under workers:, or {raise_it}"
         )
 
 
@@ -610,16 +610,22 @@ def _info(name: str, spec: AgentSpec) -> AgentInfo:
     )
 
 
-def infos(agents: Mapping[str, AgentSpec]) -> dict[str, AgentInfo]:
+def _infos(agents: Mapping[str, AgentSpec]) -> dict[str, AgentInfo]:
     return {name: _info(name, spec) for name, spec in agents.items()}
 
 
-def check_folder(root: Path) -> dict[str, AgentInfo]:
+def check_folder(
+    root: Path, max_worker_processes: int = MAX_WORKER_PROCESSES
+) -> dict[str, AgentInfo]:
     root = Path(root).resolve()
     manifest = read_manifest(root)
     agents = compile_folder(root, manifest)
-    _check_processes(Workers(agents, manifest.workers, None), MAX_WORKER_PROCESSES)
-    return infos(agents)
+    _check_processes(
+        Workers(agents, manifest.workers, None),
+        max_worker_processes,
+        "pass --max-worker-processes",
+    )
+    return _infos(agents)
 
 
 class Engine:
@@ -681,7 +687,7 @@ class Engine:
             validate_tree(self._agents)
         _check_models(self._agents, self._models)
         self._workers = Workers(self._agents, declared, worker_result_bytes)
-        _check_processes(self._workers, max_worker_processes)
+        _check_processes(self._workers, max_worker_processes, "raise Engine(max_worker_processes=)")
         self._closed = False
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
 
@@ -705,7 +711,7 @@ class Engine:
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
-        return infos(self._agents)
+        return _infos(self._agents)
 
     def _run_models(
         self, models: Mapping[str, GenerationModel | DecisionModel] | None

@@ -14,8 +14,11 @@ _WARNING = "take a snapshot of the database and stop app instances running the o
 
 
 def _parser() -> argparse.ArgumentParser:
+    from rfnry_engine.engine import MAX_WORKER_PROCESSES
+
     parser = argparse.ArgumentParser(
-        prog="rfnry-engine", description="prepare and upgrade the database rfnry-engine records in"
+        prog="rfnry-engine",
+        description="prepare and upgrade the database rfnry-engine records in, and check an agents folder",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -47,6 +50,12 @@ def _parser() -> argparse.ArgumentParser:
     folders = folder.add_subparsers(dest="folder_command", required=True)
     checked = folders.add_parser("check", help="load the folder and list its agents and modes")
     checked.add_argument("path", nargs="?", default=".", help="the folder (default: .)")
+    checked.add_argument(
+        "--max-worker-processes",
+        type=int,
+        default=MAX_WORKER_PROCESSES,
+        help=f"the ceiling on the processes of all the workers (default: {MAX_WORKER_PROCESSES})",
+    )
     folders.add_parser("schema", help="print the JSON Schema of rfnry.yaml")
     return parser
 
@@ -146,7 +155,7 @@ def _folder(args: argparse.Namespace) -> int:
         print(json.dumps(Manifest.model_json_schema(by_alias=True), indent=2))
         return 0
     try:
-        found = check_folder(Path(args.path))
+        found = check_folder(Path(args.path), args.max_worker_processes)
     except ConfigurationError as exc:
         print(exc, file=sys.stderr)
         return 1
