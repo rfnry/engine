@@ -560,11 +560,10 @@ what it leads to is excluded, ignored by a `.gitignore` under `gitignore: true`,
 the entry holds but does not offer: an alias cannot undo an exclusion. So `knowledge/alias.md`
 linking to an excluded `drafts/next.md` reads as missing and is not preloaded, and so does
 `knowledge/howto.md` linking to `support/skills/internal/SKILL.md` when `skills.exclude` names
-`internal`, while `knowledge/out.md` linking to `outside/o.md`, which `include` does not reach, reads
-as `knowledge/out.md`. A path that
-leads outside the folder is the jail's `InputError`, `jail: path outside the folder: <path>`, and a
-part written after a file names a folder that is not there, as POSIX has it: `Read` of
-`notes.md/x` is `tools/builtins: not a folder: notes.md/x`.
+`internal`, while `knowledge/out.md` linking to `outside/o.md`, which `include` does not reach,
+reads as `knowledge/out.md`. A path that leads outside the folder is the jail's `InputError`, `jail:
+path outside the folder: <path>`, and a part written after a file names a folder that is not there,
+as POSIX has it: `Read` of `notes.md/x` is `tools/builtins: not a folder: notes.md/x`.
 
 `preload` sends its entries in the order of the list, each file under its path from the root, as
 what `Read` would return for it. A file that is not text, or is over 5 MB, goes as a line naming its
@@ -1852,7 +1851,7 @@ processes and on one loop.
 | `timeout` | `120` seconds | the limit on each `Shell`, `Job`, `Write` and `Edit` call; a `Shell` command still running is stopped — on `Local`, sent SIGTERM, then killed a second later with everything it started — and `Shell` returns what it printed with `timed_out: true` |
 | `output_bytes` | `30_000` | the cap on `stdout` and on `stderr`, each keeping its first and last half |
 | `bridge` | `True` | lets a command call the run's tools, below; `False` turns it off |
-| `tree` | `None` | where the agent tree is mounted in the sandbox, as commands see it, below |
+| `tree` | `None` | where the folder of the agents is mounted in the sandbox, as commands see it, below |
 
 `Local(root, shell=, env=)`:
 
@@ -2434,10 +2433,11 @@ entrypoint takes the commit the deployment names. The image needs git, which `py
 does not have:
 
 ```dockerfile
+# syntax=docker/dockerfile:1
 FROM python:3.14-slim
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY entrypoint.sh /entrypoint.sh
+COPY --chmod=0755 entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 ```
 
