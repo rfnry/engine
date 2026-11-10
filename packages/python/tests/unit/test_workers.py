@@ -16,8 +16,14 @@ from typing import Any, cast
 import pytest
 from pydantic import JsonValue
 
-from rfnry_engine.errors import InputError, WorkerError
+from rfnry_engine.engine import Engine
+from rfnry_engine.errors import ConfigurationError, InputError, WorkerError
+from rfnry_engine.models import Reply, ToolCall
+from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.workers.pool import CAP, CLOSED, Helper, Script, WorkerPool, Workers, _Worker
+
+from .fakes import Scripted, delegating, text_reply
+from .trees import write_folder
 
 CALL = {"scope": "acme"}
 PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
@@ -1091,8 +1097,8 @@ async def test_closing_the_workers_closes_every_pool_before_it_raises_what_the_f
         await asyncio.sleep(0.2)
         await close(second)
 
-    workers = Workers({}, None)
-    workers._pools = {None: first, "billing": second, "support": third}
+    workers = Workers({}, {}, None)
+    workers._pools = {"default": first, "billing": second, "support": third}
     monkeypatch.setattr(first, "close", lambda: failing(first, "first"))
     monkeypatch.setattr(second, "close", slow)
     monkeypatch.setattr(third, "close", lambda: failing(third, "third"))
@@ -1119,8 +1125,8 @@ async def test_a_cancel_of_closing_the_workers_from_another_thread_still_closes_
             pid(await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(call, loop)))
             for call in (first.call("nap", {}, CALL, 5), second.call("nap", {}, CALL, 5))
         ]
-        workers = Workers({}, None)
-        workers._pools = {None: first, "billing": second}
+        workers = Workers({}, {}, None)
+        workers._pools = {"default": first, "billing": second}
         busy = threading.Event()
 
         def block() -> None:
@@ -1169,8 +1175,8 @@ async def test_a_cancel_of_closing_the_workers_does_not_wait_for_a_blocked_loop(
             pid(await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(call, loop)))
             for call in (first.call("nap", {}, CALL, 5), second.call("nap", {}, CALL, 5))
         ]
-        workers = Workers({}, None)
-        workers._pools = {None: first, "billing": second}
+        workers = Workers({}, {}, None)
+        workers._pools = {"default": first, "billing": second}
         blocking(loop, 2.0)
         began = time.monotonic()
         with pytest.raises(TimeoutError):
@@ -1583,3 +1589,295 @@ async def test_close_reaps_every_worker_before_it_returns(tmp_path: Path) -> Non
     finally:
         await pool.close()
     assert len(set(pids)) == 2 and all(reaped(pid(value)) for value in pids)
+
+
+GENERATION: dict[str, Any] = {"kind": "generation", "model": "m", "instructions": "a.md"}
+PICKS_PID: dict[str, Any] = {**GENERATION, "tools": {"include": ["pid"]}}
+PID_TOOL = {"pid": {"module": "tools/pid.py", "description": "Its process"}}
+PID_FILES = {"a.md": "Work.\n", "tools/pid.py": PID}
+HOLD = (
+    "import time\n"
+    "from pathlib import Path\n"
+    "def run(args, call):\n"
+    "    Path(args['started']).write_text('')\n"
+    "    while not Path(args['go']).exists():\n"
+    "        time.sleep(0.01)\n"
+    "    return 'answered'\n"
+)
+MEET = (
+    "import threading\n"
+    "both = threading.Barrier(2)\n"
+    "def run(args, call):\n"
+    "    both.wait(args['seconds'])\n"
+    "    return 'met'\n"
+)
+LONG = "def run(args, call):\n    return 'x' * args['size']\n"
+
+
+def _engine(folder: Path, **limits: Any) -> Engine:
+    return Engine(folder, models={"m": Scripted()}, **limits)
+
+
+def _surface(engine: Engine, agent: str = "a", mode: str | None = None) -> EngineTools:
+    return EngineTools(engine, agent=agent, scope="acme", mode=mode)
+
+
+async def test_no_workers_section_is_one_default_worker(tmp_path: Path) -> None:
+    folder = write_folder(
+        tmp_path, {"a": PICKS_PID, "b": PICKS_PID}, tools=PID_TOOL, files=PID_FILES
+    )
+    async with _engine(folder) as engine:
+        answers = [await _surface(engine, name).dispatch("pid", {}) for name in ("a", "b")]
+        assert list(engine._workers._pools) == ["default"]
+        assert len(engine._workers.pool(engine._spec("a"))._workers) == 1
+    assert answers[0] == answers[1]
+
+
+async def test_a_mode_picks_its_own_worker(tmp_path: Path) -> None:
+    agent = {
+        **PICKS_PID,
+        "worker": "copilot",
+        "modes": {"voice": {"worker": "voice"}, "email": {"description": "Email"}},
+    }
+    folder = write_folder(
+        tmp_path,
+        {"a": agent},
+        workers={"copilot": {"processes": 1}, "voice": {"processes": 1}},
+        tools=PID_TOOL,
+        files=PID_FILES,
+    )
+    async with _engine(folder) as engine:
+        entry, email, voice = [
+            await _surface(engine, mode=mode).dispatch("pid", {})
+            for mode in (None, "email", "voice")
+        ]
+    assert entry == email
+    assert voice != entry
+
+
+async def test_a_worker_holds_only_the_tools_that_pick_it(tmp_path: Path) -> None:
+    tools = {
+        name: {"module": f"tools/{name}.py", "description": name}
+        for name in ("front", "back", "both", "extra")
+    }
+    agents = {
+        "a": {**GENERATION, "worker": "one", "tools": {"include": ["front", "both"]}},
+        "b": {
+            **GENERATION,
+            "worker": "two",
+            "tools": {"include": ["back", "both"]},
+            "modes": {"chat": {"worker": "three", "tools": {"include": ["extra"]}}},
+        },
+        "t": {
+            "kind": "decision",
+            "model": "judge",
+            "instructions": "a.md",
+            "worker": "one",
+            "questions": ["q/plain.json"],
+            "modes": {"chat": {"worker": "two", "questions": ["q/order.json"]}},
+        },
+    }
+    folder = write_folder(
+        tmp_path,
+        agents,
+        workers={name: {"processes": 1} for name in ("one", "two", "three")},
+        tools=tools,
+        files={
+            "a.md": "Work.\n",
+            **{f"tools/{name}.py": PID for name in tools},
+            "q/plain.json": '{"type": "check", "instructions": "?", "yes": "y", "no": "n"}',
+            "q/order.json": '{"type": "choice", "instructions": "?"}',
+            "q/order.py": "def run(input, call):\n    return {'options': {'a': 'A', 'b': 'B'}}\n",
+        },
+    )
+    async with _engine(folder) as engine:
+        held = {
+            name: [item["key"] for item in cast(Any, pool._scripts)["scripts"]]
+            for name, pool in engine._workers._pools.items()
+        }
+    assert held == {
+        "one": ["tools/both", "tools/front"],
+        "two": ["q/order", "tools/back", "tools/both"],
+        "three": ["tools/back", "tools/both", "tools/extra"],
+    }
+
+
+async def test_a_killed_process_leaves_another_worker_alone(tmp_path: Path) -> None:
+    agent = {
+        **GENERATION,
+        "worker": "copilot",
+        "tools": {"include": ["hold"]},
+        "modes": {"voice": {"worker": "voice"}},
+    }
+    folder = write_folder(
+        tmp_path,
+        {"a": agent},
+        workers={"copilot": {"processes": 1}, "voice": {"processes": 1}},
+        tools={"hold": {"module": "tools/hold.py", "description": "Holds"}},
+        files={"a.md": "Work.\n", "tools/hold.py": HOLD},
+    )
+    go = tmp_path / "go"
+
+    def held(started: Path) -> dict[str, JsonValue]:
+        return {"started": str(started), "go": str(go)}
+
+    async def begun(*marks: Path) -> None:
+        async with asyncio.timeout(10):
+            while not all(mark.exists() for mark in marks):
+                await asyncio.sleep(0.01)
+
+    async with _engine(folder) as engine:
+        copilot_began, voice_began = tmp_path / "copilot", tmp_path / "voice"
+        copilot = _surface(engine)
+        copilot_call = asyncio.ensure_future(copilot.dispatch("hold", held(copilot_began)))
+        voice_call = asyncio.ensure_future(
+            _surface(engine, mode="voice").dispatch("hold", held(voice_began))
+        )
+        await begun(copilot_began, voice_began)
+        [process] = engine._workers.pool(engine._spec("a"))._workers
+        assert process is not None
+        os.kill(process.pid, signal.SIGKILL)
+        with pytest.raises(WorkerError, match="killed by signal 9"):
+            await copilot_call
+        assert not voice_call.done()
+        go.touch()
+        assert await voice_call == "answered"
+        assert await copilot.dispatch("hold", held(copilot_began)) == "answered"
+
+
+async def test_a_process_starts_on_the_first_tool_call(tmp_path: Path) -> None:
+    agents = {"a": {**PICKS_PID, "worker": "used"}, "b": {**PICKS_PID, "worker": "idle"}}
+    folder = write_folder(
+        tmp_path,
+        agents,
+        workers={"used": {"processes": 1}, "idle": {"processes": 2}},
+        tools=PID_TOOL,
+        files=PID_FILES,
+    )
+    async with _engine(folder) as engine:
+        used = engine._workers.pool(engine._spec("a"))
+        idle = engine._workers.pool(engine._spec("b"))
+        surface = _surface(engine)
+        assert used._workers == [None] and idle._workers == [None, None]
+        await surface.dispatch("pid", {})
+        assert used._workers[0] is not None and idle._workers == [None, None]
+
+
+def test_more_processes_than_the_ceiling_are_refused(tmp_path: Path) -> None:
+    folder = write_folder(
+        tmp_path,
+        {"a": {**GENERATION, "worker": "x"}, "b": GENERATION},
+        workers={"x": {"processes": 4}},
+        files={"a.md": "Work.\n"},
+    )
+    _engine(folder, max_worker_processes=5)
+    with pytest.raises(ConfigurationError) as caught:
+        _engine(folder, max_worker_processes=4)
+    assert str(caught.value) == (
+        "engine: the workers of this folder run 5 processes in all, over max_worker_processes=4; "
+        "lower processes: under workers:, or raise Engine(max_worker_processes=)"
+    )
+
+
+def test_the_default_ceiling_is_sixteen_processes(tmp_path: Path) -> None:
+    fits = write_folder(
+        tmp_path,
+        {"a": {**GENERATION, "worker": "x"}},
+        workers={"x": {"processes": 16}},
+        files={"a.md": "Work.\n"},
+    )
+    _engine(fits)
+    over = write_folder(
+        tmp_path,
+        {"a": {**GENERATION, "worker": "x"}},
+        workers={"x": {"processes": 17}},
+        files={"a.md": "Work.\n"},
+    )
+    with pytest.raises(ConfigurationError, match="17 processes in all, over .*=16;"):
+        _engine(over)
+
+
+def test_an_entry_that_only_holds_modes_does_not_use_the_default_worker(tmp_path: Path) -> None:
+    agent = {
+        "kind": "generation",
+        "model": "m",
+        "modes": {"chat": {"instructions": "a.md", "worker": "x"}},
+    }
+    folder = write_folder(
+        tmp_path,
+        {"a": agent},
+        workers={"x": {"processes": 1}},
+        files={"a.md": "Work.\n"},
+    )
+    engine = _engine(folder, max_worker_processes=1)
+    assert list(engine._workers._pools) == ["x"]
+
+
+async def test_threads_and_max_result_bytes_reach_the_worker(tmp_path: Path) -> None:
+    tools = {
+        "meet": {"module": "tools/meet.py", "description": "Meets"},
+        "long": {"module": "tools/long.py", "description": "Long"},
+    }
+    picks = {**GENERATION, "tools": {"include": ["meet", "long"]}}
+    folder = write_folder(
+        tmp_path,
+        {"pair": {**picks, "worker": "pair"}, "solo": {**picks, "worker": "solo"}},
+        workers={"pair": {"threads": 2}, "solo": {"threads": 1, "max_result_bytes": 100}},
+        tools=tools,
+        files={"a.md": "Work.\n", "tools/meet.py": MEET, "tools/long.py": LONG},
+    )
+    async with _engine(folder) as engine:
+        pair, solo = _surface(engine, "pair"), _surface(engine, "solo")
+        met = await asyncio.gather(*(pair.dispatch("meet", {"seconds": 30}) for _ in range(2)))
+        apart = await asyncio.gather(
+            *(solo.dispatch("meet", {"seconds": 0.2}) for _ in range(2)), return_exceptions=True
+        )
+        assert await pair.dispatch("long", {"size": 200}) == "x" * 200
+        assert await solo.dispatch("long", {"size": 10}) == "x" * 10
+        with pytest.raises(WorkerError, match="over the limit of 100 bytes"):
+            await solo.dispatch("long", {"size": 200})
+    assert met == ["met", "met"]
+    assert all(isinstance(result, WorkerError) for result in apart)
+
+
+@pytest.mark.parametrize(
+    ("engine_limit", "worker_limit", "applied"),
+    [(50, 100, 50), (100, 50, 50), (None, 50, 50), (60, None, 60), (None, None, None)],
+)
+def test_max_result_bytes_lowers_the_engines_limit_and_never_raises(
+    tmp_path: Path, engine_limit: int | None, worker_limit: int | None, applied: int | None
+) -> None:
+    declared = {} if worker_limit is None else {"max_result_bytes": worker_limit}
+    folder = write_folder(
+        tmp_path,
+        {"a": {**GENERATION, "worker": "x"}},
+        workers={"x": {"processes": 1, **declared}},
+        files={"a.md": "Work.\n"},
+    )
+    engine = _engine(folder, worker_result_bytes=engine_limit)
+    pool = engine._workers.pool(engine._spec("a"))
+    assert cast(Any, pool._scripts)["limit"] == applied
+
+
+async def test_a_delegated_run_uses_its_own_agents_worker(tmp_path: Path) -> None:
+    folder = write_folder(
+        tmp_path,
+        {
+            "lead": {**GENERATION, "worker": "front", "orchestration": {"delegate_to": ["helper"]}},
+            "helper": {**PICKS_PID, "model": "h", "worker": "back"},
+        },
+        workers={"front": {"processes": 1}, "back": {"processes": 1}},
+        tools=PID_TOOL,
+        files=PID_FILES,
+    )
+    lead = Scripted(delegating("helper"), text_reply("done"))
+    helper = Scripted(
+        Reply(tool_calls=[ToolCall(id="c1", name="pid", args={})], stop_reason="tool_use"),
+        text_reply("done"),
+    )
+    async with Engine(folder, models={"m": lead, "h": helper}) as engine:
+        await engine.run("lead", "acme", "x")
+        front = engine._workers.pool(engine._spec("lead"))
+        [process] = engine._workers.pool(engine._spec("helper"))._workers
+        assert front._workers == [None]
+        assert process is not None and str(process.pid) in str(helper.calls[1][1])

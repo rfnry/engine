@@ -113,7 +113,7 @@ class EngineTools(Tools):
                     timeout=deadline,
                 )
             )
-        pool = engine._workers.pool(agent)
+        pool = engine._workers.pool(spec)
         folder = [
             folder_tool(definition, pool, deadline, scope, dict(tags or {}))
             for name, definition in chosen(spec).items()

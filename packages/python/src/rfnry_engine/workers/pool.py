@@ -8,7 +8,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import Future
 from functools import partial
 from pathlib import Path
@@ -17,6 +17,7 @@ from typing import IO, TYPE_CHECKING, Any, NamedTuple, cast
 from pydantic import JsonValue
 
 from rfnry_engine.errors import InputError, WorkerError
+from rfnry_engine.manifest import WorkerEntry
 
 if TYPE_CHECKING:
     from rfnry_engine.tree import AgentSpec
@@ -445,10 +446,6 @@ class WorkerPool:
         return worker
 
 
-def _group(path: str, groups: Collection[str]) -> str | None:
-    return next((name for name in groups if path == name or path.startswith(f"{name}/")), None)
-
-
 def _gather(held: dict[str, Script], script: Script) -> None:
     earlier = held.get(script.key)
     held[script.key] = (
@@ -458,20 +455,24 @@ def _gather(held: dict[str, Script], script: Script) -> None:
     )
 
 
+def _lowered(limit: int | None, entry: int | None) -> int | None:
+    return min((held for held in (limit, entry) if held is not None), default=None)
+
+
 class Workers:
     def __init__(
         self,
         agents: Mapping[str, AgentSpec],
-        groups: Mapping[str, int] | None,
-        limit: int | None = None,
+        declared: Mapping[str, WorkerEntry],
+        limit: int | None,
     ) -> None:
-        named = dict(groups or {})
-        scripts: dict[str | None, dict[str, Script]] = {None: {}, **{name: {} for name in named}}
-        self._groups = {name: _group(spec.path, named) for name, spec in agents.items()}
-        for name, spec in agents.items():
-            own = scripts[self._groups[name]]
-            for layer in (spec, *spec.modes.values()):
-                for tool in layer.folder_tools.values():
+        held: dict[str, dict[str, Script]] = {name: {} for name in declared}
+        for agent in agents.values():
+            for spec in (agent, *agent.modes.values()):
+                if spec.needs_mode:
+                    continue
+                own = held.setdefault(spec.worker, {})
+                for tool in spec.folder_tools.values():
                     _gather(
                         own,
                         Script(
@@ -482,19 +483,22 @@ class Workers:
                             frozenset({tool.function}),
                         ),
                     )
-                for _, script in layer.scripted.values():
+                for _, script in spec.scripted.values():
                     _gather(own, script)
+        entries = {name: declared.get(name, WorkerEntry()) for name in held}
+        self.processes = sum(entry.processes for entry in entries.values())
         self._pools = {
-            group: WorkerPool(
-                [held[key] for key in sorted(held)],
-                processes=1 if group is None else named[group],
-                limit=limit,
+            name: WorkerPool(
+                [own[key] for key in sorted(own)],
+                processes=entries[name].processes,
+                threads=entries[name].threads,
+                limit=_lowered(limit, entries[name].max_result_bytes),
             )
-            for group, held in scripts.items()
+            for name, own in held.items()
         }
 
-    def pool(self, agent: str) -> WorkerPool:
-        return self._pools[self._groups[agent]]
+    def pool(self, spec: AgentSpec) -> WorkerPool:
+        return self._pools[spec.worker]
 
     async def close(self) -> None:
         failed: list[BaseException] = []

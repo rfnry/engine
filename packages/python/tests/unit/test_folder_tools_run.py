@@ -25,6 +25,7 @@ from rfnry_engine.tools.workspace import Local, Workspace
 from rfnry_engine.tree import load_tree
 
 from .fakes import Answering, Scripted, text_reply
+from .trees import write_folder
 
 RUN = "def run(args, call):\n    return {}\n"
 PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
@@ -242,7 +243,7 @@ async def test_arguments_from_code_that_json_cannot_hold_never_reach_the_worker(
         )
         assert not marker.exists()
         assert await surface.dispatch("note", {}) == "ok"
-        pool = engine._workers.pool("shop")
+        pool = engine._workers.pool(engine._spec("shop"))
         assert [len(worker.calls) for worker in pool._workers if worker is not None] == [0]
 
 
@@ -734,12 +735,25 @@ async def test_a_tool_of_a_folder_nearer_the_agent_replaces_one_of_the_same_name
     }
 
 
-async def test_workers_puts_a_folder_s_agents_on_its_own_processes(tmp_path: Path) -> None:
-    tool(tmp_path / "tools", "pid", body=PID)
-    write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
-    write(tmp_path / "support/help/AGENT.md", agent_md("help"))
-    write(tmp_path / "desk/AGENT.md", agent_md("desk"))
-    async with Engine(tmp_path, models={}, workers={"support": 2}) as engine:
+async def test_a_worker_s_agents_share_its_processes(tmp_path: Path) -> None:
+    picks = {
+        "kind": "generation",
+        "model": "m",
+        "instructions": "a.md",
+        "tools": {"include": ["pid"]},
+    }
+    write_folder(
+        tmp_path,
+        {
+            "billing": {**picks, "worker": "support"},
+            "help": {**picks, "worker": "support"},
+            "desk": picks,
+        },
+        workers={"support": {"processes": 2}},
+        tools={"pid": {"module": "tools/pid.py", "description": "Pid"}},
+        files={"a.md": "Work.\n", "tools/pid.py": PID},
+    )
+    async with Engine(tmp_path, models={}) as engine:
 
         async def pids(agent: str, n: int) -> set[int]:
             surface = EngineTools(engine, agent=agent, scope="acme")
@@ -756,11 +770,24 @@ async def test_workers_puts_a_folder_s_agents_on_its_own_processes(tmp_path: Pat
 async def test_a_cancelled_close_still_stops_every_worker_of_a_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut: str
 ) -> None:
-    tool(tmp_path / "tools", "pid", body=PID)
-    write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
-    engine = Engine(tmp_path, models={}, workers={"support": 2})
+    write_folder(
+        tmp_path,
+        {
+            "billing": {
+                "kind": "generation",
+                "model": "m",
+                "instructions": "a.md",
+                "tools": {"include": ["pid"]},
+                "worker": "support",
+            }
+        },
+        workers={"support": {"processes": 2}},
+        tools={"pid": {"module": "tools/pid.py", "description": "Pid"}},
+        files={"a.md": "Work.\n", "tools/pid.py": PID},
+    )
+    engine = Engine(tmp_path, models={})
     surface = EngineTools(engine, agent="billing", scope="acme")
-    pool = engine._workers.pool("billing")
+    pool = engine._workers.pool(engine._spec("billing"))
     calls: list[asyncio.Future[Any]] = []
     try:
         async with asyncio.timeout(10):
@@ -800,9 +827,9 @@ async def test_workers_holds_a_script_once_per_pool_however_many_agents_see_it(
     tool(tmp_path / "tools", "pid", body=PID)
     write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
     write(tmp_path / "support/help/AGENT.md", agent_md("help"))
-    async with Engine(tmp_path, models={}, workers={"support": 1}) as engine:
-        pool = engine._workers.pool("billing")
-        assert pool is engine._workers.pool("help")
+    async with Engine(tmp_path, models={}) as engine:
+        pool = engine._workers.pool(engine._spec("billing"))
+        assert pool is engine._workers.pool(engine._spec("help"))
     assert pool._scripts["scripts"] == [
         {"key": "tools/pid", "path": str((tmp_path / "tools/pid.py").resolve()), "source": PID}
     ]
@@ -818,9 +845,9 @@ async def test_two_tools_folders_of_one_worker_group_hold_a_tool_of_one_name_eac
             body=f"def run(args, call):\n    return '{side}'\n",
         )
         write(tmp_path / "shop" / side / "agent/AGENT.md", agent_md(f"{side}_agent"))
-    async with Engine(tmp_path, models={}, workers={"shop": 1}) as engine:
-        pool = engine._workers.pool("left_agent")
-        assert pool is engine._workers.pool("right_agent")
+    async with Engine(tmp_path, models={}) as engine:
+        pool = engine._workers.pool(engine._spec("left_agent"))
+        assert pool is engine._workers.pool(engine._spec("right_agent"))
         got = [
             await EngineTools(engine, agent=agent, scope="acme").dispatch("who", {})
             for agent in ("left_agent", "right_agent", "left_agent")
@@ -845,7 +872,7 @@ async def test_a_worker_tells_its_pool_which_scripts_take_a_thread(tmp_path: Pat
         )
     async with Engine(tmp_path, models={}) as engine:
         assert pid(await EngineTools(engine, agent="shop", scope="acme").dispatch("wait", {})) == 1
-        [worker] = engine._workers.pool("shop")._workers
+        [worker] = engine._workers.pool(engine._spec("shop"))._workers
         assert worker is not None and worker.threaded == {
             "tools/pid:run",
             "desk/questions/size:run",
@@ -867,53 +894,6 @@ async def test_closing_the_engine_reports_no_worker_exit(
     ] == []
 
 
-@pytest.mark.parametrize(
-    ("workers", "said"),
-    [
-        (
-            {"billing": 1},
-            "engine: workers names 'billing', which holds no agent of the tree; name a folder that holds agents by its path from the root",
-        ),
-        (
-            {"support": 1, "support/billing": 2},
-            "engine: workers names 'support/billing' inside 'support', which it names too; keep one",
-        ),
-        (
-            {"support/billing": 2, "support": 1},
-            "engine: workers names 'support/billing' inside 'support', which it names too; keep one",
-        ),
-        (
-            {"support": 0},
-            "engine: workers gives 'support' 0 processes; give each folder 1 or more",
-        ),
-    ],
-)
-def test_workers_names_folders_of_the_tree_none_inside_another(
-    tmp_path: Path, workers: dict[str, int], said: str
-) -> None:
-    write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
-    with pytest.raises(ConfigurationError) as caught:
-        Engine(tmp_path, models={}, workers=workers)
-    assert str(caught.value) == said
-
-
-@pytest.mark.parametrize("name", ["shared/tools", "shared", "."])
-def test_workers_refuses_a_folder_that_holds_no_agent(tmp_path: Path, name: str) -> None:
-    write(tmp_path / "support/billing/AGENT.md", agent_md("billing"))
-    write(tmp_path / "shared/tools/x.txt", "x")
-    with pytest.raises(ConfigurationError) as caught:
-        Engine(tmp_path, models={}, workers={name: 2})
-    assert str(caught.value) == (
-        f"engine: workers names {name!r}, which holds no agent of the tree; name a folder that holds agents by its path from the root"
-    )
-
-
-@pytest.mark.parametrize("name", ["a", "a/b", "a/b/c"])
-def test_workers_accepts_a_folder_that_holds_agents(tmp_path: Path, name: str) -> None:
-    write(tmp_path / "a/b/c/AGENT.md", agent_md("c"))
-    Engine(tmp_path, models={}, workers={name: 2})
-
-
 def test_an_engine_walks_the_tree_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write(tmp_path / "a/AGENT.md", agent_md("a"))
     walked: list[Path] = []
@@ -924,7 +904,7 @@ def test_an_engine_walks_the_tree_once(tmp_path: Path, monkeypatch: pytest.Monke
         return real(root)
 
     monkeypatch.setattr(tree, "_tree_folders", walk)
-    Engine(tmp_path, models={}, workers={"a": 1})
+    Engine(tmp_path, models={})
     assert len(walked) == 1
 
 

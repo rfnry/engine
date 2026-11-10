@@ -2409,10 +2409,10 @@ tree.
 
 One `Engine` per process serves every run at once; scale out with processes. A run in flight is tied
 to the process that started it, so route a chat's later messages, its stop and its inbox to that
-process. The engine's folder tools run in its own workers beside that process — one process for the
-whole tree by default, and as many for a group of agents as [`workers=`](#tools) gives it — each
-process taking 32 plain `def run` calls at once on its threads, and `async def run` calls without a
-limit on its event loop.
+process. The engine's folder tools run in its own workers beside that process — one process by
+default, and as many as the [`workers:`](#tools) section of `rfnry.yaml` declares — each process
+taking 32 plain `def run` calls at once on its threads, or the `threads` its worker gives, and
+`async def run` calls without a limit on its event loop.
 
 The tools' file work (`Read`, `Grep`, `Glob`, `LS`, `Load`, the history search, and `Local`'s file reads and
 writes; its commands are processes of their own) runs on the event loop's default executor,
@@ -2596,7 +2596,7 @@ engine stays closed: a run, a tool call or an `EngineTools` after `close()` is a
 `engine: this engine was closed; build a new Engine`, before any model is called, so nothing is
 recorded of it, and a run still in flight when it closed starts no other run — its `Delegate` call
 reads that error, its route fails with it. A plain `def run` runs on one of the worker's 32 threads,
-and calls past those wait; an `async def run` runs on its event loop, as many at once as come. The
+or the `threads` its worker gives, and calls past those wait; an `async def run` runs on its event loop, as many at once as come. The
 worker goes by the `run` it loaded, whatever its file spells: a `run` a decorator made a coroutine
 function runs on the event loop, any other on a thread, and what that one returns, if it can be
 awaited — a coroutine, from a plain decorator around an `async def` — is awaited on the event loop.
@@ -2605,7 +2605,8 @@ its result: a record per line, and 64 KiB at a time of a line whose end has not 
 it is dropped as it comes. A script that raises, `sys.exit()` included, is a tool error the model
 reads, `WorkerError: ValueError: no order A-1`, and the worker goes on. What a script returns or
 raises crosses back as JSON of at most `Engine(worker_result_bytes=)` bytes as the worker writes it,
-a non-ASCII character escaped to six, 32 MiB unless you set another number, `None` for no limit;
+a non-ASCII character escaped to six, 32 MiB unless you set another number, `None` for no limit, and
+a worker's `max_result_bytes` lowers it for that worker and never raises it;
 past it the worker sends a short error in its place, so a result too large never reaches your
 server, the model reads `WorkerError: workers/process: refund sent back 40000023 bytes, over the
 limit of 33554432 bytes`, and the worker goes on. A result under the limit still costs your server
@@ -2642,14 +2643,22 @@ worker that loop was still starting when it stopped is killed and reaped in the 
 pipes wait for that loop: they close when it runs again. Close the engine before its loop ends: closing it later from another loop still stops every worker, but
 Python warns of the worker pipes left on the closed loop (`ResourceWarning`).
 
-By default every agent of the tree shares one worker. `Engine(root, models=...,
-workers={"customer_support": 1, "reports": 4})` makes each folder named — by its path from the root, such as
-`customer_support` — a group of its own, for every agent inside it at any depth, with that many
-processes, and a call goes to the group's process with the fewest calls in flight; the agents
-outside the named folders share the default group, one process. A name that is not a folder holding
-an agent, at any depth below it or itself, or a folder inside another one named, is a
-`ConfigurationError`:
-`engine: workers names 'support/billing' inside 'support', which it names too; keep one`.
+A worker is a named set of tool processes. `workers:` in `rfnry.yaml` declares them, each with
+`processes` (1 unless given), `threads` (32 unless given, the plain `def run` calls at once in each
+process) and `max_result_bytes`, and `worker:` on an agent or a mode picks one. An agent with no
+`worker:`, and every agent of an `AGENT.md` tree, uses the worker called `default`, one process
+unless declared, so a file with no `workers:` section has only that one; a `worker:` naming no
+declared worker, and a declared worker nothing picks, are a `ConfigurationError`. A worker holds the tools
+and question scripts of the agents and modes that pick it, a tool picked through two workers loads
+in both, a call goes to the worker's process with the fewest calls in flight, and a delegated or
+routed run uses its own agent's `worker:`, never its caller's. A worker separates crashes and
+freezes of tool code: a process that dies fails the calls in flight in that process, the next call
+starts a new one, and a call in another worker goes on. An `async def run` that blocks stalls every
+call in its process, since they share one event loop. More processes in all than
+`Engine(max_worker_processes=)`, 16 unless you set another number, is a `ConfigurationError` when
+the engine loads, before any process starts: `engine: the workers of this folder run 17 processes
+in all, over max_worker_processes=16; lower processes: under workers:, or raise
+Engine(max_worker_processes=)`. The `default` worker counts when an entry or a mode uses it.
 
 Every tool an agent gets is on: the tools of its folders, the file tools, and the tools of the run,
 given to its own run with `run(tools=)` or to the run that delegated or routed to it, below.
@@ -3115,8 +3124,8 @@ script without its `.json`, a tool's JSON with an unknown key, no description, a
 that is not an object or a schema that does not compile, a script or helper that is not valid
 Python, imports the engine, the server's own code, a module relatively or a sibling script or
 subfolder of its folder, or imports a helper inside a function, a helper named like a
-standard-library module, a tool named like one the engine gives the agent, a `workers=` naming a
-folder that holds no agent or one inside another it names, a `reads:` that is not a path from the
+standard-library module, a tool named like one the engine gives the agent, workers running more
+processes in all than `max_worker_processes`, a `reads:` that is not a path from the
 agent's folder or goes above the root, names no folder of the tree, a `tools/` or `skills/` folder
 on an agent's path or a folder inside one, leaves the root, names the agent's own folder, one that
 holds it or one inside it, or names two folders that are the same or one inside the other (`tree:
@@ -3135,8 +3144,8 @@ gives a decision agent nothing to ask, two tools of a run with one name or one n
 engine gives the agent, a run of an agent whose model was not given, or of a router whose target's
 model was not given, a missing workspace, a `Local` root that is not a directory, a `shell` that is
 not a list of strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and
-`write`, a `Workspace` without a scope, a `max_model_calls` or `max_depth` that is not a positive
-integer, a `tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is not
+`write`, a `Workspace` without a scope, a `max_model_calls`, `max_depth` or `max_worker_processes`
+that is not a positive integer, a `tool_timeout`, `history_walk`, `history_chars`, `timeout` or `output_bytes` that is not
 positive, a `worker_result_bytes` that is neither a positive integer nor `None`, an `approve` that
 returns anything but `True` or `False`, a judge that is not a decision agent or a teacher that is
 not a generation agent. `NotFoundError` for

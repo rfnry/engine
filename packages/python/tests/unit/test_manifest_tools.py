@@ -981,7 +981,7 @@ async def test_a_call_holds_a_thread_only_when_its_function_takes_one(tmp_path: 
     )
     async with Engine(folder, models={"m": Scripted()}) as engine:
         await EngineTools(engine, agent="a", scope="acme").dispatch("plain", {})
-        [worker] = engine._workers.pool("a")._workers
+        [worker] = engine._workers.pool(engine._spec("a"))._workers
         assert worker is not None and worker.threaded == {"tools/both:run"}
 
 
@@ -1105,7 +1105,7 @@ async def test_a_file_nothing_names_is_not_a_tool(tmp_path: Path) -> None:
     assert list(spec.folder_tools) == ["one"]
     assert spec.fingerprint == before
     async with Engine(folder, models={"m": Scripted()}) as engine:
-        held = cast(Any, engine._workers.pool("a")._scripts)
+        held = cast(Any, engine._workers.pool(engine._spec("a"))._scripts)
         assert [script["key"] for script in held["scripts"]] == ["tools/one"]
         assert held["helpers"] == {str(folder.resolve() / "tools"): {}}
         assert await EngineTools(engine, agent="a", scope="acme").dispatch("one", {}) == "ran"

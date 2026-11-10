@@ -16,6 +16,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tree import load_tree
 
 from .fakes import Answering, Scripted, delegating, text_reply
+from .trees import write_folder
 
 ORDER = (
     "def run(input, call):\n"
@@ -405,27 +406,35 @@ def test_a_question_script_that_imports_the_engine_is_refused(tmp_path: Path) ->
     assert str(raised.value).startswith(f"tools/folder: {path} imports 'rfnry_engine'; ")
 
 
-async def test_a_question_script_runs_in_its_agent_s_worker_group(tmp_path: Path) -> None:
-    root = tmp_path / "agents"
-    write(root / "desk/matcher/AGENT.md", agent_md("matcher", kind="decision", model="judge"))
-    write(
-        root / "desk/matcher/questions/order.json", '{"type": "choice", "instructions": "Which?"}'
-    )
+async def test_a_question_script_runs_in_its_agent_s_worker(tmp_path: Path) -> None:
+    question = '{"type": "choice", "instructions": "Which?"}'
     pid = "import os\ndef run(input, call):\n    return {'options': {str(os.getpid()): 'Me', 'x': 'X'}}\n"
-    write(root / "desk/matcher/questions/order.py", pid)
-    write(root / "desk/support/AGENT.md", agent_md("support"))
-    write(
-        root / "desk/support/tools/pid.json",
-        '{"description": "Pid", "input_schema": {"type": "object"}}',
+    decision = {"kind": "decision", "model": "judge", "instructions": "a.md"}
+    write_folder(
+        tmp_path,
+        {
+            "matcher": {**decision, "worker": "desk", "questions": ["matcher/order.json"]},
+            "solo": {**decision, "questions": ["solo/order.json"]},
+            "support": {
+                "kind": "generation",
+                "model": "strong",
+                "instructions": "a.md",
+                "worker": "desk",
+                "tools": {"include": ["pid"]},
+            },
+        },
+        workers={"desk": {"processes": 1}},
+        tools={"pid": {"module": "support/pid.py", "description": "Pid"}},
+        files={
+            "a.md": "Work.\n",
+            "matcher/order.json": question,
+            "matcher/order.py": pid,
+            "solo/order.json": question,
+            "solo/order.py": pid,
+            "support/pid.py": "import os\ndef run(args, call):\n    return os.getpid()\n",
+        },
     )
-    write(
-        root / "desk/support/tools/pid.py",
-        "import os\ndef run(args, call):\n    return os.getpid()\n",
-    )
-    write(root / "solo/AGENT.md", agent_md("solo", kind="decision", model="judge"))
-    write(root / "solo/questions/order.json", '{"type": "choice", "instructions": "Which?"}')
-    write(root / "solo/questions/order.py", pid)
-    async with Engine(root, models={"judge": Answering()}, workers={"desk": 1}) as engine:
+    async with Engine(tmp_path, models={"judge": Answering()}) as engine:
         desk = await engine.run("matcher", "acme", "x")
         solo = await engine.run("solo", "acme", "x")
         tool = await EngineTools(engine, agent="support", scope="acme").dispatch("pid", {})

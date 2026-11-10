@@ -27,6 +27,7 @@ from rfnry_engine.manifest import (
     MANIFEST,
     AgentEntry,
     FilesSection,
+    Manifest,
     Resolved,
     SkillsSection,
     ToolEntry,
@@ -817,9 +818,7 @@ def _refuse_loose_tools(agents: Mapping[str, AgentSpec], declared: Iterable[str]
 
 
 @warns_once()
-def load_folder(root: Path) -> dict[str, AgentSpec]:
-    root = Path(root).resolve()
-    manifest = read_manifest(root)
+def compile_folder(root: Path, manifest: Manifest) -> dict[str, AgentSpec]:
     _refuse_engine_names(manifest.tools)
     project = project_of(root)
     declared = _Declared(
@@ -834,3 +833,8 @@ def load_folder(root: Path) -> dict[str, AgentSpec]:
     _refuse_loose_tools(agents, manifest.tools)
     _refuse_shared_export_names(agents)
     return agents
+
+
+def load_folder(root: Path) -> dict[str, AgentSpec]:
+    root = Path(root).resolve()
+    return compile_folder(root, read_manifest(root))

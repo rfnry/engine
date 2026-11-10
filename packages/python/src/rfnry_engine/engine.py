@@ -9,7 +9,7 @@ from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from fnmatch import fnmatch
-from itertools import count, permutations
+from itertools import count
 from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Any, NoReturn, Protocol, cast
@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
 from rfnry_engine.bundle import build_bundle
-from rfnry_engine.compiled import load_folder
+from rfnry_engine.compiled import compile_folder
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
@@ -41,7 +41,7 @@ from rfnry_engine.foreground import (
     taking,
 )
 from rfnry_engine.frontmatter import plainly
-from rfnry_engine.manifest import MANIFEST, Kind
+from rfnry_engine.manifest import MANIFEST, Kind, WorkerEntry, read_manifest
 from rfnry_engine.models import (
     Answer,
     ChoiceAnswer,
@@ -583,48 +583,17 @@ def _check_models(
             _of_its_kind(spec, model)
 
 
-def _groups(agents: Mapping[str, AgentSpec], workers: Mapping[str, int] | None) -> dict[str, int]:
-    if workers is None:
-        return {}
-    if not isinstance(workers, Mapping):
-        raise ConfigurationError(
-            "engine: workers must map folders of the tree to their number of processes"
-        )
-    folders = {
-        "/".join(parts[:n])
-        for spec in agents.values()
-        if spec.path != "."
-        for parts in [spec.path.split("/")]
-        for n in range(1, len(parts) + 1)
-    }
-    for name, processes in workers.items():
-        if name not in folders:
-            raise ConfigurationError(
-                f"engine: workers names {name!r}, which holds no agent of the tree; name a folder that holds agents by its path from the root"
-            )
-        if not isinstance(processes, int) or isinstance(processes, bool) or processes < 1:
-            raise ConfigurationError(
-                f"engine: workers gives {name!r} {processes!r} processes; give each folder 1 or more"
-            )
-    for one, other in permutations(workers, 2):
-        if one.startswith(f"{other}/"):
-            raise ConfigurationError(
-                f"engine: workers names {one!r} inside {other!r}, which it names too; keep one"
-            )
-    return dict(workers)
-
-
 class Engine:
     def __init__(
         self,
         root: Path | str,
         *,
         models: Mapping[str, GenerationModel | DecisionModel],
-        workers: Mapping[str, int] | None = None,
         refinery: Recorder | None = None,
         max_model_calls: int = 200,
         max_depth: int = 5,
         tool_timeout: float | None = 30.0,
+        max_worker_processes: int = 16,
         worker_result_bytes: int | None = 33_554_432,
         history_walk: int = 10_000,
         history_chars: int = 100_000,
@@ -641,7 +610,11 @@ class Engine:
             raise ConfigurationError(
                 "engine: worker_result_bytes must be a positive number of bytes, or None for no limit"
             )
-        for name, cap in (("max_model_calls", max_model_calls), ("max_depth", max_depth)):
+        for name, cap in (
+            ("max_model_calls", max_model_calls),
+            ("max_depth", max_depth),
+            ("max_worker_processes", max_worker_processes),
+        ):
             if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
                 raise ConfigurationError(f"engine: {name} must be a positive integer")
         if history_walk <= 0:
@@ -659,13 +632,20 @@ class Engine:
         self.worker_result_bytes = worker_result_bytes
         self.history_walk = history_walk
         self.history_chars = history_chars
+        declared: Mapping[str, WorkerEntry] = {}
         if (self.root / MANIFEST).is_file():
-            self._agents = load_folder(self.root)
+            manifest = read_manifest(self.root)
+            self._agents = compile_folder(self.root, manifest)
+            declared = manifest.workers
         else:
             self._agents = load_tree(self.root)
             validate_tree(self._agents)
         _check_models(self._agents, self._models)
-        self._workers = Workers(self._agents, _groups(self._agents, workers), worker_result_bytes)
+        self._workers = Workers(self._agents, declared, worker_result_bytes)
+        if self._workers.processes > max_worker_processes:
+            raise ConfigurationError(
+                f"engine: the workers of this folder run {self._workers.processes} processes in all, over max_worker_processes={max_worker_processes}; lower processes: under workers:, or raise Engine(max_worker_processes=)"
+            )
         self._closed = False
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
 
@@ -1050,7 +1030,7 @@ class Engine:
     async def _filled(
         self, spec: AgentSpec, scope: str, run_id: str, state: State, tags: Mapping[str, str]
     ) -> dict[str, Question]:
-        pool = self._workers.pool(spec.name)
+        pool = self._workers.pool(spec)
         given = STATE.dump_python(state, mode="json")
 
         async def fill(qid: str, front: dict[str, JsonValue], script: Script) -> Question:
