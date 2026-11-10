@@ -12,7 +12,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tree import AgentSpec
 
 from .fakes import Scripted, text_reply
-from .trees import write_folder
+from .trees import provided, write_folder
 
 TONE = "---\nname: tone\ndescription: Keep it warm\n---\nBe warm.\n"
 ESCALATE = "---\ndescription: Hand over\n---\nHand it over.\n"
@@ -54,7 +54,7 @@ def _refused(folder: Path, pattern: str) -> None:
 
 
 def _surface(folder: Path, invoked: str | None = None) -> EngineTools:
-    engine = Engine(folder, models={"m": Scripted()})
+    engine = Engine(folder, providers=provided({"m": Scripted()}))
     return EngineTools(engine, agent="a", scope="acme", invoked=invoked)
 
 
@@ -67,7 +67,7 @@ async def _answer(surface: EngineTools, tool: str, args: dict[str, Any]) -> str:
 
 async def _ran(folder: Path, input: State, **given: Any) -> tuple[Generation, Scripted]:
     model = Scripted(text_reply("Done."))
-    run = await Engine(folder, models={"m": model}).run("a", "acme", input, **given)
+    run = await Engine(folder, providers=provided({"m": model})).run("a", "acme", input, **given)
     assert isinstance(run, Generation)
     return run, model
 
@@ -260,7 +260,7 @@ async def test_skill_reaches_any_skill_the_entry_or_a_mode_names(tmp_path: Path)
         run, model = await _ran(folder, "hi", skill=name)
         assert run.skill == name
         assert _sent(model) == _invoked(name, body, "hi")
-    engine = Engine(folder, models={"m": Scripted()})
+    engine = Engine(folder, providers=provided({"m": Scripted()}))
     with pytest.raises(NotFoundError) as caught:
         await engine.run("a", "acme", "hi", skill="internal")
     assert str(caught.value) == (
@@ -276,7 +276,7 @@ async def test_skill_reaches_a_skill_the_list_excludes(tmp_path: Path) -> None:
 
 
 async def test_a_run_of_an_agent_with_no_skills_says_how_to_name_one(tmp_path: Path) -> None:
-    engine = Engine(_folder(tmp_path, None), models={"m": Scripted()})
+    engine = Engine(_folder(tmp_path, None), providers=provided({"m": Scripted()}))
     with pytest.raises(NotFoundError) as caught:
         await engine.run("a", "acme", "hi", skill="tone")
     assert str(caught.value) == (
@@ -304,7 +304,7 @@ async def test_public_all_is_every_offered_skill(tmp_path: Path) -> None:
         },
     )
     assert _spec(folder).public_skills == ("escalate", "tone")
-    assert Engine(folder, models={"m": Scripted()}).agents["a"].public_skills == {
+    assert Engine(folder, providers=provided({"m": Scripted()})).agents["a"].public_skills == {
         "escalate": "Hand over",
         "tone": "Keep it warm",
     }
@@ -393,7 +393,9 @@ async def test_an_invoked_skills_other_files_are_reachable_on_that_run(tmp_path:
     path = "skills/tone/refs/examples.md"
     call = ToolCall(id="r1", name="Read", args={"path": path})
     model = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("done"))
-    run = await Engine(folder, models={"m": model}).run("a", "acme", "hi", skill="tone")
+    run = await Engine(folder, providers=provided({"m": model})).run(
+        "a", "acme", "hi", skill="tone"
+    )
     assert isinstance(run, Generation)
     assert run.steps[0].result == "Warm examples.\n"
     surface = _surface(folder, invoked="tone")
@@ -766,7 +768,9 @@ async def test_a_delegated_run_takes_no_skill(tmp_path: Path) -> None:
     model = Scripted(
         Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("c"), text_reply("done")
     )
-    run = await Engine(folder, models={"m": model}).run("lead", "acme", "hi", skill="tone")
+    run = await Engine(folder, providers=provided({"m": model})).run(
+        "lead", "acme", "hi", skill="tone"
+    )
     assert isinstance(run, Generation) and run.skill == "tone"
     child = run.children[0]
     assert isinstance(child, Generation) and child.skill is None

@@ -14,7 +14,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.workspace import Local, Workspace
 
 from .fakes import Scripted, text_reply
-from .trees import write_folder
+from .trees import provided, write_folder
 
 FILE_TOOLS = {"Read", "Grep", "Glob", "LS", "Load"}
 SECRET = "root:x:0:0\n"
@@ -38,7 +38,9 @@ def _folder(
 
 
 def _surface(folder: Path) -> EngineTools:
-    return EngineTools(Engine(folder, models={"m": Scripted()}), agent="a", scope="acme")
+    return EngineTools(
+        Engine(folder, providers=provided({"m": Scripted()})), agent="a", scope="acme"
+    )
 
 
 def _map(folder: Path) -> list[str]:
@@ -74,7 +76,7 @@ def test_the_map_is_what_include_reaches_less_exclude(tmp_path: Path) -> None:
 async def test_the_prompt_shows_the_map(tmp_path: Path) -> None:
     folder = _folder(tmp_path, {"include": ["knowledge/refunds.md"]})
     model = Scripted(text_reply("done"))
-    await Engine(folder, models={"m": model}).run("a", "acme", "hi")
+    await Engine(folder, providers=provided({"m": model})).run("a", "acme", "hi")
     assert "<<<FILES>>>\nknowledge/\n  refunds.md" in model.calls[0][0]
 
 
@@ -202,7 +204,7 @@ async def test_preload_is_sent_every_call_and_is_readable(tmp_path: Path) -> Non
     )
     call = ToolCall(id="r1", name="Read", args={"path": "rules/a.md"})
     model = Scripted(Reply(tool_calls=[call], stop_reason="tool_use"), text_reply("done"))
-    run = await Engine(folder, models={"m": model}).run("a", "acme", "hi")
+    run = await Engine(folder, providers=provided({"m": model})).run("a", "acme", "hi")
     assert isinstance(run, Generation)
     sent: list[Part] = [
         Text(text="<<<rules/a.md>>>\nBe kind.\n"),
@@ -716,7 +718,7 @@ async def test_the_shell_is_told_where_the_included_folders_are(tmp_path: Path) 
     room = tmp_path / "room"
     room.mkdir()
     model = Scripted(text_reply("done"))
-    await Engine(folder, models={"m": model}).run(
+    await Engine(folder, providers=provided({"m": model})).run(
         "a",
         "acme",
         "hi",
@@ -733,7 +735,7 @@ async def test_the_shell_is_told_the_root_itself_when_it_is_included(tmp_path: P
     room = tmp_path / "room"
     room.mkdir()
     model = Scripted(text_reply("done"))
-    await Engine(folder, models={"m": model}).run(
+    await Engine(folder, providers=provided({"m": model})).run(
         "a",
         "acme",
         "hi",

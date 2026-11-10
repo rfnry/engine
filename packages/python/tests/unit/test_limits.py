@@ -16,7 +16,7 @@ from rfnry_engine.tools.workspace import Local, Workspace
 from .fakes import Scripted, delegating, text_reply
 from .test_engine_bridge import script, shell
 from .test_engine_workspace import use
-from .trees import write_folder
+from .trees import provided, write_folder
 
 TOO_DEEP = "DelegationDepthError: tools/delegate: depth 2 exceeded at a -> b -> c"
 TOO_LATE = "TimeoutError: engine: slow timed out after 0.05s"
@@ -115,10 +115,12 @@ async def test_max_model_calls_counts_model_calls_of_one_run(tmp_path: Path) -> 
     written = folder(tmp_path, {"a": agent(max_model_calls=2, tools={"include": ["probe"]})})
     model = Scripted(calling("probe", "probe", "probe"), calling("probe"), text_reply("never"))
     with pytest.raises(RunawayError, match=f"^{TOO_MANY}$"):
-        await Engine(written, models={"m": model}).run("a", "acme", "go", tools=PROBE)
+        await Engine(written, providers=provided({"m": model})).run("a", "acme", "go", tools=PROBE)
     assert len(model.calls) == 2
     ends_in_time = Scripted(calling("probe"), text_reply("done"))
-    run = await Engine(written, models={"m": ends_in_time}).run("a", "acme", "go", tools=PROBE)
+    run = await Engine(written, providers=provided({"m": ends_in_time})).run(
+        "a", "acme", "go", tools=PROBE
+    )
     assert worked(run).reply == "done"
 
 
@@ -133,7 +135,9 @@ async def test_a_delegated_run_counts_its_own(tmp_path: Path) -> None:
         },
     )
     model = Scripted(delegating("b"), calling("probe"), text_reply("b done"), text_reply("a done"))
-    run = worked(await Engine(enough, models={"m": model}).run("a", "acme", "go", tools=PROBE))
+    run = worked(
+        await Engine(enough, providers=provided({"m": model})).run("a", "acme", "go", tools=PROBE)
+    )
     assert run.reply == "a done"
     assert worked(run.children[0]).reply == "b done"
     assert len(model.calls) == 4
@@ -145,7 +149,9 @@ async def test_a_delegated_run_counts_its_own(tmp_path: Path) -> None:
         },
     )
     model = Scripted(delegating("b"), calling("probe"), text_reply("a done"))
-    refused = await Engine(over, models={"m": model}).run("a", "acme", "go", tools=PROBE)
+    refused = await Engine(over, providers=provided({"m": model})).run(
+        "a", "acme", "go", tools=PROBE
+    )
     assert isinstance(refused, Generation) and refused.reply == "a done"
     assert refused.steps[0].result == "RunawayError: engine: run exceeded 1 model calls"
 
@@ -153,7 +159,7 @@ async def test_a_delegated_run_counts_its_own(tmp_path: Path) -> None:
 async def model_calls_refused(tmp_path: Path, written: Any, ceiling: Any) -> str:
     root = folder(tmp_path, {"a": agent(max_model_calls=written, tools={"include": ["probe"]})})
     model = Scripted(*[calling("probe") for _ in range(9)])
-    engine = Engine(root, models={"m": model}, max_model_calls=ceiling)
+    engine = Engine(root, providers=provided({"m": model}), max_model_calls=ceiling)
     with pytest.raises(RunawayError) as raised:
         await engine.run("a", "acme", "go", tools=PROBE)
     return str(raised.value)
@@ -169,7 +175,9 @@ async def depth_refused(tmp_path: Path, written: Any, ceiling: Any) -> str:
         },
     )
     model = Scripted(delegating("b"), delegating("c"), text_reply("b done"), text_reply("a done"))
-    run = await Engine(root, models={"m": model}, max_depth=ceiling).run("a", "acme", "go")
+    run = await Engine(root, providers=provided({"m": model}), max_depth=ceiling).run(
+        "a", "acme", "go"
+    )
     assert isinstance(run, Generation) and isinstance(run.children[0], Generation)
     return str(run.children[0].steps[0].result)
 
@@ -181,7 +189,7 @@ async def deadline_passed(tmp_path: Path, written: Any, ceiling: Any) -> str:
 
     root = folder(tmp_path, {"a": agent(tools={"include": ["slow"], "timeout": written})})
     model = Scripted(calling("slow"), text_reply("done"))
-    run = await Engine(root, models={"m": model}, tool_timeout=ceiling).run(
+    run = await Engine(root, providers=provided({"m": model}), tool_timeout=ceiling).run(
         "a", "acme", "go", tools=tool(slow, "slow")
     )
     assert isinstance(run, Generation)
@@ -230,7 +238,7 @@ async def test_max_depth_counts_levels_below_the_agent(
     if first == "x":
         replies = [delegating("a"), *replies, text_reply("x done")]
     model = Scripted(*replies)
-    run: Run = await Engine(root, models={"m": model}).run(first, "acme", "go")
+    run: Run = await Engine(root, providers=provided({"m": model})).run(first, "acme", "go")
     assert isinstance(run, Generation)
     if first == "x":
         run = worked(run).children[0]
@@ -258,13 +266,15 @@ async def test_the_limits_of_two_delegates_at_once_stay_apart(tmp_path: Path) ->
     async with asyncio.timeout(5):
         run = await Engine(
             root,
-            models={
-                "p": Scripted(fanning_out("tight", "wide"), text_reply("done")),
-                "tight": Relaying("b", together),
-                "wide": Relaying("b", together),
-                "b": Relaying("c"),
-                "c": leaf,
-            },
+            providers=provided(
+                {
+                    "p": Scripted(fanning_out("tight", "wide"), text_reply("done")),
+                    "tight": Relaying("b", together),
+                    "wide": Relaying("b", together),
+                    "b": Relaying("c"),
+                    "c": leaf,
+                }
+            ),
         ).run("p", "acme", "go")
     tight, wide = worked(run).children
     assert isinstance(tight, Generation) and isinstance(wide, Generation)
@@ -301,9 +311,9 @@ async def test_limits_across_engine_tool_of_another_engine(
     consult = Reply(
         tool_calls=[ToolCall(id="t", name="b", args={"input": "go"})], stop_reason="tool_use"
     )
-    other = Engine(inner, models={"b": relay, "c": Scripted(text_reply("c done"))})
+    other = Engine(inner, providers=provided({"b": relay, "c": Scripted(text_reply("c done"))}))
     model = Scripted(consult, text_reply("done"))
-    run = await Engine(outer, models={"m": model}, max_depth=ceiling).run(
+    run = await Engine(outer, providers=provided({"m": model}), max_depth=ceiling).run(
         "a", "acme", "go", tools=other.tool("b", scope="acme")
     )
     assert worked(run).reply == "done"
@@ -319,7 +329,11 @@ async def peak_of_tool_calls(tmp_path: Path, section: Mapping[str, Any]) -> int:
 
     root = folder(tmp_path, {"a": agent(tools={"include": ["probe"], **section})})
     model = Scripted(calling(*["probe"] * 5), text_reply("done"))
-    worked(await Engine(root, models={"m": model}).run("a", "acme", "go", tools=tool(measured)))
+    worked(
+        await Engine(root, providers=provided({"m": model})).run(
+            "a", "acme", "go", tools=tool(measured)
+        )
+    )
     return gauge.peak
 
 
@@ -333,7 +347,9 @@ async def peak_of_delegate_calls(tmp_path: Path, section: Mapping[str, Any]) -> 
         },
     )
     model = Scripted(fanning_out(*["b"] * 4), text_reply("done"))
-    run = await Engine(root, models={"m": model, "child": Measured(gauge)}).run("a", "acme", "go")
+    run = await Engine(root, providers=provided({"m": model, "child": Measured(gauge)})).run(
+        "a", "acme", "go"
+    )
     assert len(worked(run).children) == 4
     return gauge.peak
 
@@ -355,7 +371,7 @@ async def test_each_run_has_its_own_slots(tmp_path: Path) -> None:
 
     root = folder(tmp_path, {"a": agent(tools={"include": ["probe"], "max_parallel": 1})})
     model = Scripted(calling("probe"), calling("probe"), text_reply("done"), text_reply("done"))
-    engine = Engine(root, models={"m": model})
+    engine = Engine(root, providers=provided({"m": model}))
     runs = await asyncio.gather(
         *[engine.run("a", "acme", "go", tools=tool(measured)) for _ in range(2)]
     )
@@ -396,7 +412,7 @@ async def test_a_delegate_call_takes_no_tool_slot(tmp_path: Path) -> None:
     )
     model = Scripted(together, text_reply("done"))
     async with asyncio.timeout(2):
-        run = await Engine(root, models={"m": model, "child": Waiting()}).run(
+        run = await Engine(root, providers=provided({"m": model, "child": Waiting()})).run(
             "a", "acme", "go", tools=tool(opens)
         )
     assert worked(run).reply == "done"
@@ -417,7 +433,7 @@ async def test_a_call_waiting_on_approve_holds_no_slot(tmp_path: Path) -> None:
     root = folder(tmp_path, {"a": agent(tools={"include": ["probe"], "max_parallel": 1})})
     model = Scripted(calling("probe", "probe"), text_reply("done"))
     async with asyncio.timeout(2):
-        run = await Engine(root, models={"m": model}).run(
+        run = await Engine(root, providers=provided({"m": model})).run(
             "a", "acme", "go", tools=tool(runs), approve=approve
         )
     assert worked(run).reply == "done"
@@ -432,7 +448,9 @@ async def test_a_call_waiting_for_a_slot_keeps_its_whole_deadline(tmp_path: Path
         tmp_path, {"a": agent(tools={"include": ["probe"], "max_parallel": 1, "timeout": 0.6})}
     )
     model = Scripted(calling("probe", "probe"), text_reply("done"))
-    run = await Engine(root, models={"m": model}).run("a", "acme", "go", tools=tool(takes_a_while))
+    run = await Engine(root, providers=provided({"m": model})).run(
+        "a", "acme", "go", tools=tool(takes_a_while)
+    )
     assert worked(run).reply == "done"
 
 
@@ -457,7 +475,7 @@ async def run_commands(
     model = Scripted(reply, text_reply("done"))
     async with (
         Workspace(Local(work), scope="acme", timeout=timeout, bridge=bridge) as room,
-        Engine(root, models={"m": model}) as engine,
+        Engine(root, providers=provided({"m": model})) as engine,
     ):
         run = await engine.run("a", "acme", "go", workspace=room, tools=tools)
     assert isinstance(run, Generation)

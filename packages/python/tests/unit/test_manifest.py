@@ -20,7 +20,8 @@ from .trees import write_folder
 
 GENERATION: dict[str, Any] = {"kind": "generation", "model": "m", "instructions": "a.md"}
 DECISION: dict[str, Any] = {"kind": "decision", "model": "m", "instructions": "a.md"}
-MINIMAL = "version: 1\nagents:\n  a: {kind: generation, model: m, instructions: a.md}\n"
+MODELS = "models:\n  m: {provider: p}\n"
+MINIMAL = f"version: 1\n{MODELS}agents:\n  a: {{kind: generation, model: m, instructions: a.md}}\n"
 ROUTE: dict[str, Any] = {"by": "category", "to": {"billing": "support"}}
 
 DESIGN_EXAMPLE = """\
@@ -34,6 +35,13 @@ workers:                              # optional; without it, one shared worker 
   live:
     processes: 1
 
+models:                               # each model once; agents pick them by name
+  strong:                             # the name agents use
+    provider: anthropic               # required: a name the host gives in Engine(providers=)
+    model: claude-sonnet-5-5          # optional: the default; a run can choose another
+    effort: medium                    # optional: the default; a run can choose another
+  decision: {provider: typesafe, model: jev-latest}
+
 tools:                                # each tool once; agents pick them by name
   lookup_order:                       # the name the model sees; the file can be called anything
     module: tools/lookup_order.py     # required: the Python file, from the folder root
@@ -45,8 +53,8 @@ tools:                                # each tool once; agents pick them by name
 
 agents:
   support:
-    kind: generation                  # required: generation, decision or voice_live
-    model: strong                     # required: a key the host maps to a model
+    kind: generation                  # required: generation, decision or voice
+    model: strong                     # required: a name under models:
     description: Handles support      # else the description: in the instructions file's frontmatter
     instructions: support/support.md  # any markdown file; frontmatter is stripped
     max_model_calls: 24               # per run; a delegated run counts its own
@@ -150,6 +158,8 @@ def test_the_example_of_the_design_parses_as_written(tmp_path: Path) -> None:
     assert manifest.workers["customers"].processes == 2
     assert manifest.workers["customers"].max_result_bytes == 33554432
     assert manifest.workers["live"].threads == 32
+    assert manifest.models["strong"].effort == "medium"
+    assert manifest.models["decision"].model == "jev-latest"
     assert manifest.tools["lookup_order"].schema_file == "tools/lookup_order.json"
     assert manifest.tools["lookup_order"].timeout == 20
     assert manifest.tools["refund"].function == "run"
@@ -219,7 +229,7 @@ def test_an_unknown_key_with_no_value_names_what_is_allowed(tmp_path: Path, empt
 def test_an_unknown_key_at_the_top_names_the_top_keys(tmp_path: Path) -> None:
     _refused(
         _file(tmp_path, f"versoin: 1\n{MINIMAL}"),
-        r"versoin \(it takes version, workers, tools, agents\)",
+        r"versoin \(it takes version, workers, models, tools, agents\)",
     )
 
 
@@ -412,7 +422,7 @@ def test_a_bare_ampersand_says_to_quote_it(tmp_path: Path) -> None:
 
 def test_a_quoted_star_is_a_pattern(tmp_path: Path) -> None:
     text = (
-        "version: 1\nagents:\n  a:\n    kind: generation\n    model: m\n    instructions: a.md\n"
+        f"version: 1\n{MODELS}agents:\n  a:\n    kind: generation\n    model: m\n    instructions: a.md\n"
         '    tools: {include: ["*"]}\n'
     )
     tools = read_manifest(_file(tmp_path, text)).agents["a"].tools
@@ -420,7 +430,7 @@ def test_a_quoted_star_is_a_pattern(tmp_path: Path) -> None:
 
 
 def _with(keys: str) -> str:
-    return f"version: 1\nagents:\n  a: {{kind: generation, model: m, instructions: a.md, {keys}}}\n"
+    return f"version: 1\nagents:\n  a: {{kind: generation, model: m, instructions: a.md, {keys}}}\n{MODELS}"
 
 
 @pytest.mark.parametrize(
@@ -643,12 +653,17 @@ def _with_name(root: Path, where: str, name: str) -> tuple[Path, str]:
         return write_folder(
             root, {"a": GENERATION}, tools={name: {"module": "x.py"}}
         ), f"tools.{name}"
+    if where == "models":
+        plain = name == name.strip() and name and not name.startswith(".") and "/" not in name
+        picking = {**GENERATION, "model": name} if plain else GENERATION
+        models = {name: {"provider": "p"}, **({} if plain else {"m": {"provider": "p"}})}
+        return write_folder(root, {"a": picking}, models=models), f"models.{name}"
     agent = {**GENERATION, "modes": {name: {"model": "n"}}}
     return write_folder(root, {"a": agent}), f"agents.a.modes.{name}"
 
 
 @pytest.mark.parametrize("bad", ["", " ", " a", "a ", ".a", "a/b"])
-@pytest.mark.parametrize("where", ["agents", "workers", "tools", "modes"])
+@pytest.mark.parametrize("where", ["agents", "workers", "models", "tools", "modes"])
 def test_a_name_is_one_plain_word(tmp_path: Path, where: str, bad: str) -> None:
     folder, path = _with_name(tmp_path, where, bad)
     said = _refused(folder, re.escape(f"manifest: {path} in <root>") + ".* is not a plain name")
@@ -656,7 +671,7 @@ def test_a_name_is_one_plain_word(tmp_path: Path, where: str, bad: str) -> None:
 
 
 @pytest.mark.parametrize("name", ["a", "a.b", "a-b", "a_b", "a b"])
-@pytest.mark.parametrize("where", ["agents", "workers", "tools", "modes"])
+@pytest.mark.parametrize("where", ["agents", "workers", "models", "tools", "modes"])
 def test_a_plain_name_loads(tmp_path: Path, where: str, name: str) -> None:
     folder, _ = _with_name(tmp_path, where, name)
     assert read_manifest(folder).version == 1

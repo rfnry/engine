@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from rfnry_engine.engine import Approve, Engine, _copied
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
-from rfnry_engine.models import DecisionModel, GenerationModel, HistoryLike
+from rfnry_engine.models import DecisionModel, GenerationModel, HistoryLike, ModelChoice
 from rfnry_engine.records import READ_BACK, Decision, Fingerprint, Generation, Run
 from rfnry_engine.refinery.conflicts import find_conflicts
 from rfnry_engine.refinery.export import (
@@ -328,7 +328,7 @@ class Refinery:
         judge: str | None = None,
         teacher: str | None = None,
         limit: int = 500,
-        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel | ModelChoice] | None = None,
     ) -> Labeled:
         if not scope:
             raise InputError("refinery: scope is required")
@@ -431,7 +431,7 @@ class Refinery:
         concurrency: int = 1,
         repeat: int = 1,
         conversation: Callable[[Run], Sequence[object] | HistoryLike] | None = None,
-        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel | ModelChoice] | None = None,
     ) -> AsyncGenerator[Replay]:
         if not scope:
             raise InputError("refinery: scope is required")

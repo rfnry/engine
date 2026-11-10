@@ -8,7 +8,7 @@ from rfnry_engine.cli import main
 from rfnry_engine.engine import Engine
 
 from .fakes import Answering, Scripted
-from .trees import write_folder
+from .trees import provided, write_folder
 
 AGENT = {"kind": "generation", "model": "strong", "instructions": "a.md"}
 MODES = {"chat": {"description": "Chat."}, "email": {"description": "Mail."}}
@@ -113,7 +113,9 @@ def test_schema_is_valid_json_schema_and_names_agents(
 
 
 def test_agents_lists_modes(tmp_path: Path) -> None:
-    engine = Engine(_good(tmp_path), models={"strong": Scripted(), "judge": Answering()})
+    engine = Engine(
+        _good(tmp_path), providers=provided({"strong": Scripted(), "judge": Answering()})
+    )
     info = engine.agents["a"]
     assert list(info.modes) == ["chat", "email"]
     assert info.modes["chat"].description == "Chat."

@@ -17,7 +17,7 @@ from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
 
 from .fakes import Answering, MemoryBucket, Scripted, delegating, text_reply
-from .trees import write_folder
+from .trees import provided, write_folder
 
 RUN = "def run(args, call):\n    return 'ran'\n"
 FILLS = "def run(input, call):\n    return {'options': {'a': 'A', 'b': 'B'}}\n"
@@ -114,7 +114,7 @@ async def test_a_mode_overlays_the_entry(tmp_path: Path) -> None:
         files=FILES,
     )
     model = Scripted(text_reply("On the entry."), text_reply("In the mode."))
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         plain = await engine.run("a", "acme", "Hi")
         moded = await engine.run("a", "acme", "Hi", mode="chat")
     (entry_system, _, entry_tools), (mode_system, _, mode_tools) = model.calls
@@ -138,7 +138,7 @@ async def test_a_tool_only_a_mode_picks_runs_in_a_worker(tmp_path: Path) -> None
         files=FILES,
     )
     model = Scripted(_calling("refund"), text_reply("Done."))
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         run = await engine.run("a", "acme", "Hi", mode="chat")
     assert isinstance(run, Generation)
     assert [(step.tool, step.result, step.is_error) for step in run.steps] == [
@@ -165,7 +165,7 @@ async def test_a_script_only_a_mode_asks_fills_its_question(tmp_path: Path) -> N
             "chat/order.py": FILLS,
         },
     )
-    async with Engine(folder, models={"j": Answering()}) as engine:
+    async with Engine(folder, providers=provided({"j": Answering()})) as engine:
         run = await engine.run("t", "acme", "Hi", mode="chat")
     assert isinstance(run, Decision)
     assert run.questions["order"].model_dump()["options"] == {"a": "A", "b": "B"}
@@ -192,7 +192,7 @@ async def test_exclude_wins_over_a_modes_include(tmp_path: Path) -> None:
         files=FILES,
     )
     model = Scripted(text_reply("Done."))
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         await engine.run("a", "acme", "Hi", mode="chat")
         surface = EngineTools(engine, agent="a", scope="acme", mode="chat")
         with pytest.raises(InputError) as refused:
@@ -211,7 +211,7 @@ async def test_an_unknown_mode_is_notfound_before_any_model_call(tmp_path: Path)
     with pytest.raises(
         NotFoundError, match=r"^engine: agent 'a' has no mode 'ghost'; its modes are chat, email$"
     ):
-        await Engine(folder, models={"m": model}).run("a", "acme", "Hi", mode="ghost")
+        await Engine(folder, providers=provided({"m": model})).run("a", "acme", "Hi", mode="ghost")
     assert model.calls == []
 
 
@@ -221,7 +221,7 @@ async def test_an_agent_without_modes_has_no_mode_to_select(tmp_path: Path) -> N
     with pytest.raises(
         NotFoundError, match=r"^engine: agent 'a' has no mode 'chat'; it has no modes$"
     ):
-        await Engine(folder, models={"m": model}).run("a", "acme", "Hi", mode="chat")
+        await Engine(folder, providers=provided({"m": model})).run("a", "acme", "Hi", mode="chat")
     assert model.calls == []
 
 
@@ -243,7 +243,7 @@ async def test_an_agent_of_the_old_loader_has_no_modes(tmp_path: Path) -> None:
 async def test_an_agent_with_only_modes_needs_one(tmp_path: Path) -> None:
     folder = write_folder(tmp_path, ONLY_MODES, files=FILES)
     model = Scripted()
-    engine = Engine(folder, models={"m": model})
+    engine = Engine(folder, providers=provided({"m": model}))
     needs = r"^engine: agent 'a' needs a mode; its modes are chat, email$"
     with pytest.raises(InputError, match=needs):
         await engine.run("a", "acme", "Hi")
@@ -257,7 +257,9 @@ async def test_an_agent_with_only_modes_needs_one(tmp_path: Path) -> None:
 async def test_an_agent_with_only_modes_runs_in_one(tmp_path: Path) -> None:
     folder = write_folder(tmp_path, ONLY_MODES, files=FILES)
     model = Scripted(text_reply("Done."))
-    run = await Engine(folder, models={"m": model}).run("a", "acme", "Hi", mode="email")
+    run = await Engine(folder, providers=provided({"m": model})).run(
+        "a", "acme", "Hi", mode="email"
+    )
     assert run.mode == "email" and "Email instructions." in model.calls[0][0]
 
 
@@ -296,7 +298,9 @@ async def test_delegated_routed_and_engine_tool_runs_take_no_mode(tmp_path: Path
         text_reply("By tool."),
     )
     kept = _Kept()
-    async with Engine(folder, models={"m": model, "j": Answering()}, refinery=kept) as engine:
+    async with Engine(
+        folder, providers=provided({"m": model, "j": Answering()}), refinery=kept
+    ) as engine:
         led = await engine.run("lead", "acme", "Hi", mode="chat")
         routing = await engine.run("triage", "acme", "Hi", mode="chat")
         answered = await engine.tool("helper", scope="acme").dispatch("helper", {"input": "Hi"})
@@ -320,7 +324,7 @@ def test_each_mode_is_compiled_at_load(tmp_path: Path) -> None:
         ConfigurationError,
         match=r"^compiled: mode 'bad' of agent 'a' cannot read its instructions 'ghost\.md'",
     ):
-        Engine(folder, models={"m": Scripted()})
+        Engine(folder, providers=provided({"m": Scripted()}))
 
 
 def test_an_agent_named_like_a_mode_of_another_is_refused(tmp_path: Path) -> None:
@@ -333,7 +337,7 @@ def test_an_agent_named_like_a_mode_of_another_is_refused(tmp_path: Path) -> Non
         ConfigurationError,
         match=r"^compiled: agent 'a\.b' and mode 'b' of agent 'a' would export under one key, 'a\.b'; rename one$",
     ):
-        Engine(folder, models={"m": Scripted()})
+        Engine(folder, providers=provided({"m": Scripted()}))
 
 
 def test_two_modes_of_two_agents_exporting_under_one_key_are_refused(tmp_path: Path) -> None:
@@ -349,14 +353,14 @@ def test_two_modes_of_two_agents_exporting_under_one_key_are_refused(tmp_path: P
         ConfigurationError,
         match=r"^compiled: mode 'b\.c' of agent 'a' and mode 'c' of agent 'a\.b' would export under one key, 'a\.b\.c'; rename one$",
     ):
-        Engine(folder, models={"m": Scripted()})
+        Engine(folder, providers=provided({"m": Scripted()}))
 
 
 async def test_the_fingerprint_differs_by_mode(tmp_path: Path) -> None:
     alike = {"chat": {"description": "Alike"}, "email": {"description": "Alike"}}
     folder = write_folder(tmp_path, {"a": {**AGENT, "modes": alike}}, files=FILES)
     model = Scripted(text_reply("1"), text_reply("2"), text_reply("3"))
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         runs = [await engine.run("a", "acme", "Hi", mode=mode) for mode in (None, "chat", "email")]
     assert len({run.fingerprint.agent for run in runs}) == 3
 
@@ -364,7 +368,7 @@ async def test_the_fingerprint_differs_by_mode(tmp_path: Path) -> None:
 async def test_a_decision_agents_modes_ask_their_own_questions(tmp_path: Path) -> None:
     folder = write_folder(tmp_path, {"t": SORTER}, files=ASKED)
     model = Answering()
-    async with Engine(folder, models={"j": model}) as engine:
+    async with Engine(folder, providers=provided({"j": model})) as engine:
         plain = await engine.run("t", "acme", "Hi")
         chat = await engine.run("t", "acme", "Hi", mode="chat")
         email = await engine.run("t", "acme", "Hi", mode="email")
@@ -388,7 +392,7 @@ def test_the_export_key_separates_by_mode() -> None:
 async def test_the_mode_is_recorded_and_exported_apart(tmp_path: Path, storage: Storage) -> None:
     folder = write_folder(tmp_path, {"t": SORTER}, files=ASKED)
     refinery = Refinery(storage)
-    async with Engine(folder, models={"j": Answering()}, refinery=refinery) as engine:
+    async with Engine(folder, providers=provided({"j": Answering()}), refinery=refinery) as engine:
         plain = await engine.run("t", "acme", "Hi")
         chat = await engine.run("t", "acme", "Hi", mode="chat")
         email = await engine.run("t", "acme", "Hi", mode="email")
@@ -414,7 +418,7 @@ async def test_the_mode_is_recorded_and_exported_apart(tmp_path: Path, storage: 
 async def test_exporting_one_mode_keeps_only_that_mode(tmp_path: Path, storage: Storage) -> None:
     folder = write_folder(tmp_path, {"t": SORTER}, files=ASKED)
     refinery = Refinery(storage)
-    async with Engine(folder, models={"j": Answering()}, refinery=refinery) as engine:
+    async with Engine(folder, providers=provided({"j": Answering()}), refinery=refinery) as engine:
         await engine.run("t", "acme", "Hi")
         chat = await engine.run("t", "acme", "Hi", mode="chat")
         await engine.run("t", "acme", "Hi", mode="email")
@@ -432,7 +436,7 @@ async def test_every_dataset_carries_the_mode(tmp_path: Path, storage: Storage) 
     folder = write_folder(tmp_path, {"a": {**AGENT, "modes": TWO_MODES}}, files=FILES)
     refinery = Refinery(storage)
     model = Scripted(text_reply("No."))
-    async with Engine(folder, models={"m": model}, refinery=refinery) as engine:
+    async with Engine(folder, providers=provided({"m": model}), refinery=refinery) as engine:
         run = await engine.run("a", "acme", "Hi", mode="chat")
     await refinery.review("acme", run.run_id, Review(correction="Yes."))
     bucket = MemoryBucket()
@@ -447,10 +451,10 @@ async def test_replay_uses_the_recorded_mode(tmp_path: Path, storage: Storage) -
     folder = write_folder(tmp_path, {"a": {**AGENT, "modes": TWO_MODES}}, files=FILES)
     refinery = Refinery(storage)
     model = Scripted(text_reply("Recorded."))
-    async with Engine(folder, models={"m": model}, refinery=refinery) as engine:
+    async with Engine(folder, providers=provided({"m": model}), refinery=refinery) as engine:
         await engine.run("a", "acme", "Hi", mode="chat")
     candidate_model = Scripted(text_reply("Replayed."))
-    async with Engine(folder, models={"m": candidate_model}) as candidate:
+    async with Engine(folder, providers=provided({"m": candidate_model})) as candidate:
         [pair] = await _replayed(refinery, candidate, "a")
     assert pair.error is None and pair.candidate is not None
     assert pair.recorded.mode == "chat" and pair.candidate.mode == "chat"
@@ -462,10 +466,10 @@ async def test_replay_of_a_decision_uses_the_recorded_mode(
 ) -> None:
     folder = write_folder(tmp_path, {"t": SORTER}, files=ASKED)
     refinery = Refinery(storage)
-    async with Engine(folder, models={"j": Answering()}, refinery=refinery) as engine:
+    async with Engine(folder, providers=provided({"j": Answering()}), refinery=refinery) as engine:
         await engine.run("t", "acme", "Hi", mode="email")
     model = Answering()
-    async with Engine(folder, models={"j": model}) as candidate:
+    async with Engine(folder, providers=provided({"j": model})) as candidate:
         [pair] = await _replayed(refinery, candidate, "t")
     assert pair.error is None and pair.candidate is not None
     assert pair.candidate.mode == "email"
@@ -497,11 +501,11 @@ async def test_replay_of_a_routed_run_uses_the_top_runs_mode(
     refinery = Refinery(storage)
     recorded = Scripted(text_reply("Routed."))
     async with Engine(
-        folder, models={"m": recorded, "j": Answering()}, refinery=refinery
+        folder, providers=provided({"m": recorded, "j": Answering()}), refinery=refinery
     ) as engine:
         await engine.run("triage", "acme", "Hi", mode="chat")
     replaying = Scripted(text_reply("Routed again."))
-    async with Engine(folder, models={"m": replaying, "j": Answering()}) as candidate:
+    async with Engine(folder, providers=provided({"m": replaying, "j": Answering()})) as candidate:
         [pair] = await _replayed(refinery, candidate, "triage")
     assert pair.error is None and isinstance(pair.candidate, Decision)
     assert pair.candidate.mode == "chat"
@@ -512,7 +516,7 @@ async def test_replay_of_a_mode_that_is_gone_says_so(tmp_path: Path, storage: St
     folder = write_folder(tmp_path, {"a": {**AGENT, "modes": TWO_MODES}}, files=FILES)
     refinery = Refinery(storage)
     model = Scripted(text_reply("Recorded."))
-    async with Engine(folder, models={"m": model}, refinery=refinery) as engine:
+    async with Engine(folder, providers=provided({"m": model}), refinery=refinery) as engine:
         recorded = await engine.run("a", "acme", "Hi", mode="chat")
     (tmp_path / "later").mkdir()
     later = write_folder(
@@ -521,7 +525,7 @@ async def test_replay_of_a_mode_that_is_gone_says_so(tmp_path: Path, storage: St
         files=FILES,
     )
     untouched = Scripted()
-    async with Engine(later, models={"m": untouched}) as candidate:
+    async with Engine(later, providers=provided({"m": untouched})) as candidate:
         [pair] = await _replayed(refinery, candidate, "a")
     assert pair.candidate is None and pair.error == (
         f"InputError: refinery: run {recorded.run_id!r} ran in mode 'chat', "

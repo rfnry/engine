@@ -104,7 +104,7 @@ class ModeEntry(_Closed):
     def _a_model_is_not_padded(cls, value: str | None) -> str | None:
         if value is not None and value != value.strip():
             raise ValueError(
-                f"manifest: model must not be padded, got {value!r}; write the name of a model the engine is given, such as model: strong"
+                f"manifest: model must not be padded, got {value!r}; write the name of an entry under models:, such as model: strong"
             )
         return value
 
@@ -124,6 +124,12 @@ class Resolved(ModeEntry):
     orchestration: Orchestration = Field(default_factory=Orchestration)
 
 
+class ModelEntry(_Closed):
+    provider: str
+    model: str | None = None
+    effort: str | None = None
+
+
 class ToolEntry(_Closed):
     module: _FolderPath
     function: str = "run"
@@ -135,6 +141,7 @@ class ToolEntry(_Closed):
 class Manifest(_Closed):
     version: Literal[1]
     workers: dict[str, WorkerEntry] = Field(default_factory=dict)
+    models: dict[str, ModelEntry]
     tools: dict[str, ToolEntry] = Field(default_factory=dict)
     agents: dict[str, AgentEntry]
 
@@ -286,6 +293,7 @@ def _refuse_names_that_are_not_plain(manifest: Manifest, path: Path) -> None:
     maps: list[tuple[str, Iterable[str]]] = [
         ("agents", manifest.agents),
         ("workers", manifest.workers),
+        ("models", manifest.models),
         ("tools", manifest.tools),
         *((f"agents.{name}.modes", agent.modes) for name, agent in manifest.agents.items()),
     ]
@@ -357,12 +365,30 @@ def _refuse_loose_workers(manifest: Manifest, path: Path) -> None:
         )
 
 
+def _refuse_loose_models(manifest: Manifest, path: Path) -> None:
+    picked: set[str] = set()
+    for name, agent in manifest.agents.items():
+        for at, entry in _layers(name, agent):
+            if entry.model is None:
+                continue
+            if entry.model not in manifest.models:
+                raise ConfigurationError(
+                    f"manifest: {at}.model in {path} names {entry.model!r}, which models: does not declare; declare it there, or pick one of {', '.join(sorted(manifest.models))}"
+                )
+            picked.add(entry.model)
+    loose = sorted(set(manifest.models) - picked)
+    if loose:
+        raise ConfigurationError(
+            f"manifest: models.{loose[0]} in {path} is picked by nothing; pick it with model: on an agent or a mode, or remove it"
+        )
+
+
 def read_manifest(root: Path) -> Manifest:
     path = root / MANIFEST
     data = _parsed(_text_of(root, path), path)
     if not isinstance(data, dict):
         raise ConfigurationError(
-            f"manifest: {path} holds no keys; write version: 1 and agents: in it"
+            f"manifest: {path} holds no keys; write version: 1, models: and agents: in it"
         )
     manifest = _validated(data, path)
     _refuse_names_that_are_not_plain(manifest, path)
@@ -370,6 +396,7 @@ def read_manifest(root: Path) -> Manifest:
         _refuse_what_its_kind_leaves_out(name, agent, path)
         _refuse_missing_instructions(name, agent, path)
     _refuse_loose_workers(manifest, path)
+    _refuse_loose_models(manifest, path)
     return manifest
 
 

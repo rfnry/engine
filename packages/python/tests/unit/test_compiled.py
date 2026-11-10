@@ -16,7 +16,7 @@ from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Local, Workspace
 
 from .fakes import Answering, Scripted, delegating, text_reply
-from .trees import write_folder
+from .trees import provided, write_folder
 
 GENERATION: dict[str, Any] = {"kind": "generation", "model": "m", "instructions": "a.md"}
 DECISION: dict[str, Any] = {"kind": "decision", "model": "j", "instructions": "a.md"}
@@ -56,7 +56,7 @@ async def test_an_agent_runs_on_its_instructions_file(tmp_path: Path, newline: s
     text = "---\ndescription: Says a\nvendor: kept out\n---\nYou are a.\n".replace("\n", newline)
     folder = write_folder(tmp_path, {"a": GENERATION}, files={"a.md": text})
     model = Scripted(text_reply("done"))
-    run = await Engine(folder, models={"m": model}).run("a", "acme", "hi")
+    run = await Engine(folder, providers=provided({"m": model})).run("a", "acme", "hi")
     assert isinstance(run, Generation) and run.reply == "done"
     [(system, _, _)] = model.calls
     assert "You are a." in system
@@ -69,7 +69,7 @@ async def test_any_markdown_path_is_instructions(tmp_path: Path, path: str) -> N
         tmp_path, {"a": {**GENERATION, "instructions": path}}, files={path: "Review it.\n"}
     )
     model = Scripted(text_reply("done"))
-    await Engine(folder, models={"m": model}).run("a", "acme", "hi")
+    await Engine(folder, providers=provided({"m": model})).run("a", "acme", "hi")
     assert "Review it." in model.calls[0][0]
 
 
@@ -138,7 +138,7 @@ async def test_a_decision_agent_answers_its_questions(tmp_path: Path) -> None:
         files={"triage/t.md": "Sort it.\n", "triage/urgent.json": URGENT, "triage/area.json": AREA},
     )
     model = Answering()
-    run = await Engine(folder, models={"j": model}).run("t", "acme", "hello")
+    run = await Engine(folder, providers=provided({"j": model})).run("t", "acme", "hello")
     assert isinstance(run, Decision)
     assert set(run.answers) == {"urgent", "area"}
     assert run.questions["urgent"] == Check(instructions="Is it urgent?")
@@ -159,7 +159,7 @@ async def test_a_question_script_fills_its_question_in_a_worker(tmp_path: Path) 
             "q/order.py": "import _names\n\n\ndef run(input, call):\n    return {'options': {_names.FIRST: 'First', call['scope']: 'Scope'}}\n",
         },
     )
-    async with Engine(folder, models={"j": Answering()}) as engine:
+    async with Engine(folder, providers=provided({"j": Answering()})) as engine:
         run = await engine.run("t", "acme", "which?")
     assert isinstance(run, Decision)
     question = run.questions["order"]
@@ -355,7 +355,7 @@ async def test_delegate_to_and_route_name_agents_of_the_file(tmp_path: Path) -> 
             assert "a, b" in said
     write_folder(tmp_path, {"a": _delegating("b"), "b": GENERATION, "c": GENERATION}, files=FILES)
     model = Scripted(delegating("b", "work"), text_reply("from b"), text_reply("done"))
-    run = await Engine(tmp_path, models={"m": model}).run("a", "acme", "go")
+    run = await Engine(tmp_path, providers=provided({"m": model})).run("a", "acme", "go")
     assert isinstance(run, Generation) and run.reply == "done"
     [delegate] = model.calls[0][2]
     assert delegate.name == "Delegate"
@@ -366,7 +366,9 @@ async def test_delegate_to_and_route_name_agents_of_the_file(tmp_path: Path) -> 
 async def test_a_route_hands_the_input_to_an_agent_of_the_file(tmp_path: Path) -> None:
     folder = write_folder(tmp_path, {"t": _routing("b"), "b": GENERATION}, files=FILES)
     generating = Scripted(text_reply("answered"))
-    run = await Engine(folder, models={"j": Answering(), "m": generating}).run("t", "acme", "x")
+    run = await Engine(folder, providers=provided({"j": Answering(), "m": generating})).run(
+        "t", "acme", "x"
+    )
     assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
     assert run.routed_to.reply == "answered"
 
@@ -485,7 +487,7 @@ async def test_workspace_true_needs_a_workspace_on_the_run(tmp_path: Path) -> No
     root.mkdir()
     write_folder(root, {"a": {**GENERATION, "workspace": True}}, files=FILES)
     model = Scripted(text_reply("done"))
-    engine = Engine(root, models={"m": model})
+    engine = Engine(root, providers=provided({"m": model}))
     with pytest.raises(ConfigurationError, match="declares workspace: true; pass workspace="):
         await engine.run("a", "acme", "go")
     room = tmp_path / "room"
@@ -502,7 +504,9 @@ async def test_a_missing_section_gives_nothing(tmp_path: Path) -> None:
     assert spec.withheld is not None and spec.withheld(folder / "a.md")
     model = Scripted(text_reply("done"))
     given = Tool("given", "A tool of the run", body=None)
-    await Engine(folder, models={"m": model}).run("a", "acme", "go", tools=Tools([given]))
+    await Engine(folder, providers=provided({"m": model})).run(
+        "a", "acme", "go", tools=Tools([given])
+    )
     assert model.calls[0][2] == []
 
 

@@ -23,7 +23,7 @@ from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.engine_tools import EngineTools
 
 from .fakes import Answering, Fixed, Scripted, delegating, text_reply
-from .trees import write_folder
+from .trees import provided, write_folder
 
 PNG = b"\x89PNG\r\n\x1a\ndiagram"
 NOT_GIVEN = "which neither the engine nor the run was given"
@@ -405,21 +405,22 @@ async def test_a_model_only_a_mode_names_can_be_given_to_the_engine_or_the_run(
     tmp_path: Path,
 ) -> None:
     folder = with_a_mode(tmp_path)
-    on_engine = await Engine(folder, models={"q": Scripted(text_reply("engine"))}).run(
-        "a", "acme", "x", mode="quick"
-    )
+    on_engine = await Engine(
+        folder, providers=provided({"m": Scripted(), "q": Scripted(text_reply("engine"))})
+    ).run("a", "acme", "x", mode="quick")
     assert isinstance(on_engine, Generation) and on_engine.reply == "engine"
-    on_run = await Engine(folder, models={}).run(
+    on_run = await Engine(folder, providers=provided({"m": Scripted(), "q": Scripted()})).run(
         "a", "acme", "x", mode="quick", models={"q": Scripted(text_reply("run"))}
     )
     assert isinstance(on_run, Generation) and on_run.reply == "run"
 
 
-def test_a_mode_on_a_model_of_the_other_kind_is_refused(tmp_path: Path) -> None:
+async def test_a_mode_on_a_model_of_the_other_kind_is_refused(tmp_path: Path) -> None:
+    engine = Engine(with_a_mode(tmp_path), providers=provided({"m": Scripted(), "q": Answering()}))
     with pytest.raises(
         ConfigurationError, match=r"agent 'a' is a generation agent, and model 'q' has no generate"
     ):
-        Engine(with_a_mode(tmp_path), models={"q": Answering()})
+        await engine.run("a", "acme", "x", mode="quick")
 
 
 async def test_a_run_refuses_a_model_no_agent_runs_on(tmp_path: Path) -> None:

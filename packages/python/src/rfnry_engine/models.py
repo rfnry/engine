@@ -1,6 +1,7 @@
 import base64
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Protocol, Self, runtime_checkable
 
 from pydantic import (
@@ -401,3 +402,19 @@ Message.model_rebuild()
 @runtime_checkable
 class HistoryLike(Protocol):
     async def read(self, start: int, stop: int | None = None) -> Sequence[object]: ...
+
+
+@dataclass(frozen=True)
+class ModelChoice:
+    provider: str | None = None
+    model: str | None = None
+    effort: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.provider is None and self.model is None and self.effort is None:
+            raise InputError(
+                "models: a ModelChoice says nothing; give it a provider, a model or an effort"
+            )
+
+
+Provider = Callable[[str | None, str | None], Any]

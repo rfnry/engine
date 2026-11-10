@@ -16,7 +16,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tree import load_tree
 
 from .fakes import Answering, Scripted, delegating, text_reply
-from .trees import write_folder
+from .trees import provided, write_folder
 
 ORDER = (
     "def run(input, call):\n"
@@ -434,7 +434,9 @@ async def test_a_question_script_runs_in_its_agent_s_worker(tmp_path: Path) -> N
             "support/pid.py": "import os\ndef run(args, call):\n    return os.getpid()\n",
         },
     )
-    async with Engine(tmp_path, models={"judge": Answering()}) as engine:
+    async with Engine(
+        tmp_path, providers=provided({"judge": Answering(), "strong": Scripted()})
+    ) as engine:
         desk = await engine.run("matcher", "acme", "x")
         solo = await engine.run("solo", "acme", "x")
         tool = await EngineTools(engine, agent="support", scope="acme").dispatch("pid", {})
@@ -473,7 +475,9 @@ async def test_a_mode_s_question_script_runs_in_the_mode_s_worker(tmp_path: Path
             "support/pid.py": "import os\ndef run(args, call):\n    return os.getpid()\n",
         },
     )
-    async with Engine(tmp_path, models={"judge": Answering()}) as engine:
+    async with Engine(
+        tmp_path, providers=provided({"judge": Answering(), "strong": Scripted()})
+    ) as engine:
         chat = await engine.run("triage", "acme", "x", mode="chat")
         entry = await engine.run("triage", "acme", "x")
         tool = await EngineTools(engine, agent="support", scope="acme").dispatch("pid", {})

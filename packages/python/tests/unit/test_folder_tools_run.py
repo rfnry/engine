@@ -25,7 +25,7 @@ from rfnry_engine.tools.workspace import Local, Workspace
 from rfnry_engine.tree import load_tree
 
 from .fakes import Answering, Scripted, text_reply
-from .trees import write_folder
+from .trees import provided, write_folder
 
 RUN = "def run(args, call):\n    return {}\n"
 PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
@@ -753,7 +753,7 @@ async def test_a_worker_s_agents_share_its_processes(tmp_path: Path) -> None:
         tools={"pid": {"module": "tools/pid.py", "description": "Pid"}},
         files={"a.md": "Work.\n", "tools/pid.py": PID},
     )
-    async with Engine(tmp_path, models={}) as engine:
+    async with Engine(tmp_path, providers=provided({"m": Scripted()})) as engine:
 
         async def pids(agent: str, n: int) -> set[int]:
             surface = EngineTools(engine, agent=agent, scope="acme")
@@ -785,7 +785,7 @@ async def test_a_cancelled_close_still_stops_every_process_of_a_worker(
         tools={"pid": {"module": "tools/pid.py", "description": "Pid"}},
         files={"a.md": "Work.\n", "tools/pid.py": PID},
     )
-    engine = Engine(tmp_path, models={})
+    engine = Engine(tmp_path, providers=provided({"m": Scripted()}))
     surface = EngineTools(engine, agent="billing", scope="acme")
     pool = engine._workers.pool(engine._spec("billing"))
     calls: list[asyncio.Future[Any]] = []

@@ -15,7 +15,7 @@ from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Local, Workspace
 
 from .fakes import Scripted, delegating, text_reply
-from .trees import write_folder
+from .trees import provided, write_folder
 
 GENERATION: dict[str, Any] = {"kind": "generation", "model": "m", "instructions": "a.md"}
 RUN = "def run(args, call):\n    return 'ran'\n"
@@ -72,7 +72,7 @@ def _offered(model: Scripted) -> list[str]:
 
 
 async def _answer(folder: Path, name: str, args: Any = None) -> Any:
-    async with Engine(folder, models={"m": Scripted()}) as engine:
+    async with Engine(folder, providers=provided({"m": Scripted()})) as engine:
         surface = EngineTools(engine, agent="a", scope="acme")
         return await surface.dispatch(name, {} if args is None else args)
 
@@ -88,7 +88,7 @@ async def test_the_name_is_the_key_not_the_file(tmp_path: Path) -> None:
         {"tools/slots_v2.py": "def run(args, call):\n    return call['tool']\n"},
     )
     model = Scripted(_calling("find_slots"), text_reply("done"))
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         run = await engine.run("a", "acme", "go")
     assert isinstance(run, Generation)
     assert _offered(model) == ["find_slots"]
@@ -109,7 +109,7 @@ async def test_the_function_is_named_and_defaults_to_run(tmp_path: Path) -> None
         },
         {"tools/both.py": source},
     )
-    async with Engine(folder, models={"m": Scripted()}) as engine:
+    async with Engine(folder, providers=provided({"m": Scripted()})) as engine:
         surface = EngineTools(engine, agent="a", scope="acme")
         assert await surface.dispatch("plain", {}) == "the default"
         assert await surface.dispatch("named", {}) == "the named one"
@@ -256,7 +256,7 @@ async def test_the_smallest_timeout_wins(
     section = {} if agent is None else {"timeout": agent}
     folder = _folder(tmp_path, {"wait": entry}, {"tools/patient.py": WAIT}, section=section)
     model = Scripted(_calling("wait"), text_reply("done"))
-    async with Engine(folder, models={"m": model}, tool_timeout=engine) as held:
+    async with Engine(folder, providers=provided({"m": model}), tool_timeout=engine) as held:
         run = await held.run("a", "acme", "go")
     assert isinstance(run, Generation)
     assert run.steps[0].is_error
@@ -271,7 +271,7 @@ async def test_the_agents_timeout_also_bounds_a_tool_the_run_gives(tmp_path: Pat
     folder = _folder(tmp_path, {}, {}, include=["given"], section={"timeout": 0.2})
     given = Tool("given", "Waits", body=patient)
     model = Scripted(_calling("given"), text_reply("done"))
-    async with Engine(folder, models={"m": model}, tool_timeout=30.0) as engine:
+    async with Engine(folder, providers=provided({"m": model}), tool_timeout=30.0) as engine:
         run = await engine.run("a", "acme", "go", tools=Tools([given]))
     assert isinstance(run, Generation)
     assert run.steps[0].result == "TimeoutError: engine: given timed out after 0.2s"
@@ -290,7 +290,7 @@ async def test_a_name_is_declared_then_built_in_then_from_the_run(tmp_path: Path
     assert spec.keep == [*FILE_TOOLS, "given", "one"]
     model = Scripted(text_reply("done"))
     given = Tool("given", "A tool of the run", body=None)
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         await engine.run("a", "acme", "go", tools=Tools([given]))
     assert _offered(model) == [*FILE_TOOLS, "given", "one"]
 
@@ -301,7 +301,7 @@ async def test_a_bare_name_the_workspace_grants_runs(tmp_path: Path) -> None:
     room_path.mkdir()
     model = Scripted(_calling("Shell", command="echo hi"), text_reply("done"))
     async with (
-        Engine(folder, models={"m": model}) as engine,
+        Engine(folder, providers=provided({"m": model})) as engine,
         Workspace(Local(room_path), scope="acme") as room,
     ):
         run = await engine.run("a", "acme", "go", workspace=room)
@@ -325,7 +325,7 @@ async def test_a_bare_name_delegate_to_grants_runs(tmp_path: Path) -> None:
         files={"a.md": "Work.\n"},
     )
     model = Scripted(delegating("b"), text_reply("from b"), text_reply("done"))
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         run = await engine.run("a", "acme", "go")
     assert isinstance(run, Generation)
     assert _offered(model) == ["Delegate"]
@@ -337,7 +337,7 @@ async def test_a_bare_name_files_grant_runs(tmp_path: Path) -> None:
         tmp_path, {}, {"k.md": "Known.\n"}, include=["Read"], files={"include": ["k.md"]}
     )
     model = Scripted(_calling("Read", path="k.md"), text_reply("done"))
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         run = await engine.run("a", "acme", "go")
     assert isinstance(run, Generation)
     assert run.steps[0].result == "Known.\n"
@@ -414,7 +414,7 @@ async def test_a_run_missing_a_name_lists_what_its_sections_grant(
     room_path = tmp_path / "room"
     room_path.mkdir()
     async with (
-        Engine(folder, models={"m": Scripted()}) as engine,
+        Engine(folder, providers=provided({"m": Scripted()})) as engine,
         Workspace(Local(room_path), scope="acme") as room,
     ):
         with pytest.raises(ConfigurationError, match=rf"its tools are {listed}$"):
@@ -429,7 +429,7 @@ async def test_exclude_drops_exactly_the_workspace_tool_it_names(tmp_path: Path)
     room_path.mkdir()
     model = Scripted(text_reply("done"))
     async with (
-        Engine(folder, models={"m": model}) as engine,
+        Engine(folder, providers=provided({"m": model})) as engine,
         Workspace(Local(room_path), scope="acme") as room,
     ):
         await engine.run("a", "acme", "go", workspace=room)
@@ -471,7 +471,7 @@ async def test_excluding_shell_job_and_jobs_together_is_valid(tmp_path: Path) ->
     room_path.mkdir()
     model = Scripted(text_reply("done"))
     async with (
-        Engine(folder, models={"m": model}) as engine,
+        Engine(folder, providers=provided({"m": model})) as engine,
         Workspace(Local(room_path), scope="acme") as room,
     ):
         await engine.run("a", "acme", "go", workspace=room)
@@ -524,7 +524,7 @@ async def test_exclude_takes_delegation_away(tmp_path: Path) -> None:
         files={"a.md": "Work.\n"},
     )
     model = Scripted(delegating("b"), text_reply("done"))
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         run = await engine.run("a", "acme", "go")
     assert isinstance(run, Generation)
     assert _offered(model) == []
@@ -556,7 +556,7 @@ async def test_a_bare_exclude_name_nothing_declares_drops_that_run_tool(tmp_path
     )
     model = Scripted(text_reply("done"))
     given = Tool("given", "A tool of the run", body=None)
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         await engine.run("a", "acme", "go", tools=Tools([given]))
     assert _offered(model) == ["one"]
 
@@ -570,7 +570,7 @@ async def test_a_pattern_matches_declared_names_only(tmp_path: Path) -> None:
     )
     model = Scripted(text_reply("done"))
     given = Tool("find_given", "A tool of the run", body=None)
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         await engine.run("a", "acme", "go", tools=Tools([given]))
     assert _offered(model) == ["Grepper", "find_a", "find_b"]
 
@@ -729,7 +729,7 @@ async def test_a_runs_tool_replaces_a_declared_tool_of_the_same_name(tmp_path: P
     folder = _folder(tmp_path, {"one": ONE}, {"tools/one.py": source})
     model = Scripted(_calling("one"), text_reply("done"))
     given = Tool("one", "A stand-in", body=stub)
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         run = await engine.run("a", "acme", "go", tools=Tools([given]))
     assert isinstance(run, Generation)
     assert run.steps[0].result == "the stub"
@@ -741,7 +741,7 @@ async def test_a_bare_name_the_run_does_not_give_fails_before_any_model_call(
 ) -> None:
     folder = _folder(tmp_path, {}, {}, include=["absent"])
     model = Scripted(text_reply("done"))
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         with pytest.raises(ConfigurationError, match=r"keeps 'absent' in tools:"):
             await engine.run("a", "acme", "go")
     assert model.calls == []
@@ -751,7 +751,7 @@ async def test_a_run_tool_no_entry_names_stays_out(tmp_path: Path) -> None:
     folder = _folder(tmp_path, {"one": ONE}, {"tools/one.py": RUN})
     model = Scripted(text_reply("done"))
     given = Tool("given", "A tool of the run", body=None)
-    async with Engine(folder, models={"m": model}) as engine:
+    async with Engine(folder, providers=provided({"m": model})) as engine:
         await engine.run("a", "acme", "go", tools=Tools([given]))
     assert _offered(model) == ["one"]
 
@@ -875,7 +875,7 @@ async def test_two_tools_of_a_folder_each_reach_their_own_modules(tmp_path: Path
             "tools/for_other.py": "VALUE = 'other'\n",
         },
     )
-    async with Engine(folder, models={"m": Scripted()}) as engine:
+    async with Engine(folder, providers=provided({"m": Scripted()})) as engine:
         surface = EngineTools(engine, agent="a", scope="acme")
         assert await surface.dispatch("one", {}) == "one"
         assert await surface.dispatch("other", {}) == "other"
@@ -901,7 +901,7 @@ async def test_a_module_two_tools_share_loads_once(tmp_path: Path) -> None:
             "tools/counted_helper.py": COUNTED,
         },
     )
-    async with Engine(folder, models={"m": Scripted()}) as engine:
+    async with Engine(folder, providers=provided({"m": Scripted()})) as engine:
         surface = EngineTools(engine, agent="a", scope="acme")
         assert [await surface.dispatch(name, {}) for name in ("first", "second", "third")] == [
             "first",
@@ -927,7 +927,7 @@ async def test_a_module_one_tool_names_and_another_imports_loads_once(tmp_path: 
         {"one": ONE, "other": OTHER},
         {"tools/one.py": one, "tools/other.py": other},
     )
-    async with Engine(folder, models={"m": Scripted()}) as engine:
+    async with Engine(folder, providers=provided({"m": Scripted()})) as engine:
         surface = EngineTools(engine, agent="a", scope="acme")
         got: list[Any] = [await surface.dispatch(name, {}) for name in ("one", "other", "one")]
     assert got == [1, 2, 3]
@@ -959,7 +959,7 @@ async def test_a_module_beside_a_tool_wins_over_an_installed_one_another_folder_
             f"tools/{beside}/yaml.py": "VALUE = 'beside'\n",
         },
     )
-    async with Engine(folder, models={"m": Scripted()}) as engine:
+    async with Engine(folder, providers=provided({"m": Scripted()})) as engine:
         surface = EngineTools(engine, agent="a", scope="acme")
         assert await surface.dispatch("beside", {}) == "beside"
         answer: Any = await surface.dispatch("installed", {})
@@ -979,7 +979,7 @@ async def test_a_call_holds_a_thread_only_when_its_function_takes_one(tmp_path: 
         },
         {"tools/both.py": source},
     )
-    async with Engine(folder, models={"m": Scripted()}) as engine:
+    async with Engine(folder, providers=provided({"m": Scripted()})) as engine:
         await EngineTools(engine, agent="a", scope="acme").dispatch("plain", {})
         [worker] = engine._workers.pool(engine._spec("a"))._workers
         assert worker is not None and worker.threaded == {"tools/both:run"}
@@ -1104,7 +1104,7 @@ async def test_a_file_nothing_names_is_not_a_tool(tmp_path: Path) -> None:
     spec = load_folder(folder)["a"]
     assert list(spec.folder_tools) == ["one"]
     assert spec.fingerprint == before
-    async with Engine(folder, models={"m": Scripted()}) as engine:
+    async with Engine(folder, providers=provided({"m": Scripted()})) as engine:
         held = cast(Any, engine._workers.pool(engine._spec("a"))._scripts)
         assert [script["key"] for script in held["scripts"]] == ["tools/one"]
         assert held["helpers"] == {str(folder.resolve() / "tools"): {}}

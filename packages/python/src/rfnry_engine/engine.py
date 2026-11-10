@@ -41,7 +41,7 @@ from rfnry_engine.foreground import (
     taking,
 )
 from rfnry_engine.frontmatter import plainly
-from rfnry_engine.manifest import MANIFEST, Kind, WorkerEntry, read_manifest
+from rfnry_engine.manifest import MANIFEST, Kind, ModelEntry, WorkerEntry, read_manifest
 from rfnry_engine.models import (
     Answer,
     ChoiceAnswer,
@@ -51,7 +51,9 @@ from rfnry_engine.models import (
     GenerationModel,
     HistoryLike,
     Message,
+    ModelChoice,
     Part,
+    Provider,
     Question,
     QuestionLike,
     Reply,
@@ -128,7 +130,7 @@ class _Options:
     on_event: EventHandler | None
     tools: ToolsLike | None
     workspace: Workspace | None
-    models: Mapping[str, GenerationModel | DecisionModel]
+    models: Mapping[str, GenerationModel | DecisionModel | ModelChoice]
     stop: Stop | None = None
     inbox: asyncio.Queue[Any] | None = None
     skill: str | None = None
@@ -529,8 +531,10 @@ def _kind_clash(spec: AgentSpec, verb: str) -> NoReturn:
 
 
 def _models(
-    models: Mapping[str, GenerationModel | DecisionModel],
-) -> dict[str, GenerationModel | DecisionModel]:
+    models: Mapping[str, GenerationModel | DecisionModel | ModelChoice],
+    *,
+    choosing: bool = False,
+) -> dict[str, GenerationModel | DecisionModel | ModelChoice]:
     if not isinstance(models, Mapping):
         raise ConfigurationError("engine: models must be a mapping of model name to adapter")
     for name, model in models.items():
@@ -538,28 +542,52 @@ def _models(
             raise ConfigurationError(
                 f"engine: model name {name!r} must be non-blank text without padding"
             )
+        if choosing and isinstance(model, ModelChoice):
+            continue
         if not isinstance(model, GenerationModel | DecisionModel):
+            also = ", or a ModelChoice" if choosing else ""
             raise ConfigurationError(
-                f"engine: model {name!r} has neither generate() nor decide(); pass an adapter that has one"
+                f"engine: model {name!r} has neither generate() nor decide(); pass an adapter that has one{also}"
             )
     return dict(models)
 
 
-def _of_its_kind(spec: AgentSpec, model: GenerationModel | DecisionModel) -> None:
+def _providers(providers: Mapping[str, Provider] | None) -> dict[str, Provider]:
+    if providers is None:
+        return {}
+    if not isinstance(providers, Mapping):
+        raise ConfigurationError(
+            "engine: providers must be a mapping of provider name to a function of (model, effort) that returns an adapter"
+        )
+    for name, provider in providers.items():
+        if not isinstance(name, str) or not name or name != name.strip():
+            raise ConfigurationError(
+                f"engine: provider name {name!r} must be non-blank text without padding"
+            )
+        if not callable(provider):
+            raise ConfigurationError(
+                f"engine: provider {name!r} cannot be called; pass a function of (model, effort) that returns an adapter"
+            )
+    return dict(providers)
+
+
+def _not_held(name: str, provider: str | None, held: Collection[str]) -> NoReturn:
+    raise ConfigurationError(
+        f"engine: model {name!r} names provider {provider!r}, which Engine(providers=) does not hold; it holds {', '.join(sorted(held)) or 'none'}"
+    )
+
+
+def _check_providers(entries: Mapping[str, ModelEntry], held: Collection[str]) -> None:
+    for name, entry in entries.items():
+        if entry.provider not in held:
+            _not_held(name, entry.provider, held)
+
+
+def _of_its_kind(spec: AgentSpec, model: object) -> None:
     if spec.kind == "generation" and not isinstance(model, GenerationModel):
         _kind_clash(spec, "generate")
     if spec.kind == "decision" and not isinstance(model, DecisionModel):
         _kind_clash(spec, "decide")
-
-
-def _adapter(
-    spec: AgentSpec, models: Mapping[str, GenerationModel | DecisionModel]
-) -> GenerationModel | DecisionModel:
-    model = models.get(spec.model)
-    if model is None:
-        _not_given(spec)
-    _of_its_kind(spec, model)
-    return model
 
 
 def _with_modes(agents: Mapping[str, AgentSpec]) -> list[AgentSpec]:
@@ -567,7 +595,8 @@ def _with_modes(agents: Mapping[str, AgentSpec]) -> list[AgentSpec]:
 
 
 def _check_names(
-    agents: Mapping[str, AgentSpec], models: Mapping[str, GenerationModel | DecisionModel]
+    agents: Mapping[str, AgentSpec],
+    models: Mapping[str, GenerationModel | DecisionModel | ModelChoice],
 ) -> None:
     used = sorted({spec.model for spec in _with_modes(agents)})
     for name in sorted(models):
@@ -578,7 +607,8 @@ def _check_names(
 
 
 def _check_models(
-    agents: Mapping[str, AgentSpec], models: Mapping[str, GenerationModel | DecisionModel]
+    agents: Mapping[str, AgentSpec],
+    models: Mapping[str, GenerationModel | DecisionModel | ModelChoice],
 ) -> None:
     _check_names(agents, models)
     for spec in _with_modes(agents):
@@ -633,7 +663,8 @@ class Engine:
         self,
         root: Path | str,
         *,
-        models: Mapping[str, GenerationModel | DecisionModel],
+        providers: Mapping[str, Provider] | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
         refinery: Recorder | None = None,
         max_model_calls: int = 200,
         max_depth: int = 5,
@@ -669,7 +700,6 @@ class Engine:
         self.root = Path(root).resolve()
         if not self.root.is_dir():
             raise ConfigurationError(f"engine: root is not a directory: {root}")
-        self._models = MappingProxyType(_models(models))
         self.refinery = refinery
         self.max_model_calls = max_model_calls
         self.max_depth = max_depth
@@ -677,15 +707,35 @@ class Engine:
         self.worker_result_bytes = worker_result_bytes
         self.history_walk = history_walk
         self.history_chars = history_chars
+        self._providers: Mapping[str, Provider] = MappingProxyType(_providers(providers))
+        self._entries: Mapping[str, ModelEntry] = {}
+        self._models: Mapping[str, GenerationModel | DecisionModel | ModelChoice]
         declared: Mapping[str, WorkerEntry] = {}
         if (self.root / MANIFEST).is_file():
+            if models is not None:
+                raise ConfigurationError(
+                    f"engine: a folder with {MANIFEST} takes providers=, not models=; declare each model under models: in the file, and pass Engine(providers=) to build them"
+                )
             manifest = read_manifest(self.root)
             self._agents = compile_folder(self.root, manifest)
             declared = manifest.workers
+            _check_providers(manifest.models, self._providers)
+            self._entries = MappingProxyType(manifest.models)
+            self._models = MappingProxyType(
+                {
+                    name: ModelChoice(entry.provider, entry.model, entry.effort)
+                    for name, entry in manifest.models.items()
+                }
+            )
         else:
+            if providers is not None or models is None:
+                raise ConfigurationError(
+                    f"engine: a folder with no {MANIFEST} takes models=, {{}} for none, not providers=; pass Engine(models=), or give the folder an {MANIFEST}"
+                )
             self._agents = load_tree(self.root)
             validate_tree(self._agents)
-        _check_models(self._agents, self._models)
+            self._models = MappingProxyType(_models(models))
+            _check_models(self._agents, self._models)
         self._workers = Workers(self._agents, declared, worker_result_bytes)
         _check_processes(self._workers, max_worker_processes, "raise Engine(max_worker_processes=)")
         self._closed = False
@@ -706,21 +756,56 @@ class Engine:
         await self.close()
 
     @property
-    def models(self) -> Mapping[str, GenerationModel | DecisionModel]:
-        return self._models
+    def models(self) -> Mapping[str, GenerationModel | DecisionModel | ModelEntry]:
+        return self._entries or cast(Mapping[str, GenerationModel | DecisionModel], self._models)
 
     @property
     def agents(self) -> dict[str, AgentInfo]:
         return _infos(self._agents)
 
     def _run_models(
-        self, models: Mapping[str, GenerationModel | DecisionModel] | None
-    ) -> Mapping[str, GenerationModel | DecisionModel]:
+        self, models: Mapping[str, GenerationModel | DecisionModel | ModelChoice] | None
+    ) -> Mapping[str, GenerationModel | DecisionModel | ModelChoice]:
         if models is None:
             return self._models
-        given = _models(models)
+        given = _models(models, choosing=bool(self._entries))
         _check_names(self._agents, given)
-        return {**self._models, **given}
+        return {
+            **self._models,
+            **{name: self._merged(name, value) for name, value in given.items()},
+        }
+
+    def _merged(
+        self, name: str, value: GenerationModel | DecisionModel | ModelChoice
+    ) -> GenerationModel | DecisionModel | ModelChoice:
+        if not isinstance(value, ModelChoice):
+            return value
+        entry = self._entries[name]
+        merged = ModelChoice(
+            provider=entry.provider if value.provider is None else value.provider,
+            model=entry.model if value.model is None else value.model,
+            effort=entry.effort if value.effort is None else value.effort,
+        )
+        if merged.provider not in self._providers:
+            _not_held(name, merged.provider, self._providers)
+        return merged
+
+    def _built(self, held: GenerationModel | DecisionModel | ModelChoice | None) -> Any:
+        if isinstance(held, ModelChoice):
+            return self._providers[cast(str, held.provider)](held.model, held.effort)
+        return held
+
+    def _adapter(
+        self,
+        spec: AgentSpec,
+        models: Mapping[str, GenerationModel | DecisionModel | ModelChoice],
+    ) -> GenerationModel | DecisionModel:
+        held = models.get(spec.model)
+        if held is None:
+            _not_given(spec)
+        model = self._built(held)
+        _of_its_kind(spec, model)
+        return cast(GenerationModel | DecisionModel, model)
 
     def _spec(self, agent: str, mode: str | None = None) -> AgentSpec:
         spec = self._agents.get(agent)
@@ -756,7 +841,7 @@ class Engine:
         inbox: asyncio.Queue[Any] | None = None,
         tags: Mapping[str, str] | None = None,
         approve: Approve | None = None,
-        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel | ModelChoice] | None = None,
     ) -> Run:
         return await self._start(
             agent,
@@ -801,7 +886,7 @@ class Engine:
         inbox: asyncio.Queue[Any] | None = None,
         tags: Mapping[str, str] | None = None,
         approve: Approve | None = None,
-        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel | ModelChoice] | None = None,
         slash: bool = False,
     ) -> Run:
         self._open()
@@ -885,7 +970,7 @@ class Engine:
         approve: Approve | None = None,
         on_event: EventHandler | None = None,
         stop: Callable[[], Stop | None] | None = None,
-        models: Mapping[str, GenerationModel | DecisionModel] | None = None,
+        models: Mapping[str, GenerationModel | DecisionModel | ModelChoice] | None = None,
     ) -> Tools:
         if not scope:
             raise InputError("engine: scope is required")
@@ -967,7 +1052,7 @@ class Engine:
         parent_run_id: str | None,
     ) -> Decision:
         caller = _caller(scope)
-        model_ = cast(DecisionModel, _adapter(spec, options.models))
+        model_ = cast(DecisionModel, self._adapter(spec, options.models))
         self._check_routes(spec, set(), options.models)
         folder = {*spec.questions, *spec.scripted}
         clash = [qid for qid in options.questions if qid in folder]
@@ -1112,7 +1197,7 @@ class Engine:
         self,
         spec: AgentSpec,
         seen: set[str],
-        models: Mapping[str, GenerationModel | DecisionModel],
+        models: Mapping[str, GenerationModel | DecisionModel | ModelChoice],
     ) -> None:
         seen.add(spec.name)
         for target in spec.route.to.values() if spec.route is not None else []:
@@ -1133,7 +1218,7 @@ class Engine:
         parent_run_id: str | None,
     ) -> Generation:
         caller = _caller(scope)
-        model_ = cast(GenerationModel, _adapter(spec, options.models))
+        model_ = cast(GenerationModel, self._adapter(spec, options.models))
         run_id = uuid4().hex
         started = time.monotonic()
         at = _now()
@@ -1155,7 +1240,7 @@ class Engine:
             history=options.source,
             start=options.start,
             invoked=options.skill,
-            models=options.models,
+            models={**options.models, spec.model: model_},
         )
         room = options.workspace if spec.workspace else None
         barred = WORKSPACE_NAMES | {DELEGATE_TOOL, OUTPUT_TOOL}

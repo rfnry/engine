@@ -23,7 +23,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.workers.pool import CAP, CLOSED, Helper, Script, WorkerPool, Workers, _Worker
 
 from .fakes import Answering, Scripted, delegating, text_reply
-from .trees import write_folder
+from .trees import provided, write_folder
 
 CALL = {"scope": "acme"}
 PID = "import os, time\ndef run(args, call):\n    time.sleep(args.get('sleep', 0))\n    return os.getpid()\n"
@@ -1617,7 +1617,7 @@ AREA = '{"type": "choice", "instructions": "Which?", "options": {"other": null, 
 
 
 def _engine(folder: Path, **limits: Any) -> Engine:
-    return Engine(folder, models={"m": Scripted()}, **limits)
+    return Engine(folder, providers=provided({"m": Scripted()}), **limits)
 
 
 def _surface(engine: Engine, agent: str = "a", mode: str | None = None) -> EngineTools:
@@ -1692,7 +1692,9 @@ async def test_a_worker_holds_only_the_tools_that_pick_it(tmp_path: Path) -> Non
             "q/order.py": "def run(input, call):\n    return {'options': {'a': 'A', 'b': 'B'}}\n",
         },
     )
-    async with _engine(folder) as engine:
+    async with Engine(
+        folder, providers=provided({"m": Scripted(), "judge": Answering()})
+    ) as engine:
         held = {
             name: [item["key"] for item in cast(Any, pool._scripts)["scripts"]]
             for name, pool in engine._workers._pools.items()
@@ -1874,7 +1876,7 @@ async def test_a_delegated_run_uses_its_own_agents_worker(tmp_path: Path) -> Non
     )
     lead = Scripted(delegating("helper"), text_reply("done"))
     helper = Scripted(CALLS_PID, text_reply("done"))
-    async with Engine(folder, models={"m": lead, "h": helper}) as engine:
+    async with Engine(folder, providers=provided({"m": lead, "h": helper})) as engine:
         await engine.run("lead", "acme", "x")
         front = engine._workers.pool(engine._spec("lead"))
         [process] = engine._workers.pool(engine._spec("helper"))._workers
@@ -1901,7 +1903,7 @@ async def test_a_routed_run_uses_its_own_agents_worker(tmp_path: Path) -> None:
         files={**PID_FILES, "q/area.json": AREA},
     )
     helper = Scripted(CALLS_PID, text_reply("done"))
-    async with Engine(folder, models={"judge": Answering(), "h": helper}) as engine:
+    async with Engine(folder, providers=provided({"judge": Answering(), "h": helper})) as engine:
         await engine.run("triage", "acme", "x")
         front = engine._workers.pool(engine._spec("triage"))
         [process] = engine._workers.pool(engine._spec("helper"))._workers
