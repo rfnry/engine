@@ -72,11 +72,12 @@ class EngineTools(Tools):
                 f"tools/engine_tools: a tool named {HISTORY_TOOL!r} collides with the builtin"
             )
         if spec.keep is not None:
-            offered = sorted({*BUILTINS, *spec.folder_tools, *given.names})
+            engine_given = BUILTINS if spec.granted is None else spec.granted
+            offered = sorted({*engine_given, *spec.folder_tools, *given.names})
             for name in spec.keep:
                 if name not in offered:
                     raise ConfigurationError(
-                        f"tools/engine_tools: agent {agent!r} keeps {name!r} in tools:, which this run does not offer; its tools are {', '.join(offered)}"
+                        f"tools/engine_tools: agent {agent!r} keeps {name!r} in tools:, which this run does not offer; its tools are {', '.join(offered) or 'none'}"
                     )
             given = given.without(*(name for name in given.names if name not in spec.keep))
         room = workspace if spec.workspace else None
@@ -108,7 +109,9 @@ class EngineTools(Tools):
         ]
         items.extend(folder)
         if room is not None:
-            items.extend(room.tools())
+            items.extend(
+                tool for tool in room.tools() if spec.granted is None or tool.name in spec.granted
+            )
         if spec.agents:
             items.append(
                 delegate_tool(engine, spec, scope, tools, workspace, tags, approve, on_event, stop)

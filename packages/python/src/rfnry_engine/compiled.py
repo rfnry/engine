@@ -29,7 +29,6 @@ from rfnry_engine.manifest import (
     FilesSection,
     Resolved,
     ToolEntry,
-    ToolsSection,
     overlaid,
     read_manifest,
 )
@@ -51,7 +50,11 @@ from rfnry_engine.tree import (
 )
 from rfnry_engine.workers.pool import Script
 
-ENGINE_TOOLS = frozenset({*BUILTINS, DELEGATE_TOOL, HISTORY_TOOL, OUTPUT_TOOL, *WORKSPACE_NAMES})
+RUN_DECIDES = {
+    OUTPUT_TOOL: "expect= on a run",
+    HISTORY_TOOL: "a run's history= and start=",
+}
+ENGINE_TOOLS = frozenset({*BUILTINS, DELEGATE_TOOL, *WORKSPACE_NAMES, *RUN_DECIDES})
 
 
 class _Asked(NamedTuple):
@@ -69,6 +72,16 @@ class _Reach(NamedTuple):
 class _Declared(NamedTuple):
     entries: Mapping[str, ToolEntry]
     tools: Mapping[str, ToolDef]
+
+
+class _Grant(NamedTuple):
+    section: str
+    given: bool
+
+
+class _Picked(NamedTuple):
+    names: list[str]
+    granted: frozenset[str]
 
 
 def _who(agent: str, mode: str | None) -> str:
@@ -286,10 +299,15 @@ def _hidden_names(root: Path, reached: Mapping[str, Path]) -> frozenset[Path]:
     return frozenset(held)
 
 
-def _file_tools(resolved: Resolved) -> list[str]:
-    if resolved.files.include is None and resolved.files.preload is None:
-        return []
-    return sorted(BUILTINS - set(resolved.tools.exclude or ()))
+def _grants(resolved: Resolved) -> dict[str, _Grant]:
+    opens_files = resolved.files.include is not None or resolved.files.preload is not None
+    return {
+        **dict.fromkeys(BUILTINS, _Grant("files", opens_files)),
+        DELEGATE_TOOL: _Grant(
+            "orchestration.delegate_to", bool(resolved.orchestration.delegate_to)
+        ),
+        **dict.fromkeys(WORKSPACE_NAMES, _Grant("workspace: true", bool(resolved.workspace))),
+    }
 
 
 def _matching_names(pattern: str, names: Iterable[str]) -> list[str]:
@@ -300,6 +318,10 @@ def _matching_names(pattern: str, names: Iterable[str]) -> list[str]:
 def _names(who: str, key: str, written: list[str] | None, declared: Collection[str]) -> list[str]:
     names: list[str] = []
     for entry in written or ():
+        if entry in RUN_DECIDES:
+            raise ConfigurationError(
+                f"compiled: {who} lists {entry!r} in tools.{key}; the run decides that tool through {RUN_DECIDES[entry]}, so leave it out"
+            )
         if "*" not in entry:
             names.append(entry)
             continue
@@ -312,13 +334,24 @@ def _names(who: str, key: str, written: list[str] | None, declared: Collection[s
     return names
 
 
-def _picked_tools(who: str, tools: ToolsSection, declared: Collection[str]) -> list[str]:
-    dropped = set(_names(who, "exclude", tools.exclude, declared))
-    return [
-        name
-        for name in dict.fromkeys(_names(who, "include", tools.include, declared))
-        if name not in dropped
-    ]
+def _check_sections(who: str, included: Iterable[str], grants: Mapping[str, _Grant]) -> None:
+    for name in included:
+        if name in grants and not grants[name].given:
+            raise ConfigurationError(
+                f"compiled: {who} lists {name!r} in tools.include, which comes with {grants[name].section}, and it has none; give it that section or remove the name"
+            )
+
+
+def _picked_tools(who: str, resolved: Resolved, declared: Collection[str]) -> _Picked:
+    grants = _grants(resolved)
+    dropped = set(_names(who, "exclude", resolved.tools.exclude, declared))
+    included = _names(who, "include", resolved.tools.include, declared)
+    if resolved.instructions is not None:
+        _check_sections(who, included, grants)
+    return _Picked(
+        [name for name in dict.fromkeys(included) if name not in dropped],
+        frozenset(name for name, grant in grants.items() if grant.given) - dropped,
+    )
 
 
 def _tool_files(root: Path, tool: ToolDef, entry: ToolEntry) -> dict[str, Path]:
@@ -369,8 +402,8 @@ def _spec(
     resolved = overlaid(entry, mode)
     who = _who(agent, mode)
     asked = _questions(root, who, resolved.questions or [])
-    picked = _picked_tools(who, resolved.tools, declared.entries)
-    folder_tools = {name: declared.tools[name] for name in picked if name in declared.tools}
+    picked = _picked_tools(who, resolved, declared.entries)
+    folder_tools = {name: declared.tools[name] for name in picked.names if name in declared.tools}
     tool_files: dict[str, Path] = {}
     for name, tool in folder_tools.items():
         tool_files |= _tool_files(root, tool, declared.entries[name])
@@ -390,7 +423,7 @@ def _spec(
     )
     files |= reach.files
     _check_what_it_reaches(root, who, files)
-    keep = sorted({*_file_tools(resolved), *picked})
+    keep = sorted({*picked.granted, *picked.names})
     named = _hidden_names(root, reach.files)
     preload, loaded = _preloaded(root, who, reach.preloaded, named, "Load" in keep)
     read |= loaded
@@ -402,10 +435,13 @@ def _spec(
         model=resolved.model,
         description=said or "",
         body=body,
-        agents=resolved.orchestration.delegate_to or [],
+        agents=(resolved.orchestration.delegate_to or [])
+        if DELEGATE_TOOL in picked.granted
+        else [],
         route=resolved.orchestration.route,
         questions=asked.questions,
         keep=keep,
+        granted=picked.granted,
         fingerprint=_fingerprint(
             root,
             agent,

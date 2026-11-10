@@ -12,13 +12,16 @@ from rfnry_engine.models import Reply, ToolCall
 from rfnry_engine.records import Generation
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
+from rfnry_engine.tools.workspace import Local, Workspace
 
-from .fakes import Scripted, text_reply
+from .fakes import Scripted, delegating, text_reply
 from .trees import write_folder
 
 GENERATION: dict[str, Any] = {"kind": "generation", "model": "m", "instructions": "a.md"}
 RUN = "def run(args, call):\n    return 'ran'\n"
 WAIT = "import asyncio\nasync def run(args, call):\n    await asyncio.sleep(30)\n"
+FILE_TOOLS = ["Glob", "Grep", "LS", "Load", "Read"]
+WORKSPACE_TOOLS = ["Edit", "Job", "Jobs", "Shell", "Write"]
 ONE: dict[str, Any] = {"module": "tools/one.py", "description": "Does one"}
 OTHER: dict[str, Any] = {"module": "tools/other.py", "description": "Does the other"}
 ORDER: dict[str, Any] = {
@@ -278,17 +281,213 @@ async def test_a_name_is_declared_then_built_in_then_from_the_run(tmp_path: Path
     folder = _folder(
         tmp_path,
         {"one": ONE},
-        {"tools/one.py": RUN},
+        {"tools/one.py": RUN, "k.md": "Known.\n"},
         include=["one", "Grep", "given"],
+        files={"include": ["k.md"]},
     )
     spec = load_folder(folder)["a"]
     assert list(spec.folder_tools) == ["one"]
-    assert spec.keep == ["Grep", "given", "one"]
+    assert spec.keep == [*FILE_TOOLS, "given", "one"]
     model = Scripted(text_reply("done"))
     given = Tool("given", "A tool of the run", body=None)
     async with Engine(folder, models={"m": model}) as engine:
         await engine.run("a", "acme", "go", tools=Tools([given]))
-    assert _offered(model) == ["Grep", "given", "one"]
+    assert _offered(model) == [*FILE_TOOLS, "given", "one"]
+
+
+async def test_a_bare_name_the_workspace_grants_runs(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {}, {}, include=["Shell"], workspace=True)
+    room_path = tmp_path / "room"
+    room_path.mkdir()
+    model = Scripted(_calling("Shell", command="echo hi"), text_reply("done"))
+    async with (
+        Engine(folder, models={"m": model}) as engine,
+        Workspace(Local(room_path), scope="acme") as room,
+    ):
+        run = await engine.run("a", "acme", "go", workspace=room)
+    assert isinstance(run, Generation)
+    assert _offered(model) == WORKSPACE_TOOLS
+    assert not run.steps[0].is_error
+    assert "hi" in str(run.steps[0].result)
+
+
+async def test_a_bare_name_delegate_to_grants_runs(tmp_path: Path) -> None:
+    folder = write_folder(
+        tmp_path,
+        {
+            "a": {
+                **GENERATION,
+                "tools": {"include": ["Delegate"]},
+                "orchestration": {"delegate_to": ["b"]},
+            },
+            "b": {**GENERATION, "description": "Helps"},
+        },
+        files={"a.md": "Work.\n"},
+    )
+    model = Scripted(delegating("b"), text_reply("from b"), text_reply("done"))
+    async with Engine(folder, models={"m": model}) as engine:
+        run = await engine.run("a", "acme", "go")
+    assert isinstance(run, Generation)
+    assert _offered(model) == ["Delegate"]
+    assert run.steps[0].result == "from b"
+
+
+async def test_a_bare_name_files_grant_runs(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path, {}, {"k.md": "Known.\n"}, include=["Read"], files={"include": ["k.md"]}
+    )
+    model = Scripted(_calling("Read", path="k.md"), text_reply("done"))
+    async with Engine(folder, models={"m": model}) as engine:
+        run = await engine.run("a", "acme", "go")
+    assert isinstance(run, Generation)
+    assert run.steps[0].result == "Known.\n"
+
+
+@pytest.mark.parametrize(
+    ("name", "section"),
+    [
+        ("Shell", r"workspace: true"),
+        ("Jobs", r"workspace: true"),
+        ("Delegate", r"orchestration\.delegate_to"),
+        ("Read", r"files"),
+        ("Load", r"files"),
+    ],
+)
+def test_an_engine_name_whose_section_is_missing_is_refused(
+    tmp_path: Path, name: str, section: str
+) -> None:
+    folder = _folder(tmp_path, {}, {}, include=[name])
+    _refused(
+        folder,
+        rf"^compiled: agent 'a' lists '{name}' in tools\.include, which comes with {section}, and it has none",
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "name", "how"),
+    [
+        ("include", "Output", r"expect= on a run"),
+        ("include", "History", r"a run's history= and start="),
+        ("exclude", "Output", r"expect= on a run"),
+        ("exclude", "History", r"a run's history= and start="),
+    ],
+)
+def test_what_the_run_decides_is_refused_in_a_tools_list(
+    tmp_path: Path, key: str, name: str, how: str
+) -> None:
+    folder = _folder(tmp_path, {}, {}, include=["given"], section={key: [name]})
+    _refused(
+        folder,
+        rf"^compiled: agent 'a' lists '{name}' in tools\.{key}; the run decides that tool through {how}, so leave it out",
+    )
+
+
+def test_a_section_each_mode_holds_grants_the_name_on_an_entry_that_needs_a_mode(
+    tmp_path: Path,
+) -> None:
+    entry: dict[str, Any] = {
+        "kind": "generation",
+        "model": "m",
+        "tools": {"include": ["Shell"]},
+        "modes": {"chat": {"instructions": "a.md", "workspace": True}},
+    }
+    folder = write_folder(tmp_path, {"a": entry}, files={"a.md": "Work.\n"})
+    assert "Shell" in (load_folder(folder)["a"].modes["chat"].keep or [])
+    entry["modes"] = {**entry["modes"], "mail": {"instructions": "a.md"}}
+    write_folder(folder, {"a": entry})
+    _refused(folder, r"^compiled: mode 'mail' of agent 'a' lists 'Shell' in tools\.include")
+
+
+@pytest.mark.parametrize(
+    ("agent", "listed"),
+    [
+        ({}, "none"),
+        ({"files": {"include": ["a.md"]}}, "Glob, Grep, LS, Load, Read"),
+        ({"workspace": True}, "Edit, Job, Jobs, Shell, Write"),
+    ],
+    ids=["nothing", "files", "workspace"],
+)
+async def test_a_run_missing_a_name_lists_what_its_sections_grant(
+    tmp_path: Path, agent: dict[str, Any], listed: str
+) -> None:
+    folder = _folder(tmp_path, {}, {}, include=["absent"], **agent)
+    room_path = tmp_path / "room"
+    room_path.mkdir()
+    async with (
+        Engine(folder, models={"m": Scripted()}) as engine,
+        Workspace(Local(room_path), scope="acme") as room,
+    ):
+        with pytest.raises(ConfigurationError, match=rf"its tools are {listed}$"):
+            await engine.run("a", "acme", "go", workspace=room)
+
+
+async def test_exclude_drops_exactly_the_workspace_tool_it_names(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path, {}, {}, include=["Write"], section={"exclude": ["Shell"]}, workspace=True
+    )
+    room_path = tmp_path / "room"
+    room_path.mkdir()
+    model = Scripted(text_reply("done"))
+    async with (
+        Engine(folder, models={"m": model}) as engine,
+        Workspace(Local(room_path), scope="acme") as room,
+    ):
+        await engine.run("a", "acme", "go", workspace=room)
+        surface = EngineTools(engine, agent="a", scope="acme", workspace=room)
+        with pytest.raises(InputError, match=r"^tools: unknown tool 'Shell'$"):
+            await surface.dispatch("Shell", {"command": "echo hi"})
+    assert _offered(model) == sorted(set(WORKSPACE_TOOLS) - {"Shell"})
+
+
+async def test_exclude_takes_delegation_away(tmp_path: Path) -> None:
+    folder = write_folder(
+        tmp_path,
+        {
+            "a": {
+                **GENERATION,
+                "tools": {"exclude": ["Delegate"]},
+                "orchestration": {"delegate_to": ["b"]},
+            },
+            "b": {**GENERATION, "description": "Helps"},
+        },
+        files={"a.md": "Work.\n"},
+    )
+    model = Scripted(delegating("b"), text_reply("done"))
+    async with Engine(folder, models={"m": model}) as engine:
+        run = await engine.run("a", "acme", "go")
+    assert isinstance(run, Generation)
+    assert _offered(model) == []
+    assert "<<<AGENTS>>>" not in model.calls[0][0]
+    assert run.steps[0].is_error and run.steps[0].child_run_id is None
+    assert "unknown tool 'Delegate'" in str(run.steps[0].result)
+    assert len(model.calls) == 2
+
+
+async def test_exclude_drops_a_built_in_files_grant(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {},
+        {"k.md": "Known.\n"},
+        include=["Grep"],
+        section={"exclude": ["Read"]},
+        files={"include": ["k.md"]},
+    )
+    assert load_folder(folder)["a"].keep == ["Glob", "Grep", "LS", "Load"]
+
+
+async def test_a_bare_exclude_name_nothing_declares_drops_that_run_tool(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {"one": ONE},
+        {"tools/one.py": RUN},
+        include=["one", "given"],
+        section={"exclude": ["given", "nobody_gives_this"]},
+    )
+    model = Scripted(text_reply("done"))
+    given = Tool("given", "A tool of the run", body=None)
+    async with Engine(folder, models={"m": model}) as engine:
+        await engine.run("a", "acme", "go", tools=Tools([given]))
+    assert _offered(model) == ["one"]
 
 
 async def test_a_pattern_matches_declared_names_only(tmp_path: Path) -> None:
@@ -496,7 +695,7 @@ async def test_a_tool_reaches_only_modules_beside_it(tmp_path: Path) -> None:
             {"one": {**ONE, "module": "tools/deep/one.py"}},
             {"tools/deep/one.py": uses, "tools/shared.py": "VALUE = 'above'\n"},
         ),
-        r"^tools/folder: .*one\.py imports 'shared', which resolves to nothing; a tool reaches the standard library, installed packages and the single \.py modules in its own folder",
+        r"^tools/folder: .*one\.py imports 'shared', which resolves to nothing; a module beside a tool is a \.py file there",
     )
     beside = tmp_path / "beside"
     beside.mkdir()
@@ -513,16 +712,85 @@ async def test_a_tool_reaches_only_modules_beside_it(tmp_path: Path) -> None:
     assert await _answer(folder, "one") == "beside"
 
 
-def test_a_folder_beside_a_tool_is_not_a_module_it_reaches(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "imports",
+    [
+        "import shared\n",
+        "import shared.deep\n",
+        "try:\n    import shared\nexcept ImportError:\n    shared = None\n",
+    ],
+    ids=["plain", "dotted", "guarded"],
+)
+def test_a_package_folder_beside_a_tool_is_refused(tmp_path: Path, imports: str) -> None:
     folder = _folder(
         tmp_path,
         {"one": ONE},
-        {
-            "tools/one.py": "import shared\n" + RUN,
-            "tools/shared/__init__.py": "VALUE = 1\n",
-        },
+        {"tools/one.py": imports + RUN, "tools/shared/__init__.py": "VALUE = 1\n"},
     )
-    _refused(folder, r"imports 'shared', which resolves to nothing.*single \.py modules")
+    _refused(
+        folder,
+        r"^tools/folder: .*one\.py imports 'shared', a package folder beside it; a module beside a tool is a \.py file there",
+    )
+
+
+def test_a_package_folder_beside_a_tool_is_refused_even_named_like_an_installed_one(
+    tmp_path: Path,
+) -> None:
+    folder = _folder(
+        tmp_path,
+        {"one": ONE},
+        {"tools/one.py": "import yaml\n" + RUN, "tools/yaml/__init__.py": "VALUE = 1\n"},
+    )
+    _refused(folder, r"imports 'yaml', a package folder beside it")
+
+
+def test_a_folder_with_no_init_beside_a_tool_resolves_to_nothing(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {"one": ONE},
+        {"tools/one.py": "import shared\n" + RUN, "tools/shared/inner.py": "VALUE = 1\n"},
+    )
+    _refused(
+        folder, r"imports 'shared', which resolves to nothing; a module beside a tool is a \.py"
+    )
+
+
+async def test_a_data_folder_beside_a_tool_leaves_an_installed_package_alone(
+    tmp_path: Path,
+) -> None:
+    source = "import yaml\ndef run(args, call):\n    return yaml.safe_load('2')\n"
+    folder = _folder(
+        tmp_path, {"one": ONE}, {"tools/one.py": source, "tools/yaml/data.txt": "not code\n"}
+    )
+    assert await _answer(folder, "one") == 2
+
+
+@pytest.mark.parametrize(
+    "imports",
+    ["import shared.sub\n", "from shared.sub import thing\n"],
+    ids=["import", "from"],
+)
+def test_a_dotted_import_of_a_module_beside_it_is_refused(tmp_path: Path, imports: str) -> None:
+    folder = _folder(
+        tmp_path,
+        {"one": ONE},
+        {"tools/one.py": imports + RUN, "tools/shared.py": "VALUE = 1\n"},
+    )
+    _refused(
+        folder,
+        r"^tools/folder: .*one\.py imports 'shared\.sub', and 'shared' beside it is a \.py file with nothing below it",
+    )
+
+
+async def test_a_guarded_dotted_import_of_a_module_beside_it_loads(tmp_path: Path) -> None:
+    source = (
+        "try:\n    import shared.sub as sub\nexcept ImportError:\n    sub = None\n"
+        "def run(args, call):\n    return sub is None\n"
+    )
+    folder = _folder(
+        tmp_path, {"one": ONE}, {"tools/one.py": source, "tools/shared.py": "VALUE = 1\n"}
+    )
+    assert await _answer(folder, "one") is True
 
 
 async def test_two_tools_of_a_folder_each_reach_their_own_modules(tmp_path: Path) -> None:
@@ -570,6 +838,29 @@ async def test_a_module_two_tools_share_loads_once(tmp_path: Path) -> None:
             "third",
         ]
     assert _loads(folder) == ["both", "counted_helper"]
+
+
+async def test_a_module_one_tool_names_and_another_imports_loads_once(tmp_path: Path) -> None:
+    other = (
+        COUNTED
+        + "CALLS = []\n"
+        + "def run(args, call):\n    CALLS.append('tool')\n    return len(CALLS)\n"
+        + "\nif __name__ == '__main__':\n    raise SystemExit('the footer ran')\n"
+    )
+    one = (
+        "import other\n"
+        "def run(args, call):\n    other.CALLS.append('import')\n    return len(other.CALLS)\n"
+    )
+    folder = _folder(
+        tmp_path,
+        {"one": ONE, "other": OTHER},
+        {"tools/one.py": one, "tools/other.py": other},
+    )
+    async with Engine(folder, models={"m": Scripted()}) as engine:
+        surface = EngineTools(engine, agent="a", scope="acme")
+        got: list[Any] = [await surface.dispatch(name, {}) for name in ("one", "other", "one")]
+    assert got == [1, 2, 3]
+    assert _loads(folder) == ["other"]
 
 
 async def test_a_call_holds_a_thread_only_when_its_function_takes_one(tmp_path: Path) -> None:

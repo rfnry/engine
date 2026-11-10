@@ -225,11 +225,8 @@ def _imports(
         yield from _imports(child, nested or isinstance(child, NESTED), kept)
 
 
-def _tops(node: ast.Import | ast.ImportFrom) -> list[str]:
-    names = (
-        [node.module or ""] if isinstance(node, ast.ImportFrom) else [a.name for a in node.names]
-    )
-    return [name.partition(".")[0] for name in names]
+def _imported(node: ast.Import | ast.ImportFrom) -> list[str]:
+    return [node.module or ""] if isinstance(node, ast.ImportFrom) else [a.name for a in node.names]
 
 
 def _origins(name: str) -> list[Path]:
@@ -335,15 +332,24 @@ def _check_imports(
             raise ConfigurationError(
                 f"tools/folder: {path} imports {shown!r} relatively; import {example}"
             )
-        for top in _tops(node):
+        for name in _imported(node):
+            top = name.partition(".")[0]
             if top == ENGINE:
                 raise ConfigurationError(
                     f"tools/folder: {path} imports {ENGINE!r}; a {what} never imports the engine, so keep what it needs in the {what} or a helper beside it"
+                )
+            if declared and (path.parent / top / "__init__.py").is_file():
+                raise ConfigurationError(
+                    f"tools/folder: {path} imports {top!r}, a package folder beside it; a module beside a tool is a .py file there, so make it {top}.py, or install the package"
                 )
             if top in helpers:
                 if nested:
                     raise ConfigurationError(
                         f"tools/folder: {path} imports the helper {top!r} inside a function or class; import it at the top of the script, since a helper is reachable only while its folder's scripts load"
+                    )
+                if declared and "." in name and not guarded:
+                    raise ConfigurationError(
+                        f"tools/folder: {path} imports {name!r}, and {top!r} beside it is a .py file with nothing below it; import {top} and use what it holds"
                     )
                 continue
             origins = _origins(top)
@@ -366,7 +372,7 @@ def _check_imports(
                 )
             if declared and not origins and not guarded and not _standard(top):
                 raise ConfigurationError(
-                    f"tools/folder: {path} imports {top!r}, which resolves to nothing; a {what} reaches the standard library, installed packages and the single .py modules in its own folder, so install it, move it there as a .py file, or guard the import with try/except ImportError or if TYPE_CHECKING"
+                    f"tools/folder: {path} imports {top!r}, which resolves to nothing; a module beside a {what} is a .py file there, and otherwise it reaches the standard library and installed packages, so install it, move it there as a .py file, or guard the import with try/except ImportError or if TYPE_CHECKING"
                 )
             for origin in origins:
                 if _owned(origin, project, folders):
@@ -434,7 +440,8 @@ def _with_its_modules(
     waiting = [parsed[script]]
     while waiting:
         for node, _, _ in _imports(waiting.pop()):
-            for top in _tops(node):
+            for name in _imported(node):
+                top = name.partition(".")[0]
                 place = script.parent / f"{top}.py"
                 if top in helpers or not place.is_file():
                     continue

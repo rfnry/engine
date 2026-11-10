@@ -262,6 +262,7 @@ class AgentSpec(BaseModel):
     questions: dict[str, Question]
     keep: list[str] | None
     fingerprint: str
+    granted: frozenset[str] | None = None
     workspace: bool = False
     scripted: dict[str, tuple[dict[str, JsonValue], Script]] = Field(default_factory=dict)
     preload: list[Part] = Field(default_factory=list)

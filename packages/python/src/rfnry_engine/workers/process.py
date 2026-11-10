@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import importlib.util
 import inspect
 import json
@@ -52,6 +53,9 @@ class _Helpers(MetaPathFinder):
         place, source = self.sources[name]
         return _spec(name, _Source(Path(place), source))
 
+    def holds(self, path: Path) -> bool:
+        return path.stem in self.sources and Path(self.sources[path.stem][0]) == path
+
 
 def _import(key: str, path: Path, source: str) -> ModuleType | str:
     name = f"{PREFIX}{key}"
@@ -64,6 +68,13 @@ def _import(key: str, path: Path, source: str) -> ModuleType | str:
         del sys.modules[name]
         return _error(exc)
     return module
+
+
+def _import_beside(name: str) -> ModuleType | str:
+    try:
+        return importlib.import_module(name)
+    except BaseException as exc:
+        return _error(exc)
 
 
 def _inside(module: ModuleType, folder: Path) -> bool:
@@ -90,7 +101,9 @@ def _load(
         finder = _Helpers(helpers.get(str(folder), {}))
         sys.meta_path.insert(_before_paths(), finder)
         for key, (path, source) in members.items():
-            loaded[key] = _import(key, path, source)
+            loaded[key] = (
+                _import_beside(path.stem) if finder.holds(path) else _import(key, path, source)
+            )
         sys.meta_path.remove(finder)
         for name in set(sys.modules) - before:
             if not name.startswith(PREFIX) and (
