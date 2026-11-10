@@ -384,6 +384,7 @@ def load_tool(root: Path, name: str, entry: ToolEntry, project: Path) -> ToolDef
             f"tools/folder: tool {name!r} has the module {entry.module!r}, which is not a .py file; the workers run Python, so write the path of a .py file from the folder root"
         )
     script = _file_of(root, name, entry.module, "module")
+    _check_name(script)
     source = _text(script)
     parsed, helpers = _with_its_modules(script, source, root)
     for path, module in parsed.items():

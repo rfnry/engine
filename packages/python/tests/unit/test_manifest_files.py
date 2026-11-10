@@ -8,12 +8,12 @@ import pytest
 from rfnry_engine.compiled import load_folder
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
-from rfnry_engine.models import Message, Part, Reply, Text, ToolCall
-from rfnry_engine.records import Generation
+from rfnry_engine.models import ChoiceAnswer, Message, Part, Reply, Text, ToolCall
+from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.workspace import Local, Workspace
 
-from .fakes import Scripted, text_reply
+from .fakes import Fixed, Scripted, text_reply
 from .trees import provided, write_folder
 
 FILE_TOOLS = {"Read", "Grep", "Glob", "LS", "Load"}
@@ -346,11 +346,13 @@ async def _a_link_out_is_left_out(root: Path) -> None:
     outside = root / "outside"
     outside.mkdir()
     (outside / "passwd").write_text(SECRET, encoding="utf-8")
-    _folder(folder, {"include": ["knowledge"]})
+    _folder(folder, {"include": ["knowledge"], "preload": ["knowledge"]})
     _link(folder / "knowledge/link", outside)
     _link(folder / "knowledge/passwd", outside / "passwd")
     _link(folder / "knowledge/etc", "/etc")
     assert not any(word in line for word in ("link", "passwd", "etc") for line in _map(folder))
+    preloaded = str(load_folder(folder)["a"].preload)
+    assert "root:" not in preloaded and "<<<knowledge/refunds.md>>>" in preloaded
     surface = _surface(folder)
     for tool in ("Read", "Load"):
         for path in (
@@ -531,10 +533,25 @@ def test_a_pattern_reaching_nothing_is_refused(
     assert key in said and repr(pattern) in said
 
 
-def test_a_pattern_reaching_only_a_link_out_is_refused(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge/link"]})
+@pytest.mark.parametrize("key", ["include", "preload"])
+def test_a_pattern_reaching_only_a_link_out_is_refused(tmp_path: Path, key: str) -> None:
+    folder = _folder(tmp_path, {key: ["knowledge/link"]})
     _link(folder / "knowledge/link", tmp_path.parent)
-    _refused(folder, r"files\.include.*reaches nothing")
+    _refused(folder, rf"files\.{key}.*reaches nothing")
+
+
+def test_a_preload_of_a_link_to_a_hidden_folder_is_refused(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"preload": ["knowledge/hl"]}, written={".keys/k.md": "K.\n"})
+    _link(folder / "knowledge/hl", "../.keys")
+    _refused(folder, r"lists 'knowledge/hl' in files\.preload, which reaches nothing")
+
+
+def test_a_preload_of_a_bytecode_cache_is_refused(tmp_path: Path) -> None:
+    named = "knowledge/__pycache__/x.pyc"
+    folder = _folder(tmp_path, {"preload": [named]}, written={named: "x"})
+    _refused(
+        folder, r"lists 'knowledge/__pycache__/x\.pyc' in files\.preload, which reaches nothing"
+    )
 
 
 def test_a_folder_of_hidden_files_only_reaches_nothing(tmp_path: Path) -> None:
@@ -668,6 +685,93 @@ async def test_a_named_hidden_file_through_a_folder_link_is_as_the_map_shows(
     _reads_as_missing(await _answer(surface, "Read", {"path": "real/.h.md"}), "real/.h.md")
 
 
+@pytest.mark.parametrize(
+    ("exclude", "alias", "target"),
+    [
+        ("knowledge/drafts/**", "knowledge/alias.md", "drafts/next.md"),
+        ("private/**", "knowledge/note.md", "../private/notes.md"),
+    ],
+    ids=["an-excluded-file", "an-excluded-file-only-the-link-reaches"],
+)
+async def test_a_link_to_an_excluded_file_reads_as_missing_and_is_not_preloaded(
+    tmp_path: Path, exclude: str, alias: str, target: str
+) -> None:
+    folder = _folder(
+        tmp_path, {"include": ["knowledge"], "preload": ["knowledge"], "exclude": [exclude]}
+    )
+    _link(folder / alias, target)
+    spec = load_folder(folder)["a"]
+    assert f"  {alias.split('/')[-1]}" not in spec.listing.splitlines()
+    assert f"<<<{alias}>>>" not in str(spec.preload)
+    assert "<<<knowledge/refunds.md>>>" in str(spec.preload)
+    surface = _surface(folder)
+    for tool in ("Read", "Load"):
+        _reads_as_missing(await _answer(surface, tool, {"path": alias}), alias)
+    found = str(await surface.dispatch("Grep", {"pattern": "refund", "path": "knowledge"}))
+    assert "knowledge/refunds.md" in found.splitlines() and alias not in found
+
+
+SKILLS = {"skills/close/SKILL.md": "Close it.\n", "skills/tone/SKILL.md": "Be warm.\n"}
+
+
+@pytest.mark.parametrize(
+    "skills",
+    [{"include": ["skills/*"], "exclude": ["close"]}, {"preload": ["skills/close"]}],
+    ids=["excluded", "preloaded-only"],
+)
+async def test_a_link_into_a_skill_the_entry_does_not_open_reads_as_missing_and_is_not_preloaded(
+    tmp_path: Path, skills: dict[str, Any]
+) -> None:
+    folder = _folder(
+        tmp_path,
+        {"include": ["knowledge"], "preload": ["knowledge"]},
+        written=SKILLS,
+        skills=skills,
+    )
+    _link(folder / "knowledge/sk.md", "../skills/close/SKILL.md")
+    spec = load_folder(folder)["a"]
+    assert "  sk.md" not in spec.listing.splitlines()
+    assert "<<<knowledge/sk.md>>>" not in str(spec.preload)
+    surface = _surface(folder)
+    for tool in ("Read", "Load"):
+        _reads_as_missing(
+            await _answer(surface, tool, {"path": "knowledge/sk.md"}), "knowledge/sk.md"
+        )
+
+
+async def test_a_link_inside_an_offered_skill_reaches_only_what_the_entry_opens(
+    tmp_path: Path,
+) -> None:
+    folder = _folder(
+        tmp_path,
+        {"include": ["knowledge"]},
+        written=SKILLS,
+        skills={"include": ["skills/*"], "exclude": ["close"]},
+    )
+    _link(folder / "skills/tone/close.md", "../close/SKILL.md")
+    _link(folder / "skills/tone/warm.md", "SKILL.md")
+    _link(folder / "knowledge/tone.md", "../skills/tone/SKILL.md")
+    surface = _surface(folder)
+    _reads_as_missing(
+        await _answer(surface, "Read", {"path": "skills/tone/close.md"}), "skills/tone/close.md"
+    )
+    for path in ("skills/tone/warm.md", "knowledge/tone.md"):
+        assert await surface.dispatch("Read", {"path": path}) == "Be warm.\n"
+
+
+async def test_a_link_into_a_closed_skill_reads_where_files_include_names_the_target(
+    tmp_path: Path,
+) -> None:
+    folder = _folder(
+        tmp_path,
+        {"include": ["knowledge", "skills/close"]},
+        written=SKILLS,
+        skills={"preload": ["skills/close"]},
+    )
+    _link(folder / "knowledge/sk.md", "../skills/close/SKILL.md")
+    assert await _surface(folder).dispatch("Read", {"path": "knowledge/sk.md"}) == "Close it.\n"
+
+
 def test_a_gitignore_beside_a_links_target_counts(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
@@ -707,6 +811,215 @@ async def test_a_withheld_link_to_a_hidden_name_answers_as_an_absent_name(
     ).replace("absent", "hl")
 
 
+WHERE = "from pathlib import Path\ndef run(args, call):\n    return Path(__file__).name\n"
+
+
+async def _seen_from(folder: Path) -> tuple[object, ...]:
+    spec = load_folder(folder)["a"]
+    async with Engine(folder, providers=provided({"m": Scripted()})) as engine:
+        surface = EngineTools(engine, agent="a", scope="acme")
+        return (
+            spec.listing,
+            spec.fingerprint,
+            await _answer(surface, "Read", {"path": "knowledge/refunds.md"}),
+            await _answer(surface, "Read", {"path": "knowledge/drafts/next.md"}),
+            await surface.dispatch("where", {}),
+        )
+
+
+def _refusal(folder: Path) -> str:
+    with pytest.raises(ConfigurationError) as raised:
+        load_folder(folder)
+    return str(raised.value)
+
+
+async def test_a_folder_reached_through_a_link_answers_as_the_folder_itself(
+    tmp_path: Path,
+) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    write_folder(
+        real,
+        {
+            "a": _agent(
+                {"include": ["knowledge"], "exclude": ["knowledge/drafts/**"]},
+                tools={"include": ["where"]},
+            )
+        },
+        tools={"where": {"module": "tools/where.py", "description": "Says where"}},
+        files={**FILES, "tools/where.py": WHERE},
+    )
+    linked = tmp_path / "linked"
+    linked.symlink_to(real)
+    seen = await _seen_from(real)
+    assert seen[2:] == (
+        "A duplicate is refunded.\n",
+        "tools/builtins: not a file: knowledge/drafts/next.md",
+        "where.py",
+    )
+    assert await _seen_from(linked) == seen
+    (real / "tools/where.py").unlink()
+    (tmp_path / "where.py").write_text(WHERE, encoding="utf-8")
+    (real / "tools/where.py").symlink_to(tmp_path / "where.py")
+    assert _refusal(linked) == _refusal(real)
+    assert "links to" in _refusal(real)
+
+
+SPELLINGS = [
+    "./knowledge/{}/next.md",
+    "knowledge//{}/next.md",
+    "knowledge/./{}/next.md",
+    "knowledge/{}/next.md/",
+    "{root}/knowledge/{}/next.md",
+]
+SPELLED = [
+    ("Read", {"path": "{}"}),
+    ("Load", {"path": "{}"}),
+    ("LS", {"path": "{}"}),
+    ("Grep", {"pattern": "refund", "path": "{}"}),
+]
+
+
+SPELLED_BESIDE = [("Read", {"path": "{}", "where": "folder"}), *SPELLED[1:]]
+
+
+def _spelled(spelling: str, place: str, folder: Path, args: dict[str, str]) -> dict[str, str]:
+    path = spelling.format(place, root=folder)
+    return {key: value.format(path) for key, value in args.items()}
+
+
+async def _withheld_as_absent(
+    folder: Path, surface: EngineTools, asked: list[tuple[str, dict[str, str]]]
+) -> None:
+    for spelling in SPELLINGS:
+        for tool, args in asked:
+            withheld = await _answer(surface, tool, _spelled(spelling, "drafts", folder, args))
+            absent = await _answer(surface, tool, _spelled(spelling, "ghost", folder, args))
+            assert withheld == absent.replace("ghost", "drafts"), (tool, spelling)
+            assert "draft refund" not in withheld
+
+
+async def test_every_spelling_of_an_excluded_path_answers_as_an_absent_one(
+    tmp_path: Path,
+) -> None:
+    folder = _folder(tmp_path, {"include": ["knowledge"], "exclude": ["knowledge/drafts/**"]})
+    await _withheld_as_absent(folder, _surface(folder), SPELLED)
+
+
+async def test_every_spelling_of_an_excluded_path_answers_as_an_absent_one_beside_a_workspace(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "agents"
+    folder.mkdir()
+    _folder(
+        folder,
+        {"include": ["knowledge"], "exclude": ["knowledge/drafts/**"]},
+        workspace=True,
+    )
+    room = tmp_path / "room"
+    (room / "knowledge/drafts").mkdir(parents=True)
+    (room / "knowledge/drafts/next.md").write_text(
+        "A draft refund in the room.\n", encoding="utf-8"
+    )
+    surface = EngineTools(
+        Engine(folder, providers=provided({"m": Scripted()})),
+        agent="a",
+        scope="acme",
+        workspace=Workspace(Local(room), scope="acme", tree=str(folder)),
+    )
+    await _withheld_as_absent(folder, surface, SPELLED_BESIDE)
+
+
+EXCLUDED = "InputError: tools/builtins: not a file: knowledge/drafts/next.md"
+CHILD = {
+    "kind": "generation",
+    "model": "m",
+    "instructions": "a.md",
+    "description": "Reads",
+    "files": {"include": ["knowledge"], "exclude": ["knowledge/drafts/**"]},
+}
+INTENT = '{"type": "choice", "instructions": "Which?", "options": {"child": null, "other": null}}'
+
+
+def _family(root: Path) -> Path:
+    return write_folder(
+        root,
+        {
+            "lead": {
+                **_agent({"include": ["knowledge"]}),
+                "orchestration": {"delegate_to": ["child"]},
+            },
+            "child": CHILD,
+            "desk": {
+                "kind": "decision",
+                "model": "judge",
+                "instructions": "desk.md",
+                "questions": ["q/*.json"],
+                "orchestration": {"route": {"by": "intent", "to": {"child": "child"}}},
+            },
+        },
+        files={**FILES, "desk.md": "", "q/intent.json": INTENT},
+    )
+
+
+def _reading() -> Reply:
+    calls = [
+        ToolCall(id=f"r{n}", name="Read", args={"path": path})
+        for n, path in enumerate(["knowledge/drafts/next.md", "knowledge/refunds.md"])
+    ]
+    return Reply(tool_calls=calls, stop_reason="tool_use")
+
+
+def _read(run: object) -> list[object]:
+    assert isinstance(run, Generation)
+    return [step.result for step in run.steps if step.tool == "Read"]
+
+
+class _Kept:
+    def __init__(self) -> None:
+        self.runs: list[object] = []
+
+    async def record(self, run: object) -> None:
+        self.runs.append(run)
+
+
+ROUTE = Fixed({"intent": ChoiceAnswer(choice="child", probabilities={"child": 0.9, "other": 0.1})})
+
+
+async def test_a_delegated_a_routed_and_an_engine_tool_run_open_only_what_their_entry_opens(
+    tmp_path: Path,
+) -> None:
+    folder = _family(tmp_path)
+    seen = [EXCLUDED, "A duplicate is refunded.\n"]
+    model = Scripted(
+        Reply(
+            tool_calls=[
+                ToolCall(id="own", name="Read", args={"path": "knowledge/drafts/next.md"}),
+                ToolCall(id="d1", name="Delegate", args={"agent": "child", "input": "x"}),
+            ],
+            stop_reason="tool_use",
+        ),
+        _reading(),
+        text_reply("c"),
+        text_reply("done"),
+    )
+    lead = await Engine(folder, providers=provided({"m": model, "judge": ROUTE})).run(
+        "lead", "acme", "hi"
+    )
+    assert _read(lead) == ["A draft refund.\n"]
+    assert isinstance(lead, Generation) and _read(lead.children[0]) == seen
+    model = Scripted(_reading(), text_reply("c"))
+    desk = await Engine(folder, providers=provided({"m": model, "judge": ROUTE})).run(
+        "desk", "acme", "hi"
+    )
+    assert isinstance(desk, Decision) and _read(desk.routed_to) == seen
+    kept = _Kept()
+    model = Scripted(_reading(), text_reply("c"))
+    engine = Engine(folder, refinery=kept, providers=provided({"m": model, "judge": ROUTE}))
+    assert await engine.tool("child", scope="acme").dispatch("child", {"input": "x"}) == "c"
+    assert _read(kept.runs[-1]) == seen
+
+
 async def test_the_shell_is_told_where_the_included_folders_are(tmp_path: Path) -> None:
     folder = tmp_path / "agents"
     folder.mkdir()
@@ -725,7 +1038,9 @@ async def test_the_shell_is_told_where_the_included_folders_are(tmp_path: Path) 
         workspace=Workspace(Local(room), scope="acme", tree=str(folder)),
     )
     [shell] = [tool for tool in model.calls[0][2] if tool.name == "Shell"]
-    assert "The folders it reads are at $RFNRY_TREE/knowledge." in (shell.description or "")
+    assert "The folders files.include opens are at $RFNRY_TREE/knowledge." in (
+        shell.description or ""
+    )
 
 
 async def test_the_shell_is_told_the_root_itself_when_it_is_included(tmp_path: Path) -> None:
@@ -742,7 +1057,7 @@ async def test_the_shell_is_told_the_root_itself_when_it_is_included(tmp_path: P
         workspace=Workspace(Local(room), scope="acme", tree=str(folder)),
     )
     [shell] = [tool for tool in model.calls[0][2] if tool.name == "Shell"]
-    assert "The folders it reads are at $RFNRY_TREE." in (shell.description or "")
+    assert "The folders files.include opens are at $RFNRY_TREE." in (shell.description or "")
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads every file")

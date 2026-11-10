@@ -425,7 +425,7 @@ async def test_a_run_refuses_a_name_no_agent_runs_on(tmp_path: Path) -> None:
     engine = Engine(_one(tmp_path), providers={"p": provider})
     with pytest.raises(
         ConfigurationError,
-        match="^engine: no agent runs on model 'fsat'; the tree's agents run on m$",
+        match="^engine: no agent runs on model 'fsat'; the agents of rfnry.yaml run on m$",
     ):
         await engine.run("a", "acme", "hi", models={"fsat": ModelChoice(model="x")})
     assert provider.calls == []

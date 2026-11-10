@@ -251,8 +251,36 @@ def _in_reach(root: Path, patterns: Collection[str], gitignore: bool) -> dict[st
     return found
 
 
+def _target(root: Path, path: Path) -> PurePosixPath:
+    return PurePosixPath(Path(os.path.realpath(path)).relative_to(root).as_posix())
+
+
+def _spelled(root: Path | None, name: str, path: Path) -> tuple[PurePosixPath, ...]:
+    if root is None:
+        return (PurePosixPath(name),)
+    return PurePosixPath(name), _target(root, path)
+
+
+def _closed_to(
+    root: Path, closed: Collection[PurePosixPath], opened: Collection[str]
+) -> Callable[[str, Path], bool]:
+    def shut(name: str, path: Path) -> bool:
+        target = _target(root, path)
+        return (
+            target != PurePosixPath(name)
+            and target.as_posix() not in opened
+            and any(folder in target.parents for folder in closed)
+        )
+
+    return shut
+
+
 def _matching(
-    who: str, key: str, patterns: Iterable[str], candidates: Mapping[str, Path]
+    who: str,
+    key: str,
+    patterns: Iterable[str],
+    candidates: Mapping[str, Path],
+    root: Path | None = None,
 ) -> dict[str, Path]:
     matched: dict[str, Path] = {}
     for pattern in patterns:
@@ -263,7 +291,7 @@ def _matching(
         found = {
             name: path
             for name, path in candidates.items()
-            if pattern_covers(pattern, PurePosixPath(name))
+            if any(pattern_covers(pattern, spelled) for spelled in _spelled(root, name, path))
         }
         if not found:
             raise ConfigurationError(
@@ -285,6 +313,8 @@ def _reach(
     files: FilesSection,
     own: Collection[str],
     in_skills: Mapping[str, Path],
+    closed: Collection[PurePosixPath],
+    in_offered: Collection[str],
 ) -> _Reach:
     include = files.include or []
     preload = files.preload or []
@@ -292,9 +322,11 @@ def _reach(
     included = _matching(who, "files.include", include, candidates)
     offered = _matching(who, "files.preload", preload, candidates)
     excluded = _matching(
-        who, "files.exclude", files.exclude or [], {**included, **offered, **in_skills}
+        who, "files.exclude", files.exclude or [], {**included, **offered, **in_skills}, root
     )
     left = {name: path for name, path in candidates.items() if name not in excluded}
+    shut = _closed_to(root, closed, {*in_offered, *(name for name in included if name in left)})
+    left = {name: path for name, path in left.items() if not shut(name, path)}
     kept = {name: path for name, path in included.items() if name in left}
     preloaded = _matching(who, "files.preload", preload, left)
     return _Reach(
@@ -435,6 +467,7 @@ def _chosen_skills(
 
 
 def _left_in_skill(
+    root: Path,
     name: str,
     held: Mapping[str, _Held],
     excluded: Collection[str],
@@ -453,10 +486,27 @@ def _left_in_skill(
         **{
             path: place
             for path, place in found.items()
-            if not any(pattern_covers(pattern, PurePosixPath(path)) for pattern in taken_back)
+            if not any(
+                pattern_covers(pattern, spelled)
+                for pattern in taken_back
+                for spelled in _spelled(root, path, place)
+            )
             and not any(other in PurePosixPath(path).parents for other in inside)
         },
     }
+
+
+def _open_in_skills(
+    root: Path,
+    skill_files: Mapping[str, Mapping[str, Path]],
+    closed: Collection[PurePosixPath],
+    opened: Collection[str],
+) -> dict[str, dict[str, Path]]:
+    left: dict[str, dict[str, Path]] = {}
+    for name, found in skill_files.items():
+        shut = _closed_to(root, closed, {*opened, *found})
+        left[name] = {path: place for path, place in found.items() if not shut(path, place)}
+    return left
 
 
 def _together(groups: Iterable[Mapping[str, Path]]) -> dict[str, Path]:
@@ -649,12 +699,12 @@ def _spec(
     }
     skill_files = {
         name: _left_in_skill(
-            name, skills.held, chosen.excluded, resolved.files.exclude or (), found
+            root, name, skills.held, chosen.excluded, resolved.files.exclude or (), found
         )
         for name, found in in_folders.items()
     }
     offered_files = _together(skill_files[name] for name in chosen.offered)
-    every_skill_file = _together(skill_files.values())
+    closed = [_skill_folder(one) for name, one in skills.held.items() if name not in chosen.offered]
     reach = (
         _Reach({}, {}, [])
         if resolved.instructions is None
@@ -664,8 +714,13 @@ def _spec(
             resolved.files,
             _own_files(resolved, {*tool_files, *offered_files}),
             _together(in_folders.values()),
+            closed,
+            offered_files,
         )
     )
+    skill_files = _open_in_skills(root, skill_files, closed, {*offered_files, *reach.files})
+    offered_files = _together(skill_files[name] for name in chosen.offered)
+    every_skill_file = _together(skill_files.values())
     files |= {**reach.files, **every_skill_file}
     _check_what_it_reaches(root, who, files)
     keep = sorted({*picked.granted, *picked.names})

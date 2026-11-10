@@ -120,6 +120,18 @@ def test_a_skill_file_linking_out_of_the_folder_is_no_skill(tmp_path: Path) -> N
     assert "linked" not in _spec(folder).skills
 
 
+def test_a_skill_folder_linking_out_of_the_folder_is_no_skill(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text("Elsewhere.\n", encoding="utf-8")
+    (tmp_path / "root").mkdir()
+    folder = _folder(tmp_path / "root", {"include": ["skills/*"]})
+    (folder / "skills/linked").symlink_to(outside)
+    assert "linked" not in _spec(folder).skills
+    _folder(folder, {"include": ["skills/linked"]})
+    _refused(folder, r"lists 'skills/linked' in skills\.include, which reaches no skill")
+
+
 def test_skill_md_at_the_root_is_no_skill(tmp_path: Path) -> None:
     _refused(
         _folder(tmp_path, {"include": ["."]}, written={"SKILL.md": "Root.\n"}), r"reaches no skill"
@@ -724,15 +736,24 @@ async def test_a_skill_offered_inside_an_excluded_one_stays_open(tmp_path: Path)
     _reads_as_missing(await _answer(surface, "Read", {"path": path}), path)
 
 
-def test_a_skill_named_in_another_mode_is_in_the_fingerprint(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("skills", "extra"),
+    [
+        (
+            {"include": ["skills/tone"]},
+            {"modes": {"m": {"skills": {"include": ["skills/escalate"]}}}},
+        ),
+        ({"include": ["skills/tone", "skills/escalate"], "exclude": ["escalate"]}, {}),
+    ],
+    ids=["named-in-another-mode", "excluded"],
+)
+def test_a_skill_the_entry_reaches_but_does_not_offer_is_in_the_fingerprint(
+    tmp_path: Path, skills: dict[str, Any], extra: dict[str, Any]
+) -> None:
     def fingerprints(body: str, examples: str) -> str:
         written = {"skills/escalate/SKILL.md": body, "skills/escalate/notes.md": examples}
-        folder = _folder(
-            tmp_path,
-            {"include": ["skills/tone"]},
-            modes={"m": {"skills": {"include": ["skills/escalate"]}}},
-            written=written,
-        )
+        folder = _folder(tmp_path, skills, written=written, **extra)
+        assert "escalate" not in _spec(folder).offered
         return _spec(folder).fingerprint
 
     before = fingerprints("One.\n", "Notes.\n")

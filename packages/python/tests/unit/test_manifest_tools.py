@@ -1078,6 +1078,19 @@ def test_a_module_beside_it_named_like_the_standard_library_is_refused(tmp_path:
     _refused(folder, r"^tools/folder: .*json\.py is named like the standard-library module 'json'")
 
 
+@pytest.mark.parametrize("name", ["time", "json"])
+def test_a_tool_module_named_like_the_standard_library_is_refused(
+    tmp_path: Path, name: str
+) -> None:
+    module = f"tools/{name}.py"
+    folder = _folder(tmp_path, {"one": {**ONE, "module": module}}, {module: RUN})
+    with pytest.raises(ConfigurationError) as raised:
+        load_folder(folder)
+    assert str(raised.value) == (
+        f"tools/folder: {folder / module} is named like the standard-library module {name!r}, and the worker can't load both; rename it"
+    )
+
+
 def test_a_module_or_its_neighbour_linking_out_of_the_root_is_refused(tmp_path: Path) -> None:
     outside = tmp_path / "outside.py"
     outside.write_text(RUN, encoding="utf-8")

@@ -598,7 +598,7 @@ def _check_names(
     for name in sorted(models):
         if name not in used:
             raise ConfigurationError(
-                f"engine: no agent runs on model {name!r}; the tree's agents run on {', '.join(used)}"
+                f"engine: no agent runs on model {name!r}; the agents of rfnry.yaml run on {', '.join(used)}"
             )
 
 
@@ -1356,7 +1356,7 @@ class Engine:
                 f"engine: decision agent {spec.name!r} already asks {', '.join(map(repr, clash))} from its folder"
             )
         if not folder and not options.questions:
-            hint = "give it questions/, or ask it through Delegate"
+            hint = "give it questions: on its entry, or ask it through Delegate"
             raise InputError(
                 f"engine: decision agent {spec.name!r} has no questions to ask; {hint}"
             )
@@ -1537,10 +1537,6 @@ class Engine:
                 for s in specs
             ]
         if expect is not None:
-            if OUTPUT_TOOL in surface:
-                raise ConfigurationError(
-                    f"engine: a tool named {OUTPUT_TOOL!r} collides with expect="
-                )
             specs.append(
                 ToolSpec(
                     name=OUTPUT_TOOL,

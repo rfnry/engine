@@ -30,7 +30,7 @@ from rfnry_engine.refinery.storage import RunRow
 
 from .trees import write_folder
 
-NO_QUESTIONS = "engine: decision agent 'questionless' has no questions to ask; give it questions/, or ask it through Delegate"
+NO_QUESTIONS = "engine: decision agent 'questionless' has no questions to ask; give it questions: on its entry, or ask it through Delegate"
 
 
 class Scripted:

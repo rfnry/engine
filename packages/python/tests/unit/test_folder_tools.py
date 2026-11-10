@@ -396,3 +396,30 @@ def test_a_script_that_is_not_valid_python_is_refused_naming_it(tmp_path: Path) 
         match=re.escape(f"tools/folder: {folder_ / 'tools/fetch.py'} is not valid Python: "),
     ):
         load_folder(folder_)
+
+
+@pytest.mark.parametrize(
+    ("imports", "said"),
+    [
+        ("import rfnry_engine\n", "imports 'rfnry_engine'; a tool never imports the engine"),
+        ("from myapp import SECRET\n", "imports 'myapp' from {server}, " + SERVER),
+        (
+            "import not_installed_anywhere\n",
+            "imports 'not_installed_anywhere', which resolves to nothing; ",
+        ),
+        ("from . import other\n", "imports '.' relatively; import a module beside it"),
+    ],
+    ids=["the-engine", "the-server-s-code", "nothing", "relative"],
+)
+def test_a_module_beside_a_tool_keeps_the_rules_of_its_imports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, imports: str, said: str
+) -> None:
+    monkeypatch.syspath_prepend(tmp_path)
+    write(tmp_path / "pyproject.toml", "[project]\nname = 'myapp'\n")
+    write(tmp_path / "myapp/__init__.py", "SECRET = 1\n")
+    agents = declared(tmp_path / "agents", body="import shared\n" + RUN)
+    write(agents / "tools/shared.py", imports + "VALUE = 1\n")
+    with pytest.raises(ConfigurationError) as caught:
+        load_folder(agents)
+    expected = said.format(server=tmp_path / "myapp/__init__.py")
+    assert str(caught.value).startswith(f"tools/folder: {agents / 'tools/shared.py'} {expected}")

@@ -727,3 +727,58 @@ def test_a_question_file_that_links_elsewhere_in_the_agent_s_folder_loads(
     (tmp_path / f"matcher/questions/order{suffix}").replace(tmp_path / f"matcher/kept{suffix}")
     (tmp_path / f"matcher/questions/order{suffix}").symlink_to(f"../kept{suffix}")
     assert list(load_folder(tmp_path)["matcher"].scripted) == ["order"]
+
+
+LINKED = (
+    "import _orders\n"
+    "def run(input, call):\n"
+    "    return {'options': {key: _orders.ORDERS[key] for key in sorted(_orders.ORDERS)}}\n"
+)
+
+
+@pytest.mark.parametrize("name", ["order.py", "_orders.py"])
+async def test_a_question_script_or_helper_linked_from_elsewhere_in_the_root_loads(
+    tmp_path: Path, name: str
+) -> None:
+    matcher(tmp_path, LINKED)
+    write(tmp_path / "matcher/questions/_orders.py", "ORDERS = {'a': 'First', 'b': 'Second'}\n")
+    write(tmp_path / f"shared/{name}", (tmp_path / f"matcher/questions/{name}").read_text())
+    (tmp_path / f"matcher/questions/{name}").unlink()
+    (tmp_path / f"matcher/questions/{name}").symlink_to(f"../../shared/{name}")
+    async with Engine(tmp_path, providers=provided({"judge": Answering()})) as engine:
+        run = await engine.run("matcher", "acme", "my desk")
+    assert isinstance(run, Decision) and options(run.questions) == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    ("imported", "written"),
+    [
+        (
+            "other",
+            {"other.py": ORDER, "other.json": '{"type": "choice", "instructions": "Which?"}'},
+        ),
+        ("pkg", {"pkg/__init__.py": ""}),
+    ],
+    ids=["a-sibling-script", "a-subfolder-package"],
+)
+def test_a_question_script_importing_what_is_not_a_helper_is_refused(
+    tmp_path: Path, imported: str, written: dict[str, str]
+) -> None:
+    matcher(tmp_path, f"import {imported}\n" + ORDER)
+    for name, text in written.items():
+        write(tmp_path / "matcher/questions" / name, text)
+    with pytest.raises(ConfigurationError) as raised:
+        load_folder(tmp_path)
+    assert str(raised.value) == (
+        f"tools/folder: {tmp_path / 'matcher/questions/order.py'} imports {imported!r}, which sits in its questions/ folder but is not a helper; a question's script reaches only the helpers of its folder, so move the shared code into a helper _{imported}.py"
+    )
+
+
+def test_a_question_helper_that_imports_the_engine_is_refused(tmp_path: Path) -> None:
+    matcher(tmp_path, "import _shared\n" + ORDER)
+    write(tmp_path / "matcher/questions/_shared.py", "import rfnry_engine\n")
+    with pytest.raises(ConfigurationError) as raised:
+        load_folder(tmp_path)
+    assert str(raised.value).startswith(
+        f"tools/folder: {tmp_path / 'matcher/questions/_shared.py'} imports 'rfnry_engine'; "
+    )

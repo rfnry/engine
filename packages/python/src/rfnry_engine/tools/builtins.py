@@ -127,7 +127,7 @@ def _written_hidden(jail: Jail, path: str) -> bool:
 def _named(jail: Jail, path: str) -> str:
     if _hides(jail, path) and (_written_hidden(jail, path) or not jail._withholds(path)):
         raise InputError(
-            f"tools/builtins: {path} is hidden; names starting with . and __pycache__ are not part of the agent's folder"
+            f"tools/builtins: {path} is hidden; names starting with . and __pycache__ are not part of the folder of the agents"
         )
     return path
 
@@ -418,7 +418,7 @@ class _Directory:
         base, pattern = self.root, a.pattern
         if not pattern or pattern.startswith("/") or ".." in pattern.split("/"):
             raise InputError(
-                "tools/builtins: pattern must be relative and stay inside the agent directory"
+                "tools/builtins: pattern must be relative and stay inside the folder of the agents"
             )
         try:
             kept = (p for p in base.glob(pattern) if not self.jail._withholds(p))

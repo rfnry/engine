@@ -125,7 +125,7 @@ async def test_no_builtin_reaches_through_a_symlink(escape: Path) -> None:
         "rules/inside.md"
     ]
     for pattern in ["../outside/*.md", "/etc/*"]:
-        with pytest.raises(InputError, match="inside the agent directory"):
+        with pytest.raises(InputError, match="stay inside the folder of the agents"):
             await tools.dispatch("Glob", {"pattern": pattern})
 
 

@@ -797,16 +797,16 @@ class Workspace:
     def _bridging(self) -> bool:
         return self.bridge and getattr(self.backend, "root", None) is not None
 
-    def _told(self, reads: Sequence[str], bridged: bool) -> str:
+    def _told(self, included: Sequence[str], bridged: bool) -> str:
         told = ""
         if self.tree is not None:
             told += (
                 " The folder of the agents is at $RFNRY_TREE, read-only: its files, skills and"
                 " scripts can be read and run from there."
             )
-            if reads:
-                places = ", ".join(posixpath.normpath(f"$RFNRY_TREE/{name}") for name in reads)
-                told += f" The folders it reads are at {places}."
+            if included:
+                places = ", ".join(posixpath.normpath(f"$RFNRY_TREE/{name}") for name in included)
+                told += f" The folders files.include opens are at {places}."
         if bridged:
             told += (
                 " While a command runs, it can call your tools: $RFNRY_TOOLS is a Unix socket and"
