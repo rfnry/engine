@@ -256,10 +256,23 @@ def test_the_schema_accepts_the_design_example(
     assert _schema(capsys).is_valid(yaml.safe_load(DESIGN))
 
 
+def test_the_schema_takes_a_tool_as_a_path_or_an_object(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["folder", "schema"]) == 0
+    schema = json.loads(capsys.readouterr().out)
+    entry = schema["properties"]["tools"]["additionalProperties"]
+    assert {branch.get("type") for branch in entry["anyOf"]} >= {"string"}
+    assert "short" not in schema["$defs"]["ToolEntry"]["properties"]
+    short = _at(yaml.safe_load(DESIGN), "tools.lookup_order", "tools/lookup_order.py")
+    assert _schema(capsys).is_valid(short)
+
+
 @pytest.mark.parametrize(
     ("path", "value"),
     [
         ("agents.support.files", None),
+        ("tools.lookup_order", ""),
         ("agents.support.files.allow", []),
         ("agents.support.files", {}),
         ("agents.support.tools.allow", [""]),

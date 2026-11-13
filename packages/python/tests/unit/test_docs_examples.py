@@ -747,7 +747,12 @@ def _under(pattern: str) -> str:
 
 
 def _stubbed(root: Path, document: Mapping[str, Any]) -> None:
-    for name, tool in document.get("tools", {}).items():
+    for name, written in document.get("tools", {}).items():
+        tool = (
+            {"module": written, "schema": written.removesuffix(".py") + ".json"}
+            if isinstance(written, str)
+            else written
+        )
         _touch(
             root,
             tool["module"],

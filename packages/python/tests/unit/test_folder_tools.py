@@ -49,6 +49,62 @@ def schema_of(tmp_path: Path, input_schema: dict[str, JsonValue]) -> str:
     return json.dumps({"description": "Do it", "input_schema": input_schema})
 
 
+def written_short(root: Path, tool: object, files: dict[str, str]) -> Path:
+    return write_folder(
+        root,
+        {
+            "a": {
+                "kind": "generation",
+                "model": "strong",
+                "instructions": "a.md",
+                "tools": {"allow": ["fetch"]},
+            }
+        },
+        tools={"fetch": tool},
+        files={"a.md": "Work.\n", **files},
+    )
+
+
+def test_a_tool_written_as_a_path_takes_the_json_beside_it(tmp_path: Path) -> None:
+    folder_ = written_short(
+        tmp_path, "tools/fetch.py", {"tools/fetch.json": DEF, "tools/fetch.py": RUN}
+    )
+    tool = load_folder(folder_)["a"].folder_tools["fetch"]
+    assert (tool.description, tool.input_schema, tool.function) == (
+        "Do it",
+        {"type": "object"},
+        "run",
+    )
+    assert tool.script.resolve() == (folder_ / "tools/fetch.py").resolve()
+
+
+def test_a_tool_written_as_a_path_without_its_json_is_refused_naming_it(tmp_path: Path) -> None:
+    folder_ = written_short(tmp_path, "tools/fetch.py", {"tools/fetch.py": RUN})
+    said = (
+        "tools/folder: tool 'fetch' is written as a path, so its schema is 'tools/fetch.json', "
+        "and the folder holds no such file; add it, or write the tool as an object with description:"
+    )
+    with pytest.raises(ConfigurationError, match=rf"^{re.escape(said)}$"):
+        load_folder(folder_)
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["tools/fetch.sh", "tools/fetch", "/tools/fetch.py", "tools/../fetch.py", "tools\\fetch.py"],
+)
+def test_a_tool_written_as_a_bad_path_is_refused_as_its_module_would_be(
+    tmp_path: Path, module: str
+) -> None:
+    def refusal(tool: object) -> str:
+        with pytest.raises(ConfigurationError) as raised:
+            load_folder(written_short(tmp_path, tool, {}))
+        return str(raised.value)
+
+    said = refusal(module)
+    assert "module" in said
+    assert said == refusal({"module": module, "description": "Do it"})
+
+
 @pytest.mark.parametrize("key", ["input_schema", "output_schema"])
 def test_a_schema_that_does_not_compile_is_refused_with_its_reason(
     tmp_path: Path, key: str

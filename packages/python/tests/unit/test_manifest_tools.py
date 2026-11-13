@@ -1224,6 +1224,25 @@ def test_what_a_tool_is_made_of_is_in_the_fingerprint(tmp_path: Path, path: str,
     assert load_folder(folder)["a"].fingerprint != before
 
 
+def test_the_json_of_a_tool_written_as_a_path_is_in_the_fingerprint(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {"one": "tools/one.py"},
+        {"tools/one.py": RUN, "tools/one.json": json.dumps(ORDER)},
+    )
+    before = load_folder(folder)["a"].fingerprint
+    edited = json.dumps({**ORDER, "description": "Edited"})
+    (folder / "tools/one.json").write_text(edited, encoding="utf-8")
+    assert load_folder(folder)["a"].fingerprint != before
+
+
+def test_a_tool_written_as_a_path_is_fingerprinted_as_its_object_form(tmp_path: Path) -> None:
+    written = {"tools/one.py": RUN, "tools/one.json": json.dumps(ORDER)}
+    short = load_folder(_folder(tmp_path, {"one": "tools/one.py"}, written))["a"]
+    whole = {"one": {"module": "tools/one.py", "schema": "tools/one.json"}}
+    assert load_folder(_folder(tmp_path, whole, written))["a"].fingerprint == short.fingerprint
+
+
 @pytest.mark.parametrize(
     "edit", [{"function": "other"}, {"timeout": 5.0}, {"description": "Edited"}]
 )

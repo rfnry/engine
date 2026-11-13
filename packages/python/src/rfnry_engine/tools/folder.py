@@ -362,6 +362,10 @@ def _with_its_modules(
 
 def _schema_of(root: Path, name: str, entry: ToolEntry) -> _Schema:
     if entry.schema_file is not None:
+        if entry.short and not (root / entry.schema_file).is_file():
+            raise ConfigurationError(
+                f"tools/folder: tool {name!r} is written as a path, so its schema is {entry.schema_file!r}, and the folder holds no such file; add it, or write the tool as an object with description:"
+            )
         return _schema_file(_file_of(root, name, entry.schema_file, "schema"), entry.description)
     if entry.description is None:
         raise ConfigurationError(

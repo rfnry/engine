@@ -75,9 +75,7 @@ models:
   strong:
     provider: anthropic
 tools:
-  lookup_order:
-    module: support/tools/lookup_order.py
-    schema: support/tools/lookup_order.json
+  lookup_order: support/tools/lookup_order.py
 agents:
   support:
     kind: generation
@@ -128,9 +126,10 @@ async with Engine(root=Path("agents"), providers=providers) as engine:
 
 `providers` maps each provider the file's `models:` names to a function of `(model, effort)` that
 builds your adapter to that model ([Models](#models)). `lookup_order` is the agent's tool, declared
-once under `tools:` and picked by the agent's `tools.allow`: the JSON is what the model reads about
-it — what it does, what it returns and the arguments it takes — and the script is what runs,
-`run(args, call)`, in a worker process the engine starts beside your server, so a tool that crashes
+once under `tools:` by the path of its script, its JSON beside it, and picked by the agent's
+`tools.allow`: the JSON is what the model reads about it — what it does, what it returns and the
+arguments it takes — and the script is what runs, `run(args, call)`, in a worker process the engine
+starts beside your server, so a tool that crashes
 takes down its worker, never your server; `call["scope"]` is the tenant of the run
 ([Tools](#tools)). The instructions file holds the agent's persona and the rules every run follows —
 who it is, what it does, when to use which tool. The model receives it, its tools, a map of what
@@ -392,7 +391,7 @@ models:                                   # each model once; agents pick them by
   judge: {provider: classifier}
 
 tools:                                    # each tool once; agents pick them by name
-  lookup_order: {module: support/tools/lookup_order.py, schema: support/tools/lookup_order.json}
+  lookup_order: support/tools/lookup_order.py   # a path: function run, its .json beside it
   refund: {module: support/tools/refund.py, schema: support/tools/refund.json, timeout: 20}
 
 agents:
@@ -2616,6 +2615,17 @@ arguments for refund: 5 is not of type "string" at charge_id`, so the script nev
 its schema refuses and the model never reasons over a malformed result. A tool without a schema
 takes any JSON object, checks its own arguments, and its result goes unchecked.
 
+A tool whose function is `run` and whose JSON sits beside its module, under the same name, is
+written as the module's path alone: `refund: billing/tools/refund.py` is `module:
+billing/tools/refund.py` with `schema: billing/tools/refund.json`, the same tool, fingerprint
+included. The key is still the name the model sees, whatever the file is called, and the path
+follows `module`'s rules, so one that is not a `.py` file or not written from the folder root is
+refused as `module` is. With no place left for a description, the JSON is required, and a missing
+one is a `ConfigurationError` naming it: `tools/folder: tool 'refund' is written as a path, so its
+schema is 'billing/tools/refund.json', and the folder holds no such file; add it, or write the tool
+as an object with description:`. A tool that needs another function, a `description` of its own,
+no schema or a `timeout` is written as an object.
+
 The script holds the logic, and ends with a footer that runs it [from a shell](#from-a-shell-with-its-tests-beside-it):
 
 ```python
@@ -3388,8 +3398,9 @@ refuse; two skills of one name, a `skills.deny` naming none of the agent's skill
 `skills.preload` that `deny` empties, and a `skills.public` name the agent does not offer or one
 holding whitespace; a tool's module that is not a `.py` file, is named like a standard-library
 module or holds no such function, a schema file that is not an object, holds an unknown key or a
-schema that does not compile, a tool nothing describes, a tool named like one the engine gives, a
-pattern of `tools.allow` or `tools.deny` that matches nothing, a name in `tools.allow` whose
+schema that does not compile, a tool nothing describes, a tool written as a path without the JSON
+beside it, a tool named like one the engine gives, a pattern of `tools.allow` or `tools.deny` that
+matches nothing, a name in `tools.allow` whose
 section is missing, `Output` or `History` in either, and one or two of `Shell`, `Job` and `Jobs` in
 `tools.deny` without the rest; a script or a module beside it that is not valid Python, imports
 the engine, a module relatively, a module beside it inside a function, a package folder beside it,

@@ -3,7 +3,16 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, get_args, get_origin
 
 import yaml
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    field_validator,
+)
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
 from pydantic_core import core_schema
 
@@ -140,6 +149,11 @@ class ToolEntry(_Closed):
     description: str | None = None
     schema_file: _FolderPath | None = Field(default=None, alias="schema")
     timeout: _Seconds | None = None
+    _short: bool = PrivateAttr(default=False)
+
+    @property
+    def short(self) -> bool:
+        return self._short
 
 
 class Manifest(_Closed):
@@ -155,6 +169,25 @@ class Manifest(_Closed):
         if type(value) is not int or value != 1:
             raise ValueError(f"manifest: write version: 1, got {value!r}")
         return value
+
+    @field_validator(
+        "tools", mode="wrap", json_schema_input_type=dict[str, ToolEntry | _FolderPath]
+    )
+    @classmethod
+    def _a_tool_written_as_a_path(
+        cls, value: object, handler: ValidatorFunctionWrapHandler
+    ) -> dict[str, ToolEntry]:
+        paths: set[str] = set()
+        if isinstance(value, dict):
+            paths = {name for name, held in value.items() if isinstance(held, str)}
+            value = {
+                name: {"module": held} if name in paths else held for name, held in value.items()
+            }
+        tools: dict[str, ToolEntry] = handler(value)
+        for name in paths:
+            tools[name].schema_file = tools[name].module.removesuffix(".py") + ".json"
+            tools[name]._short = True
+        return tools
 
 
 class _SaysSomething(GenerateJsonSchema):
