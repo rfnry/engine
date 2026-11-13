@@ -2741,7 +2741,7 @@ them is refused when the engine loads (`compiled: agent 'billing' lists 'hadnoff
 which is not under tools: or runtime_tools: and is not a tool the engine gives; declare it, or fix
 the name`), so a mistyped name fails at load, not at the first run that lacks it, and
 `rfnry-engine folder check` lists each agent's runtime tools. In `deny`, a runtime tool is dropped.
-A runtime tool no entry or mode allows or denies, one named like a declared tool or like one the
+A runtime tool no entry or mode allows, one named like a declared tool or like one the
 engine gives, and one listed twice are refused too. A run's `tools=` replaces a declared tool of
 the same name, which is how a test or a replay stubs a real system; a tool of the run that `allow`
 does not name is not offered. A

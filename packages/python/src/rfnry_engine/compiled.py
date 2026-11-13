@@ -921,15 +921,14 @@ def _refuse_runtime_names(manifest: Manifest) -> None:
             )
 
 
-def _refuse_loose_runtime_tools(manifest: Manifest) -> None:
+def _refuse_loose_runtime_tools(agents: Mapping[str, AgentSpec], runtime: Iterable[str]) -> None:
     picked = {
         name
-        for agent in manifest.agents.values()
-        for layer in (agent, *agent.modes.values())
-        if layer.tools is not None
-        for name in (*(layer.tools.allow or ()), *(layer.tools.deny or ()))
+        for agent in agents.values()
+        for spec in (agent, *agent.modes.values())
+        for name in spec.runtime_tools
     }
-    for name in manifest.runtime_tools:
+    for name in runtime:
         if name not in picked:
             raise ConfigurationError(
                 f"compiled: runtime_tools: in {MANIFEST} lists {name!r}, which no agent or mode picks; pick it with tools.allow, or remove it"
@@ -952,7 +951,7 @@ def compile_folder(root: Path, manifest: Manifest) -> dict[str, AgentSpec]:
     }
     _check_orchestration(agents, manifest.agents)
     _refuse_loose_tools(agents, manifest.tools)
-    _refuse_loose_runtime_tools(manifest)
+    _refuse_loose_runtime_tools(agents, manifest.runtime_tools)
     _refuse_shared_export_names(agents)
     return agents
 

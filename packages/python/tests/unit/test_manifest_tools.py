@@ -555,13 +555,13 @@ async def test_deny_drops_a_runtime_tool_the_run_gives(tmp_path: Path) -> None:
         {"one": ONE},
         {"tools/one.py": RUN},
         allow=["one", "given"],
-        section={"deny": ["given"]},
         runtime_tools=["given"],
+        modes={"quiet": {"tools": {"deny": ["given"]}}},
     )
     model = Scripted(text_reply("done"))
     given = Tool("given", "A tool of the run", body=None)
     async with Engine(folder, providers=provided({"m": model})) as engine:
-        await engine.run("a", "acme", "go", tools=Tools([given]))
+        await engine.run("a", "acme", "go", mode="quiet", tools=Tools([given]))
     assert _offered(model) == ["one"]
 
 
@@ -857,15 +857,39 @@ def test_a_star_reaches_no_runtime_tool(tmp_path: Path) -> None:
     assert agents["b"].runtime_tools == ["ping"]
 
 
-def test_a_runtime_tool_only_a_mode_allows_or_denies_is_picked(tmp_path: Path) -> None:
+@pytest.mark.parametrize("on_mode", [False, True], ids=["entry", "mode"])
+def test_a_runtime_tool_only_ever_denied_is_picked_by_nothing(
+    tmp_path: Path, on_mode: bool
+) -> None:
+    hushed = {"tools": {"deny": ["hush"]}}
     folder = _folder(
         tmp_path,
         {},
         {},
         allow=["ping"],
-        runtime_tools=["ping", "pong", "hush"],
+        section=None if on_mode else hushed["tools"],
+        runtime_tools=["ping", "hush"],
+        **({"modes": {"quiet": hushed}} if on_mode else {}),
+    )
+    with pytest.raises(ConfigurationError) as refused:
+        load_folder(folder)
+    assert str(refused.value) == (
+        "compiled: runtime_tools: in rfnry.yaml lists 'hush', which no agent or mode picks; "
+        "pick it with tools.allow, or remove it"
+    )
+
+
+def test_a_runtime_tool_only_a_mode_allows_is_picked_and_a_mode_may_deny_it(
+    tmp_path: Path,
+) -> None:
+    folder = _folder(
+        tmp_path,
+        {},
+        {},
+        allow=["ping"],
+        runtime_tools=["ping", "pong"],
         modes={
-            "quiet": {"tools": {"deny": ["ping", "hush"]}},
+            "quiet": {"tools": {"deny": ["ping"]}},
             "loud": {"tools": {"allow": ["pong"]}},
         },
     )
