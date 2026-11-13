@@ -2624,7 +2624,8 @@ refused as `module` is. With no place left for a description, the JSON is requir
 one is a `ConfigurationError` naming it: `tools/folder: tool 'refund' is written as a path, so its
 schema is 'billing/tools/refund.json', and the folder holds no such file; add it, or write the tool
 as an object with description:`. A tool that needs another function, a `description` of its own,
-no schema or a `timeout` is written as an object.
+no schema or a `timeout` is written as an object; a value that is neither a path nor an object is
+refused, naming both.
 
 The script holds the logic, and ends with a footer that runs it [from a shell](#from-a-shell-with-its-tests-beside-it):
 

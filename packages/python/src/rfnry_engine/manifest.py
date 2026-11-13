@@ -179,6 +179,11 @@ class Manifest(_Closed):
     ) -> dict[str, ToolEntry]:
         paths: set[str] = set()
         if isinstance(value, dict):
+            for name, held in value.items():
+                if not isinstance(held, str | dict):
+                    raise ValueError(
+                        f"manifest: tool {name!r} is neither a path nor an object, got {held!r}; write the path of its module, such as tools/{name}.py, or an object with module:"
+                    )
             paths = {name for name, held in value.items() if isinstance(held, str)}
             value = {
                 name: {"module": held} if name in paths else held for name, held in value.items()

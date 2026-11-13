@@ -880,6 +880,25 @@ def test_the_field_name_of_the_schema_is_not_a_key(tmp_path: Path) -> None:
     _refused(folder, r"tools\.x\.schema_file")
 
 
+@pytest.mark.parametrize(
+    ("value", "shown"), [(5, "5"), (1.5, "1.5"), (True, "True"), (["a"], "['a']")]
+)
+def test_a_tool_written_as_neither_a_path_nor_an_object_is_refused_naming_both(
+    tmp_path: Path, value: Any, shown: str
+) -> None:
+    folder = write_folder(tmp_path, {"a": GENERATION}, tools={"fetch": value})
+    said = (
+        f"tools: tool 'fetch' is neither a path nor an object, got {shown}; write the path of its "
+        "module, such as tools/fetch.py, or an object with module:"
+    )
+    _refused(folder, rf"^manifest: invalid <root>/rfnry\.yaml; {re.escape(said)}$")
+
+
+def test_a_tool_with_no_value_says_nothing(tmp_path: Path) -> None:
+    folder = write_folder(tmp_path, {"a": GENERATION}, tools={"fetch": None})
+    _refused(folder, r"^manifest: tools\.fetch in <root>/rfnry\.yaml says nothing")
+
+
 @pytest.mark.parametrize("bad", ["/x.py", "a/../b.py", "a\\b.py"])
 @pytest.mark.parametrize("key", ["module", "schema"])
 def test_a_tools_paths_are_written_from_the_root(tmp_path: Path, key: str, bad: str) -> None:
