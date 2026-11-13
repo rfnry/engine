@@ -67,7 +67,7 @@ EDIT = {
 
 
 def _tree(root: Path, *run_tools: str) -> Path:
-    tools = {"include": list(run_tools)} if run_tools else {}
+    tools = {"allow": list(run_tools)} if run_tools else {}
     return write_folder(
         root, {"g": {**GENERATION, **({"tools": tools} if tools else {})}}, files=FILES
     )
@@ -390,7 +390,7 @@ async def test_a_folder_tool_that_changes_its_args_leaves_the_record_as_the_mode
 ) -> None:
     root = write_folder(
         tmp_path,
-        {"g": {**GENERATION, "tools": {"include": ["edit"]}}},
+        {"g": {**GENERATION, "tools": {"allow": ["edit"]}}},
         tools={"edit": {"module": "tools/edit.py", "schema": "tools/edit.json"}},
         files={**FILES, **EDIT},
     )
@@ -420,9 +420,9 @@ async def test_what_engine_tools_hand_out_changes_no_other_instance_and_no_run(
                 "model": "strong",
                 "description": "G",
                 "instructions": "g.md",
-                "files": {"include": ["g.md"]},
+                "files": {"allow": ["g.md"]},
                 "orchestration": {"delegate_to": ["sorter"]},
-                "tools": {"include": ["edit"]},
+                "tools": {"allow": ["edit"]},
             },
             "sorter": SORTER_ENTRY,
         },

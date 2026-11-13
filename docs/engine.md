@@ -84,11 +84,11 @@ agents:
     model: strong
     instructions: support/instructions.md
     files:
-      include: [support/knowledge]
+      allow: [support/knowledge]
     skills:
-      include: [support/skills/*]
+      allow: [support/skills/*]
     tools:
-      include: [lookup_order]
+      allow: [lookup_order]
 ```
 
 ```markdown
@@ -128,13 +128,13 @@ async with Engine(root=Path("agents"), providers=providers) as engine:
 
 `providers` maps each provider the file's `models:` names to a function of `(model, effort)` that
 builds your adapter to that model ([Models](#models)). `lookup_order` is the agent's tool, declared
-once under `tools:` and picked by the agent's `tools.include`: the JSON is what the model reads about
+once under `tools:` and picked by the agent's `tools.allow`: the JSON is what the model reads about
 it — what it does, what it returns and the arguments it takes — and the script is what runs,
 `run(args, call)`, in a worker process the engine starts beside your server, so a tool that crashes
 takes down its worker, never your server; `call["scope"]` is the tenant of the run
 ([Tools](#tools)). The instructions file holds the agent's persona and the rules every run follows —
 who it is, what it does, when to use which tool. The model receives it, its tools, a map of what
-`files.include` reaches and the list of its skills, opens `support/knowledge/refunds.md` when the
+`files.allow` reaches and the list of its skills, opens `support/knowledge/refunds.md` when the
 question needs it, and answers. One call runs an agent for a tenant and returns its record; leaving
 `async with` closes the engine, which stops its workers.
 
@@ -143,9 +143,9 @@ An agent grows by its entry:
 | to give an agent | in `rfnry.yaml` | in your code |
 | --- | --- | --- |
 | the persona and the rules every run follows | its [`instructions`](#what-a-run-is-given) file | |
-| a reference, a document, anything else | a file its [`files.include`](#files) reaches, on the map with its `description:` | |
-| a way of doing something | a [skill](#skills) in `skills.include` | |
-| a system of yours | a [tool](#tools-of-the-folder) declared under `tools:`, in `tools.include` | |
+| a reference, a document, anything else | a file its [`files.allow`](#files) reaches, on the map with its `description:` | |
+| a way of doing something | a [skill](#skills) in `skills.allow` | |
+| a system of yours | a [tool](#tools-of-the-folder) declared under `tools:`, in `tools.allow` | |
 | a shell to write and run code | [`workspace: true`](#workspace) | a `Workspace` |
 | a fast, calibrated judgement | a [decision agent](#decision-agents), in `orchestration.delegate_to` | a decision model |
 | another agent to hand work to | its name in [`orchestration.delegate_to`](#nesting) | |
@@ -403,14 +403,14 @@ agents:
     instructions: support/instructions.md # any markdown file; its frontmatter is left out
     max_model_calls: 24                   # per run; lowers Engine(max_model_calls=), never raises it
     files:
-      include: [support/knowledge]        # what the model may open: folders, files or globs
-      exclude: [support/knowledge/drafts/**]
+      allow: [support/knowledge]          # what the model may open: folders, files or globs
+      deny: [support/knowledge/drafts/**]
       preload: [support/policy.md]        # sent with every model call
     tools:
-      include: ["*", handoff]             # declared above, given by the engine, or by the run
+      allow: ["*", handoff]               # declared above, given by the engine, or by the run
       timeout: 30
     skills:
-      include: [support/skills/*]         # folders holding SKILL.md, offered to the model
+      allow: [support/skills/*]           # folders holding SKILL.md, offered to the model
       public: [escalate]                  # people may type /escalate
     orchestration:
       delegate_to: [triage]               # the agents its Delegate tool may reach
@@ -420,7 +420,7 @@ agents:
       chat:                               # engine.run("support", ..., mode="chat")
         worker: live
         tools:
-          exclude: [refund]
+          deny: [refund]
 
   triage:
     kind: decision
@@ -522,7 +522,7 @@ in between, and nothing is loaded until the model asks — unless the agent prel
 `engine.agents` lists the agents as the engine loaded them, each name to an `AgentInfo`: its `kind`,
 `model` and `description`, the agents it may `delegate_to`, the `files` its model may open, the
 `tools` it picks from `tools:` by name (the built-ins and the tools a run gives are not listed), the
-`run_tools` its `tools.include` expects a run to give, the `skills` it holds, each to its
+`run_tools` its `tools.allow` expects a run to give, the `skills` it holds, each to its
 description, the `public` ones people may call, its `worker` and its `modes`, each an `AgentInfo`
 of its own. When the folder has loaded, the engine logs the names of
 its agents at INFO on the `rfnry_engine.engine` logger — `engine: agents loaded [lead, triage,
@@ -538,19 +538,19 @@ support:
   model: strong
   instructions: support/instructions.md
   files:
-    include: [support/knowledge, shared/*.md]   # folders, files or globs
-    exclude: [support/knowledge/drafts/**]      # taken back out of include and preload
+    allow: [support/knowledge, shared/*.md]     # folders, files or globs
+    deny: [support/knowledge/drafts/**]         # taken back out of allow and preload
     preload: [support/policy.md]                # sent with every model call
     gitignore: true                             # what a .gitignore ignores is not there
 ```
 
-`include` lists folders, files or globs, `*` within a name and `**` across folders. `preload` is
-sent with every model call and stays readable whether or not `include` reaches it. `exclude` takes
-paths back out of both, so an excluded file is neither sent nor readable. What is out of reach reads
+`allow` lists folders, files or globs, `*` within a name and `**` across folders. `preload` is
+sent with every model call and stays readable whether or not `allow` reaches it. `deny` takes
+paths back out of both, so a denied file is neither sent nor readable. What is out of reach reads
 as missing to `Read`, `Load`, `LS`, `Grep` and `Glob`, which come with `files`, and none of them
 lists it. Reach is fixed when the engine loads: a file added later reads as missing until a new
 `Engine` loads the folder. A pattern that reaches nothing is a `ConfigurationError` (`compiled:
-agent 'support' lists 'support/knowlege' in files.include, which reaches nothing; write a folder, a
+agent 'support' lists 'support/knowlege' in files.allow, which reaches nothing; write a folder, a
 file or a glob from the folder root that reaches a file, or remove it`), so a mistyped path cannot
 quietly shrink what a model sees, and `rfnry.yaml` itself is never readable by a model.
 
@@ -558,12 +558,12 @@ A hidden name — one that starts with `.` — and `__pycache__` are reached onl
 file names them, as `.claude/agents` does; hidden names below that path stay hidden, and a path
 through one reads `tools/builtins: .env is hidden; names starting with . and __pycache__ are not
 part of the folder of the agents`. A link that leads out of the folder is left out. One that stays
-inside is read under its own name, even when what it leads to is outside `include` or hidden, unless
-what it leads to is excluded, ignored by a `.gitignore` under `gitignore: true`, or inside a skill
-the entry holds but neither offers nor preloads: an alias cannot undo an exclusion. So
-`knowledge/alias.md` linking to an excluded `drafts/next.md` reads as missing and is not preloaded,
-and so does `knowledge/howto.md` linking to `support/skills/internal/SKILL.md` when `skills.exclude`
-names `internal`, while `knowledge/out.md` linking to `outside/o.md`, which `include` does not
+inside is read under its own name, even when what it leads to is outside `allow` or hidden, unless
+what it leads to is denied, ignored by a `.gitignore` under `gitignore: true`, or inside a skill
+the entry holds but neither offers nor preloads: an alias cannot undo a `deny`. So
+`knowledge/alias.md` linking to a denied `drafts/next.md` reads as missing and is not preloaded,
+and so does `knowledge/howto.md` linking to `support/skills/internal/SKILL.md` when `skills.deny`
+names `internal`, while `knowledge/out.md` linking to `outside/o.md`, which `allow` does not
 reach, reads as `knowledge/out.md`. A path that leads outside the folder is the jail's
 `InputError`, `jail: path outside the folder: <path>`, and a part written after a file names a
 folder that is not there, as POSIX has it: `Read` of `notes.md/x` is `tools/builtins: not a folder:
@@ -606,8 +606,8 @@ names and what `files` leaves out included. What must stay away from a model sta
 #### Modes
 
 A mode is a named overlay on one agent, written under its `modes:` and holding only the
-differences: lists add to the entry's, single values replace them, and `exclude` wins over
-`include` wherever either was written. A mode may set `description`, `instructions`, `model`,
+differences: lists add to the entry's, single values replace them, and `deny` wins over
+`allow` wherever either was written. A mode may set `description`, `instructions`, `model`,
 `max_model_calls`, `worker`, `files`, `tools`, `skills`, `orchestration`, `workspace` and
 `questions`, as far as its kind takes them, so one agent serves several channels, each with only
 what it needs:
@@ -618,14 +618,14 @@ support:
   model: strong
   instructions: support/instructions.md
   skills:
-    include: [support/skills/*]
+    allow: [support/skills/*]
   modes:
     email:
       skills:
         preload: [support/channels/email]
     chat:
       tools:
-        include: [verify_customer]
+        allow: [verify_customer]
       skills:
         preload: [support/channels/chat]
 ```
@@ -672,17 +672,17 @@ support:
   model: strong
   instructions: support/instructions.md
   skills:
-    include: [support/skills/*]          # offered: listed for the model to open
-    exclude: [internal]                  # taken back out, by name, folder or glob
+    allow: [support/skills/*]            # offered: listed for the model to open
+    deny: [internal]                     # taken back out, by name, folder or glob
     preload: [support/skills/tone]       # its text sent with every model call
     public: [escalate]                   # people may type /escalate; or the word all
 ```
 
-`include` and `preload` take the path of a skill's folder or a glob reaching some, from the folder
+`allow` and `preload` take the path of a skill's folder or a glob reaching some, from the folder
 root; a glob's match that holds no `SKILL.md` is left out, and a path or a glob that reaches no
 skill is a `ConfigurationError`, as are two folders that give one name, naming both. `Read`,
 `Grep`, `Glob`, `LS` and `Load` come with `skills` as they do with `files`. The model is offered
-`include` less `exclude`, listed in the prompt's `SKILLS` section, one line per skill in
+`allow` less `deny`, listed in the prompt's `SKILLS` section, one line per skill in
 name order, under the path `Read` takes and with the `description` its frontmatter gives:
 
 ```
@@ -692,8 +692,8 @@ support/skills/escalate/SKILL.md — Hand a conversation to a person
 
 The model opens a skill with `Read` when it judges it fits, and finds the skill's other files
 through it; there is no tool of its own for skills. An offered skill's folder leaves the map and
-stays open to the file tools. `exclude` takes a skill's name, its folder or a glob, and takes the
-skill out of `preload` too, so an excluded skill is neither listed nor sent; one that names none of
+stays open to the file tools. `deny` takes a skill's name, its folder or a glob, and takes the
+skill out of `preload` too, so a denied skill is neither listed nor sent; one that names none of
 the agent's skills, or a `preload` it leaves with nothing, is a `ConfigurationError`. `preload`
 sends a skill's text, its frontmatter left out, with every model call, in the shape `skill=` sends
 it, whether or not the list offers it; a `files.preload` of the same `SKILL.md` keeps the file as
@@ -702,9 +702,9 @@ changes no prompt until a new `Engine`.
 
 The folder of a preloaded skill is open on every run, since its text may point at the files beside
 it, and the folder of the skill a run invokes is open for that run; a skill neither offered nor
-preloaded is otherwise reachable only where `files.include` covers it. `files.exclude` holds inside
-a skill's folder, for everything but its `SKILL.md`, which `skills.exclude` decides, and a skill
-excluded from the list stays closed through a skill it is nested in. This hides a skill from the
+preloaded is otherwise reachable only where `files.allow` covers it. `files.deny` holds inside
+a skill's folder, for everything but its `SKILL.md`, which `skills.deny` decides, and a skill
+denied from the list stays closed through a skill it is nested in. This hides a skill from the
 file tools and the prompt; it is not a boundary. A script a skill keeps is a file like any other: to
 run it, the agent needs a [workspace](#workspace) whose shell can reach the folder,
 `Workspace(tree=)`, and the model runs `python "$RFNRY_TREE/support/skills/plot/run.py"`.
@@ -725,7 +725,7 @@ The skill goes in front of the input, in the same user message: a text part of `
 support/skills/escalate/SKILL.md>>>` on its own line and the file's body without its frontmatter,
 then the input as it came. It is part of the conversation, so a run that continues from it with no
 `skill=` still has the skill's text, but not its folder unless the entry offers it. `skill=` reaches
-any skill the entry or one of its modes names, offered, preloaded or excluded alike, and
+any skill the entry or one of its modes names, offered, preloaded or denied alike, and
 `engine.agents[name].skills` lists them, each to its description, `""` when it has none. A skill the
 agent does not hold is a `NotFoundError` before any model call, naming the ones it holds —
 `engine: agent 'support' has no skill 'refund'; its skills are escalate` — and `skill=` on a
@@ -751,7 +751,7 @@ not make public is no command either, so typing its name gets the answer any oth
 
 `public` decides what typing invokes, not what the model is offered: `/secret x` reaches the model
 as text, and an offered skill stays in its `SKILLS` list whether or not it is public. A skill the
-model should not be offered is named in `exclude`: the code still reaches it with `skill=`, and no
+model should not be offered is named in `deny`: the code still reaches it with `skill=`, and no
 person can, since `public` names only skills the model is offered.
 
 Giving both ways at once is an `InputError` before any model call — `engine: a run invokes one
@@ -1573,7 +1573,7 @@ voice:
   description: Talks with a person and consults another agent for facts
   instructions: voice/instructions.md
   tools:
-    include: [consult]
+    allow: [consult]
   modes:
     duplex:
       instructions: voice/instructions_duplex.md
@@ -1582,7 +1582,7 @@ voice:
 What it takes follows from what a live model is: `kind`, `model`, `description`, `instructions`,
 `worker`, `tools` and `modes`. It has no loop that opens a file or counts calls, so `files`, `skills`,
 `orchestration`, `workspace`, `questions` and `max_model_calls` are a `ConfigurationError` naming the
-key, as is a tool its sections would grant, such as `Read`, in `tools.include`. `engine.talk` runs it
+key, as is a tool its sections would grant, such as `Read`, in `tools.allow`. `engine.talk` runs it
 and refuses any other kind; `engine.run`, `engine.tool`, `delegate_to` and `route` refuse it. It
 reaches other agents through its tools, such as a consult `engine.tool` builds, in a mode of that
 agent written for answers that are spoken.
@@ -1923,7 +1923,7 @@ The folder in the shell. `Workspace(local, scope="acme", tree="/srv/agents")` sa
 folder is mounted in the sandbox, as commands see it. The commands of a run then get `RFNRY_TREE`,
 the folder as `posixpath.normpath` writes it, so `/srv/agents/` is `/srv/agents`. The `Shell`
 description tells the model that the folder is at `$RFNRY_TREE`, read-only, with its files, skills
-and scripts to read and run, and that each folder its `files.include` names is at
+and scripts to read and run, and that each folder its `files.allow` names is at
 `$RFNRY_TREE/<name>`. A skill's script is run as `python "$RFNRY_TREE/support/skills/plot/run.py"`.
 The sandbox mounts the folder read-only at the same path:
 `--ro-bind /srv/agents /srv/agents` for bubblewrap, `-v /srv/agents:/srv/agents:ro` for Docker, and
@@ -2557,7 +2557,7 @@ your code runs in your process and rides a run. The model calls both the same wa
 ### Tools of the folder
 
 A tool of the folder is a Python script, declared once under `tools:` in `rfnry.yaml` and picked by
-name in an agent's `tools.include`. Its key is the name the model sees; neither the file's name nor
+name in an agent's `tools.allow`. Its key is the name the model sees; neither the file's name nor
 the function's decides anything, so `CallInfo.tool` and a tool's error text say the key:
 
 ```yaml
@@ -2575,7 +2575,7 @@ agents:
     model: strong
     instructions: billing/instructions.md
     tools:
-      include: [refund]
+      allow: [refund]
 ```
 
 `module` is a `.py` path from the folder root, since the workers run Python. `function` is what the
@@ -2683,7 +2683,7 @@ into the fingerprint of an agent that picks it, along with the tool's entry, so 
 `conftest.py` beside a tool is just a file: nothing loads it, no worker receives it and nothing checks
 its imports. A tool's module runs in a worker under a name of its own, so its footer stays inert
 there. The module, the schema and the modules beside it that a tool imports leave the map of an
-agent that picks it, as its instructions do; the rest of a folder `files.include` reaches stays on
+agent that picks it, as its instructions do; the rest of a folder `files.allow` reaches stays on
 the map.
 
 An entry's `tools:` decides which tools its agent has:
@@ -2694,37 +2694,37 @@ billing:
   model: strong
   instructions: billing/instructions.md
   files:
-    include: [billing/knowledge]
+    allow: [billing/knowledge]
   tools:
-    include: [refund, handoff]          # declared, given by the engine or given by the run
-    exclude: [Grep]                     # applied after include, across the entry and its mode
+    allow: [refund, handoff]            # declared, given by the engine or given by the run
+    deny: [Grep]                        # applied after allow, across the entry and its mode
     timeout: 30                         # seconds per call, under Engine(tool_timeout=)
     max_parallel: 4                     # tool calls of one run at once
 ```
 
-An entry of `include` or `exclude` holding `*`, the only wildcard, is a pattern over the names under
+An entry of `allow` or `deny` holding `*`, the only wildcard, is a pattern over the names under
 `tools:` and never reaches a built-in or a tool a run gives. An entry without one is a name: a
 declared tool, then a tool the entry's sections grant, then one the run gives through `tools=`, and a
 run that does not give it fails before any model call (`tools/engine_tools: agent 'billing' lists
-'handoff' in tools.include, which this run does not offer; its tools are Glob, Grep, LS, Load, Read,
+'handoff' in tools.allow, which this run does not offer; its tools are Glob, Grep, LS, Load, Read,
 refund`). The sections grant `Read`, `Grep`, `Glob`, `LS` and `Load` with `files` or `skills`,
 `Delegate` with `orchestration.delegate_to`, and `Shell`, `Job`, `Jobs`, `Write` and `Edit` with
-`workspace: true`, whether or not `include` names them; naming one when its section is missing is a
+`workspace: true`, whether or not `allow` names them; naming one when its section is missing is a
 `ConfigurationError` naming the section, since no run can supply it. `History` comes with a run whose
 `start=` is past the beginning of its history and `Output` with `expect=`: the run decides them, so
-either one in `include` or `exclude`, in any case, is a `ConfigurationError`. `exclude` applies
-after `include`, across the entry and its mode, and drops exactly the tool it names, a tool a
-section grants included: `exclude: [Delegate]` takes delegation away, and `exclude: [Write]` leaves
+either one in `allow` or `deny`, in any case, is a `ConfigurationError`. `deny` applies
+after `allow`, across the entry and its mode, and drops exactly the tool it names, a tool a
+section grants included: `deny: [Delegate]` takes delegation away, and `deny: [Write]` leaves
 `Edit` and the rest. `Shell`, `Job` and `Jobs` go together or not at all, since `Shell` can start a
-job only `Job` and `Jobs` can read or stop, so excluding one or two of them is a
-`ConfigurationError`. A name in `include` or `exclude` that differs only by case from a declared
+job only `Job` and `Jobs` can read or stop, so denying one or two of them is a
+`ConfigurationError`. A name in `allow` or `deny` that differs only by case from a declared
 tool or one the engine gives is a `ConfigurationError` naming the right one (`compiled: agent
-'billing' lists 'read' in tools.include; did you mean 'Read'? ...`); any other name that is neither
+'billing' lists 'read' in tools.allow; did you mean 'Read'? ...`); any other name that is neither
 is read as one the run gives, so a name the run must give fails only at a run without it, and
-`rfnry-engine folder check` lists those names for each agent. In `exclude`, such a tool of the run
+`rfnry-engine folder check` lists those names for each agent. In `deny`, such a tool of the run
 is dropped. A run's `tools=` replaces a declared tool of the same name, which is how a test or a
-replay stubs a real system; a tool of the run that `include` does not name is not offered. A
-pattern that matches nothing, a declared tool that no entry or mode picks once `exclude` has
+replay stubs a real system; a tool of the run that `allow` does not name is not offered. A
+pattern that matches nothing, a declared tool that no entry or mode picks once `deny` has
 applied, a declared tool named like one the engine gives (`Read`, `Grep`, `Glob`, `LS`, `Load`,
 `Shell`, `Job`, `Jobs`, `Write`, `Edit`, `Delegate`, `History`, `Output`), and a module, function
 or schema that is not there are `ConfigurationError`s when the engine loads. The smallest of the
@@ -2944,7 +2944,7 @@ Python warns of the worker pipes left on the closed loop (`ResourceWarning`).
 Tools that must live in your process ride a run: `run(tools=)` takes a `Tools`, or anything with its
 two verbs, for that one run — a tool bound to a tenant's connection, one that streams to a UI,
 rfnry-memory's `MemoryTools`; a tool every run needs is the same `Tools` passed on every run. The
-agent is offered the ones its entry's `tools.include` names, here `fetch_invoice`. Each is a `Tool`:
+agent is offered the ones its entry's `tools.allow` names, here `fetch_invoice`. Each is a `Tool`:
 its name, its description, its arguments and the async function that runs it, in your process:
 
 ```python
@@ -2973,9 +2973,9 @@ swap in a version bound to a tenant's connection. Two tools of one run with one 
 and so is a run's tool named like one the engine gives the agent.
 
 A run's tools ride the runs it delegates and routes to, as its tags do, and each agent is offered of
-them what its own `tools.include` names. A lead given rfnry-memory's `MemoryTools` that delegates to
-a writer whose `tools.include` names none of them keeps the memory tools for itself; a writer whose
-`tools.include` names `memory_search` is offered that one, and its runs need a caller that gives it.
+them what its own `tools.allow` names. A lead given rfnry-memory's `MemoryTools` that delegates to
+a writer whose `tools.allow` names none of them keeps the memory tools for itself; a writer whose
+`tools.allow` names `memory_search` is offered that one, and its runs need a caller that gives it.
 
 Every tool call inside a run has a deadline, `Engine(tool_timeout=30.0)` by default and `None` to
 turn it off. When it passes, the model gets the error
@@ -3027,12 +3027,12 @@ run = await engine.run("support", scope="acme", input=text,
 ```
 
 That is how rfnry-memory mounts: its `MemoryTools` is a `Tools`, neither library imports the other,
-and the entry's `tools.include` names the memory tools its agent is offered. The set an agent runs
+and the entry's `tools.allow` names the memory tools its agent is offered. The set an agent runs
 with is itself a first-class object, so you can drive it without a model — from a test, or from a
 loop of your own. `EngineTools` holds exactly what the model of such a run is offered: the file
 tools, `History`, the tools of the folder it picks, whose calls go to their worker under
 `tool_timeout` with `call` holding the scope and the `tags` given to it, the workspace's, `Delegate`
-and the tools of `tools` its `tools.include` names, each less what `tools.exclude` drops:
+and the tools of `tools` its `tools.allow` names, each less what `tools.deny` drops:
 
 ```python
 surface = EngineTools(engine, agent="support", scope="acme")
@@ -3296,7 +3296,7 @@ rfnry-engine folder schema > rfnry.schema.json    # the JSON Schema of rfnry.yam
 `folder check` builds what `Engine(path)` builds, the default `max_worker_processes` included, and
 starts no worker; `--max-worker-processes N` sets the ceiling it checks against, for a host that
 raises it in `Engine(max_worker_processes=)`. Each agent's line ends with the names its
-`tools.include`, on the entry or a mode, expects a run to give through `tools=`, since only a run
+`tools.allow`, on the entry or a mode, expects a run to give through `tools=`, since only a run
 can supply them:
 
 ```
@@ -3384,14 +3384,14 @@ more processes in all than `max_worker_processes`; a path not written from the f
 pattern of `files`, `skills` or `questions` that reaches nothing, one naming `rfnry.yaml`, a file an
 agent reaches that links out of the folder, a file an agent is made of that cannot be read, a name
 that is not UTF-8, a `.gitignore` that cannot be read or decoded, and a preloaded file `Read` would
-refuse; two skills of one name, a `skills.exclude` naming none of the agent's skills, a
-`skills.preload` that `exclude` empties, and a `skills.public` name the agent does not offer or one
+refuse; two skills of one name, a `skills.deny` naming none of the agent's skills, a
+`skills.preload` that `deny` empties, and a `skills.public` name the agent does not offer or one
 holding whitespace; a tool's module that is not a `.py` file, is named like a standard-library
 module or holds no such function, a schema file that is not an object, holds an unknown key or a
 schema that does not compile, a tool nothing describes, a tool named like one the engine gives, a
-pattern of `tools.include` or `tools.exclude` that matches nothing, a name in `tools.include` whose
+pattern of `tools.allow` or `tools.deny` that matches nothing, a name in `tools.allow` whose
 section is missing, `Output` or `History` in either, and one or two of `Shell`, `Job` and `Jobs` in
-`tools.exclude` without the rest; a script or a module beside it that is not valid Python, imports
+`tools.deny` without the rest; a script or a module beside it that is not valid Python, imports
 the engine, a module relatively, a module beside it inside a function, a package folder beside it,
 a name below a `.py` file beside it, the server's own code, or a module that resolves to nothing
 outside `try/except ImportError` and `if TYPE_CHECKING`; a question that is not a JSON object,
@@ -3405,7 +3405,7 @@ under one key; and a `providers` that is not a mapping of names to functions, a 
 `history_walk` or `history_chars` that is not positive, and a `worker_result_bytes` that is neither
 a positive integer nor `None`. When a run starts: a model whose adapter has not its kind's method, a
 `ModelChoice` naming a provider you did not give, a `models=` key no agent or mode runs on, a name
-in `tools.include` the run does not offer, two tools of a run with one name or one named like a tool
+in `tools.allow` the run does not offer, two tools of a run with one name or one named like a tool
 the engine gives, and a missing workspace. And a `Local` root that is not a directory, a `shell`
 that is not a list of strings or whose first word is not on `PATH`, a backend without `spawn`,
 `read` and `write`, a `Workspace` without a scope, a `timeout` or `output_bytes` that is not

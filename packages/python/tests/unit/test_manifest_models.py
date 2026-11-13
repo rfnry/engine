@@ -626,8 +626,8 @@ async def test_a_surface_builds_no_adapter_until_a_load_runs(tmp_path: Path) -> 
         {
             "a": {
                 **GENERATION,
-                "files": {"include": ["diagram.png"]},
-                "tools": {"include": ["echo"]},
+                "files": {"allow": ["diagram.png"]},
+                "tools": {"allow": ["echo"]},
             }
         },
         models=ONE_ENTRY,
@@ -653,7 +653,7 @@ async def test_a_surface_builds_no_adapter_until_a_load_runs(tmp_path: Path) -> 
 async def test_engine_tools_read_what_the_provider_built(tmp_path: Path) -> None:
     folder = write_folder(
         tmp_path,
-        {"a": {**GENERATION, "files": {"include": ["diagram.png"]}}},
+        {"a": {**GENERATION, "files": {"allow": ["diagram.png"]}}},
         models=ONE_ENTRY,
         files=FILES,
     )

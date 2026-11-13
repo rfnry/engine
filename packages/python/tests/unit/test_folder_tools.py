@@ -37,7 +37,7 @@ def declared(root: Path, *, body: str = RUN, definition: str = DEF, name: str = 
                 "kind": "generation",
                 "model": "strong",
                 "instructions": "a.md",
-                "tools": {"include": [name]},
+                "tools": {"allow": [name]},
             }
         },
         tools={name: {"module": f"tools/{name}.py", "schema": f"tools/{name}.json"}},

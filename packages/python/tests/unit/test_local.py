@@ -37,7 +37,7 @@ def worker(folder: Path) -> None:
                 "model": "strong",
                 "instructions": "worker.md",
                 "workspace": True,
-                "files": {"include": ["worker.md"]},
+                "files": {"allow": ["worker.md"]},
             }
         },
         files={"worker.md": "Work.\n"},

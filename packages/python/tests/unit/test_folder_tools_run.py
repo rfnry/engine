@@ -81,7 +81,7 @@ def tool(
     owners = [picks] if isinstance(picks, str) else (picks if picks is not None else [named])
     for owner in owners:
         section = document["agents"][owner].setdefault("tools", {})
-        section.setdefault("include", []).append(name)
+        section.setdefault("allow", []).append(name)
     (root / MANIFEST).write_text(yaml.dump(document, sort_keys=False), encoding="utf-8")
 
 
@@ -403,7 +403,7 @@ async def test_a_worker_s_agents_share_its_processes(tmp_path: Path) -> None:
         "kind": "generation",
         "model": "m",
         "instructions": "a.md",
-        "tools": {"include": ["pid"]},
+        "tools": {"allow": ["pid"]},
     }
     write_folder(
         tmp_path,
@@ -440,7 +440,7 @@ async def test_a_cancelled_close_still_stops_every_process_of_a_worker(
                 "kind": "generation",
                 "model": "m",
                 "instructions": "a.md",
-                "tools": {"include": ["pid"]},
+                "tools": {"allow": ["pid"]},
                 "worker": "support",
             }
         },
@@ -651,16 +651,16 @@ async def test_a_delegated_or_routed_agent_keeps_only_the_inherited_run_tools_it
         tmp_path,
         "lead",
         orchestration={"delegate_to": ["drafter", "helper"]},
-        tools={"include": ["remember"]},
+        tools={"allow": ["remember"]},
     )
     shop(
         tmp_path,
         "drafter",
         description="Drafts",
-        files={"include": ["drafter.md"]},
-        tools={"exclude": ["Grep", "Glob", "LS", "Load"]},
+        files={"allow": ["drafter.md"]},
+        tools={"deny": ["Grep", "Glob", "LS", "Load"]},
     )
-    shop(tmp_path, "helper", description="Helps", tools={"include": ["remember"]})
+    shop(tmp_path, "helper", description="Helps", tools={"allow": ["remember"]})
     deciding(tmp_path, "desk", {"go": GO}, route={"by": "go", "to": {"next": "drafter"}})
     given = Tools([Tool("remember", "Remember", body=pong)])
     llm = Scripted(
@@ -694,15 +694,15 @@ async def test_a_delegated_run_that_does_not_offer_a_kept_name_is_a_tool_error_a
         tmp_path,
         "drafter",
         description="Drafts",
-        files={"include": ["drafter.md"]},
-        tools={"include": ["remember"]},
+        files={"allow": ["drafter.md"]},
+        tools={"allow": ["remember"]},
     )
     deciding(tmp_path, "desk", {"go": GO}, route={"by": "go", "to": {"next": "drafter"}})
     llm = Scripted(
         calling(("Delegate", {"agent": "drafter", "input": "draft"})), text_reply("done")
     )
     said = (
-        "tools/engine_tools: agent 'drafter' lists 'remember' in tools.include, which this run "
+        "tools/engine_tools: agent 'drafter' lists 'remember' in tools.allow, which this run "
         "does not offer; its tools are Glob, Grep, LS, Load, Read"
     )
     async with Engine(
@@ -835,7 +835,7 @@ async def test_a_run_in_flight_when_its_engine_closes_is_refused_the_runs_it_wou
         tmp_path,
         "lead",
         orchestration={"delegate_to": ["aide", "judge"]},
-        tools={"include": ["close"]},
+        tools={"allow": ["close"]},
     )
     shop(tmp_path, "aide", description="Helps")
     deciding(tmp_path, "judge", {"fine": FINE}, description="Judges")
@@ -894,8 +894,8 @@ async def test_engine_tools_holds_exactly_the_assembled_set(tmp_path: Path) -> N
     shop(
         tmp_path,
         orchestration={"delegate_to": ["aide"]},
-        files={"include": ["shop.md"]},
-        tools={"include": ["lookup_order", "notify", "ping"]},
+        files={"allow": ["shop.md"]},
+        tools={"allow": ["lookup_order", "notify", "ping"]},
     )
     shop(tmp_path, "aide", description="Helps")
     tool(
@@ -928,7 +928,7 @@ async def test_engine_tools_holds_exactly_the_assembled_set(tmp_path: Path) -> N
 
 async def test_agent_info_lists_the_folder_tools_an_agent_gets(tmp_path: Path) -> None:
     shop(tmp_path, "billing")
-    shop(tmp_path, "support", files={"include": ["support.md"]})
+    shop(tmp_path, "support", files={"allow": ["support.md"]})
     tool(tmp_path / "tools", "notify", picks="support")
     tool(tmp_path / "support/billing/tools", "refund", picks="billing")
     tool(tmp_path / "support/tools", "lookup_order", picks="billing")

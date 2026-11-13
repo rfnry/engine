@@ -32,7 +32,7 @@ def tree(
         if targets:
             entry["orchestration"] = {"delegate_to": targets}
         if run_tools and name in run_tools:
-            entry["tools"] = {"include": run_tools[name]}
+            entry["tools"] = {"allow": run_tools[name]}
         add_agent(root, name, entry, files={f"{name}.md": f"You are {name}.\n"})
     return root
 

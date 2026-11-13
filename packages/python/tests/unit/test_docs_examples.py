@@ -166,7 +166,7 @@ SETUPS = {
         }
     ),
     "class InvoiceArgs(BaseModel):": Setup(
-        amend={"support": {"tools": {"include": ["lookup_order", "fetch_invoice"]}}},
+        amend={"support": {"tools": {"allow": ["lookup_order", "fetch_invoice"]}}},
         replace={
             "tools=invoicing)": (
                 "tools=invoicing)\nassert 'fetch_invoice' in [tool.name for tool in run.tools]"
@@ -365,9 +365,9 @@ AGENTS: dict[str, dict[str, Any]] = {
     "support": generation(
         "support",
         description="Handles technical support conversations",
-        files={"include": ["support/knowledge"]},
-        skills={"include": ["support/skills/*"], "public": ["escalate"]},
-        tools={"include": ["lookup_order"]},
+        files={"allow": ["support/knowledge"]},
+        skills={"allow": ["support/skills/*"], "public": ["escalate"]},
+        tools={"allow": ["lookup_order"]},
         orchestration={"delegate_to": ["triage"]},
         modes={"voice": {"instructions": "support/voice.md"}},
     ),
@@ -396,7 +396,7 @@ AGENTS: dict[str, dict[str, Any]] = {
         "model": "voice-live",
         "description": "Talks with a person and consults another agent for facts",
         "instructions": "voice/instructions.md",
-        "tools": {"include": ["consult"]},
+        "tools": {"allow": ["consult"]},
         "modes": {"duplex": {"instructions": "voice/instructions_duplex.md"}},
     },
 }
@@ -665,7 +665,7 @@ async def test_the_bridge_client_of_the_docs_calls_a_tool_from_a_command_as_writ
 ) -> None:
     root = tmp_path / "agents"
     tree(root)
-    amend(root, "coder", tools={"include": ["lookup_order"]})
+    amend(root, "coder", tools={"allow": ["lookup_order"]})
     work = short_root
     write(work / "solve.py", CLIENT)
 
@@ -763,15 +763,15 @@ def _stubbed(root: Path, document: Mapping[str, Any]) -> None:
                 _touch(root, layer["instructions"], "")
             files = layer.get("files", {})
             for pattern in [
-                *files.get("include", []),
+                *files.get("allow", []),
                 *files.get("preload", []),
-                *files.get("exclude", []),
+                *files.get("deny", []),
             ]:
                 _touch(root, _under(pattern), "")
             skills = layer.get("skills", {})
             public = skills.get("public", [])
-            names = [*(public if isinstance(public, list) else []), *skills.get("exclude", [])]
-            for pattern in [*skills.get("include", []), *skills.get("preload", [])]:
+            names = [*(public if isinstance(public, list) else []), *skills.get("deny", [])]
+            for pattern in [*skills.get("allow", []), *skills.get("preload", [])]:
                 folder, _, last = pattern.rpartition("/")
                 held = [last]
                 if "*" in last:

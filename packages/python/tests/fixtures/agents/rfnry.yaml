@@ -18,7 +18,7 @@ agents:
     description: Answers billing questions
     instructions: billing/instructions.md
     files:
-      include:
+      allow:
         - billing
   frontdesk:
     kind: decision
@@ -47,14 +47,14 @@ agents:
     description: Handles technical support conversations
     instructions: support/instructions.md
     files:
-      include:
+      allow:
         - support/knowledge
         - support/rules
     skills:
-      include:
+      allow:
         - support/skills/*
     tools:
-      include:
+      allow:
         - lookup_order
         - now
     orchestration:

@@ -68,7 +68,7 @@ def solo(
     agent: dict[str, Any] = {"kind": kind, "model": model, "instructions": f"{name}.md", **entry}
     picked = list(tools)
     if picked:
-        agent["tools"] = {**agent.get("tools", {}), "include": picked}
+        agent["tools"] = {**agent.get("tools", {}), "allow": picked}
     return write_folder(
         root, {name: agent}, tools=declared, files={f"{name}.md": body, **(written or {})}
     )
@@ -137,8 +137,8 @@ def tooled(fixtures: Path, tmp_path: Path, agent: str, *tools: str) -> Path:
     root = tmp_path / "agents"
     shutil.copytree(fixtures, root)
     document = yaml.safe_load((root / MANIFEST).read_text(encoding="utf-8"))
-    held = document["agents"][agent].get("tools", {}).get("include", [])
-    return amend(root, agent, tools={"include": [*held, *tools]})
+    held = document["agents"][agent].get("tools", {}).get("allow", [])
+    return amend(root, agent, tools={"allow": [*held, *tools]})
 
 
 def provided(adapters: Mapping[str, Any]) -> dict[str, Provider]:

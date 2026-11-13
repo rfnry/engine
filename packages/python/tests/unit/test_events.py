@@ -54,7 +54,7 @@ def make_tree(tmp_path: Path, run_tools: dict[str, list[str]] | None = None) -> 
         },
     }
     for name, tools in (run_tools or {}).items():
-        agents[name] = {**agents[name], "tools": {"include": tools}}
+        agents[name] = {**agents[name], "tools": {"allow": tools}}
     return write_folder(root, agents, files={f"{name}.md": f"You are {name}.\n" for name in agents})
 
 

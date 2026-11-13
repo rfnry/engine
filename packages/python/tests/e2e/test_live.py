@@ -110,7 +110,7 @@ async def test_a_coder_calls_a_tool_from_its_script(adapters: Any, tmp_path: Pat
                 "description": "Writes and runs code",
                 "instructions": "coder.md",
                 "workspace": True,
-                "tools": {"include": ["constant"]},
+                "tools": {"allow": ["constant"]},
             }
         },
         files={

@@ -27,7 +27,7 @@ SKILLS = {"skills/escalate/SKILL.md": ESCALATE, "skills/close/SKILL.md": CLOSE}
 
 
 def agents(root: Path, public: list[str] | str | None = BOTH_PUBLIC) -> Path:
-    skills: dict[str, Any] = {"include": ["skills/*"]}
+    skills: dict[str, Any] = {"allow": ["skills/*"]}
     if public is not None:
         skills["public"] = public
     return write_folder(
@@ -208,7 +208,7 @@ async def test_engine_tool_and_delegate_inputs_never_invoke_a_skill(tmp_path: Pa
                 "model": "strong",
                 "description": "Reviews",
                 "instructions": "reviewer.md",
-                "skills": {"include": ["skills/*"], "public": BOTH_PUBLIC},
+                "skills": {"allow": ["skills/*"], "public": BOTH_PUBLIC},
             },
             "lead": {
                 "kind": "generation",

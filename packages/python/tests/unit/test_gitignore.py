@@ -30,14 +30,14 @@ def folder(
     files: dict[str, str],
     *,
     gitignore: bool = True,
-    include: list[str] | None = None,
+    allow: list[str] | None = None,
     preload: list[str] | None = None,
     tools: dict[str, Any] | None = None,
     picks: list[str] | None = None,
 ) -> Path:
     section: dict[str, Any] = {"gitignore": gitignore}
-    if include is not None or preload is None:
-        section["include"] = include or ["."]
+    if allow is not None or preload is None:
+        section["allow"] = allow or ["."]
     if preload is not None:
         section["preload"] = preload
     entry: dict[str, Any] = {
@@ -47,7 +47,7 @@ def folder(
         "files": section,
     }
     if picks:
-        entry["tools"] = {"include": picks}
+        entry["tools"] = {"allow": picks}
     root.mkdir(parents=True, exist_ok=True)
     return write_folder(root, {"a": entry}, tools=tools, files={"a.md": "Work.\n", **files})
 
@@ -102,7 +102,7 @@ def test_ignored_files_are_left_out_of_a_preloaded_folder(tmp_path: Path) -> Non
 @pytest.mark.parametrize("entry", ["debug.log", "build", "build/out.txt", "data/raw.csv"])
 def test_naming_an_ignored_file_in_preload_reaches_nothing(tmp_path: Path, entry: str) -> None:
     with pytest.raises(ConfigurationError) as caught:
-        load_folder(furnished(tmp_path, preload=[entry], include=["notes.md"]))
+        load_folder(furnished(tmp_path, preload=[entry], allow=["notes.md"]))
     assert str(caught.value) == (
         f"compiled: agent 'a' lists {entry!r} in files.preload, which reaches nothing; write a folder, a file or a glob from the folder root that reaches a file, or remove it"
     )
@@ -416,7 +416,7 @@ async def test_one_agent_s_gitignore_leaves_another_agent_s_view_alone(
             "kind": "generation",
             "model": "strong",
             "instructions": f"{name}.md",
-            "files": {"include": ["shared"], "gitignore": name == gitignored},
+            "files": {"allow": ["shared"], "gitignore": name == gitignored},
         }
     root = write_folder(
         tmp_path,

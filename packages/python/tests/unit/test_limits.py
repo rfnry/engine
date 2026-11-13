@@ -112,7 +112,7 @@ def worked(run: Run) -> Generation:
 
 
 async def test_max_model_calls_counts_model_calls_of_one_run(tmp_path: Path) -> None:
-    written = folder(tmp_path, {"a": agent(max_model_calls=2, tools={"include": ["probe"]})})
+    written = folder(tmp_path, {"a": agent(max_model_calls=2, tools={"allow": ["probe"]})})
     model = Scripted(calling("probe", "probe", "probe"), calling("probe"), text_reply("never"))
     with pytest.raises(RunawayError, match=f"^{TOO_MANY}$"):
         await Engine(written, providers=provided({"m": model})).run("a", "acme", "go", tools=PROBE)
@@ -131,7 +131,7 @@ async def test_a_delegated_run_counts_its_own(tmp_path: Path) -> None:
         tmp_path / "enough",
         {
             "a": agent(max_model_calls=2, orchestration={"delegate_to": ["b"]}),
-            "b": agent(max_model_calls=2, tools={"include": ["probe"]}),
+            "b": agent(max_model_calls=2, tools={"allow": ["probe"]}),
         },
     )
     model = Scripted(delegating("b"), calling("probe"), text_reply("b done"), text_reply("a done"))
@@ -145,7 +145,7 @@ async def test_a_delegated_run_counts_its_own(tmp_path: Path) -> None:
         tmp_path / "over",
         {
             "a": agent(max_model_calls=2, orchestration={"delegate_to": ["b"]}),
-            "b": agent(max_model_calls=1, tools={"include": ["probe"]}),
+            "b": agent(max_model_calls=1, tools={"allow": ["probe"]}),
         },
     )
     model = Scripted(delegating("b"), calling("probe"), text_reply("a done"))
@@ -157,7 +157,7 @@ async def test_a_delegated_run_counts_its_own(tmp_path: Path) -> None:
 
 
 async def model_calls_refused(tmp_path: Path, written: Any, ceiling: Any) -> str:
-    root = folder(tmp_path, {"a": agent(max_model_calls=written, tools={"include": ["probe"]})})
+    root = folder(tmp_path, {"a": agent(max_model_calls=written, tools={"allow": ["probe"]})})
     model = Scripted(*[calling("probe") for _ in range(9)])
     engine = Engine(root, providers=provided({"m": model}), max_model_calls=ceiling)
     with pytest.raises(RunawayError) as raised:
@@ -187,7 +187,7 @@ async def deadline_passed(tmp_path: Path, written: Any, ceiling: Any) -> str:
         await asyncio.sleep(2)
         return "done"
 
-    root = folder(tmp_path, {"a": agent(tools={"include": ["slow"], "timeout": written})})
+    root = folder(tmp_path, {"a": agent(tools={"allow": ["slow"], "timeout": written})})
     model = Scripted(calling("slow"), text_reply("done"))
     run = await Engine(root, providers=provided({"m": model}), tool_timeout=ceiling).run(
         "a", "acme", "go", tools=tool(slow, "slow")
@@ -299,7 +299,7 @@ async def test_limits_across_engine_tool_of_another_engine(
     (tmp_path / "outer").mkdir()
     (tmp_path / "inner").mkdir()
     limit = {} if written is None else {"orchestration": {"max_depth": written}}
-    outer = folder(tmp_path / "outer", {"a": agent(tools={"include": ["b"]}, **limit)})
+    outer = folder(tmp_path / "outer", {"a": agent(tools={"allow": ["b"]}, **limit)})
     inner = folder(
         tmp_path / "inner",
         {
@@ -327,7 +327,7 @@ async def peak_of_tool_calls(tmp_path: Path, section: Mapping[str, Any]) -> int:
         await gauge.hold()
         return "done"
 
-    root = folder(tmp_path, {"a": agent(tools={"include": ["probe"], **section})})
+    root = folder(tmp_path, {"a": agent(tools={"allow": ["probe"], **section})})
     model = Scripted(calling(*["probe"] * 5), text_reply("done"))
     worked(
         await Engine(root, providers=provided({"m": model})).run(
@@ -369,7 +369,7 @@ async def test_each_run_has_its_own_slots(tmp_path: Path) -> None:
         await gauge.hold()
         return "done"
 
-    root = folder(tmp_path, {"a": agent(tools={"include": ["probe"], "max_parallel": 1})})
+    root = folder(tmp_path, {"a": agent(tools={"allow": ["probe"], "max_parallel": 1})})
     model = Scripted(calling("probe"), calling("probe"), text_reply("done"), text_reply("done"))
     engine = Engine(root, providers=provided({"m": model}))
     runs = await asyncio.gather(
@@ -397,7 +397,7 @@ async def test_a_delegate_call_takes_no_tool_slot(tmp_path: Path) -> None:
         tmp_path,
         {
             "a": agent(
-                tools={"include": ["probe"], "max_parallel": 1},
+                tools={"allow": ["probe"], "max_parallel": 1},
                 orchestration={"delegate_to": ["b"]},
             ),
             "b": agent(model="child"),
@@ -430,7 +430,7 @@ async def test_a_call_waiting_on_approve_holds_no_slot(tmp_path: Path) -> None:
         other_ran.set()
         return "done"
 
-    root = folder(tmp_path, {"a": agent(tools={"include": ["probe"], "max_parallel": 1})})
+    root = folder(tmp_path, {"a": agent(tools={"allow": ["probe"], "max_parallel": 1})})
     model = Scripted(calling("probe", "probe"), text_reply("done"))
     async with asyncio.timeout(2):
         run = await Engine(root, providers=provided({"m": model})).run(
@@ -445,7 +445,7 @@ async def test_a_call_waiting_for_a_slot_keeps_its_whole_deadline(tmp_path: Path
         return "done"
 
     root = folder(
-        tmp_path, {"a": agent(tools={"include": ["probe"], "max_parallel": 1, "timeout": 0.6})}
+        tmp_path, {"a": agent(tools={"allow": ["probe"], "max_parallel": 1, "timeout": 0.6})}
     )
     model = Scripted(calling("probe", "probe"), text_reply("done"))
     run = await Engine(root, providers=provided({"m": model})).run(
@@ -468,7 +468,7 @@ async def run_commands(
         {
             "a": agent(
                 workspace=True,
-                tools={"include": ["Shell", "probe"], "max_parallel": cap},
+                tools={"allow": ["Shell", "probe"], "max_parallel": cap},
             )
         },
     )

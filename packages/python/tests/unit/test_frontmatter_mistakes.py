@@ -33,7 +33,7 @@ def test_a_described_file_after_a_byte_order_mark_is_in_the_map(tmp_path: Path) 
                 "kind": "generation",
                 "model": "strong",
                 "instructions": "a.md",
-                "files": {"include": ["notes.md"]},
+                "files": {"allow": ["notes.md"]},
             }
         },
         files={"a.md": "You are a.\n", "notes.md": "﻿---\ndescription: Notes\n---\nBody\n"},

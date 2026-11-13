@@ -65,7 +65,7 @@ def make_tree(
     for name, tools in picks.items():
         agents[name] = {
             **agents[name],
-            "tools": {**agents[name].get("tools", {}), "include": tools},
+            "tools": {**agents[name].get("tools", {}), "allow": tools},
         }
     files = {f"{name}.md": f"You are {name}.\n" for name in agents}
     return write_folder(
@@ -124,9 +124,9 @@ async def test_a_workspace_run_shows_the_files_and_skills_only_with_a_read_to_op
             "description": "D",
             "instructions": f"{name}/a.md",
             "workspace": True,
-            "files": {"include": [f"{name}/notes.md"]},
-            "skills": {"include": [f"{name}/skills/x"]},
-            "tools": {"exclude": list(dropped)},
+            "files": {"allow": [f"{name}/notes.md"]},
+            "skills": {"allow": [f"{name}/skills/x"]},
+            "tools": {"deny": list(dropped)},
         }
 
     root = make_tree(
@@ -339,7 +339,7 @@ async def test_an_agent_loads_the_chart_it_made_in_its_workspace(
         text_reply("the line goes up"),
     )
     engine = Engine(
-        make_tree(tmp_path, {"coder": {**AGENTS["coder"], "files": {"include": ["coder.md"]}}}),
+        make_tree(tmp_path, {"coder": {**AGENTS["coder"], "files": {"allow": ["coder.md"]}}}),
         providers=provided({"strong": llm, "judge": None}),
     )
     run = await engine.run("coder", "acme", "x", workspace=work)
@@ -430,7 +430,7 @@ async def test_an_agent_reads_a_file_it_wrote_in_its_workspace(
         text_reply("two"),
     )
     engine = Engine(
-        make_tree(tmp_path, {"coder": {**AGENTS["coder"], "files": {"include": ["coder.md"]}}}),
+        make_tree(tmp_path, {"coder": {**AGENTS["coder"], "files": {"allow": ["coder.md"]}}}),
         providers=provided({"strong": llm, "judge": None}),
     )
     run = await engine.run("coder", "acme", "x", workspace=work)

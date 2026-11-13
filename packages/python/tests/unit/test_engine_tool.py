@@ -134,7 +134,7 @@ async def test_a_call_through_the_tool_resets_the_route_chain(tmp_path: Path) ->
             "kind": "generation",
             "model": "strong",
             "instructions": "g.md",
-            "tools": {"include": ["r"]},
+            "tools": {"allow": ["r"]},
         },
         files={"g.md": "hi\n"},
     )

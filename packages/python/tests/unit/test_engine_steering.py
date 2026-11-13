@@ -75,7 +75,7 @@ def make_tree(tmp_path: Path, run_tools: dict[str, list[str]] | None = None) -> 
     agents = {
         name: {
             **entry,
-            **({"tools": {"include": run_tools[name]}} if run_tools and name in run_tools else {}),
+            **({"tools": {"allow": run_tools[name]}} if run_tools and name in run_tools else {}),
         }
         for name, entry in AGENTS.items()
     }

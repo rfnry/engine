@@ -408,7 +408,7 @@ async def test_an_agent_without_load_is_not_told_load_opens_a_file(
     support = root / "support"
     furnish(support)
     preload_all(root)
-    amend(root, "support", tools={"exclude": ["Grep", "Glob", "LS", "Load"]})
+    amend(root, "support", tools={"deny": ["Grep", "Glob", "LS", "Load"]})
     spec = engine(root, Scripted())._agents["support"]
     assert Text(text="<<<support/knowledge/diagram.png>>>\nimage/png, 15 bytes") in spec.preload
     assert not any("Load opens it" in getattr(part, "text", "") for part in spec.preload)

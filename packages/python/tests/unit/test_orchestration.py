@@ -62,7 +62,7 @@ def lead_and_worker(root: Path) -> Path:
                 "instructions": "lead.md",
                 "orchestration": {"delegate_to": ["worker"]},
             },
-            "worker": {**WORKSPACE, "instructions": "worker.md", "tools": {"include": ["claim"]}},
+            "worker": {**WORKSPACE, "instructions": "worker.md", "tools": {"allow": ["claim"]}},
         },
         files={"lead.md": "Lead.\n", "worker.md": "Work.\n"},
     )
@@ -144,7 +144,7 @@ async def test_the_background_recipe_returns_a_run_that_links_back(
                 "kind": "generation",
                 "model": "strong",
                 "instructions": "boss.md",
-                "tools": {"include": ["start", "check"]},
+                "tools": {"allow": ["start", "check"]},
             },
             "support": {"kind": "generation", "model": "strong", "instructions": "support.md"},
         },

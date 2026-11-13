@@ -52,22 +52,22 @@ class WorkerEntry(_Closed):
 
 
 class FilesSection(_Closed):
-    include: list[_FolderPath] | None = None
-    exclude: list[_FolderPath] | None = None
+    allow: list[_FolderPath] | None = None
+    deny: list[_FolderPath] | None = None
     preload: list[_FolderPath] | None = None
     gitignore: bool = False
 
 
 class ToolsSection(_Closed):
-    include: list[str] | None = None
-    exclude: list[str] | None = None
+    allow: list[str] | None = None
+    deny: list[str] | None = None
     timeout: _Seconds | None = None
     max_parallel: _Count | None = None
 
 
 class SkillsSection(_Closed):
-    include: list[_FolderPath] | None = None
-    exclude: list[_FolderPath] | None = None
+    allow: list[_FolderPath] | None = None
+    deny: list[_FolderPath] | None = None
     preload: list[_FolderPath] | None = None
     public: list[str] | Literal["all"] | None = None
 

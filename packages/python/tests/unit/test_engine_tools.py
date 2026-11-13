@@ -35,7 +35,7 @@ async def test_engine_tools_is_the_agents_surface(fixtures: Path) -> None:
 
 
 async def test_call_tools_ride_along_and_collisions_are_refused(tmp_path: Path) -> None:
-    folder = solo(tmp_path, name="billing", files={"include": ["billing.md"]}, tools=["ping"])
+    folder = solo(tmp_path, name="billing", files={"allow": ["billing.md"]}, tools=["ping"])
     engine = Engine(folder, providers=provided({"strong": Scripted()}))
 
     async def ping(args: dict[str, Any]) -> str:
@@ -64,7 +64,7 @@ async def test_an_agent_reads_another_agent_s_folder_in_full(tmp_path: Path) -> 
     folder = write_folder(
         tmp_path,
         {
-            "coding": {**agent, "instructions": "coding.md", "files": {"include": ["writing"]}},
+            "coding": {**agent, "instructions": "coding.md", "files": {"allow": ["writing"]}},
             "writing": {**agent, "instructions": "writing/w.md"},
         },
         files={

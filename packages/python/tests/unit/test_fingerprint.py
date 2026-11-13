@@ -200,7 +200,7 @@ async def test_the_order_an_agent_keeps_tools_in_changes_its_fingerprint_and_not
     listed = tree(fixtures, tmp_path / "listed")
     flipped = tree(fixtures, tmp_path / "flipped")
     for root, kept in ((listed, ["lookup_order", "now"]), (flipped, ["now", "lookup_order"])):
-        amend(root, "support", tools={"include": kept})
+        amend(root, "support", tools={"allow": kept})
     llm = Scripted(text_reply("ok"))
     run = await Engine(flipped, providers=provided({"strong": llm, "judge": Desk()})).run(
         "support", "acme", "hi"
@@ -425,7 +425,7 @@ async def test_an_edit_to_a_read_folder_changes_the_fingerprint_of_every_agent_r
     tmp_path: Path,
 ) -> None:
     agent = {"kind": "generation", "model": "strong"}
-    reading = {**agent, "files": {"include": ["books"]}}
+    reading = {**agent, "files": {"allow": ["books"]}}
     folder = write_folder(
         tmp_path,
         {

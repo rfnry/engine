@@ -92,7 +92,7 @@ async def test_the_shell_description_names_the_folder_and_what_the_agent_reads(
 ) -> None:
     tree = make_tree(
         tmp_path,
-        {"coder": {**AGENTS["coder"], "files": {"include": ["books"]}}},
+        {"coder": {**AGENTS["coder"], "files": {"allow": ["books"]}}},
         written={"books/a.md": "a"},
     )
     work = Workspace(Local(root), scope="acme", tree=str(tree))

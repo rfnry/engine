@@ -144,7 +144,7 @@ def with_picture(root: Path) -> Path:
         {
             "lead": {
                 **LEAD,
-                "files": {"include": ["lead/diagram.png"]},
+                "files": {"allow": ["lead/diagram.png"]},
                 "orchestration": {"delegate_to": ["writer"]},
             },
             "writer": WRITER,
@@ -482,7 +482,7 @@ async def test_a_run_lends_no_models_to_an_engine_tool_it_calls(tmp_path: Path) 
     engine = Engine(
         write_folder(
             tmp_path,
-            {"lead": {**LEAD, "tools": {"include": ["consult"]}}, "writer": WRITER},
+            {"lead": {**LEAD, "tools": {"allow": ["consult"]}}, "writer": WRITER},
             files=BODIES,
         ),
         providers=provided({"strong": None, "fast": None}),

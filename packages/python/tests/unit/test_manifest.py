@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 import yaml
 
+from rfnry_engine.compiled import load_folder
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.manifest import (
     MANIFEST,
@@ -61,20 +62,20 @@ agents:
     worker: customers                 # which worker runs its tools
 
     files:
-      include: [knowledge]            # what the model may open: folders, files or globs
-      exclude: [knowledge/drafts/**]  # taken back out
+      allow: [knowledge]              # what the model may open: folders, files or globs
+      deny: [knowledge/drafts/**]     # taken back out
       preload: [support/rules]        # sent with every model call; also readable
       gitignore: true                 # what a .gitignore ignores is not there
 
     tools:
-      include: ["*", handoff]         # names or patterns: declared above, built in, or given by the run
-      exclude: [refund]
+      allow: ["*", handoff]           # names or patterns: declared above, built in, or given by the run
+      deny: [refund]
       timeout: 30                     # seconds per call
       max_parallel: 4                 # tool calls of one run at once; absent means no cap
 
     skills:
-      include: [support/skills/*]     # listed for the model to open
-      exclude: [internal]
+      allow: [support/skills/*]       # listed for the model to open
+      deny: [internal]
       preload: [support/skills/tone]  # full text sent with every model call
       public: [escalate]              # people may type /escalate; a list or the word all
 
@@ -92,7 +93,7 @@ agents:
       chat:
         worker: live
         tools:
-          include: [verify_customer]
+          allow: [verify_customer]
         skills:
           preload: [support/channels/live, support/channels/chat]
 
@@ -165,12 +166,12 @@ def test_the_example_of_the_design_parses_as_written(tmp_path: Path) -> None:
     assert manifest.tools["refund"].function == "run"
     support = manifest.agents["support"]
     assert support.files is not None and support.files.gitignore is True
-    assert support.tools is not None and support.tools.include == ["*", "handoff"]
+    assert support.tools is not None and support.tools.allow == ["*", "handoff"]
     assert support.skills is not None and support.skills.public == ["escalate"]
     assert support.orchestration is not None and support.orchestration.delegate_to == ["drafter"]
     assert support.workspace is True
     assert overlaid(support, "chat").worker == "live"
-    assert overlaid(support, "chat").tools.include == ["*", "handoff", "verify_customer"]
+    assert overlaid(support, "chat").tools.allow == ["*", "handoff", "verify_customer"]
     triage = manifest.agents["triage"]
     assert triage.orchestration is not None and triage.orchestration.route is not None
     assert triage.orchestration.route.min_confidence == 0.7
@@ -204,19 +205,19 @@ def test_broken_yaml_names_the_line_of_the_file(tmp_path: Path, text: str, line:
 
 
 def test_an_unknown_key_names_its_path_and_what_is_allowed(tmp_path: Path) -> None:
-    agent = {**GENERATION, "tools": {"exlude": ["x"]}}
+    agent = {**GENERATION, "tools": {"dney": ["x"]}}
     _refused(
         write_folder(tmp_path, {"a": agent}),
-        r"agents\.a\.tools\.exlude \(it takes include, exclude, timeout, max_parallel\)",
+        r"agents\.a\.tools\.dney \(it takes allow, deny, timeout, max_parallel\)",
     )
 
 
 @pytest.mark.parametrize("empty", [[], None, "", "  "])
 def test_an_unknown_key_with_no_value_names_what_is_allowed(tmp_path: Path, empty: Any) -> None:
-    agent = {**GENERATION, "tools": {"exlude": empty}}
+    agent = {**GENERATION, "tools": {"dney": empty}}
     _refused(
         write_folder(tmp_path, {"a": agent}),
-        r"agents\.a\.tools\.exlude \(it takes include, exclude, timeout, max_parallel\)",
+        r"agents\.a\.tools\.dney \(it takes allow, deny, timeout, max_parallel\)",
     )
 
     tool = {"module": "tools/x.py", "timout": empty}
@@ -236,18 +237,18 @@ def test_an_unknown_key_at_the_top_names_the_top_keys(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("agent", "path", "allowed"),
     [
-        ({**GENERATION, "exlude": 1}, r"agents\.a\.exlude", "kind"),
+        ({**GENERATION, "dney": 1}, r"agents\.a\.dney", "kind"),
         (
-            {**GENERATION, "modes": {"m": {"tools": {"exlude": ["x"]}}}},
-            r"agents\.a\.modes\.m\.tools\.exlude",
-            "include",
+            {**GENERATION, "modes": {"m": {"tools": {"dney": ["x"]}}}},
+            r"agents\.a\.modes\.m\.tools\.dney",
+            "allow",
         ),
         (
             {**GENERATION, "modes": {"m": {"kind": "decision"}}},
             r"agents\.a\.modes\.m\.kind",
             "questions",
         ),
-        ({**GENERATION, "files": {"inclde": ["x"]}}, r"agents\.a\.files\.inclde", "gitignore"),
+        ({**GENERATION, "files": {"alow": ["x"]}}, r"agents\.a\.files\.alow", "gitignore"),
         ({**GENERATION, "skills": {"publik": ["x"]}}, r"agents\.a\.skills\.publik", "public"),
         (
             {**DECISION, "orchestration": {"rout": ROUTE}},
@@ -273,19 +274,56 @@ def test_an_unknown_key_of_a_worker_names_the_keys_of_a_worker(tmp_path: Path) -
 
 
 def test_every_unknown_key_is_named_at_once(tmp_path: Path) -> None:
-    agent = {**GENERATION, "exlude": 1, "tools": {"exlude": ["x"]}}
-    said = _refused(write_folder(tmp_path, {"a": agent}), r"agents\.a\.exlude")
-    assert "agents.a.tools.exlude" in said
+    agent = {**GENERATION, "dney": 1, "tools": {"dney": ["x"]}}
+    said = _refused(write_folder(tmp_path, {"a": agent}), r"agents\.a\.dney")
+    assert "agents.a.tools.dney" in said
+
+
+@pytest.mark.parametrize("old", ["include", "exclude"])
+@pytest.mark.parametrize("section", ["files", "tools", "skills"])
+def test_the_old_key_of_a_section_is_an_unknown_key(tmp_path: Path, section: str, old: str) -> None:
+    write_folder(
+        tmp_path,
+        {
+            "a": {
+                "kind": "generation",
+                "model": "strong",
+                "instructions": "a.md",
+                section: {old: ["x"]},
+            }
+        },
+        files={"a.md": "Work.\n"},
+    )
+    with pytest.raises(
+        ConfigurationError, match=rf"unknown key in .*: agents\.a\.{section}\.{old} \(it takes "
+    ):
+        load_folder(tmp_path)
+
+
+def test_deny_wins_over_allow_in_files(tmp_path: Path) -> None:
+    write_folder(
+        tmp_path,
+        {
+            "a": {
+                "kind": "generation",
+                "model": "strong",
+                "instructions": "a.md",
+                "files": {"allow": ["k"], "deny": ["k/secret.md"]},
+            }
+        },
+        files={"a.md": "Work.\n", "k/open.md": "o\n", "k/secret.md": "s\n"},
+    )
+    assert set(load_folder(tmp_path)["a"].reachable) == {"k/open.md"}
 
 
 GENERATION_LISTS = [
-    "files.include",
-    "files.exclude",
+    "files.allow",
+    "files.deny",
     "files.preload",
-    "tools.include",
-    "tools.exclude",
-    "skills.include",
-    "skills.exclude",
+    "tools.allow",
+    "tools.deny",
+    "skills.allow",
+    "skills.deny",
     "skills.preload",
     "skills.public",
     "orchestration.delegate_to",
@@ -328,8 +366,8 @@ def test_a_top_level_mapping_with_no_value_says_nothing(
         ("model", None),
         ("description", ""),
         ("instructions", ""),
-        ("files.include", [""]),
-        ("files.include", [None]),
+        ("files.allow", [""]),
+        ("files.allow", [None]),
     ],
 )
 def test_a_value_that_says_nothing_is_refused(tmp_path: Path, dotted: str, value: Any) -> None:
@@ -387,7 +425,7 @@ def test_a_merge_key_says_to_write_the_keys_out(tmp_path: Path) -> None:
 def test_an_anchored_list_item_is_refused(tmp_path: Path) -> None:
     text = (
         "version: 1\nagents:\n  a:\n    kind: generation\n    model: m\n    instructions: a.md\n"
-        "    tools:\n      include: [&one x]\n"
+        "    tools:\n      allow: [&one x]\n"
     )
     _refused(_file(tmp_path, text), r"at line 8\b")
 
@@ -395,13 +433,13 @@ def test_an_anchored_list_item_is_refused(tmp_path: Path) -> None:
 def test_a_bare_star_starts_an_alias_and_is_refused(tmp_path: Path) -> None:
     text = (
         "version: 1\nagents:\n  a:\n    kind: generation\n    model: m\n    instructions: a.md\n"
-        "    tools: {include: [*]}\n"
+        "    tools: {allow: [*]}\n"
     )
     _refused(_file(tmp_path, text), r"at line 7\b.*quote a value")
 
 
 def test_an_alias_says_to_quote_a_pattern(tmp_path: Path) -> None:
-    text = _with("tools: {include: [*_lookup]}")
+    text = _with("tools: {allow: [*_lookup]}")
     _refused(_file(tmp_path, text), r"at line 3 is refused; quote it if it is a pattern")
 
 
@@ -423,10 +461,10 @@ def test_a_bare_ampersand_says_to_quote_it(tmp_path: Path) -> None:
 def test_a_quoted_star_is_a_pattern(tmp_path: Path) -> None:
     text = (
         f"version: 1\n{MODELS}agents:\n  a:\n    kind: generation\n    model: m\n    instructions: a.md\n"
-        '    tools: {include: ["*"]}\n'
+        '    tools: {allow: ["*"]}\n'
     )
     tools = read_manifest(_file(tmp_path, text)).agents["a"].tools
-    assert tools is not None and tools.include == ["*"]
+    assert tools is not None and tools.allow == ["*"]
 
 
 def _with(keys: str) -> str:
@@ -534,10 +572,10 @@ def test_at_least_one_agent_is_required(tmp_path: Path, text: str, said: str) ->
 
 
 DECISION_REFUSES: list[tuple[str, Any, str]] = [
-    ("files.include", ["x"], "files"),
+    ("files.allow", ["x"], "files"),
     ("files.gitignore", True, "files"),
-    ("tools.include", ["x"], "tools"),
-    ("skills.include", ["x"], "skills"),
+    ("tools.allow", ["x"], "tools"),
+    ("skills.allow", ["x"], "skills"),
     ("max_model_calls", 3, "max_model_calls"),
     ("workspace", True, "workspace"),
     ("orchestration.delegate_to", ["x"], "orchestration.delegate_to"),
@@ -607,11 +645,11 @@ def test_a_model_is_required_on_the_entry(tmp_path: Path) -> None:
 
 PATHS: list[tuple[str, dict[str, Any]]] = [
     ("instructions", GENERATION),
-    ("files.include", GENERATION),
-    ("files.exclude", GENERATION),
+    ("files.allow", GENERATION),
+    ("files.deny", GENERATION),
     ("files.preload", GENERATION),
-    ("skills.include", GENERATION),
-    ("skills.exclude", GENERATION),
+    ("skills.allow", GENERATION),
+    ("skills.deny", GENERATION),
     ("skills.preload", GENERATION),
     ("questions", DECISION),
 ]
@@ -636,7 +674,7 @@ def test_a_path_on_a_mode_is_written_from_the_root(tmp_path: Path, bad: str) -> 
 
 
 def test_two_dots_inside_a_name_are_not_a_path_going_up(tmp_path: Path) -> None:
-    agent = {**GENERATION, "instructions": "a..b/c..d.md", "files": {"include": ["x/**"]}}
+    agent = {**GENERATION, "instructions": "a..b/c..d.md", "files": {"allow": ["x/**"]}}
     entry = read_manifest(write_folder(tmp_path, {"a": agent})).agents["a"]
     assert entry.instructions == "a..b/c..d.md"
 
@@ -695,15 +733,15 @@ def test_a_blank_model_says_nothing(tmp_path: Path, model: str, on_mode: bool) -
     ("dotted", "value", "base"),
     [
         ("instructions", "  ", GENERATION),
-        ("files.include", ["  "], GENERATION),
-        ("files.exclude", ["  "], GENERATION),
+        ("files.allow", ["  "], GENERATION),
+        ("files.deny", ["  "], GENERATION),
         ("files.preload", ["  "], GENERATION),
-        ("skills.include", ["  "], GENERATION),
-        ("skills.exclude", ["  "], GENERATION),
+        ("skills.allow", ["  "], GENERATION),
+        ("skills.deny", ["  "], GENERATION),
         ("skills.preload", ["  "], GENERATION),
         ("skills.public", ["  "], GENERATION),
-        ("tools.include", ["  "], GENERATION),
-        ("tools.exclude", ["  "], GENERATION),
+        ("tools.allow", ["  "], GENERATION),
+        ("tools.deny", ["  "], GENERATION),
         ("orchestration.delegate_to", ["  "], GENERATION),
         ("worker", "  ", GENERATION),
         ("questions", ["  "], DECISION),
@@ -728,11 +766,11 @@ def test_a_whitespace_only_field_of_a_tool_says_nothing(tmp_path: Path, key: str
 def test_a_tool_or_skill_name_is_not_a_path(tmp_path: Path) -> None:
     agent = {
         **GENERATION,
-        "tools": {"include": ["a/../b"], "exclude": ["/x"]},
+        "tools": {"allow": ["a/../b"], "deny": ["/x"]},
         "skills": {"public": ["a\\b"]},
     }
     entry = read_manifest(write_folder(tmp_path, {"a": agent})).agents["a"]
-    assert entry.tools is not None and entry.tools.exclude == ["/x"]
+    assert entry.tools is not None and entry.tools.deny == ["/x"]
     assert entry.skills is not None and entry.skills.public == ["a\\b"]
 
 
@@ -932,11 +970,11 @@ def _entry(tmp_path: Path, agent: dict[str, Any]) -> Any:
 def test_a_mode_adds_to_lists_and_replaces_single_values(tmp_path: Path) -> None:
     agent = {
         **GENERATION,
-        "tools": {"exclude": ["a"]},
-        "modes": {"m": {"model": "m2", "tools": {"exclude": ["b"]}}},
+        "tools": {"deny": ["a"]},
+        "modes": {"m": {"model": "m2", "tools": {"deny": ["b"]}}},
     }
     resolved = overlaid(_entry(tmp_path, agent), "m")
-    assert resolved.tools.exclude == ["a", "b"]
+    assert resolved.tools.deny == ["a", "b"]
     assert resolved.model == "m2"
     assert resolved.kind == "generation"
 
@@ -944,10 +982,10 @@ def test_a_mode_adds_to_lists_and_replaces_single_values(tmp_path: Path) -> None
 def test_a_list_is_added_once_in_entry_then_mode_order(tmp_path: Path) -> None:
     agent = {
         **GENERATION,
-        "files": {"include": ["b", "a"]},
-        "modes": {"m": {"files": {"include": ["a", "c"]}}},
+        "files": {"allow": ["b", "a"]},
+        "modes": {"m": {"files": {"allow": ["a", "c"]}}},
     }
-    assert overlaid(_entry(tmp_path, agent), "m").files.include == ["b", "a", "c"]
+    assert overlaid(_entry(tmp_path, agent), "m").files.allow == ["b", "a", "c"]
 
 
 def test_every_list_field_adds(tmp_path: Path) -> None:
@@ -988,21 +1026,21 @@ def test_no_mode_is_the_entry_with_every_section_present(tmp_path: Path) -> None
 def test_a_mode_with_no_section_keeps_the_entrys(tmp_path: Path) -> None:
     agent = {
         **GENERATION,
-        "files": {"include": ["k"], "gitignore": True},
+        "files": {"allow": ["k"], "gitignore": True},
         "tools": {"timeout": 9},
         "modes": {"m": {"description": "Other"}},
     }
     resolved = overlaid(_entry(tmp_path, agent), "m")
-    assert resolved.files.include == ["k"]
+    assert resolved.files.allow == ["k"]
     assert resolved.files.gitignore is True
     assert resolved.tools.timeout == 9
     assert resolved.description == "Other"
 
 
 def test_a_section_only_on_the_mode_is_taken_whole(tmp_path: Path) -> None:
-    agent = {**GENERATION, "modes": {"m": {"tools": {"include": ["x"], "max_parallel": 2}}}}
+    agent = {**GENERATION, "modes": {"m": {"tools": {"allow": ["x"], "max_parallel": 2}}}}
     resolved = overlaid(_entry(tmp_path, agent), "m")
-    assert resolved.tools.include == ["x"]
+    assert resolved.tools.allow == ["x"]
     assert resolved.tools.max_parallel == 2
 
 
@@ -1010,7 +1048,7 @@ def test_a_mode_that_says_nothing_of_gitignore_leaves_it(tmp_path: Path) -> None
     agent = {
         **GENERATION,
         "files": {"gitignore": True},
-        "modes": {"m": {"files": {"include": ["x"]}}},
+        "modes": {"m": {"files": {"allow": ["x"]}}},
     }
     assert overlaid(_entry(tmp_path, agent), "m").files.gitignore is True
 
@@ -1076,10 +1114,10 @@ def test_a_text_that_reads_all_is_an_ordinary_single_value(tmp_path: Path) -> No
 def test_overlaying_leaves_the_entry_as_it_was(tmp_path: Path) -> None:
     agent = {
         **GENERATION,
-        "tools": {"exclude": ["a"]},
-        "modes": {"m": {"tools": {"exclude": ["b"]}}},
+        "tools": {"deny": ["a"]},
+        "modes": {"m": {"tools": {"deny": ["b"]}}},
     }
     entry = _entry(tmp_path, agent)
     overlaid(entry, "m")
-    assert entry.tools is not None and entry.tools.exclude == ["a"]
-    assert entry.modes["m"].tools is not None and entry.modes["m"].tools.exclude == ["b"]
+    assert entry.tools is not None and entry.tools.deny == ["a"]
+    assert entry.modes["m"].tools is not None and entry.modes["m"].tools.deny == ["b"]

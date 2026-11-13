@@ -753,7 +753,7 @@ async def test_replay_selects_reads_back_and_resends_what_each_run_was_given(
 
 def reviewing(root: Path, public: list[str] | None = None) -> Path:
     root.mkdir(parents=True, exist_ok=True)
-    skills: dict[str, Any] = {"include": ["skills/*"]}
+    skills: dict[str, Any] = {"allow": ["skills/*"]}
     if public is not None:
         skills["public"] = public
     return write_folder(

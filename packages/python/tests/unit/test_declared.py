@@ -36,7 +36,7 @@ def _listing(root: Path, *run_tools: str, description: str = "Look up an order")
                 "kind": "generation",
                 "model": "strong",
                 "instructions": "a.md",
-                "tools": {"include": ["lookup", *run_tools]},
+                "tools": {"allow": ["lookup", *run_tools]},
             }
         },
         tools={"lookup": {"module": "tools/lookup.py", "schema": "tools/lookup.json"}},

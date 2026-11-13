@@ -99,13 +99,13 @@ async def test_a_mode_overlays_the_entry(tmp_path: Path) -> None:
         {
             "a": {
                 **AGENT,
-                "tools": {"include": ["lookup"]},
-                "skills": {"include": ["skills/tone"]},
+                "tools": {"allow": ["lookup"]},
+                "skills": {"allow": ["skills/tone"]},
                 "modes": {
                     "chat": {
                         "instructions": "chat.md",
-                        "tools": {"include": ["refund"]},
-                        "skills": {"include": ["skills/escalate"]},
+                        "tools": {"allow": ["refund"]},
+                        "skills": {"allow": ["skills/escalate"]},
                     }
                 },
             }
@@ -133,7 +133,7 @@ async def test_a_mode_overlays_the_entry(tmp_path: Path) -> None:
 async def test_a_tool_only_a_mode_picks_runs_in_a_worker(tmp_path: Path) -> None:
     folder = write_folder(
         tmp_path,
-        {"a": {**AGENT, "modes": {"chat": {"tools": {"include": ["refund"]}}}}},
+        {"a": {**AGENT, "modes": {"chat": {"tools": {"allow": ["refund"]}}}}},
         tools={"refund": TOOLS["refund"]},
         files=FILES,
     )
@@ -171,22 +171,22 @@ async def test_a_script_only_a_mode_asks_fills_its_question(tmp_path: Path) -> N
     assert run.questions["order"].model_dump()["options"] == {"a": "A", "b": "B"}
 
 
-async def test_exclude_wins_over_a_modes_include(tmp_path: Path) -> None:
+async def test_deny_wins_over_a_modes_allow(tmp_path: Path) -> None:
     folder = write_folder(
         tmp_path,
         {
             "a": {
                 **AGENT,
-                "tools": {"include": ["lookup"], "exclude": ["refund"]},
-                "skills": {"include": ["skills/tone"], "exclude": ["escalate"]},
+                "tools": {"allow": ["lookup"], "deny": ["refund"]},
+                "skills": {"allow": ["skills/tone"], "deny": ["escalate"]},
                 "modes": {
                     "chat": {
-                        "tools": {"include": ["refund"]},
-                        "skills": {"include": ["skills/escalate"]},
+                        "tools": {"allow": ["refund"]},
+                        "skills": {"allow": ["skills/escalate"]},
                     }
                 },
             },
-            "other": {**AGENT, "tools": {"include": ["refund"]}},
+            "other": {**AGENT, "tools": {"allow": ["refund"]}},
         },
         tools=TOOLS,
         files=FILES,

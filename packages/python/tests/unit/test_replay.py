@@ -831,7 +831,7 @@ def _coder(root: Path, *run_tools: str) -> None:
                 "model": "strong",
                 "instructions": "coder.md",
                 "workspace": True,
-                **({"tools": {"include": list(run_tools)}} if run_tools else {}),
+                **({"tools": {"allow": list(run_tools)}} if run_tools else {}),
             }
         },
         files={"coder.md": "You code.\n"},

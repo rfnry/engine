@@ -29,7 +29,7 @@ ENTRY: dict[str, Any] = {
     "kind": "voice",
     "model": "live",
     "instructions": "voice.md",
-    "tools": {"include": ["lookup"]},
+    "tools": {"allow": ["lookup"]},
     "modes": {"duplex": {"instructions": "duplex.md"}},
 }
 FILES = {"voice.md": "Speak plainly.\n", "duplex.md": "Talk both ways.\n"}
@@ -120,7 +120,7 @@ async def test_a_voice_run_reads_back_equal(tmp_path: Path, storage: Storage) ->
 
 async def test_a_cancelled_call_reads_back_stopped(tmp_path: Path, storage: Storage) -> None:
     refinery = Refinery(storage)
-    engine = voice_engine(tmp_path, refinery, {**ENTRY, "tools": {"include": ["slow"]}})
+    engine = voice_engine(tmp_path, refinery, {**ENTRY, "tools": {"allow": ["slow"]}})
     began = asyncio.Event()
 
     async def slow(args: dict[str, Any]) -> Result:

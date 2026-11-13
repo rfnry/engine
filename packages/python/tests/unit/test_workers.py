@@ -1592,7 +1592,7 @@ async def test_close_reaps_every_worker_before_it_returns(tmp_path: Path) -> Non
 
 
 GENERATION: dict[str, Any] = {"kind": "generation", "model": "m", "instructions": "a.md"}
-PICKS_PID: dict[str, Any] = {**GENERATION, "tools": {"include": ["pid"]}}
+PICKS_PID: dict[str, Any] = {**GENERATION, "tools": {"allow": ["pid"]}}
 PID_TOOL = {"pid": {"module": "tools/pid.py", "description": "Its process"}}
 PID_FILES = {"a.md": "Work.\n", "tools/pid.py": PID}
 HOLD = (
@@ -1663,12 +1663,12 @@ async def test_a_worker_holds_only_the_tools_that_pick_it(tmp_path: Path) -> Non
         for name in ("front", "back", "both", "extra")
     }
     agents = {
-        "a": {**GENERATION, "worker": "one", "tools": {"include": ["front", "both"]}},
+        "a": {**GENERATION, "worker": "one", "tools": {"allow": ["front", "both"]}},
         "b": {
             **GENERATION,
             "worker": "two",
-            "tools": {"include": ["back", "both"]},
-            "modes": {"chat": {"worker": "three", "tools": {"include": ["extra"]}}},
+            "tools": {"allow": ["back", "both"]},
+            "modes": {"chat": {"worker": "three", "tools": {"allow": ["extra"]}}},
         },
         "t": {
             "kind": "decision",
@@ -1710,7 +1710,7 @@ async def test_a_killed_process_leaves_another_worker_alone(tmp_path: Path) -> N
     agent = {
         **GENERATION,
         "worker": "copilot",
-        "tools": {"include": ["hold"]},
+        "tools": {"allow": ["hold"]},
         "modes": {"voice": {"worker": "voice"}},
     }
     folder = write_folder(
@@ -1851,7 +1851,7 @@ async def test_threads_and_max_result_bytes_reach_the_worker(tmp_path: Path) -> 
         "meet": {"module": "tools/meet.py", "description": "Meets"},
         "long": {"module": "tools/long.py", "description": "Long"},
     }
-    picks = {**GENERATION, "tools": {"include": ["meet", "long"]}}
+    picks = {**GENERATION, "tools": {"allow": ["meet", "long"]}}
     folder = write_folder(
         tmp_path,
         {"pair": {**picks, "worker": "pair"}, "solo": {**picks, "worker": "solo"}},

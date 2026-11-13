@@ -1540,7 +1540,7 @@ class Engine:
         variables = {"RFNRY_TREE": room.tree} if room is not None and room.tree is not None else {}
         specs = [ToolSpec.model_validate(_copied(d)) for d in surface.definitions()]
         if room is not None:
-            told = room._told(spec.included_folders, bridging)
+            told = room._told(spec.allowed_folders, bridging)
             specs = [
                 s.model_copy(update={"description": s.description + told})
                 if s.name == "Shell"

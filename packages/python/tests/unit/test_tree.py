@@ -201,7 +201,7 @@ def test_a_route_entry_that_is_not_a_name_fails_as_any_bad_value(tmp_path: Path)
 
 def _shared(root: Path) -> Path:
     for name in ("a", "b"):
-        _generation(root, name, files={"include": ["kb"]})
+        _generation(root, name, files={"allow": ["kb"]})
     return root
 
 
@@ -281,7 +281,7 @@ def _declared(root: Path) -> Path:
                 "kind": "generation",
                 "model": "strong",
                 "instructions": "a.md",
-                "tools": {"include": ["x"]},
+                "tools": {"allow": ["x"]},
             },
             "d": {
                 "kind": "decision",
@@ -335,7 +335,7 @@ def test_an_unreadable_skill_is_refused_at_load(
                 "kind": "generation",
                 "model": "strong",
                 "instructions": "a.md",
-                "skills": {"include": ["skills/*"]},
+                "skills": {"allow": ["skills/*"]},
             }
         },
         files={
@@ -362,7 +362,7 @@ def test_an_unreadable_skill_is_refused_at_load(
     finally:
         notes.chmod(0o644)
     assert str(caught.value) == (
-        "compiled: agent 'a' lists 'skills/*' in skills.include, which reaches no skill; a skill is a folder holding SKILL.md, so write such a folder or a glob from the folder root that reaches one, or remove it"
+        "compiled: agent 'a' lists 'skills/*' in skills.allow, which reaches no skill; a skill is a folder holding SKILL.md, so write such a folder or a glob from the folder root that reaches one, or remove it"
     )
 
 

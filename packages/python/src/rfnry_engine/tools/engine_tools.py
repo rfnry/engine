@@ -84,7 +84,7 @@ class EngineTools(Tools):
         for name in spec.keep:
             if name not in offered:
                 raise ConfigurationError(
-                    f"tools/engine_tools: agent {agent!r} lists {name!r} in tools.include, which this run does not offer; its tools are {', '.join(offered) or 'none'}"
+                    f"tools/engine_tools: agent {agent!r} lists {name!r} in tools.allow, which this run does not offer; its tools are {', '.join(offered) or 'none'}"
                 )
         given = given.without(*(name for name in given.names if name not in spec.keep))
         room = workspace if spec.workspace else None

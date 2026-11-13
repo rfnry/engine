@@ -85,7 +85,7 @@ def _reads_as_missing(answer: str, path: str) -> None:
 
 
 def test_a_skill_is_a_folder_with_skill_md(tmp_path: Path) -> None:
-    spec = _spec(_folder(tmp_path, {"include": ["skills/*"]}))
+    spec = _spec(_folder(tmp_path, {"allow": ["skills/*"]}))
     assert list(spec.skills) == ["escalate", "internal", "tone"]
     assert spec.skills["tone"].path == "skills/tone/SKILL.md"
     assert spec.skills["tone"].place == tmp_path / "skills/tone"
@@ -95,7 +95,7 @@ def test_a_skill_is_a_folder_with_skill_md(tmp_path: Path) -> None:
     assert spec.offered == {"escalate", "internal", "tone"}
 
 
-@pytest.mark.parametrize("key", ["include", "preload"])
+@pytest.mark.parametrize("key", ["allow", "preload"])
 @pytest.mark.parametrize(
     "path",
     ["skills/loose.md", "skills", "skills/tone/SKILL.md", "skills/ghost", "skills/g*"],
@@ -114,7 +114,7 @@ def test_a_skill_file_linking_out_of_the_folder_is_no_skill(tmp_path: Path) -> N
     outside = tmp_path / "outside.md"
     outside.write_text("Elsewhere.\n", encoding="utf-8")
     (tmp_path / "root").mkdir()
-    folder = _folder(tmp_path / "root", {"include": ["skills/*"]})
+    folder = _folder(tmp_path / "root", {"allow": ["skills/*"]})
     (folder / "skills/linked").mkdir()
     (folder / "skills/linked/SKILL.md").symlink_to(outside)
     assert "linked" not in _spec(folder).skills
@@ -125,33 +125,33 @@ def test_a_skill_folder_linking_out_of_the_folder_is_no_skill(tmp_path: Path) ->
     outside.mkdir()
     (outside / "SKILL.md").write_text("Elsewhere.\n", encoding="utf-8")
     (tmp_path / "root").mkdir()
-    folder = _folder(tmp_path / "root", {"include": ["skills/*"]})
+    folder = _folder(tmp_path / "root", {"allow": ["skills/*"]})
     (folder / "skills/linked").symlink_to(outside)
     assert "linked" not in _spec(folder).skills
-    _folder(folder, {"include": ["skills/linked"]})
-    _refused(folder, r"lists 'skills/linked' in skills\.include, which reaches no skill")
+    _folder(folder, {"allow": ["skills/linked"]})
+    _refused(folder, r"lists 'skills/linked' in skills\.allow, which reaches no skill")
 
 
 def test_skill_md_at_the_root_is_no_skill(tmp_path: Path) -> None:
     _refused(
-        _folder(tmp_path, {"include": ["."]}, written={"SKILL.md": "Root.\n"}), r"reaches no skill"
+        _folder(tmp_path, {"allow": ["."]}, written={"SKILL.md": "Root.\n"}), r"reaches no skill"
     )
 
 
 def test_a_glob_can_reach_skills_at_any_depth(tmp_path: Path) -> None:
     written = {"desk/deep/skills/brief/SKILL.md": "Brief.\n"}
-    spec = _spec(_folder(tmp_path, {"include": ["desk/**"]}, written=written))
+    spec = _spec(_folder(tmp_path, {"allow": ["desk/**"]}, written=written))
     assert list(spec.skills) == ["brief"]
     assert spec.skills["brief"].path == "desk/deep/skills/brief/SKILL.md"
 
 
 @pytest.mark.parametrize(
-    "exclude",
+    "deny",
     ["internal", "skills/internal", "skills/int*"],
     ids=["a-bare-name", "a-path", "a-glob"],
 )
-async def test_the_list_is_include_less_exclude(tmp_path: Path, exclude: str) -> None:
-    folder = _folder(tmp_path, {"include": ["skills/*"], "exclude": [exclude]})
+async def test_the_list_is_allow_less_deny(tmp_path: Path, deny: str) -> None:
+    folder = _folder(tmp_path, {"allow": ["skills/*"], "deny": [deny]})
     assert _spec(folder).offered == {"escalate", "tone"}
     _, model = await _ran(folder, "hi")
     assert model.calls[0][0].split("<<<SKILLS>>>\n")[1].split("\n\n")[0].splitlines() == [
@@ -160,18 +160,18 @@ async def test_the_list_is_include_less_exclude(tmp_path: Path, exclude: str) ->
     ]
 
 
-def test_an_exclude_reaching_no_skill_is_refused(tmp_path: Path) -> None:
+def test_a_deny_reaching_no_skill_is_refused(tmp_path: Path) -> None:
     _refused(
-        _folder(tmp_path, {"include": ["skills/*"], "exclude": ["ghost"]}),
-        r"^compiled: agent 'a' lists 'ghost' in skills\.exclude, which reaches no skill it names",
+        _folder(tmp_path, {"allow": ["skills/*"], "deny": ["ghost"]}),
+        r"^compiled: agent 'a' lists 'ghost' in skills\.deny, which reaches no skill it names",
     )
 
 
-def test_an_entrys_exclude_may_name_a_skill_only_a_mode_includes(tmp_path: Path) -> None:
+def test_an_entrys_deny_may_name_a_skill_only_a_mode_allows(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["skills/tone"], "exclude": ["internal"]},
-        modes={"m": {"skills": {"include": ["skills/internal"]}}},
+        {"allow": ["skills/tone"], "deny": ["internal"]},
+        modes={"m": {"skills": {"allow": ["skills/internal"]}}},
     )
     spec = _spec(folder)
     assert spec.offered == {"tone"}
@@ -182,8 +182,8 @@ def test_an_entrys_exclude_may_name_a_skill_only_a_mode_includes(tmp_path: Path)
 def test_a_mode_adds_to_the_list(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["skills/tone"]},
-        modes={"m": {"skills": {"include": ["skills/escalate"]}}},
+        {"allow": ["skills/tone"]},
+        modes={"m": {"skills": {"allow": ["skills/escalate"]}}},
     )
     spec = _spec(folder)
     assert spec.offered == {"tone"}
@@ -191,7 +191,7 @@ def test_a_mode_adds_to_the_list(tmp_path: Path) -> None:
 
 
 async def test_preload_sends_a_skills_text_that_the_list_does_not_offer(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["skills/tone"], "preload": ["skills/escalate"]})
+    folder = _folder(tmp_path, {"allow": ["skills/tone"], "preload": ["skills/escalate"]})
     spec = _spec(folder)
     assert spec.offered == {"tone"}
     assert list(spec.skills) == ["escalate", "tone"]
@@ -208,7 +208,7 @@ async def test_a_preloaded_skills_folder_is_open_on_every_run(tmp_path: Path) ->
     folder = _folder(
         tmp_path,
         {"preload": ["skills/tone"]},
-        files={"exclude": ["skills/tone/refs/kept.md"]},
+        files={"deny": ["skills/tone/refs/kept.md"]},
         written={"skills/tone/refs/kept.md": "Not for the model.\n"},
     )
     surface = _surface(folder)
@@ -256,26 +256,26 @@ def test_files_preload_of_a_skill_file_stays_raw_and_is_sent_once(tmp_path: Path
     ]
 
 
-def test_exclude_narrows_preload(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"preload": ["skills/*"], "exclude": ["internal"]})
+def test_deny_narrows_preload(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"preload": ["skills/*"], "deny": ["internal"]})
     assert [str(getattr(part, "text", "")).splitlines()[0] for part in _spec(folder).preload] == [
         "<<<SKILL skills/escalate/SKILL.md>>>",
         "<<<SKILL skills/tone/SKILL.md>>>",
     ]
 
 
-def test_a_preload_exclude_leaves_with_nothing_is_refused(tmp_path: Path) -> None:
+def test_a_preload_deny_leaves_with_nothing_is_refused(tmp_path: Path) -> None:
     _refused(
-        _folder(tmp_path, {"preload": ["skills/tone"], "exclude": ["tone"]}),
-        r"^compiled: agent 'a' lists 'skills/tone' in skills\.preload, which skills\.exclude takes back out",
+        _folder(tmp_path, {"preload": ["skills/tone"], "deny": ["tone"]}),
+        r"^compiled: agent 'a' lists 'skills/tone' in skills\.preload, which skills\.deny takes back out",
     )
 
 
 async def test_skill_reaches_any_skill_the_entry_or_a_mode_names(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["skills/tone"]},
-        modes={"m": {"skills": {"include": ["skills/escalate"]}}},
+        {"allow": ["skills/tone"]},
+        modes={"m": {"skills": {"allow": ["skills/escalate"]}}},
     )
     for name, body in (("tone", "Be warm."), ("escalate", "Hand it over.")):
         run, model = await _ran(folder, "hi", skill=name)
@@ -289,8 +289,8 @@ async def test_skill_reaches_any_skill_the_entry_or_a_mode_names(tmp_path: Path)
     )
 
 
-async def test_skill_reaches_a_skill_the_list_excludes(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["skills/*"], "exclude": ["internal"]})
+async def test_skill_reaches_a_skill_the_list_denies(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"allow": ["skills/*"], "deny": ["internal"]})
     run, model = await _ran(folder, "hi", skill="internal")
     assert run.skill == "internal"
     assert _sent(model) == _invoked("internal", "Internal notes.", "hi")
@@ -302,12 +302,12 @@ async def test_a_run_of_an_agent_with_no_skills_says_how_to_name_one(tmp_path: P
         await engine.run("a", "acme", "hi", skill="tone")
     assert str(caught.value) == (
         "engine: agent 'a' has no skill 'tone'; it has no skills; name a folder holding SKILL.md "
-        "in skills.include or skills.preload"
+        "in skills.allow or skills.preload"
     )
 
 
 async def test_slash_reaches_only_public(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["skills/*"], "public": ["escalate"]})
+    folder = _folder(tmp_path, {"allow": ["skills/*"], "public": ["escalate"]})
     run, model = await _ran(folder, "/escalate x")
     assert run.skill == "escalate" and run.input == "x"
     assert _sent(model) == _invoked("escalate", "Hand it over.", "x")
@@ -319,7 +319,7 @@ async def test_public_all_is_every_offered_skill(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
         {
-            "include": ["skills/tone", "skills/escalate"],
+            "allow": ["skills/tone", "skills/escalate"],
             "preload": ["skills/internal"],
             "public": "all",
         },
@@ -353,7 +353,7 @@ def test_public_names_with_whitespace_are_refused(
 ) -> None:
     written = {"skills/my skill/SKILL.md": "Body.\n"}
     _refused(
-        _folder(tmp_path, {"include": ["skills/*"], "public": public}, written=written),
+        _folder(tmp_path, {"allow": ["skills/*"], "public": public}, written=written),
         rf"^compiled: agent 'a' makes {pattern} public, and no one can type it with a space in it; rename",
     )
 
@@ -361,12 +361,12 @@ def test_public_names_with_whitespace_are_refused(
 @pytest.mark.parametrize(
     "skills",
     [
-        {"include": ["skills/tone"], "public": ["internal"]},
-        {"include": ["skills/*"], "exclude": ["internal"], "public": ["internal"]},
-        {"include": ["skills/tone"], "preload": ["skills/internal"], "public": ["internal"]},
+        {"allow": ["skills/tone"], "public": ["internal"]},
+        {"allow": ["skills/*"], "deny": ["internal"], "public": ["internal"]},
+        {"allow": ["skills/tone"], "preload": ["skills/internal"], "public": ["internal"]},
         {"public": ["internal"]},
     ],
-    ids=["named-nowhere", "excluded", "only-preloaded", "offers-nothing"],
+    ids=["named-nowhere", "denied", "only-preloaded", "offers-nothing"],
 )
 def test_a_public_name_the_entry_does_not_offer_is_refused(
     tmp_path: Path, skills: dict[str, Any]
@@ -377,11 +377,11 @@ def test_a_public_name_the_entry_does_not_offer_is_refused(
     )
 
 
-def test_a_public_name_a_mode_excludes_is_refused_on_that_mode(tmp_path: Path) -> None:
+def test_a_public_name_a_mode_denies_is_refused_on_that_mode(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["skills/tone"], "public": ["tone"]},
-        modes={"m": {"skills": {"exclude": ["tone"]}}},
+        {"allow": ["skills/tone"], "public": ["tone"]},
+        modes={"m": {"skills": {"deny": ["tone"]}}},
     )
     _refused(
         folder,
@@ -395,7 +395,7 @@ def test_public_on_an_entry_that_needs_a_mode_is_checked_on_its_modes(tmp_path: 
         "model": "m",
         "skills": {"public": ["tone"]},
         "modes": {
-            "m": {"instructions": "a.md", "skills": {"include": ["skills/tone"]}},
+            "m": {"instructions": "a.md", "skills": {"allow": ["skills/tone"]}},
         },
     }
     spec = load_folder(write_folder(tmp_path, {"a": entry}, files=FILES))["a"]
@@ -409,7 +409,7 @@ async def test_an_invoked_skills_other_files_are_reachable_on_that_run(tmp_path:
         tmp_path,
         {"preload": ["skills/escalate"]},
         modes={"m": {"skills": {"preload": ["skills/tone"]}}},
-        files={"include": ["knowledge"]},
+        files={"allow": ["knowledge"]},
     )
     path = "skills/tone/refs/examples.md"
     call = ToolCall(id="r1", name="Read", args={"path": path})
@@ -432,15 +432,15 @@ async def test_an_invoked_skills_other_files_are_reachable_on_that_run(tmp_path:
 
 
 async def test_an_offered_skills_files_are_open_on_every_run(tmp_path: Path) -> None:
-    surface = _surface(_folder(tmp_path, {"include": ["skills/tone"]}))
+    surface = _surface(_folder(tmp_path, {"allow": ["skills/tone"]}))
     assert await _answer(surface, "Read", {"path": "skills/tone/SKILL.md"}) == TONE
     assert await _answer(surface, "Read", {"path": "skills/tone/refs/examples.md"}) == (
         "Warm examples.\n"
     )
 
 
-async def test_a_skill_excluded_from_the_list_reads_as_missing(tmp_path: Path) -> None:
-    surface = _surface(_folder(tmp_path, {"include": ["skills/*"], "exclude": ["internal"]}))
+async def test_a_skill_denied_from_the_list_reads_as_missing(tmp_path: Path) -> None:
+    surface = _surface(_folder(tmp_path, {"allow": ["skills/*"], "deny": ["internal"]}))
     path = "skills/internal/SKILL.md"
     _reads_as_missing(await _answer(surface, "Read", {"path": path}), path)
 
@@ -454,7 +454,7 @@ CLAUDE_SKILL = (
 async def test_claude_skills_load_as_they_are(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": [".claude/skills/*"]},
+        {"allow": [".claude/skills/*"]},
         written={
             ".claude/skills/tone/SKILL.md": CLAUDE_SKILL,
             ".claude/skills/tone/refs/examples.md": "Examples.\n",
@@ -481,8 +481,8 @@ async def test_claude_skills_load_as_they_are(tmp_path: Path) -> None:
 async def test_a_hidden_skill_not_offered_opens_when_invoked(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["skills/tone"]},
-        modes={"m": {"skills": {"include": [".claude/skills/*"]}}},
+        {"allow": ["skills/tone"]},
+        modes={"m": {"skills": {"allow": [".claude/skills/*"]}}},
         written={
             ".claude/skills/close/SKILL.md": "Close.\n",
             ".claude/skills/close/notes.md": "Notes.\n",
@@ -496,20 +496,20 @@ async def test_a_hidden_skill_not_offered_opens_when_invoked(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     "agent",
     [
-        {"skills": {"include": ["one/tone", "two/tone"]}},
-        {"skills": {"include": ["one/tone"], "preload": ["two/tone"]}},
+        {"skills": {"allow": ["one/tone", "two/tone"]}},
+        {"skills": {"allow": ["one/tone"], "preload": ["two/tone"]}},
         {
-            "skills": {"include": ["one/tone"]},
-            "modes": {"m": {"skills": {"include": ["two/tone"]}}},
+            "skills": {"allow": ["one/tone"]},
+            "modes": {"m": {"skills": {"allow": ["two/tone"]}}},
         },
         {
             "modes": {
-                "m": {"instructions": "a.md", "skills": {"include": ["one/tone"]}},
-                "n": {"instructions": "a.md", "skills": {"include": ["two/tone"]}},
+                "m": {"instructions": "a.md", "skills": {"allow": ["one/tone"]}},
+                "n": {"instructions": "a.md", "skills": {"allow": ["two/tone"]}},
             },
         },
     ],
-    ids=["two-includes", "include-and-preload", "entry-and-mode", "two-modes"],
+    ids=["two-allows", "allow-and-preload", "entry-and-mode", "two-modes"],
 )
 def test_two_folders_with_one_name_are_refused(tmp_path: Path, agent: dict[str, Any]) -> None:
     entry: dict[str, Any] = {"kind": "generation", "model": "m", **agent}
@@ -529,15 +529,15 @@ def test_two_folders_with_one_name_are_refused(tmp_path: Path, agent: dict[str, 
 def test_one_folder_named_twice_is_one_skill(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["skills/tone", "./skills/t*"], "preload": ["skills/tone/"]},
+        {"allow": ["skills/tone", "./skills/t*"], "preload": ["skills/tone/"]},
     )
     assert list(_spec(folder).skills) == ["tone"]
 
 
-@pytest.mark.parametrize("key", ["include", "preload"])
+@pytest.mark.parametrize("key", ["allow", "preload"])
 @pytest.mark.parametrize("tool", SKILL_TOOLS)
 def test_a_skills_section_grants_the_file_tools(tmp_path: Path, key: str, tool: str) -> None:
-    folder = _folder(tmp_path, {key: ["skills/tone"]}, tools={"include": [tool]})
+    folder = _folder(tmp_path, {key: ["skills/tone"]}, tools={"allow": [tool]})
     assert _spec(folder).keep == SKILL_TOOLS
 
 
@@ -545,20 +545,20 @@ def test_a_skills_section_grants_the_file_tools(tmp_path: Path, key: str, tool: 
 def test_a_skills_section_that_opens_nothing_grants_no_file_tools(
     tmp_path: Path, skills: dict[str, Any] | None
 ) -> None:
-    folder = _folder(tmp_path, skills, tools={"include": ["Read"]})
+    folder = _folder(tmp_path, skills, tools={"allow": ["Read"]})
     _refused(folder, r"which comes with files or skills, and it has none")
 
 
 def test_the_file_tools_come_with_skills_without_being_listed(tmp_path: Path) -> None:
-    spec = _spec(_folder(tmp_path, {"include": ["skills/tone"]}))
+    spec = _spec(_folder(tmp_path, {"allow": ["skills/tone"]}))
     assert spec.keep == SKILL_TOOLS
 
 
 async def test_an_offered_skill_leaves_the_map(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["skills/tone", "skills/internal"], "exclude": ["internal"]},
-        files={"include": ["skills", "knowledge"]},
+        {"allow": ["skills/tone", "skills/internal"], "deny": ["internal"]},
+        files={"allow": ["skills", "knowledge"]},
     )
     assert _spec(folder).listing.splitlines() == [
         "knowledge/",
@@ -572,10 +572,10 @@ async def test_an_offered_skill_leaves_the_map(tmp_path: Path) -> None:
     ]
 
 
-async def test_a_skill_not_offered_is_reachable_where_files_include_covers_it(
+async def test_a_skill_not_offered_is_reachable_where_files_allow_covers_it(
     tmp_path: Path,
 ) -> None:
-    folder = _folder(tmp_path, {"preload": ["skills/tone"]}, files={"include": ["skills/tone"]})
+    folder = _folder(tmp_path, {"preload": ["skills/tone"]}, files={"allow": ["skills/tone"]})
     assert _spec(folder).listing.splitlines() == [
         "skills/",
         "  tone/",
@@ -591,7 +591,7 @@ async def test_gitignore_true_leaves_out_what_a_gitignore_ignores_in_a_skill(
 ) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["skills/*"]},
+        {"allow": ["skills/*"]},
         files={"gitignore": True},
         written={".gitignore": "skills/internal/\nskills/tone/refs/\n"},
     )
@@ -601,7 +601,7 @@ async def test_gitignore_true_leaves_out_what_a_gitignore_ignores_in_a_skill(
 
 
 def test_skill_text_that_is_not_utf8_is_refused(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["skills/tone"]})
+    folder = _folder(tmp_path, {"allow": ["skills/tone"]})
     (folder / "skills/tone/SKILL.md").write_bytes(b"\xff\xfe")
     _refused(folder, r"^compiled: agent 'a' reads 'skills/tone/SKILL\.md', not UTF-8 text")
 
@@ -647,7 +647,7 @@ OTHER_HARNESS = {
 def test_frontmatter_that_does_not_parse_is_read_for_its_description_line(
     tmp_path: Path, name: str, said: str, body: str
 ) -> None:
-    folder = _folder(tmp_path, {"include": [".claude/skills/*"]}, written=OTHER_HARNESS)
+    folder = _folder(tmp_path, {"allow": [".claude/skills/*"]}, written=OTHER_HARNESS)
     skill = _spec(folder).skills[name]
     assert skill.description == said
     assert skill.body == body
@@ -658,14 +658,14 @@ def test_a_description_that_parses_and_is_no_string_is_no_description(tmp_path: 
         "a.md": "---\ndescription: 12\n---\nWork.\n",
         "skills/bad/SKILL.md": "---\ndescription: [one, two]\n---\nBody.\n",
     }
-    spec = _spec(_folder(tmp_path, {"include": ["skills/*"]}, written=written))
+    spec = _spec(_folder(tmp_path, {"allow": ["skills/*"]}, written=written))
     assert (spec.skills["bad"].description, spec.skills["bad"].body) == ("", "Body.")
     assert (spec.description, spec.body) == ("", "Work.")
 
 
 def test_a_file_on_the_map_with_frontmatter_that_does_not_parse_loads(tmp_path: Path) -> None:
     folder = _folder(
-        tmp_path, None, files={"include": [".claude/skills/colon"]}, written=OTHER_HARNESS
+        tmp_path, None, files={"allow": [".claude/skills/colon"]}, written=OTHER_HARNESS
     )
     assert _spec(folder).listing.splitlines() == [
         ".claude/",
@@ -675,11 +675,11 @@ def test_a_file_on_the_map_with_frontmatter_that_does_not_parse_loads(tmp_path: 
     ]
 
 
-async def test_files_exclude_holds_inside_an_offered_skill(tmp_path: Path) -> None:
+async def test_files_deny_holds_inside_an_offered_skill(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["skills/tone"]},
-        files={"include": ["skills/tone"], "exclude": ["skills/tone/refs/**"]},
+        {"allow": ["skills/tone"]},
+        files={"allow": ["skills/tone"], "deny": ["skills/tone/refs/**"]},
     )
     surface = _surface(folder)
     path = "skills/tone/refs/examples.md"
@@ -688,29 +688,27 @@ async def test_files_exclude_holds_inside_an_offered_skill(tmp_path: Path) -> No
     assert await _answer(surface, "Read", {"path": "skills/tone/SKILL.md"}) == TONE
 
 
-async def test_files_exclude_holds_on_a_run_that_invokes_the_skill(tmp_path: Path) -> None:
+async def test_files_deny_holds_on_a_run_that_invokes_the_skill(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
         {"preload": ["skills/tone"]},
-        files={"include": ["skills/tone"], "exclude": ["skills/tone/refs/**"]},
+        files={"allow": ["skills/tone"], "deny": ["skills/tone/refs/**"]},
     )
     path = "skills/tone/refs/examples.md"
     _reads_as_missing(await _answer(_surface(folder, invoked="tone"), "Read", {"path": path}), path)
 
 
-async def test_files_exclude_may_reach_only_into_a_skill_folder(tmp_path: Path) -> None:
-    folder = _folder(
-        tmp_path, {"include": ["skills/tone"]}, files={"exclude": ["skills/tone/refs/**"]}
-    )
+async def test_files_deny_may_reach_only_into_a_skill_folder(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"allow": ["skills/tone"]}, files={"deny": ["skills/tone/refs/**"]})
     path = "skills/tone/refs/examples.md"
     _reads_as_missing(await _answer(_surface(folder), "Read", {"path": path}), path)
 
 
-async def test_files_exclude_leaves_a_listed_skills_own_file_open(tmp_path: Path) -> None:
+async def test_files_deny_leaves_a_listed_skills_own_file_open(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["skills/tone"]},
-        files={"include": ["skills"], "exclude": ["skills/**"]},
+        {"allow": ["skills/tone"]},
+        files={"allow": ["skills"], "deny": ["skills/**"]},
     )
     surface = _surface(folder)
     assert await _answer(surface, "Read", {"path": "skills/tone/SKILL.md"}) == TONE
@@ -721,8 +719,8 @@ async def test_files_exclude_leaves_a_listed_skills_own_file_open(tmp_path: Path
 NESTED = {"skills/tone/child/SKILL.md": "Child.\n", "skills/tone/child/notes.md": "Notes.\n"}
 
 
-async def test_an_excluded_nested_skill_stays_closed_through_its_parent(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["skills/**"], "exclude": ["child"]}, written=NESTED)
+async def test_a_denied_nested_skill_stays_closed_through_its_parent(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"allow": ["skills/**"], "deny": ["child"]}, written=NESTED)
     assert "child" not in _spec(folder).offered
     closed = _surface(folder)
     for path in ("skills/tone/child/SKILL.md", "skills/tone/child/notes.md"):
@@ -733,14 +731,14 @@ async def test_an_excluded_nested_skill_stays_closed_through_its_parent(tmp_path
     _reads_as_missing(await _answer(invoked, "Read", {"path": path}), path)
 
 
-async def test_an_excluded_nested_skill_opens_when_it_is_the_one_invoked(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["skills/**"], "exclude": ["child"]}, written=NESTED)
+async def test_a_denied_nested_skill_opens_when_it_is_the_one_invoked(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"allow": ["skills/**"], "deny": ["child"]}, written=NESTED)
     invoked = _surface(folder, invoked="child")
     assert await _answer(invoked, "Read", {"path": "skills/tone/child/notes.md"}) == "Notes.\n"
 
 
-async def test_a_skill_offered_inside_an_excluded_one_stays_open(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["skills/**"], "exclude": ["tone"]}, written=NESTED)
+async def test_a_skill_offered_inside_a_denied_one_stays_open(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"allow": ["skills/**"], "deny": ["tone"]}, written=NESTED)
     surface = _surface(folder)
     assert await _answer(surface, "Read", {"path": "skills/tone/child/notes.md"}) == "Notes.\n"
     path = "skills/tone/refs/examples.md"
@@ -751,12 +749,12 @@ async def test_a_skill_offered_inside_an_excluded_one_stays_open(tmp_path: Path)
     ("skills", "extra"),
     [
         (
-            {"include": ["skills/tone"]},
-            {"modes": {"m": {"skills": {"include": ["skills/escalate"]}}}},
+            {"allow": ["skills/tone"]},
+            {"modes": {"m": {"skills": {"allow": ["skills/escalate"]}}}},
         ),
-        ({"include": ["skills/tone", "skills/escalate"], "exclude": ["escalate"]}, {}),
+        ({"allow": ["skills/tone", "skills/escalate"], "deny": ["escalate"]}, {}),
     ],
-    ids=["named-in-another-mode", "excluded"],
+    ids=["named-in-another-mode", "denied"],
 )
 def test_a_skill_the_entry_reaches_but_does_not_offer_is_in_the_fingerprint(
     tmp_path: Path, skills: dict[str, Any], extra: dict[str, Any]
@@ -774,14 +772,14 @@ def test_a_skill_the_entry_reaches_but_does_not_offer_is_in_the_fingerprint(
 
 
 def test_skills_the_entry_does_not_name_stay_out_of_the_fingerprint(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["skills/tone"]})
+    folder = _folder(tmp_path, {"allow": ["skills/tone"]})
     before = _spec(folder).fingerprint
     (folder / "skills/escalate/SKILL.md").write_text("Changed.\n", encoding="utf-8")
     assert _spec(folder).fingerprint == before
 
 
 async def test_a_link_to_rfnry_yaml_inside_a_skill_folder_reads_as_missing(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["skills/tone"]})
+    folder = _folder(tmp_path, {"allow": ["skills/tone"]})
     (folder / "skills/tone/rules.yaml").symlink_to(folder / "rfnry.yaml")
     path = "skills/tone/rules.yaml"
     _reads_as_missing(await _answer(_surface(folder), "Read", {"path": path}), path)
@@ -791,8 +789,8 @@ async def test_a_delegated_run_takes_no_skill(tmp_path: Path) -> None:
     folder = write_folder(
         tmp_path,
         {
-            "lead": _agent({"include": ["skills/tone"]}, orchestration={"delegate_to": ["child"]}),
-            "child": _agent({"include": ["skills/escalate"]}),
+            "lead": _agent({"allow": ["skills/tone"]}, orchestration={"delegate_to": ["child"]}),
+            "child": _agent({"allow": ["skills/escalate"]}),
         },
         files=FILES,
     )

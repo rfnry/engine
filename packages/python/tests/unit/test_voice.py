@@ -106,7 +106,7 @@ def tool(name: str, body: Any = None) -> Tool:
 
 def with_tools(root: Path, *names: str, **entry: Any) -> Path:
     return write_folder(
-        root, {"voice": {**VOICE, "tools": {"include": list(names)}, **entry}}, files=FILES
+        root, {"voice": {**VOICE, "tools": {"allow": list(names)}, **entry}}, files=FILES
     )
 
 
@@ -128,8 +128,8 @@ async def never(start: VoiceStart) -> Spoken:
 @pytest.mark.parametrize(
     ("key", "value"),
     [
-        ("files", {"include": ["voice.md"]}),
-        ("skills", {"include": ["s/*"]}),
+        ("files", {"allow": ["voice.md"]}),
+        ("skills", {"allow": ["s/*"]}),
         ("orchestration", {"max_depth": 1}),
         ("workspace", True),
         ("questions", ["q/*.json"]),
@@ -251,8 +251,8 @@ async def test_talk_needs_a_scope_and_an_open_engine(tmp_path: Path) -> None:
 async def test_the_session_gets_its_modes_instructions_model_and_tools(tmp_path: Path) -> None:
     entry = {
         **VOICE,
-        "tools": {"include": ["consult"]},
-        "modes": {"duplex": {"instructions": "duplex.md", "tools": {"include": ["hang_up"]}}},
+        "tools": {"allow": ["consult"]},
+        "modes": {"duplex": {"instructions": "duplex.md", "tools": {"allow": ["hang_up"]}}},
     }
     write_folder(tmp_path, {"voice": entry}, files={**FILES, "duplex.md": "Talk both ways.\n"})
     live, seen = Live(), list[VoiceStart]()
@@ -306,7 +306,7 @@ async def test_a_bare_name_the_run_does_not_give_fails_before_the_session_opens(
     tmp_path: Path,
 ) -> None:
     with_tools(tmp_path, "consult")
-    with pytest.raises(ConfigurationError, match=r"lists 'consult' in tools\.include"):
+    with pytest.raises(ConfigurationError, match=r"lists 'consult' in tools\.allow"):
         await engine_of(tmp_path).talk("voice", "acme", never)
 
 
@@ -315,7 +315,7 @@ def test_a_tool_a_section_grants_is_a_load_error(tmp_path: Path, name: str) -> N
     with_tools(tmp_path, name)
     with pytest.raises(
         ConfigurationError,
-        match=rf"lists '{name}' in tools\.include, which a voice agent has no section to grant; remove the name",
+        match=rf"lists '{name}' in tools\.allow, which a voice agent has no section to grant; remove the name",
     ):
         load_folder(tmp_path)
 
@@ -323,18 +323,18 @@ def test_a_tool_a_section_grants_is_a_load_error(tmp_path: Path, name: str) -> N
 @pytest.mark.parametrize("name", ["Output", "History"])
 def test_a_tool_the_run_decides_is_a_load_error(tmp_path: Path, name: str) -> None:
     with_tools(tmp_path, name)
-    with pytest.raises(ConfigurationError, match=f"lists '{name}' in tools.include"):
+    with pytest.raises(ConfigurationError, match=f"lists '{name}' in tools.allow"):
         load_folder(tmp_path)
 
 
-def test_nothing_is_granted_and_exclude_drops_a_declared_tool(tmp_path: Path) -> None:
+def test_nothing_is_granted_and_deny_drops_a_declared_tool(tmp_path: Path) -> None:
     write_folder(
         tmp_path,
         {
             "voice": {
                 **VOICE,
-                "tools": {"include": ["who", "consult"]},
-                "modes": {"quiet": {"tools": {"exclude": ["who"]}}},
+                "tools": {"allow": ["who", "consult"]},
+                "modes": {"quiet": {"tools": {"deny": ["who"]}}},
             }
         },
         tools={"who": {"module": "tools/who.py", "description": "Who"}},
@@ -386,7 +386,7 @@ async def test_a_tool_call_passes_approve_and_becomes_a_step(tmp_path: Path) -> 
 async def test_a_call_that_passes_its_deadline_is_an_error_and_a_step(tmp_path: Path) -> None:
     write_folder(
         tmp_path,
-        {"voice": {**VOICE, "tools": {"include": ["slow"], "timeout": 0.05}}},
+        {"voice": {**VOICE, "tools": {"allow": ["slow"], "timeout": 0.05}}},
         files=FILES,
     )
 
@@ -422,7 +422,7 @@ async def test_a_tool_that_raises_is_an_error_to_the_session(tmp_path: Path) -> 
 async def test_max_parallel_caps_the_calls_of_a_session(tmp_path: Path) -> None:
     write_folder(
         tmp_path,
-        {"voice": {**VOICE, "tools": {"include": ["held"], "max_parallel": 1}}},
+        {"voice": {**VOICE, "tools": {"allow": ["held"], "max_parallel": 1}}},
         files=FILES,
     )
     running, most = 0, 0
@@ -469,7 +469,7 @@ async def test_on_event_gets_the_tool_call_events(tmp_path: Path) -> None:
 async def test_a_folder_tool_runs_in_its_worker(tmp_path: Path) -> None:
     write_folder(
         tmp_path,
-        {"voice": {**VOICE, "worker": "live_tools", "tools": {"include": ["who"]}}},
+        {"voice": {**VOICE, "worker": "live_tools", "tools": {"allow": ["who"]}}},
         workers={"live_tools": {"processes": 1}},
         tools={"who": {"module": "tools/who.py", "description": "Who runs this"}},
         files={**FILES, "tools/who.py": PID},
@@ -580,7 +580,7 @@ async def test_a_call_cancelled_in_its_result_handler_keeps_one_step(tmp_path: P
 async def test_a_cancelled_call_cancels_an_async_tool_in_its_worker(tmp_path: Path) -> None:
     write_folder(
         tmp_path,
-        {"voice": {**VOICE, "tools": {"include": ["slow"]}}},
+        {"voice": {**VOICE, "tools": {"allow": ["slow"]}}},
         tools={"slow": {"module": "tools/slow.py", "description": "Slow"}},
         files={**FILES, "tools/slow.py": SLOW_ASYNC},
     )

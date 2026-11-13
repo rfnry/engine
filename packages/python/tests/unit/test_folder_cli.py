@@ -23,7 +23,7 @@ def _good(root: Path) -> Path:
     return write_folder(
         root,
         {
-            "a": {**AGENT, "files": {"include": ["notes/*.md"]}, "modes": MODES},
+            "a": {**AGENT, "files": {"allow": ["notes/*.md"]}, "modes": MODES},
             "b": {"kind": "decision", "model": "judge", "instructions": "a.md"},
         },
         files={"a.md": "Work.\n", "notes/x.md": "x\n"},
@@ -44,8 +44,8 @@ def test_check_lists_the_names_a_run_must_give(
         {
             "a": {
                 **AGENT,
-                "tools": {"include": ["handoff"]},
-                "modes": {"chat": {"tools": {"include": ["verify"]}}},
+                "tools": {"allow": ["handoff"]},
+                "modes": {"chat": {"tools": {"allow": ["verify"]}}},
             },
             "b": {"kind": "decision", "model": "judge", "instructions": "a.md"},
         },
@@ -125,7 +125,7 @@ def test_check_starts_no_process_for_a_folder_with_a_tool(
     monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: started.append(args))
     folder = write_folder(
         tmp_path,
-        {"a": {**AGENT, "tools": {"include": ["one"]}}},
+        {"a": {**AGENT, "tools": {"allow": ["one"]}}},
         tools={"one": {"module": "tools/one.py", "description": "Does one"}},
         files={"a.md": "Work.\n", "tools/one.py": "def run(args, call):\n    return {}\n"},
     )
@@ -192,18 +192,18 @@ agents:
     max_model_calls: 24
     worker: customers
     files:
-      include: [knowledge]
-      exclude: [knowledge/drafts/**]
+      allow: [knowledge]
+      deny: [knowledge/drafts/**]
       preload: [support/rules]
       gitignore: true
     tools:
-      include: ["*", handoff]
-      exclude: [refund]
+      allow: ["*", handoff]
+      deny: [refund]
       timeout: 30
       max_parallel: 4
     skills:
-      include: [support/skills/*]
-      exclude: [internal]
+      allow: [support/skills/*]
+      deny: [internal]
       preload: [support/skills/tone]
       public: [escalate]
     orchestration:
@@ -218,7 +218,7 @@ agents:
       chat:
         worker: live
         tools:
-          include: [verify_customer]
+          allow: [verify_customer]
         skills:
           preload: [support/channels/live, support/channels/chat]
 
@@ -260,9 +260,9 @@ def test_the_schema_accepts_the_design_example(
     ("path", "value"),
     [
         ("agents.support.files", None),
-        ("agents.support.files.include", []),
+        ("agents.support.files.allow", []),
         ("agents.support.files", {}),
-        ("agents.support.tools.include", [""]),
+        ("agents.support.tools.allow", [""]),
         ("agents.support.description", ""),
         ("agents.support.modes", {}),
         ("agents.support.modes.email", None),

@@ -76,7 +76,7 @@ def test_an_unreadable_folder_is_named_in_a_warning_and_left_out(
                 "kind": "generation",
                 "model": "strong",
                 "instructions": "a.md",
-                "files": {"include": ["."]},
+                "files": {"allow": ["."]},
             }
         },
         files={"a.md": "Work.\n", "notes/a.md": "A.\n", "lost/b.md": "B.\n"},

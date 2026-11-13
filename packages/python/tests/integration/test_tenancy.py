@@ -209,7 +209,7 @@ G: dict[str, Any] = {
     "description": "G",
     "instructions": "g.md",
     "files": {"preload": ["g"]},
-    "tools": {"include": ["look"]},
+    "tools": {"allow": ["look"]},
 }
 
 

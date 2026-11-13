@@ -68,34 +68,32 @@ def _refused(folder: Path, pattern: str) -> None:
         load_folder(folder)
 
 
-def test_the_map_is_what_include_reaches_less_exclude(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge"], "exclude": ["knowledge/drafts/**"]})
+def test_the_map_is_what_allow_reaches_less_deny(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"allow": ["knowledge"], "deny": ["knowledge/drafts/**"]})
     assert _map(folder) == ["knowledge/", "  rates.md", "  refunds.md"]
 
 
 async def test_the_prompt_shows_the_map(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge/refunds.md"]})
+    folder = _folder(tmp_path, {"allow": ["knowledge/refunds.md"]})
     model = Scripted(text_reply("done"))
     await Engine(folder, providers=provided({"m": model})).run("a", "acme", "hi")
     assert "<<<FILES>>>\nknowledge/\n  refunds.md" in model.calls[0][0]
 
 
 def test_a_glob_reaches_files_and_the_folders_it_matches(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge/*"], "exclude": ["knowledge/r*.md"]})
+    folder = _folder(tmp_path, {"allow": ["knowledge/*"], "deny": ["knowledge/r*.md"]})
     assert _map(folder) == ["knowledge/", "  drafts/", "    next.md"]
 
 
 async def test_read_takes_root_relative_paths(tmp_path: Path) -> None:
-    surface = _surface(_folder(tmp_path, {"include": ["knowledge"]}))
+    surface = _surface(_folder(tmp_path, {"allow": ["knowledge"]}))
     assert await surface.dispatch("Read", {"path": "knowledge/refunds.md"}) == (
         "A duplicate is refunded.\n"
     )
 
 
-async def test_an_excluded_path_reads_as_missing(tmp_path: Path) -> None:
-    surface = _surface(
-        _folder(tmp_path, {"include": ["knowledge"], "exclude": ["knowledge/drafts/**"]})
-    )
+async def test_a_denied_path_reads_as_missing(tmp_path: Path) -> None:
+    surface = _surface(_folder(tmp_path, {"allow": ["knowledge"], "deny": ["knowledge/drafts/**"]}))
     path = "knowledge/drafts/next.md"
     _reads_as_missing(await _answer(surface, "Read", {"path": path}), path)
 
@@ -115,17 +113,17 @@ async def test_an_excluded_path_reads_as_missing(tmp_path: Path) -> None:
         ("Glob", {"pattern": "private/*"}, {"pattern": "absent/*"}),
     ],
 )
-async def test_a_path_outside_include_reads_as_missing(
+async def test_a_path_outside_allow_reads_as_missing(
     tmp_path: Path, tool: str, args: dict[str, Any], absent: dict[str, Any]
 ) -> None:
-    surface = _surface(_folder(tmp_path, {"include": ["knowledge"]}))
+    surface = _surface(_folder(tmp_path, {"allow": ["knowledge"]}))
     answer = await _answer(surface, tool, args)
     assert "A private refund" not in answer
     assert answer == (await _answer(surface, tool, absent)).replace("absent", "private")
 
 
-async def test_the_searching_tools_stay_inside_include(tmp_path: Path) -> None:
-    surface = _surface(_folder(tmp_path, {"include": ["knowledge"]}))
+async def test_the_searching_tools_stay_inside_allow(tmp_path: Path) -> None:
+    surface = _surface(_folder(tmp_path, {"allow": ["knowledge"]}))
     expected = ["knowledge/drafts/next.md", "knowledge/rates.md", "knowledge/refunds.md"]
     assert str(await surface.dispatch("Glob", {"pattern": "**/*.md"})).splitlines() == expected
     assert str(await surface.dispatch("LS", {})).splitlines() == ["knowledge/"]
@@ -140,7 +138,7 @@ async def test_a_path_that_tidies_into_reach_but_leads_elsewhere_reads_as_missin
 ) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["knowledge"]},
+        {"allow": ["knowledge"]},
         written={"deep/place/here.md": "x\n", "deep/knowledge/refunds.md": "Elsewhere.\n"},
     )
     _link(folder / "tunnel", folder / "deep/place")
@@ -154,7 +152,7 @@ async def test_a_path_that_tidies_into_reach_but_leads_elsewhere_reads_as_missin
 async def test_the_agents_own_instructions_tools_and_skills_stay_out_of_its_map(
     tmp_path: Path,
 ) -> None:
-    folder = _folder(tmp_path, {"include": ["."]})
+    folder = _folder(tmp_path, {"allow": ["."]})
     assert _map(folder) == [
         "knowledge/",
         "  drafts/",
@@ -169,19 +167,19 @@ async def test_the_agents_own_instructions_tools_and_skills_stay_out_of_its_map(
 async def test_instructions_spelled_with_a_dot_stay_out_of_the_map(tmp_path: Path) -> None:
     folder = write_folder(
         tmp_path,
-        {"a": {**_agent({"include": ["."]}), "instructions": "./a.md"}},
+        {"a": {**_agent({"allow": ["."]}), "instructions": "./a.md"}},
         files={"a.md": "Work.\n", "b.md": "Other.\n"},
     )
     assert _map(folder) == ["b.md"]
 
 
-@pytest.mark.parametrize("key", ["include", "preload"])
+@pytest.mark.parametrize("key", ["allow", "preload"])
 def test_naming_rfnry_yaml_is_refused(tmp_path: Path, key: str) -> None:
     _refused(_folder(tmp_path, {key: ["rfnry.yaml"]}), r"a model never reads that file")
 
 
 async def test_rfnry_yaml_is_never_readable(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["."]})
+    folder = _folder(tmp_path, {"allow": ["."]})
     _link(folder / "knowledge/copy.yaml", "../rfnry.yaml")
     assert not any("yaml" in line for line in _map(folder))
     surface = _surface(folder)
@@ -218,15 +216,15 @@ async def test_preload_is_sent_every_call_and_is_readable(tmp_path: Path) -> Non
     assert run.steps[0].result == "Be kind.\n"
 
 
-def test_preload_needs_no_include_and_stays_off_the_map(tmp_path: Path) -> None:
+def test_preload_needs_no_allow_and_stays_off_the_map(tmp_path: Path) -> None:
     folder = _folder(tmp_path, {"preload": ["knowledge/refunds.md"]})
     assert _map(folder) == []
 
 
-def test_an_included_preload_is_on_the_map_and_sent_once(tmp_path: Path) -> None:
+def test_an_allowed_preload_is_on_the_map_and_sent_once(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["knowledge/refunds.md"], "preload": ["knowledge", "knowledge/refunds.md"]},
+        {"allow": ["knowledge/refunds.md"], "preload": ["knowledge", "knowledge/refunds.md"]},
     )
     spec = load_folder(folder)["a"]
     assert spec.listing.splitlines() == ["knowledge/", "  refunds.md"]
@@ -244,8 +242,8 @@ def _preloaded_names(folder: Path) -> list[str]:
     ]
 
 
-async def test_exclude_narrows_a_preload_folder(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"exclude": ["knowledge/drafts/**"], "preload": ["knowledge"]})
+async def test_deny_narrows_a_preload_folder(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"deny": ["knowledge/drafts/**"], "preload": ["knowledge"]})
     assert _preloaded_names(folder) == ["<<<knowledge/rates.md>>>", "<<<knowledge/refunds.md>>>"]
     surface = _surface(folder)
     path = "knowledge/drafts/next.md"
@@ -253,18 +251,18 @@ async def test_exclude_narrows_a_preload_folder(tmp_path: Path) -> None:
     assert await surface.dispatch("Read", {"path": "knowledge/rates.md"}) == "Rates go up.\n"
 
 
-def test_exclude_narrows_a_preload_glob(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"exclude": ["knowledge/rates.md"], "preload": ["knowledge/r*.md"]})
+def test_deny_narrows_a_preload_glob(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {"deny": ["knowledge/rates.md"], "preload": ["knowledge/r*.md"]})
     assert _preloaded_names(folder) == ["<<<knowledge/refunds.md>>>"]
 
 
-@pytest.mark.parametrize("include", [{}, {"include": ["knowledge"]}], ids=["alone", "included"])
-def test_a_preload_exclude_leaves_with_nothing_is_refused(
-    tmp_path: Path, include: dict[str, Any]
+@pytest.mark.parametrize("allow", [{}, {"allow": ["knowledge"]}], ids=["alone", "allowed"])
+def test_a_preload_deny_leaves_with_nothing_is_refused(
+    tmp_path: Path, allow: dict[str, Any]
 ) -> None:
     folder = _folder(
         tmp_path,
-        {**include, "exclude": ["knowledge/rates.md"], "preload": ["knowledge/rates.md"]},
+        {**allow, "deny": ["knowledge/rates.md"], "preload": ["knowledge/rates.md"]},
     )
     _refused(
         folder,
@@ -280,7 +278,7 @@ def test_a_preload_changes_the_fingerprint_with_its_text(tmp_path: Path) -> None
 
 
 def test_a_reached_file_changes_the_fingerprint_and_one_outside_does_not(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge"]})
+    folder = _folder(tmp_path, {"allow": ["knowledge"]})
     before = load_folder(folder)["a"].fingerprint
     (folder / "private/notes.md").write_text("Changed.\n", encoding="utf-8")
     assert load_folder(folder)["a"].fingerprint == before
@@ -293,7 +291,7 @@ async def test_a_named_hidden_folder_is_reachable_but_hidden_names_below_stay_hi
 ) -> None:
     folder = _folder(
         tmp_path,
-        {"include": [".claude/agents"]},
+        {"allow": [".claude/agents"]},
         written={
             ".claude/agents/reviewer.md": "Review.\n",
             ".claude/agents/.draft.md": "Draft.\n",
@@ -320,15 +318,15 @@ async def test_a_named_hidden_folder_is_reachable_but_hidden_names_below_stay_hi
 
 def test_a_hidden_name_is_reached_only_by_a_literal_segment(tmp_path: Path) -> None:
     written = {".claude/x.md": "X.\n", "knowledge/.env": "KEY=1\n"}
-    _refused(_folder(tmp_path, {"include": ["*/x.md"]}, written=written), r"reaches nothing")
-    assert _map(_folder(tmp_path, {"include": ["knowledge/*"]}, written=written)) == [
+    _refused(_folder(tmp_path, {"allow": ["*/x.md"]}, written=written), r"reaches nothing")
+    assert _map(_folder(tmp_path, {"allow": ["knowledge/*"]}, written=written)) == [
         "knowledge/",
         "  drafts/",
         "    next.md",
         "  rates.md",
         "  refunds.md",
     ]
-    assert _map(_folder(tmp_path, {"include": ["knowledge/.env"]}, written=written)) == [
+    assert _map(_folder(tmp_path, {"allow": ["knowledge/.env"]}, written=written)) == [
         "knowledge/",
         "  .env",
     ]
@@ -336,7 +334,7 @@ def test_a_hidden_name_is_reached_only_by_a_literal_segment(tmp_path: Path) -> N
 
 async def _dotdot_is_refused(root: Path) -> None:
     for pattern in ("../x", "knowledge/../../x", "knowledge/*/../../x", "**/../x"):
-        for key in ("include", "exclude", "preload"):
+        for key in ("allow", "deny", "preload"):
             _refused(_folder(root, {key: [pattern]}), r"not written from the folder root")
 
 
@@ -346,7 +344,7 @@ async def _a_link_out_is_left_out(root: Path) -> None:
     outside = root / "outside"
     outside.mkdir()
     (outside / "passwd").write_text(SECRET, encoding="utf-8")
-    _folder(folder, {"include": ["knowledge"], "preload": ["knowledge"]})
+    _folder(folder, {"allow": ["knowledge"], "preload": ["knowledge"]})
     _link(folder / "knowledge/link", outside)
     _link(folder / "knowledge/passwd", outside / "passwd")
     _link(folder / "knowledge/etc", "/etc")
@@ -376,7 +374,7 @@ async def _a_link_out_is_left_out(root: Path) -> None:
 
 
 async def _a_hidden_env_reads_as_hidden(root: Path) -> None:
-    folder = _folder(root, {"include": ["knowledge"]}, written={"knowledge/.env": "KEY=1\n"})
+    folder = _folder(root, {"allow": ["knowledge"]}, written={"knowledge/.env": "KEY=1\n"})
     assert not any(".env" in line for line in _map(folder))
     surface = _surface(folder)
     for tool in ("Read", "Load"):
@@ -397,12 +395,12 @@ async def test_nothing_escapes(tmp_path: Path, check: Callable[[Path], Awaitable
 
 
 async def test_a_dotdot_glob_given_to_the_tool_is_refused(tmp_path: Path) -> None:
-    surface = _surface(_folder(tmp_path, {"include": ["knowledge"]}))
+    surface = _surface(_folder(tmp_path, {"allow": ["knowledge"]}))
     assert "must be relative" in await _answer(surface, "Glob", {"pattern": "knowledge/../*"})
 
 
 async def test_a_link_inside_the_root_reads_by_its_own_name(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge"]})
+    folder = _folder(tmp_path, {"allow": ["knowledge"]})
     _link(folder / "knowledge/note.md", "../private/notes.md")
     _link(folder / "knowledge/shared", "../private")
     assert _map(folder) == [
@@ -432,7 +430,7 @@ async def test_a_link_inside_the_root_reads_by_its_own_name(tmp_path: Path) -> N
 
 async def test_a_folder_holding_only_links_is_listed_searched_and_globbed(tmp_path: Path) -> None:
     shared = {"shared/policy.md": "A shared policy.\n", "shared/rates.md": "Shared rates.\n"}
-    folder = _folder(tmp_path, {"include": ["linked"]}, written=shared)
+    folder = _folder(tmp_path, {"allow": ["linked"]}, written=shared)
     _link(folder / "linked/policy.md", "../shared/policy.md")
     _link(folder / "linked/rates.md", "../shared/rates.md")
     assert _map(folder) == ["linked/", "  policy.md", "  rates.md"]
@@ -455,7 +453,7 @@ async def test_a_folder_holding_only_links_is_listed_searched_and_globbed(tmp_pa
 
 
 def test_a_link_cycle_ends(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge"]})
+    folder = _folder(tmp_path, {"allow": ["knowledge"]})
     _link(folder / "knowledge/up", "..")
     _link(folder / "knowledge/drafts/loop", "../drafts")
     assert "  up/" not in _map(folder)
@@ -463,7 +461,7 @@ def test_a_link_cycle_ends(tmp_path: Path) -> None:
 
 
 def test_a_folder_link_to_a_hidden_folder_is_left_out(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge"]}, written={".keys/k.md": "K.\n"})
+    folder = _folder(tmp_path, {"allow": ["knowledge"]}, written={".keys/k.md": "K.\n"})
     _link(folder / "knowledge/keys", "../.keys")
     assert not any("keys" in line for line in _map(folder))
 
@@ -473,12 +471,12 @@ async def test_gitignore_true_leaves_out_what_a_gitignore_ignores(tmp_path: Path
         ".gitignore": "drafts/\n",
         "knowledge/.gitignore": "rates.md\n",
     }
-    folder = _folder(tmp_path, {"include": ["knowledge"], "gitignore": True}, written=written)
+    folder = _folder(tmp_path, {"allow": ["knowledge"], "gitignore": True}, written=written)
     assert _map(folder) == ["knowledge/", "  refunds.md"]
     surface = _surface(folder)
     for path in ("knowledge/rates.md", "knowledge/drafts/next.md"):
         _reads_as_missing(await _answer(surface, "Read", {"path": path}), path)
-    assert _map(_folder(tmp_path, {"include": ["knowledge"]}, written=written)) == [
+    assert _map(_folder(tmp_path, {"allow": ["knowledge"]}, written=written)) == [
         "knowledge/",
         "  drafts/",
         "    next.md",
@@ -490,7 +488,7 @@ async def test_gitignore_true_leaves_out_what_a_gitignore_ignores(tmp_path: Path
 def test_a_gitignore_inside_a_named_hidden_folder_counts(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": [".claude/rules"], "gitignore": True},
+        {"allow": [".claude/rules"], "gitignore": True},
         written={
             ".claude/rules/kept.md": "K.\n",
             ".claude/rules/gone.md": "G.\n",
@@ -509,13 +507,13 @@ def test_a_gitignored_preload_reaches_nothing(tmp_path: Path) -> None:
     _refused(folder, r"files\.preload.*reaches nothing")
 
 
-async def test_file_tools_come_with_files_and_tools_exclude_drops_one(tmp_path: Path) -> None:
-    surface = _surface(_folder(tmp_path, {"include": ["knowledge"]}))
+async def test_file_tools_come_with_files_and_tools_deny_drops_one(tmp_path: Path) -> None:
+    surface = _surface(_folder(tmp_path, {"allow": ["knowledge"]}))
     assert set(surface.names) >= FILE_TOOLS
     surface = _surface(_folder(tmp_path, {"preload": ["knowledge/rates.md"]}))
     assert set(surface.names) >= FILE_TOOLS
     surface = _surface(
-        _folder(tmp_path, {"include": ["knowledge"]}, tools={"exclude": ["Grep", "Load"]})
+        _folder(tmp_path, {"allow": ["knowledge"]}, tools={"deny": ["Grep", "Load"]})
     )
     assert FILE_TOOLS & set(surface.names) == {"Read", "Glob", "LS"}
     bare = write_folder(
@@ -529,22 +527,22 @@ def test_a_preload_is_offered_to_load_only_when_load_is_kept(tmp_path: Path) -> 
     (tmp_path / "knowledge/map.png").write_bytes(b"\x89PNG\r\n\x1a\n\0")
     folder = _folder(tmp_path, {"preload": ["knowledge/map.png"]})
     assert "Load opens it" in str(load_folder(folder)["a"].preload)
-    folder = _folder(tmp_path, {"preload": ["knowledge/map.png"]}, tools={"exclude": ["Load"]})
+    folder = _folder(tmp_path, {"preload": ["knowledge/map.png"]}, tools={"deny": ["Load"]})
     assert "Load opens it" not in str(load_folder(folder)["a"].preload)
 
 
 @pytest.mark.parametrize(
     ("files", "key", "pattern"),
     [
-        ({"include": ["nowhere"]}, "files.include", "nowhere"),
-        ({"include": ["knowledge/*.pdf"]}, "files.include", "knowledge/*.pdf"),
+        ({"allow": ["nowhere"]}, "files.allow", "nowhere"),
+        ({"allow": ["knowledge/*.pdf"]}, "files.allow", "knowledge/*.pdf"),
         ({"preload": ["nowhere/x.md"]}, "files.preload", "nowhere/x.md"),
         (
-            {"include": ["knowledge"], "exclude": ["knowledge/none/**"]},
-            "files.exclude",
+            {"allow": ["knowledge"], "deny": ["knowledge/none/**"]},
+            "files.deny",
             "knowledge/none/**",
         ),
-        ({"include": ["knowledge"], "exclude": ["private"]}, "files.exclude", "private"),
+        ({"allow": ["knowledge"], "deny": ["private"]}, "files.deny", "private"),
     ],
 )
 def test_a_pattern_reaching_nothing_is_refused(
@@ -557,7 +555,7 @@ def test_a_pattern_reaching_nothing_is_refused(
     assert key in said and repr(pattern) in said
 
 
-@pytest.mark.parametrize("key", ["include", "preload"])
+@pytest.mark.parametrize("key", ["allow", "preload"])
 def test_a_pattern_reaching_only_a_link_out_is_refused(tmp_path: Path, key: str) -> None:
     folder = _folder(tmp_path, {key: ["knowledge/link"]})
     _link(folder / "knowledge/link", tmp_path.parent)
@@ -579,8 +577,8 @@ def test_a_preload_of_a_bytecode_cache_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_folder_of_hidden_files_only_reaches_nothing(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["vault"]}, written={"vault/.env": "KEY=1\n"})
-    _refused(folder, r"files\.include.*reaches nothing")
+    folder = _folder(tmp_path, {"allow": ["vault"]}, written={"vault/.env": "KEY=1\n"})
+    _refused(folder, r"files\.allow.*reaches nothing")
 
 
 def test_a_mode_is_named_when_its_pattern_reaches_nothing(tmp_path: Path) -> None:
@@ -588,8 +586,8 @@ def test_a_mode_is_named_when_its_pattern_reaches_nothing(tmp_path: Path) -> Non
         tmp_path,
         {
             "a": {
-                **_agent({"include": ["knowledge"]}),
-                "modes": {"chat": {"files": {"include": ["x"]}}},
+                **_agent({"allow": ["knowledge"]}),
+                "modes": {"chat": {"files": {"allow": ["x"]}}},
             }
         },
         files=FILES,
@@ -604,8 +602,8 @@ async def test_a_mode_adds_to_what_its_entry_reaches(tmp_path: Path) -> None:
         tmp_path,
         {
             "a": {
-                **_agent({"include": ["knowledge/rates.md"]}),
-                "modes": {"chat": {"files": {"include": ["private"]}}},
+                **_agent({"allow": ["knowledge/rates.md"]}),
+                "modes": {"chat": {"files": {"allow": ["private"]}}},
             }
         },
         files=FILES,
@@ -624,8 +622,8 @@ def test_an_entry_every_mode_completes_is_checked_on_its_modes(tmp_path: Path) -
     entry = {
         "kind": "generation",
         "model": "m",
-        "files": {"exclude": ["knowledge/drafts/**"]},
-        "modes": {"chat": {"instructions": "a.md", "files": {"include": ["knowledge"]}}},
+        "files": {"deny": ["knowledge/drafts/**"]},
+        "modes": {"chat": {"instructions": "a.md", "files": {"allow": ["knowledge"]}}},
     }
     agent = load_folder(write_folder(tmp_path, {"a": entry}, files=FILES))["a"]
     assert agent.needs_mode
@@ -644,9 +642,9 @@ async def _nothing_is_open(surface: EngineTools) -> None:
 @pytest.mark.parametrize(
     "files",
     [
-        {"include": ["knowledge"], "exclude": ["knowledge"]},
-        {"include": ["knowledge"], "exclude": ["knowledge/**"]},
-        {"include": ["knowledge/refunds.md"], "exclude": ["knowledge/refunds.md"]},
+        {"allow": ["knowledge"], "deny": ["knowledge"]},
+        {"allow": ["knowledge"], "deny": ["knowledge/**"]},
+        {"allow": ["knowledge/refunds.md"], "deny": ["knowledge/refunds.md"]},
     ],
     ids=["folder", "glob", "file"],
 )
@@ -662,7 +660,7 @@ def test_an_entry_without_instructions_opens_nothing_itself(tmp_path: Path) -> N
     entry = {
         "kind": "generation",
         "model": "m",
-        "files": {"include": ["knowledge"]},
+        "files": {"allow": ["knowledge"]},
         "modes": {"chat": {"instructions": "a.md"}},
     }
     folder = write_folder(tmp_path, {"a": entry}, files=FILES)
@@ -674,7 +672,7 @@ def test_an_entry_without_instructions_opens_nothing_itself(tmp_path: Path) -> N
 
 
 async def test_reach_is_fixed_at_load(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge"]})
+    folder = _folder(tmp_path, {"allow": ["knowledge"]})
     surface = _surface(folder)
     (folder / "knowledge/later.md").write_text("A later refund.\n", encoding="utf-8")
     path = "knowledge/later.md"
@@ -686,7 +684,7 @@ async def test_reach_is_fixed_at_load(tmp_path: Path) -> None:
 
 
 async def test_a_file_link_to_a_hidden_file_reads_under_the_links_name(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge"]}, written={".env": "KEY=1\n"})
+    folder = _folder(tmp_path, {"allow": ["knowledge"]}, written={".env": "KEY=1\n"})
     _link(folder / "knowledge/env", "../.env")
     assert "  env" in _map(folder)
     surface = _surface(folder)
@@ -698,7 +696,7 @@ async def test_a_file_link_to_a_hidden_file_reads_under_the_links_name(tmp_path:
 async def test_a_named_hidden_file_through_a_folder_link_is_as_the_map_shows(
     tmp_path: Path,
 ) -> None:
-    folder = _folder(tmp_path, {"include": ["alias/.h.md"]}, written={"real/.h.md": "Hello.\n"})
+    folder = _folder(tmp_path, {"allow": ["alias/.h.md"]}, written={"real/.h.md": "Hello.\n"})
     _link(folder / "alias", "real")
     assert _map(folder) == ["alias/", "  .h.md"]
     surface = _surface(folder)
@@ -710,19 +708,17 @@ async def test_a_named_hidden_file_through_a_folder_link_is_as_the_map_shows(
 
 
 @pytest.mark.parametrize(
-    ("exclude", "alias", "target"),
+    ("deny", "alias", "target"),
     [
         ("knowledge/drafts/**", "knowledge/alias.md", "drafts/next.md"),
         ("private/**", "knowledge/note.md", "../private/notes.md"),
     ],
-    ids=["an-excluded-file", "an-excluded-file-only-the-link-reaches"],
+    ids=["a-denied-file", "a-denied-file-only-the-link-reaches"],
 )
-async def test_a_link_to_an_excluded_file_reads_as_missing_and_is_not_preloaded(
-    tmp_path: Path, exclude: str, alias: str, target: str
+async def test_a_link_to_a_denied_file_reads_as_missing_and_is_not_preloaded(
+    tmp_path: Path, deny: str, alias: str, target: str
 ) -> None:
-    folder = _folder(
-        tmp_path, {"include": ["knowledge"], "preload": ["knowledge"], "exclude": [exclude]}
-    )
+    folder = _folder(tmp_path, {"allow": ["knowledge"], "preload": ["knowledge"], "deny": [deny]})
     _link(folder / alias, target)
     spec = load_folder(folder)["a"]
     assert f"  {alias.split('/')[-1]}" not in spec.listing.splitlines()
@@ -741,20 +737,20 @@ SKILLS = {"skills/close/SKILL.md": "Close it.\n", "skills/tone/SKILL.md": "Be wa
 @pytest.mark.parametrize(
     ("skills", "modes"),
     [
-        ({"include": ["skills/*"], "exclude": ["close"]}, {}),
+        ({"allow": ["skills/*"], "deny": ["close"]}, {}),
         (
             {"preload": ["skills/tone"]},
             {"modes": {"m": {"skills": {"preload": ["skills/close"]}}}},
         ),
     ],
-    ids=["excluded", "only-a-mode-names-it"],
+    ids=["denied", "only-a-mode-names-it"],
 )
 async def test_a_link_into_a_skill_the_entry_does_not_open_reads_as_missing_and_is_not_preloaded(
     tmp_path: Path, skills: dict[str, Any], modes: dict[str, Any]
 ) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["knowledge"], "preload": ["knowledge"]},
+        {"allow": ["knowledge"], "preload": ["knowledge"]},
         written=SKILLS,
         skills=skills,
         **modes,
@@ -772,7 +768,7 @@ async def test_a_link_into_a_skill_the_entry_does_not_open_reads_as_missing_and_
 
 async def test_a_link_into_a_preloaded_skill_reads_under_its_own_name(tmp_path: Path) -> None:
     folder = _folder(
-        tmp_path, {"include": ["knowledge"]}, written=SKILLS, skills={"preload": ["skills/close"]}
+        tmp_path, {"allow": ["knowledge"]}, written=SKILLS, skills={"preload": ["skills/close"]}
     )
     _link(folder / "knowledge/sk.md", "../skills/close/SKILL.md")
     assert "  sk.md" in _map(folder)
@@ -784,9 +780,9 @@ async def test_a_link_inside_an_offered_skill_reaches_only_what_the_entry_opens(
 ) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["knowledge"]},
+        {"allow": ["knowledge"]},
         written=SKILLS,
-        skills={"include": ["skills/*"], "exclude": ["close"]},
+        skills={"allow": ["skills/*"], "deny": ["close"]},
     )
     _link(folder / "skills/tone/close.md", "../close/SKILL.md")
     _link(folder / "skills/tone/warm.md", "SKILL.md")
@@ -799,12 +795,12 @@ async def test_a_link_inside_an_offered_skill_reaches_only_what_the_entry_opens(
         assert await surface.dispatch("Read", {"path": path}) == "Be warm.\n"
 
 
-async def test_a_link_into_a_closed_skill_reads_where_files_include_names_the_target(
+async def test_a_link_into_a_closed_skill_reads_where_files_allow_names_the_target(
     tmp_path: Path,
 ) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["knowledge", "skills/close"]},
+        {"allow": ["knowledge", "skills/close"]},
         written=SKILLS,
         skills={"preload": ["skills/close"]},
     )
@@ -815,7 +811,7 @@ async def test_a_link_into_a_closed_skill_reads_where_files_include_names_the_ta
 def test_a_gitignore_beside_a_links_target_counts(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
-        {"include": ["knowledge"], "gitignore": True},
+        {"allow": ["knowledge"], "gitignore": True},
         written={"private/.gitignore": "notes.md\n", "private/deep/kept.md": "K.\n"},
     )
     _link(folder / "knowledge/note.md", "../private/notes.md")
@@ -839,7 +835,7 @@ def test_a_gitignore_beside_a_links_target_counts(tmp_path: Path) -> None:
 async def test_a_withheld_link_to_a_hidden_name_answers_as_an_absent_name(
     tmp_path: Path, place: str, tool: str, args: dict[str, Any]
 ) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge"]}, written={".keys/k.md": "K.\n"})
+    folder = _folder(tmp_path, {"allow": ["knowledge"]}, written={".keys/k.md": "K.\n"})
     _link(folder / place / "hl", "../.keys")
     surface = _surface(folder)
 
@@ -882,8 +878,8 @@ async def test_a_folder_reached_through_a_link_answers_as_the_folder_itself(
         real,
         {
             "a": _agent(
-                {"include": ["knowledge"], "exclude": ["knowledge/drafts/**"]},
-                tools={"include": ["where"]},
+                {"allow": ["knowledge"], "deny": ["knowledge/drafts/**"]},
+                tools={"allow": ["where"]},
             )
         },
         tools={"where": {"module": "tools/where.py", "description": "Says where"}},
@@ -939,21 +935,21 @@ async def _withheld_as_absent(
             assert "draft refund" not in withheld
 
 
-async def test_every_spelling_of_an_excluded_path_answers_as_an_absent_one(
+async def test_every_spelling_of_a_denied_path_answers_as_an_absent_one(
     tmp_path: Path,
 ) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge"], "exclude": ["knowledge/drafts/**"]})
+    folder = _folder(tmp_path, {"allow": ["knowledge"], "deny": ["knowledge/drafts/**"]})
     await _withheld_as_absent(folder, _surface(folder), SPELLED)
 
 
-async def test_every_spelling_of_an_excluded_path_answers_as_an_absent_one_beside_a_workspace(
+async def test_every_spelling_of_a_denied_path_answers_as_an_absent_one_beside_a_workspace(
     tmp_path: Path,
 ) -> None:
     folder = tmp_path / "agents"
     folder.mkdir()
     _folder(
         folder,
-        {"include": ["knowledge"], "exclude": ["knowledge/drafts/**"]},
+        {"allow": ["knowledge"], "deny": ["knowledge/drafts/**"]},
         workspace=True,
     )
     room = tmp_path / "room"
@@ -976,7 +972,7 @@ CHILD = {
     "model": "m",
     "instructions": "a.md",
     "description": "Reads",
-    "files": {"include": ["knowledge"], "exclude": ["knowledge/drafts/**"]},
+    "files": {"allow": ["knowledge"], "deny": ["knowledge/drafts/**"]},
 }
 INTENT = '{"type": "choice", "instructions": "Which?", "options": {"child": null, "other": null}}'
 
@@ -986,7 +982,7 @@ def _family(root: Path) -> Path:
         root,
         {
             "lead": {
-                **_agent({"include": ["knowledge"]}),
+                **_agent({"allow": ["knowledge"]}),
                 "orchestration": {"delegate_to": ["child"]},
             },
             "child": CHILD,
@@ -1060,12 +1056,12 @@ async def test_a_delegated_a_routed_and_an_engine_tool_run_open_only_what_their_
     assert _read(kept.runs[-1]) == seen
 
 
-async def test_the_shell_is_told_where_the_included_folders_are(tmp_path: Path) -> None:
+async def test_the_shell_is_told_where_the_allowed_folders_are(tmp_path: Path) -> None:
     folder = tmp_path / "agents"
     folder.mkdir()
     _folder(
         folder,
-        {"include": ["knowledge", "private/notes.md", "*.md"]},
+        {"allow": ["knowledge", "private/notes.md", "*.md"]},
         workspace=True,
     )
     room = tmp_path / "room"
@@ -1078,15 +1074,15 @@ async def test_the_shell_is_told_where_the_included_folders_are(tmp_path: Path) 
         workspace=Workspace(Local(room), scope="acme", tree=str(folder)),
     )
     [shell] = [tool for tool in model.calls[0][2] if tool.name == "Shell"]
-    assert "The folders files.include opens are at $RFNRY_TREE/knowledge." in (
+    assert "The folders files.allow opens are at $RFNRY_TREE/knowledge." in (
         shell.description or ""
     )
 
 
-async def test_the_shell_is_told_the_root_itself_when_it_is_included(tmp_path: Path) -> None:
+async def test_the_shell_is_told_the_root_itself_when_it_is_allowed(tmp_path: Path) -> None:
     folder = tmp_path / "agents"
     folder.mkdir()
-    _folder(folder, {"include": ["."]}, workspace=True)
+    _folder(folder, {"allow": ["."]}, workspace=True)
     room = tmp_path / "room"
     room.mkdir()
     model = Scripted(text_reply("done"))
@@ -1097,14 +1093,14 @@ async def test_the_shell_is_told_the_root_itself_when_it_is_included(tmp_path: P
         workspace=Workspace(Local(room), scope="acme", tree=str(folder)),
     )
     [shell] = [tool for tool in model.calls[0][2] if tool.name == "Shell"]
-    assert "The folders files.include opens are at $RFNRY_TREE." in (shell.description or "")
+    assert "The folders files.allow opens are at $RFNRY_TREE." in (shell.description or "")
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads every file")
 def test_an_unreadable_file_is_left_out_with_a_warning(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    folder = _folder(tmp_path, {"include": ["knowledge"]})
+    folder = _folder(tmp_path, {"allow": ["knowledge"]})
     locked = folder / "knowledge/rates.md"
     locked.chmod(0)
     try:

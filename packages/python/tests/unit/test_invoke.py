@@ -28,7 +28,7 @@ REVIEWER: dict[str, Any] = {
     "model": "strong",
     "description": "Reviews contracts",
     "instructions": "reviewer/instructions.md",
-    "skills": {"include": ["reviewer/skills/*"]},
+    "skills": {"allow": ["reviewer/skills/*"]},
 }
 
 
@@ -57,7 +57,7 @@ SKILLED: dict[str, Any] = {
         **REVIEWER,
         "description": "Reviews",
         "orchestration": {"delegate_to": ["chat"]},
-        "files": {"include": ["reviewer/rules"]},
+        "files": {"allow": ["reviewer/rules"]},
     },
     "chat": {
         "kind": "generation",
@@ -195,7 +195,7 @@ async def test_a_run_that_continues_still_has_the_skill(tmp_path: Path) -> None:
             "chat",
             NotFoundError,
             "engine: agent 'chat' has no skill 'ghost'; it has no skills; name a folder "
-            "holding SKILL.md in skills.include or skills.preload",
+            "holding SKILL.md in skills.allow or skills.preload",
         ),
         (
             skills,

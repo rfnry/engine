@@ -45,11 +45,11 @@ def _folder(
     tools: dict[str, Any],
     written: dict[str, str],
     *,
-    include: list[str] | None = None,
+    allow: list[str] | None = None,
     section: dict[str, Any] | None = None,
     **agent: Any,
 ) -> Path:
-    picks = {"include": ["*"] if include is None else include, **(section or {})}
+    picks = {"allow": ["*"] if allow is None else allow, **(section or {})}
     return write_folder(
         root,
         {"a": {**GENERATION, "tools": picks, **agent}},
@@ -268,7 +268,7 @@ async def test_the_agents_timeout_also_bounds_a_tool_the_run_gives(tmp_path: Pat
         await asyncio.sleep(30)
         return "late"
 
-    folder = _folder(tmp_path, {}, {}, include=["given"], section={"timeout": 0.2})
+    folder = _folder(tmp_path, {}, {}, allow=["given"], section={"timeout": 0.2})
     given = Tool("given", "Waits", body=patient)
     model = Scripted(_calling("given"), text_reply("done"))
     async with Engine(folder, providers=provided({"m": model}), tool_timeout=30.0) as engine:
@@ -282,8 +282,8 @@ async def test_a_name_is_declared_then_built_in_then_from_the_run(tmp_path: Path
         tmp_path,
         {"one": ONE},
         {"tools/one.py": RUN, "k.md": "Known.\n"},
-        include=["one", "Grep", "given"],
-        files={"include": ["k.md"]},
+        allow=["one", "Grep", "given"],
+        files={"allow": ["k.md"]},
     )
     spec = load_folder(folder)["a"]
     assert list(spec.folder_tools) == ["one"]
@@ -296,7 +296,7 @@ async def test_a_name_is_declared_then_built_in_then_from_the_run(tmp_path: Path
 
 
 async def test_a_bare_name_the_workspace_grants_runs(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, {}, {}, include=["Shell"], workspace=True)
+    folder = _folder(tmp_path, {}, {}, allow=["Shell"], workspace=True)
     room_path = tmp_path / "room"
     room_path.mkdir()
     model = Scripted(_calling("Shell", command="echo hi"), text_reply("done"))
@@ -317,7 +317,7 @@ async def test_a_bare_name_delegate_to_grants_runs(tmp_path: Path) -> None:
         {
             "a": {
                 **GENERATION,
-                "tools": {"include": ["Delegate"]},
+                "tools": {"allow": ["Delegate"]},
                 "orchestration": {"delegate_to": ["b"]},
             },
             "b": {**GENERATION, "description": "Helps"},
@@ -333,9 +333,7 @@ async def test_a_bare_name_delegate_to_grants_runs(tmp_path: Path) -> None:
 
 
 async def test_a_bare_name_files_grant_runs(tmp_path: Path) -> None:
-    folder = _folder(
-        tmp_path, {}, {"k.md": "Known.\n"}, include=["Read"], files={"include": ["k.md"]}
-    )
+    folder = _folder(tmp_path, {}, {"k.md": "Known.\n"}, allow=["Read"], files={"allow": ["k.md"]})
     model = Scripted(_calling("Read", path="k.md"), text_reply("done"))
     async with Engine(folder, providers=provided({"m": model})) as engine:
         run = await engine.run("a", "acme", "go")
@@ -356,29 +354,29 @@ async def test_a_bare_name_files_grant_runs(tmp_path: Path) -> None:
 def test_an_engine_name_whose_section_is_missing_is_refused(
     tmp_path: Path, name: str, section: str
 ) -> None:
-    folder = _folder(tmp_path, {}, {}, include=[name])
+    folder = _folder(tmp_path, {}, {}, allow=[name])
     _refused(
         folder,
-        rf"^compiled: agent 'a' lists '{name}' in tools\.include, which comes with {section}, and it has none",
+        rf"^compiled: agent 'a' lists '{name}' in tools\.allow, which comes with {section}, and it has none",
     )
 
 
 @pytest.mark.parametrize(
     ("key", "name", "how"),
     [
-        ("include", "Output", r"expect= on a run"),
-        ("include", "History", r"a run's history= and start="),
-        ("exclude", "Output", r"expect= on a run"),
-        ("exclude", "History", r"a run's history= and start="),
-        ("include", "output", r"expect= on a run"),
-        ("include", "HISTORY", r"a run's history= and start="),
-        ("exclude", "history", r"a run's history= and start="),
+        ("allow", "Output", r"expect= on a run"),
+        ("allow", "History", r"a run's history= and start="),
+        ("deny", "Output", r"expect= on a run"),
+        ("deny", "History", r"a run's history= and start="),
+        ("allow", "output", r"expect= on a run"),
+        ("allow", "HISTORY", r"a run's history= and start="),
+        ("deny", "history", r"a run's history= and start="),
     ],
 )
 def test_what_the_run_decides_is_refused_in_a_tools_list(
     tmp_path: Path, key: str, name: str, how: str
 ) -> None:
-    folder = _folder(tmp_path, {}, {}, include=["given"], section={key: [name]})
+    folder = _folder(tmp_path, {}, {}, allow=["given"], section={key: [name]})
     _refused(
         folder,
         rf"^compiled: agent 'a' lists '{name}' in tools\.{key}; the run decides that tool through {how}, so leave it out",
@@ -391,21 +389,21 @@ def test_a_section_each_mode_holds_grants_the_name_on_an_entry_that_needs_a_mode
     entry: dict[str, Any] = {
         "kind": "generation",
         "model": "m",
-        "tools": {"include": ["Shell"]},
+        "tools": {"allow": ["Shell"]},
         "modes": {"chat": {"instructions": "a.md", "workspace": True}},
     }
     folder = write_folder(tmp_path, {"a": entry}, files={"a.md": "Work.\n"})
     assert "Shell" in (load_folder(folder)["a"].modes["chat"].keep or [])
     entry["modes"] = {**entry["modes"], "mail": {"instructions": "a.md"}}
     write_folder(folder, {"a": entry})
-    _refused(folder, r"^compiled: mode 'mail' of agent 'a' lists 'Shell' in tools\.include")
+    _refused(folder, r"^compiled: mode 'mail' of agent 'a' lists 'Shell' in tools\.allow")
 
 
 @pytest.mark.parametrize(
     ("agent", "listed"),
     [
         ({}, "none"),
-        ({"files": {"include": ["a.md"]}}, "Glob, Grep, LS, Load, Read"),
+        ({"files": {"allow": ["a.md"]}}, "Glob, Grep, LS, Load, Read"),
         ({"workspace": True}, "Edit, Job, Jobs, Shell, Write"),
     ],
     ids=["nothing", "files", "workspace"],
@@ -413,7 +411,7 @@ def test_a_section_each_mode_holds_grants_the_name_on_an_entry_that_needs_a_mode
 async def test_a_run_missing_a_name_lists_what_its_sections_grant(
     tmp_path: Path, agent: dict[str, Any], listed: str
 ) -> None:
-    folder = _folder(tmp_path, {}, {}, include=["absent"], **agent)
+    folder = _folder(tmp_path, {}, {}, allow=["absent"], **agent)
     room_path = tmp_path / "room"
     room_path.mkdir()
     async with (
@@ -424,10 +422,8 @@ async def test_a_run_missing_a_name_lists_what_its_sections_grant(
             await engine.run("a", "acme", "go", workspace=room)
 
 
-async def test_exclude_drops_exactly_the_workspace_tool_it_names(tmp_path: Path) -> None:
-    folder = _folder(
-        tmp_path, {}, {}, include=["Shell"], section={"exclude": ["Write"]}, workspace=True
-    )
+async def test_deny_drops_exactly_the_workspace_tool_it_names(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {}, {}, allow=["Shell"], section={"deny": ["Write"]}, workspace=True)
     room_path = tmp_path / "room"
     room_path.mkdir()
     model = Scripted(text_reply("done"))
@@ -451,13 +447,11 @@ async def test_exclude_drops_exactly_the_workspace_tool_it_names(tmp_path: Path)
 def test_excluding_some_of_shell_job_and_jobs_is_refused(
     tmp_path: Path, dropped: list[str]
 ) -> None:
-    folder = _folder(
-        tmp_path, {}, {}, include=["Write"], section={"exclude": dropped}, workspace=True
-    )
+    folder = _folder(tmp_path, {}, {}, allow=["Write"], section={"deny": dropped}, workspace=True)
     shown = ", ".join(sorted(dropped))
     _refused(
         folder,
-        rf"^compiled: agent 'a' lists only {shown} of Shell, Job and Jobs in tools\.exclude; Shell can start a job only Job and Jobs can read or stop, so exclude the three together or none of them",
+        rf"^compiled: agent 'a' lists only {shown} of Shell, Job and Jobs in tools\.deny; Shell can start a job only Job and Jobs can read or stop, so deny the three together or none of them",
     )
 
 
@@ -466,8 +460,8 @@ async def test_excluding_shell_job_and_jobs_together_is_valid(tmp_path: Path) ->
         tmp_path,
         {},
         {},
-        include=["Write"],
-        section={"exclude": ["Shell", "Job", "Jobs"]},
+        allow=["Write"],
+        section={"deny": ["Shell", "Job", "Jobs"]},
         workspace=True,
     )
     room_path = tmp_path / "room"
@@ -486,14 +480,14 @@ def test_a_mode_can_complete_the_three_on_an_entry_that_needs_a_mode(tmp_path: P
         "kind": "generation",
         "model": "m",
         "workspace": True,
-        "tools": {"exclude": ["Shell"]},
-        "modes": {"chat": {"instructions": "a.md", "tools": {"exclude": ["Job", "Jobs"]}}},
+        "tools": {"deny": ["Shell"]},
+        "modes": {"chat": {"instructions": "a.md", "tools": {"deny": ["Job", "Jobs"]}}},
     }
     folder = write_folder(tmp_path, {"a": entry}, files={"a.md": "Work.\n"})
     assert load_folder(folder)["a"].modes["chat"].keep == ["Edit", "Write"]
 
 
-def test_a_delegate_target_that_does_not_exist_is_refused_with_delegate_excluded(
+def test_a_delegate_target_that_does_not_exist_is_refused_with_delegate_denied(
     tmp_path: Path,
 ) -> None:
     folder = write_folder(
@@ -501,7 +495,7 @@ def test_a_delegate_target_that_does_not_exist_is_refused_with_delegate_excluded
         {
             "a": {
                 **GENERATION,
-                "tools": {"exclude": ["Delegate"]},
+                "tools": {"deny": ["Delegate"]},
                 "orchestration": {"delegate_to": ["ghost"]},
             },
         },
@@ -513,13 +507,13 @@ def test_a_delegate_target_that_does_not_exist_is_refused_with_delegate_excluded
     )
 
 
-async def test_exclude_takes_delegation_away(tmp_path: Path) -> None:
+async def test_deny_takes_delegation_away(tmp_path: Path) -> None:
     folder = write_folder(
         tmp_path,
         {
             "a": {
                 **GENERATION,
-                "tools": {"exclude": ["Delegate"]},
+                "tools": {"deny": ["Delegate"]},
                 "orchestration": {"delegate_to": ["b"]},
             },
             "b": {**GENERATION, "description": "Helps"},
@@ -537,25 +531,25 @@ async def test_exclude_takes_delegation_away(tmp_path: Path) -> None:
     assert len(model.calls) == 2
 
 
-async def test_exclude_drops_a_built_in_files_grant(tmp_path: Path) -> None:
+async def test_deny_drops_a_built_in_files_grant(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
         {},
         {"k.md": "Known.\n"},
-        include=["Grep"],
-        section={"exclude": ["Read"]},
-        files={"include": ["k.md"]},
+        allow=["Grep"],
+        section={"deny": ["Read"]},
+        files={"allow": ["k.md"]},
     )
     assert load_folder(folder)["a"].keep == ["Glob", "Grep", "LS", "Load"]
 
 
-async def test_a_bare_exclude_name_nothing_declares_drops_that_run_tool(tmp_path: Path) -> None:
+async def test_a_bare_deny_name_nothing_declares_drops_that_run_tool(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
         {"one": ONE},
         {"tools/one.py": RUN},
-        include=["one", "given"],
-        section={"exclude": ["given", "nobody_gives_this"]},
+        allow=["one", "given"],
+        section={"deny": ["given", "nobody_gives_this"]},
     )
     model = Scripted(text_reply("done"))
     given = Tool("given", "A tool of the run", body=None)
@@ -569,7 +563,7 @@ async def test_a_pattern_matches_declared_names_only(tmp_path: Path) -> None:
         tmp_path,
         {"find_a": ONE, "find_b": ONE, "Grepper": ONE},
         {"tools/one.py": RUN},
-        include=["find_*", "*per"],
+        allow=["find_*", "*per"],
     )
     model = Scripted(text_reply("done"))
     given = Tool("find_given", "A tool of the run", body=None)
@@ -582,8 +576,8 @@ async def test_a_star_is_the_only_wildcard_of_a_pattern(tmp_path: Path) -> None:
     folder = write_folder(
         tmp_path,
         {
-            "a": {**GENERATION, "tools": {"include": ["find_[ab]*"]}},
-            "b": {**GENERATION, "tools": {"include": ["find_a"]}},
+            "a": {**GENERATION, "tools": {"allow": ["find_[ab]*"]}},
+            "b": {**GENERATION, "tools": {"allow": ["find_a"]}},
         },
         tools={"find_[ab]x": ONE, "find_a": ONE},
         files={"a.md": "Work.\n", "tools/one.py": RUN},
@@ -591,18 +585,18 @@ async def test_a_star_is_the_only_wildcard_of_a_pattern(tmp_path: Path) -> None:
     assert list(load_folder(folder)["a"].folder_tools) == ["find_[ab]x"]
 
 
-def test_exclude_removes_one_of_a_pattern(tmp_path: Path) -> None:
+def test_deny_removes_one_of_a_pattern(tmp_path: Path) -> None:
     folder = write_folder(
         tmp_path,
         {
             "a": {
                 **GENERATION,
-                "tools": {"include": ["*"], "exclude": ["kept_out", "dropped_*"]},
+                "tools": {"allow": ["*"], "deny": ["kept_out", "dropped_*"]},
                 "modes": {
-                    "chat": {"tools": {"include": ["kept_out"], "exclude": ["kept_in"]}},
+                    "chat": {"tools": {"allow": ["kept_out"], "deny": ["kept_in"]}},
                 },
             },
-            "b": {**GENERATION, "tools": {"include": ["kept_out", "dropped_a"]}},
+            "b": {**GENERATION, "tools": {"allow": ["kept_out", "dropped_a"]}},
         },
         tools={"kept_in": ONE, "stays": ONE, "kept_out": ONE, "dropped_a": ONE},
         files={"a.md": "Work.\n", "tools/one.py": RUN},
@@ -619,13 +613,13 @@ def test_excluding_a_built_in_drops_it_and_a_pattern_never_does(tmp_path: Path) 
         {
             "a": {
                 **GENERATION,
-                "files": {"include": ["k.md"]},
-                "tools": {"include": ["one"], "exclude": ["Grep"]},
+                "files": {"allow": ["k.md"]},
+                "tools": {"allow": ["one"], "deny": ["Grep"]},
             },
             "b": {
                 **GENERATION,
-                "files": {"include": ["k.md"]},
-                "tools": {"include": ["one", "other"], "exclude": ["o*r"]},
+                "files": {"allow": ["k.md"]},
+                "tools": {"allow": ["one", "other"], "deny": ["o*r"]},
             },
         },
         tools={"one": ONE, "other": ONE},
@@ -640,10 +634,10 @@ def test_excluding_a_built_in_drops_it_and_a_pattern_never_does(tmp_path: Path) 
         {
             "a": {
                 **GENERATION,
-                "files": {"include": ["k.md"]},
-                "tools": {"include": ["one", "other"], "exclude": ["Grep", "o*r"]},
+                "files": {"allow": ["k.md"]},
+                "tools": {"allow": ["one", "other"], "deny": ["Grep", "o*r"]},
             },
-            "b": {**GENERATION, "tools": {"include": ["other"]}},
+            "b": {**GENERATION, "tools": {"allow": ["other"]}},
         },
         tools={"one": ONE, "other": ONE},
     )
@@ -651,9 +645,9 @@ def test_excluding_a_built_in_drops_it_and_a_pattern_never_does(tmp_path: Path) 
     assert agents["a"].keep == ["Glob", "LS", "Load", "Read", "one"]
 
 
-@pytest.mark.parametrize("key", ["include", "exclude"])
+@pytest.mark.parametrize("key", ["allow", "deny"])
 def test_a_pattern_matching_nothing_is_refused(tmp_path: Path, key: str) -> None:
-    section = {"include": ["one"], key: ["one", "nothing_*"] if key == "include" else ["nothing_*"]}
+    section = {"allow": ["one"], key: ["one", "nothing_*"] if key == "allow" else ["nothing_*"]}
     folder = write_folder(
         tmp_path,
         {"a": {**GENERATION, "tools": section}},
@@ -671,17 +665,17 @@ def test_a_pattern_on_a_mode_matching_nothing_names_the_mode(tmp_path: Path) -> 
         tmp_path,
         {"one": ONE},
         {"tools/one.py": RUN},
-        modes={"chat": {"tools": {"include": ["nothing_*"]}}},
+        modes={"chat": {"tools": {"allow": ["nothing_*"]}}},
     )
     _refused(
         folder,
-        r"^compiled: mode 'chat' of agent 'a' lists the pattern 'nothing_\*' in tools\.include",
+        r"^compiled: mode 'chat' of agent 'a' lists the pattern 'nothing_\*' in tools\.allow",
     )
 
 
 @pytest.mark.parametrize(
     "section",
-    [{"include": ["one"]}, {"include": ["*"], "exclude": ["loose"]}],
+    [{"allow": ["one"]}, {"allow": ["*"], "deny": ["loose"]}],
     ids=["left-out", "taken-back"],
 )
 def test_a_declared_tool_nothing_picks_is_refused(tmp_path: Path, section: dict[str, Any]) -> None:
@@ -700,10 +694,10 @@ def test_a_tool_only_a_mode_or_another_agent_picks_counts_as_picked(tmp_path: Pa
         {
             "a": {
                 **GENERATION,
-                "tools": {"include": ["one"]},
-                "modes": {"chat": {"tools": {"include": ["by_a_mode"]}}},
+                "tools": {"allow": ["one"]},
+                "modes": {"chat": {"tools": {"allow": ["by_a_mode"]}}},
             },
-            "b": {**GENERATION, "tools": {"include": ["by_another"]}},
+            "b": {**GENERATION, "tools": {"allow": ["by_another"]}},
         },
         tools={"one": ONE, "by_a_mode": ONE, "by_another": ONE},
         files={"a.md": "Work.\n", "tools/one.py": RUN},
@@ -742,10 +736,10 @@ async def test_a_runs_tool_replaces_a_declared_tool_of_the_same_name(tmp_path: P
 async def test_a_bare_name_the_run_does_not_give_fails_before_any_model_call(
     tmp_path: Path,
 ) -> None:
-    folder = _folder(tmp_path, {}, {}, include=["absent"])
+    folder = _folder(tmp_path, {}, {}, allow=["absent"])
     model = Scripted(text_reply("done"))
     async with Engine(folder, providers=provided({"m": model})) as engine:
-        with pytest.raises(ConfigurationError, match=r"lists 'absent' in tools\.include"):
+        with pytest.raises(ConfigurationError, match=r"lists 'absent' in tools\.allow"):
             await engine.run("a", "acme", "go")
     assert model.calls == []
 
@@ -753,23 +747,23 @@ async def test_a_bare_name_the_run_does_not_give_fails_before_any_model_call(
 @pytest.mark.parametrize(
     ("key", "written", "right"),
     [
-        ("include", "read", "Read"),
-        ("include", "ONE", "one"),
-        ("exclude", "shell", "Shell"),
-        ("exclude", "One", "one"),
+        ("allow", "read", "Read"),
+        ("allow", "ONE", "one"),
+        ("deny", "shell", "Shell"),
+        ("deny", "One", "one"),
     ],
 )
 def test_a_bare_name_differing_only_by_case_is_refused_naming_the_right_one(
     tmp_path: Path, key: str, written: str, right: str
 ) -> None:
-    picks = {"include": ["one", written]} if key == "include" else {"exclude": [written]}
+    picks = {"allow": ["one", written]} if key == "allow" else {"deny": [written]}
     folder = _folder(
         tmp_path,
         {"one": ONE},
         {"tools/one.py": RUN},
-        include=picks.get("include", ["one"]),
-        section={key: picks[key]} if key == "exclude" else None,
-        files={"include": ["a.md"]},
+        allow=picks.get("allow", ["one"]),
+        section={key: picks[key]} if key == "deny" else None,
+        files={"allow": ["a.md"]},
     )
     with pytest.raises(ConfigurationError) as refused:
         load_folder(folder)
@@ -784,9 +778,9 @@ def test_the_names_a_run_must_give_are_listed(tmp_path: Path) -> None:
         tmp_path,
         {"one": ONE},
         {"tools/one.py": RUN},
-        include=["one", "Read", "handoff", "lookup_customer"],
-        files={"include": ["a.md"]},
-        modes={"chat": {"tools": {"include": ["verify"]}}},
+        allow=["one", "Read", "handoff", "lookup_customer"],
+        files={"allow": ["a.md"]},
+        modes={"chat": {"tools": {"allow": ["verify"]}}},
     )
     spec = load_folder(folder)["a"]
     assert spec.from_run == ["handoff", "lookup_customer"]
@@ -1185,10 +1179,10 @@ def test_a_tools_own_files_leave_its_map_and_the_rest_stays(tmp_path: Path) -> N
         {
             "a": {
                 **GENERATION,
-                "files": {"include": ["tools"]},
-                "tools": {"include": ["one"]},
+                "files": {"allow": ["tools"]},
+                "tools": {"allow": ["one"]},
             },
-            "b": {**GENERATION, "tools": {"include": ["other"]}},
+            "b": {**GENERATION, "tools": {"allow": ["other"]}},
         },
         tools={
             "one": {"module": "tools/one.py", "schema": "tools/one.json"},
@@ -1243,8 +1237,8 @@ def test_a_tools_entry_is_in_the_fingerprint(tmp_path: Path, edit: dict[str, Any
 
 def test_a_tool_the_agent_does_not_pick_leaves_its_fingerprint_alone(tmp_path: Path) -> None:
     agents = {
-        "a": {**GENERATION, "tools": {"include": ["one"]}},
-        "b": {**GENERATION, "tools": {"include": ["other"]}},
+        "a": {**GENERATION, "tools": {"allow": ["one"]}},
+        "b": {**GENERATION, "tools": {"allow": ["other"]}},
     }
     files = {"a.md": "Work.\n", "tools/one.py": RUN, "tools/other.py": RUN}
     folder = write_folder(tmp_path, agents, tools={"one": ONE, "other": OTHER}, files=files)

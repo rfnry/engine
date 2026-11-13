@@ -91,9 +91,9 @@ async def found(args: dict[str, Any]) -> str:
 
 
 def coding_tree(tmp_path: Path, *run_tools: str, **extra: dict[str, Any]) -> Path:
-    coder: dict[str, Any] = {**AGENTS["coder"], "files": {"include": ["coder.md"]}}
+    coder: dict[str, Any] = {**AGENTS["coder"], "files": {"allow": ["coder.md"]}}
     if run_tools:
-        coder["tools"] = {"include": list(run_tools)}
+        coder["tools"] = {"allow": list(run_tools)}
     return make_tree(tmp_path, {"coder": coder, **extra})
 
 
@@ -141,8 +141,8 @@ async def test_one_shell_call_reaches_a_run_tool_and_a_folder_tool(
         {
             "coder": {
                 **AGENTS["coder"],
-                "files": {"include": ["coder.md"]},
-                "tools": {"include": ["double", "lookup"]},
+                "files": {"allow": ["coder.md"]},
+                "tools": {"allow": ["double", "lookup"]},
             }
         },
         declared={
@@ -320,7 +320,7 @@ async def test_the_workspace_s_own_tools_and_delegate_are_not_offered(
         {
             "coder": {
                 **AGENTS["coder"],
-                "files": {"include": ["coder.md"]},
+                "files": {"allow": ["coder.md"]},
                 "orchestration": {"delegate_to": ["chat"]},
             }
         },

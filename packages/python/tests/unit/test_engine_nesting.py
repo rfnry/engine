@@ -261,7 +261,7 @@ async def test_dispatch_delegate_gives_the_child_the_tenant_tools(tmp_path: Path
             "kind": "generation",
             "model": "strong",
             "instructions": "b.md",
-            "tools": {"include": ["ping"]},
+            "tools": {"allow": ["ping"]},
         },
         files={"b.md": "hi\n"},
     )

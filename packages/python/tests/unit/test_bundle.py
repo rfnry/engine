@@ -47,7 +47,7 @@ def test_sections_in_order_with_missing_ones_skipped() -> None:
 def test_an_old_index_file_is_an_ordinary_file(tmp_path: Path) -> None:
     solo(
         tmp_path,
-        files={"include": ["INDEX.md", "rules"]},
+        files={"allow": ["INDEX.md", "rules"]},
         written={
             "INDEX.md": "Read rules/x.md first.\n",
             "rules/_index.md": "- x.md — the x rule\n",
@@ -101,8 +101,8 @@ async def test_an_agent_without_read_or_load_still_gets_a_skill_body_in_the_inpu
                 "instructions": "a.md",
                 "skills": {"preload": ["skills/x"]},
                 "tools": {
-                    "exclude": ["Read", "Load", "Grep", "Glob", "LS"],
-                    **({"include": tools} if tools else {}),
+                    "deny": ["Read", "Load", "Grep", "Glob", "LS"],
+                    **({"allow": tools} if tools else {}),
                 },
             }
         },

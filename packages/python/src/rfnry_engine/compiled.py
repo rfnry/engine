@@ -88,7 +88,7 @@ class _Held(NamedTuple):
 
 
 class _Reached(NamedTuple):
-    include: dict[str, str]
+    allow: dict[str, str]
     preload: dict[str, str]
 
 
@@ -99,7 +99,7 @@ class _Skills(NamedTuple):
 
 class _Chosen(NamedTuple):
     offered: frozenset[str]
-    excluded: frozenset[str]
+    denied: frozenset[str]
     preloaded: list[Skill]
     public: tuple[str, ...]
     opened: frozenset[str]
@@ -312,18 +312,18 @@ def _reach(
     closed: Collection[PurePosixPath],
     in_offered: Collection[str],
 ) -> _Reach:
-    include = files.include or []
+    allow = files.allow or []
     preload = files.preload or []
-    candidates = _in_reach(root, [*include, *preload], files.gitignore)
-    included = _matching(who, "files.include", include, candidates)
+    candidates = _in_reach(root, [*allow, *preload], files.gitignore)
+    allowed = _matching(who, "files.allow", allow, candidates)
     offered = _matching(who, "files.preload", preload, candidates)
-    excluded = _matching(
-        who, "files.exclude", files.exclude or [], {**included, **offered, **in_skills}, root
+    denied = _matching(
+        who, "files.deny", files.deny or [], {**allowed, **offered, **in_skills}, root
     )
-    left = {name: path for name, path in candidates.items() if name not in excluded}
-    shut = _closed_to(root, closed, {*in_offered, *(name for name in included if name in left)})
+    left = {name: path for name, path in candidates.items() if name not in denied}
+    shut = _closed_to(root, closed, {*in_offered, *(name for name in allowed if name in left)})
     left = {name: path for name, path in left.items() if not shut(name, path)}
-    kept = {name: path for name, path in included.items() if name in left}
+    kept = {name: path for name, path in allowed.items() if name in left}
     preloaded = _matching(who, "files.preload", preload, left)
     return _Reach(
         on_the_map={name: path for name, path in kept.items() if name not in own},
@@ -366,7 +366,7 @@ def _folders_reached(
 def _reached_skills(root: Path, who: str, resolved: Resolved) -> _Reached:
     section, gitignore = resolved.skills, resolved.files.gitignore
     return _Reached(
-        _folders_reached(root, who, "skills.include", section.include or (), gitignore),
+        _folders_reached(root, who, "skills.allow", section.allow or (), gitignore),
         _folders_reached(root, who, "skills.preload", section.preload or (), gitignore),
     )
 
@@ -395,7 +395,7 @@ def _every_skill(root: Path, agent: str, entry: AgentEntry) -> _Skills:
     }
     folders: dict[str, str] = {}
     for reached in layers.values():
-        for folder in (*reached.include.values(), *reached.preload.values()):
+        for folder in (*reached.allow.values(), *reached.preload.values()):
             _hold_once(who, folders, folder)
     return _Skills(
         {name: _held_skill(root, who, folders[name]) for name in sorted(folders)}, layers
@@ -406,8 +406,8 @@ def _skill_folder(held: _Held) -> PurePosixPath:
     return PurePosixPath(held.skill.path).parent
 
 
-def _excluded_skills(who: str, written: Iterable[str], held: Mapping[str, _Held]) -> set[str]:
-    excluded: set[str] = set()
+def _denied_skills(who: str, written: Iterable[str], held: Mapping[str, _Held]) -> set[str]:
+    denied: set[str] = set()
     for entry in written:
         found = {
             name
@@ -416,10 +416,10 @@ def _excluded_skills(who: str, written: Iterable[str], held: Mapping[str, _Held]
         }
         if not found:
             raise ConfigurationError(
-                f"compiled: {who} lists {entry!r} in skills.exclude, which reaches no skill it names; write a skill's name, its folder or a glob from the folder root, or remove it"
+                f"compiled: {who} lists {entry!r} in skills.deny, which reaches no skill it names; write a skill's name, its folder or a glob from the folder root, or remove it"
             )
-        excluded |= found
-    return excluded
+        denied |= found
+    return denied
 
 
 def _preload_left(
@@ -428,7 +428,7 @@ def _preload_left(
     for pattern in patterns:
         if not any(pattern_reaches(pattern, PurePosixPath(reached[name])) for name in left):
             raise ConfigurationError(
-                f"compiled: {who} lists {pattern!r} in skills.preload, which skills.exclude takes back out; take it out of one of the two"
+                f"compiled: {who} lists {pattern!r} in skills.preload, which skills.deny takes back out; take it out of one of the two"
             )
 
 
@@ -442,7 +442,7 @@ def _public(who: str, section: SkillsSection, offered: Collection[str]) -> tuple
         if name not in offered:
             have = f"it offers {', '.join(sorted(offered))}" if offered else "it offers no skills"
             raise ConfigurationError(
-                f"compiled: {who} lists {name!r} in skills.public, which it does not offer; {have}, so add it to skills.include or remove the name"
+                f"compiled: {who} lists {name!r} in skills.public, which it does not offer; {have}, so add it to skills.allow or remove the name"
             )
     return tuple(names)
 
@@ -450,13 +450,13 @@ def _public(who: str, section: SkillsSection, offered: Collection[str]) -> tuple
 def _chosen_skills(
     who: str, section: SkillsSection, held: Mapping[str, _Held], reached: _Reached
 ) -> _Chosen:
-    excluded = _excluded_skills(who, section.exclude or (), held)
-    offered = frozenset(reached.include) - excluded
-    preloaded = [name for name in reached.preload if name not in excluded]
+    denied = _denied_skills(who, section.deny or (), held)
+    offered = frozenset(reached.allow) - denied
+    preloaded = [name for name in reached.preload if name not in denied]
     _preload_left(who, section.preload or (), reached.preload, preloaded)
     return _Chosen(
         offered,
-        frozenset(excluded),
+        frozenset(denied),
         [held[name].skill for name in preloaded],
         _public(who, section, offered),
         offered | frozenset(preloaded),
@@ -467,14 +467,14 @@ def _left_in_skill(
     root: Path,
     name: str,
     held: Mapping[str, _Held],
-    excluded: Collection[str],
+    denied: Collection[str],
     taken_back: Collection[str],
     found: Mapping[str, Path],
 ) -> dict[str, Path]:
     folder = _skill_folder(held[name])
     inside = [
         _skill_folder(held[other])
-        for other in excluded
+        for other in denied
         if folder in _skill_folder(held[other]).parents
     ]
     written = held[name].skill.path
@@ -545,7 +545,7 @@ def _hidden_names(root: Path, reached: Mapping[str, Path]) -> frozenset[Path]:
 
 def _grants(resolved: Resolved) -> dict[str, _Grant]:
     opens_files = any(
-        section.include is not None or section.preload is not None
+        section.allow is not None or section.preload is not None
         for section in (resolved.files, resolved.skills)
     )
     return {
@@ -595,37 +595,37 @@ def _names(who: str, key: str, written: list[str] | None, declared: Collection[s
 
 
 def _check_sections(
-    who: str, included: Iterable[str], grants: Mapping[str, _Grant], kind: Kind
+    who: str, allowed: Iterable[str], grants: Mapping[str, _Grant], kind: Kind
 ) -> None:
-    for name in included:
+    for name in allowed:
         if name in grants and not grants[name].given:
             if kind == "voice":
                 raise ConfigurationError(
-                    f"compiled: {who} lists {name!r} in tools.include, which a voice agent has no section to grant; remove the name"
+                    f"compiled: {who} lists {name!r} in tools.allow, which a voice agent has no section to grant; remove the name"
                 )
             raise ConfigurationError(
-                f"compiled: {who} lists {name!r} in tools.include, which comes with {grants[name].section}, and it has none; give it that section or remove the name"
+                f"compiled: {who} lists {name!r} in tools.allow, which comes with {grants[name].section}, and it has none; give it that section or remove the name"
             )
 
 
-def _check_jobs_go_together(who: str, dropped: Collection[str]) -> None:
-    named = BACKGROUND_JOBS.intersection(dropped)
+def _check_jobs_go_together(who: str, denied: Collection[str]) -> None:
+    named = BACKGROUND_JOBS.intersection(denied)
     if named and named != BACKGROUND_JOBS:
         raise ConfigurationError(
-            f"compiled: {who} lists only {', '.join(sorted(named))} of Shell, Job and Jobs in tools.exclude; Shell can start a job only Job and Jobs can read or stop, so exclude the three together or none of them"
+            f"compiled: {who} lists only {', '.join(sorted(named))} of Shell, Job and Jobs in tools.deny; Shell can start a job only Job and Jobs can read or stop, so deny the three together or none of them"
         )
 
 
 def _picked_tools(who: str, resolved: Resolved, declared: Collection[str]) -> _Picked:
     grants = _grants(resolved)
-    dropped = set(_names(who, "exclude", resolved.tools.exclude, declared))
-    included = _names(who, "include", resolved.tools.include, declared)
+    denied = set(_names(who, "deny", resolved.tools.deny, declared))
+    allowed = _names(who, "allow", resolved.tools.allow, declared)
     if resolved.instructions is not None:
-        _check_sections(who, included, grants, resolved.kind)
-        _check_jobs_go_together(who, dropped)
+        _check_sections(who, allowed, grants, resolved.kind)
+        _check_jobs_go_together(who, denied)
     return _Picked(
-        [name for name in dict.fromkeys(included) if name not in dropped],
-        frozenset(name for name, grant in grants.items() if grant.given) - dropped,
+        [name for name in dict.fromkeys(allowed) if name not in denied],
+        frozenset(name for name, grant in grants.items() if grant.given) - denied,
     )
 
 
@@ -710,7 +710,7 @@ def _spec(
     }
     skill_files = {
         name: _left_in_skill(
-            root, name, skills.held, chosen.excluded, resolved.files.exclude or (), found
+            root, name, skills.held, chosen.denied, resolved.files.deny or (), found
         )
         for name, found in in_folders.items()
     }
@@ -790,8 +790,8 @@ def _spec(
             if name not in chosen.opened
         },
         named=named,
-        included_folders=[
-            pattern for pattern in resolved.files.include or [] if (root / pattern).is_dir()
+        allowed_folders=[
+            pattern for pattern in resolved.files.allow or [] if (root / pattern).is_dir()
         ],
         max_model_calls=resolved.max_model_calls,
         tool_timeout=resolved.tools.timeout,
@@ -896,7 +896,7 @@ def _refuse_loose_tools(agents: Mapping[str, AgentSpec], declared: Iterable[str]
     loose = sorted(set(declared) - picked)
     if loose:
         raise ConfigurationError(
-            f"compiled: tools.{loose[0]} in {MANIFEST} is picked by nothing; pick it with tools.include on an agent or a mode, or remove it"
+            f"compiled: tools.{loose[0]} in {MANIFEST} is picked by nothing; pick it with tools.allow on an agent or a mode, or remove it"
         )
 
 
