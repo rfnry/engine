@@ -154,7 +154,7 @@ class AgentInfo(BaseModel):
     delegate_to: list[str]
     files: list[str]
     tools: list[str]
-    run_tools: list[str]
+    runtime_tools: list[str]
     skills: dict[str, str]
     public: dict[str, str]
     worker: str
@@ -620,7 +620,7 @@ def _info(name: str, spec: AgentSpec) -> AgentInfo:
         delegate_to=list(spec.agents),
         files=list(spec.reachable),
         tools=list(chosen(spec)),
-        run_tools=sorted(spec.from_run),
+        runtime_tools=sorted(spec.runtime_tools),
         skills={called: skill.description for called, skill in spec.skills.items()},
         public={called: spec.skills[called].description for called in spec.public},
         worker=spec.worker,

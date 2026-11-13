@@ -54,7 +54,7 @@ from .fakes import (
     said,
     text_reply,
 )
-from .trees import deciding, provided, tooled, write_folder
+from .trees import deciding, provided, runtime, tooled, write_folder
 
 BASE = datetime(2026, 9, 1, tzinfo=UTC)
 
@@ -834,6 +834,7 @@ def _coder(root: Path, *run_tools: str) -> None:
                 **({"tools": {"allow": list(run_tools)}} if run_tools else {}),
             }
         },
+        runtime_tools=runtime(run_tools),
         files={"coder.md": "You code.\n"},
     )
 

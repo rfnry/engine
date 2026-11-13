@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -44,12 +45,15 @@ def write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def shop(root: Path, name: str = "shop", **entry: Any) -> Path:
+def shop(
+    root: Path, name: str = "shop", *, runtime_tools: Iterable[str] = (), **entry: Any
+) -> Path:
     return add_agent(
         root,
         name,
         {"kind": "generation", "model": "strong", "instructions": f"{name}.md", **entry},
         files={f"{name}.md": "Work.\n"},
+        runtime_tools=runtime_tools,
     )
 
 
@@ -652,6 +656,7 @@ async def test_a_delegated_or_routed_agent_keeps_only_the_inherited_run_tools_it
         "lead",
         orchestration={"delegate_to": ["drafter", "helper"]},
         tools={"allow": ["remember"]},
+        runtime_tools=["remember"],
     )
     shop(
         tmp_path,
@@ -696,6 +701,7 @@ async def test_a_delegated_run_that_does_not_offer_a_kept_name_is_a_tool_error_a
         description="Drafts",
         files={"allow": ["drafter.md"]},
         tools={"allow": ["remember"]},
+        runtime_tools=["remember"],
     )
     deciding(tmp_path, "desk", {"go": GO}, route={"by": "go", "to": {"next": "drafter"}})
     llm = Scripted(
@@ -836,6 +842,7 @@ async def test_a_run_in_flight_when_its_engine_closes_is_refused_the_runs_it_wou
         "lead",
         orchestration={"delegate_to": ["aide", "judge"]},
         tools={"allow": ["close"]},
+        runtime_tools=["close"],
     )
     shop(tmp_path, "aide", description="Helps")
     deciding(tmp_path, "judge", {"fine": FINE}, description="Judges")
@@ -896,6 +903,7 @@ async def test_engine_tools_holds_exactly_the_assembled_set(tmp_path: Path) -> N
         orchestration={"delegate_to": ["aide"]},
         files={"allow": ["shop.md"]},
         tools={"allow": ["lookup_order", "notify", "ping"]},
+        runtime_tools=["ping"],
     )
     shop(tmp_path, "aide", description="Helps")
     tool(

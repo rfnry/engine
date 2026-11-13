@@ -80,6 +80,7 @@ class _Reach(NamedTuple):
 class _Declared(NamedTuple):
     entries: Mapping[str, ToolEntry]
     tools: Mapping[str, ToolDef]
+    runtime: frozenset[str]
 
 
 class _Held(NamedTuple):
@@ -562,8 +563,7 @@ def _matching_names(pattern: str, names: Iterable[str]) -> list[str]:
     return [name for name in names if shape.fullmatch(name)]
 
 
-def _refuse_near_miss(who: str, key: str, entry: str, declared: Collection[str]) -> None:
-    known = (ENGINE_TOOLS - RUN_DECIDES.keys()) | set(declared)
+def _refuse_near_miss(who: str, key: str, entry: str, known: Collection[str]) -> None:
     if entry in known:
         return
     right = sorted(name for name in known if name.casefold() == entry.casefold())
@@ -573,7 +573,14 @@ def _refuse_near_miss(who: str, key: str, entry: str, declared: Collection[str])
         )
 
 
-def _names(who: str, key: str, written: list[str] | None, declared: Collection[str]) -> list[str]:
+def _names(
+    who: str,
+    key: str,
+    written: list[str] | None,
+    declared: Collection[str],
+    runtime: Collection[str],
+) -> list[str]:
+    known = (ENGINE_TOOLS - RUN_DECIDES.keys()) | set(declared) | set(runtime)
     names: list[str] = []
     for entry in written or ():
         decided = next((name for name in RUN_DECIDES if name.casefold() == entry.casefold()), None)
@@ -582,7 +589,11 @@ def _names(who: str, key: str, written: list[str] | None, declared: Collection[s
                 f"compiled: {who} lists {entry!r} in tools.{key}; the run decides that tool through {RUN_DECIDES[decided]}, so leave it out"
             )
         if "*" not in entry:
-            _refuse_near_miss(who, key, entry, declared)
+            _refuse_near_miss(who, key, entry, known)
+            if entry not in known:
+                raise ConfigurationError(
+                    f"compiled: {who} lists {entry!r} in tools.{key}, which is not under tools: or runtime_tools: and is not a tool the engine gives; declare it, or fix the name"
+                )
             names.append(entry)
             continue
         found = _matching_names(entry, declared)
@@ -616,10 +627,12 @@ def _check_jobs_go_together(who: str, denied: Collection[str]) -> None:
         )
 
 
-def _picked_tools(who: str, resolved: Resolved, declared: Collection[str]) -> _Picked:
+def _picked_tools(
+    who: str, resolved: Resolved, declared: Collection[str], runtime: Collection[str]
+) -> _Picked:
     grants = _grants(resolved)
-    denied = set(_names(who, "deny", resolved.tools.deny, declared))
-    allowed = _names(who, "allow", resolved.tools.allow, declared)
+    denied = set(_names(who, "deny", resolved.tools.deny, declared, runtime))
+    allowed = _names(who, "allow", resolved.tools.allow, declared, runtime)
     if resolved.instructions is not None:
         _check_sections(who, allowed, grants, resolved.kind)
         _check_jobs_go_together(who, denied)
@@ -682,7 +695,7 @@ def _spec(
     resolved = overlaid(entry, mode)
     who = _who(agent, mode)
     asked = _questions(root, who, resolved.questions or [])
-    picked = _picked_tools(who, resolved, declared.entries)
+    picked = _picked_tools(who, resolved, declared.entries, declared.runtime)
     folder_tools = {name: declared.tools[name] for name in picked.names if name in declared.tools}
     tool_files: dict[str, Path] = {}
     for name, tool in folder_tools.items():
@@ -774,11 +787,7 @@ def _spec(
         offered=chosen.offered,
         public=chosen.public,
         folder_tools=dict(sorted(folder_tools.items())),
-        from_run=[
-            name
-            for name in picked.names
-            if name not in ENGINE_TOOLS and name not in declared.entries
-        ],
+        runtime_tools=[name for name in picked.names if name in declared.runtime],
         listing="\n".join(mapped(sorted(reach.on_the_map.items()))),
         needs_mode=resolved.instructions is None,
         worker=resolved.worker or "default",
@@ -900,13 +909,42 @@ def _refuse_loose_tools(agents: Mapping[str, AgentSpec], declared: Iterable[str]
         )
 
 
+def _refuse_runtime_names(manifest: Manifest) -> None:
+    for name in manifest.runtime_tools:
+        if name in manifest.tools:
+            raise ConfigurationError(
+                f"compiled: runtime_tools: in {MANIFEST} lists {name!r}, which tools: declares; a run's tools= replaces a folder tool by its name, so remove it from runtime_tools:"
+            )
+        if name in ENGINE_TOOLS:
+            raise ConfigurationError(
+                f"compiled: runtime_tools: in {MANIFEST} lists {name!r}, which is named like a tool the engine gives; rename it, since the name is the one the model sees"
+            )
+
+
+def _refuse_loose_runtime_tools(manifest: Manifest) -> None:
+    picked = {
+        name
+        for agent in manifest.agents.values()
+        for layer in (agent, *agent.modes.values())
+        if layer.tools is not None
+        for name in (*(layer.tools.allow or ()), *(layer.tools.deny or ()))
+    }
+    for name in manifest.runtime_tools:
+        if name not in picked:
+            raise ConfigurationError(
+                f"compiled: runtime_tools: in {MANIFEST} lists {name!r}, which no agent or mode picks; pick it with tools.allow, or remove it"
+            )
+
+
 @warns_once()
 def compile_folder(root: Path, manifest: Manifest) -> dict[str, AgentSpec]:
     _refuse_engine_names(manifest.tools)
+    _refuse_runtime_names(manifest)
     project = project_of(root)
     declared = _Declared(
         manifest.tools,
         {name: load_tool(root, name, entry, project) for name, entry in manifest.tools.items()},
+        frozenset(manifest.runtime_tools),
     )
     agents = {
         name: _agent(root, name, manifest.agents[name], declared)
@@ -914,6 +952,7 @@ def compile_folder(root: Path, manifest: Manifest) -> dict[str, AgentSpec]:
     }
     _check_orchestration(agents, manifest.agents)
     _refuse_loose_tools(agents, manifest.tools)
+    _refuse_loose_runtime_tools(manifest)
     _refuse_shared_export_names(agents)
     return agents
 

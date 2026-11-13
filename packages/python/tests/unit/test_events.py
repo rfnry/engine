@@ -22,7 +22,7 @@ from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import Fixed, Scripted, Streaming, text_reply
-from .trees import provided, write_folder
+from .trees import provided, runtime, write_folder
 
 STOPPED = "stopped by the user"
 ROUTER_TEAM = {
@@ -55,7 +55,12 @@ def make_tree(tmp_path: Path, run_tools: dict[str, list[str]] | None = None) -> 
     }
     for name, tools in (run_tools or {}).items():
         agents[name] = {**agents[name], "tools": {"allow": tools}}
-    return write_folder(root, agents, files={f"{name}.md": f"You are {name}.\n" for name in agents})
+    return write_folder(
+        root,
+        agents,
+        runtime_tools=runtime(name for names in (run_tools or {}).values() for name in names),
+        files={f"{name}.md": f"You are {name}.\n" for name in agents},
+    )
 
 
 async def lookup(args: dict[str, Any]) -> dict[str, str]:

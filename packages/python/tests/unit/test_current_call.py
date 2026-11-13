@@ -19,7 +19,7 @@ from rfnry_engine.records import (
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import Answering, Scripted, text_reply
-from .trees import add_agent, provided
+from .trees import add_agent, provided, runtime
 
 
 def tree(
@@ -34,9 +34,16 @@ def tree(
         }
         if targets:
             entry["orchestration"] = {"delegate_to": targets}
-        if run_tools and name in run_tools:
-            entry["tools"] = {"allow": run_tools[name]}
-        add_agent(root, name, entry, files={f"{name}.md": f"You are {name}.\n"})
+        given = run_tools[name] if run_tools and name in run_tools else []
+        if given:
+            entry["tools"] = {"allow": given}
+        add_agent(
+            root,
+            name,
+            entry,
+            files={f"{name}.md": f"You are {name}.\n"},
+            runtime_tools=runtime(given),
+        )
     return root
 
 

@@ -137,6 +137,7 @@ async def test_a_call_through_the_tool_resets_the_route_chain(tmp_path: Path) ->
             "tools": {"allow": ["r"]},
         },
         files={"g.md": "hi\n"},
+        runtime_tools=["r"],
     )
     llm = Scripted(calling("r", "again"), text_reply("inner done"), text_reply("outer done"))
     engine = Engine(tmp_path, providers=provided({"strong": llm, "judge": Answering()}))

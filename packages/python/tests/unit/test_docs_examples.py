@@ -43,7 +43,7 @@ from rfnry_engine.manifest import MANIFEST
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.engine_tools import EngineTools
 
-from .trees import amend, provided, write_folder
+from .trees import amend, picked_by, provided, runtime, write_folder
 
 DOCS = Path(__file__).parents[4] / "docs" / "engine.md"
 BLOCKS: list[tuple[str, str]] = re.findall(
@@ -408,6 +408,7 @@ def tree(root: Path) -> None:
         root,
         AGENTS,
         models=MODELS,
+        runtime_tools=["consult"],
         tools={
             "lookup_order": {
                 "module": "support/tools/lookup_order.py",
@@ -693,7 +694,7 @@ async def test_the_bridge_client_of_the_docs_calls_a_tool_from_a_command_as_writ
     assert json.loads(run.steps[1].result)["stdout"] == "shipped\n"
 
 
-SECTIONS = {"version", "workers", "models", "tools", "agents"}
+SECTIONS = {"version", "workers", "models", "tools", "runtime_tools", "agents"}
 
 
 def _layers(entry: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -733,6 +734,9 @@ def _completed(written: Mapping[str, Any]) -> dict[str, Any]:
             name, {"kind": "generation", "model": first, "instructions": f"{name}.md"}
         )
     document["agents"] = agents
+    given = runtime(picked_by(agents), document.get("tools", {}))
+    if given and "runtime_tools" not in document:
+        document["runtime_tools"] = given
     return document
 
 

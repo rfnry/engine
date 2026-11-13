@@ -264,6 +264,7 @@ async def test_dispatch_delegate_gives_the_child_the_tenant_tools(tmp_path: Path
             "tools": {"allow": ["ping"]},
         },
         files={"b.md": "hi\n"},
+        runtime_tools=["ping"],
     )
 
     async def ping(args: dict[str, Any]) -> str:

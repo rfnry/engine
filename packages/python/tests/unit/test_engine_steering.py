@@ -20,7 +20,7 @@ from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Local, Workspace
 
 from .fakes import Fixed, said, text_reply
-from .trees import provided, write_folder
+from .trees import provided, runtime, write_folder
 
 AGENTS: dict[str, dict[str, Any]] = {
     "chat": {
@@ -82,6 +82,7 @@ def make_tree(tmp_path: Path, run_tools: dict[str, list[str]] | None = None) -> 
     return write_folder(
         root,
         agents,
+        runtime_tools=runtime(name for names in (run_tools or {}).values() for name in names),
         files={
             **{f"{name}.md": f"You are {name}.\n" for name in AGENTS},
             "desk/intent.json": INTENT,

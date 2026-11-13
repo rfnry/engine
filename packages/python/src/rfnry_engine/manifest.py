@@ -161,6 +161,7 @@ class Manifest(_Closed):
     workers: dict[str, WorkerEntry] = Field(default_factory=dict)
     models: dict[str, ModelEntry]
     tools: dict[str, ToolEntry] = Field(default_factory=dict)
+    runtime_tools: list[str] = Field(default_factory=list, json_schema_extra={"uniqueItems": True})
     agents: dict[str, AgentEntry]
 
     @field_validator("version", mode="before")
@@ -379,6 +380,10 @@ def _validated(data: dict[Any, Any], path: Path) -> Manifest:
     return manifest
 
 
+def _plain(name: str) -> bool:
+    return bool(name) and name == name.strip() and not name.startswith(".") and "/" not in name
+
+
 def _refuse_names_that_are_not_plain(manifest: Manifest, path: Path) -> None:
     maps: list[tuple[str, Iterable[str]]] = [
         ("agents", manifest.agents),
@@ -389,10 +394,24 @@ def _refuse_names_that_are_not_plain(manifest: Manifest, path: Path) -> None:
     ]
     for at, names in maps:
         for name in names:
-            if not name or name != name.strip() or name.startswith(".") or "/" in name:
+            if not _plain(name):
                 raise ConfigurationError(
                     f"manifest: {at}.{name} in {path} is not a plain name, got {name!r}; write it with no blank, no padding, no leading . and no /"
                 )
+
+
+def _refuse_runtime_tools_written_wrong(manifest: Manifest, path: Path) -> None:
+    held: set[str] = set()
+    for name in manifest.runtime_tools:
+        if not _plain(name):
+            raise ConfigurationError(
+                f"manifest: runtime_tools in {path} lists {name!r}, which is not a plain name; write it with no blank, no padding, no leading . and no /"
+            )
+        if name in held:
+            raise ConfigurationError(
+                f"manifest: runtime_tools in {path} lists {name!r} twice; list each name once"
+            )
+        held.add(name)
 
 
 def _layers(name: str, agent: AgentEntry) -> Iterator[tuple[str, ModeEntry]]:
@@ -482,6 +501,7 @@ def read_manifest(root: Path) -> Manifest:
         )
     manifest = _validated(data, path)
     _refuse_names_that_are_not_plain(manifest, path)
+    _refuse_runtime_tools_written_wrong(manifest, path)
     for name, agent in manifest.agents.items():
         _refuse_what_its_kind_leaves_out(name, agent, path)
         _refuse_missing_instructions(name, agent, path)

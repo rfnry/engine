@@ -36,9 +36,7 @@ def test_check_passes_a_good_folder(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert out == ["a  generation  strong  modes: chat, email", "b  decision  judge"]
 
 
-def test_check_lists_the_names_a_run_must_give(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_check_lists_the_runtime_tools(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     folder = write_folder(
         tmp_path,
         {
@@ -49,15 +47,19 @@ def test_check_lists_the_names_a_run_must_give(
             },
             "b": {"kind": "decision", "model": "judge", "instructions": "a.md"},
         },
+        runtime_tools=["handoff", "verify"],
         files={"a.md": "Work.\n"},
     )
     assert main(["folder", "check", str(folder)]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        "a  generation  strong  modes: chat  from the run: handoff, verify",
+        "a  generation  strong  modes: chat  runtime tools: handoff, verify",
         "b  decision  judge",
     ]
     info = check_folder(folder)["a"]
-    assert (info.run_tools, info.modes["chat"].run_tools) == (["handoff"], ["handoff", "verify"])
+    assert (info.runtime_tools, info.modes["chat"].runtime_tools) == (
+        ["handoff"],
+        ["handoff", "verify"],
+    )
 
 
 def test_check_fails_a_bad_one_with_its_message(
@@ -183,6 +185,8 @@ tools:
     timeout: 20
   refund: {module: tools/refund.py, schema: tools/refund.json}
 
+runtime_tools: [handoff, verify_customer]
+
 agents:
   support:
     kind: generation
@@ -273,6 +277,9 @@ def test_the_schema_takes_a_tool_as_a_path_or_an_object(
     [
         ("agents.support.files", None),
         ("tools.lookup_order", ""),
+        ("runtime_tools", []),
+        ("runtime_tools", [""]),
+        ("runtime_tools", ["handoff", "handoff"]),
         ("agents.support.files.allow", []),
         ("agents.support.files", {}),
         ("agents.support.tools.allow", [""]),

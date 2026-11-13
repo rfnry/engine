@@ -49,7 +49,7 @@ from .fakes import (
     text_reply,
 )
 from .test_engine_workspace import make_tree, use
-from .trees import provided, tooled, write_folder
+from .trees import provided, runtime, tooled, write_folder
 
 GENERATION: dict[str, Any] = {
     "kind": "generation",
@@ -69,7 +69,10 @@ EDIT = {
 def _tree(root: Path, *run_tools: str) -> Path:
     tools = {"allow": list(run_tools)} if run_tools else {}
     return write_folder(
-        root, {"g": {**GENERATION, **({"tools": tools} if tools else {})}}, files=FILES
+        root,
+        {"g": {**GENERATION, **({"tools": tools} if tools else {})}},
+        runtime_tools=runtime(run_tools),
+        files=FILES,
     )
 
 

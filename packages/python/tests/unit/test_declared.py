@@ -11,7 +11,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import Scripted, text_reply
-from .trees import provided, write_folder
+from .trees import provided, runtime, write_folder
 
 SCHEMA = {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
 
@@ -40,6 +40,7 @@ def _listing(root: Path, *run_tools: str, description: str = "Look up an order")
             }
         },
         tools={"lookup": {"module": "tools/lookup.py", "schema": "tools/lookup.json"}},
+        runtime_tools=runtime(run_tools),
         files={
             "a.md": "Hi\n",
             "tools/lookup.json": json.dumps({"description": description, "input_schema": SCHEMA}),

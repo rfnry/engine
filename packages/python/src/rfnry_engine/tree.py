@@ -98,7 +98,7 @@ class AgentSpec(BaseModel):
     offered: frozenset[str] = frozenset()
     public: tuple[str, ...] = ()
     folder_tools: dict[str, ToolDef] = Field(default_factory=dict)
-    from_run: list[str] = Field(default_factory=list)
+    runtime_tools: list[str] = Field(default_factory=list)
     modes: dict[str, AgentSpec] = Field(default_factory=dict)
     needs_mode: bool = False
     worker: str = "default"

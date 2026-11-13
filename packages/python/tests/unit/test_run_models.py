@@ -483,6 +483,7 @@ async def test_a_run_lends_no_models_to_an_engine_tool_it_calls(tmp_path: Path) 
         write_folder(
             tmp_path,
             {"lead": {**LEAD, "tools": {"allow": ["consult"]}}, "writer": WRITER},
+            runtime_tools=["consult"],
             files=BODIES,
         ),
         providers=provided({"strong": None, "fast": None}),

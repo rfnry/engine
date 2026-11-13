@@ -16,7 +16,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import Fixed, MemoryBucket, Scripted, text_reply
-from .trees import provided, write_folder
+from .trees import provided, runtime, write_folder
 
 INTENT = '{"type": "choice", "instructions": "What is this?", "options": {"help": "Needs help", "other": "Anything else"}}'
 AGENTS: dict[str, dict[str, Any]] = {
@@ -57,6 +57,7 @@ def make_tree(tmp_path: Path, run_tools: dict[str, list[str]] | None = None) -> 
     return write_folder(
         root,
         agents,
+        runtime_tools=runtime(name for names in (run_tools or {}).values() for name in names),
         files={
             **{f"{name}.md": f"You are {name}.\n" for name in AGENTS},
             "router/intent.json": INTENT,

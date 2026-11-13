@@ -16,7 +16,7 @@ from rfnry_engine.tools.workspace import Local, Workspace
 from .fakes import Scripted, delegating, text_reply
 from .test_engine_bridge import script, shell
 from .test_engine_workspace import use
-from .trees import provided, write_folder
+from .trees import picked_by, provided, runtime, write_folder
 
 TOO_DEEP = "DelegationDepthError: tools/delegate: depth 2 exceeded at a -> b -> c"
 TOO_LATE = "TimeoutError: engine: slow timed out after 0.05s"
@@ -78,7 +78,9 @@ def agent(**sections: Any) -> dict[str, Any]:
 
 
 def folder(tmp_path: Path, agents: Mapping[str, Mapping[str, Any]]) -> Path:
-    return write_folder(tmp_path, agents, files={"a.md": "Work.\n"})
+    return write_folder(
+        tmp_path, agents, runtime_tools=runtime(picked_by(agents)), files={"a.md": "Work.\n"}
+    )
 
 
 def calling(*names: str) -> Reply:

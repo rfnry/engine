@@ -14,7 +14,7 @@ from unit.fakes import (
     generation_record,
     text_reply,
 )
-from unit.trees import provided, write_folder
+from unit.trees import picked_by, provided, runtime, write_folder
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, NotFoundError
@@ -73,7 +73,9 @@ async def dropping(start: VoiceStart) -> Spoken:
 
 
 def voice_engine(root: Path, refinery: Refinery, entry: dict[str, Any] = ENTRY) -> Engine:
-    write_folder(root, {"voice": entry}, files=FILES)
+    write_folder(
+        root, {"voice": entry}, runtime_tools=runtime(picked_by({"voice": entry})), files=FILES
+    )
     return Engine(root, providers=provided({"live": Live()}), refinery=refinery)
 
 
@@ -253,7 +255,9 @@ async def test_label_leaves_voice_runs_out(tmp_path: Path, storage: Storage) -> 
         "teacher": {"kind": "generation", "model": "strong", "instructions": "voice.md"},
     }
     grounded = json.dumps({"type": "check", "instructions": "Is the reply grounded?"})
-    write_folder(tmp_path, agents, files={**FILES, "q/grounded.json": grounded})
+    write_folder(
+        tmp_path, agents, runtime_tools=["lookup"], files={**FILES, "q/grounded.json": grounded}
+    )
     taught = ToolCall(
         id="t1", name="Output", args={"answers": {"urgent": True}, "rationale": "It is down."}
     )

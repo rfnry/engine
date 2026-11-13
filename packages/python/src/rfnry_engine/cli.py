@@ -164,10 +164,10 @@ def _folder(args: argparse.Namespace) -> int:
         if info.modes:
             line += f"  modes: {', '.join(info.modes)}"
         given = sorted(
-            {*info.run_tools, *(n for mode in info.modes.values() for n in mode.run_tools)}
+            {*info.runtime_tools, *(n for mode in info.modes.values() for n in mode.runtime_tools)}
         )
         if given:
-            line += f"  from the run: {', '.join(given)}"
+            line += f"  runtime tools: {', '.join(given)}"
         print(line)
     return 0
 

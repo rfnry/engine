@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -47,6 +48,7 @@ def _folder(
     *,
     allow: list[str] | None = None,
     section: dict[str, Any] | None = None,
+    runtime_tools: list[str] | None = None,
     **agent: Any,
 ) -> Path:
     picks = {"allow": ["*"] if allow is None else allow, **(section or {})}
@@ -54,6 +56,7 @@ def _folder(
         root,
         {"a": {**GENERATION, "tools": picks, **agent}},
         tools=tools or None,
+        runtime_tools=runtime_tools or (),
         files={"a.md": "Work.\n", **written},
     )
 
@@ -268,7 +271,9 @@ async def test_the_agents_timeout_also_bounds_a_tool_the_run_gives(tmp_path: Pat
         await asyncio.sleep(30)
         return "late"
 
-    folder = _folder(tmp_path, {}, {}, allow=["given"], section={"timeout": 0.2})
+    folder = _folder(
+        tmp_path, {}, {}, allow=["given"], section={"timeout": 0.2}, runtime_tools=["given"]
+    )
     given = Tool("given", "Waits", body=patient)
     model = Scripted(_calling("given"), text_reply("done"))
     async with Engine(folder, providers=provided({"m": model}), tool_timeout=30.0) as engine:
@@ -283,6 +288,7 @@ async def test_a_name_is_declared_then_built_in_then_from_the_run(tmp_path: Path
         {"one": ONE},
         {"tools/one.py": RUN, "k.md": "Known.\n"},
         allow=["one", "Grep", "given"],
+        runtime_tools=["given"],
         files={"allow": ["k.md"]},
     )
     spec = load_folder(folder)["a"]
@@ -411,7 +417,7 @@ def test_a_section_each_mode_holds_grants_the_name_on_an_entry_that_needs_a_mode
 async def test_a_run_missing_a_name_lists_what_its_sections_grant(
     tmp_path: Path, agent: dict[str, Any], listed: str
 ) -> None:
-    folder = _folder(tmp_path, {}, {}, allow=["absent"], **agent)
+    folder = _folder(tmp_path, {}, {}, allow=["absent"], runtime_tools=["absent"], **agent)
     room_path = tmp_path / "room"
     room_path.mkdir()
     async with (
@@ -543,13 +549,14 @@ async def test_deny_drops_a_built_in_files_grant(tmp_path: Path) -> None:
     assert load_folder(folder)["a"].keep == ["Glob", "Grep", "LS", "Load"]
 
 
-async def test_a_bare_deny_name_nothing_declares_drops_that_run_tool(tmp_path: Path) -> None:
+async def test_deny_drops_a_runtime_tool_the_run_gives(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
         {"one": ONE},
         {"tools/one.py": RUN},
         allow=["one", "given"],
-        section={"deny": ["given", "nobody_gives_this"]},
+        section={"deny": ["given"]},
+        runtime_tools=["given"],
     )
     model = Scripted(text_reply("done"))
     given = Tool("given", "A tool of the run", body=None)
@@ -736,7 +743,7 @@ async def test_a_runs_tool_replaces_a_declared_tool_of_the_same_name(tmp_path: P
 async def test_a_bare_name_the_run_does_not_give_fails_before_any_model_call(
     tmp_path: Path,
 ) -> None:
-    folder = _folder(tmp_path, {}, {}, allow=["absent"])
+    folder = _folder(tmp_path, {}, {}, allow=["absent"], runtime_tools=["absent"])
     model = Scripted(text_reply("done"))
     async with Engine(folder, providers=provided({"m": model})) as engine:
         with pytest.raises(ConfigurationError, match=r"lists 'absent' in tools\.allow"):
@@ -773,18 +780,137 @@ def test_a_bare_name_differing_only_by_case_is_refused_naming_the_right_one(
     )
 
 
-def test_the_names_a_run_must_give_are_listed(tmp_path: Path) -> None:
+UNDECLARED = (
+    "lists 'hadnoff' in tools.{key}, which is not under tools: or runtime_tools: and is not a tool "
+    "the engine gives; declare it, or fix the name"
+)
+
+
+@pytest.mark.parametrize("on_mode", [False, True], ids=["entry", "mode"])
+@pytest.mark.parametrize("key", ["allow", "deny"])
+def test_a_tool_name_declared_nowhere_is_refused_when_the_folder_loads(
+    tmp_path: Path, key: str, on_mode: bool
+) -> None:
+    written = {"allow": ["handoff", "hadnoff"]} if key == "allow" else {"deny": ["hadnoff"]}
+    entry: dict[str, Any] = {**GENERATION, "tools": {"allow": ["handoff"]}}
+    if on_mode:
+        entry["modes"] = {"chat": {"tools": written}}
+    else:
+        entry["tools"] = {"allow": ["handoff"], **written}
+    folder = write_folder(
+        tmp_path, {"a": entry}, runtime_tools=["handoff"], files={"a.md": "Work.\n"}
+    )
+    who = "mode 'chat' of agent 'a'" if on_mode else "agent 'a'"
+    with pytest.raises(ConfigurationError) as refused:
+        load_folder(folder)
+    assert str(refused.value) == f"compiled: {who} " + UNDECLARED.format(key=key)
+
+
+def test_a_runtime_tool_no_entry_or_mode_picks_is_refused(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {}, {}, allow=["handoff"], runtime_tools=["handoff", "ping"])
+    with pytest.raises(ConfigurationError) as refused:
+        load_folder(folder)
+    assert str(refused.value) == (
+        "compiled: runtime_tools: in rfnry.yaml lists 'ping', which no agent or mode picks; "
+        "pick it with tools.allow, or remove it"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "said"),
+    [
+        ("one", "which tools: declares; a run's tools= replaces a folder tool by its name"),
+        ("Read", "which is named like a tool the engine gives; rename it"),
+        ("Delegate", "which is named like a tool the engine gives; rename it"),
+        ("Output", "which is named like a tool the engine gives; rename it"),
+        ("History", "which is named like a tool the engine gives; rename it"),
+    ],
+)
+def test_a_runtime_tool_named_like_a_folder_or_engine_tool_is_refused(
+    tmp_path: Path, name: str, said: str
+) -> None:
+    folder = _folder(tmp_path, {"one": ONE}, {"tools/one.py": RUN}, runtime_tools=[name])
+    _refused(folder, rf"^compiled: runtime_tools: in rfnry\.yaml lists {name!r}, {re.escape(said)}")
+
+
+def test_a_runtime_tool_listed_twice_is_refused(tmp_path: Path) -> None:
+    folder = _folder(tmp_path, {}, {}, allow=["ping"], runtime_tools=["ping", "ping"])
+    _refused(
+        folder,
+        r"^manifest: runtime_tools in .*rfnry\.yaml lists 'ping' twice; list each name once$",
+    )
+
+
+def test_a_star_reaches_no_runtime_tool(tmp_path: Path) -> None:
+    folder = write_folder(
+        tmp_path,
+        {
+            "a": {**GENERATION, "tools": {"allow": ["*"]}},
+            "b": {**GENERATION, "tools": {"allow": ["ping"]}},
+        },
+        tools={"one": ONE},
+        runtime_tools=["ping"],
+        files={"a.md": "Work.\n", "tools/one.py": RUN},
+    )
+    agents = load_folder(folder)
+    assert (agents["a"].keep, agents["a"].runtime_tools) == (["one"], [])
+    assert agents["b"].runtime_tools == ["ping"]
+
+
+def test_a_runtime_tool_only_a_mode_allows_or_denies_is_picked(tmp_path: Path) -> None:
+    folder = _folder(
+        tmp_path,
+        {},
+        {},
+        allow=["ping"],
+        runtime_tools=["ping", "pong", "hush"],
+        modes={
+            "quiet": {"tools": {"deny": ["ping", "hush"]}},
+            "loud": {"tools": {"allow": ["pong"]}},
+        },
+    )
+    spec = load_folder(folder)["a"]
+    assert spec.runtime_tools == ["ping"]
+    assert spec.modes["quiet"].runtime_tools == []
+    assert spec.modes["loud"].runtime_tools == ["ping", "pong"]
+
+
+async def test_a_runs_tools_replace_a_folder_tool_beside_the_runtime_tools(
+    tmp_path: Path,
+) -> None:
+    async def stub(args: dict[str, Any]) -> str:
+        return "the stub"
+
+    source = "def run(args, call):\n    raise RuntimeError('the real system was called')\n"
+    folder = _folder(
+        tmp_path,
+        {"one": ONE},
+        {"tools/one.py": source},
+        allow=["one", "handoff"],
+        runtime_tools=["handoff"],
+    )
+    model = Scripted(_calling("one"), text_reply("done"))
+    given = Tools([Tool("one", "A stand-in", body=stub), Tool("handoff", "Hands over", body=None)])
+    async with Engine(folder, providers=provided({"m": model})) as engine:
+        run = await engine.run("a", "acme", "go", tools=given)
+    assert isinstance(run, Generation)
+    assert run.steps[0].result == "the stub"
+    assert _offered(model) == ["handoff", "one"]
+
+
+def test_the_runtime_tools_an_agent_allows_are_listed(tmp_path: Path) -> None:
     folder = _folder(
         tmp_path,
         {"one": ONE},
         {"tools/one.py": RUN},
         allow=["one", "Read", "handoff", "lookup_customer"],
+        runtime_tools=["handoff", "lookup_customer", "verify"],
         files={"allow": ["a.md"]},
         modes={"chat": {"tools": {"allow": ["verify"]}}},
     )
     spec = load_folder(folder)["a"]
-    assert spec.from_run == ["handoff", "lookup_customer"]
-    assert spec.modes["chat"].from_run == ["handoff", "lookup_customer", "verify"]
+    assert spec.runtime_tools == ["handoff", "lookup_customer"]
+    assert spec.modes["chat"].runtime_tools == ["handoff", "lookup_customer", "verify"]
 
 
 async def test_a_run_tool_no_entry_names_stays_out(tmp_path: Path) -> None:

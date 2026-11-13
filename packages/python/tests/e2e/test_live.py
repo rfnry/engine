@@ -113,6 +113,7 @@ async def test_a_coder_calls_a_tool_from_its_script(adapters: Any, tmp_path: Pat
                 "tools": {"allow": ["constant"]},
             }
         },
+        runtime_tools=["constant"],
         files={
             "coder.md": "You write Python and run it with Shell. Reply with the program's output only.\n"
         },

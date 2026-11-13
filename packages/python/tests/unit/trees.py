@@ -5,6 +5,7 @@ from typing import Any
 
 import yaml
 
+from rfnry_engine.compiled import ENGINE_TOOLS
 from rfnry_engine.manifest import MANIFEST
 from rfnry_engine.models import Provider
 
@@ -25,6 +26,24 @@ def _picked_models(agents: Mapping[str, Any]) -> dict[str, dict[str, str]]:
     return {name: {"provider": name} for name in names if isinstance(name, str) and name.strip()}
 
 
+def runtime(names: Iterable[str], declared: Iterable[str] = ()) -> list[str]:
+    held = set(declared)
+    return [
+        name
+        for name in dict.fromkeys(names)
+        if "*" not in name and name not in ENGINE_TOOLS and name not in held
+    ]
+
+
+def picked_by(agents: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for agent in agents.values():
+        for layer in (agent, *(agent.get("modes") or {}).values()):
+            tools = layer.get("tools") or {}
+            names += [*tools.get("allow", []), *tools.get("deny", [])]
+    return names
+
+
 def write_folder(
     root: Path,
     agents: Mapping[str, Mapping[str, Any]],
@@ -32,6 +51,7 @@ def write_folder(
     workers: Mapping[str, Any] | None = None,
     models: Mapping[str, Any] | None = None,
     tools: Mapping[str, Any] | None = None,
+    runtime_tools: Iterable[str] = (),
     files: Mapping[str, str] | None = None,
 ) -> Path:
     document: dict[str, Any] = {"version": 1}
@@ -42,6 +62,8 @@ def write_folder(
         document["models"] = declared
     if tools is not None:
         document["tools"] = tools
+    if runtime_tools:
+        document["runtime_tools"] = list(runtime_tools)
     document["agents"] = agents
     (root / MANIFEST).write_text(
         yaml.dump(document, Dumper=_NoAliases, sort_keys=False), encoding="utf-8"
@@ -70,7 +92,11 @@ def solo(
     if picked:
         agent["tools"] = {**agent.get("tools", {}), "allow": picked}
     return write_folder(
-        root, {name: agent}, tools=declared, files={f"{name}.md": body, **(written or {})}
+        root,
+        {name: agent},
+        tools=declared,
+        runtime_tools=runtime(picked, declared or {}),
+        files={f"{name}.md": body, **(written or {})},
     )
 
 
@@ -80,6 +106,7 @@ def add_agent(
     entry: Mapping[str, Any],
     files: Mapping[str, str] | None = None,
     tools: Mapping[str, Any] | None = None,
+    runtime_tools: Iterable[str] = (),
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     held: dict[str, Any] = {}
@@ -90,6 +117,7 @@ def add_agent(
         root,
         {**held.get("agents", {}), name: entry},
         tools={**held.get("tools", {}), **(tools or {})} or None,
+        runtime_tools=dict.fromkeys([*held.get("runtime_tools", []), *runtime_tools]),
         files=files,
     )
 
@@ -129,6 +157,12 @@ def amend(root: Path, agent: str, **sections: Any) -> Path:
     entry = document["agents"][agent]
     for key, value in sections.items():
         entry[key] = {**entry[key], **value} if isinstance(entry.get(key), dict) else value
+    given = runtime(
+        [*document.get("runtime_tools", []), *picked_by(document["agents"])],
+        document.get("tools", {}),
+    )
+    if given:
+        document["runtime_tools"] = given
     (root / MANIFEST).write_text(yaml.dump(document, sort_keys=False), encoding="utf-8")
     return root
 

@@ -14,7 +14,7 @@ from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import answer_to, text_reply
-from .trees import add_agent, provided
+from .trees import add_agent, provided, runtime
 
 STOPPED = "stopped by the user"
 
@@ -31,9 +31,16 @@ def tree(
         }
         if targets:
             entry["orchestration"] = {"delegate_to": targets}
-        if run_tools and name in run_tools:
-            entry["tools"] = {"allow": run_tools[name]}
-        add_agent(root, name, entry, files={f"{name}.md": f"You are {name}.\n"})
+        given = run_tools[name] if run_tools and name in run_tools else []
+        if given:
+            entry["tools"] = {"allow": given}
+        add_agent(
+            root,
+            name,
+            entry,
+            files={f"{name}.md": f"You are {name}.\n"},
+            runtime_tools=runtime(given),
+        )
     return root
 
 

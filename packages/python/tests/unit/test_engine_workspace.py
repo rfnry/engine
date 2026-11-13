@@ -16,7 +16,7 @@ from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Local, Workspace
 
 from .fakes import Fixed, Scripted, text_reply
-from .trees import provided, write_folder
+from .trees import picked_by, provided, runtime, write_folder
 
 INTENT = '{"type": "choice", "instructions": "What is this?", "options": {"code": "Write code", "talk": "Just talk"}}'
 AGENTS: dict[str, dict[str, Any]] = {
@@ -72,6 +72,7 @@ def make_tree(
         root,
         agents,
         tools=declared,
+        runtime_tools=runtime(picked_by(agents), declared or {}),
         files={**files, "desk/intent.json": INTENT, **(written or {})},
     )
 

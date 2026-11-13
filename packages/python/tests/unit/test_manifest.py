@@ -52,6 +52,8 @@ tools:                                # each tool once; agents pick them by name
     timeout: 20                       # optional: seconds per call
   refund: {module: tools/refund.py, schema: tools/refund.json}
 
+runtime_tools: [handoff, verify_customer]   # names a run gives through tools=
+
 agents:
   support:
     kind: generation                  # required: generation, decision or voice
@@ -172,6 +174,7 @@ def test_the_example_of_the_design_parses_as_written(tmp_path: Path) -> None:
     assert support.workspace is True
     assert overlaid(support, "chat").worker == "live"
     assert overlaid(support, "chat").tools.allow == ["*", "handoff", "verify_customer"]
+    assert manifest.runtime_tools == ["handoff", "verify_customer"]
     triage = manifest.agents["triage"]
     assert triage.orchestration is not None and triage.orchestration.route is not None
     assert triage.orchestration.route.min_confidence == 0.7
@@ -230,7 +233,7 @@ def test_an_unknown_key_with_no_value_names_what_is_allowed(tmp_path: Path, empt
 def test_an_unknown_key_at_the_top_names_the_top_keys(tmp_path: Path) -> None:
     _refused(
         _file(tmp_path, f"versoin: 1\n{MINIMAL}"),
-        r"versoin \(it takes version, workers, models, tools, agents\)",
+        r"versoin \(it takes version, workers, models, tools, runtime_tools, agents\)",
     )
 
 
@@ -706,6 +709,15 @@ def test_a_name_is_one_plain_word(tmp_path: Path, where: str, bad: str) -> None:
     folder, path = _with_name(tmp_path, where, bad)
     said = _refused(folder, re.escape(f"manifest: {path} in <root>") + ".* is not a plain name")
     assert repr(bad) in said
+
+
+@pytest.mark.parametrize("bad", [" a", "a ", ".a", "a/b"])
+def test_a_runtime_tool_is_one_plain_word(tmp_path: Path, bad: str) -> None:
+    folder = write_folder(tmp_path, {"a": GENERATION}, runtime_tools=[bad])
+    _refused(
+        folder,
+        rf"^manifest: runtime_tools in <root>/rfnry\.yaml lists {re.escape(repr(bad))}, which is not a plain name",
+    )
 
 
 @pytest.mark.parametrize("name", ["a", "a.b", "a-b", "a_b", "a b"])

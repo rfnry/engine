@@ -394,6 +394,8 @@ tools:                                    # each tool once; agents pick them by 
   lookup_order: support/tools/lookup_order.py   # a path: function run, its .json beside it
   refund: {module: support/tools/refund.py, schema: support/tools/refund.json, timeout: 20}
 
+runtime_tools: [handoff]                  # the tools a run gives through tools=, by name
+
 agents:
   support:
     kind: generation                      # generation, decision or voice
@@ -406,7 +408,7 @@ agents:
       deny: [support/knowledge/drafts/**]
       preload: [support/policy.md]        # sent with every model call
     tools:
-      allow: ["*", handoff]               # declared above, given by the engine, or by the run
+      allow: ["*", handoff]               # * is every tool above; handoff is a runtime tool
       timeout: 30
     skills:
       allow: [support/skills/*]           # folders holding SKILL.md, offered to the model
@@ -436,6 +438,7 @@ agents:
 | `version` | `1`, required | |
 | `models:` | each model once, under the name agents pick it by; required | [Models in the folder](#models-in-the-folder) |
 | `tools:` | each tool script once, under the name the model sees | [Tools of the folder](#tools-of-the-folder) |
+| `runtime_tools:` | the name of each tool a run gives through `tools=` | [Tools of the run](#tools-of-the-run) |
 | `workers:` | the processes the tools run in; without it, one `default` worker | [Workers](#workers) |
 | `agents:` | each agent, under the name a run calls it by; required | below |
 
@@ -521,7 +524,7 @@ in between, and nothing is loaded until the model asks — unless the agent prel
 `engine.agents` lists the agents as the engine loaded them, each name to an `AgentInfo`: its `kind`,
 `model` and `description`, the agents it may `delegate_to`, the `files` its model may open, the
 `tools` it picks from `tools:` by name (the built-ins and the tools a run gives are not listed), the
-`run_tools` its `tools.allow` expects a run to give, the `skills` it holds, each to its
+`runtime_tools` its `tools.allow` picks, which a run gives, the `skills` it holds, each to its
 description, the `public` ones people may call, its `worker` and its `modes`, each an `AgentInfo`
 of its own. When the folder has loaded, the engine logs the names of
 its agents at INFO on the `rfnry_engine.engine` logger — `engine: agents loaded [lead, triage,
@@ -1581,8 +1584,10 @@ voice:
 What it takes follows from what a live model is: `kind`, `model`, `description`, `instructions`,
 `worker`, `tools` and `modes`. It has no loop that opens a file or counts calls, so `files`, `skills`,
 `orchestration`, `workspace`, `questions` and `max_model_calls` are a `ConfigurationError` naming the
-key, as is a tool its sections would grant, such as `Read`, in `tools.allow`. `engine.talk` runs it
-and refuses any other kind; `engine.run`, `engine.tool`, `delegate_to` and `route` refuse it. It
+key, as is a tool its sections would grant, such as `Read`, in `tools.allow`. With no section to
+grant one, its tools are declared tools and runtime tools, each listed under `runtime_tools:`.
+`engine.talk` runs it and refuses any other kind; `engine.run`, `engine.tool`, `delegate_to` and
+`route` refuse it. It
 reaches other agents through its tools, such as a consult `engine.tool` builds, in a mode of that
 agent written for answers that are spoken.
 
@@ -2707,7 +2712,7 @@ billing:
   files:
     allow: [billing/knowledge]
   tools:
-    allow: [refund, handoff]            # declared, given by the engine or given by the run
+    allow: [refund, handoff]            # under tools: or runtime_tools:, or given by the engine
     deny: [Grep]                        # applied after allow, across the entry and its mode
     timeout: 30                         # seconds per call, under Engine(tool_timeout=)
     max_parallel: 4                     # tool calls of one run at once
@@ -2715,10 +2720,11 @@ billing:
 
 An entry of `allow` or `deny` holding `*`, the only wildcard, is a pattern over the names under
 `tools:` and never reaches a built-in or a tool a run gives. An entry without one is a name: a
-declared tool, then a tool the entry's sections grant, then one the run gives through `tools=`, and a
-run that does not give it fails before any model call (`tools/engine_tools: agent 'billing' lists
-'handoff' in tools.allow, which this run does not offer; its tools are Glob, Grep, LS, Load, Read,
-refund`). The sections grant `Read`, `Grep`, `Glob`, `LS` and `Load` with `files` or `skills`,
+declared tool, then a tool the entry's sections grant, then a runtime tool, one the run gives
+through `tools=` and the file lists under `runtime_tools:`, and a run that does not give it fails
+before any model call (`tools/engine_tools: agent 'billing' lists 'handoff' in tools.allow, which
+this run does not offer; its tools are Glob, Grep, LS, Load, Read, refund`). The sections grant
+`Read`, `Grep`, `Glob`, `LS` and `Load` with `files` or `skills`,
 `Delegate` with `orchestration.delegate_to`, and `Shell`, `Job`, `Jobs`, `Write` and `Edit` with
 `workspace: true`, whether or not `allow` names them; naming one when its section is missing is a
 `ConfigurationError` naming the section, since no run can supply it. `History` comes with a run whose
@@ -2730,11 +2736,15 @@ section grants included: `deny: [Delegate]` takes delegation away, and `deny: [W
 job only `Job` and `Jobs` can read or stop, so denying one or two of them is a
 `ConfigurationError`. A name in `allow` or `deny` that differs only by case from a declared
 tool or one the engine gives is a `ConfigurationError` naming the right one (`compiled: agent
-'billing' lists 'read' in tools.allow; did you mean 'Read'? ...`); any other name that is neither
-is read as one the run gives, so a name the run must give fails only at a run without it, and
-`rfnry-engine folder check` lists those names for each agent. In `deny`, such a tool of the run
-is dropped. A run's `tools=` replaces a declared tool of the same name, which is how a test or a
-replay stubs a real system; a tool of the run that `allow` does not name is not offered. A
+'billing' lists 'read' in tools.allow; did you mean 'Read'? ...`); any other name that is none of
+them is refused when the engine loads (`compiled: agent 'billing' lists 'hadnoff' in tools.allow,
+which is not under tools: or runtime_tools: and is not a tool the engine gives; declare it, or fix
+the name`), so a mistyped name fails at load, not at the first run that lacks it, and
+`rfnry-engine folder check` lists each agent's runtime tools. In `deny`, a runtime tool is dropped.
+A runtime tool no entry or mode allows or denies, one named like a declared tool or like one the
+engine gives, and one listed twice are refused too. A run's `tools=` replaces a declared tool of
+the same name, which is how a test or a replay stubs a real system; a tool of the run that `allow`
+does not name is not offered. A
 pattern that matches nothing, a declared tool that no entry or mode picks once `deny` has
 applied, a declared tool named like one the engine gives (`Read`, `Grep`, `Glob`, `LS`, `Load`,
 `Shell`, `Job`, `Jobs`, `Write`, `Edit`, `Delegate`, `History`, `Output`), and a module, function
@@ -2955,7 +2965,8 @@ Python warns of the worker pipes left on the closed loop (`ResourceWarning`).
 Tools that must live in your process ride a run: `run(tools=)` takes a `Tools`, or anything with its
 two verbs, for that one run — a tool bound to a tenant's connection, one that streams to a UI,
 rfnry-memory's `MemoryTools`; a tool every run needs is the same `Tools` passed on every run. The
-agent is offered the ones its entry's `tools.allow` names, here `fetch_invoice`. Each is a `Tool`:
+file lists each of their names under `runtime_tools:`, and the agent is offered the ones its entry's
+`tools.allow` names, here `fetch_invoice`. Each is a `Tool`:
 its name, its description, its arguments and the async function that runs it, in your process:
 
 ```python
@@ -3300,18 +3311,17 @@ first.
 An agents repository checks its own folder in CI with no database and no models:
 
 ```sh
-rfnry-engine folder check agents      # lists each agent, its kind, model, modes and the tools a run must give it
+rfnry-engine folder check agents      # each agent, its kind, model, modes and runtime tools
 rfnry-engine folder schema > rfnry.schema.json    # the JSON Schema of rfnry.yaml, for an editor
 ```
 
 `folder check` builds what `Engine(path)` builds, the default `max_worker_processes` included, and
 starts no worker; `--max-worker-processes N` sets the ceiling it checks against, for a host that
-raises it in `Engine(max_worker_processes=)`. Each agent's line ends with the names its
-`tools.allow`, on the entry or a mode, expects a run to give through `tools=`, since only a run
-can supply them:
+raises it in `Engine(max_worker_processes=)`. Each agent's line ends with the runtime tools its
+`tools.allow` picks, on the entry or a mode, since only a run can supply them through `tools=`:
 
 ```
-support  generation  strong  modes: chat  from the run: handoff
+support  generation  strong  modes: chat  runtime tools: handoff
 ```
 
 It takes the folder that holds `rfnry.yaml`, and given the file itself it says to pass the folder.
@@ -3401,8 +3411,10 @@ holding whitespace; a tool's module that is not a `.py` file, is named like a st
 module or holds no such function, a schema file that is not an object, holds an unknown key or a
 schema that does not compile, a tool nothing describes, a tool written as a path without the JSON
 beside it, a tool named like one the engine gives, a pattern of `tools.allow` or `tools.deny` that
-matches nothing, a name in `tools.allow` whose
-section is missing, `Output` or `History` in either, and one or two of `Shell`, `Job` and `Jobs` in
+matches nothing, a name in either under neither `tools:` nor `runtime_tools:` and not one the engine
+gives, a runtime tool nothing picks, named like a declared tool or one the engine gives or listed
+twice, a name in `tools.allow` whose section is missing, `Output` or `History` in either, and one or
+two of `Shell`, `Job` and `Jobs` in
 `tools.deny` without the rest; a script or a module beside it that is not valid Python, imports
 the engine, a module relatively, a module beside it inside a function, a package folder beside it,
 a name below a `.py` file beside it, the server's own code, or a module that resolves to nothing

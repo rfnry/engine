@@ -30,7 +30,7 @@ from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Result, Tool, Tools
 
 from .fakes import Scripted, text_reply
-from .trees import provided, write_folder
+from .trees import provided, runtime, write_folder
 
 VOICE: dict[str, Any] = {"kind": "voice", "model": "live", "instructions": "voice.md"}
 FILES = {"voice.md": "Speak plainly.\n"}
@@ -106,7 +106,10 @@ def tool(name: str, body: Any = None) -> Tool:
 
 def with_tools(root: Path, *names: str, **entry: Any) -> Path:
     return write_folder(
-        root, {"voice": {**VOICE, "tools": {"allow": list(names)}, **entry}}, files=FILES
+        root,
+        {"voice": {**VOICE, "tools": {"allow": list(names)}, **entry}},
+        runtime_tools=runtime(names),
+        files=FILES,
     )
 
 
@@ -254,7 +257,12 @@ async def test_the_session_gets_its_modes_instructions_model_and_tools(tmp_path:
         "tools": {"allow": ["consult"]},
         "modes": {"duplex": {"instructions": "duplex.md", "tools": {"allow": ["hang_up"]}}},
     }
-    write_folder(tmp_path, {"voice": entry}, files={**FILES, "duplex.md": "Talk both ways.\n"})
+    write_folder(
+        tmp_path,
+        {"voice": entry},
+        runtime_tools=["consult", "hang_up"],
+        files={**FILES, "duplex.md": "Talk both ways.\n"},
+    )
     live, seen = Live(), list[VoiceStart]()
 
     async def session(start: VoiceStart) -> Spoken:
@@ -327,6 +335,18 @@ def test_a_tool_the_run_decides_is_a_load_error(tmp_path: Path, name: str) -> No
         load_folder(tmp_path)
 
 
+def test_a_voice_agent_allows_its_runtime_tools(tmp_path: Path) -> None:
+    write_folder(
+        tmp_path,
+        {"voice": {**VOICE, "tools": {"allow": ["consult", "end_call"]}}},
+        runtime_tools=["consult", "end_call"],
+        files=FILES,
+    )
+    spec = load_folder(tmp_path)["voice"]
+    assert spec.runtime_tools == ["consult", "end_call"]
+    assert spec.keep == ["consult", "end_call"] and spec.granted == frozenset()
+
+
 def test_nothing_is_granted_and_deny_drops_a_declared_tool(tmp_path: Path) -> None:
     write_folder(
         tmp_path,
@@ -338,6 +358,7 @@ def test_nothing_is_granted_and_deny_drops_a_declared_tool(tmp_path: Path) -> No
             }
         },
         tools={"who": {"module": "tools/who.py", "description": "Who"}},
+        runtime_tools=["consult"],
         files={**FILES, "tools/who.py": PID},
     )
     spec = load_folder(tmp_path)["voice"]
@@ -387,6 +408,7 @@ async def test_a_call_that_passes_its_deadline_is_an_error_and_a_step(tmp_path: 
     write_folder(
         tmp_path,
         {"voice": {**VOICE, "tools": {"allow": ["slow"], "timeout": 0.05}}},
+        runtime_tools=["slow"],
         files=FILES,
     )
 
@@ -423,6 +445,7 @@ async def test_max_parallel_caps_the_calls_of_a_session(tmp_path: Path) -> None:
     write_folder(
         tmp_path,
         {"voice": {**VOICE, "tools": {"allow": ["held"], "max_parallel": 1}}},
+        runtime_tools=["held"],
         files=FILES,
     )
     running, most = 0, 0
