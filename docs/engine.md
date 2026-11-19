@@ -2247,6 +2247,10 @@ The world reports whether the action worked:
 await refinery.outcome("acme", run.run_id, Outcome(status="failed", detail="Customer escalated."))
 ```
 
+An action whose result nobody knows yet — the call that would have refunded timed out, so the
+refund may or may not have happened — is reported as it is, `status="unknown"`, rather than guessed
+as either.
+
 Each call stores a new label. An app that labels from events more than one process hears — a staff
 reply every replica of a backend receives — or that retries after a crash passes `label_id=`, an id
 derived from the event such as the message id:

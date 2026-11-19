@@ -20,7 +20,7 @@ class Review(BaseModel):
 
 
 class Outcome(BaseModel):
-    status: Literal["succeeded", "failed"]
+    status: Literal["succeeded", "failed", "unknown"]
     detail: str | None = None
 
 

@@ -290,7 +290,8 @@ Applied to retrieval, these rules mean printing the rule before any query runs, 
 
 - **Approval and correction rates** per agent and per version: the share of runs people accepted,
   and the share they rewrote.
-- **Outcome success**: the share of runs whose outcome succeeded.
+- **Outcome success**: the share of runs whose outcome succeeded, with the runs whose outcome is `unknown`
+  counted apart, since they are neither.
 - **Holdout grade rate**: the number every change and every candidate model is compared on.
 - **Judge agreement**: how often the judge agrees with people, before trusting its scores.
 - **Calibration** of decision models: whether answers given at 0.8 are right about 80% of the time,

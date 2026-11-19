@@ -3,12 +3,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, NotFoundError
 from rfnry_engine.models import Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Decision, Generation, Run
-from rfnry_engine.refinery.labels import Outcome, Review
+from rfnry_engine.refinery.labels import Label, Outcome, Review
 from rfnry_engine.refinery.postgres import PostgresStorage, _Encoded
 from rfnry_engine.refinery.refinery import Refinery, label_of
 from rfnry_engine.refinery.storage import RunRow, Storage
@@ -60,6 +61,27 @@ async def test_review_and_outcome_become_labels_with_their_source(storage: Stora
     assert {labels[0].label_id, labels[1].label_id} == {review.label_id, outcome.label_id}
     world = next(label for label in labels if label.source == "world")
     assert world.body["outcome"]["status"] == "failed"
+
+
+async def test_an_outcome_whose_result_is_not_known_is_stored_and_exported_as_unknown(
+    storage: Storage,
+) -> None:
+    refinery = Refinery(storage)
+    run = decision_record(agent="frontdesk")
+    await refinery.record(run)
+    stored = await refinery.outcome(
+        "acme", run.run_id, Outcome(status="unknown", detail="The refund call timed out.")
+    )
+    assert stored.outcome == Outcome(status="unknown", detail="The refund call timed out.")
+    [label] = await refinery.storage.labels("acme", run_ids=[run.run_id])
+    assert Label.model_validate(label.body) == stored
+    bucket = MemoryBucket()
+    await refinery.export("acme", bucket)
+    [key] = bucket.objects
+    [row] = [json.loads(line) for line in bucket.objects[key].decode().splitlines()]
+    assert row["outcome"] == "unknown"
+    with pytest.raises(ValidationError, match="'succeeded', 'failed' or 'unknown'"):
+        Outcome(status="pending")  # type: ignore[arg-type]
 
 
 async def test_a_label_id_stores_one_label_however_often_it_is_given(storage: Storage) -> None:

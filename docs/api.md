@@ -858,11 +858,11 @@ A person's label on a run, for `Refinery.review`: a stance, a comment, a correct
 
 ```python
 class Outcome(BaseModel):
-    status: Literal["succeeded", "failed"]
+    status: Literal["succeeded", "failed", "unknown"]
     detail: str | None = None
 ```
 
-What the world reported about a run, for `Refinery.outcome`.
+What the world reported about a run, for `Refinery.outcome`: it `succeeded`, it `failed`, or its result is `unknown`, as when the call that would have done it timed out and nobody can yet say whether it happened.
 
 ### `Label`
 
