@@ -39,6 +39,7 @@ from rfnry_engine.foreground import (
     Lent,
     answer_stopped,
     answers_stopped,
+    beneath,
     halted,
     hooks,
     returned,
@@ -1190,7 +1191,7 @@ class Engine:
             tools=tools,
             workspace=workspace,
             models=merged,
-            stop=Stop() if stop is None else stop,
+            stop=beneath(stop),
             inbox=asyncio.Queue() if inbox is None else inbox,
             skill=invoked,
             tags=tagged,
@@ -1205,7 +1206,7 @@ class Engine:
             run = await (self._owned(spec, options.stop, running) if owned else running)
         except Exception:
             if record and options.failed:
-                with taking(stop):
+                with taking(options.stop):
                     await self._record(options.failed[-1])
             raise
         finally:
@@ -1213,7 +1214,7 @@ class Engine:
         if run is None:
             return None
         if record:
-            with taking(stop):
+            with taking(options.stop):
                 await self._record(run)
         return run
 
@@ -1257,24 +1258,24 @@ class Engine:
         merged = self._run_models(models)
 
         async def body(args: dict[str, Any]) -> Result:
-            with hooks(on_event, stop) as (watching, held):
-                run = await self._start(
-                    agent,
-                    scope,
-                    args["input"],
-                    mode=mode,
-                    questions=args.get("questions"),
-                    context=context,
-                    tools=tools,
-                    workspace=workspace,
-                    tags=tagged,
-                    approve=approve,
-                    on_event=watching,
-                    stop=Stop() if held is None else held,
-                    record=RECORDING.get(),
-                    models=merged,
-                    owned=True,
-                )
+            watching, held = hooks(on_event, stop)
+            run = await self._start(
+                agent,
+                scope,
+                args["input"],
+                mode=mode,
+                questions=args.get("questions"),
+                context=context,
+                tools=tools,
+                workspace=workspace,
+                tags=tagged,
+                approve=approve,
+                on_event=watching,
+                stop=held,
+                record=RECORDING.get(),
+                models=merged,
+                owned=True,
+            )
             if run is None:
                 answer_stopped()
                 return cut_result()
@@ -1787,7 +1788,12 @@ class Engine:
             self._running[held] = _Running(
                 kind, helper.stop, helper.inbox if kind == "generation" else None
             )
-            helper.task.add_done_callback(lambda _: self._running.pop(held, None))
+
+            def gone(_: object) -> None:
+                self._running.pop(held, None)
+                helper.stop._drop()
+
+            helper.task.add_done_callback(gone)
             return json.dumps({"job": helper.job}), False, helper.run_id, False
 
         async def delegate(call: ToolCall) -> tuple[Content, bool, str | None, bool]:

@@ -67,21 +67,21 @@ def halted(run: Run) -> bool:
     return isinstance(run, Generation) and run.stopped is not None
 
 
-@contextmanager
 def hooks(
     on_event: EventHandler | None, stop: Callable[[], Stop | None] | None
-) -> Iterator[tuple[EventHandler | None, Stop | None]]:
+) -> tuple[EventHandler | None, Stop | None]:
     here = current()
     above = None if here is None else here.stop
-    given = above if stop is None else stop()
-    if above is not None and above._from(given):
-        given = above
-    held = None if given is None else given._below()
-    try:
-        yield on_event if on_event is not None or here is None else here.on_event, held
-    finally:
-        if held is not None:
-            held._drop()
+    watching = on_event if on_event is not None or here is None else here.on_event
+    return watching, above if stop is None else stop()
+
+
+def beneath(given: Stop | None) -> Stop:
+    if given is None:
+        return Stop()
+    here = current()
+    above = None if here is None else here.stop
+    return (above if above is not None and above._from(given) else given)._below()
 
 
 def returned(run: Run) -> Run:

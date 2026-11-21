@@ -797,6 +797,25 @@ async def test_a_decision_helper_cut_by_its_id_sends_a_stopped_notice_and_leaves
     )
 
 
+async def test_a_decision_helper_stopped_before_its_call_leaves_nothing_on_the_given_stop(
+    tmp_path: Path,
+) -> None:
+    desk = Gated()
+    model = Crew(
+        [background("is it urgent?", agent="desk"), text_reply("final"), text_reply("final")]
+    )
+    engine = team(crew(tmp_path, background=True), model, desk=desk)
+    given = Stop()
+
+    async def on_event(event: Any) -> None:
+        if isinstance(event, ToolResultReady) and event.step.child_run_id is not None:
+            engine.stop(event.step.child_run_id, scope="acme")
+
+    run = await asyncio.wait_for(engine.run("lead", "acme", "go", on_event=on_event, stop=given), 5)
+    assert isinstance(run, Generation) and run.children == [] and not desk.asked.is_set()
+    assert given._children == set()
+
+
 def broken(model: str | None, effort: str | None, /) -> Any:
     raise RuntimeError("no key for solo")
 

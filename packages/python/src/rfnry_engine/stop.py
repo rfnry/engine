@@ -48,8 +48,14 @@ class Stop:
         return child
 
     def _drop(self) -> None:
-        if self._parent is not None:
-            self._parent._children.discard(self)
+        parent = self._parent
+        if parent is None:
+            return
+        parent._children.discard(self)
+        for child in self._children:
+            child._parent = parent
+            parent._children.add(child)
+        self._children = set()
 
     def _from(self, other: Stop | None) -> bool:
         stop: Stop | None = self

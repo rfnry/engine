@@ -219,22 +219,22 @@ def delegate_tool(
 ) -> Tool:
     async def body(args: dict[str, Any]) -> str:
         parsed = permit(spec, args, DelegateArgs)
-        with hooks(on_event, stop) as (watching, held):
-            run = await engine._start(
-                parsed.agent,
-                scope,
-                parsed.input,
-                questions=parsed.questions,
-                tools=tools,
-                workspace=workspace,
-                tags=tags,
-                approve=approve,
-                on_event=watching,
-                stop=Stop() if held is None else held,
-                record=RECORDING.get(),
-                models=models,
-                owned=True,
-            )
+        watching, held = hooks(on_event, stop)
+        run = await engine._start(
+            parsed.agent,
+            scope,
+            parsed.input,
+            questions=parsed.questions,
+            tools=tools,
+            workspace=workspace,
+            tags=tags,
+            approve=approve,
+            on_event=watching,
+            stop=held,
+            record=RECORDING.get(),
+            models=models,
+            owned=True,
+        )
         if run is None:
             answer_stopped()
             return json.dumps(cut_result())

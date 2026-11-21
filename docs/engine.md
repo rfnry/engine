@@ -1010,15 +1010,17 @@ waiting in `Ask` reads it once the `Ask` returns, since only its lead answers it
 is the `inbox` you gave it, so the message lands on that queue, and a run without one, and every
 delegated run, has one of its own. `engine.stop(run_id, scope="acme")` presses that run's stop,
 `after_step=True` for `after_step()`. Each run has a stop of its own, chained below the stop of the
-run that started it — the top run's is the `stop` you gave it, or one of its own — so a press
-reaches the run and every run below it, never one above: a delegated run stopped on its own answers
-its `Delegate` call `stopped by the user`, with `stopped=True`, and the run that delegated goes on
-to its next model call. Only a stop pressed on a run or above it ends that run. A decision run
-stopped by its id has its call cut by what waits for it — a `Delegate` or consult call, answered
-`stopped by the user`, or a route, whose router is kept with what it answered — and is not recorded;
-a top-level one, which nothing waits for, keeps its call, and the press rides to the run it routes
-to as a press of a `Stop` does: a routed generation run stops, and a routed decision run answers.
-Once a decision run has routed, a press by its id goes to the run it routed to, and with
+run that started it — the top run's below the `stop` you gave it, or one of its own — so a press
+reaches the run and every run below it, never one above. Stopping a top run by its id leaves every
+other run you gave the same `Stop`, which a press of that `Stop` still stops, as it stops a run a
+tool call left running after the run that made the call has ended. A delegated run stopped on its
+own answers its `Delegate` call `stopped by the user`, with `stopped=True`, and the run that
+delegated goes on to its next model call. Only a stop pressed on a run or above it ends that run. A
+decision run stopped by its id has its call cut by what waits for it — a `Delegate` or consult call,
+answered `stopped by the user`, or a route, whose router is kept with what it answered — and is not
+recorded; a top-level one, which nothing waits for, keeps its call, and the press rides to the run
+it routes to as a press of a `Stop` does: a routed generation run stops, and a routed decision run
+answers. Once a decision run has routed, a press by its id goes to the run it routed to, and with
 `after_step=True` its one call finishes and the press rides on to that run. A press of a `Stop` you
 gave reaches a decision run only as below. A run the engine is not running under that scope — an id
 never started, another tenant's run, a run that already returned — is a `NotFoundError` (`engine:

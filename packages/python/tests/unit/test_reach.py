@@ -492,6 +492,16 @@ def test_a_stop_that_dropped_out_is_not_reached_by_its_parent() -> None:
     assert above._children == {kept}
 
 
+def test_a_stop_that_drops_out_hands_the_stops_below_it_to_its_parent() -> None:
+    above = Stop()
+    gone = above._below()
+    left = gone._below()
+    gone._drop()
+    above.now()
+    assert (requested(left), requested(gone)) == ("now", None)
+    assert above._children == {left} and gone._children == set() and left._from(above)
+
+
 async def test_stopping_a_delegated_decision_run_leaves_its_parent_running(tmp_path: Path) -> None:
     lead = Model(use("Delegate", "d1", agent="desk", input="sort this"), text_reply("went on"))
     desk = Desk()
@@ -557,7 +567,7 @@ async def test_a_top_level_decision_run_takes_a_stop_by_its_id_as_it_takes_its_s
     assert isinstance(answer, ChoiceAnswer) and answer.choice == "talk"
     routed = run.routed_to
     assert isinstance(routed, Generation) and routed.stopped == "now" and routed.calls == 0
-    assert helper.calls == [] and requested(stop) == "now"
+    assert helper.calls == [] and requested(stop) == (None if pressed == "by_id" else "now")
 
 
 async def test_a_decision_run_a_top_level_router_stopped_by_its_id_then_routes_to_answers(
@@ -1144,3 +1154,131 @@ async def test_after_step_by_id_lets_a_decision_run_answer_and_rides_to_its_rout
         assert isinstance(routed, Generation) and routed.stopped == "after_step"
         assert routed.calls == 0 and helper.calls == []
         assert (step.result, step.stopped, step.child_run_id) == (STOPPED, True, child.run_id)
+
+
+async def test_stopping_a_top_run_by_its_id_leaves_the_runs_given_the_same_stop(
+    tmp_path: Path,
+) -> None:
+    gate = asyncio.Event()
+    lead = Model(text_reply("done"), text_reply("done"), gate=gate)
+    engine = engine_of(tmp_path, lead)
+    shared = Stop()
+    seen = {scope: Seen() for scope in ("tenant-a", "tenant-b")}
+    work = {
+        scope: asyncio.create_task(engine.run("lead", scope, "x", stop=shared, on_event=handler))
+        for scope, handler in seen.items()
+    }
+    await until(lambda: len(lead.calls) == 2, "both model calls")
+    [a_id] = seen["tenant-a"].started(below=False)
+    engine.stop(a_id, scope="tenant-a")
+    a = await asyncio.wait_for(work["tenant-a"], 5)
+    assert isinstance(a, Generation) and a.stopped == "now"
+    assert requested(shared) is None and not work["tenant-b"].done()
+    gate.set()
+    b = await asyncio.wait_for(work["tenant-b"], 5)
+    assert isinstance(b, Generation) and (b.stopped, b.reply) == (None, "done")
+    assert shared._children == set()
+
+
+async def test_a_press_of_a_stop_given_to_runs_in_two_scopes_stops_both(tmp_path: Path) -> None:
+    lead = Model(text_reply("never"), text_reply("never"), gate=asyncio.Event())
+    engine = engine_of(tmp_path, lead)
+    shared = Stop()
+    work = [
+        asyncio.create_task(engine.run("lead", scope, "x", stop=shared))
+        for scope in ("tenant-a", "tenant-b")
+    ]
+    await until(lambda: len(lead.calls) == 2, "both model calls")
+    shared.now()
+    runs = [await asyncio.wait_for(task, 5) for task in work]
+    assert [run.stopped for run in runs if isinstance(run, Generation)] == ["now", "now"]
+    assert shared._children == set()
+
+
+def kicking(tmp_path: Path) -> Path:
+    root = tmp_path / "kicking"
+    root.mkdir(parents=True)
+    generation = {"kind": "generation", "description": "Works", "instructions": "work.md"}
+    return write_folder(
+        root,
+        {
+            "outer": {
+                **generation,
+                "model": "outer",
+                "tools": {"allow": ["kick"]},
+                "orchestration": {"delegate_to": ["middle"]},
+            },
+            "middle": {**generation, "model": "middle", "tools": {"allow": ["kick"]}},
+            "inner": {**generation, "model": "inner"},
+        },
+        runtime_tools=["kick"],
+        files={"work.md": "You work.\n"},
+    )
+
+
+@pytest.mark.parametrize("start", ["run", "consult"])
+@pytest.mark.parametrize("by", ["outer", "middle"])
+async def test_a_run_a_tool_leaves_running_stops_on_the_given_stop_after_its_caller_ends(
+    tmp_path: Path, by: str, start: str
+) -> None:
+    kick = use("kick", "k1")
+    first = kick if by == "outer" else use("Delegate", "d1", agent="middle", input="go")
+    outer = Model(first, text_reply("outer done"))
+    middle = Model(kick, text_reply("middle done"))
+    inner = Model(text_reply("inner answered"), gate=asyncio.Event())
+    shared = Stop()
+    engine = Engine(
+        kicking(tmp_path), providers=provided({"outer": outer, "middle": middle, "inner": inner})
+    )
+    left: list[asyncio.Task[Any]] = []
+
+    async def started() -> Any:
+        if start == "run":
+            return await engine.run("inner", "acme", "go", stop=shared)
+        return await engine.tool("inner", scope="acme").dispatch("inner", {"input": "go"})
+
+    async def body(args: dict[str, Any]) -> str:
+        left.append(asyncio.create_task(started()))
+        await inner.asked.wait()
+        return "kicked"
+
+    tools = Tools([Tool("kick", "Starts a run", body=body)])
+    run = await asyncio.wait_for(engine.run("outer", "acme", "go", stop=shared, tools=tools), 5)
+    assert isinstance(run, Generation) and (run.stopped, run.reply) == (None, "outer done")
+    shared.now()
+    got = await asyncio.wait_for(left[0], 5)
+    if start == "run":
+        assert isinstance(got, Generation) and got.stopped == "now"
+    else:
+        assert got == ""
+    assert shared._children == set()
+
+
+@pytest.mark.parametrize("by", ["outer", "middle"])
+async def test_a_run_a_tool_starts_with_the_stop_its_run_was_given_takes_a_press_of_it_as_in_0_1_13(
+    tmp_path: Path, by: str
+) -> None:
+    kick = use("kick", "k1")
+    outer = Model(kick if by == "outer" else use("Delegate", "d1", agent="middle", input="go"))
+    middle = Model(kick)
+    inner = Model(text_reply("never"), gate=asyncio.Event())
+    kept = Kept()
+    shared = Stop()
+    engine = Engine(
+        kicking(tmp_path),
+        refinery=kept,
+        providers=provided({"outer": outer, "middle": middle, "inner": inner}),
+    )
+
+    async def body(args: dict[str, Any]) -> str:
+        await engine.run("inner", "acme", "go", stop=shared)
+        return "kicked"
+
+    tools = Tools([Tool("kick", "Starts a run", body=body)])
+    work = asyncio.create_task(engine.run("outer", "acme", "go", stop=shared, tools=tools))
+    await inner.asked.wait()
+    shared.now()
+    run = await asyncio.wait_for(work, 5)
+    assert isinstance(run, Generation) and run.stopped == "now"
+    [held] = [record for record in kept.runs if record.agent == "inner"]
+    assert isinstance(held, Generation) and (held.stopped, held.error) == ("now", None)
