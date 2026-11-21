@@ -259,8 +259,6 @@ class Helpers:
     async def wake(self, inbox: asyncio.Queue[Any], stop: Stop) -> list[Any]:
         if self.ready.is_set() or requested(stop) is not None:
             return []
-        if not inbox.empty():
-            return [inbox.get_nowait()]
         loop = asyncio.get_running_loop()
         ready = asyncio.ensure_future(self.ready.wait())
         told = asked(stop)

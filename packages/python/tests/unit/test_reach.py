@@ -21,7 +21,7 @@ from rfnry_engine.models import (
     ToolSpec,
 )
 from rfnry_engine.records import Decision, Generation, Run, Spoken, SpokenLine, VoiceStart
-from rfnry_engine.stop import requested
+from rfnry_engine.stop import press, requested, unless_cut
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import Seen, text_reply, until
@@ -1282,3 +1282,28 @@ async def test_a_run_a_tool_starts_with_the_stop_its_run_was_given_takes_a_press
     assert isinstance(run, Generation) and run.stopped == "now"
     [held] = [record for record in kept.runs if record.agent == "inner"]
     assert isinstance(held, Generation) and (held.stopped, held.error) == ("now", None)
+
+
+async def test_a_cut_its_work_outlives_keeps_the_work_s_result_and_its_task_s_cancel_count() -> (
+    None
+):
+    stop = Stop()
+    waiting = asyncio.Event()
+
+    async def answers_anyway() -> str:
+        waiting.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return "answered"
+        return "never"
+
+    async def owner() -> tuple[str | None, int]:
+        got = await unless_cut(stop, answers_anyway())
+        return got, cast(asyncio.Task[Any], asyncio.current_task()).cancelling()
+
+    task = asyncio.create_task(owner())
+    await waiting.wait()
+    press(stop)
+    assert await asyncio.wait_for(task, 5) == ("answered", 0)
+    assert stop._cut is None

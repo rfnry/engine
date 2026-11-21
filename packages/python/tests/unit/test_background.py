@@ -25,7 +25,7 @@ from rfnry_engine import (
 )
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ModelError, RunawayError
-from rfnry_engine.models import Message, QuestionLike, Reply, State, ToolCall, ToolSpec
+from rfnry_engine.models import Message, QuestionLike, Reply, State, Text, ToolCall, ToolSpec
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.delegate import child_result
 from rfnry_engine.tools.tools import Tool, Tools
@@ -1758,3 +1758,30 @@ async def test_a_decision_helper_stopped_from_the_step_that_starts_it_never_asks
         notice=Notice(job="d1", agent="desk", run_id=helper_id, kind="stopped"),
     )
     assert not desk.asked.is_set() and engine._running == {}
+
+
+async def test_job_ids_pass_over_delegate_results_that_hold_no_job(tmp_path: Path) -> None:
+    def answered(call_id: str, content: Any, is_error: bool = False) -> list[Message]:
+        call = ToolCall(id=call_id, name="Delegate", args={"agent": "worker", "input": "a"})
+        return [
+            Message(role="assistant", tool_calls=[call]),
+            Message(role="tool", tool_call_id=call_id, content=content, is_error=is_error),
+            Message(role="assistant", content="ok"),
+        ]
+
+    history = [
+        Message(role="user", content="earlier"),
+        *answered("x1", '{"job": "d2"}'),
+        *answered("x2", "the worker's reply"),
+        *answered("x3", "InputError: tools/delegate: invalid arguments", is_error=True),
+        *answered("x4", "[4, 5]"),
+        *answered("x5", [Text(text='{"job": "d9"}')]),
+    ]
+    model = Crew(
+        [background("part one"), text_reply("waiting"), text_reply("final")],
+        {"part one": [text_reply("the answer")]},
+    )
+    engine = team(crew(tmp_path, background=True), model)
+    run = await asyncio.wait_for(engine.run("lead", "acme", "go", history=history), 5)
+    assert isinstance(run, Generation)
+    assert run.steps[0].result == '{"job": "d3"}'
