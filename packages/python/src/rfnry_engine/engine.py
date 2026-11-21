@@ -84,6 +84,7 @@ from rfnry_engine.records import (
     Pipe,
     ReasoningDelta,
     Run,
+    RunEnded,
     RunStarted,
     Spoken,
     Step,
@@ -1939,12 +1940,36 @@ class Engine:
                 error=None if error is None else _failure(error),
             )
 
+        started_call = CALL.get()
+
+        said_end = False
+
+        async def announce(record: Generation) -> None:
+            nonlocal said_end
+            if said_end:
+                return
+            said_end = True
+            await emit(
+                RunEnded(
+                    run_id=run_id,
+                    agent=spec.name,
+                    call=started_call,
+                    stopped=record.stopped,
+                    error=record.error,
+                )
+            )
+
+        async def finished(reply_text: str, stopped: Stopped | None = None) -> Generation:
+            record = finish(reply_text, stopped)
+            await announce(record)
+            return record
+
         try:
-            await emit(RunStarted(run_id=run_id, agent=spec.name, call=CALL.get()))
+            await emit(RunStarted(run_id=run_id, agent=spec.name, call=started_call))
             for turn in range(most_calls):
                 mode = requested(stop)
                 if mode is not None:
-                    return finish(said, mode)
+                    return await finished(said, mode)
                 taken = drain() if turn else []
                 if taken:
                     await emit(
@@ -1957,14 +1982,14 @@ class Engine:
                     )
                     mode = requested(stop)
                     if mode is not None:
-                        return finish(said, mode)
+                        return await finished(said, mode)
                 streamed.clear()
                 asking = asyncio.ensure_future(ask())
                 if await wait([asking], stop):
                     partial = "".join(streamed)
                     if partial:
                         messages.append(Message(role="assistant", content=partial))
-                    return finish(partial or said, "now")
+                    return await finished(partial or said, "now")
                 reply = asking.result()
                 ended = reply.stop_reason
                 said = reply.text
@@ -1984,7 +2009,7 @@ class Engine:
                 if reply.stop_reason != "tool_use" or not asked:
                     for call in asked:
                         not_run(call, f"the reply ended with {reply.stop_reason}")
-                    return finish(reply.text, "now" if requested(stop) == "now" else None)
+                    return await finished(reply.text, "now" if requested(stop) == "now" else None)
                 rest = list(asked)
                 while rest:
                     at_output = next(
@@ -2001,7 +2026,7 @@ class Engine:
                         break
                     if pressed:
                         await answer_all(rest, [None] * len(rest), time.monotonic())
-                        return finish(said, "now")
+                        return await finished(said, "now")
                     output, rest = rest[0], rest[1:]
                     try:
                         parsed = expect.model_validate(_copied(output.args))
@@ -2038,10 +2063,10 @@ class Engine:
                     )
                     for call in rest:
                         not_run(call, f"{OUTPUT_TOOL} ended the run")
-                    return finish(parsed.model_dump_json())
+                    return await finished(parsed.model_dump_json())
             mode = requested(stop)
             if mode is not None:
-                return finish(said, mode)
+                return await finished(said, mode)
             raise RunawayError(f"engine: run exceeded {most_calls} model calls")
         except Exception as exc:
             for call in asked:
@@ -2049,5 +2074,7 @@ class Engine:
                 if built is not None and not any(built is kept for kept in steps):
                     answer(call, built)
             children.extend(sorted(delegated.values(), key=lambda run: (run.at, run.run_id)))
-            options.failed.append(finish("", error=exc))
+            failure = finish("", error=exc)
+            options.failed.append(failure)
+            await announce(failure)
             raise

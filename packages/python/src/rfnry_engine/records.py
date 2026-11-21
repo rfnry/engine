@@ -104,6 +104,14 @@ class RunStarted(BaseModel):
     call: CallInfo | None
 
 
+class RunEnded(BaseModel):
+    run_id: str
+    agent: str
+    call: CallInfo | None
+    stopped: Stopped | None
+    error: str | None
+
+
 class TextDelta(BaseModel):
     run_id: str
     agent: str
@@ -155,6 +163,7 @@ class CommandOutput(BaseModel):
 
 Event = (
     RunStarted
+    | RunEnded
     | TextDelta
     | ReasoningDelta
     | MessagesTaken

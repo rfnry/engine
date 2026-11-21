@@ -440,6 +440,7 @@ async def test_each_delta_names_its_turn_and_the_reply_is_the_last_turns_text(
         "ToolCallStarted",
         "ToolResultReady",
         1,
+        "RunEnded",
     ]
     deltas = [e for e in seen if isinstance(e, TextDelta)]
     assert "".join(e.text for e in deltas if e.turn == 0) == "Let me look that up."

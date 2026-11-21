@@ -957,6 +957,14 @@ apart from the reply: it never becomes part of the reply or the conversation, wh
 reasoning as the adapter returned it, and reasoning streamed before `stop.now()` is not kept. A model
 that does not stream its reasoning sends none.
 
+Every generation run also ends with a `RunEnded`, after its last other event: `run_id`, `agent`, the
+same `call` its `RunStarted` carried, `stopped` (`"now"` or `"after_step"`, whether set by the `stop`
+given to `run` or by `engine.stop` on its id) and `error`, the text of the failure record's `error`
+(`"RunawayError: engine: run exceeded 2 model calls"`), sent before `run` raises. A reply, an
+accepted `Output`, a stop and a failure each end this way; a decision run sends none, and a run its
+consumer cancels sends none. A consumer that merges a delegated run's workspace or tears its
+sandbox down listens for it rather than for the parent's `ToolResultReady`.
+
 A person can stop or steer a run while it works. Pass `stop=Stop()` and call `stop.now()` to cancel
 the model call in flight and every tool still running, or `stop.after_step()` to let the current
 tool calls finish and end before the next model call. Pass `inbox=asyncio.Queue()` and put a string
@@ -3405,7 +3413,7 @@ Everything the package exports, by role.
 - **Run things:** `Engine`, `AgentInfo`, `Provider`, `ModelChoice`, `ModelEntry`, `Stop`,
   `HistoryLike`, `VoiceStart`, `Spoken`, `SpokenLine`.
 - **What a run returns:** `Generation`, `Decision`, `Voice`, `Run`, `Step`, `Fingerprint`; events
-  `RunStarted`, `TextDelta`, `ReasoningDelta`, `MessagesTaken`, `ToolCallStarted`,
+  `RunStarted`, `RunEnded`, `TextDelta`, `ReasoningDelta`, `MessagesTaken`, `ToolCallStarted`,
   `ToolResultReady`, `CommandOutput`, `Event`.
 - **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `OnDelta`, `DecisionModel`,
   `VoiceModel`;

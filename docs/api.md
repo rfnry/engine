@@ -767,6 +767,19 @@ class RunStarted(BaseModel):
 
 Sent to `on_event` once by every generation run, before anything else it sends — also by a run that a stop set before it started ends before its first model call. `call` is the tool call the run works for, as `current_call` sees it when the run starts: the caller's `Delegate` call for a delegated run, the caller's call for a run an `engine.tool` call started inside a run, the call that started the decision run for a run it routes to, `None` for a run started outside any tool call. It names the call even when it was made in another scope, where the run's record holds `None`. Every later event with this `run_id` belongs under `call`, so sub-agents nest at any depth. A decision run sends no events; the `ToolCallStarted` and `ToolResultReady` of the call that asked it show it. A stop waits for its handler, and one the handler sets ends the run before its first model call; a handler that raises fails the run, recorded with that `error` and no model call.
 
+### `RunEnded`
+
+```python
+class RunEnded(BaseModel):
+    run_id: str
+    agent: str
+    call: CallInfo | None
+    stopped: Stopped | None
+    error: str | None
+```
+
+Sent to `on_event` once by every generation run, after its last other event, whichever way it ends: a reply, an accepted `Output`, a stop (`Stopped` is `Literal["now", "after_step"]`, and `stopped` is `"now"` or `"after_step"`, whether set through the `stop` given to `Engine.run` or by `Engine.stop` on its id), a failure, or `RunawayError`. `call` is the `call` of the run's `RunStarted`. `error` is `None` for a run that returned, and for one that raised the text its record's `error` holds, `"<Type>: <message>"`; the event goes out before `Engine.run` raises. No event of this `run_id` follows it. A handler that raises on it fails the run as a handler of any event does: `Engine.run` raises that error and the record holds it as `error`, and no second `RunEnded` is sent, so the one already sent may have said `error=None`. A run its consumer cancels sends none, and a decision run sends none, as it sends no `RunStarted`.
+
 ### `TextDelta`
 
 ```python
@@ -848,6 +861,7 @@ Sent to `on_event` while a foreground `Shell` command of a run with a `Workspace
 ```python
 Event = (
     RunStarted
+    | RunEnded
     | TextDelta
     | ReasoningDelta
     | MessagesTaken

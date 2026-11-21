@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import pytest
 
-from rfnry_engine import MessagesTaken, RunStarted, Stop
+from rfnry_engine import MessagesTaken, RunEnded, RunStarted, Stop
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, NotFoundError
 from rfnry_engine.models import (
@@ -232,6 +232,13 @@ async def until(check: Callable[[], bool], what: str) -> None:
         pytest.fail(f"{what} never happened")
 
 
+def ended_once(seen: Seen, run_id: str) -> RunEnded:
+    own: list[Any] = [e for e in seen.events if getattr(e, "run_id", None) == run_id]
+    [event] = [e for e in own if isinstance(e, RunEnded)]
+    assert own[-1] is event
+    return cast(RunEnded, event)
+
+
 async def child_of(seen: Seen) -> str:
     await until(lambda: bool(seen.started(below=True)), "the child's RunStarted")
     [child_id] = seen.started(below=True)
@@ -295,6 +302,8 @@ async def test_stopping_one_delegated_run_leaves_its_parent_running(tmp_path: Pa
     [child] = run.children
     assert isinstance(child, Generation) and child.run_id == child_id
     assert child.stopped == "now"
+    assert ended_once(seen, child_id).stopped == "now"
+    assert ended_once(seen, run.run_id).stopped is None
     step = run.steps[0]
     assert (step.tool, step.result, step.is_error, step.stopped, step.child_run_id) == (
         "Delegate",
@@ -346,6 +355,8 @@ async def test_after_step_lets_the_stopped_run_finish_its_step(tmp_path: Path) -
         ("lookup", "found", False, False)
     ]
     assert child.stopped == "after_step" and len(helper.calls) == 1
+    assert ended_once(seen, child_id).stopped == "after_step"
+    assert ended_once(seen, run.run_id).stopped is None
     assert (run.steps[0].result, run.steps[0].stopped) == (STOPPED, True)
     assert run.stopped is None and run.reply == "went on"
 

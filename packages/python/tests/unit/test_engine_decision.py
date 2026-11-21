@@ -260,6 +260,7 @@ async def test_a_route_forwards_everything_the_run_was_given(
         "RunStarted",
         "ToolCallStarted",
         "ToolResultReady",
+        "RunEnded",
     ]
 
 

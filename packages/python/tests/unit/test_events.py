@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from rfnry_engine import (
     ChoiceAnswer,
     Event,
+    RunEnded,
     RunStarted,
     Stop,
     TextDelta,
@@ -17,6 +18,7 @@ from rfnry_engine import (
     ToolResultReady,
 )
 from rfnry_engine.engine import Engine
+from rfnry_engine.errors import RunawayError
 from rfnry_engine.models import Message, Reply, ToolCall
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.tools import Tool, Tools
@@ -1099,7 +1101,7 @@ async def test_a_run_says_it_started_before_anything_else(tmp_path: Path) -> Non
         providers=provided({"strong": Scripted(text_reply("Hi.")), "judge": None}),
     ).run("chat", "acme", "Hi", on_event=collect)
     assert collect.events[0] == RunStarted(run_id=run.run_id, agent="chat", call=None)
-    assert [type(e) for e in collect.events] == [RunStarted, TextDelta]
+    assert [type(e) for e in collect.events] == [RunStarted, TextDelta, RunEnded]
 
 
 async def test_each_sub_agent_names_the_call_it_works_for_before_its_first_tool(
@@ -1132,7 +1134,13 @@ async def test_each_sub_agent_names_the_call_it_works_for_before_its_first_tool(
         )
         assert call.call_id == {"A": "d1", "B": "d2"}[str(child.input)]
         own = [e for e in collect.events if e.run_id == child.run_id]
-        assert [type(e) for e in own] == [RunStarted, ToolCallStarted, ToolResultReady, TextDelta]
+        assert [type(e) for e in own] == [
+            RunStarted,
+            ToolCallStarted,
+            ToolResultReady,
+            TextDelta,
+            RunEnded,
+        ]
 
 
 async def test_a_grandchild_names_its_parents_call(tmp_path: Path) -> None:
@@ -1272,7 +1280,10 @@ async def test_a_run_stopped_before_it_starts_still_says_it_started(tmp_path: Pa
         make_tree(tmp_path), providers=provided({"strong": Scripted(), "judge": None})
     ).run("chat", "acme", "Hi", on_event=collect, stop=stop)
     assert isinstance(run, Generation) and run.stopped == "now"
-    assert collect.events == [RunStarted(run_id=run.run_id, agent="chat", call=None)]
+    assert collect.events == [
+        RunStarted(run_id=run.run_id, agent="chat", call=None),
+        RunEnded(run_id=run.run_id, agent="chat", call=None, stopped="now", error=None),
+    ]
 
 
 class Kept:
@@ -1323,3 +1334,197 @@ async def test_a_routed_run_whose_start_handler_raises_sits_in_its_router(tmp_pa
     routed = router.routed_to
     assert routed.error == "RuntimeError: the socket is gone" and routed.calls == 0
     assert llm.calls == []
+
+
+async def test_every_generation_run_ends_with_run_ended(tmp_path: Path) -> None:
+    llm = ByAgent(
+        [
+            Reply(
+                tool_calls=[
+                    ToolCall(id="d1", name="Delegate", args={"agent": "chat", "input": "A"})
+                ],
+                stop_reason="tool_use",
+            ),
+            text_reply("Done."),
+        ],
+        chat=looking,
+    )
+    collect = Collect()
+    run = await Engine(
+        make_tree(tmp_path, run_tools={"lead": ["lookup"]}),
+        providers=provided({"strong": llm, "judge": None}),
+    ).run("lead", "acme", "Go", tools=TOOLS, on_event=collect)
+    assert isinstance(run, Generation)
+    [child] = run.children
+    ended = [e for e in collect.events if isinstance(e, RunEnded)]
+    assert len(ended) == 2
+    for event in ended:
+        own = [e for e in collect.events if e.run_id == event.run_id]
+        assert own[-1] is event
+        assert event.stopped is None and event.error is None
+    by_run = {e.run_id: e for e in ended}
+    assert by_run[run.run_id].call is None and by_run[run.run_id].agent == "lead"
+    assert by_run[child.run_id].agent == "chat"
+    assert by_run[child.run_id].call == started(collect)[child.run_id].call
+    child_call = by_run[child.run_id].call
+    assert child_call is not None and child_call.run_id == run.run_id
+
+
+async def test_run_ended_carries_the_stop_and_the_error(tmp_path: Path) -> None:
+    stop = Stop()
+    stop.now()
+    stopped = Collect()
+    await Engine(
+        make_tree(tmp_path / "a"), providers=provided({"strong": Scripted(), "judge": None})
+    ).run("chat", "acme", "Hi", on_event=stopped, stop=stop)
+    [event] = [e for e in stopped.events if isinstance(e, RunEnded)]
+    assert event.stopped == "now" and event.error is None
+
+    failed = Collect()
+    call = ToolCall(id="c1", name="lookup", args={"order_id": "A-1"})
+    looped = Reply(tool_calls=[call], stop_reason="tool_use")
+    with pytest.raises(RunawayError):
+        await Engine(
+            make_tree(tmp_path / "b", run_tools={"chat": ["lookup"]}),
+            max_model_calls=2,
+            providers=provided({"strong": Scripted(looped, looped), "judge": None}),
+        ).run("chat", "acme", "Hi", tools=TOOLS, on_event=failed)
+    [event] = [e for e in failed.events if isinstance(e, RunEnded)]
+    assert event.stopped is None and event.error is not None
+    assert event.error == "RunawayError: engine: run exceeded 2 model calls"
+    assert failed.events[-1] is event
+
+
+async def test_a_decision_run_sends_no_run_ended(tmp_path: Path) -> None:
+    root = tmp_path / "agents"
+    root.mkdir(parents=True)
+    root = write_folder(
+        root,
+        {
+            "router": {
+                "kind": "decision",
+                "model": "judge",
+                "description": "Routes",
+                "instructions": "router.md",
+                "questions": ["router/*.json"],
+            }
+        },
+        files=ROUTER_TEAM,
+    )
+    collect = Collect()
+    run = await Engine(
+        root,
+        providers=provided(
+            {
+                "strong": None,
+                "judge": Fixed(
+                    {
+                        "team": ChoiceAnswer(
+                            choice="billing", probabilities={"billing": 0.9, "other": 0.1}
+                        )
+                    }
+                ),
+            }
+        ),
+    ).run("router", "acme", "Help", on_event=collect)
+    assert isinstance(run, Decision)
+    assert collect.events == []
+
+
+class Ending(Collect):
+    async def __call__(self, event: Event) -> None:
+        await super().__call__(event)
+        if isinstance(event, RunEnded):
+            raise RuntimeError("the audit log is down")
+
+
+async def test_a_handler_that_raises_on_run_ended_fails_the_run_without_a_second_one(
+    tmp_path: Path,
+) -> None:
+    kept = Kept()
+    collect = Ending()
+    with pytest.raises(RuntimeError, match="the audit log is down"):
+        await Engine(
+            make_tree(tmp_path),
+            refinery=kept,
+            providers=provided({"strong": Scripted(text_reply("Hi.")), "judge": None}),
+        ).run("chat", "acme", "Hi", on_event=collect)
+    [event] = [e for e in collect.events if isinstance(e, RunEnded)]
+    assert event.error is None and collect.events[-1] is event
+    [record] = kept.runs
+    assert isinstance(record, Generation)
+    assert record.error == "RuntimeError: the audit log is down"
+
+
+def ended_last(collect: Collect, run: Generation) -> RunEnded:
+    own = [e for e in collect.events if e.run_id == run.run_id]
+    [event] = [e for e in own if isinstance(e, RunEnded)]
+    assert own[-1] is event
+    return event
+
+
+async def test_a_stop_after_the_step_ends_with_after_step(tmp_path: Path) -> None:
+    stop = Stop()
+
+    class After(Collect):
+        async def __call__(self, event: Event) -> None:
+            await super().__call__(event)
+            if isinstance(event, ToolResultReady):
+                stop.after_step()
+
+    collect = After()
+    call = ToolCall(id="c1", name="lookup", args={"order_id": "A-1"})
+    run = await Engine(
+        make_tree(tmp_path, run_tools={"chat": ["lookup"]}),
+        providers=provided(
+            {
+                "strong": Scripted(Reply(tool_calls=[call], stop_reason="tool_use")),
+                "judge": None,
+            }
+        ),
+    ).run("chat", "acme", "Hi", tools=TOOLS, stop=stop, on_event=collect)
+    assert isinstance(run, Generation) and run.stopped == "after_step"
+    event = ended_last(collect, run)
+    assert event.stopped == "after_step" and event.error is None
+
+
+async def test_an_accepted_output_ends_with_one_run_ended(tmp_path: Path) -> None:
+    collect = Collect()
+    reply = Reply(
+        tool_calls=[ToolCall(id="o1", name="Output", args={"ok": True})], stop_reason="tool_use"
+    )
+    run = await Engine(
+        make_tree(tmp_path),
+        providers=provided({"strong": Scripted(reply), "judge": None}),
+    ).run("chat", "acme", "Hi", expect=Verdict, on_event=collect)
+    assert isinstance(run, Generation) and run.reply == '{"ok":true}'
+    event = ended_last(collect, run)
+    assert event.stopped is None and event.error is None
+
+
+class Waiting:
+    def __init__(self) -> None:
+        self.asked = asyncio.Event()
+
+    async def generate(self, system: str, messages: list[Message], tools: list[Any]) -> Reply:
+        self.asked.set()
+        await asyncio.sleep(30)
+        return text_reply("never")
+
+
+async def test_a_stop_while_the_model_is_called_ends_with_now(tmp_path: Path) -> None:
+    stop = Stop()
+    collect = Collect()
+    waiting = Waiting()
+    work = asyncio.create_task(
+        Engine(
+            make_tree(tmp_path),
+            providers=provided({"strong": waiting, "judge": None}),
+        ).run("chat", "acme", "Hi", stop=stop, on_event=collect)
+    )
+    await asyncio.wait_for(waiting.asked.wait(), 5)
+    stop.now()
+    run = await asyncio.wait_for(work, 5)
+    assert isinstance(run, Generation) and run.stopped == "now"
+    event = ended_last(collect, run)
+    assert event.stopped == "now" and event.error is None

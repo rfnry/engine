@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from rfnry_engine import OnDelta, ReasoningDelta, RunStarted, Stop, TextDelta, chain
+from rfnry_engine import OnDelta, ReasoningDelta, RunEnded, RunStarted, Stop, TextDelta, chain
 from rfnry_engine.engine import Engine
 from rfnry_engine.models import (
     Document,
@@ -649,7 +649,7 @@ async def test_reasoning_streams_as_its_own_events_before_the_text(fixtures: Pat
         "support", "acme", "Charged twice.", on_event=seen
     )
     assert isinstance(run, Generation) and run.reply == "Refund in full."
-    assert seen.events[1:] == [
+    assert seen.events[1:-1] == [
         ReasoningDelta(run_id=run.run_id, agent="support", turn=0, text="The rule says "),
         ReasoningDelta(run_id=run.run_id, agent="support", turn=0, text="refund."),
         TextDelta(run_id=run.run_id, agent="support", turn=0, text="Refund in full."),
@@ -663,7 +663,7 @@ async def test_an_adapter_that_streams_no_reasoning_works_as_before(fixtures: Pa
         fixtures, providers=provided({"strong": Plain(text_reply("Hi.")), "judge": None})
     ).run("support", "acme", "Hi", on_event=seen)
     assert isinstance(run, Generation) and run.reply == "Hi."
-    assert [type(e) for e in seen.events] == [RunStarted, TextDelta]
+    assert [type(e) for e in seen.events] == [RunStarted, TextDelta, RunEnded]
 
 
 async def test_a_stop_during_reasoning_keeps_no_reasoning_and_no_text(fixtures: Path) -> None:

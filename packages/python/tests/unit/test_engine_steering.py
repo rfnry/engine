@@ -763,6 +763,7 @@ async def test_taken_messages_are_announced_before_the_turn_that_reads_them(tmp_
         "ToolResultReady",
         "MessagesTaken",
         "TextDelta",
+        "RunEnded",
     ]
     assert llm.calls[1][-2:] == taken
 

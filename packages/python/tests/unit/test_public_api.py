@@ -25,6 +25,7 @@ EXPECTED = {
     "VoiceStart",
     "Run",
     "Step",
+    "RunEnded",
     "RunStarted",
     "MessagesTaken",
     "ReasoningDelta",
