@@ -24,7 +24,7 @@ from rfnry_engine import (
     current_call,
 )
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import InputError, ModelError, RunawayError
+from rfnry_engine.errors import ModelError, RunawayError
 from rfnry_engine.models import Message, QuestionLike, Reply, State, ToolCall, ToolSpec
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.delegate import child_result
@@ -54,7 +54,6 @@ DESCRIPTION_0_1_13 = (
     "- desk (decision agent): Sorts"
 )
 URGENT_QUESTION = {"type": "check", "instructions": "Urgent?"}
-REFUSED = "InputError: tools/delegate: agent 'lead' may not delegate in the background"
 PAST_CAP = "InputError: tools/delegate: max_background is 1, and running now: d1; wait for a helper to end or stop one"
 STILL_RUNNING = "engine: still running: d1; stop them or wait for them, then call Output again"
 
@@ -195,27 +194,41 @@ async def test_background_is_offered_only_to_an_entry_that_opts_in(tmp_path: Pat
     assert run.fingerprint.tools != TOOLS_0_1_13
 
 
-async def test_a_lead_that_does_not_opt_in_is_refused_a_background_delegate(
+async def test_a_lead_that_does_not_opt_in_runs_a_background_delegate_as_a_synchronous_one(
     tmp_path: Path,
 ) -> None:
-    model = Crew([background("one"), text_reply("done")], {"one": [text_reply("never")]})
+    unoffered = ToolCall(
+        id="b2", name="Delegate", args={"agent": "worker", "input": "two", "background": "soon"}
+    )
+    model = Crew(
+        [
+            background("one"),
+            Reply(tool_calls=[unoffered], stop_reason="tool_use"),
+            text_reply("done"),
+        ],
+        {"one": [text_reply("one done")], "two": [text_reply("two done")]},
+    )
     run = await team(crew(tmp_path), model).run("lead", "acme", "go")
-    assert isinstance(run, Generation) and run.reply == "done" and run.children == []
-    step = run.steps[0]
-    assert (step.result, step.is_error, step.child_run_id) == (REFUSED, True, None)
-    assert model.calls["one"] == []
+    assert isinstance(run, Generation) and run.reply == "done"
+    one, two = run.children
+    assert [(s.result, s.is_error) for s in run.steps] == [("one done", False), ("two done", False)]
+    assert [s.child_run_id for s in run.steps] == [one.run_id, two.run_id]
+    assert run.steps[0].args == {"agent": "worker", "input": "one", "background": True}
+    assert [m.notice for m in run.conversation] == [None] * len(run.conversation)
 
 
-async def test_a_delegate_dispatched_from_code_has_no_background(tmp_path: Path) -> None:
-    engine = team(crew(tmp_path, background=True), Crew([]))
+async def test_a_delegate_dispatched_from_code_runs_a_background_one_synchronously(
+    tmp_path: Path,
+) -> None:
+    model = Crew([], {"one": [text_reply("one done")]})
+    engine = team(crew(tmp_path, background=True), model)
     tools = EngineTools(engine, agent="lead", scope="acme")
     [delegate] = [d for d in tools.definitions() if d["name"] == "Delegate"]
     assert list(delegate["input_schema"]["properties"]) == ["agent", "input", "questions"]
     assert delegate["description"] == DESCRIPTION_0_1_13
     args = {"agent": "worker", "input": "one", "background": True}
-    with pytest.raises(InputError) as raised:
-        await tools.dispatch("Delegate", args)
-    assert f"InputError: {raised.value}" == REFUSED
+    assert await tools.dispatch("Delegate", args) == "one done"
+    assert len(model.calls["one"]) == 1
 
 
 async def test_a_background_delegate_returns_a_job_at_once_and_the_lead_goes_on(

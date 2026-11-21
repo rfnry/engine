@@ -90,6 +90,9 @@ class AgentArgs(BaseModel):
 
 class DelegateArgs(AgentArgs):
     agent: str
+
+
+class BackgroundArgs(DelegateArgs):
     background: bool = False
 
 
@@ -104,9 +107,9 @@ def run_arguments(agents: list[AgentSpec]) -> dict[str, Any]:
     return arguments
 
 
-def permit(spec: AgentSpec, args: dict[str, Any], background: bool = False) -> DelegateArgs:
+def permit[A: DelegateArgs](spec: AgentSpec, args: dict[str, Any], shape: type[A]) -> A:
     try:
-        parsed = DelegateArgs.model_validate(args)
+        parsed = shape.model_validate(args)
     except ValidationError as exc:
         raise InputError(
             f"tools/delegate: invalid arguments: {exc.errors(include_url=False)}"
@@ -115,8 +118,6 @@ def permit(spec: AgentSpec, args: dict[str, Any], background: bool = False) -> D
         raise InputError(
             f"tools/delegate: agent {spec.name!r} may not delegate to {parsed.agent!r}"
         )
-    if parsed.background and not background:
-        raise InputError(f"tools/delegate: agent {spec.name!r} may not delegate in the background")
     return parsed
 
 
@@ -217,7 +218,7 @@ def delegate_tool(
     models: Mapping[str, RunModel] | None = None,
 ) -> Tool:
     async def body(args: dict[str, Any]) -> str:
-        parsed = permit(spec, args)
+        parsed = permit(spec, args, DelegateArgs)
         with hooks(on_event, stop) as (watching, held):
             run = await engine._start(
                 parsed.agent,

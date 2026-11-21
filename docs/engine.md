@@ -1554,13 +1554,13 @@ lead:
 ```
 
 Without `background: true` nothing changes: `Delegate` takes no `background`, a call that passes
-it anyway is a tool error (`tools/delegate: agent 'lead' may not delegate in the background`), and
-the agent is offered and fingerprinted as before. `background: true` without `delegate_to` is a
-`ConfigurationError` when the engine loads (`compiled: agent 'lead' sets orchestration.background
-but delegates to no agent; name them in orchestration.delegate_to`), and a decision agent takes
-neither key. A `Delegate` dispatched through an `EngineTools` or `engine.tool` belongs to no run
-that can wait for a helper, so it takes no `background` either, and an `EngineTools` holds no `Job`
-or `Jobs` over helpers.
+it anyway runs its child as any `Delegate` does, the argument ignored as any argument a tool does
+not offer, and the agent is offered and fingerprinted as before. `background: true` without
+`delegate_to` is a `ConfigurationError` when the engine loads (`compiled: agent 'lead' sets
+orchestration.background but delegates to no agent; name them in orchestration.delegate_to`), and
+a decision agent takes neither key. A `Delegate` dispatched through an `EngineTools` or
+`engine.tool` belongs to no run that can wait for a helper, so it takes no `background` either and
+runs its child before it returns, and an `EngineTools` holds no `Job` or `Jobs` over helpers.
 
 With it, `Delegate` takes `background`, a boolean the model sets to `true` to start a helper. The
 call returns at once with a job id, `{"job": "d1"}`, and the model goes on with its turn while the

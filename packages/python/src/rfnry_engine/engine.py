@@ -101,6 +101,7 @@ from rfnry_engine.tools.declared import chosen, smallest
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
     AgentArgs,
+    BackgroundArgs,
     DelegateArgs,
     child_result,
     cut_result,
@@ -1782,13 +1783,13 @@ class Engine:
         async def delegate(call: ToolCall) -> tuple[Content, bool, str | None, bool]:
             failed: list[Generation | Decision] = []
             try:
-                held = permit(spec, call.args, background=True) if spec.background else None
+                held = permit(spec, call.args, BackgroundArgs) if spec.background else None
                 if held is not None and held.background:
                     return begin(self._agents[held.agent], held)
                 async with delegate_slots:
                     if requested(stop) == "now":
                         return STOPPED, True, None, True
-                    args = held or permit(spec, call.args)
+                    args = held or permit(spec, call.args, DelegateArgs)
                     target = self._agents[args.agent]
                     forwarded = forward(
                         _asked(target, args.questions), stop._below(), asyncio.Queue(), failed, None
