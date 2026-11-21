@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import RunawayError
+from rfnry_engine.errors import ConfigurationError, RunawayError
 from rfnry_engine.models import Message, Reply, ToolCall, ToolSpec
 from rfnry_engine.records import Generation, Run
 from rfnry_engine.tools.tools import Tool, Tools
@@ -530,3 +530,66 @@ async def test_absent_caps_leave_calls_unbounded(
     expected: int,
 ) -> None:
     assert await peak_of(tmp_path, {}) == expected
+
+
+class Fanning:
+    def __init__(self, helpers: int) -> None:
+        self.helpers = helpers
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        if not any(spec.name == "Delegate" for spec in tools):
+            return text_reply("helped")
+        if len(messages) > 1:
+            return text_reply("done")
+        calls = [
+            ToolCall(
+                id=f"b{n}",
+                name="Delegate",
+                args={"agent": "b", "input": f"part {n}", "background": True},
+            )
+            for n in range(self.helpers)
+        ]
+        return Reply(tool_calls=calls, stop_reason="tool_use")
+
+
+@pytest.mark.parametrize(
+    ("written", "ceiling", "started"),
+    [
+        pytest.param(3, 1, 1, id="lowered-by-the-engine"),
+        pytest.param(1, None, 1, id="the-entry-alone"),
+        pytest.param(2, 3, 2, id="lowered-by-the-entry"),
+        pytest.param(None, 2, 2, id="the-engine-alone"),
+        pytest.param(None, None, 4, id="uncapped"),
+    ],
+)
+async def test_max_background_lowers_the_engine_ceiling(
+    tmp_path: Path, written: int | None, ceiling: int | None, started: int
+) -> None:
+    orchestration: dict[str, Any] = {"delegate_to": ["b"], "background": True}
+    if written is not None:
+        orchestration["max_background"] = written
+    root = folder(tmp_path, {"a": agent(orchestration=orchestration), "b": agent()})
+    engine = Engine(root, providers=provided({"m": Fanning(4)}), max_background=ceiling)
+    assert engine.max_background == ceiling
+    run = worked_or_refused(await engine.run("a", "acme", "go"))
+    assert len(run.children) == started
+    refused = [str(step.result) for step in run.steps if step.is_error]
+    assert refused == [
+        f"InputError: tools/delegate: max_background is {started}, and running now: "
+        f"{', '.join(f'd{n}' for n in range(1, started + 1))}; wait for a helper to end or stop one"
+    ] * (4 - started)
+
+
+def worked_or_refused(run: Run) -> Generation:
+    assert isinstance(run, Generation) and run.reply == "done"
+    return run
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, True, "2"])
+def test_max_background_is_a_positive_integer_or_none(tmp_path: Path, bad: Any) -> None:
+    root = folder(tmp_path, {"a": agent()})
+    with pytest.raises(
+        ConfigurationError,
+        match=r"^engine: max_background must be a positive integer, or None for no cap$",
+    ):
+        Engine(root, providers=provided({"m": Fanning(0)}), max_background=bad)

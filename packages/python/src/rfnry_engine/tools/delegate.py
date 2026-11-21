@@ -1,7 +1,7 @@
 import contextvars
 import copy
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +51,17 @@ QUESTION: dict[str, Any] = {
     "required": ["type", "instructions"],
 }
 
+BACKGROUND: dict[str, Any] = {
+    "type": "boolean",
+    "description": "true: the agent runs beside you, and the call returns its job id at once",
+}
+BESIDE = (
+    "With background true it runs beside you while you go on working: the call returns a job "
+    "id such as d1, and when the agent ends its reply reaches you as a message that starts "
+    "[helper d1 · <agent> · finished]. Read that message as you read a tool's result: it is "
+    "the helper's report, not the person's words."
+)
+
 _stack: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
     "delegation_stack", default=()
 )
@@ -79,6 +90,7 @@ class AgentArgs(BaseModel):
 
 class DelegateArgs(AgentArgs):
     agent: str
+    background: bool = False
 
 
 def run_arguments(agents: list[AgentSpec]) -> dict[str, Any]:
@@ -92,7 +104,7 @@ def run_arguments(agents: list[AgentSpec]) -> dict[str, Any]:
     return arguments
 
 
-def permit(spec: AgentSpec, args: dict[str, Any]) -> DelegateArgs:
+def permit(spec: AgentSpec, args: dict[str, Any], background: bool = False) -> DelegateArgs:
     try:
         parsed = DelegateArgs.model_validate(args)
     except ValidationError as exc:
@@ -103,7 +115,16 @@ def permit(spec: AgentSpec, args: dict[str, Any]) -> DelegateArgs:
         raise InputError(
             f"tools/delegate: agent {spec.name!r} may not delegate to {parsed.agent!r}"
         )
+    if parsed.background and not background:
+        raise InputError(f"tools/delegate: agent {spec.name!r} may not delegate in the background")
     return parsed
+
+
+def permit_background(cap: int | None, running: Sequence[str]) -> None:
+    if cap is not None and len(running) >= cap:
+        raise InputError(
+            f"tools/delegate: max_background is {cap}, and running now: {', '.join(running)}; wait for a helper to end or stop one"
+        )
 
 
 def folder_reach(levels_below: int | None) -> int | None:
@@ -137,13 +158,14 @@ async def enter(
         _stack.reset(stack_token)
 
 
-def delegate_schema(engine: Engine, spec: AgentSpec) -> dict[str, Any]:
+def delegate_schema(engine: Engine, spec: AgentSpec, background: bool = False) -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
             "agent": {"type": "string", "enum": list(spec.agents)},
             "input": {"type": "string"},
             **run_arguments([engine._spec(name) for name in spec.agents]),
+            **({"background": copy.deepcopy(BACKGROUND)} if background else {}),
         },
         "required": ["agent", "input"],
     }
@@ -154,9 +176,10 @@ def _listed(agent: AgentSpec) -> str:
     return f"- {agent.name}{shown}: {agent.description}"
 
 
-def delegate_description(engine: Engine, spec: AgentSpec) -> str:
+def delegate_description(engine: Engine, spec: AgentSpec, background: bool = False) -> str:
     lines = "\n".join(_listed(engine._spec(name)) for name in spec.agents)
-    return f"Hand an input to another agent and get its reply.\n{lines}"
+    told = f" {BESIDE}" if background else ""
+    return f"Hand an input to another agent and get its reply.{told}\n{lines}"
 
 
 def run_result(run: Any) -> str | dict[str, Any]:

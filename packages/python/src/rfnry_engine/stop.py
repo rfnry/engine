@@ -71,6 +71,10 @@ def _press(stop: Stop, seen: int) -> asyncio.Future[None]:
     return stop._pressed
 
 
+def pressed(stop: Stop) -> asyncio.Future[None]:
+    return _press(stop, stop._presses)
+
+
 async def wait(
     tasks: Sequence[asyncio.Future[Any]],
     stop: Stop | None,

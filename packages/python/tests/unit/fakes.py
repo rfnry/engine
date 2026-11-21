@@ -59,6 +59,28 @@ class Streaming(Scripted):
         return reply
 
 
+class Crew:
+    def __init__(
+        self,
+        lead: list[Reply | asyncio.Event],
+        helpers: Mapping[str, list[Reply | asyncio.Event]] | None = None,
+        marker: str = "Lead.",
+    ) -> None:
+        self.marker = marker
+        self.replies = {"lead": list(lead), **{k: list(v) for k, v in (helpers or {}).items()}}
+        self.calls: dict[str, list[list[Message]]] = {name: [] for name in self.replies}
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        who = "lead" if self.marker in system else str(messages[0].content)
+        self.calls.setdefault(who, []).append(list(messages))
+        held = self.replies.get(who, [])
+        while held and isinstance(held[0], asyncio.Event):
+            await cast(asyncio.Event, held.pop(0)).wait()
+        if not held:
+            raise AssertionError(f"Crew ran out of replies for {who}")
+        return cast(Reply, held.pop(0))
+
+
 class Fixed:
     def __init__(
         self, answers: dict[str, Answer] | Callable[[State], dict[str, Answer] | Decided]

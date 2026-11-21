@@ -86,8 +86,9 @@ class Message(BaseModel):
     usage: Usage | None = None
     model: str | None = None
     settings: dict[str, JsonValue] | None = None
+    notice: Notice | None = Field(default=None, exclude_if=lambda held: held is None)
 
-    @field_validator("prefix", "usage", "model", "settings", mode="wrap")
+    @field_validator("prefix", "usage", "model", "settings", "notice", mode="wrap")
     @classmethod
     def _engines_own(
         cls, value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo
@@ -102,6 +103,13 @@ class Message(BaseModel):
 
 
 MARK = re.compile(r"[0-9a-f]{16}")
+
+
+class Notice(BaseModel):
+    job: str
+    agent: str
+    run_id: str
+    kind: Literal["finished", "failed", "stopped", "asks"]
 
 
 class Usage(BaseModel):

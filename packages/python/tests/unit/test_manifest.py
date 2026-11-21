@@ -584,6 +584,8 @@ DECISION_REFUSES: list[tuple[str, Any, str]] = [
     ("orchestration.delegate_to", ["x"], "orchestration.delegate_to"),
     ("orchestration.max_depth", 1, "orchestration.max_depth"),
     ("orchestration.max_parallel", 1, "orchestration.max_parallel"),
+    ("orchestration.background", True, "orchestration.background"),
+    ("orchestration.max_background", 1, "orchestration.max_background"),
 ]
 
 
@@ -619,6 +621,36 @@ def test_a_decision_agent_takes_its_questions_and_a_route(tmp_path: Path) -> Non
     assert entry.orchestration is not None
     assert entry.orchestration.route is not None
     assert entry.orchestration.route.by == "category"
+
+
+@pytest.mark.parametrize(
+    ("lead", "who"),
+    [
+        ({"orchestration": {"background": True}}, "agent 'lead'"),
+        ({"modes": {"m": {"orchestration": {"background": True}}}}, "mode 'm' of agent 'lead'"),
+    ],
+)
+def test_background_without_delegate_to_is_refused(
+    tmp_path: Path, lead: dict[str, Any], who: str
+) -> None:
+    root = write_folder(tmp_path, {"lead": {**GENERATION, **lead}}, files={"a.md": "Lead.\n"})
+    with pytest.raises(ConfigurationError) as raised:
+        load_folder(root)
+    assert str(raised.value) == (
+        f"compiled: {who} sets orchestration.background but delegates to no agent; name them in orchestration.delegate_to"
+    )
+
+
+def test_background_and_its_cap_reach_the_agent(tmp_path: Path) -> None:
+    lead = {
+        **GENERATION,
+        "orchestration": {"delegate_to": ["lead"], "background": True, "max_background": 3},
+        "modes": {"m": {"orchestration": {"max_background": 2}}},
+    }
+    agents = load_folder(write_folder(tmp_path, {"lead": lead}, files={"a.md": "Lead.\n"}))
+    held = agents["lead"]
+    assert (held.background, held.background_parallel) == (True, 3)
+    assert (held.modes["m"].background, held.modes["m"].background_parallel) == (True, 2)
 
 
 def test_instructions_are_required_on_the_entry_or_every_mode(tmp_path: Path) -> None:
@@ -935,6 +967,8 @@ def test_a_bom_is_accepted_and_non_utf8_is_refused(tmp_path: Path) -> None:
         ("tools.timeout", "3"),
         ("tools.max_parallel", 1.5),
         ("orchestration.max_depth", "1"),
+        ("orchestration.background", "yes"),
+        ("orchestration.max_background", "1"),
         ("description", 3),
         ("instructions", ["a.md"]),
     ],
@@ -962,6 +996,7 @@ def test_a_worker_takes_numbers(tmp_path: Path, value: Any) -> None:
         ("tools.max_parallel", 0),
         ("orchestration.max_depth", 0),
         ("orchestration.max_parallel", 0),
+        ("orchestration.max_background", 0),
     ],
 )
 def test_a_limit_on_an_agent_is_positive(tmp_path: Path, dotted: str, value: Any) -> None:

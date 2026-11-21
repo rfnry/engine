@@ -807,6 +807,8 @@ def _spec(
         max_depth=resolved.orchestration.max_depth,
         tool_parallel=resolved.tools.max_parallel,
         delegate_parallel=resolved.orchestration.max_parallel,
+        background=resolved.orchestration.background,
+        background_parallel=resolved.orchestration.max_background,
         mode=mode,
     )
 
@@ -871,6 +873,10 @@ def _check_orchestration(
         for spec in (agent, *agent.modes.values()):
             who = _who(agent.name, spec.mode)
             delegates = overlaid(entries[agent.name], spec.mode).orchestration.delegate_to
+            if spec.background and not delegates:
+                raise ConfigurationError(
+                    f"compiled: {who} sets orchestration.background but delegates to no agent; name them in orchestration.delegate_to"
+                )
             _refuse_targets(agents, who, spec, delegates or ())
             _check_route(agents, who, spec)
 

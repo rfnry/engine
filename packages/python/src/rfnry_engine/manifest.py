@@ -95,6 +95,8 @@ class Orchestration(_Closed):
     max_depth: _Count | None = None
     max_parallel: _Count | None = None
     route: RouteSpec | None = None
+    background: bool = Field(default=False, exclude_if=lambda held: held is False)
+    max_background: _Count | None = Field(default=None, exclude_if=lambda held: held is None)
 
 
 class ModeEntry(_Closed):
@@ -240,6 +242,8 @@ _LEFT_OUT: dict[Kind, tuple[frozenset[str], str]] = {
                 "orchestration.delegate_to",
                 "orchestration.max_depth",
                 "orchestration.max_parallel",
+                "orchestration.background",
+                "orchestration.max_background",
             }
         ),
         "a decision agent takes only kind, model, description, instructions, worker, questions, orchestration.route and modes",

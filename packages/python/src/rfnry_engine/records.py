@@ -131,6 +131,7 @@ class MessagesTaken(BaseModel):
     agent: str
     turn: int
     messages: list[Message]
+    notices: list[Message] = []
 
 
 class ToolCallStarted(BaseModel):

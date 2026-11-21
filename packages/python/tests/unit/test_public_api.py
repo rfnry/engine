@@ -33,6 +33,7 @@ EXPECTED = {
     "Fingerprint",
     "Stop",
     "Message",
+    "Notice",
     "ToolSpec",
     "ToolCall",
     "Usage",

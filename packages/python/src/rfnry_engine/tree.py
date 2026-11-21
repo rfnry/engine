@@ -111,6 +111,8 @@ class AgentSpec(BaseModel):
     max_depth: int | None = None
     tool_parallel: int | None = None
     delegate_parallel: int | None = None
+    background: bool = False
+    background_parallel: int | None = None
     mode: str | None = None
 
 

@@ -19,6 +19,7 @@ from rfnry_engine.models import (
     Document,
     Image,
     Message,
+    Notice,
     Question,
     Reply,
     Score,
@@ -251,3 +252,13 @@ def test_a_message_s_settings_that_are_not_a_json_object_are_dropped() -> None:
     assert Message.model_validate({**held, "settings": {"effort": "high"}}).settings == {
         "effort": "high"
     }
+
+
+def test_a_message_s_notice_that_does_not_fit_is_dropped() -> None:
+    held = {"role": "user", "content": "[helper d1 · worker · finished]\nx"}
+    notice = {"job": "d1", "agent": "worker", "run_id": "r1", "kind": "finished"}
+    assert Message.model_validate({**held, "notice": notice}).notice == Notice(
+        job="d1", agent="worker", run_id="r1", kind="finished"
+    )
+    for odd in ("d1", {**notice, "kind": "done"}, {"job": 1}):
+        assert Message.model_validate({**held, "notice": odd}).notice is None

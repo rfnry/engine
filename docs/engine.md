@@ -148,6 +148,7 @@ An agent grows by its entry:
 | a shell to write and run code | [`workspace: true`](#workspace) | a `Workspace` |
 | a fast, calibrated judgement | a [decision agent](#decision-agents), in `orchestration.delegate_to` | a decision model |
 | another agent to hand work to | its name in [`orchestration.delegate_to`](#nesting) | |
+| agents that work beside it while it goes on | [`orchestration.background: true`](#in-the-background) | |
 | one agent for several channels | its [`modes`](#modes) | `mode=` |
 | a spoken conversation | a [voice agent](#voice-agents) | a session and a live model |
 | a memory, or a corpus too large for a folder | | rfnry-memory's `MemoryTools` |
@@ -659,7 +660,14 @@ without one, calls of that kind are not capped. Each run has its own slots. A ca
 after `approve`, so a call waiting on a person holds none, and its deadline starts once it has one.
 A call a command makes through the tool bridge takes a slot of `tools.max_parallel`, so a script's
 fan-out stays under the cap, and a `Shell` on a run with a bridge takes none, so a command never
-waits on a slot its own call holds.
+waits on a slot its own call holds. `orchestration.max_background` caps how many of a run's
+[helpers](#in-the-background) run at once, and `Engine(max_background=)` is its ceiling: the
+smaller holds, and with neither, `None` by default, they are not capped. A background `Delegate`
+past the cap is answered at once with a tool error naming the helpers running (`tools/delegate:
+max_background is 2, and running now: d1, d3; wait for a helper to end or stop one`), never
+queued, and a helper takes no slot of `orchestration.max_parallel`, which counts only the
+`Delegate` calls the run waits on. Every helper of every tenant shares the process's event loop,
+so a service that serves many tenants in one process sets `Engine(max_background=)`.
 
 ### Skills
 
@@ -984,7 +992,11 @@ run.stopped, run.reply, run.steps
 When the run takes messages it sends a `MessagesTaken` with them and the turn about to read them.
 The inbox is first in, first out and the run takes everything waiting, so a frontend can show a
 message as sent but not yet read, and mark the first `len(event.messages)` as read when the event
-arrives. Messages still waiting when the run ends were never read and send nothing.
+arrives. Messages still waiting when the run ends were never read and send nothing. A lead with
+[helpers](#in-the-background) takes their notices at the same boundary, before the inbox's
+messages, so a person's newest words sit closest to the model's turn: they ride in
+`event.notices`, and `event.messages` keeps meaning what was taken from the inbox, `[]` when only
+notices were.
 
 Any run in flight is reached alone, by its id, through the engine running it: the top run, a run it
 delegated or routed to, a consult an `engine.tool` call started. Each generation run's `RunStarted`
@@ -1519,6 +1531,75 @@ forwards the same input, so a route into an agent that already decided it — in
 routes, since the last `Delegate` — is refused with `DelegationLoopError`; a `Delegate` starts a new
 input, so the agents above it do not count. Through `Delegate` an error reaches the model as a tool
 error and the run continues; through a route it raises.
+
+#### In the background
+
+`orchestration.background: true` beside `delegate_to` lets the agent's model start a delegated run
+that runs beside it — a helper — and go on working:
+
+```yaml
+lead:
+  kind: generation
+  model: strong
+  instructions: lead/instructions.md
+  orchestration:
+    delegate_to: [prover, checker]
+    background: true                      # Delegate takes background; the run waits for its helpers
+    max_background: 8                     # helpers of one run at once; absent means no cap
+```
+
+Without `background: true` nothing changes: `Delegate` takes no `background`, a call that passes
+it anyway is a tool error (`tools/delegate: agent 'lead' may not delegate in the background`), and
+the agent is offered and fingerprinted as before. `background: true` without `delegate_to` is a
+`ConfigurationError` when the engine loads (`compiled: agent 'lead' sets orchestration.background
+but delegates to no agent; name them in orchestration.delegate_to`), and a decision agent takes
+neither key. A `Delegate` dispatched through an `EngineTools` or `engine.tool` belongs to no run
+that can wait for a helper, so it takes no `background` either.
+
+With it, `Delegate` takes `background`, a boolean the model sets to `true` to start a helper. The
+call returns at once with a job id, `{"job": "d1"}`, and the model goes on with its turn while the
+helper runs. Ids are `d1`, `d2`, … in the order a run starts its helpers, numbered after the highest
+one a `Delegate` result or a notice holds in the messages the run reads — its `history` from `start`
+— so its model never sees two `d1`; a long stored conversation read through windows may repeat a
+`dN` outside one window, and each helper's step keeps that helper's own `run_id`. The `d` keeps them
+apart from a workspace's `j1`. A helper runs as a synchronous child does — the run's tools,
+workspace, tags, `approve`, `on_event` and models, under the same scope, with a stop chained below
+the lead's and an inbox of its own — and the step that started it carries its `run_id` at once; its
+record joins `children` when it ends, in the order helpers end. A decision agent runs in the
+background too, its one call its whole run. A helper is a level below its lead, and one whose entry
+opts in may start helpers of its own. `approve` is asked about a background `Delegate` as about any
+call, and a `Delegate` refused before its helper starts — by `approve`, past `max_background`, or
+for `questions` that do not fit — starts no helper and spends no id.
+
+When a helper ends, the lead hears it before its next model call, as a `role="user"` message whose
+first line names the helper and how it ended:
+
+```
+[helper d1 · prover · finished]
+Lemma 4 holds; the proof is on branch prover-d1.
+```
+
+What follows is the helper's reply — a decision helper's answers as JSON, as `Delegate` returns
+them — or, after `failed`, its error as a tool's result would show it, and after `stopped`, what it
+had said. The message carries `notice`, a `Notice` naming the helper's `job`, `agent` and `run_id`
+and the `kind` of notice, so the record and a dataset tell it from the person's words; a model is
+sent only the text and reads the first line. A helper's reply holds whatever the helper read, a
+hostile document included, so write the lead's instructions to treat a notice as it treats a tool
+result, not as the person. Every helper that ended since the last model call is taken at once, in
+the order they ended, so many helpers ending together are one wake-up and one model call.
+
+A run with helpers ends when its model replies with no tool call, no helper of its own runs and no
+notice waits. A reply with no tool call while a helper runs, or while a notice waits, stays in the
+conversation and streams as any reply, and the run waits for the next notice or a message on its
+inbox, then calls the model again. Each such call counts toward `max_model_calls`, so a lead that
+waits through many ends needs a higher one, and such a reply on the run's last allowed call raises
+`RunawayError` at once, unless its stop is pending, rather than wait for a call it cannot make. A
+message on the inbox wakes a waiting run, so a reminder reaches a lead whose helpers still work, but
+it never keeps a run going: a lead with no helper running ends as any run does, and what is left on
+its inbox stays there. The message that woke it is the run's once taken: it joins the conversation,
+with its `MessagesTaken`, even when the run's stop ends it before its next model call, and the rest
+of the inbox stays there. A lead that ends this way sends its `RunEnded` after every helper's, and a
+helper's events go to the same `on_event` as a synchronous child's.
 
 ### Both kinds together
 
@@ -3416,11 +3497,10 @@ Everything the package exports, by role.
   `RunStarted`, `RunEnded`, `TextDelta`, `ReasoningDelta`, `MessagesTaken`, `ToolCallStarted`,
   `ToolResultReady`, `CommandOutput`, `Event`.
 - **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `OnDelta`, `DecisionModel`,
-  `VoiceModel`;
-  `Message`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts `Text`, `Image`, `Audio`,
-  `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`; `ChoiceAnswer`, `ScoreAnswer`,
-  `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a result are read by,
-  `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
+  `VoiceModel`; `Message`, `Notice`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts
+  `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`;
+  `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a
+  result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
 - **Give models tools:** `Tool`, `Tools`, `EngineTools`, `current_call`, `CallInfo`, `Jail`,
   `Workspace`, `JobInfo`, `Backend`, `Process`, `Local`.
 - **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Replay`,
@@ -3437,78 +3517,80 @@ naming the file or the dotted path and what to change. When the engine loads: a 
 directory or holds no `rfnry.yaml`; a file that is not UTF-8 or not valid YAML, an anchor, an alias
 or a merge key, a key a section or an agent's kind does not take (`manifest: unknown key in
 /srv/agents/rfnry.yaml: agents.frontdesk.orchestration.rout (it takes delegate_to, max_depth,
-max_parallel, route)`), a key with no value, an empty list or mapping, a `version` other than 1, a
-name that is not plain, and an agent with `instructions` neither on its entry nor on every mode; a
-`model:` naming no entry under `models:`, a `worker:` naming no worker, a model, a worker or a
-declared tool nothing picks, an entry whose provider `providers` does not hold, and workers running
-more processes in all than `max_worker_processes`; a path not written from the folder root, a
-pattern of `files`, `skills` or `questions` that reaches nothing, one naming `rfnry.yaml`, a file an
-agent reaches that links out of the folder, a file an agent is made of that cannot be read, a name
-that is not UTF-8, a `.gitignore` that cannot be read or decoded, and a preloaded file `Read` would
-refuse; two skills of one name, a `skills.deny` naming none of the agent's skills, a
-`skills.preload` that `deny` empties, and a `skills.public` name the agent does not offer or one
-holding whitespace; a tool's module that is not a `.py` file, is named like a standard-library
-module or holds no such function, a schema file that is not an object, holds an unknown key or a
-schema that does not compile, a tool nothing describes, a tool written as a path without the JSON
-beside it, a tool named like one the engine gives, a pattern of `tools.allow` or `tools.deny` that
-matches nothing, a name in either under neither `tools:` nor `runtime_tools:` and not one the engine
-gives, a runtime tool nothing picks, named like a declared tool or one the engine gives or listed
-twice, a name in `tools.allow` whose section is missing, `Output` or `History` in either, and one or
-two of `Shell`, `Job` and `Jobs` in
-`tools.deny` without the rest; a script or a module beside it that is not valid Python, imports
-the engine, a module relatively, a module beside it inside a function, a package folder beside it,
-a name below a `.py` file beside it, the server's own code, or a module that resolves to nothing
-outside `try/except ImportError` and `if TYPE_CHECKING`; a question that is not a JSON object,
-holds a key it does not take or one of another type, has no instructions or does not fit its type,
-a question in markdown, a question's script without its `.json`, and two questions of one id; a
-`delegate_to` or a route naming an agent the file does not hold, a voice agent or an agent that
-needs a mode, a route not by a choice question the router asks, by one a script fills, of an option
-the question does not have, or to a decision agent with nothing to ask; two agents that would export
-under one key; and a `providers` that is not a mapping of names to functions, a `max_model_calls`,
-`max_depth` or `max_worker_processes` that is not a positive integer, a `tool_timeout`,
-`history_walk` or `history_chars` that is not positive, and a `worker_result_bytes` that is neither
-a positive integer nor `None`. When a run starts: a model whose adapter has not its kind's method, a
-`ModelChoice` naming a provider you did not give, a `models=` key no agent or mode runs on, a name
-in `tools.allow` the run does not offer, two tools of a run with one name or one named like a tool
-the engine gives, and a missing workspace. And a `Local` root that is not a directory, a `shell`
-that is not a list of strings or whose first word is not on `PATH`, a backend without `spawn`,
-`read` and `write`, a `Workspace` without a scope, a `timeout` or `output_bytes` that is not
-positive, an `approve` that returns anything but `True` or `False`, a judge that is not a decision
-agent or a teacher that is not a generation agent. `NotFoundError` for
-an agent the folder does not have — a judge, a teacher or a replay's agent in the candidate
-included — a mode it does not have, a skill the agent does not have (`engine: agent 'support' has no skill 'refund'; its skills are
-escalate`), found when the run starts, a run the refinery does not, or a run `engine.send` or
-`engine.stop` does not find its engine running under its scope. `InputError` for a call the
-library refuses: an empty scope, an input that is not a string, a JSON object or a list of JSON
-values and parts, a workspace of another scope, a history that breaks a tool call from its result, a
-`start` outside the history or without one, tags outside their limits, runtime questions that do not
-fit, a runtime id the run already asks, questions for a generation agent, a skill for a decision
-agent, a run without a mode of an agent that needs one, a voice agent given to `engine.run` or
-`engine.tool` and another kind given to `engine.talk`, a run given a skill both by `skill=` and by
-an input that starts with a public `/name` (`engine: a run invokes one skill, by skill= or by an
-input that starts with /<name>; got skill='escalate' and /close`), a decision run with no question
-to ask, media the decision model does not declare, a media part with both or neither of `data` and
-`url`, a correction of the wrong shape or for a question the run was not asked, a message
-`engine.send` sends to a decision run or one a run could not read, a `delete_runs` or
-`verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an
-`export` or a `replay` given a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or
-a `limit`, `concurrency` or `repeat` below 1, a tool called with bad arguments, arguments JSON
-cannot hold or a path outside the folder, and any use of an engine after `close()` (`engine: this
-engine was closed; build a new Engine`). `ModelError` when an adapter breaks the contract — a result
-whose fields do not fit, a missing answer, probabilities that do not cover the options, lie outside
-0 and 1 or do not sum to 1, a score outside its levels — or a folder tool's result does not match
-its `output_schema`, or a question's script returns anything but an object, a key its JSON sets or
-one its type does not take, or a question that does not fit. `RunawayError` when a loop passes its
-limit of model calls, the smaller of `Engine(max_model_calls=)`, 200 unless you set another, and its
-entry's. `DelegationLoopError` for a route into an agent already in the same chain of routes;
-`DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
-`Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool or
-a question's script that fails in its worker process: what its script raised, `sys.exit()` included,
-a result JSON cannot hold, a result or error over `worker_result_bytes`, a worker that stopped while
-the call was in flight (`workers/pool: the worker for lookup_order stopped: exited with code 3`) or
-a call in flight when `close()` stopped its worker. Inside a run, a tool's error is the model's to
-read, never raised. All under `EngineException` — the root takes the `Exception` suffix, every child
-ends in `Error`, the same shape as rfnry-memory's. Every message names the module that raised it,
-then says what went wrong in lowercase: `engine: agent 'ghost' was not found`, `tools/workspace:
-path outside the workspace: ../x`. A tool's error reaches the model with its type in front:
-`InputError: tools: unknown tool 'Ghost'`.
+max_parallel, route, background, max_background)`), a key with no value, an empty list or mapping, a
+`version` other than 1, a name that is not plain, and an agent with `instructions` neither on its
+entry nor on every mode; a `model:` naming no entry under `models:`, a `worker:` naming no worker, a
+model, a worker or a declared tool nothing picks, an entry whose provider `providers` does not hold,
+and workers running more processes in all than `max_worker_processes`; a path not written from the
+folder root, a pattern of `files`, `skills` or `questions` that reaches nothing, one naming
+`rfnry.yaml`, a file an agent reaches that links out of the folder, a file an agent is made of that
+cannot be read, a name that is not UTF-8, a `.gitignore` that cannot be read or decoded, and a
+preloaded file `Read` would refuse; two skills of one name, a `skills.deny` naming none of the
+agent's skills, a `skills.preload` that `deny` empties, and a `skills.public` name the agent does
+not offer or one holding whitespace; a tool's module that is not a `.py` file, is named like a
+standard-library module or holds no such function, a schema file that is not an object, holds an
+unknown key or a schema that does not compile, a tool nothing describes, a tool written as a path
+without the JSON beside it, a tool named like one the engine gives, a pattern of `tools.allow` or
+`tools.deny` that matches nothing, a name in either under neither `tools:` nor `runtime_tools:` and
+not one the engine gives, a runtime tool nothing picks, named like a declared tool or one the engine
+gives or listed twice, a name in `tools.allow` whose section is missing, `Output` or `History` in
+either, and one or two of `Shell`, `Job` and `Jobs` in `tools.deny` without the rest; a script or a
+module beside it that is not valid Python, imports the engine, a module relatively, a module beside
+it inside a function, a package folder beside it, a name below a `.py` file beside it, the server's
+own code, or a module that resolves to nothing outside `try/except ImportError` and `if
+TYPE_CHECKING`; a question that is not a JSON object, holds a key it does not take or one of another
+type, has no instructions or does not fit its type, a question in markdown, a question's script
+without its `.json`, and two questions of one id; a `delegate_to` or a route naming an agent the
+file does not hold, a voice agent or an agent that needs a mode, a route not by a choice question
+the router asks, by one a script fills, of an option the question does not have, or to a decision
+agent with nothing to ask; an `orchestration.background` with no `delegate_to`; two agents that
+would export under one key; and a `providers` that is not a mapping of names to functions, a
+`max_model_calls`, `max_depth` or `max_worker_processes` that is not a positive integer, a
+`max_background` that is neither a positive integer nor `None`, a `tool_timeout`, `history_walk` or
+`history_chars` that is not positive, and a `worker_result_bytes` that is neither a positive integer
+nor `None`. When a run starts: a model whose adapter has not its kind's method, a `ModelChoice`
+naming a provider you did not give, a `models=` key no agent or mode runs on, a name in
+`tools.allow` the run does not offer, two tools of a run with one name or one named like a tool the
+engine gives, and a missing workspace. And a `Local` root that is not a directory, a `shell` that is
+not a list of strings or whose first word is not on `PATH`, a backend without `spawn`, `read` and
+`write`, a `Workspace` without a scope, a `timeout` or `output_bytes` that is not positive, an
+`approve` that returns anything but `True` or `False`, a judge that is not a decision agent or a
+teacher that is not a generation agent. `NotFoundError` for an agent the folder does not have — a
+judge, a teacher or a replay's agent in the candidate included — a mode it does not have, a skill
+the agent does not have (`engine: agent 'support' has no skill 'refund'; its skills are escalate`),
+found when the run starts, a run the refinery does not, or a run `engine.send` or `engine.stop` does
+not find its engine running under its scope. `InputError` for a call the library refuses: an empty
+scope, an input that is not a string, a JSON object or a list of JSON values and parts, a workspace
+of another scope, a history that breaks a tool call from its result, a `start` outside the history
+or without one, tags outside their limits, runtime questions that do not fit, a runtime id the run
+already asks, questions for a generation agent, a skill for a decision agent, a run without a mode
+of an agent that needs one, a voice agent given to `engine.run` or `engine.tool` and another kind
+given to `engine.talk`, a run given a skill both by `skill=` and by an input that starts with a
+public `/name` (`engine: a run invokes one skill, by skill= or by an input that starts with /<name>;
+got skill='escalate' and /close`), a decision run with no question to ask, media the decision model
+does not declare, a media part with both or neither of `data` and `url`, a correction of the wrong
+shape or for a question the run was not asked, a message `engine.send` sends to a decision run or
+one a run could not read, a `delete_runs` or `verify_absent` given both `run_ids` and `tags` or an
+empty one, a `delete_runs` given neither, an `export` or a `replay` given a `holdout_percent`
+outside 0 to 100, a `replay` given empty `tags` or a `limit`, `concurrency` or `repeat` below 1, a
+tool called with bad arguments, arguments JSON cannot hold or a path outside the folder, a
+`Delegate` given `background` by an agent that does not opt in or past `max_background`, and any use
+of an engine after `close()` (`engine: this engine was closed; build a new Engine`). `ModelError`
+when an adapter breaks the contract — a result whose fields do not fit, a missing answer,
+probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1, a score outside
+its levels — or a folder tool's result does not match its `output_schema`, or a question's script
+returns anything but an object, a key its JSON sets or one its type does not take, or a question
+that does not fit. `RunawayError` when a loop passes its limit of model calls, the smaller of
+`Engine(max_model_calls=)`, 200 unless you set another, and its entry's. `DelegationLoopError` for a
+route into an agent already in the same chain of routes; `DelegationDepthError` for nesting past
+`max_depth`, which reaches the model as a tool error through `Delegate` and raises through a route.
+`StorageError` for the database. `WorkerError` for a tool or a question's script that fails in its
+worker process: what its script raised, `sys.exit()` included, a result JSON cannot hold, a result
+or error over `worker_result_bytes`, a worker that stopped while the call was in flight
+(`workers/pool: the worker for lookup_order stopped: exited with code 3`) or a call in flight when
+`close()` stopped its worker. Inside a run, a tool's error is the model's to read, never raised. All
+under `EngineException` — the root takes the `Exception` suffix, every child ends in `Error`, the
+same shape as rfnry-memory's. Every message names the module that raised it, then says what went
+wrong in lowercase: `engine: agent 'ghost' was not found`, `tools/workspace: path outside the
+workspace: ../x`. A tool's error reaches the model with its type in front: `InputError: tools:
+unknown tool 'Ghost'`.

@@ -36,3 +36,7 @@ class StorageError(EngineException):
 
 class WorkerError(EngineException):
     pass
+
+
+def error_text(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
