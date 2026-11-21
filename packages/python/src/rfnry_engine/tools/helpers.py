@@ -1,17 +1,15 @@
 import asyncio
-import re
 from typing import Any, cast
 
 from pydantic import BaseModel
 
 from rfnry_engine.errors import InputError
-from rfnry_engine.helpers import Helper, Helpers, Unanswered
+from rfnry_engine.helpers import HELPER_ID, Helper, Helpers, Unanswered
 from rfnry_engine.tools.tools import Tool
 from rfnry_engine.tools.workspace import JOB_TOOL, JOBS_TOOL, JobArgs, Workspace
 
 HELPER_TOOLS = frozenset({JOB_TOOL, JOBS_TOOL})
 ASK_TOOL = "Ask"
-HELPER_ID = re.compile(r"d[0-9]+")
 ENDED = "and whether it is running or, once it has ended, how: finished, failed or stopped."
 
 

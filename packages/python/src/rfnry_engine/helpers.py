@@ -6,7 +6,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from rfnry_engine.errors import error_text
 from rfnry_engine.foreground import FOREGROUND, Foreground, halted
@@ -18,7 +18,7 @@ from rfnry_engine.tools.delegate import DELEGATE_TOOL, child_result, run_result
 from rfnry_engine.tools.workspace import JOB_TOOL, JOBS_TOOL
 
 Ending = Literal["finished", "failed", "stopped"]
-JOB = re.compile(r"d([1-9][0-9]*)")
+HELPER_ID = re.compile(r"d([0-9]+)")
 
 
 class Unanswered(Enum):
@@ -31,7 +31,7 @@ def notice_text(job: str, agent: str, kind: str, body: str) -> str:
 
 
 def _number(job: object) -> int:
-    found = JOB.fullmatch(job) if isinstance(job, str) else None
+    found = HELPER_ID.fullmatch(job) if isinstance(job, str) else None
     return 0 if found is None else int(found[1])
 
 
@@ -106,11 +106,11 @@ class Helper:
     stop: Stop
     inbox: asyncio.Queue[Any]
     started: datetime
-    task: asyncio.Task[Any] | None
     ended: Ending | None = None
     said: str = ""
     record: Generation | Decision | None = None
     asks: list[Asking] = field(default_factory=list)
+    task: asyncio.Task[None] = field(init=False)
 
     def pending(self) -> list[Asking]:
         return [asking for asking in self.asks if not asking.answer.done()]
@@ -145,7 +145,6 @@ class Helpers:
             stop=stop,
             inbox=asyncio.Queue(),
             started=datetime.now(UTC),
-            task=None,
         )
         self._next += 1
         self._helpers[helper.job] = helper
@@ -236,7 +235,7 @@ class Helpers:
     async def stop_one(self, job: str, seconds: float | None) -> None:
         helper = self._helpers[job]
         press(helper.stop)
-        await asyncio.wait([cast(asyncio.Task[Any], helper.task)], timeout=seconds)
+        await asyncio.wait([helper.task], timeout=seconds)
 
     async def send(self, job: str, text: str) -> None:
         helper = self._helpers[job]
@@ -293,7 +292,7 @@ class Helpers:
         for helper in self.running():
             for asking in helper.pending():
                 asking.answer.set_result(Unanswered.STOPPED)
-        tasks = [helper.task for helper in self.running() if helper.task is not None]
+        tasks = [helper.task for helper in self.running()]
         if mode == "after_step":
             for helper in self.running():
                 helper.stop.after_step()
@@ -308,7 +307,7 @@ class Helpers:
             await asyncio.wait(running)
 
     async def cancel(self) -> None:
-        tasks = [helper.task for helper in self.running() if helper.task is not None]
+        tasks = [helper.task for helper in self.running()]
         for task in tasks:
             task.cancel()
         await wait(tasks, None)

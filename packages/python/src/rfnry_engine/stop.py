@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable, Collection, Sequence
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 Stopped = Literal["now", "after_step"]
 
@@ -152,10 +152,7 @@ async def wait(
 
 
 async def unless_cut[T](stop: Stop, work: Awaitable[T]) -> T | None:
-    task = asyncio.current_task()
-    if task is None:
-        return await work
-    owner: asyncio.Task[Any] = task
+    owner = cast(asyncio.Task[Any], asyncio.current_task())
     calm = owner.cancelling()
     fired = False
 
