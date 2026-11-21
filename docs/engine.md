@@ -960,9 +960,9 @@ that does not stream its reasoning sends none.
 A person can stop or steer a run while it works. Pass `stop=Stop()` and call `stop.now()` to cancel
 the model call in flight and every tool still running, or `stop.after_step()` to let the current
 tool calls finish and end before the next model call. Pass `inbox=asyncio.Queue()` and put a string
-or a list of parts on it whenever the person says something: at each step boundary — after the
-tool results, before the next model call — the run takes everything waiting and appends each as a
-`role="user"` message, in order:
+or a list of parts on it — another value JSON can hold is read as its JSON text — whenever the
+person says something: at each step boundary — after the tool results, before the next model call —
+the run takes everything waiting and appends each as a `role="user"` message, in order:
 
 ```python
 stop, inbox = Stop(), asyncio.Queue()
@@ -977,6 +977,28 @@ When the run takes messages it sends a `MessagesTaken` with them and the turn ab
 The inbox is first in, first out and the run takes everything waiting, so a frontend can show a
 message as sent but not yet read, and mark the first `len(event.messages)` as read when the event
 arrives. Messages still waiting when the run ends were never read and send nothing.
+
+Any run in flight is reached alone, by its id, through the engine running it: the top run, a run it
+delegated or routed to, a consult an `engine.tool` call started. Each generation run's `RunStarted`
+gives its `run_id`, and its `call` the call it works for. `await engine.send(run_id, message,
+scope="acme")` puts a message in that run's inbox, read at its next boundary as above: the top run's
+is the `inbox` you gave it, so the message lands on that queue, and a run without one, and every
+delegated run, has one of its own. `engine.stop(run_id, scope="acme")` presses that run's stop,
+`after_step=True` for `after_step()`. Each run has a stop of its own, chained below the stop of the
+run that started it — the top run's is the `stop` you gave it, or one of its own — so a press
+reaches the run and every run below it, never one above: a delegated run stopped on its own answers
+its `Delegate` call `stopped by the user`, with `stopped=True`, and the run that delegated goes on
+to its next model call. Only a stop pressed on a run or above it ends that run. A decision run
+stopped by its id has its call cut by what waits for it — a `Delegate` or consult call, answered
+`stopped by the user`, or a route, whose router is kept with what it answered — and is not recorded;
+a top-level one, which nothing waits for, keeps its call, and the press rides to the run it routes
+to as a press of a `Stop` does: a routed generation run stops, and a routed decision run answers.
+Once a decision run has routed, a press by its id goes to the run it routed to, and with
+`after_step=True` its one call finishes and the press rides on to that run. A press of a `Stop` you
+gave reaches a decision run only as below. A run the engine is not running under that scope — an id
+never started, another tenant's run, a run that already returned — is a `NotFoundError` (`engine:
+run 'f3a9…' is not running`), and a message to a decision run, or one the run could not read, an
+`InputError`, raised by `send` itself.
 
 A stopped run returns, never raises: `run.stopped` is `"now"` or `"after_step"` (`None` for a run
 that ended on its own), `run.steps` are the steps it took, `run.reply` is the last text the model
@@ -1011,8 +1033,9 @@ inbox is not read. Whatever is still in the inbox when the run ends stays there 
 starts a run; you do, with those messages as its input. A decision run never reads the inbox: its
 questions are one call, and a stop or an inbox rides to the run it routes to; a stop that finds a
 delegated or consulted decision run still asking cancels its call, as it cancels a model call in
-flight, and that run is not recorded. "Pause, please" is a message in the inbox: the model reads it
-at the next boundary and wraps up in its own words.
+flight, and that run is not recorded; `engine.stop` on its id cuts its call the same way, and with
+`after_step=True` lets that call finish. "Pause, please" is a message in the inbox: the model reads
+it at the next boundary and wraps up in its own words.
 
 A run that ended continues from its record, on any process, after any restart. With a refinery
 attached every run that returns is recorded with its conversation: keep the run id beside what you
@@ -1531,7 +1554,8 @@ billing:
 
 When the chosen option maps to an agent and confidence clears the floor, that agent runs with
 everything the run was given — the same input, parts included, `history`, `context`, `expect`,
-`tools`, `workspace`, `on_event`, `stop`, `inbox` and `tags` — and the routed run is attached:
+`tools`, `workspace`, `on_event`, `inbox` and `tags` — and a stop of its own, chained below the
+run's, so the run's `stop` reaches it; the routed run is attached:
 
 ```python
 engine = Engine(Path("agents"), providers=providers)
@@ -2526,10 +2550,11 @@ folder.
 
 One `Engine` per process serves every run at once; scale out with processes. A run in flight is tied
 to the process that started it, so route a chat's later messages, its stop and its inbox to that
-process. The tools of the folder run in the engine's own workers beside that process — one process
-by default, and as many as the [`workers:`](#workers) section of `rfnry.yaml` declares — each process
-taking 32 plain `def run` calls at once on its threads, or the `threads` its worker gives, and
-`async def run` calls without a limit on its event loop.
+process: there `engine.send` and `engine.stop` reach any run in flight, a delegated one included, by
+its id and scope. The tools of the folder run in the engine's own workers beside that process — one
+process by default, and as many as the [`workers:`](#workers) section of `rfnry.yaml` declares —
+each process taking 32 plain `def run` calls at once on its threads, or the `threads` its worker
+gives, and `async def run` calls without a limit on its event loop.
 
 The tools' file work (`Read`, `Grep`, `Glob`, `LS`, `Load`, the history search, and `Local`'s file reads and
 writes; its commands are processes of their own) runs on the event loop's default executor,
@@ -3109,16 +3134,16 @@ the route chain resets there: an agent may reach a fresh run of itself through i
 into an agent already in the same chain of routes is refused.
 
 Called inside a run, a consult is part of that run's foreground, as a delegated run is: its run
-takes the caller's `stop` and `on_event`. The caller's `stop.now()` reaches the consult instead of
-cancelling its call, so the consult ends with its record — one a script's call started included, as
-"Calling tools from code" says — and whatever else the call was doing is cut once the consult has
-taken the stop — a stop that lands before a call returns cuts it, even when its consult had just
-finished, and that consult keeps its record — and the caller's step reads `stopped by the user`, as
-a stopped `Delegate` step does; `after_step()` ends it after its current step. A consult a tool of
-yours starts in a task of its own — two at once, say — is in the foreground too; one a script's call
-started through the workspace's tool bridge ends with the script's command instead, unless
-`stop.now()` ended the command, as "Calling tools from code" says. Its events reach the caller's
-handler, told apart by `agent` and `run_id`:
+takes the caller's `on_event` and a stop chained below the caller's `stop`. The caller's
+`stop.now()` reaches the consult instead of cancelling its call, so the consult ends with its record
+— one a script's call started included, as "Calling tools from code" says — and whatever else the
+call was doing is cut once the consult has taken the stop — a stop that lands before a call returns
+cuts it, even when its consult had just finished, and that consult keeps its record — and the
+caller's step reads `stopped by the user`, as a stopped `Delegate` step does; `after_step()` ends it
+after its current step. A consult a tool of yours starts in a task of its own — two at once, say —
+is in the foreground too; one a script's call started through the workspace's tool bridge ends with
+the script's command instead, unless `stop.now()` ended the command, as "Calling tools from code"
+says. Its events reach the caller's handler, told apart by `agent` and `run_id`:
 
 ```python
 async def status(event):
@@ -3152,7 +3177,10 @@ def barge_in():
 
 Given inside a run, these win over the caller's: a `stop` of your own, or `None` from the function,
 leaves the consult out of the caller's foreground, and the caller's stop cancels its call as it
-cancels any tool's. Outside a run, a stopped consult's `dispatch` returns what its run produced.
+cancels any tool's. A stop the caller's own is chained below — the one you gave the top run, read
+inside a run it delegated to — counts as the caller's: the consult's stop is made below the
+caller's, the consult stays in the caller's foreground, and a press of yours reaches it as the
+caller's stop does. Outside a run, a stopped consult's `dispatch` returns what its run produced.
 `EngineTools` takes the same two for the `Delegate` it dispatches outside a run.
 
 ## Storage
@@ -3441,28 +3469,30 @@ positive, an `approve` that returns anything but `True` or `False`, a judge that
 agent or a teacher that is not a generation agent. `NotFoundError` for
 an agent the folder does not have — a judge, a teacher or a replay's agent in the candidate
 included — a mode it does not have, a skill the agent does not have (`engine: agent 'support' has no skill 'refund'; its skills are
-escalate`), found when the run starts, or a run the refinery does not. `InputError` for a call the
+escalate`), found when the run starts, a run the refinery does not, or a run `engine.send` or
+`engine.stop` does not find its engine running under its scope. `InputError` for a call the
 library refuses: an empty scope, an input that is not a string, a JSON object or a list of JSON
 values and parts, a workspace of another scope, a history that breaks a tool call from its result, a
 `start` outside the history or without one, tags outside their limits, runtime questions that do not
 fit, a runtime id the run already asks, questions for a generation agent, a skill for a decision
 agent, a run without a mode of an agent that needs one, a voice agent given to `engine.run` or
 `engine.tool` and another kind given to `engine.talk`, a run given a skill both by `skill=` and by
-an input that starts with a public `/name` (`engine: a run invokes one skill, by skill= or by an input that starts with /<name>; got
-skill='escalate' and /close`), a decision run with no question to ask, media the decision model does
-not declare, a media part with both or neither of `data` and `url`, a correction of the wrong shape
-or for a question the run was not asked, a `delete_runs` or `verify_absent` given both `run_ids` and
-`tags` or an empty one, a `delete_runs` given neither, an `export` or a `replay` given a
-`holdout_percent` outside 0 to 100, a `replay` given empty `tags` or a `limit`, `concurrency` or
-`repeat` below 1, a tool called with bad arguments, arguments JSON cannot hold or a path outside the
-folder, and any use of an engine after `close()` (`engine: this engine was closed; build a new
-Engine`). `ModelError` when an adapter breaks the contract — a result whose fields do not fit, a
-missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1,
-a score outside its levels — or a folder tool's result does not match its `output_schema`, or a
-question's script returns anything but an object, a key its JSON sets or one its type does not take,
-or a question that does not fit. `RunawayError` when a loop passes its limit of model calls, the
-smaller of `Engine(max_model_calls=)`, 200 unless you set another, and its entry's.
-`DelegationLoopError` for a route into an agent already in the same chain of routes;
+an input that starts with a public `/name` (`engine: a run invokes one skill, by skill= or by an
+input that starts with /<name>; got skill='escalate' and /close`), a decision run with no question
+to ask, media the decision model does not declare, a media part with both or neither of `data` and
+`url`, a correction of the wrong shape or for a question the run was not asked, a message
+`engine.send` sends to a decision run or one a run could not read, a `delete_runs` or
+`verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an
+`export` or a `replay` given a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or
+a `limit`, `concurrency` or `repeat` below 1, a tool called with bad arguments, arguments JSON
+cannot hold or a path outside the folder, and any use of an engine after `close()` (`engine: this
+engine was closed; build a new Engine`). `ModelError` when an adapter breaks the contract — a result
+whose fields do not fit, a missing answer, probabilities that do not cover the options, lie outside
+0 and 1 or do not sum to 1, a score outside its levels — or a folder tool's result does not match
+its `output_schema`, or a question's script returns anything but an object, a key its JSON sets or
+one its type does not take, or a question that does not fit. `RunawayError` when a loop passes its
+limit of model calls, the smaller of `Engine(max_model_calls=)`, 200 unless you set another, and its
+entry's. `DelegationLoopError` for a route into an agent already in the same chain of routes;
 `DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
 `Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool or
 a question's script that fails in its worker process: what its script raised, `sys.exit()` included,

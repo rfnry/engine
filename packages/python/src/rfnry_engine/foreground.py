@@ -49,7 +49,7 @@ def current() -> Foreground | None:
 @contextmanager
 def taking(stop: Stop | None) -> Iterator[None]:
     here = current()
-    if stop is None or here is None or here.stop is not stop:
+    if stop is None or here is None or not stop._from(here.stop):
         yield
         return
     here.live += 1
@@ -67,21 +67,38 @@ def halted(run: Run) -> bool:
     return isinstance(run, Generation) and run.stopped is not None
 
 
+@contextmanager
 def hooks(
     on_event: EventHandler | None, stop: Callable[[], Stop | None] | None
-) -> tuple[EventHandler | None, Stop | None]:
+) -> Iterator[tuple[EventHandler | None, Stop | None]]:
     here = current()
-    return (
-        on_event if on_event is not None or here is None else here.on_event,
-        stop() if stop is not None else None if here is None else here.stop,
-    )
+    above = None if here is None else here.stop
+    given = above if stop is None else stop()
+    if above is not None and above._from(given):
+        given = above
+    held = None if given is None else given._below()
+    try:
+        yield on_event if on_event is not None or here is None else here.on_event, held
+    finally:
+        if held is not None:
+            held._drop()
 
 
 def returned(run: Run) -> Run:
-    here = current()
-    if here is not None and halted(run):
-        here.stopped = True
+    if halted(run):
+        answer_stopped()
     return run
+
+
+def answer_stopped() -> None:
+    here = current()
+    if here is not None:
+        here.stopped = True
+
+
+def answers_stopped() -> bool:
+    here = current()
+    return here is not None and here.stopped
 
 
 CALL: contextvars.ContextVar[CallInfo | None] = contextvars.ContextVar("call", default=None)

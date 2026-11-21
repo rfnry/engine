@@ -5,7 +5,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from rfnry_engine.engine import Engine
@@ -363,4 +363,4 @@ async def ask(
     questions: Mapping[str, QuestionLike] | None = None,
     **options: Any,
 ) -> Run:
-    return await engine._start(agent, scope, input, questions=questions, **options)
+    return cast(Run, await engine._start(agent, scope, input, questions=questions, **options))

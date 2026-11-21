@@ -444,7 +444,9 @@ async def test_a_delegated_child_observes_the_stop(tmp_path: Path) -> None:
     assert inbox.get_nowait() == "for the lead"
 
 
-async def test_a_routed_run_shares_the_stop_and_the_inbox(tmp_path: Path) -> None:
+async def test_a_routed_run_shares_the_inbox_and_takes_a_stop_chained_below_the_router_s(
+    tmp_path: Path,
+) -> None:
     decide = Fixed(
         {"intent": ChoiceAnswer(choice="talk", probabilities={"talk": 0.9, "other": 0.1})}
     )

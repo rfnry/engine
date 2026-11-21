@@ -13,7 +13,7 @@ from functools import partial
 from itertools import count
 from pathlib import Path
 from types import MappingProxyType
-from typing import Annotated, Any, NoReturn, Protocol, cast
+from typing import Annotated, Any, Literal, NoReturn, Protocol, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
@@ -36,6 +36,8 @@ from rfnry_engine.foreground import (
     RECORDING,
     Foreground,
     Lent,
+    answer_stopped,
+    answers_stopped,
     halted,
     hooks,
     returned,
@@ -91,12 +93,13 @@ from rfnry_engine.records import (
     Voice,
     VoiceStart,
 )
-from rfnry_engine.stop import Stop, Stopped, cancel, requested, wait
+from rfnry_engine.stop import Stop, Stopped, cancel, requested, unless_cut, wait
 from rfnry_engine.tools.declared import chosen, smallest
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
     AgentArgs,
     child_result,
+    cut_result,
     enter,
     folder_reach,
     permit,
@@ -135,8 +138,8 @@ class _Options:
     tools: ToolsLike | None
     workspace: Workspace | None
     models: Mapping[str, RunModel]
-    stop: Stop | None = None
-    inbox: asyncio.Queue[Any] | None = None
+    stop: Stop
+    inbox: asyncio.Queue[Any]
     skill: str | None = None
     tags: dict[str, str] = field(default_factory=dict)
     approve: Approve | None = None
@@ -144,6 +147,13 @@ class _Options:
     start: int = 0
     source: Sequence[object] | HistoryLike | None = None
     failed: list[Generation | Decision] = field(default_factory=list)
+
+
+@dataclass
+class _Running:
+    kind: Literal["generation", "decision"]
+    stop: Stop
+    inbox: asyncio.Queue[Any] | None
 
 
 class AgentInfo(BaseModel):
@@ -246,7 +256,7 @@ def _unfit(input: object) -> str | None:
     return None
 
 
-def _parts(value: object) -> list[Part] | None:
+def _parts(value: object, what: str = "input") -> list[Part] | None:
     if not isinstance(value, list):
         return None
     parts = [_part(item) for item in value]
@@ -254,7 +264,7 @@ def _parts(value: object) -> list[Part] | None:
     if not found:
         return None
     if len(found) != len(parts):
-        raise InputError("engine: input mixes parts with other values")
+        raise InputError(f"engine: {what} mixes parts with other values")
     return found
 
 
@@ -352,10 +362,10 @@ def _tags(value: Mapping[str, str] | None) -> dict[str, str]:
     return dict(value)
 
 
-def _content(value: object) -> Content:
+def _content(value: object, what: str = "input") -> Content:
     if isinstance(value, str):
         return value
-    parts = _parts(value)
+    parts = _parts(value, what)
     return parts if parts is not None else json.dumps(value, ensure_ascii=False)
 
 
@@ -943,11 +953,42 @@ class Engine:
         self._workers = Workers(self._agents, manifest.workers, worker_result_bytes)
         _check_processes(self._workers, max_worker_processes, "raise Engine(max_worker_processes=)")
         self._closed = False
+        self._running: dict[tuple[str, str], _Running] = {}
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
 
     async def close(self) -> None:
         self._closed = True
         await self._workers.close()
+
+    def _in_flight(self, run_id: str, scope: str) -> _Running:
+        running = self._running.get((scope, run_id))
+        if running is None:
+            raise NotFoundError(f"engine: run {run_id!r} is not running")
+        return running
+
+    async def send(self, run_id: str, message: Content, *, scope: str) -> None:
+        running = self._in_flight(run_id, scope)
+        if running.kind == "decision":
+            raise InputError(f"engine: run {run_id!r} is a decision run and reads no messages")
+        try:
+            _content(message, "a message")
+        except (TypeError, ValueError) as exc:
+            raise InputError(
+                f"engine: a message is a string, a list of parts or a value JSON can hold; {exc}"
+            ) from exc
+        await cast(asyncio.Queue[Any], running.inbox).put(message)
+
+    def stop(self, run_id: str, *, scope: str, after_step: bool = False) -> None:
+        running = self._in_flight(run_id, scope)
+        pressed = running.stop
+        if after_step:
+            pressed.after_step()
+            return
+        pressed.now()
+        while pressed._routed is not None:
+            pressed = pressed._routed
+        if pressed._cut is not None:
+            pressed._cut()
 
     def _open(self) -> None:
         if self._closed:
@@ -1051,7 +1092,7 @@ class Engine:
         approve: Approve | None = None,
         models: Mapping[str, GenerationModel | DecisionModel | ModelChoice] | None = None,
     ) -> Generation | Decision:
-        return await self._start(
+        run = await self._start(
             agent,
             scope,
             input,
@@ -1072,6 +1113,7 @@ class Engine:
             models=models,
             slash=True,
         )
+        return cast(Generation | Decision, run)
 
     async def _start(
         self,
@@ -1096,7 +1138,8 @@ class Engine:
         approve: Approve | None = None,
         models: Mapping[str, RunModel] | None = None,
         slash: bool = False,
-    ) -> Generation | Decision:
+        owned: bool = False,
+    ) -> Generation | Decision | None:
         self._open()
         if not scope:
             raise InputError("engine: scope is required")
@@ -1134,8 +1177,8 @@ class Engine:
             tools=tools,
             workspace=workspace,
             models=merged,
-            stop=stop,
-            inbox=inbox,
+            stop=Stop() if stop is None else stop,
+            inbox=asyncio.Queue() if inbox is None else inbox,
             skill=invoked,
             tags=tagged,
             approve=approve,
@@ -1145,7 +1188,8 @@ class Engine:
         )
         recording = RECORDING.set(record)
         try:
-            run = await self._run(spec, scope, input, options, None)
+            running = self._run(spec, scope, input, options, None)
+            run = await (self._owned(spec, options.stop, running) if owned else running)
         except Exception:
             if record and options.failed:
                 with taking(stop):
@@ -1153,6 +1197,8 @@ class Engine:
             raise
         finally:
             RECORDING.reset(recording)
+        if run is None:
+            return None
         if record:
             with taking(stop):
                 await self._record(run)
@@ -1198,23 +1244,27 @@ class Engine:
         merged = self._run_models(models)
 
         async def body(args: dict[str, Any]) -> Result:
-            watching, held = hooks(on_event, stop)
-            run = await self._start(
-                agent,
-                scope,
-                args["input"],
-                mode=mode,
-                questions=args.get("questions"),
-                context=context,
-                tools=tools,
-                workspace=workspace,
-                tags=tagged,
-                approve=approve,
-                on_event=watching,
-                stop=held,
-                record=RECORDING.get(),
-                models=merged,
-            )
+            with hooks(on_event, stop) as (watching, held):
+                run = await self._start(
+                    agent,
+                    scope,
+                    args["input"],
+                    mode=mode,
+                    questions=args.get("questions"),
+                    context=context,
+                    tools=tools,
+                    workspace=workspace,
+                    tags=tagged,
+                    approve=approve,
+                    on_event=watching,
+                    stop=Stop() if held is None else held,
+                    record=RECORDING.get(),
+                    models=merged,
+                    owned=True,
+                )
+            if run is None:
+                answer_stopped()
+                return cut_result()
             return run_result(returned(run))
 
         schema = {
@@ -1333,6 +1383,11 @@ class Engine:
             await self._record(run)
         return run
 
+    async def _owned[R](self, spec: AgentSpec, stop: Stop, running: Awaitable[R]) -> R | None:
+        if spec.kind != "decision":
+            return await running
+        return await unless_cut(stop, running)
+
     async def _run(
         self,
         spec: AgentSpec,
@@ -1341,14 +1396,29 @@ class Engine:
         options: _Options,
         parent_run_id: str | None,
         routed: bool = False,
+        run_id: str | None = None,
     ) -> Generation | Decision:
-        self._open()
-        reach = folder_reach(spec.max_depth)
-        async with enter(spec.name, _lowered(reach, self.max_depth), reach, routed=routed):
-            if spec.kind == "generation":
-                with taking(options.stop):
-                    return await self._generation(spec, scope, input, options, parent_run_id)
-            return await self._decision(spec, scope, input, options, parent_run_id)
+        run_id = uuid4().hex if run_id is None else run_id
+        kind: Literal["generation", "decision"] = (
+            "generation" if spec.kind == "generation" else "decision"
+        )
+        held = (scope, run_id)
+        self._running[held] = _Running(
+            kind, options.stop, options.inbox if kind == "generation" else None
+        )
+        try:
+            self._open()
+            reach = folder_reach(spec.max_depth)
+            async with enter(spec.name, _lowered(reach, self.max_depth), reach, routed=routed):
+                if kind == "generation":
+                    with taking(options.stop):
+                        return await self._generation(
+                            spec, scope, input, options, parent_run_id, run_id
+                        )
+                return await self._decision(spec, scope, input, options, parent_run_id, run_id)
+        finally:
+            del self._running[held]
+            options.stop._drop()
 
     async def _decision(
         self,
@@ -1357,6 +1427,7 @@ class Engine:
         input: State,
         options: _Options,
         parent_run_id: str | None,
+        run_id: str,
     ) -> Decision:
         caller = _caller(scope)
         model_ = cast(DecisionModel, self._adapter(spec, options.models))
@@ -1374,7 +1445,6 @@ class Engine:
         own = {qid: _fresh(question) for qid, question in spec.questions.items()}
         questions = {**own, **options.questions}
         state = _state(spec, input, getattr(model_, "media_types", None))
-        run_id = uuid4().hex
         started = time.monotonic()
         at = _now()
         decided: Decided | None = None
@@ -1430,15 +1500,23 @@ class Engine:
                 target = route.to.get(answer.choice) if isinstance(answer, ChoiceAnswer) else None
                 floor = route.min_confidence
                 if target is not None and (floor is None or answer.confidence >= floor):
-                    forwarded = replace(options, questions={}, failed=routing)
-                    routed = await self._run(
-                        self._agents[target],
-                        scope,
-                        _given(input),
-                        forwarded,
-                        run_id,
-                        routed=True,
+                    forwarded = replace(
+                        options, questions={}, failed=routing, stop=options.stop._below()
                     )
+                    reached = self._agents[target]
+                    options.stop._routed = forwarded.stop
+                    try:
+                        routed = await self._owned(
+                            reached,
+                            forwarded.stop,
+                            self._run(
+                                reached, scope, _given(input), forwarded, run_id, routed=True
+                            ),
+                        )
+                    finally:
+                        options.stop._routed = None
+                    if routed is None:
+                        answer_stopped()
         except Exception as exc:
             options.failed.append(decision(exc))
             raise
@@ -1506,10 +1584,10 @@ class Engine:
         input: State,
         options: _Options,
         parent_run_id: str | None,
+        run_id: str,
     ) -> Generation:
         caller = _caller(scope)
         model_ = cast(GenerationModel, self._adapter(spec, options.models))
-        run_id = uuid4().hex
         started = time.monotonic()
         at = _now()
         expect, on_event, stop, inbox = (
@@ -1621,20 +1699,25 @@ class Engine:
                     questions=_asked(target, args.questions),
                     history=[],
                     expect=None,
-                    inbox=None,
+                    stop=stop._below(),
+                    inbox=asyncio.Queue(),
                     skill=None,
                     start=0,
                     source=None,
                     failed=failed,
                 )
-                child = await self._run(target, scope, args.input, forwarded, run_id)
+                child = await self._owned(
+                    target, forwarded.stop, self._run(target, scope, args.input, forwarded, run_id)
+                )
             except Exception as exc:
                 kept = failed[-1] if failed else None
                 if kept is not None:
                     delegated[kept.run_id] = kept
                 return _failure(exc), True, None if kept is None else kept.run_id, False
+            if child is None:
+                return STOPPED, True, None, True
             delegated[child.run_id] = child
-            if halted(child):
+            if halted(child) or answers_stopped():
                 return STOPPED, True, child.run_id, True
             return child_result(child), False, child.run_id, False
 
@@ -1804,7 +1887,7 @@ class Engine:
 
         def drain() -> list[Message]:
             taken: list[Message] = []
-            while inbox is not None and not inbox.empty():
+            while not inbox.empty():
                 taken.append(Message(role="user", content=_own(_content(inbox.get_nowait()))))
                 inbox.task_done()
             messages.extend(taken)

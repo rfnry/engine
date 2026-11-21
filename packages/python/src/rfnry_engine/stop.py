@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from typing import Any, Literal
 
 Stopped = Literal["now", "after_step"]
@@ -10,6 +10,10 @@ class Stop:
         self._mode: Stopped | None = None
         self._presses = 0
         self._pressed: asyncio.Future[None] | None = None
+        self._parent: Stop | None = None
+        self._children: set[Stop] = set()
+        self._cut: Callable[[], None] | None = None
+        self._routed: Stop | None = None
 
     def now(self) -> None:
         self._mode = "now"
@@ -17,10 +21,36 @@ class Stop:
         if self._pressed is not None and not self._pressed.done():
             self._pressed.set_result(None)
         self._pressed = None
+        for child in self._children:
+            child.now()
 
     def after_step(self) -> None:
         if self._mode is None:
             self._mode = "after_step"
+        for child in self._children:
+            child.after_step()
+
+    def _below(self) -> Stop:
+        child = Stop()
+        child._parent = self
+        self._children.add(child)
+        if self._mode == "now":
+            child.now()
+        elif self._mode == "after_step":
+            child.after_step()
+        return child
+
+    def _drop(self) -> None:
+        if self._parent is not None:
+            self._parent._children.discard(self)
+
+    def _from(self, other: Stop | None) -> bool:
+        stop: Stop | None = self
+        while stop is not None:
+            if stop is other:
+                return True
+            stop = stop._parent
+        return False
 
 
 def requested(stop: Stop | None) -> Stopped | None:
@@ -87,6 +117,34 @@ async def wait(
     if cancelled is not None:
         raise cancelled
     return seen > 0
+
+
+async def unless_cut[T](stop: Stop, work: Awaitable[T]) -> T | None:
+    task = asyncio.current_task()
+    if task is None:
+        return await work
+    owner: asyncio.Task[Any] = task
+    calm = owner.cancelling()
+    fired = False
+
+    def cut() -> None:
+        nonlocal fired
+        if not fired:
+            fired = True
+            owner.cancel()
+
+    stop._cut = cut
+    try:
+        done = await work
+    except asyncio.CancelledError:
+        if fired and owner.uncancel() <= calm:
+            return None
+        raise
+    finally:
+        stop._cut = None
+    if fired:
+        owner.uncancel()
+    return done
 
 
 async def cancel(tasks: Sequence[asyncio.Future[Any]]) -> None:

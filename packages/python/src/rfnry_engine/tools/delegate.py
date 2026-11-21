@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ValidationError, field_validator
 
 from rfnry_engine.errors import DelegationDepthError, DelegationLoopError, InputError
-from rfnry_engine.foreground import RECORDING, hooks, returned
+from rfnry_engine.foreground import RECORDING, answer_stopped, hooks, returned
 from rfnry_engine.models import RunModel, ToolCall
 from rfnry_engine.records import EventHandler, Generation
 from rfnry_engine.stop import Stop
@@ -172,6 +172,10 @@ def run_result(run: Any) -> str | dict[str, Any]:
     return result
 
 
+def cut_result() -> dict[str, Any]:
+    return {"answers": {}}
+
+
 def child_result(child: Any) -> str:
     result = run_result(child)
     return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
@@ -191,25 +195,26 @@ def delegate_tool(
 ) -> Tool:
     async def body(args: dict[str, Any]) -> str:
         parsed = permit(spec, args)
-        watching, held = hooks(on_event, stop)
-        return child_result(
-            returned(
-                await engine._start(
-                    parsed.agent,
-                    scope,
-                    parsed.input,
-                    questions=parsed.questions,
-                    tools=tools,
-                    workspace=workspace,
-                    tags=tags,
-                    approve=approve,
-                    on_event=watching,
-                    stop=held,
-                    record=RECORDING.get(),
-                    models=models,
-                )
+        with hooks(on_event, stop) as (watching, held):
+            run = await engine._start(
+                parsed.agent,
+                scope,
+                parsed.input,
+                questions=parsed.questions,
+                tools=tools,
+                workspace=workspace,
+                tags=tags,
+                approve=approve,
+                on_event=watching,
+                stop=Stop() if held is None else held,
+                record=RECORDING.get(),
+                models=models,
+                owned=True,
             )
-        )
+        if run is None:
+            answer_stopped()
+            return json.dumps(cut_result())
+        return child_result(returned(run))
 
     return Tool(
         DELEGATE_TOOL,

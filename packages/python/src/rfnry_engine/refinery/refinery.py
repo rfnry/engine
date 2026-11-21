@@ -480,7 +480,7 @@ class Refinery:
             while isinstance(run, Decision) and run.routed_to is not None:
                 run = run.routed_to
             if isinstance(run, Decision):
-                return await candidate._start(
+                again = await candidate._start(
                     agent,
                     scope,
                     run.state,
@@ -493,6 +493,7 @@ class Refinery:
                     record=False,
                     models=merged,
                 )
+                return cast(Run, again)
             sent = run.messages[-1].content if run.messages else None
             if run.skill is not None and isinstance(sent, list):
                 sent = sent[1:] or None
@@ -512,7 +513,7 @@ class Refinery:
                         )
                     history = held[:cut]
                 start = run.start
-            return await candidate._start(
+            again = await candidate._start(
                 agent,
                 scope,
                 sent if isinstance(sent, list) else run.input,
@@ -529,6 +530,7 @@ class Refinery:
                 record=False,
                 models=merged,
             )
+            return cast(Run, again)
 
         async def pair(kept: Run, held: list[Label], attempt: int) -> Replay:
             recorded = kept.model_copy(deep=True)
