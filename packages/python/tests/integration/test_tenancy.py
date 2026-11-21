@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import json
 from collections.abc import Mapping
@@ -8,12 +9,16 @@ import pytest
 from unit.fakes import (
     SORTER,
     SORTER_ENTRY,
+    Answering,
     Desk,
     MemoryBucket,
     Scripted,
+    Seen,
     answer_to,
+    crew,
     delegate_triage,
     text_reply,
+    until,
 )
 from unit.trees import provided, tooled, write_folder
 
@@ -23,11 +28,13 @@ from rfnry_engine.models import (
     Answer,
     Choice,
     Image,
+    Message,
     QuestionLike,
     Reply,
     State,
     Text,
     ToolCall,
+    ToolSpec,
 )
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.labels import Outcome, Review
@@ -284,3 +291,46 @@ async def test_one_tenant_s_run_cannot_change_what_another_tenant_s_run_is_sent(
     assert isinstance(sorted_b, Decision) and sorted_b.questions == asked
     assert await refinery.run("tenant-b", b.run_id) == b
     assert await refinery.run("tenant-b", sorted_b.run_id) == sorted_b
+
+
+class Held:
+    def __init__(self) -> None:
+        self.gate = asyncio.Event()
+        self.calls = 0
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        self.calls += 1
+        await self.gate.wait()
+        return text_reply("done")
+
+
+async def test_one_tenant_cannot_send_to_or_stop_another_tenant_s_run(
+    tmp_path: Path, storage: Storage
+) -> None:
+    model = Held()
+    seen = Seen()
+    engine = Engine(
+        crew(tmp_path),
+        refinery=Refinery(storage),
+        providers=provided({"crew": model, "judge": Answering()}),
+    )
+    first = asyncio.create_task(engine.run("lead", "tenant-a", "go", on_event=seen))
+    second = asyncio.create_task(engine.run("lead", "tenant-b", "go", on_event=seen))
+    await until(lambda: model.calls == 2, "both runs in flight")
+    a_id, b_id = seen.started(below=False)
+    for mine, run_id in (("tenant-a", b_id), ("tenant-b", a_id)):
+        text = f"engine: run {run_id!r} is not running"
+        with pytest.raises(NotFoundError) as sent:
+            await engine.send(run_id, "intruder", scope=mine)
+        assert str(sent.value) == text
+        with pytest.raises(NotFoundError) as stopped:
+            engine.stop(run_id, scope=mine)
+        assert str(stopped.value) == text
+        with pytest.raises(NotFoundError):
+            engine.stop(run_id, scope=mine, after_step=True)
+    model.gate.set()
+    a, b = await asyncio.wait_for(asyncio.gather(first, second), 5)
+    for run in (a, b):
+        assert isinstance(run, Generation)
+        assert run.stopped is None and run.reply == "done"
+        assert [m.content for m in run.conversation if m.role == "user"] == ["go"]

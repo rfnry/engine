@@ -1,13 +1,13 @@
 import asyncio
 import json
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from rfnry_engine import MessagesTaken, RunEnded, RunStarted, Stop
+from rfnry_engine import MessagesTaken, RunEnded, Stop
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, NotFoundError
 from rfnry_engine.models import (
@@ -24,7 +24,7 @@ from rfnry_engine.records import Decision, Generation, Run, Spoken, SpokenLine, 
 from rfnry_engine.stop import requested
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import text_reply
+from .fakes import Seen, text_reply, until
 from .trees import provided, write_folder
 
 STOPPED = "stopped by the user"
@@ -206,30 +206,6 @@ class Lookup:
         self.started.set()
         await self.gate.wait()
         return "found"
-
-
-class Seen:
-    def __init__(self) -> None:
-        self.events: list[Any] = []
-
-    async def __call__(self, event: Any) -> None:
-        self.events.append(event)
-
-    def started(self, below: bool) -> list[str]:
-        return [
-            e.run_id
-            for e in self.events
-            if isinstance(e, RunStarted) and (e.call is not None) is below
-        ]
-
-
-async def until(check: Callable[[], bool], what: str) -> None:
-    try:
-        async with asyncio.timeout(10):
-            while not check():
-                await asyncio.sleep(0.01)
-    except TimeoutError:
-        pytest.fail(f"{what} never happened")
 
 
 def ended_once(seen: Seen, run_id: str) -> RunEnded:

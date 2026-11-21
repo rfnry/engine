@@ -30,12 +30,21 @@ from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.delegate import child_result
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import Answering, Crew, text_reply
+from .fakes import (
+    URGENT,
+    Answering,
+    Crew,
+    Seen,
+    background,
+    crew,
+    released,
+    team,
+    text_reply,
+    until,
+)
 from .test_failed_runs import Kept
-from .test_reach import Seen, until
 from .trees import provided, write_folder
 
-URGENT = '{"type": "check", "instructions": "Urgent?"}'
 AGENT_0_1_13 = "34102ac5a160ec02"
 TOOLS_0_1_13 = "1df013bbe33bc7a6"
 PREFIX_0_1_13 = "cf5a7c0b8c982083"
@@ -48,59 +57,6 @@ URGENT_QUESTION = {"type": "check", "instructions": "Urgent?"}
 REFUSED = "InputError: tools/delegate: agent 'lead' may not delegate in the background"
 PAST_CAP = "InputError: tools/delegate: max_background is 1, and running now: d1; wait for a helper to end or stop one"
 STILL_RUNNING = "engine: still running: d1; stop them or wait for them, then call Output again"
-
-
-def crew(root: Path, worker: Mapping[str, Any] | None = None, **orchestration: Any) -> Path:
-    root.mkdir(parents=True, exist_ok=True)
-    return write_folder(
-        root,
-        {
-            "lead": {
-                "kind": "generation",
-                "model": "crew",
-                "description": "Leads the crew",
-                "instructions": "lead.md",
-                "orchestration": {"delegate_to": ["worker", "desk"], **orchestration},
-            },
-            "worker": {
-                "kind": "generation",
-                "model": "crew",
-                "description": "Works on one part",
-                "instructions": "worker.md",
-                **(worker or {}),
-            },
-            "desk": {
-                "kind": "decision",
-                "model": "judge",
-                "description": "Sorts",
-                "instructions": "desk.md",
-                "questions": ["desk/*.json"],
-            },
-        },
-        runtime_tools=["lookup"] if worker and "tools" in worker else (),
-        files={
-            "lead.md": "Lead.\n",
-            "worker.md": "Work.\n",
-            "desk.md": "",
-            "desk/urgent.json": URGENT,
-        },
-    )
-
-
-def team(root: Path, model: Crew, desk: Any = None, **engine: Any) -> Engine:
-    return Engine(root, providers=provided({"crew": model, "judge": desk or Answering()}), **engine)
-
-
-def background(*inputs: str, agent: str = "worker", prefix: str = "b") -> Reply:
-    calls = [
-        ToolCall(
-            id=f"{prefix}{n}",
-            name="Delegate",
-            args={"agent": agent, "input": text, "background": True},
-        )
-        for n, text in enumerate(inputs, 1)
-    ]
-    return Reply(tool_calls=calls, stop_reason="tool_use")
 
 
 def notice(job: str, agent: str, run_id: str, body: str, kind: Any = "finished") -> Message:
@@ -202,17 +158,6 @@ def ends(seen: Seen, count: int) -> Callable[[], bool]:
 
 def taken(seen: Seen, run_id: str) -> list[MessagesTaken]:
     return [e for e in seen.events if isinstance(e, MessagesTaken) and e.run_id == run_id]
-
-
-async def released(
-    work: asyncio.Task[Any], model: Crew, gate: asyncio.Event, calls: int = 2
-) -> Generation:
-    await until(lambda: len(model.calls["lead"]) == calls, f"the lead's call {calls}")
-    assert not work.done()
-    gate.set()
-    run = await asyncio.wait_for(work, 5)
-    assert isinstance(run, Generation)
-    return run
 
 
 class Gated:

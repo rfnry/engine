@@ -12,9 +12,8 @@ import rfnry_engine
 from rfnry_engine import Engine, Generation, Message, Reply, ToolCall, ToolSpec
 from rfnry_engine.models import Answer, CheckAnswer, ChoiceAnswer, Decided, Usage
 
-from .fakes import Crew
+from .fakes import Crew, until
 from .test_docs_examples import ILLUSTRATIVE, PYTHON, YAML, first_line
-from .test_reach import until
 from .trees import provided, write_folder
 
 COPY = "class PerRun:"

@@ -14,16 +14,21 @@ from database import SCHEMA, URL
 from unit.fakes import (
     PICK,
     Answering,
+    Crew,
     Desk,
     MemoryBucket,
     Scripted,
     ask,
+    background,
+    crew,
     decision_record,
     delegate_triage,
     delegating,
     generation_record,
     lead,
+    released,
     sorter,
+    team,
     text_reply,
 )
 from unit.trees import provided, write_folder
@@ -1318,3 +1323,31 @@ async def test_a_recorded_call_reads_back(storage: Storage, tmp_path: Path) -> N
     again = await Refinery(storage).run("a", run.run_id)
     assert isinstance(again, Generation)
     assert [c.call for c in again.children] == [c.call for c in run.children]
+
+
+async def test_a_lead_s_background_helpers_are_stored_as_its_children_and_read_back(
+    tmp_path: Path, storage: Storage
+) -> None:
+    gate = asyncio.Event()
+    model = Crew(
+        [background("part one", "part two"), text_reply("waiting"), text_reply("final")],
+        {"part one": [gate, text_reply("one done")], "part two": [gate, text_reply("two done")]},
+    )
+    refinery = Refinery(storage)
+    engine = team(crew(tmp_path, background=True), model, refinery=refinery)
+    work = asyncio.create_task(engine.run("lead", "acme", "go"))
+    run = await released(work, model, gate)
+    stored = await refinery.run("acme", run.run_id)
+    assert isinstance(stored, Generation)
+    assert {child.run_id for child in stored.children} == {
+        str(step.child_run_id) for step in run.steps
+    }
+    assert {child.parent_run_id for child in stored.children} == {run.run_id}
+    notices = [m.notice for m in stored.conversation if m.notice is not None]
+    assert {(n.job, n.kind) for n in notices} == {("d1", "finished"), ("d2", "finished")}
+    assert stored.conversation == run.conversation
+    row = await storage.get_run("acme", run.run_id)
+    assert row is not None
+    body = row.body["conversation"]
+    assert sum("notice" in m for m in body) == len(notices)
+    assert "notice" not in body[0]

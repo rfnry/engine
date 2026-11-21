@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any
 
@@ -5,7 +6,7 @@ import pytest
 from unit.fakes import MemoryBucket
 from unit.trees import provided, write_folder
 
-from rfnry_engine import ChoiceAnswer, Decision, Engine, Generation, Refinery, Storage
+from rfnry_engine import ChoiceAnswer, Decision, Engine, Generation, Refinery, Step, Storage
 
 pytestmark = pytest.mark.live
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "agents"
@@ -196,3 +197,63 @@ async def test_reasoning_goes_back_only_where_it_was_given(adapters: Any) -> Non
     assert [m.reasoning for m in same.messages if m.role == "assistant"] == kept, (
         "reasoning given under the same history must go back unchanged"
     )
+
+
+def handed_out(step: Step) -> str | None:
+    try:
+        result = json.loads(str(step.result))
+    except ValueError:
+        return None
+    if isinstance(result, dict) and "job" in result:
+        return str(result["job"])
+    return None
+
+
+@pytest.mark.xfail(strict=False)
+async def test_a_live_lead_starts_two_helpers_and_answers_after_both(
+    adapters: Any, tmp_path: Path
+) -> None:
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    write_folder(
+        agents,
+        {
+            "lead": {
+                "kind": "generation",
+                "model": "strong",
+                "description": "Leads a small team",
+                "instructions": "lead.md",
+                "orchestration": {"delegate_to": ["translator", "summarizer"], "background": True},
+            },
+            "translator": {
+                "kind": "generation",
+                "model": "strong",
+                "description": "Translates a sentence into French",
+                "instructions": "translator.md",
+            },
+            "summarizer": {
+                "kind": "generation",
+                "model": "strong",
+                "description": "Summarizes a sentence in five words",
+                "instructions": "summarizer.md",
+            },
+        },
+        files={
+            "lead.md": (
+                "You lead a team. Start the translator and the summarizer as background helpers "
+                "with Delegate and background set to true, both at once. When both have reported, "
+                "answer with the two results.\n"
+            ),
+            "translator.md": "Translate the input into French. Reply with the translation only.\n",
+            "summarizer.md": "Summarize the input in five words. Reply with the summary only.\n",
+        },
+    )
+    async with Engine(
+        agents, providers=provided({"strong": adapters.generation(), "judge": None})
+    ) as engine:
+        run = await engine.run("lead", "live", "The harbor was calm and the boats rested at dawn.")
+    assert isinstance(run, Generation) and run.reply
+    started = [job for step in run.steps if step.tool == "Delegate" if (job := handed_out(step))]
+    assert len(run.children) == len(started)
+    noticed = {m.notice.job for m in run.conversation if m.notice is not None}
+    assert noticed == set(started)

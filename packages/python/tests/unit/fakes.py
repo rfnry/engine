@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
+import pytest
+
+from rfnry_engine import RunStarted
 from rfnry_engine.engine import Engine
 from rfnry_engine.models import (
     Answer,
@@ -28,7 +31,7 @@ from rfnry_engine.records import Decision, Fingerprint, Generation, Run, Step
 from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.storage import RunRow
 
-from .trees import write_folder
+from .trees import provided, write_folder
 
 NO_QUESTIONS = "engine: decision agent 'questionless' has no questions to ask; give it questions: on its entry, or ask it through Delegate"
 
@@ -386,3 +389,94 @@ async def ask(
     **options: Any,
 ) -> Run:
     return cast(Run, await engine._start(agent, scope, input, questions=questions, **options))
+
+
+URGENT = '{"type": "check", "instructions": "Urgent?"}'
+
+
+def crew(root: Path, worker: Mapping[str, Any] | None = None, **orchestration: Any) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    return write_folder(
+        root,
+        {
+            "lead": {
+                "kind": "generation",
+                "model": "crew",
+                "description": "Leads the crew",
+                "instructions": "lead.md",
+                "orchestration": {"delegate_to": ["worker", "desk"], **orchestration},
+            },
+            "worker": {
+                "kind": "generation",
+                "model": "crew",
+                "description": "Works on one part",
+                "instructions": "worker.md",
+                **(worker or {}),
+            },
+            "desk": {
+                "kind": "decision",
+                "model": "judge",
+                "description": "Sorts",
+                "instructions": "desk.md",
+                "questions": ["desk/*.json"],
+            },
+        },
+        runtime_tools=["lookup"] if worker and "tools" in worker else (),
+        files={
+            "lead.md": "Lead.\n",
+            "worker.md": "Work.\n",
+            "desk.md": "",
+            "desk/urgent.json": URGENT,
+        },
+    )
+
+
+def team(root: Path, model: Crew, desk: Any = None, **engine: Any) -> Engine:
+    return Engine(root, providers=provided({"crew": model, "judge": desk or Answering()}), **engine)
+
+
+def background(*inputs: str, agent: str = "worker", prefix: str = "b") -> Reply:
+    calls = [
+        ToolCall(
+            id=f"{prefix}{n}",
+            name="Delegate",
+            args={"agent": agent, "input": text, "background": True},
+        )
+        for n, text in enumerate(inputs, 1)
+    ]
+    return Reply(tool_calls=calls, stop_reason="tool_use")
+
+
+class Seen:
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    async def __call__(self, event: Any) -> None:
+        self.events.append(event)
+
+    def started(self, below: bool) -> list[str]:
+        return [
+            e.run_id
+            for e in self.events
+            if isinstance(e, RunStarted) and (e.call is not None) is below
+        ]
+
+
+async def until(check: Callable[[], bool], what: str) -> None:
+    try:
+        async with asyncio.timeout(10):
+            while not check():
+                await asyncio.sleep(0.01)
+    except TimeoutError:
+        pytest.fail(f"{what} never happened")
+
+
+async def released(
+    work: asyncio.Task[Any], model: Crew, gate: asyncio.Event, calls: int = 2
+) -> Generation:
+    await until(lambda: len(model.calls["lead"]) == calls, f"the lead's call {calls}")
+    assert not work.done()
+    gate.set()
+    run = await asyncio.wait_for(work, 5)
+    assert isinstance(run, Generation)
+    return run
