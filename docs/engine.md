@@ -1574,17 +1574,19 @@ With it, `Delegate` takes `background`, a boolean the model sets to `true` to st
 call returns at once with a job id, `{"job": "d1"}`, and the model goes on with its turn while the
 helper runs. Ids are `d1`, `d2`, … in the order a run starts its helpers, numbered after the highest
 one a `Delegate` result, a notice, a `Job` call's `id` or a `Jobs` result holds in the messages the
-run reads — its `history` from `start` — so its model never sees two `d1`; a long stored conversation read through windows may repeat a
-`dN` outside one window, and each helper's step keeps that helper's own `run_id`. The `d` keeps them
-apart from a workspace's `j1`. A helper runs as a synchronous child does — the run's tools,
-workspace, tags, `approve`, `on_event` and models, under the same scope, with a stop chained below
-the lead's and an inbox of its own — and the step that started it carries its `run_id` at once, so
-`engine.send` and `engine.stop` reach it from that step's `ToolResultReady` on; its record joins
-`children` when it ends, in the order helpers end, and is read back there. A decision agent runs in
-the background too, its one call its whole run. A helper is a level below its lead, and one whose
-entry opts in may start helpers of its own. `approve` is asked about a background `Delegate` as
-about any call, and a `Delegate` refused before its helper starts — by `approve`, past
-`max_background`, or for `questions` that do not fit — starts no helper and spends no id.
+run reads — its `history` from `start` — so the messages its model is sent never hold two `d1`.
+What came before `start` is not read: `History`, which a run that starts past the beginning offers,
+may show its model an older `dN` there, as a long stored conversation read through windows may
+repeat one, and each helper's step keeps that helper's own `run_id`. The `d` keeps them apart from a
+workspace's `j1`. A helper runs as a synchronous child does — the run's tools, workspace, tags,
+`approve`, `on_event` and models, under the same scope, with a stop chained below the lead's and an
+inbox of its own — and the step that started it carries its `run_id` at once, so `engine.send` and
+`engine.stop` reach it from that step's `ToolResultReady` on; its record joins `children` when it
+ends, in the order helpers end, and is read back there. A decision agent runs in the background too,
+its one call its whole run. A helper is a level below its lead, and one whose entry opts in may
+start helpers of its own. `approve` is asked about a background `Delegate` as about any call, and a
+`Delegate` refused before its helper starts — by `approve`, past `max_background`, or for
+`questions` that do not fit — starts no helper and spends no id.
 
 When a helper ends, the lead hears it before its next model call, as a `role="user"` message whose
 first line names the helper and how it ended:
@@ -1677,7 +1679,7 @@ with a tool error (`tools/engine_tools: a tool named 'Ask' collides with the bui
 helper and spending no id. A folder that does not opt in keeps any tool named `Ask`.
 
 A run with helpers ends when its model replies with no tool call, no helper of its own runs and no
-notice waits; such a reply first answers with a tool error every `Ask` its lead was given, as above.
+notice waits; such a reply first answers with a tool error every `Ask` it was given, as above.
 A reply with no tool call while a helper runs, or while a notice waits, stays in the conversation
 and streams as any reply, and the run waits for the next notice, a message on its inbox or its
 stop, then calls the model again. Each such call counts toward `max_model_calls`, so a lead
@@ -1706,15 +1708,15 @@ conversation resumed after a stop never holds a `{"job": "d1"}` with no outcome:
 them in one `MessagesTaken`, before the message that woke it, and a failed run keeps them in the
 record it raises with. A decision helper whose call a stop cuts, or that a stop reaches before its
 call starts, leaves no record, its notice `stopped` with nothing after it; one whose route a stop
-cuts is recorded with what it answered, its notice `stopped` too. A notice that waits when an `Output` is accepted is appended the same way.
-Cancelling the run's task cancels every helper, at any depth, and re-raises once all of them have
-ended; a message that reaches a waiting lead as the cancel lands stays on its inbox, and one that
-woke it but had not yet joined its conversation is put back with `put_nowait`, returning at the
-back of its queue — or, on a queue you `shutdown()` or a bounded one left full, going with the
-cancelled run as any message a cancelled run took does. A shut-down inbox has nothing more to give
-a waiting lead, which goes on waiting for its helpers and its stop. The lead sends its `RunEnded`
-after every helper's, on every path but a cancel, which sends none, and a helper's events go to the
-same `on_event` as a synchronous child's.
+cuts is recorded with what it answered, its notice `stopped` too. A notice that waits when an
+`Output` is accepted is appended the same way. Cancelling the run's task cancels every helper, at
+any depth, and re-raises once all of them have ended; a message that reaches a waiting lead as the
+cancel lands stays on its inbox, and one that woke it but had not yet joined its conversation is put
+back with `put_nowait`, returning at the back of its queue — or, on a queue you `shutdown()` or a
+bounded one left full, going with the cancelled run as any message a cancelled run took does. A
+shut-down inbox has nothing more to give a waiting lead, which goes on waiting for its helpers and
+its stop. The lead sends its `RunEnded` after every helper's, on every path but a cancel, which
+sends none, and a helper's events go to the same `on_event` as a synchronous child's.
 
 ### Both kinds together
 
@@ -1954,8 +1956,9 @@ its own, have it claim work before it does it, and merge when a child ends. A `B
 the copy is a directory per run, named by `current_call().run_id`: inside a tool or a backend,
 `current_call()` is the call the running run is making. `RunStarted.call` names the run that
 started a child, and the child's `RunEnded`, its last event, is where you merge: a synchronous child
-and a helper alike, since a helper's `Delegate` step returns as the helper starts. How a directory
-is copied and merged (worktrees, a copy, a container per run) is yours too:
+and a helper alike, since a helper's `Delegate` step returns as the helper starts. A tree whose task
+you cancel sends no `RunEnded`, so its teardown is a `finally` of yours around `engine.run`. How a
+directory is copied and merged (worktrees, a copy, a container per run) is yours too:
 
 ```python
 from pathlib import Path

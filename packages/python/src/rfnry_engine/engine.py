@@ -989,7 +989,7 @@ class Engine:
             raise NotFoundError(f"engine: run {run_id!r} is not running")
         return running
 
-    async def send(self, run_id: str, message: Content, *, scope: str) -> None:
+    async def send(self, run_id: str, message: Content | JsonValue, *, scope: str) -> None:
         running = self._in_flight(run_id, scope)
         if running.kind == "decision":
             raise InputError(f"engine: run {run_id!r} is a decision run and reads no messages")
