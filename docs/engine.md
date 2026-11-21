@@ -1003,7 +1003,8 @@ notices were.
 
 Any run in flight is reached alone, by its id, through the engine running it: the top run, a run it
 delegated or routed to, a consult an `engine.tool` call started. Each generation run's `RunStarted`
-gives its `run_id`, and its `call` the call it works for. `await engine.send(run_id, message,
+gives its `run_id`, and its `call` the call it works for; a background helper is reached before
+that, from its `Delegate` step's `child_run_id`. `await engine.send(run_id, message,
 scope="acme")` puts a message in that run's inbox, read at its next boundary as above — a helper
 waiting in `Ask` reads it once the `Ask` returns, since only its lead answers it: the top run's
 is the `inbox` you gave it, so the message lands on that queue, and a run without one, and every
@@ -1570,12 +1571,13 @@ run reads — its `history` from `start` — so its model never sees two `d1`; a
 `dN` outside one window, and each helper's step keeps that helper's own `run_id`. The `d` keeps them
 apart from a workspace's `j1`. A helper runs as a synchronous child does — the run's tools,
 workspace, tags, `approve`, `on_event` and models, under the same scope, with a stop chained below
-the lead's and an inbox of its own — and the step that started it carries its `run_id` at once; its
-record joins `children` when it ends, in the order helpers end. A decision agent runs in the
-background too, its one call its whole run. A helper is a level below its lead, and one whose entry
-opts in may start helpers of its own. `approve` is asked about a background `Delegate` as about any
-call, and a `Delegate` refused before its helper starts — by `approve`, past `max_background`, or
-for `questions` that do not fit — starts no helper and spends no id.
+the lead's and an inbox of its own — and the step that started it carries its `run_id` at once, so
+`engine.send` and `engine.stop` reach it from that step's `ToolResultReady` on; its record joins
+`children` when it ends, in the order helpers end. A decision agent runs in the background too,
+its one call its whole run. A helper is a level below its lead, and one whose entry opts in may
+start helpers of its own. `approve` is asked about a background `Delegate` as about any call, and a
+`Delegate` refused before its helper starts — by `approve`, past `max_background`, or for
+`questions` that do not fit — starts no helper and spends no id.
 
 When a helper ends, the lead hears it before its next model call, as a `role="user"` message whose
 first line names the helper and how it ended:
@@ -1692,9 +1694,9 @@ its helpers as `now()` does. Either way their records join `children`, and every
 was not given, theirs included, is appended to the conversation without a model call, so a
 conversation resumed after a stop never holds a `{"job": "d1"}` with no outcome: a stopped run sends
 them in one `MessagesTaken`, before the message that woke it, and a failed run keeps them in the
-record it raises with. A decision helper whose call a stop cuts leaves no record, its notice
-`stopped` with nothing after it; one whose route a stop cuts is recorded with what it answered, its
-notice `stopped` too. A notice that waits when an `Output` is accepted is appended the same way.
+record it raises with. A decision helper whose call a stop cuts, or that a stop reaches before its
+call starts, leaves no record, its notice `stopped` with nothing after it; one whose route a stop
+cuts is recorded with what it answered, its notice `stopped` too. A notice that waits when an `Output` is accepted is appended the same way.
 Cancelling the run's task cancels every helper, at any depth, and re-raises once all of them have
 ended; a message that reaches a waiting lead as the cancel lands stays on its inbox, and one that
 woke it but had not yet joined its conversation is put back with `put_nowait`, returning at the

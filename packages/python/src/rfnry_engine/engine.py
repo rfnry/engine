@@ -1766,6 +1766,8 @@ class Engine:
             failed: list[Generation | Decision] = []
 
             async def run(helper: Helper) -> Generation | Decision | None:
+                if kind == "decision" and requested(helper.stop) == "now":
+                    return None
                 forwarded = forward(questions, helper.stop, helper.inbox, failed, (helper, helpers))
                 running = self._run(
                     target, scope, args.input, forwarded, run_id, run_id=helper.run_id
@@ -1777,7 +1779,15 @@ class Engine:
                         raise
                     return failed[-1]
 
+            kind: Literal["generation", "decision"] = (
+                "generation" if target.kind == "generation" else "decision"
+            )
             helper = helpers.start(args.agent, target.kind, uuid4().hex, stop._below(), run)
+            held = (scope, helper.run_id)
+            self._running[held] = _Running(
+                kind, helper.stop, helper.inbox if kind == "generation" else None
+            )
+            helper.task.add_done_callback(lambda _: self._running.pop(held, None))
             return json.dumps({"job": helper.job}), False, helper.run_id, False
 
         async def delegate(call: ToolCall) -> tuple[Content, bool, str | None, bool]:

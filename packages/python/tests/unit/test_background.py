@@ -1687,3 +1687,55 @@ async def test_an_inbox_item_the_run_cannot_read_keeps_the_notices_taken_with_it
     [child] = failure.children
     assert failure.conversation[-1] == notice("d1", "worker", child.run_id, "the answer")
     assert len(model.calls["lead"]) == 2 and taken(seen, failure.run_id) == []
+
+
+async def test_a_helper_is_reached_by_its_id_from_the_step_that_starts_it(tmp_path: Path) -> None:
+    model = Crew(
+        [background("part one", "part two"), *[text_reply("waiting")] * 3],
+        {"part one": [halfway(), text_reply("one done")], "part two": [text_reply("never")]},
+    )
+    engine = team(crew(tmp_path, background=True), model)
+    reached: list[str] = []
+
+    async def on_event(event: Any) -> None:
+        if isinstance(event, ToolResultReady) and event.step.child_run_id is not None:
+            job = json.loads(str(event.step.result))["job"]
+            if job == "d1":
+                await engine.send(event.step.child_run_id, "hello", scope="acme")
+            else:
+                engine.stop(event.step.child_run_id, scope="acme")
+            reached.append(job)
+
+    run = await asyncio.wait_for(engine.run("lead", "acme", "go", on_event=on_event), 5)
+    assert isinstance(run, Generation) and reached == ["d1", "d2"]
+    by_id = {child.run_id: child for child in run.children}
+    one, two = (by_id[str(step.child_run_id)] for step in run.steps)
+    assert isinstance(one, Generation) and one.reply == "one done"
+    assert Message(role="user", content="hello") in model.calls["part one"][1]
+    assert isinstance(two, Generation) and (two.stopped, two.calls) == ("now", 0)
+    assert model.calls["part two"] == []
+    assert engine._running == {}
+
+
+async def test_a_decision_helper_stopped_from_the_step_that_starts_it_never_asks(
+    tmp_path: Path,
+) -> None:
+    desk = Gated()
+    model = Crew(
+        [background("is it urgent?", agent="desk"), text_reply("final"), text_reply("final")]
+    )
+    engine = team(crew(tmp_path, background=True), model, desk=desk)
+
+    async def on_event(event: Any) -> None:
+        if isinstance(event, ToolResultReady) and event.step.child_run_id is not None:
+            engine.stop(event.step.child_run_id, scope="acme")
+
+    run = await asyncio.wait_for(engine.run("lead", "acme", "go", on_event=on_event), 5)
+    assert isinstance(run, Generation) and run.reply == "final" and run.children == []
+    helper_id = str(run.steps[0].child_run_id)
+    assert run.conversation[-2] == Message(
+        role="user",
+        content="[helper d1 · desk · stopped]\n",
+        notice=Notice(job="d1", agent="desk", run_id=helper_id, kind="stopped"),
+    )
+    assert not desk.asked.is_set() and engine._running == {}
