@@ -2,12 +2,15 @@ import asyncio
 import re
 from typing import Any, cast
 
+from pydantic import BaseModel
+
 from rfnry_engine.errors import InputError
-from rfnry_engine.helpers import Helpers
+from rfnry_engine.helpers import Helper, Helpers, Unanswered
 from rfnry_engine.tools.tools import Tool
 from rfnry_engine.tools.workspace import JOB_TOOL, JOBS_TOOL, JobArgs, Workspace
 
 HELPER_TOOLS = frozenset({JOB_TOOL, JOBS_TOOL})
+ASK_TOOL = "Ask"
 HELPER_ID = re.compile(r"d[0-9]+")
 ENDED = "and whether it is running or, once it has ended, how: finished, failed or stopped."
 
@@ -16,17 +19,24 @@ class HelperJobArgs(JobArgs):
     send: str | None = None
 
 
+class AskArgs(BaseModel):
+    question: str
+
+
 def _helper(deadline: float | None) -> str:
     upto = "" if deadline is None else f", up to {deadline:g},"
     left = "" if deadline is None else f", for what is left of the call's {deadline:g} seconds"
     return (
-        "whether it is running, its agent, and once it has ended its reply (a decision agent's "
+        "whether it is running, its agent, under asking the question it waits on you to answer "
+        "through Ask (null when none), and once it has ended its reply (a decision agent's "
         f"answers), its error, or what it had said when it was stopped. wait is seconds{upto} to "
-        "wait first; it returns as soon as the helper ends or any notice from a helper reaches you. "
+        "wait first; it returns as soon as the helper ends or any notice from a helper reaches you, "
+        "and at once while the helper waits on your answer. "
         "stop=true stops the helper and every helper it started, after the wait, and waits for it "
-        f"to end{left}. send gives a running generation helper a message, which it reads before its next "
-        "model call; a decision helper takes none. Its end reaches you as a notice whether or not "
-        "you read it here."
+        f"to end{left}. send answers the question under asking; when there is none, it gives a "
+        "running generation helper a message, which it reads before its next model call; a "
+        "decision helper takes none. Its end reaches you as a notice whether or not you read it "
+        "here."
     )
 
 
@@ -108,3 +118,26 @@ def helper_tools(
         Tool(JOB_TOOL, reading, body=job, args=HelperJobArgs),
         Tool(JOBS_TOOL, listing, body=jobs),
     ]
+
+
+def ask_tool(helper: Helper, helpers: Helpers) -> Tool:
+    lead = helpers.lead
+
+    async def ask(args: dict[str, Any]) -> str:
+        answer = await helpers.ask(helper, AskArgs.model_validate(args).question)
+        if isinstance(answer, str):
+            return answer
+        if answer is Unanswered.STOPPED:
+            raise InputError(
+                "tools/helpers: your lead was stopped or failed before it answered; you stop with it"
+            )
+        raise InputError("tools/helpers: your lead ended its turn without answering")
+
+    return Tool(
+        ASK_TOOL,
+        f"Ask {lead}, the agent that started you in the background, a question, and wait for its "
+        f"answer: its answer is this call's result. If {lead} ends its turn without answering, "
+        "the call ends with an error, and you go on with what you have.",
+        body=ask,
+        args=AskArgs,
+    )

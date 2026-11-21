@@ -113,8 +113,8 @@ from rfnry_engine.tools.delegate import (
     run_arguments,
     run_result,
 )
-from rfnry_engine.tools.engine_tools import EngineTools
-from rfnry_engine.tools.helpers import HELPER_TOOLS, helper_tools
+from rfnry_engine.tools.engine_tools import EngineTools, refuse_builtin
+from rfnry_engine.tools.helpers import ASK_TOOL, HELPER_TOOLS, ask_tool, helper_tools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import JOB_TOOL, WORKSPACE_NAMES, WORKSPACE_TOOLS, Workspace
 from rfnry_engine.tree import (
@@ -155,7 +155,7 @@ class _Options:
     start: int = 0
     source: Sequence[object] | HistoryLike | None = None
     failed: list[Generation | Decision] = field(default_factory=list)
-    lead: Helper | None = None
+    lead: tuple[Helper, Helpers] | None = None
 
 
 @dataclass
@@ -667,6 +667,7 @@ class _ToolCalls:
     on_event: EventHandler | None
     stop: Stop | None = None
     shell_slots: AbstractAsyncContextManager[Any] = field(default_factory=nullcontext)
+    unslotted: frozenset[str] = frozenset()
     lend: Callable[[ToolCall, Foreground], None] | None = None
     delegate: Callable[[ToolCall], Awaitable[tuple[Content, bool, str | None, bool]]] | None = None
     ran: list[tuple[ToolCall, Step]] = field(default_factory=list)
@@ -785,7 +786,8 @@ class _ToolCalls:
                 content, is_error, child_run_id, cut_short = await self.delegate(call)
             else:
                 limit = None if call.name in self.own_deadline else self.deadline
-                async with self.shell_slots if call.name == "Shell" else self.tool_slots:
+                slots = self.shell_slots if call.name == "Shell" else self.tool_slots
+                async with nullcontext() if call.name in self.unslotted else slots:
                     deadline = asyncio.timeout(limit)
                     try:
                         async with deadline:
@@ -1511,7 +1513,11 @@ class Engine:
                 floor = route.min_confidence
                 if target is not None and (floor is None or answer.confidence >= floor):
                     forwarded = replace(
-                        options, questions={}, failed=routing, stop=options.stop._below()
+                        options,
+                        questions={},
+                        failed=routing,
+                        stop=options.stop._below(),
+                        lead=None,
                     )
                     reached = self._agents[target]
                     options.stop._routed = forwarded.stop
@@ -1630,17 +1636,21 @@ class Engine:
         )
         deadline = smallest(spec.tool_timeout, self.tool_timeout)
         helping = spec.background and JOB_TOOL in spec.granted
+        asks = frozenset() if options.lead is None else frozenset({ASK_TOOL})
         own_deadline = (
             surface._in_workers
             | (WORKSPACE_TOOLS if room is not None else frozenset())
             | ({JOB_TOOL} if helping else frozenset())
+            | asks
         )
         offered: Tools = surface
         if helping:
             offered = Tools(
                 [surface.without(*HELPER_TOOLS), *helper_tools(helpers, room, deadline)]
             )
-        barred = WORKSPACE_NAMES | {DELEGATE_TOOL, OUTPUT_TOOL}
+        if options.lead is not None:
+            offered = Tools([offered, ask_tool(*options.lead)])
+        barred = WORKSPACE_NAMES | {DELEGATE_TOOL, OUTPUT_TOOL} | asks
         reachable = offered.without(*barred)
         bridging = room is not None and room._bridging and bool(reachable)
         variables = {"RFNRY_TREE": room.tree} if room is not None and room.tree is not None else {}
@@ -1731,7 +1741,7 @@ class Engine:
             below: Stop,
             queue: asyncio.Queue[Any],
             failed: list[Generation | Decision],
-            lead: Helper | None,
+            lead: tuple[Helper, Helpers] | None,
         ) -> _Options:
             return replace(
                 options,
@@ -1749,11 +1759,13 @@ class Engine:
 
         def begin(target: AgentSpec, args: DelegateArgs) -> tuple[Content, bool, str | None, bool]:
             permit_background(helpers.cap, [helper.job for helper in helpers.running()])
+            if target.kind == "generation":
+                refuse_builtin(options.tools, ASK_TOOL)
             questions = _asked(target, args.questions)
             failed: list[Generation | Decision] = []
 
             async def run(helper: Helper) -> Generation | Decision | None:
-                forwarded = forward(questions, helper.stop, helper.inbox, failed, helper)
+                forwarded = forward(questions, helper.stop, helper.inbox, failed, (helper, helpers))
                 running = self._run(
                     target, scope, args.input, forwarded, run_id, run_id=helper.run_id
                 )
@@ -1871,6 +1883,7 @@ class Engine:
             on_event=on_event,
             stop=stop,
             shell_slots=shell_slots,
+            unslotted=asks,
             lend=lend if room is not None else None,
             delegate=delegate if spec.agents else None,
         )
@@ -2113,6 +2126,7 @@ class Engine:
                 if reply.stop_reason != "tool_use" or not asked:
                     for call in asked:
                         not_run(call, f"the reply ended with {reply.stop_reason}")
+                    helpers.fail_given_asks()
                     if helpers.running() or helpers.waiting():
                         if turn + 1 == most_calls:
                             break

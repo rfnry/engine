@@ -39,7 +39,7 @@ from rfnry_engine.models import Choice, Part, Question
 from rfnry_engine.tools.builtins import BUILTINS, preload_parts
 from rfnry_engine.tools.delegate import DELEGATE_TOOL
 from rfnry_engine.tools.folder import ToolDef, load_tool, project_of
-from rfnry_engine.tools.helpers import HELPER_TOOLS
+from rfnry_engine.tools.helpers import ASK_TOOL, HELPER_TOOLS
 from rfnry_engine.tools.history import HISTORY_TOOL
 from rfnry_engine.tools.workspace import WORKSPACE_NAMES
 from rfnry_engine.tree import (
@@ -884,6 +884,14 @@ def _check_route(agents: Mapping[str, AgentSpec], who: str, spec: AgentSpec) -> 
             )
 
 
+def _refuse_ask(agents: Mapping[str, AgentSpec], who: str, delegates: Iterable[str]) -> None:
+    for name in delegates:
+        if ASK_TOOL in agents[name].keep:
+            raise ConfigurationError(
+                f"compiled: agent {name!r} has a tool named {ASK_TOOL!r}, which {who} gives every helper it starts in the background; rename the tool"
+            )
+
+
 def _check_orchestration(
     agents: Mapping[str, AgentSpec], entries: Mapping[str, AgentEntry]
 ) -> None:
@@ -896,6 +904,8 @@ def _check_orchestration(
                     f"compiled: {who} sets orchestration.background but delegates to no agent; name them in orchestration.delegate_to"
                 )
             _refuse_targets(agents, who, spec, delegates or ())
+            if spec.background:
+                _refuse_ask(agents, who, delegates or ())
             _check_route(agents, who, spec)
 
 

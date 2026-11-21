@@ -1416,3 +1416,35 @@ def test_a_tool_the_agent_does_not_pick_leaves_its_fingerprint_alone(tmp_path: P
     (folder / "tools/other.py").write_text(RUN + "VALUE = 2\n", encoding="utf-8")
     write_folder(folder, agents, tools={"one": ONE, "other": {**OTHER, "timeout": 5.0}})
     assert load_folder(folder)["a"].fingerprint == before
+
+
+@pytest.mark.parametrize("declared", [True, False], ids=["folder-tool", "runtime-tool"])
+def test_a_folder_tool_named_ask_on_a_helper_is_refused_at_load(
+    tmp_path: Path, declared: bool
+) -> None:
+    def folder(root: Path, background: bool) -> Path:
+        root.mkdir()
+        lead = {"delegate_to": ["worker"], **({"background": True} if background else {})}
+        return write_folder(
+            root,
+            {
+                "lead": {**GENERATION, "instructions": "lead.md", "orchestration": lead},
+                "worker": {
+                    **GENERATION,
+                    "description": "Works",
+                    "instructions": "worker.md",
+                    "tools": {"allow": ["Ask"]},
+                },
+            },
+            tools={"Ask": ONE} if declared else None,
+            runtime_tools=() if declared else ["Ask"],
+            files={"lead.md": "Lead.\n", "worker.md": "Work.\n", "tools/one.py": RUN},
+        )
+
+    agents = load_folder(folder(tmp_path / "plain", background=False))
+    assert "Ask" in agents["worker"].keep
+    _refused(
+        folder(tmp_path / "opted", background=True),
+        r"^compiled: agent 'worker' has a tool named 'Ask', which agent 'lead' gives every "
+        r"helper it starts in the background; rename the tool$",
+    )

@@ -8,9 +8,18 @@ from typing import Any
 
 import pytest
 
-from rfnry_engine.errors import ConfigurationError
+from rfnry_engine import Stop
+from rfnry_engine.engine import Engine
+from rfnry_engine.errors import ConfigurationError, RunawayError
 from rfnry_engine.models import Message, Reply, ToolCall
-from rfnry_engine.records import Decision, Generation, RunEnded, Step, ToolCallStarted
+from rfnry_engine.records import (
+    Decision,
+    Generation,
+    RunEnded,
+    Step,
+    ToolCallStarted,
+    ToolResultReady,
+)
 from rfnry_engine.tools.engine_tools import EngineTools
 from rfnry_engine.tools.tools import Tool, Tools
 from rfnry_engine.tools.workspace import Local, Workspace
@@ -18,6 +27,7 @@ from rfnry_engine.tools.workspace import Local, Workspace
 from .fakes import Crew, text_reply
 from .test_background import (
     Gated,
+    Watched,
     background,
     crew,
     ended,
@@ -28,19 +38,23 @@ from .test_background import (
     taken,
     team,
 )
-from .test_engine_bridge import result, run_coder, script
+from .test_engine_bridge import PY, result, run_coder, script
 from .test_engine_workspace import AGENTS, make_tree
-from .test_reach import Seen, until, use
-from .trees import write_folder
+from .test_failed_runs import Kept
+from .test_reach import Seen, child_of, until, use
+from .trees import provided, write_folder
 
 HELPER = (
-    "whether it is running, its agent, and once it has ended its reply (a decision agent's "
-    "answers), its error, or what it had said when it was stopped. wait is seconds, up to 30, to "
-    "wait first; it returns as soon as the helper ends or any notice from a helper reaches you. "
+    "whether it is running, its agent, under asking the question it waits on you to answer "
+    "through Ask (null when none), and once it has ended its reply (a decision agent's answers), "
+    "its error, or what it had said when it was stopped. wait is seconds, up to 30, to wait "
+    "first; it returns as soon as the helper ends or any notice from a helper reaches you, and at "
+    "once while the helper waits on your answer. "
     "stop=true stops the helper and every helper it started, after the wait, and waits for it to "
-    "end, for what is left of the call's 30 seconds. send gives a running generation helper a message, which it reads before its next model "
-    "call; a decision helper takes none. Its end reaches you as a notice whether or not you read "
-    "it here."
+    "end, for what is left of the call's 30 seconds. send answers the question under asking; "
+    "when there is none, it gives a running generation helper a message, which it reads before "
+    "its next model call; a decision helper takes none. Its end reaches you as a notice whether "
+    "or not you read it here."
 )
 JOB_ALONE = (
     f"Read a helper you started with Delegate in the background, by its id (d1, d2, …): {HELPER}"
@@ -717,3 +731,494 @@ async def test_job_ids_continue_after_a_job_or_jobs_call_in_the_window(
     work = asyncio.create_task(engine.run("lead", "acme", "go", history=history))
     run = await released(work, model, gate)
     assert run.steps[0].result == '{"job": "d4"}'
+
+
+ASK = (
+    "Ask lead, the agent that started you in the background, a question, and wait for its "
+    "answer: its answer is this call's result. If lead ends its turn without answering, the call "
+    "ends with an error, and you go on with what you have."
+)
+UNANSWERED = "InputError: tools/helpers: your lead ended its turn without answering"
+LEFT = (
+    "InputError: tools/helpers: your lead was stopped or failed before it answered; "
+    "you stop with it"
+)
+ROUTED = '{"type": "choice", "instructions": "Which?", "options": {"talk": null, "work": null}}'
+
+
+def asking(question: str = "which lemma?", call_id: str = "a1") -> Reply:
+    return use("Ask", call_id, question=question)
+
+
+def asked(seen: Seen) -> bool:
+    return any(isinstance(e, ToolCallStarted) and e.tool == "Ask" for e in seen.events)
+
+
+def kinds(run: Generation) -> list[str]:
+    return [m.notice.kind for m in run.conversation if m.notice is not None]
+
+
+def outcome(step: Step) -> tuple[str, Any, bool]:
+    return step.tool, step.result, step.is_error
+
+
+async def test_ask_waits_for_the_lead_s_answer(tmp_path: Path) -> None:
+    gate = asyncio.Event()
+    model = Crew(
+        [
+            background("part one"),
+            text_reply("waiting"),
+            use("Job", "r1", id="d1"),
+            use("Job", "r2", id="d1", send="lemma 4", wait=30),
+            text_reply("done"),
+        ],
+        {"part one": [gate, asking(), text_reply("proved with lemma 4")]},
+    )
+    engine = team(crew(tmp_path, background=True), model)
+    run = await released(asyncio.create_task(engine.run("lead", "acme", "go")), model, gate)
+    assert run.reply == "done"
+    [child] = run.children
+    assert isinstance(child, Generation) and child.reply == "proved with lemma 4"
+    [tool] = child.tools
+    assert (tool.name, tool.description) == ("Ask", ASK)
+    assert list(tool.input_schema["properties"]) == ["question"]
+    assert tool.input_schema["required"] == ["question"]
+    [step] = child.steps
+    assert outcome(step) == ("Ask", "lemma 4", False)
+    assert step.args == {"question": "which lemma?"}
+    answered = Message(role="tool", tool_call_id="a1", content="lemma 4")
+    assert model.calls["part one"][1][-1] == answered
+    told = notice("d1", "worker", child.run_id, "which lemma?", kind="asks")
+    assert told.content == "[helper d1 · worker · asks]\nwhich lemma?"
+    assert model.calls["lead"][2][-1] == Message(role="user", content=told.content)
+    assert [m for m in run.conversation if m.notice is not None] == [
+        told,
+        notice("d1", "worker", child.run_id, "proved with lemma 4"),
+    ]
+    assert read(run.steps[1]) == {"running": True, "agent": "worker", "asking": "which lemma?"}
+    assert read(run.steps[2]) == {
+        "running": False,
+        "agent": "worker",
+        "asking": None,
+        "reply": "proved with lemma 4",
+    }
+
+
+async def test_only_a_background_helper_is_offered_ask(tmp_path: Path) -> None:
+    gate = asyncio.Event()
+    model = Crew(
+        [
+            use("Delegate", "s1", agent="worker", input="in the turn"),
+            background("beside"),
+            text_reply("waiting"),
+            text_reply("done"),
+        ],
+        {"in the turn": [text_reply("synchronous")], "beside": [gate, text_reply("helped")]},
+    )
+    engine = team(crew(tmp_path, background=True), model)
+    work = asyncio.create_task(engine.run("lead", "acme", "go"))
+    run = await released(work, model, gate, 3)
+    assert run.reply == "done"
+    assert [tool.name for tool in run.tools] == ["Delegate", "Job", "Jobs"]
+    synchronous, helper = run.children
+    assert isinstance(synchronous, Generation) and synchronous.reply == "synchronous"
+    assert isinstance(helper, Generation) and helper.reply == "helped"
+    assert synchronous.tools == []
+    assert [tool.name for tool in helper.tools] == ["Ask"]
+
+
+async def test_a_run_a_decision_helper_routes_to_is_offered_no_ask(tmp_path: Path) -> None:
+    root = write_folder(
+        tmp_path,
+        {
+            "lead": {
+                "kind": "generation",
+                "model": "crew",
+                "description": "Leads the crew",
+                "instructions": "lead.md",
+                "orchestration": {"delegate_to": ["router"], "background": True},
+            },
+            "router": {
+                "kind": "decision",
+                "model": "judge",
+                "description": "Routes",
+                "instructions": "router.md",
+                "questions": ["router/*.json"],
+                "orchestration": {"route": {"by": "intent", "to": {"work": "worker"}}},
+            },
+            "worker": {
+                "kind": "generation",
+                "model": "crew",
+                "description": "Works on one part",
+                "instructions": "worker.md",
+            },
+        },
+        files={
+            "lead.md": "Lead.\n",
+            "router.md": "",
+            "worker.md": "Work.\n",
+            "router/intent.json": ROUTED,
+        },
+    )
+    gate = asyncio.Event()
+    model = Crew(
+        [background("part one", agent="router"), text_reply("waiting"), text_reply("done")],
+        {"part one": [gate, text_reply("routed reply")]},
+    )
+    run = await released(
+        asyncio.create_task(team(root, model).run("lead", "acme", "go")), model, gate
+    )
+    assert run.reply == "done"
+    [router] = run.children
+    assert isinstance(router, Decision)
+    routed = router.routed_to
+    assert isinstance(routed, Generation) and routed.reply == "routed reply"
+    assert routed.tools == []
+
+
+async def test_a_lead_that_ends_its_turn_without_answering_fails_the_ask(tmp_path: Path) -> None:
+    gate = asyncio.Event()
+    model = Crew(
+        [
+            background("part one"),
+            text_reply("waiting"),
+            text_reply("no answer"),
+            text_reply("done"),
+        ],
+        {"part one": [gate, asking(), text_reply("went on without it")]},
+    )
+    engine = team(crew(tmp_path, background=True), model)
+    run = await released(asyncio.create_task(engine.run("lead", "acme", "go")), model, gate)
+    assert (run.reply, run.calls) == ("done", 4)
+    [child] = run.children
+    assert isinstance(child, Generation)
+    assert (child.reply, child.stopped) == ("went on without it", None)
+    assert [outcome(step) for step in child.steps] == [("Ask", UNANSWERED, True)]
+    failed = Message(role="tool", tool_call_id="a1", content=UNANSWERED, is_error=True)
+    assert model.calls["part one"][1][-1] == failed
+    assert model.calls["lead"][2][-1].content == "[helper d1 · worker · asks]\nwhich lemma?"
+    assert kinds(run) == ["asks", "finished"]
+
+
+async def test_a_question_that_arrives_during_the_lead_s_model_call_is_given_next(
+    tmp_path: Path,
+) -> None:
+    gate, lead_gate = asyncio.Event(), asyncio.Event()
+    model = Crew(
+        [
+            background("part one"),
+            lead_gate,
+            text_reply("waiting"),
+            use("Job", "r1", id="d1", send="lemma 4", wait=30),
+            text_reply("done"),
+        ],
+        {"part one": [gate, asking(), text_reply("proved")]},
+    )
+    seen = Seen()
+    engine = team(crew(tmp_path, background=True), model)
+    work = asyncio.create_task(engine.run("lead", "acme", "go", on_event=seen))
+    await until(lambda: len(model.calls["lead"]) == 2, "the lead's second call")
+    gate.set()
+    await until(lambda: asked(seen), "the helper's question")
+    lead_gate.set()
+    run = await asyncio.wait_for(work, 5)
+    assert isinstance(run, Generation) and (run.reply, run.calls) == ("done", 4)
+    [child] = run.children
+    assert isinstance(child, Generation) and child.reply == "proved"
+    assert [outcome(step) for step in child.steps] == [("Ask", "lemma 4", False)]
+    assert all(
+        m.content != "[helper d1 · worker · asks]\nwhich lemma?" for m in model.calls["lead"][1]
+    )
+    assert model.calls["lead"][2][-1].content == "[helper d1 · worker · asks]\nwhich lemma?"
+    assert kinds(run) == ["asks", "finished"]
+
+
+@pytest.mark.parametrize("how", ["now", "after_step", "failed"])
+async def test_a_lead_that_stops_fails_the_ask_and_stops_the_helper(
+    tmp_path: Path, how: str
+) -> None:
+    gate, lead_gate = asyncio.Event(), asyncio.Event()
+    ghost = Reply(tool_calls=[ToolCall(id="g1", name="ghost", args={})], stop_reason="tool_use")
+    model = Crew(
+        [background("part one"), text_reply("waiting"), lead_gate, ghost],
+        {"part one": [gate, asking(), text_reply("never")]},
+    )
+    seen, stop, kept = Seen(), Stop(), Kept()
+    engine = team(crew(tmp_path, background=True), model, max_model_calls=3, refinery=kept)
+    work = asyncio.create_task(engine.run("lead", "acme", "go", stop=stop, on_event=seen))
+    await until(lambda: len(model.calls["lead"]) == 2, "the lead's second call")
+    gate.set()
+    await until(lambda: len(model.calls["lead"]) == 3, "the lead's third call")
+    if how == "now":
+        stop.now()
+    if how == "after_step":
+        stop.after_step()
+    lead_gate.set()
+    if how == "failed":
+        with pytest.raises(RunawayError, match=r"^engine: run exceeded 3 model calls$"):
+            await asyncio.wait_for(work, 5)
+        [run] = kept.runs
+    else:
+        run = await asyncio.wait_for(work, 5)
+    assert isinstance(run, Generation)
+    assert run.stopped == (None if how == "failed" else how)
+    [child] = run.children
+    assert isinstance(child, Generation)
+    assert child.stopped == ("after_step" if how == "after_step" else "now")
+    [step] = child.steps
+    cut = how == "now"
+    assert outcome(step) == ("Ask", "stopped by the user" if cut else LEFT, True)
+    assert step.stopped is cut
+    assert model.calls["lead"][2][-1].content == "[helper d1 · worker · asks]\nwhich lemma?"
+    assert kinds(run) == ["asks", "stopped"]
+    assert ended(seen) == [child.run_id, run.run_id]
+
+
+async def test_an_ask_made_once_the_lead_is_stopping_fails_at_once(tmp_path: Path) -> None:
+    gate = asyncio.Event()
+    model = Crew(
+        [background("part one"), text_reply("waiting")],
+        {"part one": [gate, asking(), text_reply("never")]},
+    )
+    stop, inbox = Stop(), Watched()
+    engine = team(crew(tmp_path, background=True), model)
+    work = asyncio.create_task(engine.run("lead", "acme", "go", stop=stop, inbox=inbox))
+    await until(lambda: inbox.waiting == 1 and len(model.calls["part one"]) == 1, "the lead's hold")
+    stop.after_step()
+    await until(lambda: inbox.waiting == 0, "the lead's settle")
+    gate.set()
+    run = await asyncio.wait_for(work, 5)
+    assert isinstance(run, Generation) and run.stopped == "after_step"
+    [child] = run.children
+    assert isinstance(child, Generation) and child.stopped == "after_step"
+    assert [outcome(step) for step in child.steps] == [("Ask", LEFT, True)]
+    assert kinds(run) == ["stopped"]
+
+
+async def test_an_app_send_never_answers_an_ask(tmp_path: Path) -> None:
+    gate, lead_gate = asyncio.Event(), asyncio.Event()
+    model = Crew(
+        [
+            background("part one"),
+            text_reply("waiting"),
+            lead_gate,
+            use("Job", "r1", id="d1", send="lemma 4", wait=30),
+            text_reply("done"),
+        ],
+        {"part one": [gate, asking(), text_reply("proved")]},
+    )
+    seen = Seen()
+    engine = team(crew(tmp_path, background=True), model)
+    work = asyncio.create_task(engine.run("lead", "acme", "go", on_event=seen))
+    helper_id = await child_of(seen)
+    await until(lambda: len(model.calls["lead"]) == 2, "the lead's second call")
+    gate.set()
+    await until(lambda: len(model.calls["lead"]) == 3, "the lead's third call")
+    await engine.send(helper_id, "from the app", scope="acme")
+    assert not any(isinstance(e, ToolResultReady) and e.run_id == helper_id for e in seen.events)
+    lead_gate.set()
+    run = await asyncio.wait_for(work, 5)
+    assert isinstance(run, Generation) and run.reply == "done"
+    [child] = run.children
+    assert isinstance(child, Generation) and child.reply == "proved"
+    assert [outcome(step) for step in child.steps] == [("Ask", "lemma 4", False)]
+    sent = Message(role="user", content="from the app")
+    assert model.calls["part one"][1][-2:] == [
+        Message(role="tool", tool_call_id="a1", content="lemma 4"),
+        sent,
+    ]
+    [event] = taken(seen, helper_id)
+    assert event.messages == [sent] and event.notices == []
+    assert read(run.steps[1])["reply"] == "proved"
+
+
+async def test_the_bridge_offers_no_ask(tmp_path: Path, short_root: Path) -> None:
+    lead = {**AGENTS["lead"], "orchestration": {"delegate_to": ["coder"], "background": True}}
+    coder = {**AGENTS["coder"], "files": {"allow": ["coder.md"]}}
+    tree = make_tree(tmp_path, {"lead": lead, "coder": coder})
+    script(short_root, "import json\nprint(json.dumps(call('Ask', question='which lemma?')))\n")
+    gate = asyncio.Event()
+    model = Crew(
+        [background("part one", agent="coder"), text_reply("waiting"), text_reply("done")],
+        {"part one": [gate, use("Shell", "s1", command=f"{PY} script.py"), text_reply("ran it")]},
+        marker="You are lead.",
+    )
+    engine = Engine(tree, providers=provided({"strong": model, "judge": None}))
+    async with Workspace(Local(short_root), scope="acme") as work:
+        running = asyncio.create_task(engine.run("lead", "acme", "go", workspace=work))
+        run = await released(running, model, gate)
+    assert run.reply == "done"
+    [child] = run.children
+    assert isinstance(child, Generation) and child.reply == "ran it"
+    assert "Ask" in [tool.name for tool in child.tools]
+    printed = [json.loads(line) for line in result(child.steps[-1])["stdout"].splitlines()]
+    assert printed == [{"error": "InputError: tools: unknown tool 'Ask'"}]
+    assert [step.tool for step in child.steps] == ["Shell"]
+
+
+async def hang(args: dict[str, Any]) -> str:
+    await asyncio.Event().wait()
+    return "never"
+
+
+def timed_out(seen: Seen) -> bool:
+    return any(isinstance(e, ToolResultReady) and e.step.tool == "lookup" for e in seen.events)
+
+
+async def test_ask_holds_no_slot_and_no_deadline(tmp_path: Path) -> None:
+    gate, lead_gate = asyncio.Event(), asyncio.Event()
+    both = calling(
+        ToolCall(id="a1", name="Ask", args={"question": "which lemma?"}),
+        ToolCall(id="t1", name="lookup", args={}),
+    )
+    model = Crew(
+        [
+            background("part one"),
+            text_reply("waiting"),
+            lead_gate,
+            use("Job", "r1", id="d1", send="lemma 4", wait=30),
+            text_reply("done"),
+        ],
+        {"part one": [gate, both, text_reply("proved")]},
+    )
+    seen = Seen()
+    worker = {"tools": {"allow": ["lookup"], "timeout": 0.1, "max_parallel": 1}}
+    engine = team(crew(tmp_path, worker=worker, background=True), model)
+    given = Tools([Tool("lookup", "Hangs", body=hang)])
+    work = asyncio.create_task(engine.run("lead", "acme", "go", tools=given, on_event=seen))
+    await until(lambda: len(model.calls["lead"]) == 2, "the lead's second call")
+    gate.set()
+    await until(lambda: timed_out(seen), "lookup's deadline")
+    lead_gate.set()
+    run = await asyncio.wait_for(work, 5)
+    assert isinstance(run, Generation) and run.reply == "done"
+    [child] = run.children
+    assert isinstance(child, Generation) and child.reply == "proved"
+    ask, lookup = child.steps
+    assert outcome(ask) == ("Ask", "lemma 4", False) and ask.duration_ms >= 100
+    assert outcome(lookup) == ("lookup", "TimeoutError: engine: lookup timed out after 0.1s", True)
+
+
+async def test_a_runtime_tool_named_ask_fails_the_background_start(tmp_path: Path) -> None:
+    desk = Gated()
+    model = Crew(
+        [
+            started(("b1", "worker", "part one"), ("b2", "desk", "is it urgent?")),
+            text_reply("waiting"),
+            text_reply("done"),
+        ],
+        {"part one": [text_reply("never")]},
+    )
+    seen = Seen()
+    engine = team(crew(tmp_path, background=True), model, desk=desk)
+    given = Tools([Tool("Ask", "Mine", body=mine)])
+    work = asyncio.create_task(engine.run("lead", "acme", "go", tools=given, on_event=seen))
+    run = await released(work, model, desk.gate)
+    assert run.reply == "done"
+    refused, begun = run.steps
+    assert (refused.result, refused.is_error, refused.child_run_id) == (
+        "ConfigurationError: tools/engine_tools: a tool named 'Ask' collides with the builtin",
+        True,
+        None,
+    )
+    assert read(begun) == {"job": "d1"}
+    [decided] = run.children
+    assert isinstance(decided, Decision) and decided.run_id == begun.child_run_id
+    assert model.calls["part one"] == []
+    assert seen.started(below=True) == []
+
+
+async def test_each_send_answers_the_oldest_question_still_waiting(tmp_path: Path) -> None:
+    gate, lead_gate = asyncio.Event(), asyncio.Event()
+    both = calling(
+        ToolCall(id="a1", name="Ask", args={"question": "first?"}),
+        ToolCall(id="a2", name="Ask", args={"question": "second?"}),
+    )
+    model = Crew(
+        [
+            background("part one"),
+            lead_gate,
+            text_reply("waiting"),
+            use("Job", "r1", id="d1"),
+            use("Job", "r2", id="d1", send="first answer"),
+            use("Job", "r3", id="d1"),
+            use("Job", "r4", id="d1", send="second answer", wait=30),
+            text_reply("done"),
+        ],
+        {"part one": [gate, both, text_reply("both answered")]},
+    )
+    seen = Seen()
+    engine = team(crew(tmp_path, background=True), model)
+    work = asyncio.create_task(engine.run("lead", "acme", "go", on_event=seen))
+    await until(lambda: len(model.calls["lead"]) == 2, "the lead's second call")
+    gate.set()
+    await until(
+        lambda: sum(isinstance(e, ToolCallStarted) and e.tool == "Ask" for e in seen.events) == 2,
+        "both questions",
+    )
+    lead_gate.set()
+    run = await asyncio.wait_for(work, 5)
+    assert isinstance(run, Generation) and run.reply == "done"
+    [child] = run.children
+    assert isinstance(child, Generation) and child.reply == "both answered"
+    assert [outcome(step) for step in child.steps] == [
+        ("Ask", "first answer", False),
+        ("Ask", "second answer", False),
+    ]
+    first, _, second, last = (read(step) for step in run.steps[1:])
+    assert (first["asking"], second["asking"]) == ("first?", "second?")
+    assert last == {
+        "running": False,
+        "agent": "worker",
+        "asking": None,
+        "reply": "both answered",
+    }
+    assert model.calls["lead"][2][-2:] == [
+        Message(role="user", content="[helper d1 · worker · asks]\nfirst?"),
+        Message(role="user", content="[helper d1 · worker · asks]\nsecond?"),
+    ]
+
+
+async def test_ask_goes_through_approve(tmp_path: Path) -> None:
+    gate = asyncio.Event()
+    model = Crew(
+        [background("part one"), text_reply("waiting"), text_reply("done")],
+        {"part one": [gate, asking(), text_reply("went on")]},
+    )
+    named: list[str] = []
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        named.append(call.name)
+        return call.name != "Ask"
+
+    engine = team(crew(tmp_path, background=True), model)
+    work = asyncio.create_task(engine.run("lead", "acme", "go", approve=approve))
+    run = await released(work, model, gate)
+    assert run.reply == "done" and named == ["Delegate", "Ask"]
+    [child] = run.children
+    assert isinstance(child, Generation) and child.reply == "went on"
+    [step] = child.steps
+    assert outcome(step) == ("Ask", "NotApproved: Ask was not approved", True)
+    assert step.approved is False
+    assert kinds(run) == ["finished"]
+
+
+async def test_job_wait_on_a_helper_waiting_in_ask_returns_at_once(tmp_path: Path) -> None:
+    gate = asyncio.Event()
+    model = Crew(
+        [
+            background("part one"),
+            text_reply("waiting"),
+            use("Job", "r1", id="d1", wait=30),
+            use("Job", "r2", id="d1", send="lemma 4", wait=30),
+            text_reply("done"),
+        ],
+        {"part one": [gate, asking(), text_reply("proved")]},
+    )
+    engine = team(crew(tmp_path, background=True), model)
+    run = await released(asyncio.create_task(engine.run("lead", "acme", "go")), model, gate)
+    assert run.reply == "done"
+    assert model.calls["lead"][2][-1].content == "[helper d1 · worker · asks]\nwhich lemma?"
+    assert read(run.steps[1]) == {"running": True, "agent": "worker", "asking": "which lemma?"}
+    assert run.steps[1].duration_ms < 5000
+    assert read(run.steps[2])["reply"] == "proved"

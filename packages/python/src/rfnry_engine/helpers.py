@@ -3,8 +3,9 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import Enum
 from typing import Any, Literal, cast
 
 from rfnry_engine.errors import error_text
@@ -18,6 +19,11 @@ from rfnry_engine.tools.workspace import JOB_TOOL, JOBS_TOOL
 
 Ending = Literal["finished", "failed", "stopped"]
 JOB = re.compile(r"d([1-9][0-9]*)")
+
+
+class Unanswered(Enum):
+    ENDED = "ended"
+    STOPPED = "stopped"
 
 
 def notice_text(job: str, agent: str, kind: str, body: str) -> str:
@@ -84,6 +90,13 @@ def _ending(record: Generation | Decision | None, cut: bool) -> tuple[Ending, st
     return "finished", child_result(record)
 
 
+@dataclass(eq=False)
+class Asking:
+    question: str
+    answer: asyncio.Future[str | Unanswered]
+    given: bool = False
+
+
 @dataclass
 class Helper:
     job: str
@@ -97,6 +110,10 @@ class Helper:
     ended: Ending | None = None
     said: str = ""
     record: Generation | Decision | None = None
+    asks: list[Asking] = field(default_factory=list)
+
+    def pending(self) -> list[Asking]:
+        return [asking for asking in self.asks if not asking.answer.done()]
 
 
 class Helpers:
@@ -110,6 +127,7 @@ class Helpers:
         self._next = first
         self._helpers: dict[str, Helper] = {}
         self._notices: list[Message] = []
+        self._settling = False
 
     def start(
         self,
@@ -152,6 +170,9 @@ class Helpers:
         helper.ended, helper.said, helper.record = kind, body, record
         if record is not None:
             self.children.append(record)
+        self._noticed(helper, kind, body)
+
+    def _noticed(self, helper: Helper, kind: Ending | Literal["asks"], body: str) -> None:
         self._notices.append(
             Message(
                 role="user",
@@ -160,6 +181,20 @@ class Helpers:
             )
         )
         self.ready.set()
+
+    async def ask(self, helper: Helper, question: str) -> str | Unanswered:
+        if self._settling:
+            return Unanswered.STOPPED
+        asking = Asking(question, asyncio.get_running_loop().create_future())
+        helper.asks.append(asking)
+        self._noticed(helper, "asks", question)
+        return await asking.answer
+
+    def fail_given_asks(self) -> None:
+        for helper in self._helpers.values():
+            for asking in helper.pending():
+                if asking.given:
+                    asking.answer.set_result(Unanswered.ENDED)
 
     def running(self) -> list[Helper]:
         return [helper for helper in self._helpers.values() if helper.ended is None]
@@ -181,7 +216,8 @@ class Helpers:
 
     def read(self, job: str) -> dict[str, Any]:
         helper = self._helpers[job]
-        held = {"running": helper.ended is None, "agent": helper.agent, "asking": None}
+        question = next((asking.question for asking in helper.pending()), None)
+        held = {"running": helper.ended is None, "agent": helper.agent, "asking": question}
         if helper.ended == "finished":
             result = run_result(helper.record)
             return {**held, **({"reply": result} if isinstance(result, str) else result)}
@@ -190,7 +226,8 @@ class Helpers:
         return held
 
     async def wait(self, job: str, seconds: float | None) -> None:
-        if self._helpers[job].ended is not None or seconds == 0:
+        helper = self._helpers[job]
+        if helper.ended is not None or helper.pending() or seconds == 0:
             return
         with suppress(TimeoutError):
             async with asyncio.timeout(seconds):
@@ -202,7 +239,12 @@ class Helpers:
         await asyncio.wait([cast(asyncio.Task[Any], helper.task)], timeout=seconds)
 
     async def send(self, job: str, text: str) -> None:
-        await self._helpers[job].inbox.put(text)
+        helper = self._helpers[job]
+        pending = helper.pending()
+        if pending:
+            pending[0].answer.set_result(text)
+            return
+        await helper.inbox.put(text)
 
     def waiting(self) -> bool:
         return bool(self._notices)
@@ -210,6 +252,9 @@ class Helpers:
     def take(self) -> list[Message]:
         taken, self._notices = self._notices, []
         self.ready.clear()
+        for helper in self._helpers.values():
+            for asking in helper.pending():
+                asking.given = True
         return taken
 
     async def wake(self, inbox: asyncio.Queue[Any], stop: Stop) -> list[Any]:
@@ -244,6 +289,10 @@ class Helpers:
         return [first]
 
     async def settle(self, mode: Stopped, stop: Stop) -> None:
+        self._settling = True
+        for helper in self.running():
+            for asking in helper.pending():
+                asking.answer.set_result(Unanswered.STOPPED)
         tasks = [helper.task for helper in self.running() if helper.task is not None]
         if mode == "after_step":
             for helper in self.running():

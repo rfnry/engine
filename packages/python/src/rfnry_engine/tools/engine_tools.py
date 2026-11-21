@@ -27,6 +27,13 @@ def _own(item: Tool | ToolsLike) -> Tool | ToolsLike:
     return item
 
 
+def refuse_builtin(tools: ToolsLike | None, name: str) -> None:
+    if tools is not None and name in Tools([tools]):
+        raise ConfigurationError(
+            f"tools/engine_tools: a tool named {name!r} collides with the builtin"
+        )
+
+
 def _withheld_on(spec: AgentSpec, invoked: str | None) -> Callable[[Path], bool]:
     if invoked is None:
         return spec.withheld
@@ -76,11 +83,8 @@ class EngineTools(Tools):
             raise ConfigurationError(
                 f"tools/engine_tools: agent {agent!r} declares workspace: true; pass workspace= to the run"
             )
+        refuse_builtin(tools, HISTORY_TOOL)
         given = Tools() if tools is None else Tools([tools])
-        if HISTORY_TOOL in given:
-            raise ConfigurationError(
-                f"tools/engine_tools: a tool named {HISTORY_TOOL!r} collides with the builtin"
-            )
         offered = sorted({*spec.granted, *spec.folder_tools, *given.names})
         for name in spec.keep:
             if name not in offered:
