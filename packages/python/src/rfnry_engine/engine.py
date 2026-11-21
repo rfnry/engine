@@ -1977,12 +1977,12 @@ class Engine:
 
         def drain(whole: bool = True) -> tuple[list[Message], list[Message]]:
             notices = helpers.take()
+            messages.extend(notices)
             taken: list[Message] = []
             while woken or (whole and not inbox.empty()):
                 item = woken.pop(0) if woken else inbox.get_nowait()
                 taken.append(Message(role="user", content=_own(_content(item))))
                 inbox.task_done()
-            messages.extend(notices)
             messages.extend(taken)
             return notices, taken
 

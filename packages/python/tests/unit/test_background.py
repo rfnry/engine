@@ -1661,3 +1661,29 @@ async def test_a_put_back_that_raises_still_cancels_the_helpers(tmp_path: Path) 
     with pytest.raises(TypeError, match="not supported between instances of 'dict' and 'dict'"):
         await asyncio.wait_for(work, 5)
     assert pending(before) == [] and not gate.is_set()
+
+
+async def test_an_inbox_item_the_run_cannot_read_keeps_the_notices_taken_with_it(
+    tmp_path: Path,
+) -> None:
+    lead_gate, gate = asyncio.Event(), asyncio.Event()
+    model = Crew(
+        [background("part one"), lead_gate, text_reply("waiting"), text_reply("never")],
+        {"part one": [gate, text_reply("the answer")]},
+    )
+    seen, kept = Seen(), Kept()
+    inbox: asyncio.Queue[Any] = asyncio.Queue()
+    engine = team(crew(tmp_path, background=True), model, refinery=kept)
+    work = asyncio.create_task(engine.run("lead", "acme", "go", on_event=seen, inbox=inbox))
+    await until(lambda: len(model.calls["lead"]) == 2, "the lead's second call")
+    gate.set()
+    await until(ends(seen, 1), "the helper's end")
+    inbox.put_nowait({1, 2})
+    lead_gate.set()
+    with pytest.raises(TypeError, match="^Object of type set is not JSON serializable$"):
+        await asyncio.wait_for(work, 5)
+    [failure] = kept.runs
+    assert isinstance(failure, Generation) and failure.error is not None
+    [child] = failure.children
+    assert failure.conversation[-1] == notice("d1", "worker", child.run_id, "the answer")
+    assert len(model.calls["lead"]) == 2 and taken(seen, failure.run_id) == []

@@ -1687,21 +1687,22 @@ it stops a delegated run and cuts a decision helper's call, and `after_step()` w
 at once, which reads no more of its inbox, and lets each helper finish its step — a generation
 helper ends at its next boundary, a decision helper gives its answers — unless `now()` follows while
 they do, which stops every helper still running as `now()` does, the run then ending `now`. A run
-that fails — its model, a handler, its `max_model_calls` — first stops its helpers as `now()` does.
-Either way their records join `children`, and every notice the model was not given, theirs included,
-is appended to the conversation without a model call, so a conversation resumed after a stop never
-holds a `{"job": "d1"}` with no outcome: a stopped run sends them in one `MessagesTaken`, before the
-message that woke it, and a failed run keeps them in the record it raises with. A decision helper
-whose call a stop cuts leaves no record, its notice `stopped` with nothing after it; one whose route
-a stop cuts is recorded with what it answered, its notice `stopped` too. A notice that waits when an
-`Output` is accepted is appended the same way. Cancelling the run's task cancels every helper, at
-any depth, and re-raises once all of them have ended; a message that reaches a waiting lead as the
-cancel lands stays on its inbox, and one that woke it but had not yet joined its conversation is put
-back with `put_nowait`, returning at the back of its queue — or, on a queue you `shutdown()` or a
-bounded one left full, going with the cancelled run as any message a cancelled run took does. A
-shut-down inbox has nothing more to give a waiting lead, which goes on waiting for its helpers and
-its stop. The lead sends its `RunEnded` after every helper's, on every path but a cancel, which
-sends none, and a helper's events go to the same `on_event` as a synchronous child's.
+that fails — its model, a handler, its `max_model_calls`, an inbox item it cannot read — first stops
+its helpers as `now()` does. Either way their records join `children`, and every notice the model
+was not given, theirs included, is appended to the conversation without a model call, so a
+conversation resumed after a stop never holds a `{"job": "d1"}` with no outcome: a stopped run sends
+them in one `MessagesTaken`, before the message that woke it, and a failed run keeps them in the
+record it raises with. A decision helper whose call a stop cuts leaves no record, its notice
+`stopped` with nothing after it; one whose route a stop cuts is recorded with what it answered, its
+notice `stopped` too. A notice that waits when an `Output` is accepted is appended the same way.
+Cancelling the run's task cancels every helper, at any depth, and re-raises once all of them have
+ended; a message that reaches a waiting lead as the cancel lands stays on its inbox, and one that
+woke it but had not yet joined its conversation is put back with `put_nowait`, returning at the
+back of its queue — or, on a queue you `shutdown()` or a bounded one left full, going with the
+cancelled run as any message a cancelled run took does. A shut-down inbox has nothing more to give
+a waiting lead, which goes on waiting for its helpers and its stop. The lead sends its `RunEnded`
+after every helper's, on every path but a cancel, which sends none, and a helper's events go to the
+same `on_event` as a synchronous child's.
 
 ### Both kinds together
 
