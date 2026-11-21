@@ -139,7 +139,7 @@ class Notice(BaseModel):
     kind: Literal["finished", "failed", "stopped", "asks"]
 ```
 
-Which helper a notice reports on and what it reports: `job` is the id the lead's `Delegate` returned (`d1`), `agent` the helper's agent and `run_id` its run, the `child_run_id` of the step that started it and the `run_id` of its record in the lead's `children`. `kind` is `finished` when the helper replied, the message's text then its reply (a decision helper's answers as JSON, as `Delegate` returns them); `failed` when it raised, the text then its error as a tool's result shows it; `stopped` when it was stopped, the text then what it had said; `asks` when it called `Ask`, the text then its question, which the lead answers with `Job(id, send=)`.
+Which helper a notice reports on and what it reports: `job` is the id the lead's `Delegate` returned (`d1`), `agent` the helper's agent and `run_id` its run, the `child_run_id` of the step that started it and the `run_id` of its record in the lead's `children` — when it has one: a decision helper whose call a stop cut or kept from starting, and a helper that failed before its run made a record, such as one past `max_depth`, leave none, and their `run_id` names no record. `kind` is `finished` when the helper replied, the message's text then its reply (a decision helper's answers as JSON, as `Delegate` returns them); `failed` when it raised, the text then its error as a tool's result shows it; `stopped` when it was stopped, the text then what it had said; `asks` when it called `Ask`, the text then its question, which the lead answers with `Job(id, send=)`.
 
 ### `HistoryLike`
 

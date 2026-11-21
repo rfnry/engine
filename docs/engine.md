@@ -1600,10 +1600,13 @@ said. A helper that fails, or runs past its own `max_model_calls`, never fails i
 reads `failed` and goes on, and the helper's record joins `children` with its `error`. The message
 carries `notice`, a `Notice` naming the helper's `job`, `agent` and `run_id` and the `kind` of
 notice, so the record and a dataset tell it from the person's words; a model is sent only the text
-and reads the first line. A helper's reply holds whatever the helper read, a hostile document
-included, so write the lead's instructions to treat a notice as it treats a tool result, not as the
-person. Every helper that ended since the last model call is taken at once, in the order they ended,
-so many helpers ending together are one wake-up and one model call.
+and reads the first line. That `run_id`, as the step's `child_run_id`, names no record when the
+helper left none: a decision helper whose call a stop cut or kept from starting, and a helper that
+failed before its run made a record, such as one past `max_depth`. A helper's reply holds whatever
+the helper read, a hostile document included, so write the lead's instructions to treat a notice
+as it treats a tool result, not as the person. Every helper that ended since the last model call is
+taken at once, in the order they ended, so many helpers ending together are one wake-up and one
+model call.
 
 The lead also gets two tools over its helpers, `Job` and `Jobs`, workspace or not.
 `Job(id, wait=0, stop=false, send=null)` reads one helper by its id: `{"running": true, "agent":
