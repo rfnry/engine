@@ -42,11 +42,12 @@ speaks itself, is a third: the engine hands it to your voice session and records
 **The library runs; it does not take over.** You bring the providers that build your models, the
 conversation history, the storage connection, the bucket, and the tools that must live in your
 process. The tools of the folder run in worker processes the engine starts beside yours, never
-inside it, until you close the engine. There is no background loop and no plugin registry;
-`rfnry.yaml` is plain data the engine reads once, and every verb is a function you call. It writes
-nothing of its own: the only writes are a model's, inside a `Workspace` you pass a run, and the one
-file the engine itself creates there, the socket a command calls the run's tools through, which
-lives as long as that command ([Workspace](#workspace)).
+inside it, until you close the engine. There is no background loop — an agent a model delegated
+[in the background](#in-the-background) runs until it ends or the run that started it does — and no
+plugin registry; `rfnry.yaml` is plain data the engine reads once, and every verb is a function you
+call. It writes nothing of its own: the only writes are a model's, inside a `Workspace` you pass a
+run, and the one file the engine itself creates there, the socket a command calls the run's tools
+through, which lives as long as that command ([Workspace](#workspace)).
 
 **Nothing is hidden.** A run returns a record: what was sent, what came back, every tool call with
 its timing, every model call with its usage, every child run. That record is what you feed your own
@@ -1886,18 +1887,67 @@ budget = Budget(50)
 run = await engine.run("support", scope="acme", input=message, on_event=budget, stop=budget.stop)
 ```
 
+A team that works while its lead goes on is a `Delegate` in the [background](#in-the-background).
+Each helper that ends, and each question one asks, is a new message in its lead's conversation, and
+every model call sends the whole conversation, so a large team is crews: the lead starts captains,
+each captain its own helpers, and each conversation grows with its own fan-out, not with the team:
+
+```yaml
+lead:
+  kind: generation
+  model: strong
+  instructions: lead/instructions.md
+  orchestration:
+    delegate_to: [captain]
+    background: true
+    max_background: 4                     # captains at once
+captain:
+  kind: generation
+  model: strong
+  instructions: captain/instructions.md
+  orchestration:
+    delegate_to: [prover]
+    background: true
+    max_background: 16                    # provers of one captain at once
+prover:
+  kind: generation
+  model: strong
+  instructions: prover/instructions.md
+```
+
+```python
+team = await engine.run("lead", scope="acme", input=goal)
+[m.notice.agent for m in team.conversation if m.notice]   # ["captain", "captain"]: no prover
+[len(captain.children) for captain in team.children]      # [2, 2]: each captain's provers
+```
+
+The call returns once the whole team has ended. A captain waits for its provers as the lead waits
+for its captains: a run ends when its model replies with no tool call, none of its own helpers runs
+and no notice waits; until then such a reply is held, and the run waits for the next notice, a
+message on its inbox or its stop, then calls its model again
+([In the background](#in-the-background) has the whole rule). So the lead's conversation holds a
+notice from each captain and none from a prover, and its record holds every captain in `children`,
+each with its provers in its own.
+
+Write the instructions so a helper's reply is a verdict, what its lead needs to decide next, and the
+detail it worked out goes on a board you keep, behind a tool of yours, where any agent of the team
+can read it. A notice is a helper's words, never the person's: have each lead read it as it reads a
+tool result. Each wake-up is a model call, so a long lead needs `Engine(max_model_calls=)` above its
+default of 200, and its entry's `max_model_calls` with it when it sets one; a service with many
+tenants in one process sets `Engine(max_background=)`, as [Limits](#limits) says.
+
 Two agents that write `guide.md` into one workspace overwrite each other. Give each run a copy of
-its own, have it claim work before it does it, and merge when a child comes back. A `Backend` is
-yours, so the copy is a directory per run, named by `current_call().run_id`: inside a tool or a
-backend, `current_call()` is the call the running run is making. `RunStarted.call` names the run that
-started a child, and the parent's `ToolResultReady` for its `Delegate` step carries
-`step.child_run_id`, which is where you merge. How a directory is copied and merged (worktrees, a
-copy, a container per run) is yours too:
+its own, have it claim work before it does it, and merge when a child ends. A `Backend` is yours, so
+the copy is a directory per run, named by `current_call().run_id`: inside a tool or a backend,
+`current_call()` is the call the running run is making. `RunStarted.call` names the run that
+started a child, and the child's `RunEnded`, its last event, is where you merge: a synchronous child
+and a helper alike, since a helper's `Delegate` step returns as the helper starts. How a directory
+is copied and merged (worktrees, a copy, a container per run) is yours too:
 
 ```python
 from pathlib import Path
 
-from rfnry_engine import Local, RunStarted, Tool, ToolResultReady, Tools, Workspace, current_call
+from rfnry_engine import Local, RunEnded, RunStarted, Tool, Tools, Workspace, current_call
 
 class PerRun:
     def __init__(self, base):
@@ -1916,8 +1966,8 @@ class PerRun:
     async def on_event(self, event):
         if isinstance(event, RunStarted) and event.call:
             self.parent[event.run_id] = event.call.run_id
-        if isinstance(event, ToolResultReady) and event.step.child_run_id:
-            self.merged.append(event.step.child_run_id)
+        if isinstance(event, RunEnded) and event.call:
+            self.merged.append(event.run_id)
 
 claims = {}
 
@@ -1932,7 +1982,10 @@ run = await engine.run("lead", scope="acme", input=message, tools=tools, on_even
                        workspace=Workspace(backend, scope="acme"))
 ```
 
-Work in the background is two tools of yours: one starts `engine.run` in a task you keep, one reads
+A job no conversation can hold, even in crews, runs the other way: the lead works as short runs over
+your board, and its helpers are runs your code starts, which outlive the run that asked for them,
+are reached by their ids with `engine.send` and `engine.stop`, and tell you they ended with their
+`RunEnded`. Its shape is two tools of yours: one starts `engine.run` in a task you keep, one reads
 the task. You cancel these tasks and bound how many there are. The run they start records the call
 that started it, so its record links back to the run that asked for it:
 
@@ -1960,9 +2013,10 @@ outer = await engine.run("boss", scope="acme", input=message, tools=tools)
 
 Whether a team is worth it is measured, not assumed. Run the team and a single agent on the same
 input and compare what each spent over the whole tree, summed over `children` and `routed_to`. A
-run a tool of yours started as a consult is not a child: it links back to its caller through its
-`call`, and `spent` does not count it. Over the holdout, with the grades beside the cost, the same
-comparison is a replay of each, as [`evaluation.md`](evaluation.md#replaying-the-holdout) shows:
+lead's helpers are among its `children`, so `spent` counts them; a run a tool of yours started as a
+consult is not a child: it links back to its caller through its `call`, and `spent` does not count
+it. Over the holdout, with the grades beside the cost, the same comparison is a replay of each, as
+[`evaluation.md`](evaluation.md#replaying-the-holdout) shows:
 
 ```python
 def spent(run):

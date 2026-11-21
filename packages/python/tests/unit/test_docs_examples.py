@@ -96,6 +96,7 @@ ILLUSTRATIVE = {
     'pool = await asyncpg.create_pool(dsn, server_settings={"search_path": "engine"})': "needs a Postgres pool; the integration tier runs the command and check()",
     "class PerRun:": "needs agents that declare `workspace: true`",
     "jobs = {}": "needs a model that calls start and then check",
+    'team = await engine.run("lead", scope="acme", input=goal)': "needs a model for a lead, its captains and their provers",
     'ORDERS = os.environ["ORDERS_URL"]': "a tool script, which the test tree holds as support/tools/lookup_order.py",
     "async def run(args, call):": "a tool script, which test_the_refund_tool_runs_in_a_worker_from_a_shell_and_under_its_tests runs",
     "import argparse": "_cli.py, which the refund tool's footer runs from a shell",
