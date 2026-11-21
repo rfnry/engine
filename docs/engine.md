@@ -902,6 +902,8 @@ An accepted `Output` ends the run. A call the model made after it in the same tu
 answered with an error saying so, so every call in `run.conversation` has its result. Of a reply
 with more than one `Output`, the first that fits is taken: each before it is answered with what is
 wrong, each after it is not run, and the reply's other calls before it run as they would without it.
+While a [helper](#in-the-background) of the run still runs, `Output` is answered with a tool error
+naming it, and the run goes on.
 
 Pass `context=` to add data about this run that does not belong in the folder — the contract under
 review, today's date, never instructions — the record keeps it as `run.context` — and pass
@@ -1047,8 +1049,9 @@ running but a call whose generation run — a delegated one, or a consult throug
 takes the same `now()`, and a call whose `ToolResultReady` handler the stop waits for; each further
 cancel cancels everything still running once more; and a workspace kills its command outright. A
 stop set before the run starts ends it before the first model call; one set after it ended does
-nothing. A stop reaches delegated and routed runs, and the runs an `engine.tool` starts while the
-run calls it, which end the same way at their own next boundary. With `after_step()` pending the
+nothing. A stop reaches delegated and routed runs, a lead's [helpers](#in-the-background), and the
+runs an `engine.tool` starts while the run calls it, which end the same way at their own next
+boundary. With `after_step()` pending the
 inbox is not read. Whatever is still in the inbox when the run ends stays there — the engine never
 starts a run; you do, with those messages as its input. A decision run never reads the inbox: its
 questions are one call, and a stop or an inbox rides to the run it routes to; a stop that finds a
@@ -1579,27 +1582,54 @@ first line names the helper and how it ended:
 Lemma 4 holds; the proof is on branch prover-d1.
 ```
 
-What follows is the helper's reply — a decision helper's answers as JSON, as `Delegate` returns
-them — or, after `failed`, its error as a tool's result would show it, and after `stopped`, what it
-had said. The message carries `notice`, a `Notice` naming the helper's `job`, `agent` and `run_id`
-and the `kind` of notice, so the record and a dataset tell it from the person's words; a model is
-sent only the text and reads the first line. A helper's reply holds whatever the helper read, a
-hostile document included, so write the lead's instructions to treat a notice as it treats a tool
-result, not as the person. Every helper that ended since the last model call is taken at once, in
-the order they ended, so many helpers ending together are one wake-up and one model call.
+What follows is the helper's reply — a decision helper's answers as JSON, as `Delegate` returns them
+— or, after `failed`, its error as a tool's result would show it, and after `stopped`, what it had
+said. A helper that fails, or runs past its own `max_model_calls`, never fails its lead: the lead
+reads `failed` and goes on, and the helper's record joins `children` with its `error`. The message
+carries `notice`, a `Notice` naming the helper's `job`, `agent` and `run_id` and the `kind` of
+notice, so the record and a dataset tell it from the person's words; a model is sent only the text
+and reads the first line. A helper's reply holds whatever the helper read, a hostile document
+included, so write the lead's instructions to treat a notice as it treats a tool result, not as the
+person. Every helper that ended since the last model call is taken at once, in the order they ended,
+so many helpers ending together are one wake-up and one model call.
 
 A run with helpers ends when its model replies with no tool call, no helper of its own runs and no
 notice waits. A reply with no tool call while a helper runs, or while a notice waits, stays in the
-conversation and streams as any reply, and the run waits for the next notice or a message on its
-inbox, then calls the model again. Each such call counts toward `max_model_calls`, so a lead that
-waits through many ends needs a higher one, and such a reply on the run's last allowed call raises
-`RunawayError` at once, unless its stop is pending, rather than wait for a call it cannot make. A
-message on the inbox wakes a waiting run, so a reminder reaches a lead whose helpers still work, but
-it never keeps a run going: a lead with no helper running ends as any run does, and what is left on
-its inbox stays there. The message that woke it is the run's once taken: it joins the conversation,
-with its `MessagesTaken`, even when the run's stop ends it before its next model call, and the rest
-of the inbox stays there. A lead that ends this way sends its `RunEnded` after every helper's, and a
-helper's events go to the same `on_event` as a synchronous child's.
+conversation and streams as any reply, and the run waits for the next notice, a message on its inbox
+or its stop, then calls the model again. Each such call counts toward `max_model_calls`, so a lead
+that waits through many ends needs a higher one, and such a reply on the run's last allowed call
+raises `RunawayError` at once, unless its stop is pending, rather than wait for a call it cannot
+make. A message on the inbox wakes a waiting run, so a reminder reaches a lead whose helpers still
+work, but it never keeps a run going: a lead with no helper running ends as any run does, and what
+is left on its inbox stays there. The message that wakes it is the run's from then on, never put
+back while the run waits: it goes first among the inbox's messages at the run's next boundary, and
+joins the conversation, with its `MessagesTaken`, even when the run's stop ends it before its next
+model call, while the rest of the inbox stays there. An `Output` (with `expect=`) while a helper
+runs is answered with a tool error naming them, `engine: still running: d1, d3; stop them or wait
+for them, then call Output again`, and the run goes on: a typed reply is a final answer, given once
+the helpers have ended.
+
+A run returns, or raises, only once every helper of its own has ended, whichever way it ends, so no
+helper outlives its lead. The lead's stop reaches its helpers: `now()` stops a generation helper as
+it stops a delegated run and cuts a decision helper's call, and `after_step()` wakes a waiting lead
+at once, which reads no more of its inbox, and lets each helper finish its step — a generation
+helper ends at its next boundary, a decision helper gives its answers — unless `now()` follows while
+they do, which stops every helper still running as `now()` does, the run then ending `now`. A run
+that fails — its model, a handler, its `max_model_calls` — first stops its helpers as `now()` does.
+Either way their records join `children`, and every notice the model was not given, theirs included,
+is appended to the conversation without a model call, so a conversation resumed after a stop never
+holds a `{"job": "d1"}` with no outcome: a stopped run sends them in one `MessagesTaken`, before the
+message that woke it, and a failed run keeps them in the record it raises with. A decision helper
+whose call a stop cuts leaves no record, its notice `stopped` with nothing after it; one whose route
+a stop cuts is recorded with what it answered, its notice `stopped` too. A notice that waits when an
+`Output` is accepted is appended the same way. Cancelling the run's task cancels every helper, at
+any depth, and re-raises once all of them have ended; a message that reaches a waiting lead as the
+cancel lands stays on its inbox, and one that woke it but had not yet joined its conversation is put
+back with `put_nowait`, returning at the back of its queue — or, on a queue you `shutdown()` or a
+bounded one left full, going with the cancelled run as any message a cancelled run took does. A
+shut-down inbox has nothing more to give a waiting lead, which goes on waiting for its helpers and
+its stop. The lead sends its `RunEnded` after every helper's, on every path but a cancel, which
+sends none, and a helper's events go to the same `on_event` as a synchronous child's.
 
 ### Both kinds together
 
@@ -3588,7 +3618,9 @@ route into an agent already in the same chain of routes; `DelegationDepthError` 
 worker process: what its script raised, `sys.exit()` included, a result JSON cannot hold, a result
 or error over `worker_result_bytes`, a worker that stopped while the call was in flight
 (`workers/pool: the worker for lookup_order stopped: exited with code 3`) or a call in flight when
-`close()` stopped its worker. Inside a run, a tool's error is the model's to read, never raised. All
+`close()` stopped its worker. Inside a run, a tool's error is the model's to read, never raised. A
+run that raises stops its [helpers](#in-the-background) first, and their records join the
+failure's `children`. All
 under `EngineException` — the root takes the `Exception` suffix, every child ends in `Error`, the
 same shape as rfnry-memory's. Every message names the module that raised it, then says what went
 wrong in lowercase: `engine: agent 'ghost' was not found`, `tools/workspace: path outside the

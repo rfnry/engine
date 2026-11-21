@@ -45,7 +45,7 @@ from rfnry_engine.foreground import (
     taking,
 )
 from rfnry_engine.frontmatter import plainly
-from rfnry_engine.helpers import Helper, Helpers, first_job
+from rfnry_engine.helpers import Helper, Helpers, first_job, given_back
 from rfnry_engine.manifest import Kind, ModelEntry, read_manifest
 from rfnry_engine.models import (
     Answer,
@@ -96,7 +96,7 @@ from rfnry_engine.records import (
     Voice,
     VoiceStart,
 )
-from rfnry_engine.stop import Stop, Stopped, cancel, requested, unless_cut, wait
+from rfnry_engine.stop import Stop, Stopped, cancel, cut_through, requested, unless_cut, wait
 from rfnry_engine.tools.declared import chosen, smallest
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
@@ -1003,10 +1003,7 @@ class Engine:
             pressed.after_step()
             return
         pressed.now()
-        while pressed._routed is not None:
-            pressed = pressed._routed
-        if pressed._cut is not None:
-            pressed._cut()
+        cut_through(pressed)
 
     def _open(self) -> None:
         if self._closed:
@@ -1959,7 +1956,7 @@ class Engine:
             return cut_short
 
         def drain(whole: bool = True) -> tuple[list[Message], list[Message]]:
-            notices = helpers.take() if whole else []
+            notices = helpers.take()
             taken: list[Message] = []
             while woken or (whole and not inbox.empty()):
                 item = woken.pop(0) if woken else inbox.get_nowait()
@@ -2053,24 +2050,44 @@ class Engine:
             await announce(record)
             return record
 
+        async def halt(turn: int, reply_text: str, mode: Stopped) -> Generation:
+            await helpers.settle(mode, stop)
+            mode = requested(stop) or mode
+            await took(turn, *drain(whole=False))
+            return await finished(reply_text, mode)
+
+        def refuse(output: ToolCall, why: str) -> None:
+            messages.append(
+                Message(role="tool", tool_call_id=output.id, content=why, is_error=True)
+            )
+            steps.append(
+                Step(
+                    tool=OUTPUT_TOOL,
+                    args=output.args,
+                    result=why,
+                    is_error=True,
+                    at=_now(),
+                    duration_ms=0,
+                )
+            )
+
         try:
             await emit(RunStarted(run_id=run_id, agent=spec.name, call=started_call))
             for turn in range(most_calls):
                 mode = requested(stop)
                 if mode is not None:
-                    await took(turn, *drain(whole=False))
-                    return await finished(said, mode)
+                    return await halt(turn, said, mode)
                 if turn and await took(turn, *drain()):
                     mode = requested(stop)
                     if mode is not None:
-                        return await finished(said, mode)
+                        return await halt(turn, said, mode)
                 streamed.clear()
                 asking = asyncio.ensure_future(ask())
                 if await wait([asking], stop):
                     partial = "".join(streamed)
                     if partial:
                         messages.append(Message(role="assistant", content=partial))
-                    return await finished(partial or said, "now")
+                    return await halt(turn + 1, partial or said, "now")
                 reply = asking.result()
                 ended = reply.stop_reason
                 said = reply.text
@@ -2112,26 +2129,21 @@ class Engine:
                         break
                     if pressed:
                         await answer_all(rest, [None] * len(rest), time.monotonic())
-                        return await finished(said, "now")
+                        return await halt(turn + 1, said, "now")
                     output, rest = rest[0], rest[1:]
+                    running = [helper.job for helper in helpers.running()]
+                    if running:
+                        refuse(
+                            output,
+                            f"engine: still running: {', '.join(running)}; stop them or wait for them, then call {OUTPUT_TOOL} again",
+                        )
+                        continue
                     try:
                         parsed = expect.model_validate(_copied(output.args))
                     except ValidationError as exc:
-                        errors = f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}"
-                        messages.append(
-                            Message(
-                                role="tool", tool_call_id=output.id, content=errors, is_error=True
-                            )
-                        )
-                        steps.append(
-                            Step(
-                                tool=OUTPUT_TOOL,
-                                args=output.args,
-                                result=errors,
-                                is_error=True,
-                                at=_now(),
-                                duration_ms=0,
-                            )
+                        refuse(
+                            output,
+                            f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}",
                         )
                         continue
                     messages.append(
@@ -2149,18 +2161,26 @@ class Engine:
                     )
                     for call in rest:
                         not_run(call, f"{OUTPUT_TOOL} ended the run")
+                    await took(turn + 1, *drain(whole=False))
                     return await finished(parsed.model_dump_json())
             mode = requested(stop)
             if mode is not None:
-                return await finished(said, mode)
+                return await halt(most_calls, said, mode)
             raise RunawayError(f"engine: run exceeded {most_calls} model calls")
         except Exception as exc:
             for call in asked:
                 built = next((step for done, step in ran if done is call), None)
                 if built is not None and not any(built is kept for kept in steps):
                     answer(call, built)
+            await helpers.settle("now", stop)
+            messages.extend(helpers.take())
             children.extend(sorted(delegated.values(), key=lambda run: (run.at, run.run_id)))
             failure = finish("", error=exc)
             options.failed.append(failure)
             await announce(failure)
             raise
+        finally:
+            try:
+                given_back(inbox, woken)
+            finally:
+                await helpers.cancel()

@@ -2,15 +2,16 @@ import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from rfnry_engine.errors import error_text
-from rfnry_engine.foreground import halted
+from rfnry_engine.foreground import FOREGROUND, Foreground, halted
 from rfnry_engine.models import Message, Notice
 from rfnry_engine.records import Decision, Generation
-from rfnry_engine.stop import Stop, pressed, requested
+from rfnry_engine.stop import Stop, Stopped, asked, cut_through, pressed, requested, wait
 from rfnry_engine.tools.delegate import DELEGATE_TOOL, child_result
 
 Ending = Literal["finished", "failed", "stopped"]
@@ -49,12 +50,26 @@ def first_job(history: Sequence[Message]) -> int:
     return max([*handed, *noticed], default=0) + 1
 
 
-def _ending(record: Generation | Decision | None) -> tuple[Ending, str]:
+async def _arrival(inbox: asyncio.Queue[Any]) -> Any:
+    try:
+        return await inbox.get()
+    except asyncio.QueueShutDown:
+        return await asyncio.get_running_loop().create_future()
+
+
+def given_back(inbox: asyncio.Queue[Any], woken: list[Any]) -> None:
+    while woken:
+        with suppress(asyncio.QueueShutDown, asyncio.QueueFull):
+            inbox.put_nowait(woken.pop(0))
+        inbox.task_done()
+
+
+def _ending(record: Generation | Decision | None, cut: bool) -> tuple[Ending, str]:
     if record is None:
         return "stopped", ""
     if record.error is not None:
         return "failed", record.error
-    if halted(record):
+    if cut or halted(record):
         return "stopped", child_result(record)
     return "finished", child_result(record)
 
@@ -106,12 +121,14 @@ class Helpers:
     async def _ran(
         self, helper: Helper, run: Callable[[Helper], Awaitable[Generation | Decision | None]]
     ) -> None:
+        here = Foreground(None, None)
+        FOREGROUND.set(here)
         try:
             record = await run(helper)
         except Exception as exc:
             self._ended(helper, None, "failed", error_text(exc))
             return
-        self._ended(helper, record, *_ending(record))
+        self._ended(helper, record, *_ending(record, here.stopped))
 
     def _ended(
         self, helper: Helper, record: Generation | Decision | None, kind: Ending, body: str
@@ -142,11 +159,51 @@ class Helpers:
     async def wake(self, inbox: asyncio.Queue[Any], stop: Stop) -> list[Any]:
         if self.ready.is_set() or requested(stop) is not None:
             return []
+        if not inbox.empty():
+            return [inbox.get_nowait()]
+        loop = asyncio.get_running_loop()
         ready = asyncio.ensure_future(self.ready.wait())
-        getting = asyncio.ensure_future(inbox.get())
+        told = asked(stop)
+        holding = True
         try:
-            await asyncio.wait([ready, getting, pressed(stop)], return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            ready.cancel()
-            getting.cancel()
-        return [getting.result()] if getting.done() and not getting.cancelled() else []
+            async with asyncio.timeout(None) as held:
+
+                def woke(_: object) -> None:
+                    nonlocal holding
+                    if holding:
+                        holding = False
+                        held.reschedule(loop.time())
+
+                ready.add_done_callback(woke)
+                told.add_done_callback(woke)
+                try:
+                    first = await _arrival(inbox)
+                finally:
+                    holding = False
+                    ready.remove_done_callback(woke)
+                    told.remove_done_callback(woke)
+                    ready.cancel()
+        except TimeoutError:
+            return []
+        return [first]
+
+    async def settle(self, mode: Stopped, stop: Stop) -> None:
+        tasks = [helper.task for helper in self.running() if helper.task is not None]
+        if mode == "after_step":
+            for helper in self.running():
+                helper.stop.after_step()
+            press = pressed(stop)
+            while not press.done() and (left := [task for task in tasks if not task.done()]):
+                await asyncio.wait([*left, press], return_when=asyncio.FIRST_COMPLETED)
+        for helper in self.running():
+            if requested(helper.stop) != "now":
+                helper.stop.now()
+            cut_through(helper.stop)
+        if running := [task for task in tasks if not task.done()]:
+            await asyncio.wait(running)
+
+    async def cancel(self) -> None:
+        tasks = [helper.task for helper in self.running() if helper.task is not None]
+        for task in tasks:
+            task.cancel()
+        await wait(tasks, None)

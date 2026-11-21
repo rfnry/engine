@@ -10,6 +10,7 @@ class Stop:
         self._mode: Stopped | None = None
         self._presses = 0
         self._pressed: asyncio.Future[None] | None = None
+        self._asked: asyncio.Future[None] | None = None
         self._parent: Stop | None = None
         self._children: set[Stop] = set()
         self._cut: Callable[[], None] | None = None
@@ -21,14 +22,20 @@ class Stop:
         if self._pressed is not None and not self._pressed.done():
             self._pressed.set_result(None)
         self._pressed = None
+        self._told()
         for child in self._children:
             child.now()
 
     def after_step(self) -> None:
         if self._mode is None:
             self._mode = "after_step"
+            self._told()
         for child in self._children:
             child.after_step()
+
+    def _told(self) -> None:
+        if self._asked is not None and not self._asked.done():
+            self._asked.set_result(None)
 
     def _below(self) -> Stop:
         child = Stop()
@@ -73,6 +80,19 @@ def _press(stop: Stop, seen: int) -> asyncio.Future[None]:
 
 def pressed(stop: Stop) -> asyncio.Future[None]:
     return _press(stop, stop._presses)
+
+
+def asked(stop: Stop) -> asyncio.Future[None]:
+    if stop._asked is None:
+        stop._asked = asyncio.get_running_loop().create_future()
+    return stop._asked
+
+
+def cut_through(stop: Stop) -> None:
+    while stop._routed is not None:
+        stop = stop._routed
+    if stop._cut is not None:
+        stop._cut()
 
 
 async def wait(
