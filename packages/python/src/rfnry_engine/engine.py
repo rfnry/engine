@@ -96,7 +96,7 @@ from rfnry_engine.records import (
     Voice,
     VoiceStart,
 )
-from rfnry_engine.stop import Stop, Stopped, cancel, cut_through, requested, unless_cut, wait
+from rfnry_engine.stop import Stop, Stopped, cancel, press, requested, unless_cut, wait
 from rfnry_engine.tools.declared import chosen, smallest
 from rfnry_engine.tools.delegate import (
     DELEGATE_TOOL,
@@ -114,8 +114,9 @@ from rfnry_engine.tools.delegate import (
     run_result,
 )
 from rfnry_engine.tools.engine_tools import EngineTools
+from rfnry_engine.tools.helpers import HELPER_TOOLS, helper_tools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
-from rfnry_engine.tools.workspace import WORKSPACE_NAMES, WORKSPACE_TOOLS, Workspace
+from rfnry_engine.tools.workspace import JOB_TOOL, WORKSPACE_NAMES, WORKSPACE_TOOLS, Workspace
 from rfnry_engine.tree import (
     OUTPUT_TOOL,
     TAKEN,
@@ -997,13 +998,7 @@ class Engine:
         await cast(asyncio.Queue[Any], running.inbox).put(message)
 
     def stop(self, run_id: str, *, scope: str, after_step: bool = False) -> None:
-        running = self._in_flight(run_id, scope)
-        pressed = running.stop
-        if after_step:
-            pressed.after_step()
-            return
-        pressed.now()
-        cut_through(pressed)
+        press(self._in_flight(run_id, scope).stop, after_step)
 
     def _open(self) -> None:
         if self._closed:
@@ -1626,12 +1621,30 @@ class Engine:
             models={**options.models, spec.model: model_},
         )
         room = options.workspace if spec.workspace else None
+        children: list[Generation | Decision] = []
+        helpers = Helpers(
+            spec.name,
+            _capped(spec.background_parallel, self.max_background),
+            first_job(options.history) if spec.background else 1,
+            children,
+        )
+        deadline = smallest(spec.tool_timeout, self.tool_timeout)
+        helping = spec.background and JOB_TOOL in spec.granted
+        own_deadline = (
+            surface._in_workers
+            | (WORKSPACE_TOOLS if room is not None else frozenset())
+            | ({JOB_TOOL} if helping else frozenset())
+        )
+        offered: Tools = surface
+        if helping:
+            offered = Tools(
+                [surface.without(*HELPER_TOOLS), *helper_tools(helpers, room, deadline)]
+            )
         barred = WORKSPACE_NAMES | {DELEGATE_TOOL, OUTPUT_TOOL}
-        reachable = surface.without(*barred)
+        reachable = offered.without(*barred)
         bridging = room is not None and room._bridging and bool(reachable)
-        own_deadline = surface._in_workers | (WORKSPACE_TOOLS if room is not None else frozenset())
         variables = {"RFNRY_TREE": room.tree} if room is not None and room.tree is not None else {}
-        specs = [ToolSpec.model_validate(_copied(d)) for d in surface.definitions()]
+        specs = [ToolSpec.model_validate(_copied(d)) for d in offered.definitions()]
         if room is not None:
             told = room._told(spec.allowed_folders, bridging)
             specs = [
@@ -1678,14 +1691,7 @@ class Engine:
         messages = [*history, Message(role="user", content=opening)]
         sent = list(messages)
         steps: list[Step] = []
-        children: list[Generation | Decision] = []
         delegated: dict[str, Generation | Decision] = {}
-        helpers = Helpers(
-            spec.name,
-            _capped(spec.background_parallel, self.max_background),
-            first_job(options.history) if spec.background else 1,
-            children,
-        )
         woken: list[Any] = []
         tool_slots = _slots(spec.tool_parallel)
         shell_slots = _slots(None) if bridging else tool_slots
@@ -1758,7 +1764,7 @@ class Engine:
                         raise
                     return failed[-1]
 
-            helper = helpers.start(args.agent, uuid4().hex, stop._below(), run)
+            helper = helpers.start(args.agent, target.kind, uuid4().hex, stop._below(), run)
             return json.dumps({"job": helper.job}), False, helper.run_id, False
 
         async def delegate(call: ToolCall) -> tuple[Content, bool, str | None, bool]:
@@ -1857,8 +1863,8 @@ class Engine:
             run_id=run_id,
             scope=scope,
             tags=options.tags,
-            surface=surface,
-            deadline=smallest(spec.tool_timeout, self.tool_timeout),
+            surface=offered,
+            deadline=deadline,
             own_deadline=own_deadline,
             tool_slots=tool_slots,
             approve=options.approve,

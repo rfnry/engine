@@ -11,6 +11,7 @@ from rfnry_engine.stop import Stop
 from rfnry_engine.tools.builtins import builtins, load_tool
 from rfnry_engine.tools.declared import chosen, described, folder_tool, smallest
 from rfnry_engine.tools.delegate import delegate_tool
+from rfnry_engine.tools.helpers import HELPER_TOOLS
 from rfnry_engine.tools.history import HISTORY_TOOL, history_tool
 from rfnry_engine.tools.tools import Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import Workspace
@@ -87,6 +88,9 @@ class EngineTools(Tools):
                     f"tools/engine_tools: agent {agent!r} lists {name!r} in tools.allow, which this run does not offer; its tools are {', '.join(offered) or 'none'}"
                 )
         given = given.without(*(name for name in given.names if name not in spec.keep))
+        clash = [name for name in sorted(HELPER_TOOLS) if name in given]
+        if spec.background and clash:
+            raise ConfigurationError(f"tools/engine_tools: duplicate tool name {clash[0]!r}")
         room = workspace if spec.workspace else None
         merged = engine._run_models(models)
 

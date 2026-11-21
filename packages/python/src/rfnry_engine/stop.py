@@ -95,6 +95,14 @@ def cut_through(stop: Stop) -> None:
         stop._cut()
 
 
+def press(stop: Stop, after_step: bool = False) -> None:
+    if after_step:
+        stop.after_step()
+        return
+    stop.now()
+    cut_through(stop)
+
+
 async def wait(
     tasks: Sequence[asyncio.Future[Any]],
     stop: Stop | None,

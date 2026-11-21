@@ -39,6 +39,7 @@ from rfnry_engine.models import Choice, Part, Question
 from rfnry_engine.tools.builtins import BUILTINS, preload_parts
 from rfnry_engine.tools.delegate import DELEGATE_TOOL
 from rfnry_engine.tools.folder import ToolDef, load_tool, project_of
+from rfnry_engine.tools.helpers import HELPER_TOOLS
 from rfnry_engine.tools.history import HISTORY_TOOL
 from rfnry_engine.tools.workspace import WORKSPACE_NAMES
 from rfnry_engine.tree import (
@@ -61,7 +62,7 @@ RUN_DECIDES = {
     HISTORY_TOOL: "a run's history= and start=",
 }
 ENGINE_TOOLS = frozenset({*BUILTINS, DELEGATE_TOOL, *WORKSPACE_NAMES, *RUN_DECIDES})
-BACKGROUND_JOBS = frozenset({"Shell", "Job", "Jobs"})
+BACKGROUND_JOBS = frozenset({"Shell", *HELPER_TOOLS})
 SKILL_FILE = "SKILL.md"
 
 
@@ -555,6 +556,13 @@ def _grants(resolved: Resolved) -> dict[str, _Grant]:
             "orchestration.delegate_to", bool(resolved.orchestration.delegate_to)
         ),
         **dict.fromkeys(WORKSPACE_NAMES, _Grant("workspace: true", bool(resolved.workspace))),
+        **dict.fromkeys(
+            HELPER_TOOLS,
+            _Grant(
+                "workspace: true or orchestration.background",
+                bool(resolved.workspace or resolved.orchestration.background),
+            ),
+        ),
     }
 
 
@@ -619,12 +627,18 @@ def _check_sections(
             )
 
 
-def _check_jobs_go_together(who: str, denied: Collection[str]) -> None:
-    named = BACKGROUND_JOBS.intersection(denied)
-    if named and named != BACKGROUND_JOBS:
+def _check_jobs_go_together(who: str, denied: Collection[str], shell: bool) -> None:
+    together = BACKGROUND_JOBS if shell else HELPER_TOOLS
+    named = together.intersection(denied)
+    if not named or named == together:
+        return
+    if shell:
         raise ConfigurationError(
             f"compiled: {who} lists only {', '.join(sorted(named))} of Shell, Job and Jobs in tools.deny; Shell can start a job only Job and Jobs can read or stop, so deny the three together or none of them"
         )
+    raise ConfigurationError(
+        f"compiled: {who} lists only {', '.join(sorted(named))} of Job and Jobs in tools.deny; Jobs lists the helpers Job reads, waits on, messages and stops, so deny the two together or neither"
+    )
 
 
 def _picked_tools(
@@ -635,7 +649,11 @@ def _picked_tools(
     allowed = _names(who, "allow", resolved.tools.allow, declared, runtime)
     if resolved.instructions is not None:
         _check_sections(who, allowed, grants, resolved.kind)
-        _check_jobs_go_together(who, denied)
+        _check_jobs_go_together(
+            who,
+            denied,
+            bool(resolved.workspace) or not resolved.orchestration.background,
+        )
     return _Picked(
         [name for name in dict.fromkeys(allowed) if name not in denied],
         frozenset(name for name, grant in grants.items() if grant.given) - denied,

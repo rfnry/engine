@@ -1557,13 +1557,14 @@ the agent is offered and fingerprinted as before. `background: true` without `de
 `ConfigurationError` when the engine loads (`compiled: agent 'lead' sets orchestration.background
 but delegates to no agent; name them in orchestration.delegate_to`), and a decision agent takes
 neither key. A `Delegate` dispatched through an `EngineTools` or `engine.tool` belongs to no run
-that can wait for a helper, so it takes no `background` either.
+that can wait for a helper, so it takes no `background` either, and an `EngineTools` holds no `Job`
+or `Jobs` over helpers.
 
 With it, `Delegate` takes `background`, a boolean the model sets to `true` to start a helper. The
 call returns at once with a job id, `{"job": "d1"}`, and the model goes on with its turn while the
 helper runs. Ids are `d1`, `d2`, … in the order a run starts its helpers, numbered after the highest
-one a `Delegate` result or a notice holds in the messages the run reads — its `history` from `start`
-— so its model never sees two `d1`; a long stored conversation read through windows may repeat a
+one a `Delegate` result, a notice, a `Job` call's `id` or a `Jobs` result holds in the messages the
+run reads — its `history` from `start` — so its model never sees two `d1`; a long stored conversation read through windows may repeat a
 `dN` outside one window, and each helper's step keeps that helper's own `run_id`. The `d` keeps them
 apart from a workspace's `j1`. A helper runs as a synchronous child does — the run's tools,
 workspace, tags, `approve`, `on_event` and models, under the same scope, with a stop chained below
@@ -1592,6 +1593,35 @@ and reads the first line. A helper's reply holds whatever the helper read, a hos
 included, so write the lead's instructions to treat a notice as it treats a tool result, not as the
 person. Every helper that ended since the last model call is taken at once, in the order they ended,
 so many helpers ending together are one wake-up and one model call.
+
+The lead also gets two tools over its helpers, `Job` and `Jobs`, workspace or not.
+`Job(id, wait=0, stop=false, send=null)` reads one helper by its id: `{"running": true, "agent":
+"prover", "asking": null}` while it runs — `asking` is the question it waits on, `null` when none —
+and once it has ended the same with its `reply`, a decision helper's `answers` (and `routed_to`, as
+`Delegate` returns them), its `error`, or under `stopped` what it had said. `wait` is seconds to wait
+first, up to the call's deadline (the entry's `tools.timeout` and `Engine(tool_timeout=)`, as for
+any call; no bound when both are `None`), and returns as soon as that helper ends or any notice for
+the lead arrives, one already waiting included, so a lead waiting on one helper never sleeps through
+another. `stop=true` stops the helper after the wait, exactly as `engine.stop` on its `run_id`
+does — it and everything below it, its own helpers included, while its siblings and the lead go on
+— and then waits for that helper to end, for what is left of the call's deadline, so it returns
+the helper's `stopped` read even while another helper's notice waits; on a helper that has already
+ended it reads how it ended. Its notice reads `stopped`. `send` puts a message on a running
+generation helper's inbox, which it reads before its next model call, as it reads one `engine.send`
+gives it; a message sent as the helper gives its last reply is never read. Sending to a decision
+helper or to one that has ended is a tool error (`tools/helpers: helper d1 is a decision run and
+reads no messages`), and so is a `d` id no helper has, `d0` and `d01` included, workspace or not
+(`tools/helpers: there is no helper d9`), and a `wait` outside its bounds (`tools/helpers: wait must be between 0 and 30 seconds; got 40`). `Jobs()` lists
+the run's helpers in the order they started, `{"job": "d1", "agent": "prover", "started":
+"2026-11-21T10:00:00+00:00", "running": true}`, one that ended with `"running": false` and `ended`:
+`finished`, `failed` or `stopped`. A helper's notice reaches the lead whether or not `Job` read it
+first: the record is the truth, and reading a reply twice costs less than missing an end. `Job` and
+`Jobs` go through `approve` and are recorded as steps like any call, and a command's tool bridge
+carries neither, as it carries no `Delegate`. The two names come with `background: true` as they
+come with `workspace: true`: `tools.allow` may name them, `tools.deny` drops the two together — with
+`Shell` too when the agent has a workspace — and a run's `tools=` holding one is a
+`ConfigurationError` (`tools/engine_tools: duplicate tool name 'Job'`), as an `EngineTools` given
+one for such an agent is. With a workspace too, the same two tools hold both kinds of id, as [Workspace](#workspace) says.
 
 A run with helpers ends when its model replies with no tool call, no helper of its own runs and no
 notice waits. A reply with no tool call while a helper runs, or while a notice waits, stays in the
@@ -1987,6 +2017,12 @@ what it printed waits for `Job`, kept to its first and last `output_bytes // 2` 
 jobs is not in the system prompt, which would change with every job and cost the cached prefix of
 every conversation on the workspace; the model asks `Jobs()`.
 
+An agent whose entry sets `orchestration.background` too gets one `Job` and one `Jobs` for both
+kinds of id, their descriptions naming both: `Job` reads a job's `j` id exactly as above, under the
+workspace's `timeout`, and a helper's `d` id as [In the background](#in-the-background) says, under
+the run's deadline, and `Jobs()` lists the workspace's jobs, then the run's helpers. `send` on a
+job's id is a tool error (`tools/helpers: job j1 is a command; send reaches only a helper`).
+
 A frontend shows the same jobs with `workspace.jobs()`, a list of `JobInfo(job, command, started,
 running, exit_code)`, and reads one with `workspace.output("j1")`, everything the job printed so far
 in the same cap. Neither changes what the model's `Job` reads next, and a job that ended leaves the
@@ -2005,7 +2041,7 @@ processes and on one loop.
 | --- | --- | --- |
 | `backend` | | where commands run and files live: `Local`, or one of yours |
 | `scope` | | the tenant the workspace belongs to |
-| `timeout` | `120` seconds | the limit on each `Shell`, `Job`, `Write` and `Edit` call; a `Shell` command still running is stopped — on `Local`, sent SIGTERM, then killed a second later with everything it started — and `Shell` returns what it printed with `timed_out: true` |
+| `timeout` | `120` seconds | the limit on each `Shell`, `Job` on a job, `Write` and `Edit` call; a `Shell` command still running is stopped — on `Local`, sent SIGTERM, then killed a second later with everything it started — and `Shell` returns what it printed with `timed_out: true` |
 | `output_bytes` | `30_000` | the cap on `stdout` and on `stderr`, each keeping its first and last half |
 | `bridge` | `True` | lets a command call the run's tools, below; `False` turns it off |
 | `tree` | `None` | where the folder of the agents is mounted in the sandbox, as commands see it, below |
@@ -2019,7 +2055,8 @@ processes and on one loop.
 | `env` | `PATH`, `HOME` (the directory), `LANG` | the only environment commands see, so the service's own keys never reach them |
 
 The workspace's `timeout` replaces `Engine(tool_timeout=)` for `Shell`, `Job`, `Write` and `Edit`,
-so a ten-minute build and a thirty-second API call live in the same engine. A `shell` whose first
+so a ten-minute build and a thirty-second API call live in the same engine; a `Job` on a helper's id
+keeps the run's deadline. A `shell` whose first
 word is not on `PATH` is a `ConfigurationError` that says so; pass `shell=["sh", "-c"]` on a system
 that has only a POSIX shell, such as Alpine.
 
@@ -2166,8 +2203,8 @@ connection closed at the cap of 64 below, refused before its line is read, count
 budget.
 
 The socket carries every tool the run offers the model — the builtins, `History`, the folder tools,
-the run's `tools=` — except the workspace's own (`Shell`, `Job`, `Jobs`, `Write`, `Edit`) and any
-tool named `Output` or `Delegate`, the engine's or one of the run's `tools=`, which the model still
+the run's `tools=` — except the workspace's own (`Shell`, `Job`, `Jobs`, `Write`, `Edit`), the
+same `Job` and `Jobs` over a lead's helpers, and any tool named `Output` or `Delegate`, the engine's or one of the run's `tools=`, which the model still
 calls. A name the socket does not carry gets the model's error for an unknown tool,
 `InputError: tools: unknown tool 'Shell'`, and leaves no step and no event. Connections are answered
 as they come, so calls a script makes at once — from threads, or with `asyncio` — run at once, as a
@@ -2342,7 +2379,7 @@ it is answered `InputError: tools: unknown tool 'ghost'` at once and leaves its 
 step records `approved` — `True`, `False`, or `None` when nobody was asked — and the exported rows
 keep it, so a person's refusals become labels. A
 workspace's calls carry what a person needs to decide: `background` on `Shell`, `wait` and `stop` on
-`Job`.
+`Job`, and a lead's `Job` its `send` too.
 
 Time spent waiting is not a tool's time: the deadline starts when the call runs. `stop.now()` ends
 a wait. Delegated and routed runs are asked through the same function, with their own agent's name;
@@ -2873,8 +2910,9 @@ through `tools=` and the file lists under `runtime_tools:`, and a run that does 
 before any model call (`tools/engine_tools: agent 'billing' lists 'handoff' in tools.allow, which
 this run does not offer; its tools are Glob, Grep, LS, Load, Read, refund`). The sections grant
 `Read`, `Grep`, `Glob`, `LS` and `Load` with `files` or `skills`,
-`Delegate` with `orchestration.delegate_to`, and `Shell`, `Job`, `Jobs`, `Write` and `Edit` with
-`workspace: true`, whether or not `allow` names them; naming one when its section is missing is a
+`Delegate` with `orchestration.delegate_to`, `Shell`, `Job`, `Jobs`, `Write` and `Edit` with
+`workspace: true`, and `Job` and `Jobs` with `orchestration.background` too, whether or not `allow`
+names them; naming one when its section is missing is a
 `ConfigurationError` naming the section, since no run can supply it. `History` comes with a run whose
 `start=` is past the beginning of its history and `Output` with `expect=`: the run decides them, so
 either one in `allow` or `deny`, in any case, is a `ConfigurationError`. `deny` applies
@@ -2882,7 +2920,9 @@ after `allow`, across the entry and its mode, and drops exactly the tool it name
 section grants included: `deny: [Delegate]` takes delegation away, and `deny: [Write]` leaves
 `Edit` and the rest. `Shell`, `Job` and `Jobs` go together or not at all, since `Shell` can start a
 job only `Job` and `Jobs` can read or stop, so denying one or two of them is a
-`ConfigurationError`. A name in `allow` or `deny` that differs only by case from a declared
+`ConfigurationError`. An agent with `orchestration.background` and no workspace has no `Shell`, so
+there `Job` and `Jobs` go together alone: `deny: [Job, Jobs]` takes them away, and denying one of
+them is a `ConfigurationError`. A name in `allow` or `deny` that differs only by case from a declared
 tool or one the engine gives is a `ConfigurationError` naming the right one (`compiled: agent
 'billing' lists 'read' in tools.allow; did you mean 'Read'? ...`); any other name that is none of
 them is refused when the engine loads (`compiled: agent 'billing' lists 'hadnoff' in tools.allow,
@@ -2898,7 +2938,7 @@ applied, a declared tool named like one the engine gives (`Read`, `Grep`, `Glob`
 `Shell`, `Job`, `Jobs`, `Write`, `Edit`, `Delegate`, `History`, `Output`), and a module, function
 or schema that is not there are `ConfigurationError`s when the engine loads. The smallest of the
 tool's own `timeout`, the entry's `tools.timeout` and `Engine(tool_timeout=)` bounds each call; a
-`Workspace`'s own `timeout` replaces them for `Shell`, `Job`, `Write` and `Edit`. `max_parallel` is
+`Workspace`'s own `timeout` replaces them for `Shell`, `Job` on a job, `Write` and `Edit`. `max_parallel` is
 one of the [limits](#limits).
 
 ### From a shell, with its tests beside it
@@ -3154,7 +3194,8 @@ deadline is its worker's, above. `History` reads your storage under the same dea
 A run's tools are async and the deadline cancels them, so a body that runs blocking work in a thread
 must put its own limit on that work: cancelling the await does not stop the thread. A workspace's
 `Shell`, `Job`, `Write` and `Edit` keep the workspace's own `timeout` instead. `Delegate` has no
-deadline. The child run it starts is bounded by its own tool calls and `max_model_calls`.
+deadline. A lead's `Job` on a helper's id takes the deadline as the most its `wait` may be, and
+returns its read once the wait is over. The child run it starts is bounded by its own tool calls and `max_model_calls`.
 
 The builtins are bounded whatever the deadline. `Read` returns UTF-8 text and refuses anything else
 with a pointer to `Load`; `offset` and `limit` select lines. `Load` takes any file up to 20 MB and
@@ -3564,7 +3605,9 @@ without the JSON beside it, a tool named like one the engine gives, a pattern of
 `tools.deny` that matches nothing, a name in either under neither `tools:` nor `runtime_tools:` and
 not one the engine gives, a runtime tool nothing picks, named like a declared tool or one the engine
 gives or listed twice, a name in `tools.allow` whose section is missing, `Output` or `History` in
-either, and one or two of `Shell`, `Job` and `Jobs` in `tools.deny` without the rest; a script or a
+either, and one or two of `Shell`, `Job` and `Jobs` in `tools.deny` without the rest — for an agent
+that sets `orchestration.background` without a workspace, one of `Job` and `Jobs` without the other
+instead; a script or a
 module beside it that is not valid Python, imports the engine, a module relatively, a module beside
 it inside a function, a package folder beside it, a name below a `.py` file beside it, the server's
 own code, or a module that resolves to nothing outside `try/except ImportError` and `if

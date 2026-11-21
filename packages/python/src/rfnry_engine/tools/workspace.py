@@ -27,8 +27,10 @@ from rfnry_engine.tools.tools import Tool
 
 logger = logging.getLogger(__name__)
 
-WORKSPACE_TOOLS = frozenset({"Shell", "Job", "Write", "Edit"})
-WORKSPACE_NAMES = frozenset({*WORKSPACE_TOOLS, "Jobs"})
+JOB_TOOL = "Job"
+JOBS_TOOL = "Jobs"
+WORKSPACE_TOOLS = frozenset({"Shell", JOB_TOOL, "Write", "Edit"})
+WORKSPACE_NAMES = frozenset({*WORKSPACE_TOOLS, JOBS_TOOL})
 GRACE = 1.0
 CHUNK = 65_536
 TEXT_BYTES = 5 * 1024 * 1024

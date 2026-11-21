@@ -351,7 +351,8 @@ async def test_a_bare_name_files_grant_runs(tmp_path: Path) -> None:
     ("name", "section"),
     [
         ("Shell", r"workspace: true"),
-        ("Jobs", r"workspace: true"),
+        ("Job", r"workspace: true or orchestration\.background"),
+        ("Jobs", r"workspace: true or orchestration\.background"),
         ("Delegate", r"orchestration\.delegate_to"),
         ("Read", r"files or skills"),
         ("Load", r"files or skills"),

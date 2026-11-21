@@ -238,7 +238,8 @@ async def test_background_is_offered_only_to_an_entry_that_opts_in(tmp_path: Pat
     opted = Crew([text_reply("done")])
     run = await team(crew(tmp_path / "opted", background=True), opted).run("lead", "acme", "go")
     assert isinstance(run, Generation)
-    [tool] = run.tools
+    assert [tool.name for tool in run.tools] == ["Delegate", "Job", "Jobs"]
+    tool = run.tools[0]
     assert list(tool.input_schema["properties"]) == ["agent", "input", "questions", "background"]
     assert tool.input_schema["properties"]["background"]["type"] == "boolean"
     assert tool.input_schema["required"] == ["agent", "input"]
