@@ -785,8 +785,12 @@ runs. It is the whole observability payload; hand it to your own telemetry:
 run.run_id, run.model, run.calls, run.usage.input, run.usage.output, run.duration_ms
 for step in run.steps:
     step.tool, step.args, step.is_error, step.duration_ms, step.child_run_id
-run.children                                         # runs made through Delegate, in step order
+run.children                                         # runs made through Delegate, as they joined
 ```
+
+`run.children` holds them in the order they joined the run: a synchronous child when its step is
+answered, so in step order, and a [helper](#in-the-background) when it ends. `refinery.run` reads
+them back in that order.
 
 `run.model` is the model the replies reported, the resolved one — a dated snapshot, say. When no
 reply reported one — a run stopped during its first model call — it is the adapter's `model`
@@ -867,8 +871,9 @@ no model call. A delegated run that fails stays under its parent in `children`, 
 the parent's model was given, and the parent goes on; a routed run that fails fails its router,
 which is recorded with its answers and the failed run in `routed_to`, or `None` when the routed run
 was refused before its first model call. A run that failed keeps the delegated runs that had
-returned in `children`: those its steps answered, in step order, then those it had not answered yet,
-in the order they started, as `refinery.run` reads them back.
+returned in `children`: those its steps answered and the helpers that ended, in the order they
+joined, then those it had not answered yet, in the order they started, as `refinery.run` reads them
+back.
 
 Pass `tags=` to mark a run with what you will group it by later — the commit of the folder, an
 experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64
@@ -1575,11 +1580,11 @@ apart from a workspace's `j1`. A helper runs as a synchronous child does — the
 workspace, tags, `approve`, `on_event` and models, under the same scope, with a stop chained below
 the lead's and an inbox of its own — and the step that started it carries its `run_id` at once, so
 `engine.send` and `engine.stop` reach it from that step's `ToolResultReady` on; its record joins
-`children` when it ends, in the order helpers end. A decision agent runs in the background too,
-its one call its whole run. A helper is a level below its lead, and one whose entry opts in may
-start helpers of its own. `approve` is asked about a background `Delegate` as about any call, and a
-`Delegate` refused before its helper starts — by `approve`, past `max_background`, or for
-`questions` that do not fit — starts no helper and spends no id.
+`children` when it ends, in the order helpers end, and is read back there. A decision agent runs in
+the background too, its one call its whole run. A helper is a level below its lead, and one whose
+entry opts in may start helpers of its own. `approve` is asked about a background `Delegate` as
+about any call, and a `Delegate` refused before its helper starts — by `approve`, past
+`max_background`, or for `questions` that do not fit — starts no helper and spends no id.
 
 When a helper ends, the lead hears it before its next model call, as a `role="user"` message whose
 first line names the helper and how it ended:

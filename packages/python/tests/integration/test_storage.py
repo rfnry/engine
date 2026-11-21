@@ -26,10 +26,10 @@ from unit.fakes import (
     delegating,
     generation_record,
     lead,
-    released,
     sorter,
     team,
     text_reply,
+    until,
 )
 from unit.trees import provided, write_folder
 
@@ -52,7 +52,7 @@ from rfnry_engine.models import (
 from rfnry_engine.records import Decision, Fingerprint, Generation
 from rfnry_engine.refinery.labels import Outcome, Review
 from rfnry_engine.refinery.postgres import PostgresStorage
-from rfnry_engine.refinery.refinery import Refinery, label_of
+from rfnry_engine.refinery.refinery import Refinery, label_of, reshaped
 from rfnry_engine.refinery.storage import LabelRow, RunRow, Storage
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, Tools
@@ -1325,29 +1325,44 @@ async def test_a_recorded_call_reads_back(storage: Storage, tmp_path: Path) -> N
     assert [c.call for c in again.children] == [c.call for c in run.children]
 
 
-async def test_a_lead_s_background_helpers_are_stored_as_its_children_and_read_back(
+async def test_a_lead_s_children_are_stored_and_read_back_in_the_order_they_ended(
     tmp_path: Path, storage: Storage
 ) -> None:
-    gate = asyncio.Event()
+    first, second = asyncio.Event(), asyncio.Event()
     model = Crew(
-        [background("part one", "part two"), text_reply("waiting"), text_reply("final")],
-        {"part one": [gate, text_reply("one done")], "part two": [gate, text_reply("two done")]},
+        [
+            background("part one", "part two"),
+            delegating("worker", "sync part", call_id="s1"),
+            *[text_reply("waiting")] * 4,
+        ],
+        {
+            "part one": [first, text_reply("one done")],
+            "part two": [second, text_reply("two done")],
+            "sync part": [text_reply("sync done")],
+        },
     )
     refinery = Refinery(storage)
     engine = team(crew(tmp_path, background=True), model, refinery=refinery)
     work = asyncio.create_task(engine.run("lead", "acme", "go"))
-    run = await released(work, model, gate)
+    await until(lambda: len(model.calls["lead"]) == 3, "the lead's third call")
+    second.set()
+    await until(lambda: len(model.calls["lead"]) == 4, "the lead's fourth call")
+    first.set()
+    run = await asyncio.wait_for(work, 5)
+    assert isinstance(run, Generation)
+    inputs = [child.input for child in run.children if isinstance(child, Generation)]
+    assert inputs == ["sync part", "part two", "part one"]
+    assert [step.child_run_id for step in run.steps] == [
+        child.run_id for child in (run.children[2], run.children[1], run.children[0])
+    ]
     stored = await refinery.run("acme", run.run_id)
-    assert isinstance(stored, Generation)
-    assert {child.run_id for child in stored.children} == {
-        str(step.child_run_id) for step in run.steps
-    }
-    assert {child.parent_run_id for child in stored.children} == {run.run_id}
-    notices = [m.notice for m in stored.conversation if m.notice is not None]
-    assert {(n.job, n.kind) for n in notices} == {("d1", "finished"), ("d2", "finished")}
-    assert stored.conversation == run.conversation
+    assert stored == run
     row = await storage.get_run("acme", run.run_id)
     assert row is not None
+    assert row.body["children"] == [child.run_id for child in run.children]
+    assert reshaped(row) == row.body
+    notices = [m.notice for m in run.conversation if m.notice is not None]
+    assert [(n.job, n.kind) for n in notices] == [("d2", "finished"), ("d1", "finished")]
     body = row.body["conversation"]
     assert sum("notice" in m for m in body) == len(notices)
     assert "notice" not in body[0]

@@ -44,6 +44,11 @@ from rfnry_engine.tools.workspace import Workspace
 REPORTED = ("human", "world")
 
 
+def _by_step(body: dict[str, Any]) -> dict[str, int]:
+    named = [step["child_run_id"] for step in body.get("steps", [])]
+    return {run_id: index for index, run_id in enumerate(named) if run_id is not None}
+
+
 def flatten(run: Run, recorded: datetime) -> list[RunRow]:
     body = run.model_dump(mode="json")
     children: list[Run] = []
@@ -54,7 +59,13 @@ def flatten(run: Run, recorded: datetime) -> list[RunRow]:
             )
         del body["messages"]
         body["sent"] = len(run.messages)
-        body["children"] = []
+        order = _by_step(body)
+        joined = [child.run_id for child in run.children]
+        stepped = sorted(
+            run.children,
+            key=lambda child: (order.get(child.run_id, len(order)), child.at, child.run_id),
+        )
+        body["children"] = [] if [child.run_id for child in stepped] == joined else joined
         children = list(run.children)
     elif isinstance(run, Decision):
         body["routed_to"] = None
@@ -88,11 +99,14 @@ def children_of(rows: list[RunRow]) -> dict[str, list[RunRow]]:
 
 def unflatten(row: RunRow, under: dict[str, list[RunRow]]) -> dict[str, Any]:
     body: dict[str, Any] = _copied(row.body)
-    named = [step["child_run_id"] for step in body.get("steps", [])]
-    order = {run_id: index for index, run_id in enumerate(named) if run_id is not None}
+    listed = {run_id: index for index, run_id in enumerate(body.get("children", []))}
+    order = _by_step(body)
     children = sorted(
         under.get(row.run_id, []),
-        key=lambda child: order.get(child.run_id, len(order)),
+        key=lambda child: (
+            listed.get(child.run_id, len(listed)),
+            order.get(child.run_id, len(order)),
+        ),
     )
     nested = [unflatten(child, under) for child in children]
     if row.kind == "generation":
@@ -116,7 +130,10 @@ def reshaped(row: RunRow) -> dict[str, Any]:
     body: dict[str, Any] = _copied(row.body)
     if row.kind == "generation" and "sent" not in body:
         body["sent"] = len(body.pop("messages"))
-    return flatten(read_back(row.model_copy(update={"body": body}), {}), row.recorded)[0].body
+    shaped = flatten(read_back(row.model_copy(update={"body": body}), {}), row.recorded)[0].body
+    if row.kind == "generation":
+        shaped["children"] = body.get("children", [])
+    return shaped
 
 
 def printed(row: RunRow) -> Fingerprint:

@@ -11,7 +11,7 @@ from rfnry_engine.models import Image, Message, Part, Reply, Text, ToolCall
 from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.refinery.labels import Label, Outcome, Review
 from rfnry_engine.refinery.postgres import PostgresStorage, _Encoded
-from rfnry_engine.refinery.refinery import Refinery, label_of
+from rfnry_engine.refinery.refinery import Refinery, children_of, flatten, label_of, read_back
 from rfnry_engine.refinery.storage import RunRow, Storage
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.tools import Tool, Tools
@@ -304,6 +304,19 @@ async def test_delegated_children_read_back_in_the_order_of_their_steps(
     assert isinstance(run, Generation) and len(run.children) == 3
     got = await refinery.run("acme", run.run_id)
     assert got.model_dump() == run.model_dump()
+
+
+async def test_children_in_step_order_are_stored_unnamed_and_read_back_in_that_order(
+    fixtures: Path,
+) -> None:
+    calls = [delegate_triage(f"d{n}", f"ticket {n}").tool_calls[0] for n in range(3)]
+    llm = Scripted(Reply(tool_calls=calls, stop_reason="tool_use"), text_reply("All triaged."))
+    engine = Engine(fixtures, providers=provided({"strong": llm, "judge": Desk()}))
+    run = await engine.run("support", "acme", "Three tickets")
+    assert isinstance(run, Generation) and len(run.children) == 3
+    top, *below = flatten(run, run.at)
+    assert top.body["children"] == []
+    assert read_back(top, children_of(below[::-1])) == run
 
 
 async def test_a_stopped_run_read_back_continues_the_next_run(
