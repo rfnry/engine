@@ -974,11 +974,11 @@ reasoning as the adapter returned it, and reasoning streamed before `stop.now()`
 that does not stream its reasoning sends none.
 
 Every generation run also ends with a `RunEnded`, after its last other event: `run_id`, `agent`, the
-same `call` its `RunStarted` carried, `stopped` (`"now"` or `"after_step"`, whether set by the `stop`
-given to `run` or by `engine.stop` on its id) and `error`, the text of the failure record's `error`
-(`"RunawayError: engine: run exceeded 2 model calls"`), sent before `run` raises. A reply, an
-accepted `Output`, a stop and a failure each end this way; a decision run sends none, and a run its
-consumer cancels sends none. A consumer that merges a delegated run's workspace or tears its
+same `call` its `RunStarted` carried, `stopped` (`"now"` or `"after_step"`, whether set by the
+`stop` given to `run` or by `engine.stop` on its id) and `error`, the text of the failure record's
+`error` (`"RunawayError: engine: run exceeded 2 model calls"`), sent before `run` raises. A reply,
+an accepted `Output`, a stop and a failure each end this way; a decision run sends none, and a run
+its consumer cancels sends none. A consumer that merges a delegated run's workspace or tears its
 sandbox down listens for it rather than for the parent's `ToolResultReady`.
 
 A person can stop or steer a run while it works. Pass `stop=Stop()` and call `stop.now()` to cancel
@@ -1672,11 +1672,11 @@ failed before it answered; you stop with it`, as does an `Ask` the helper makes 
 stopping, and the helper then stops with its lead; a stop `now()` reaches the helper at once and
 cuts the call as it cuts any call in flight, `stopped by the user`. The name comes with the lead's
 `background: true`: a tool of the folder, declared or runtime, named `Ask` on an agent such a lead
-names in `delegate_to` is a `ConfigurationError` when the engine loads (`compiled: agent 'worker' has
-a tool named 'Ask', which agent 'lead' gives every helper it starts in the background; rename the
-tool`), and a run's `tools=` holding one answers every background `Delegate` of a generation agent
-with a tool error (`tools/engine_tools: a tool named 'Ask' collides with the builtin`), starting no
-helper and spending no id. A folder that does not opt in keeps any tool named `Ask`.
+names in `delegate_to` is a `ConfigurationError` when the engine loads (`compiled: agent 'worker'
+has a tool named 'Ask', which agent 'lead' gives every helper it starts in the background; rename
+the tool`), and a run's `tools=` holding one answers every background `Delegate` of a generation
+agent with a tool error (`tools/engine_tools: a tool named 'Ask' collides with the builtin`),
+starting no helper and spending no id. A folder that does not opt in keeps any tool named `Ask`.
 
 A run with helpers ends when its model replies with no tool call, no helper of its own runs and no
 notice waits; such a reply first answers with a tool error every `Ask` it was given, as above.
@@ -3034,10 +3034,10 @@ section grants included: `deny: [Delegate]` takes delegation away, and `deny: [W
 job only `Job` and `Jobs` can read or stop, so denying one or two of them is a
 `ConfigurationError`. An agent with `orchestration.background` and no workspace has no `Shell`, so
 there `Job` and `Jobs` go together alone: `deny: [Job, Jobs]` takes them away, and denying one of
-them is a `ConfigurationError`. A name in `allow` or `deny` that differs only by case from a declared
-tool or one the engine gives is a `ConfigurationError` naming the right one (`compiled: agent
-'billing' lists 'read' in tools.allow; did you mean 'Read'? ...`); any other name that is none of
-them is refused when the engine loads (`compiled: agent 'billing' lists 'hadnoff' in tools.allow,
+them is a `ConfigurationError`. A name in `allow` or `deny` that differs only by case from a
+declared tool or one the engine gives is a `ConfigurationError` naming the right one (`compiled:
+agent 'billing' lists 'read' in tools.allow; did you mean 'Read'? ...`); any other name that is none
+of them is refused when the engine loads (`compiled: agent 'billing' lists 'hadnoff' in tools.allow,
 which is not under tools: or runtime_tools: and is not a tool the engine gives; declare it, or fix
 the name`), so a mistyped name fails at load, not at the first run that lacks it, and
 `rfnry-engine folder check` lists each agent's runtime tools. In `deny`, a runtime tool is dropped.
@@ -3050,8 +3050,8 @@ applied, a declared tool named like one the engine gives (`Read`, `Grep`, `Glob`
 `Shell`, `Job`, `Jobs`, `Write`, `Edit`, `Delegate`, `History`, `Output`), and a module, function
 or schema that is not there are `ConfigurationError`s when the engine loads. The smallest of the
 tool's own `timeout`, the entry's `tools.timeout` and `Engine(tool_timeout=)` bounds each call; a
-`Workspace`'s own `timeout` replaces them for `Shell`, `Job` on a job, `Write` and `Edit`. `max_parallel` is
-one of the [limits](#limits).
+`Workspace`'s own `timeout` replaces them for `Shell`, `Job` on a job, `Write` and `Edit`.
+`max_parallel` is one of the [limits](#limits).
 
 ### From a shell, with its tests beside it
 
@@ -3307,7 +3307,8 @@ A run's tools are async and the deadline cancels them, so a body that runs block
 must put its own limit on that work: cancelling the await does not stop the thread. A workspace's
 `Shell`, `Job`, `Write` and `Edit` keep the workspace's own `timeout` instead. `Delegate` has no
 deadline. A lead's `Job` on a helper's id takes the deadline as the most its `wait` may be, and
-returns its read once the wait is over. The child run it starts is bounded by its own tool calls and `max_model_calls`.
+returns its read once the wait is over. The child run it starts is bounded by its own tool calls and
+`max_model_calls`.
 
 The builtins are bounded whatever the deadline. `Read` returns UTF-8 text and refuses anything else
 with a pointer to `Load`; `offset` and `limit` select lines. `Load` takes any file up to 20 MB and
