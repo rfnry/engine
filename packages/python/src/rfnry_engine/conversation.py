@@ -8,6 +8,14 @@ from rfnry_engine.models import ConversationStore, Message, _handed
 HISTORY = TypeAdapter(list[Message])
 
 
+def _measured(key: str, length: object) -> int:
+    if not isinstance(length, int) or isinstance(length, bool) or length < 0:
+        raise InputError(
+            f"conversation: the store's length of conversation {key!r} must be a whole number from 0; got {length!r}"
+        )
+    return length
+
+
 class Conversation:
     def __init__(self, store: ConversationStore, scope: str, key: str) -> None:
         self.store = store
@@ -24,11 +32,7 @@ class Conversation:
             raise
 
     async def opened(self) -> list[Message]:
-        length = await self._called(self.store.length)
-        if not isinstance(length, int) or isinstance(length, bool) or length < 0:
-            raise InputError(
-                f"conversation: the store's length of conversation {self.key!r} must be a whole number from 0; got {length!r}"
-            )
+        length = _measured(self.key, await self._called(self.store.length))
         if length == 0:
             return []
         found = await self._called(self.store.read, 0)
@@ -45,6 +49,16 @@ class Conversation:
             )
         self.saved = length
         return [_handed(message) for message in held]
+
+    async def used(self, key: str) -> bool:
+        if self.failed is not None:
+            raise self.failed
+        try:
+            length = await self.store.length(self.scope, key)
+        except Exception as exc:
+            self.failed = exc
+            raise
+        return _measured(key, length) > 0
 
     async def window(self, length: int) -> int:
         start = await self._called(self.store.window, length)

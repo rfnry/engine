@@ -1363,13 +1363,35 @@ the input and what it added.
 One run holds a conversation at a time in one engine: a second run of the same name and scope
 while the first is in flight is an `InputError` (`engine: conversation 'dana-1' of scope 'acme' is
 in use by a run in flight`), and the name is free again once the first returns; the same name in
-another scope is another conversation. A store shared by processes locks a conversation itself. A
-delegated run, in the background or not, keeps nothing in the store; a run a decision agent routes
-to keeps the conversation under its router's name, and a decision run calls no store.
+another scope is another conversation. A store shared by processes locks a conversation itself.
+
+Every generation run below a run with a store keeps a conversation of its own in the same store,
+with its own window and its own `History`, under a name that is a path below its lead's: a helper
+under its lead's name and its job id, `dana-1/d1`, and that helper's own helpers under its name,
+`dana-1/d1/d1`; a synchronous `Delegate`'s child under its lead's name and its `run_id`,
+`dana-1/<run_id>`. A store can list or drop a whole team by the prefix, and the engine never lists.
+A run a decision agent routes to keeps the conversation under its router's name, so a top decision
+agent given a store routes to a run that continues `dana-1`. A decision run calls no store, and a
+decision agent delegated to keeps no conversation, nor does a run it routes to. A consult keeps
+none either: `engine.tool` and `EngineTools` take no store, and the run a consult starts inside a
+run with a store is a top run of its own, keeping nothing.
+
+A helper never writes into a conversation already in use. A background `Delegate` returns its job
+id at once, and the helper starts writing under its name, while the lead's conversation names that
+id only once the batch is answered and stored, so a crash between the two can leave `dana-1/d3`
+full with a conversation the lead's never mentions, and a resume would give the next helper `d3`
+again. Before a generation helper starts, its lead therefore asks the store's `length` of its name,
+and passes over the id while a run in flight on this engine holds that name or the store holds a
+message under it: the helper takes the next free id, so `Delegate` returns `{"job": "d4"}`.
 
 A store call that raises fails the run with that error, and the engine never retries one. A store
-retries what it can, such as a brief database error, before it raises. A lead that fails stops its
-helpers, and a resume reports each of them as `lost`.
+retries what it can, such as a brief database error, before it raises. The `length` a lead asks
+before a helper starts is its own call: a store that raises there fails the lead, as does a length
+that is not a whole number from 0, and no helper starts — never a tool result, even when another
+call of the same batch fails too, whose error is then logged. A child's own store call fails only
+that child, as its model's error does: a helper's notice reads `failed` (`[helper d1 · worker ·
+failed]`, then `OSError: disk full`), and a synchronous child's `Delegate` is answered with it as
+a tool error. A lead that fails stops its helpers, and a resume reports each of them as `lost`.
 
 ### Decision agents
 
@@ -1684,15 +1706,18 @@ run reads — its `history` from `start` — so the messages its model is sent n
 What came before `start` is not read: `History`, which a run that starts past the beginning offers,
 may show its model an older `dN` there, as a long stored conversation read through windows may
 repeat one, and each helper's step keeps that helper's own `run_id`. The `d` keeps them apart from a
-workspace's `j1`. A helper runs as a synchronous child does — the run's tools, workspace, tags,
-`approve`, `on_event` and models, under the same scope, with a stop chained below the lead's and an
-inbox of its own — and the step that started it carries its `run_id` at once, so `engine.send` and
-`engine.stop` reach it from that step's `ToolResultReady` on; its record joins `children` when it
-ends, in the order helpers end, and is read back there. A decision agent runs in the background too,
-its one call its whole run. A helper is a level below its lead, and one whose entry opts in may
-start helpers of its own. `approve` is asked about a background `Delegate` as about any call, and a
-`Delegate` refused before its helper starts — by `approve`, past `max_background`, or for
-`questions` that do not fit — starts no helper and spends no id.
+workspace's `j1`. A run with a store keeps each generation helper's conversation under its own name
+and the helper's id, `survey-1/d1`, and passes over an id whose name is already in use, so its ids
+may skip one ([A conversation in your store](#a-conversation-in-your-store)). A helper runs as a
+synchronous child does — the run's tools, workspace, tags, `approve`, `on_event` and models, under
+the same scope, with a stop chained below the lead's and an inbox of its own — and the step that
+started it carries its `run_id` at once, so `engine.send` and `engine.stop` reach it from that
+step's `ToolResultReady` on; its record joins `children` when it ends, in the order helpers end, and
+is read back there. A decision agent runs in the background too, its one call its whole run. A
+helper is a level below its lead, and one whose entry opts in may start helpers of its own.
+`approve` is asked about a background `Delegate` as about any call, and a `Delegate` refused before
+its helper starts — by `approve`, past `max_background`, or for `questions` that do not fit — starts
+no helper and spends no id.
 
 When a helper ends, the lead hears it before its next model call, as a `role="user"` message whose
 first line names the helper and how it ended:

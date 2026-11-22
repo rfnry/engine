@@ -129,6 +129,12 @@ class Helpers:
         self._notices: list[Message] = []
         self._settling = False
 
+    def upcoming(self) -> str:
+        return f"d{self._next}"
+
+    def skip(self) -> None:
+        self._next += 1
+
     def start(
         self,
         agent: str,
@@ -138,7 +144,7 @@ class Helpers:
         run: Callable[[Helper], Awaitable[Generation | Decision | None]],
     ) -> Helper:
         helper = Helper(
-            job=f"d{self._next}",
+            job=self.upcoming(),
             agent=agent,
             kind=kind,
             run_id=run_id,
@@ -146,7 +152,7 @@ class Helpers:
             inbox=asyncio.Queue(),
             started=datetime.now(UTC),
         )
-        self._next += 1
+        self.skip()
         self._helpers[helper.job] = helper
         helper.task = asyncio.ensure_future(self._ran(helper, run))
         return helper

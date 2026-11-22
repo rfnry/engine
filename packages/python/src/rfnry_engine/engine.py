@@ -1735,6 +1735,7 @@ class Engine:
         tool_slots = _slots(spec.tool_parallel)
         shell_slots = _slots(None) if bridging else tool_slots
         delegate_slots = _slots(spec.delegate_parallel)
+        starting = asyncio.Lock()
         asked: list[ToolCall] = []
         usage = Usage()
         calls = 0
@@ -1771,6 +1772,7 @@ class Engine:
             queue: asyncio.Queue[Any],
             failed: list[Generation | Decision],
             lead: tuple[Helper, Helpers] | None,
+            key: str | None,
         ) -> _Options:
             return replace(
                 options,
@@ -1784,21 +1786,51 @@ class Engine:
                 source=None,
                 failed=failed,
                 lead=lead,
-                store=None,
-                key=None,
+                store=None if key is None else options.store,
+                key=key,
             )
 
-        def begin(target: AgentSpec, args: DelegateArgs) -> tuple[Content, bool, str | None, bool]:
-            permit_background(helpers.cap, [helper.job for helper in helpers.running()])
-            if target.kind == "generation":
-                refuse_builtin(options.tools, ASK_TOOL)
-            questions = _asked(target, args.questions)
+        def keyed(target: AgentSpec, below: str) -> str | None:
+            if conversation is None or target.kind != "generation":
+                return None
+            return f"{conversation.key}/{below}"
+
+        async def taken(key: str | None) -> bool:
+            if conversation is None or key is None:
+                return False
+            return (scope, key) in self._conversations or await conversation.used(key)
+
+        async def begin(
+            target: AgentSpec, args: DelegateArgs
+        ) -> tuple[Content, bool, str | None, bool]:
+            async with starting:
+                try:
+                    permit_background(helpers.cap, [helper.job for helper in helpers.running()])
+                    if target.kind == "generation":
+                        refuse_builtin(options.tools, ASK_TOOL)
+                    questions = _asked(target, args.questions)
+                except Exception as exc:
+                    return error_text(exc), True, None, False
+                while await taken(keyed(target, helpers.upcoming())):
+                    helpers.skip()
+                return launch(target, args, questions)
+
+        def launch(
+            target: AgentSpec, args: DelegateArgs, questions: dict[str, Question]
+        ) -> tuple[Content, bool, str | None, bool]:
             failed: list[Generation | Decision] = []
 
             async def run(helper: Helper) -> Generation | Decision | None:
                 if kind == "decision" and requested(helper.stop) == "now":
                     return None
-                forwarded = forward(questions, helper.stop, helper.inbox, failed, (helper, helpers))
+                forwarded = forward(
+                    questions,
+                    helper.stop,
+                    helper.inbox,
+                    failed,
+                    (helper, helpers),
+                    keyed(target, helper.job),
+                )
                 running = self._run(
                     target, scope, args.input, forwarded, run_id, run_id=helper.run_id
                 )
@@ -1826,23 +1858,32 @@ class Engine:
             return json.dumps({"job": helper.job}), False, helper.run_id, False
 
         async def delegate(call: ToolCall) -> tuple[Content, bool, str | None, bool]:
-            failed: list[Generation | Decision] = []
             try:
                 held = permit(spec, call.args, BackgroundArgs) if spec.background else None
-                if held is not None and held.background:
-                    return begin(self._agents[held.agent], held)
+            except Exception as exc:
+                return error_text(exc), True, None, False
+            if held is not None and held.background:
+                return await begin(self._agents[held.agent], held)
+            failed: list[Generation | Decision] = []
+            try:
                 async with delegate_slots:
                     if requested(stop) == "now":
                         return STOPPED, True, None, True
                     args = held or permit(spec, call.args, DelegateArgs)
                     target = self._agents[args.agent]
+                    child_id = uuid4().hex
                     forwarded = forward(
-                        _asked(target, args.questions), stop._below(), asyncio.Queue(), failed, None
+                        _asked(target, args.questions),
+                        stop._below(),
+                        asyncio.Queue(),
+                        failed,
+                        None,
+                        keyed(target, child_id),
                     )
                     child = await self._owned(
                         target,
                         forwarded.stop,
-                        self._run(target, scope, args.input, forwarded, run_id),
+                        self._run(target, scope, args.input, forwarded, run_id, run_id=child_id),
                     )
             except Exception as exc:
                 kept = failed[-1] if failed else None
@@ -1991,6 +2032,9 @@ class Engine:
                 if here is not None and here.failed is not None and here.failed not in raised:
                     held.append(here.failed)
             failures = [*raised, *held]
+            lost = None if conversation is None else conversation.failed
+            if lost is not None and any(error is lost for error in failures):
+                failures = [lost, *(error for error in failures if error is not lost)]
             for error in failures[1:]:
                 logger.error(
                     "engine: a further call of the same batch failed: %s", error, exc_info=error

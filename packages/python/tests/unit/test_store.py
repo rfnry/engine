@@ -897,7 +897,7 @@ async def test_job_ids_count_the_whole_stored_conversation(tmp_path: Path) -> No
             Message(role="assistant", content="ok"),
         ]
 
-    store = MemoryStore(lambda conversation, length: 10)
+    store = MemoryStore(lambda conversation, length: 10 if conversation == "c1" else 0)
     store.held[KEY] = [
         Message(role="user", content="earlier"),
         *delegated("x1", "d1"),
@@ -916,3 +916,5 @@ async def test_job_ids_count_the_whole_stored_conversation(tmp_path: Path) -> No
     run = await released(work, model, gate)
     assert [message.content for message in model.calls["lead"][0]] == ["later", "noted", "go"]
     assert run.steps[0].result == '{"job": "d4"}'
+    [helper] = run.children
+    assert isinstance(helper, Generation) and store.held[("acme", "c1/d4")] == helper.conversation

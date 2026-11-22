@@ -13,6 +13,10 @@ ALLOWED: dict[tuple[str, str], str] = {
     ("tools/workspace.py", "cancelled"): "a cancel that came during a kill goes on once it ends",
     ("engine.py", "failures[0]"): "an on_event error reaches the run as it would from any handler",
     ("engine.py", "here.failed"): "an on_event error reaches the run as it would from any handler",
+    (
+        "conversation.py",
+        "self.failed",
+    ): "a lead's store error ends every later helper start of its batch as it ended the first",
     ("stop.py", "cancelled"): "a cancel that came while tasks ended goes on once they have",
     (
         "tools/bridge.py",
