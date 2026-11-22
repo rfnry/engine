@@ -447,3 +447,11 @@ async def test_an_unwritable_save_error_never_says_none(caller, tmp_path, monkey
     tool = tool_of(web_over(lambda request: ok()), tmp_path)
     with pytest.raises(FetchError, match="could not write 'x': disk full"):
         await caller(tool, {"url": "https://arxiv.org/a", "save": "x"})
+
+
+async def test_a_3xx_with_an_empty_location_is_a_result():
+    def handler(request):
+        return httpx.Response(302, content=b"moved", headers={"location": "  "})
+
+    page = await web_over(handler).get("https://arxiv.org/a")
+    assert (page.status, page.body) == (302, b"moved")

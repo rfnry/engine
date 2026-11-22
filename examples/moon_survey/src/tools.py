@@ -205,7 +205,10 @@ class Web:
                     follow_redirects=False,
                 ) as response,
             ):
-                if response.status_code in REDIRECTS and "location" in response.headers:
+                if (
+                    response.status_code in REDIRECTS
+                    and response.headers.get("location", "").strip()
+                ):
                     return Page(url, response.status_code, "", b""), response.headers["location"]
                 chunks: list[bytes] = []
                 size = 0
