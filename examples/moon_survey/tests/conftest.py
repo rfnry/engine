@@ -28,3 +28,39 @@ async def pool():
             await admin.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         finally:
             await admin.close()
+
+
+GRS_URL = (
+    "https://pds-geosciences.wustl.edu/lunar/lp-l-grs-5-elem-abundance-v1/lp_9001/data/"
+    "lpgrs_high1_elem_abundance_2deg.tab"
+)
+
+
+@pytest.fixture
+def dossier():
+    return {
+        "region": "N75-90/0",
+        "terrain": "polar",
+        "values": {
+            "water_ice": {
+                "low": 0.0,
+                "high": 1.5,
+                "confidence": "low",
+                "sources": [
+                    "https://pds-geosciences.wustl.edu/missions/lunarp/reduced/hydrogenlow.txt"
+                ],
+            },
+            "TiO2": {"low": 0.2, "high": 1.0, "confidence": "medium", "sources": [GRS_URL]},
+            "FeO": {"low": 4, "high": 7, "confidence": "medium", "sources": [GRS_URL]},
+            "Al2O3": {
+                "low": 24,
+                "high": 30,
+                "confidence": "medium",
+                "sources": ["Lunar Prospector gamma-ray spectrometer"],
+            },
+            "Th": {"low": 0.5, "high": 1.5, "confidence": "high", "sources": [GRS_URL]},
+            "He3": {"unknown": "no orbiter measures He3 and no paper gives this region a value"},
+        },
+        "notes": "Cold traps near the pole may hold several wt% of ice.",
+        "simulated": False,
+    }

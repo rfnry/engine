@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dossier",
+  "description": "One region's resources, as one surveyor found them, written as dossier.json in its working directory.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "region",
+    "terrain",
+    "values",
+    "notes",
+    "simulated"
+  ],
+  "properties": {
+    "region": {
+      "description": "The region's id, as the board names it, such as N00-15/3.",
+      "type": "string",
+      "pattern": "^[NS][0-9]{2}-[0-9]{2}/[0-9]+$"
+    },
+    "terrain": {
+      "description": "What the region mostly is.",
+      "enum": [
+        "mare",
+        "highland",
+        "polar",
+        "mixed"
+      ]
+    },
+    "values": {
+      "description": "Every value of the region: a range with its confidence and sources, or unknown with the reason.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "water_ice",
+        "TiO2",
+        "FeO",
+        "Al2O3",
+        "Th",
+        "He3"
+      ],
+      "properties": {
+        "water_ice": {
+          "description": "Water ice, the region's average in the top metre of regolith, in wt%. Concentrations in cold traps go in notes, not here.",
+          "unit": "wt%",
+          "$ref": "#/$defs/quantity",
+          "properties": {
+            "low": {
+              "minimum": 0,
+              "maximum": 100
+            },
+            "high": {
+              "minimum": 0,
+              "maximum": 100
+            }
+          }
+        },
+        "TiO2": {
+          "description": "Titanium dioxide, the region's average at the surface, in wt%.",
+          "unit": "wt%",
+          "$ref": "#/$defs/quantity",
+          "properties": {
+            "low": {
+              "minimum": 0,
+              "maximum": 20
+            },
+            "high": {
+              "minimum": 0,
+              "maximum": 20
+            }
+          }
+        },
+        "FeO": {
+          "description": "Iron oxide, the region's average at the surface, in wt%.",
+          "unit": "wt%",
+          "$ref": "#/$defs/quantity",
+          "properties": {
+            "low": {
+              "minimum": 0,
+              "maximum": 30
+            },
+            "high": {
+              "minimum": 0,
+              "maximum": 30
+            }
+          }
+        },
+        "Al2O3": {
+          "description": "Aluminium oxide, the region's average at the surface, in wt%.",
+          "unit": "wt%",
+          "$ref": "#/$defs/quantity",
+          "properties": {
+            "low": {
+              "minimum": 0,
+              "maximum": 40
+            },
+            "high": {
+              "minimum": 0,
+              "maximum": 40
+            }
+          }
+        },
+        "Th": {
+          "description": "Thorium, the region's average at the surface, in ppm.",
+          "unit": "ppm",
+          "$ref": "#/$defs/quantity",
+          "properties": {
+            "low": {
+              "minimum": 0,
+              "maximum": 20
+            },
+            "high": {
+              "minimum": 0,
+              "maximum": 20
+            }
+          }
+        },
+        "He3": {
+          "description": "Helium-3 implanted by the solar wind, the region's average in the regolith, in ppb.",
+          "unit": "ppb",
+          "$ref": "#/$defs/quantity",
+          "properties": {
+            "low": {
+              "minimum": 0,
+              "maximum": 100
+            },
+            "high": {
+              "minimum": 0,
+              "maximum": 100
+            }
+          }
+        }
+      }
+    },
+    "notes": {
+      "description": "What else was found, in words.",
+      "type": "string"
+    },
+    "simulated": {
+      "description": "True only for a dossier a fake model wrote.",
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "quantity": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/range"
+        },
+        {
+          "$ref": "#/$defs/unknown"
+        }
+      ]
+    },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "low",
+        "high",
+        "confidence",
+        "sources"
+      ],
+      "properties": {
+        "low": {
+          "type": "number"
+        },
+        "high": {
+          "type": "number"
+        },
+        "confidence": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "sources": {
+          "description": "The dataset, missions, instruments, papers or fetched pages the range comes from; a URL starts with https://.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "unknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unknown"
+      ],
+      "properties": {
+        "unknown": {
+          "description": "Why nothing can be said.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
