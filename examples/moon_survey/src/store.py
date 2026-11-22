@@ -158,6 +158,9 @@ class Store:
             )
             if prompt is None or prompt <= self.size:
                 return start
+            last = _held(await conn.fetch(READ, scope, conversation, length - 1, length))
+            if not last or last[0].role != "user":
+                return start
             first = max(start + 1, start + math.floor((length - start) * (1 - self.keep)))
             held = _held(await conn.fetch(READ, scope, conversation, first, length))
             moved = next(

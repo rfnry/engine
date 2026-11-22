@@ -412,7 +412,9 @@ async def test_the_window_holds_until_the_size_then_jumps_to_a_person_message(po
     assert (length, await store.moves(scope, "c1")) == (12, 0)
 
     await store.append(scope, "c1", 12, [reply("e", usage=prompt(1001)), result("e")])
-    assert await store.window(scope, "c1", 14) == 11
+    assert await store.window(scope, "c1", 14) == 0
+    await store.append(scope, "c1", 14, [said("from the lead: next")])
+    assert await store.window(scope, "c1", 15) == 11
     assert await store.moves(scope, "c1") == 1
 
     later = [
@@ -420,7 +422,7 @@ async def test_the_window_holds_until_the_size_then_jumps_to_a_person_message(po
         [told("d2")],
         [reply("g", usage=Usage(input=100, cache_read=800, cache_creation=100)), result("g")],
     ]
-    length = 14
+    length = 15
     for step in later:
         await store.append(scope, "c1", length, step)
         length += len(step)
@@ -458,8 +460,38 @@ async def test_the_window_measures_only_replies_sent_since_it_moved(pool, scope)
     assert await store.moves(scope, "c1") == 1
 
     await store.append(scope, "c1", 15, [reply("w", usage=prompt(1500)), result("w")])
-    assert await store.window(scope, "c1", 17) == 14
+    assert await store.window(scope, "c1", 17) == 8
+    await store.append(scope, "c1", 17, [told("d7")])
+    assert await store.window(scope, "c1", 18) == 14
     assert await store.moves(scope, "c1") == 2
+
+
+async def test_the_window_holds_through_a_tool_loop_and_moves_at_the_next_person_message(
+    pool, scope
+):
+    store = Store(pool, size=1000)
+    people = [said("survey"), *(told(f"d{n}") for n in range(1, 6))]
+    await store.append(scope, "c1", 0, [*people, reply("x", usage=prompt(2000)), result("x")])
+    assert await store.window(scope, "c1", 8) == 0
+    await store.append(scope, "c1", 8, [reply("y", usage=prompt(2100)), result("y")])
+    assert await store.window(scope, "c1", 10) == 0
+    assert await store.moves(scope, "c1") == 0
+
+    await store.append(scope, "c1", 10, [told("d6")])
+    assert await store.window(scope, "c1", 11) == 10
+    assert await store.moves(scope, "c1") == 1
+
+
+async def test_the_window_never_moves_while_the_last_message_is_a_reply(pool, scope):
+    store = Store(pool, size=1000)
+    await store.append(
+        scope, "c1", 0, [said("survey"), told("d1"), Message(role="assistant", content="waiting")]
+    )
+    await store.append(scope, "c1", 3, [said("go on")])
+    await store.append(scope, "c1", 4, [reply("x", usage=prompt(2000))])
+    assert await store.window(scope, "c1", 5) == 0
+    await store.append(scope, "c1", 5, [result("x"), told("d2")])
+    assert await store.window(scope, "c1", 7) == 6
 
 
 async def test_the_window_measures_the_latest_reply_that_carries_usage(pool, scope):

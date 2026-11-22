@@ -1,0 +1,22 @@
+{
+  "source": "placeholder until the calibration",
+  "latency": {
+    "lead": [2.0, 3.0, 4.5, 6.0],
+    "flat": [2.0, 3.0, 4.5, 6.0],
+    "captain": [1.5, 2.5, 3.5, 5.0],
+    "surveyor": [1.0, 1.5, 2.0, 3.0, 4.5, 7.0],
+    "crosscheck": [1.0, 1.5, 2.0, 3.0, 4.5],
+    "crosscheck_second": [0.8, 1.2, 1.8, 2.5, 3.5],
+    "boss": [1.0, 1.5, 2.5],
+    "gate": [0.3, 0.5, 0.8, 1.5]
+  },
+  "size": {
+    "lead": [200, 400, 800],
+    "flat": [200, 400, 800],
+    "captain": [200, 400, 800],
+    "surveyor": [200, 500, 900, 1400],
+    "crosscheck": [150, 300, 600],
+    "crosscheck_second": [150, 300, 600],
+    "boss": [150, 300]
+  }
+}
