@@ -1346,10 +1346,11 @@ moves; the store keeps it as it was appended.
 
 Calling again with the same name continues the conversation. The run reads it once, as it starts —
 `length`, then `read(scope, conversation, 0)` when it is not empty — and appends `input=` as the
-next message, such as "the process restarted; carry on". It is a new run, with its own `run_id`,
-whose helpers' job ids go on after the highest `dN` in the whole stored conversation, not only in
-its window. A store whose `read` returns a number of messages other than its `length`, or messages
-that do not fit `Message`, is refused before the run starts, and nothing is recorded.
+next message, after whatever it mends of a run that ended mid-way ([After a crash](#after-a-crash)).
+It is a new run, with its own `run_id`, whose helpers' job ids go on after the highest `dN` in the
+whole stored conversation, not only in its window. A store whose `read` returns a number of messages
+other than its `length`, or messages that do not fit `Message`, is refused before the run starts,
+and nothing is recorded.
 
 A store run's record begins where its first window did, as a run's record begins at `start`:
 `run.start` is that window's start, `run.messages` that window as it was sent, the input last and a
@@ -1358,7 +1359,7 @@ window and then every message the run added, so `run.added` is what the run adde
 every message as it was appended, its reasoning included. A run that ends before its first model
 call — stopped at once, failed by its `RunStarted` handler or refused its first window — begins
 where its own messages do, at the conversation's length when it started, so its record holds only
-the input and what it added.
+its own messages: what it mended, the input and what it added.
 
 One run holds a conversation at a time in one engine: a second run of the same name and scope
 while the first is in flight is an `InputError` (`engine: conversation 'dana-1' of scope 'acme' is
@@ -1402,7 +1403,53 @@ the stop adds is stored too. The `length` a lead asks for a helper's name is cut
 call, as any call is, and starts no helper. A cancel of the run's task cuts the call in flight,
 which is not the store's error: the cancelled run calls the store no more, and the next run of the
 name starts from what `length` and `read` show, so a store keeps each `append` whole or not at all.
-A lead that fails stops its helpers, and a resume reports each of them as `lost`.
+A lead its store fails stops its helpers, as any failing lead does, but the store takes no message
+more, their notices included: a resume reports each helper whose job id the store holds as `lost`,
+and ends each `Delegate` call whose result it never took ([After a crash](#after-a-crash)).
+
+##### After a crash
+
+A process that ends in the middle of a run — a crash, a deploy, a cancel of the run's task —
+leaves the conversation as far as the store took it. To go on, call `engine.run` again with the same
+`conversation=` and an input that says what happened, such as "the process restarted; carry on".
+The run first mends what the end cut off, then appends the input, and appends all of it before its
+first model call, which sends it.
+
+A batch's results are stored once the batch is answered, so a run that ends while its tools work —
+a long `Shell` command, a lead in `Job(wait=…)`, a synchronous child working for hours — leaves the
+conversation ending in a reply whose calls have no result, as a run that fails during a batch can.
+The run answers each call of the last reply with calls that has none, in call order, with a tool
+error:
+
+```
+Ended: Shell did not return; the process that ran it ended, and what it did is unknown
+```
+
+What it did is unknown because the engine cannot tell how far the call got: a command may have done
+its work, a payment gone through, and a model told so checks before it does it again. A background
+`Delegate` the end cut off is answered the same way. Its lead never saw its job id, so nothing more
+is said of it; if the helper started, its conversation stays under its name, which a later helper
+passes over. A conversation broken anywhere else, which a run never leaves, still fails the window's
+check.
+
+A helper whose job id the lead did see — its `{"job": "d2"}` is stored — but whose outcome
+(`finished`, `failed` or `stopped`) the store never took is told to the lead as a notice of kind
+`lost`, after the ended results, in job order:
+
+```
+[helper d2 · worker · lost]
+the process that ran it ended before it did; its conversation is dana-1/d2
+```
+
+The body names the name the helper's conversation is kept under, so you or a board of the team can
+read what it did; a decision helper that does not route keeps none, and that name holds nothing. Its
+`Notice` has `kind` `lost` and `run_id` `None`, since the helper's `run_id` was on its `Delegate`
+step, not in the conversation. A `lost` notice is an outcome, so a later resume tells it no more,
+and the helper is not one of the run's own: `Job` on its id is the tool error `tools/helpers: there
+is no helper d2`. A helper that finished while its notice still waited to be read reads `lost` too,
+though it ended and its conversation is stored under that name: its lead never heard how. The run
+sends its lost notices in one `MessagesTaken` at turn 0, right after its `RunStarted`, with
+`messages=[]`, and the ended results and lost notices are the run's own messages, in its record.
 
 ### Decision agents
 
@@ -1740,17 +1787,19 @@ Lemma 4 holds; the proof is on branch prover-d1.
 
 What follows is the helper's reply — a decision helper's answers as JSON, as `Delegate` returns them
 — or, after `failed`, its error as a tool's result would show it, and after `stopped`, what it had
-said. A helper that fails, or runs past its own `max_model_calls`, never fails its lead: the lead
-reads `failed` and goes on, and the helper's record joins `children` with its `error`. The message
-carries `notice`, a `Notice` naming the helper's `job`, `agent` and `run_id` and the `kind` of
-notice, so the record and a dataset tell it from the person's words; a model is sent only the text
-and reads the first line. That `run_id`, as the step's `child_run_id`, names no record when the
-helper left none: a decision helper whose call a stop cut or kept from starting, and a helper that
-failed before its run made a record, such as one past `max_depth`. A helper's reply holds whatever
-the helper read, a hostile document included, so write the lead's instructions to treat a notice
-as it treats a tool result, not as the person. Every helper that ended since the last model call is
-taken at once, in the order they ended, so many helpers ending together are one wake-up and one
-model call.
+said. A run with a store that continues a conversation its process left mid-way reads a fourth,
+`lost`, for a helper whose outcome the store never took, after it the name its conversation is kept
+under ([After a crash](#after-a-crash)). A helper that fails, or runs past its own
+`max_model_calls`, never fails its lead: the lead reads `failed` and goes on, and the helper's
+record joins `children` with its `error`. The message carries `notice`, a `Notice` naming the
+helper's `job`, `agent` and `run_id` and the `kind` of notice, so the record and a dataset tell it
+from the person's words; a model is sent only the text and reads the first line. That `run_id`, as
+the step's `child_run_id`, names no record when the helper left none: a decision helper whose call a
+stop cut or kept from starting, and a helper that failed before its run made a record, such as one
+past `max_depth`; a `lost` notice's is `None`. A helper's reply holds whatever the helper read, a
+hostile document included, so write the lead's instructions to treat a notice as it treats a tool
+result, not as the person. Every helper that ended since the last model call is taken at once, in
+the order they ended, so many helpers ending together are one wake-up and one model call.
 
 The lead also gets two tools over its helpers, `Job` and `Jobs`, workspace or not.
 `Job(id, wait=0, stop=false, send=null)` reads one helper by its id: `{"running": true, "agent":
@@ -1852,13 +1901,15 @@ record it raises with. A decision helper whose call a stop cuts, or that a stop 
 call starts, leaves no record, its notice `stopped` with nothing after it; one whose route a stop
 cuts is recorded with what it answered, its notice `stopped` too. A notice that waits when an
 `Output` is accepted is appended the same way. Cancelling the run's task cancels every helper, at
-any depth, and re-raises once all of them have ended; a message that reaches a waiting lead as the
-cancel lands stays on its inbox, and one that woke it but had not yet joined its conversation is put
-back with `put_nowait`, returning at the back of its queue — or, on a queue you `shutdown()` or a
-bounded one left full, going with the cancelled run as any message a cancelled run took does. A
-shut-down inbox has nothing more to give a waiting lead, which goes on waiting for its helpers and
-its stop. The lead sends its `RunEnded` after every helper's, on every path but a cancel, which
-sends none, and a helper's events go to the same `on_event` as a synchronous child's.
+any depth, and re-raises once all of them have ended, with no notice of theirs appended, so a
+conversation in a store holds their job ids with no outcome until a resume tells each as `lost`; a
+message that reaches a waiting lead as the cancel lands stays on its inbox, and one that woke it but
+had not yet joined its conversation is put back with `put_nowait`, returning at the back of its
+queue — or, on a queue you `shutdown()` or a bounded one left full, going with the cancelled run as
+any message a cancelled run took does. A shut-down inbox has nothing more to give a waiting lead,
+which goes on waiting for its helpers and its stop. The lead sends its `RunEnded` after every
+helper's, on every path but a cancel, which sends none, and a helper's events go to the same
+`on_event` as a synchronous child's.
 
 ### Both kinds together
 

@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 from rfnry_engine import chain
 from rfnry_engine.bundle import build_bundle
 from rfnry_engine.compiled import compile_folder
-from rfnry_engine.conversation import HISTORY, Conversation
+from rfnry_engine.conversation import HISTORY, Conversation, ended_calls
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
@@ -47,7 +47,7 @@ from rfnry_engine.foreground import (
     taking,
 )
 from rfnry_engine.frontmatter import plainly
-from rfnry_engine.helpers import Helper, Helpers, first_job, given_back
+from rfnry_engine.helpers import Helper, Helpers, first_job, given_back, lost_notices
 from rfnry_engine.manifest import Kind, ModelEntry, read_manifest
 from rfnry_engine.models import (
     CONTAINERS,
@@ -1640,6 +1640,8 @@ class Engine:
             else Conversation(options.store, scope, options.key)
         )
         given = options.history if conversation is None else await conversation.opened()
+        repairs = [] if conversation is None else ended_calls(given)
+        losses = [] if conversation is None else lost_notices(given, conversation.key)
         messages: list[Message] = []
         window = 0
         surface = RunTools(
@@ -1730,7 +1732,7 @@ class Engine:
         opening = _content(input)
         if options.skill is not None:
             opening = _invoked(spec.skills[options.skill], opening)
-        messages.extend([*history, Message(role="user", content=opening)])
+        messages.extend([*history, *repairs, *losses, Message(role="user", content=opening)])
         begun = 0 if conversation is None else len(history)
         sent = messages[begun:]
         seen = messages
@@ -2235,6 +2237,7 @@ class Engine:
 
         try:
             await emit(RunStarted(run_id=run_id, agent=spec.name, call=started_call))
+            await took(0, losses, [])
             for turn in range(most_calls):
                 mode = requested(stop)
                 if mode is not None:

@@ -262,3 +262,19 @@ def test_a_message_s_notice_that_does_not_fit_is_dropped() -> None:
     )
     for odd in ("d1", {**notice, "kind": "done"}, {"job": 1}):
         assert Message.model_validate({**held, "notice": odd}).notice is None
+
+
+def test_a_notice_s_run_id_is_none_only_when_lost() -> None:
+    held = {"role": "user", "content": "[helper d2 · worker · lost]\nx"}
+    lost = {"job": "d2", "agent": "worker", "run_id": None, "kind": "lost"}
+    assert Message.model_validate({**held, "notice": lost}).notice == Notice(
+        job="d2", agent="worker", run_id=None, kind="lost"
+    )
+    refused = {
+        "models: a finished notice names its helper's run_id": {**lost, "kind": "finished"},
+        "models: a lost notice names no run_id; got 'r1'": {**lost, "run_id": "r1"},
+    }
+    for why, odd in refused.items():
+        with pytest.raises(ValidationError, match=why):
+            Notice.model_validate(odd)
+        assert Message.model_validate({**held, "notice": odd}).notice is None

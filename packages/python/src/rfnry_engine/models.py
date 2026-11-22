@@ -108,8 +108,16 @@ MARK = re.compile(r"[0-9a-f]{16}")
 class Notice(BaseModel):
     job: str
     agent: str
-    run_id: str
-    kind: Literal["finished", "failed", "stopped", "asks"]
+    run_id: str | None
+    kind: Literal["finished", "failed", "stopped", "asks", "lost"]
+
+    @model_validator(mode="after")
+    def _run_id_unless_lost(self) -> Self:
+        if self.run_id is None and self.kind != "lost":
+            raise ValueError(f"models: a {self.kind} notice names its helper's run_id")
+        if self.run_id is not None and self.kind == "lost":
+            raise ValueError(f"models: a lost notice names no run_id; got {self.run_id!r}")
+        return self
 
 
 class Usage(BaseModel):

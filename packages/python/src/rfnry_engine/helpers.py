@@ -8,16 +8,19 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
 from rfnry_engine.errors import error_text
 from rfnry_engine.foreground import FOREGROUND, Foreground, halted
 from rfnry_engine.manifest import Kind
-from rfnry_engine.models import Message, Notice
+from rfnry_engine.models import Message, Notice, ToolCall
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.stop import Stop, Stopped, asked, cut_through, press, pressed, requested, wait
-from rfnry_engine.tools.delegate import DELEGATE_TOOL, child_result, run_result
+from rfnry_engine.tools.delegate import DELEGATE_TOOL, BackgroundArgs, child_result, run_result
 from rfnry_engine.tools.workspace import JOB_TOOL, JOBS_TOOL
 
 Ending = Literal["finished", "failed", "stopped"]
+OUTCOMES = frozenset({"finished", "failed", "stopped", "lost"})
 HELPER_ID = re.compile(r"d([0-9]+)")
 
 
@@ -28,6 +31,20 @@ class Unanswered(Enum):
 
 def notice_text(job: str, agent: str, kind: str, body: str) -> str:
     return f"[helper {job} · {agent} · {kind}]\n{body}"
+
+
+def _notice(
+    job: str,
+    agent: str,
+    run_id: str | None,
+    kind: Ending | Literal["asks", "lost"],
+    body: str,
+) -> Message:
+    return Message(
+        role="user",
+        content=notice_text(job, agent, kind, body),
+        notice=Notice(job=job, agent=agent, run_id=run_id, kind=kind),
+    )
 
 
 def _number(job: object) -> int:
@@ -64,6 +81,56 @@ def first_job(history: Sequence[Message]) -> int:
     ]
     noticed = [_number(message.notice.job) for message in history if message.notice is not None]
     return max([*named, *shown, *noticed], default=0) + 1
+
+
+def _background(call: ToolCall) -> str | None:
+    try:
+        held = BackgroundArgs.model_validate(call.args)
+    except ValidationError:
+        return None
+    return held.agent if held.background else None
+
+
+def _started(message: Message) -> str | None:
+    if message.is_error or not isinstance(message.content, str):
+        return None
+    try:
+        held = json.loads(message.content)
+    except ValueError:
+        return None
+    job = held.get("job") if isinstance(held, dict) and len(held) == 1 else None
+    return job if isinstance(job, str) and _number(job) else None
+
+
+def lost_notices(history: Sequence[Message], key: str) -> list[Message]:
+    calls = {
+        call.id: agent
+        for message in history
+        for call in message.tool_calls
+        if call.name == DELEGATE_TOOL and (agent := _background(call)) is not None
+    }
+    jobs = {
+        job: agent
+        for message in history
+        if message.role == "tool"
+        and (agent := calls.get(message.tool_call_id or "")) is not None
+        and (job := _started(message)) is not None
+    }
+    ended = {
+        message.notice.job
+        for message in history
+        if message.notice is not None and message.notice.kind in OUTCOMES
+    }
+    return [
+        _notice(
+            job,
+            jobs[job],
+            None,
+            "lost",
+            f"the process that ran it ended before it did; its conversation is {key}/{job}",
+        )
+        for job in sorted(jobs.keys() - ended, key=_number)
+    ]
 
 
 async def _arrival(inbox: asyncio.Queue[Any]) -> Any:
@@ -178,13 +245,7 @@ class Helpers:
         self._noticed(helper, kind, body)
 
     def _noticed(self, helper: Helper, kind: Ending | Literal["asks"], body: str) -> None:
-        self._notices.append(
-            Message(
-                role="user",
-                content=notice_text(helper.job, helper.agent, kind, body),
-                notice=Notice(job=helper.job, agent=helper.agent, run_id=helper.run_id, kind=kind),
-            )
-        )
+        self._notices.append(_notice(helper.job, helper.agent, helper.run_id, kind, body))
         self.ready.set()
 
     async def ask(self, helper: Helper, question: str) -> str | Unanswered:

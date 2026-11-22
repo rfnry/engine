@@ -8,6 +8,30 @@ from rfnry_engine.models import ConversationStore, Message, _handed
 HISTORY = TypeAdapter(list[Message])
 
 
+def ended_calls(history: Sequence[Message]) -> list[Message]:
+    last = next(
+        (
+            n
+            for n in reversed(range(len(history)))
+            if history[n].role == "assistant" and history[n].tool_calls
+        ),
+        None,
+    )
+    if last is None:
+        return []
+    answered = {message.tool_call_id for message in history[last + 1 :] if message.role == "tool"}
+    return [
+        Message(
+            role="tool",
+            tool_call_id=call.id,
+            content=f"Ended: {call.name} did not return; the process that ran it ended, and what it did is unknown",
+            is_error=True,
+        )
+        for call in history[last].tool_calls
+        if call.id not in answered
+    ]
+
+
 def _measured(key: str, length: object) -> int:
     if not isinstance(length, int) or isinstance(length, bool) or length < 0:
         raise InputError(

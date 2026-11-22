@@ -16,7 +16,7 @@ from rfnry_engine import RunEnded, RunStarted, Stop
 from rfnry_engine.conversation import Conversation
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, ModelError, RunawayError
-from rfnry_engine.models import Message, Reply, Text, ToolCall, ToolSpec, Usage
+from rfnry_engine.models import Message, Notice, Reply, Text, ToolCall, ToolSpec, Usage
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
@@ -896,9 +896,14 @@ async def test_job_ids_count_the_whole_stored_conversation(tmp_path: Path) -> No
             ),
             Message(role="tool", tool_call_id=call_id, content=json.dumps({"job": job})),
             Message(role="assistant", content="ok"),
+            Message(
+                role="user",
+                content=f"[helper {job} · worker · finished]\ndone",
+                notice=Notice(job=job, agent="worker", run_id=f"r{job}", kind="finished"),
+            ),
         ]
 
-    store = MemoryStore(lambda conversation, length: 10 if conversation == "c1" else 0)
+    store = MemoryStore(lambda conversation, length: 13 if conversation == "c1" else 0)
     store.held[KEY] = [
         Message(role="user", content="earlier"),
         *delegated("x1", "d1"),
