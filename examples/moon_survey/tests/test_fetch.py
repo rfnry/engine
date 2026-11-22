@@ -175,6 +175,28 @@ async def test_a_symlink_leaving_the_sandbox_is_refused(caller, tmp_path):
     assert not (tmp_path / "outside" / "x").exists()
 
 
+@pytest.mark.parametrize("save", ["link/x", ".", "d"])
+async def test_a_save_refused_after_the_download_is_still_logged(caller, tmp_path, save):
+    (tmp_path / "a" / "d").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "a" / "link").symlink_to(tmp_path / "outside")
+    log = Recorder()
+    tool = tool_of(web_over(lambda request: ok(b"abc")), tmp_path, log)
+    with pytest.raises(FetchError, match=f"^fetch: could not write '{save}': "):
+        await caller(tool, {"url": "https://arxiv.org/a", "save": save})
+    assert log.rows == [
+        {
+            "run_id": "a",
+            "url": "https://arxiv.org/a",
+            "status": 200,
+            "bytes": 3,
+            "saved": None,
+            "cached": False,
+        }
+    ]
+    assert list((tmp_path / "outside").iterdir()) == []
+
+
 @pytest.mark.parametrize("save", ["notes.txt", "data/x.bin"])
 async def test_a_symlink_swapped_in_during_the_fetch_is_not_written_through(caller, tmp_path, save):
     place = tmp_path / "a"

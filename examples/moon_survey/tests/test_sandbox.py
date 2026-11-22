@@ -336,13 +336,15 @@ async def test_a_child_that_leaves_its_session_ends_when_its_command_is_killed(s
 
 
 async def test_a_queued_command_is_not_killed_by_waiting(base, run_as):
-    sandboxes = Sandboxes(base, agents=AGENTS, data=CUT, run_timeout=2)
+    sandboxes = Sandboxes(base, agents=AGENTS, data=CUT, run_timeout=4)
     run_as("a")
-    busy = [await sandboxes.spawn("sleep 1.5", {}) for _ in range(16)]
-    late = await sandboxes.spawn("sleep 1; echo done", {})
+    began = time.monotonic()
+    busy = [await sandboxes.spawn("sleep 1", {}) for _ in range(80)]
+    late = await sandboxes.spawn("echo done", {})
     out, err = await asyncio.gather(drain(late.stdout), drain(late.stderr))
     assert (await late.wait(), out, err) == (0, "done\n", "")
-    assert await asyncio.gather(*(process.wait() for process in busy)) == [0] * 16
+    assert time.monotonic() - began > 4
+    assert await asyncio.gather(*(process.wait() for process in busy)) == [0] * 80
 
 
 async def test_a_command_past_the_run_limit_is_stopped_and_frees_its_slot(base, run_as):

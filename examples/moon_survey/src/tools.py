@@ -336,12 +336,13 @@ def fetch_tool(web: Any, sandboxes: Sandboxes, log: Any) -> Tool:
             await log.write(run_id=run_id, url=url, status=0, bytes=0, saved=None, cached=False)
             raise
         saved = None
+        refused = None
         if target is not None and page.status == 200:
             try:
                 await sandboxes.write(target, page.body)
+                saved = save
             except InputError as error:
-                raise FetchError(f"fetch: could not write '{save}': {error}") from None
-            saved = save
+                refused = FetchError(f"fetch: could not write '{save}': {error}")
         for logged in dict.fromkeys((url, page.url)):
             await log.write(
                 run_id=run_id,
@@ -351,6 +352,8 @@ def fetch_tool(web: Any, sandboxes: Sandboxes, log: Any) -> Tool:
                 saved=saved,
                 cached=page.cached,
             )
+        if refused is not None:
+            raise refused
         content_type = page.content_type
         if saved is not None:
             return {

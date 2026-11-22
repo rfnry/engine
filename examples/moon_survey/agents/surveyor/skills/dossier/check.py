@@ -45,7 +45,7 @@ def listed(names: list[str]) -> str:
 
 
 def region_problems(region: object) -> list[str]:
-    if not isinstance(region, str) or not REGION.search(region):
+    if not isinstance(region, str) or not REGION.fullmatch(region):
         return [f"region: {shown(region)} is not a region id of the form N00-15/3"]
     if region not in GRID:
         return [f"region: {shown(region)} is no region of the grid"]

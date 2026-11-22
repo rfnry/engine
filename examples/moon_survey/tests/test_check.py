@@ -80,6 +80,10 @@ CASES = {
         [change(("region",), "north pole")],
         ['region: "north pole" is not a region id of the form N00-15/3'],
     ),
+    "a region with a final newline": (
+        [change(("region",), "N00-15/3\n")],
+        ['region: "N00-15/3\\n" is not a region id of the form N00-15/3'],
+    ),
     "no region of the grid": (
         [change(("region",), "N00-15/40")],
         ['region: "N00-15/40" is no region of the grid'],
