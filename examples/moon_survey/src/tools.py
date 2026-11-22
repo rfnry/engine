@@ -1,0 +1,348 @@
+import asyncio
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
+from html.parser import HTMLParser
+from pathlib import Path, PurePosixPath
+from typing import Any
+from urllib.parse import urljoin, urlsplit
+
+import asyncpg
+import httpx
+from rfnry_engine import Tool, current_call
+
+HOSTS = (
+    "pds-geosciences.wustl.edu",
+    "pds.nasa.gov",
+    "astrogeology.usgs.gov",
+    "ssd.jpl.nasa.gov",
+    "ssd-api.jpl.nasa.gov",
+    "ntrs.nasa.gov",
+    "arxiv.org",
+    "export.arxiv.org",
+)
+USER_AGENT = "moon-survey-example/0"
+MAX_REDIRECTS = 5
+REDIRECTS = (301, 302, 303, 307, 308)
+SKIPPED = ("script", "style")
+BLOCKS = (
+    "p",
+    "div",
+    "br",
+    "li",
+    "ul",
+    "ol",
+    "tr",
+    "table",
+    "section",
+    "article",
+    "pre",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "blockquote",
+    "header",
+    "footer",
+)
+TEXT_TYPES = ("application/json", "application/xml", "application/javascript", "application/csv")
+WRITE = """
+insert into fetches (scope, survey, run_id, url, status, bytes, saved, cached)
+values ($1, $2, $3, $4, $5, $6, $7, $8)
+"""
+URLS = "select distinct url from fetches where scope = $1 and survey = $2 and run_id = $3"
+
+
+class FetchError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class Page:
+    url: str
+    status: int
+    content_type: str
+    body: bytes
+    cached: bool = False
+
+
+def base_type(content_type: str) -> str:
+    return content_type.split(";")[0].strip().lower()
+
+
+def is_text(content_type: str) -> bool:
+    kind = base_type(content_type)
+    return kind.startswith("text/") or kind in TEXT_TYPES or kind.endswith(("+xml", "+json"))
+
+
+class Reader(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.skipped = 0
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag in SKIPPED:
+            self.skipped += 1
+        elif tag in BLOCKS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in SKIPPED:
+            self.skipped = max(0, self.skipped - 1)
+        elif tag in BLOCKS:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self.skipped:
+            self.parts.append(data)
+
+
+def html_text(source: str) -> str:
+    reader = Reader()
+    reader.feed(source)
+    reader.close()
+    lines = (" ".join(line.split()) for line in "".join(reader.parts).splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+def decode(body: bytes) -> str:
+    return body.decode("utf-8", errors="replace")
+
+
+def reading(page: Page) -> str:
+    text = decode(page.body)
+    return (
+        html_text(text)
+        if base_type(page.content_type) in ("text/html", "application/xhtml+xml")
+        else text
+    )
+
+
+class Web:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        hosts: tuple[str, ...] = HOSTS,
+        text_cap: int = 60_000,
+        save_cap: int = 50_000_000,
+        timeout: float = 30.0,
+        pace: dict[str, float] | None = None,
+        default_pace: float = 1.0,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self.client = client
+        self.hosts = hosts
+        self.text_cap = text_cap
+        self.save_cap = save_cap
+        self.timeout = timeout
+        self.pace = {"arxiv.org": 3.0, "export.arxiv.org": 3.0} if pace is None else pace
+        self.default_pace = default_pace
+        self.clock = clock
+        self.sleep = sleep
+        self.cache: dict[str, Page] = {}
+        self.flying: dict[str, asyncio.Task[Page]] = {}
+        self.locks: dict[str, asyncio.Lock] = {}
+        self.started: dict[str, float] = {}
+
+    def check(self, url: str, *, redirect: bool = False) -> str:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        if redirect:
+            if host not in self.hosts:
+                raise FetchError(f"fetch: a redirect to '{url}' leaves the list")
+        elif parts.scheme != "https":
+            raise FetchError(f"fetch: only https is allowed; got '{url}'")
+        elif host not in self.hosts:
+            raise FetchError(f"fetch: host '{host}' is not on the list")
+        if parts.scheme != "https":
+            raise FetchError(f"fetch: only https is allowed; got '{url}'")
+        return host
+
+    async def wait_turn(self, host: str) -> None:
+        lock = self.locks.setdefault(host, asyncio.Lock())
+        async with lock:
+            gap = self.pace.get(host, self.default_pace)
+            last = self.started.get(host)
+            if last is not None:
+                wait = last + gap - self.clock()
+                if wait > 0:
+                    await self.sleep(wait)
+            self.started[host] = self.clock()
+
+    async def request(self, url: str) -> Page:
+        try:
+            async with self.client.stream(
+                "GET", url, headers={"User-Agent": USER_AGENT}, timeout=self.timeout
+            ) as response:
+                if response.status_code in REDIRECTS and "location" in response.headers:
+                    return Page(response.headers["location"], response.status_code, "", b"")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > self.save_cap:
+                        raise FetchError(
+                            f"fetch: '{url}' is larger than the cap of {self.save_cap} bytes"
+                        )
+                return Page(
+                    url,
+                    response.status_code,
+                    response.headers.get("content-type", ""),
+                    bytes(body),
+                )
+        except httpx.HTTPError as error:
+            raise FetchError(f"fetch: {type(error).__name__} for '{url}': {error}") from None
+
+    async def load(self, url: str) -> Page:
+        current = url
+        host = self.check(current)
+        for _ in range(MAX_REDIRECTS + 1):
+            await self.wait_turn(host)
+            page = await self.request(current)
+            if page.status in REDIRECTS and not page.body and page.content_type == "":
+                current = urljoin(current, page.url)
+                host = self.check(current, redirect=True)
+                continue
+            self.cache[url] = page
+            return page
+        raise FetchError(f"fetch: more than {MAX_REDIRECTS} redirects from '{url}'")
+
+    async def get(self, url: str) -> Page:
+        found = self.cache.get(url)
+        if found is not None:
+            return replace(found, cached=True)
+        flying = self.flying.get(url)
+        if flying is not None:
+            return replace(await asyncio.shield(flying), cached=True)
+        task = asyncio.ensure_future(self.load(url))
+        self.flying[url] = task
+        task.add_done_callback(lambda _: self.flying.pop(url, None))
+        return await asyncio.shield(task)
+
+
+class FakeWeb:
+    def __init__(
+        self,
+        pages: dict[str, tuple[str, bytes]],
+        *,
+        text_cap: int = 60_000,
+        save_cap: int = 50_000_000,
+    ) -> None:
+        self.pages = pages
+        self.text_cap = text_cap
+        self.save_cap = save_cap
+
+    async def get(self, url: str) -> Page:
+        found = self.pages.get(url)
+        if found is None:
+            return Page(url, 404, "text/plain", b"not found")
+        content_type, body = found
+        if len(body) > self.save_cap:
+            raise FetchError(f"fetch: '{url}' is larger than the cap of {self.save_cap} bytes")
+        return Page(url, 200, content_type, body)
+
+
+class FetchLog:
+    def __init__(self, pool: asyncpg.Pool, scope: str, survey: str) -> None:
+        self.pool = pool
+        self.scope = scope
+        self.survey = survey
+
+    async def write(
+        self, *, run_id: str, url: str, status: int, bytes: int, saved: str | None, cached: bool
+    ) -> None:
+        await self.pool.execute(
+            WRITE, self.scope, self.survey, run_id, url, status, bytes, saved, cached
+        )
+
+    async def urls(self, run_id: str) -> set[str]:
+        rows = await self.pool.fetch(URLS, self.scope, self.survey, run_id)
+        return {row["url"] for row in rows}
+
+
+def sandbox_path(root: Path, save: str) -> Path:
+    refusal = FetchError(f"fetch: save must be a path inside your sandbox; got '{save}'")
+    if not save or save.startswith("/") or ".." in PurePosixPath(save).parts:
+        raise refusal
+    base = root.resolve()
+    target = (base / save).resolve()
+    if not target.is_relative_to(base) or target == base:
+        raise refusal
+    return target
+
+
+def fetch_tool(web: Any, place: Callable[[str], Path], log: Any) -> Tool:
+    async def fetch(args: dict[str, Any]) -> dict[str, Any]:
+        call = current_call()
+        if call is None:
+            raise FetchError("fetch: no run is calling")
+        run_id = call.run_id
+        url = args["url"]
+        save = args.get("save")
+        target = sandbox_path(place(run_id), save) if save else None
+        try:
+            page = await web.get(url)
+        except FetchError:
+            await log.write(run_id=run_id, url=url, status=0, bytes=0, saved=None, cached=False)
+            raise
+        saved = None
+        if target is not None and page.status == 200:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(page.body)
+            saved = save
+        for logged in dict.fromkeys((url, page.url)):
+            await log.write(
+                run_id=run_id,
+                url=logged,
+                status=page.status,
+                bytes=len(page.body),
+                saved=saved,
+                cached=page.cached,
+            )
+        content_type = page.content_type
+        if saved is not None:
+            return {
+                "url": page.url,
+                "status": page.status,
+                "content_type": content_type,
+                "saved": saved,
+                "bytes": len(page.body),
+            }
+        if not is_text(content_type) and page.status == 200:
+            return {
+                "url": page.url,
+                "status": page.status,
+                "content_type": content_type,
+                "bytes": len(page.body),
+                "note": "binary; fetch it again with save to write it into your sandbox",
+            }
+        text = reading(page)
+        return {
+            "url": page.url,
+            "status": page.status,
+            "content_type": content_type,
+            "text": text[: web.text_cap],
+            "cut": len(text) > web.text_cap,
+        }
+
+    return Tool(
+        "fetch",
+        "Read a web page, or save it into your sandbox. Only public science hosts answer; "
+        "pages are text, and a binary file is written with save, a path inside your sandbox.",
+        body=fetch,
+        input_schema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "an https URL"},
+                "save": {
+                    "type": "string",
+                    "description": "a path inside your sandbox to write the body to",
+                },
+            },
+            "required": ["url"],
+        },
+    )

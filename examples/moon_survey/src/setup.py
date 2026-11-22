@@ -86,6 +86,18 @@ create table if not exists failures (
     at timestamptz not null default now()
 );
 create index if not exists failures_by_region on failures (scope, survey, region);
+create table if not exists fetches (
+    scope text not null,
+    survey text not null,
+    run_id text not null,
+    url text not null,
+    status integer not null,
+    bytes integer not null,
+    saved text,
+    cached boolean not null,
+    at timestamptz not null default now()
+);
+create index if not exists fetches_by_run on fetches (scope, survey, run_id);
 """
 
 
