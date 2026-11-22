@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -7,7 +8,9 @@ from pathlib import Path
 import jsonschema_rs
 import pytest
 
-SKILL = Path(__file__).resolve().parent.parent / "agents" / "surveyor" / "skills" / "dossier"
+EXAMPLE = Path(__file__).resolve().parent.parent
+SKILL = EXAMPLE / "agents" / "surveyor" / "skills" / "dossier"
+HUGE = int("1" + "0" * 400)
 RANGES = {
     "water_ice": (0, 100, "wt%"),
     "TiO2": (0, 20, "wt%"),
@@ -57,6 +60,13 @@ CASES = {
     "out of range": (
         [change(("values", "Th", "high"), 25)],
         ["values.Th: high 25 is outside 0 to 20 ppm"],
+    ),
+    "a huge integer": (
+        [change(("values", "TiO2", "low"), HUGE)],
+        [
+            f"values.TiO2: low {str(HUGE)[:77]}... is outside 0 to 20 wt%",
+            f"values.TiO2: low {str(HUGE)[:77]}... is above high 1.0",
+        ],
     ),
     "below range": (
         [change(("values", "water_ice", "low"), -1)],
@@ -176,8 +186,9 @@ def test_check_names_every_problem_of_a_dossier_at_once(check, dossier):
 
 
 def run_check(*args):
+    env = {**os.environ, "MOON_SURVEY_SRC": str(EXAMPLE / "src")}
     return subprocess.run(
-        [sys.executable, str(SKILL / "check.py"), *args], capture_output=True, text=True
+        [sys.executable, str(SKILL / "check.py"), *args], capture_output=True, text=True, env=env
     )
 
 
@@ -225,8 +236,11 @@ def test_the_schema_holds_the_names_units_and_ranges(check, dossier):
     assert "top metre" in values["properties"]["water_ice"]["description"]
     validator = jsonschema_rs.Draft202012Validator(schema)
     assert validator.is_valid(dossier)
-    for case in ("out of range", "unknown confidence", "no region's form", "no source"):
+    for case in set(CASES) - BEYOND_THE_SCHEMA:
         broken = json.loads(json.dumps(dossier))
         for apply in CASES[case][0]:
             apply(broken)
         assert not validator.is_valid(broken), case
+
+
+BEYOND_THE_SCHEMA = {"low above high", "no region of the grid", "a high that is not finite"}

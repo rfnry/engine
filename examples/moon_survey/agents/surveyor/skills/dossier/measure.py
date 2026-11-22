@@ -1,9 +1,9 @@
+import importlib
 import json
+import os
 import sys
 from dataclasses import asdict
-from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[4] / "src"
 NODE = "https://pds-geosciences.wustl.edu"
 GRS = f"{NODE}/lunar/lp-l-grs-5-elem-abundance-v1/lp_9001/data/lpgrs_high1_elem_abundance_2deg.tab"
 HYDROGEN = f"{NODE}/missions/lunarp/reduced/hydrogenlow.txt"
@@ -15,9 +15,9 @@ def main(argv: list[str]) -> int:
     if len(argv) != 1:
         print("measure: usage: measure.py <region>, such as N00-15/3", file=sys.stderr)
         return 2
-    if str(SRC) not in sys.path:
-        sys.path.append(str(SRC))
-    import moon
+    if source := os.environ.get("MOON_SURVEY_SRC"):
+        sys.path.append(source)
+    moon = importlib.import_module("moon")
 
     try:
         found = moon.measured(argv[0])

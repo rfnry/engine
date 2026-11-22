@@ -1,14 +1,17 @@
 import asyncio
+import contextlib
 import os
 import shutil
 import signal
-from collections.abc import Mapping
+from collections.abc import Coroutine, Mapping
 from pathlib import Path
+from typing import Any
 
 from rfnry_engine import Local, current_call
 
 EXAMPLE = Path(__file__).resolve().parent.parent
 VENV = EXAMPLE / ".venv"
+SRC = EXAMPLE / "src"
 KILLED = -signal.SIGKILL
 SYSTEM = (
     "--ro-bind",
@@ -65,27 +68,54 @@ def folder(path: Path, name: str) -> Path:
     return found
 
 
+async def through(work: Coroutine[Any, Any, None]) -> None:
+    task = asyncio.ensure_future(work)
+    while not task.done():
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait([task])
+    task.result()
+
+
 class Later:
     def __init__(self, slotted: Slotted, name: str) -> None:
         self.slotted = slotted
         self.name = name
+        self.last = b"\n"
+        self.told = False
 
     async def read(self, n: int) -> bytes:
         await self.slotted.ready.wait()
         if self.slotted.process is None:
             return b""
-        return await getattr(self.slotted.process, self.name).read(n)
+        chunk = await getattr(self.slotted.process, self.name).read(n)
+        if chunk:
+            self.last = chunk[-1:]
+            return chunk
+        if self.name == "stderr" and self.slotted.stopped and not self.told:
+            self.told = True
+            notice = (
+                f"sandbox: stopped: a command may run for at most {self.slotted.limit:g} seconds\n"
+            )
+            return (b"" if self.last == b"\n" else b"\n") + notice.encode()
+        return b""
 
 
 class Slotted:
     def __init__(
-        self, local: Local, command: str, env: Mapping[str, str], slots: asyncio.Semaphore
+        self,
+        local: Local,
+        command: str,
+        env: Mapping[str, str],
+        slots: asyncio.Semaphore,
+        limit: float,
     ) -> None:
         self.stdout = Later(self, "stdout")
         self.stderr = Later(self, "stderr")
-        self.process = None
+        self.limit = limit
+        self.process: Any = None
         self.killed = False
         self.holding = False
+        self.stopped = False
         self.ready = asyncio.Event()
         self.code: asyncio.Future[int] = asyncio.get_running_loop().create_future()
         self.task = asyncio.create_task(self.run(local, command, dict(env), slots))
@@ -103,6 +133,15 @@ class Slotted:
             self.ready.set()
             if self.killed:
                 await self.process.kill()
+            deadline = asyncio.timeout(self.limit)
+            try:
+                async with deadline:
+                    return await self.process.wait()
+            except TimeoutError:
+                if not deadline.expired():
+                    raise
+            self.stopped = True
+            await self.process.kill()
             return await self.process.wait()
         finally:
             self.ready.set()
@@ -125,25 +164,48 @@ class Slotted:
         if not self.holding:
             self.task.cancel()
             return
-        await self.ready.wait()
-        if self.process is not None:
+        try:
+            await self.ready.wait()
+        except asyncio.CancelledError:
+            await through(self.end_now())
+            raise
+        if self.process is not None and not self.task.done():
             await self.process.kill()
+
+    async def end_now(self) -> None:
+        await self.ready.wait()
+        if self.process is None or self.task.done():
+            return
+        killing = asyncio.ensure_future(self.process.kill())
+        await asyncio.sleep(0)
+        killing.cancel()
+        await asyncio.wait([killing])
 
 
 class Sandboxes:
-    def __init__(self, base: Path, *, agents: Path, data: Path, slots: int = 16) -> None:
+    def __init__(
+        self,
+        base: Path,
+        *,
+        agents: Path,
+        data: Path,
+        slots: int = 16,
+        run_timeout: float = 120.0,
+    ) -> None:
         if slots < 1:
             raise SandboxError(f"sandbox: slots must be at least 1; got {slots}")
+        if run_timeout <= 0:
+            raise SandboxError(f"sandbox: run_timeout must be positive; got {run_timeout:g}")
         self.base = Path(base).resolve()
         self.agents = folder(agents, "agents")
         self.data = folder(data, "data")
+        self.run_timeout = run_timeout
         self.path = f"{VENV / 'bin'}:/usr/bin:/bin"
-        if shutil.which("bwrap", path=self.path) is None:
-            raise SandboxError("sandbox: bwrap was not found; install bubblewrap")
+        self.bwrap = shutil.which("bwrap", path=self.path)
         self.mounts = [
             *SYSTEM,
             *runtime(VENV),
-            *read_only(EXAMPLE / "src"),
+            *read_only(SRC),
             *read_only(self.agents),
             *read_only(self.data),
         ]
@@ -155,8 +217,10 @@ class Sandboxes:
         return self.base / run_id
 
     def shell(self, place: Path) -> list[str]:
+        if self.bwrap is None:
+            raise SandboxError("sandbox: bwrap was not found; install bubblewrap")
         return [
-            "bwrap",
+            self.bwrap,
             *self.mounts,
             "--bind",
             str(place),
@@ -168,7 +232,7 @@ class Sandboxes:
             *CONFINED,
         ]
 
-    def here(self) -> Local:
+    def here(self) -> Path:
         call = current_call()
         if call is None:
             raise SandboxError(
@@ -176,19 +240,28 @@ class Sandboxes:
             )
         place = self.place(call.run_id)
         place.mkdir(parents=True, exist_ok=True)
-        env = {
+        return place
+
+    def env(self, place: Path) -> dict[str, str]:
+        return {
             "PATH": self.path,
             "HOME": str(place),
             "LANG": "C.UTF-8",
             "MOON_SURVEY_DATA": str(self.data),
+            "MOON_SURVEY_SRC": str(SRC),
         }
-        return Local(place, shell=self.shell(place), env=env)
+
+    def files(self) -> Local:
+        place = self.here()
+        return Local(place, env=self.env(place))
 
     async def spawn(self, command: str, env: Mapping[str, str]) -> Slotted:
-        return Slotted(self.here(), command, env, self.slots)
+        place = self.here()
+        local = Local(place, shell=self.shell(place), env=self.env(place))
+        return Slotted(local, command, env, self.slots, self.run_timeout)
 
     async def read(self, path: str, limit: int) -> bytes:
-        return await self.here().read(path, limit)
+        return await self.files().read(path, limit)
 
     async def write(self, path: str, data: bytes) -> None:
-        await self.here().write(path, data)
+        await self.files().write(path, data)

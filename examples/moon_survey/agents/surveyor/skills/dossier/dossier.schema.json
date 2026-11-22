@@ -13,7 +13,7 @@
   ],
   "properties": {
     "region": {
-      "description": "The region's id, as the board names it, such as N00-15/3.",
+      "description": "The region's id, one of the grid's 250 as the board names them, such as N00-15/3.",
       "type": "string",
       "pattern": "^[NS][0-9]{2}-[0-9]{2}/[0-9]+$"
     },
@@ -179,11 +179,21 @@
           "type": "array",
           "minItems": 1,
           "items": {
-            "type": "string",
-            "minLength": 1
+            "$ref": "#/$defs/text",
+            "anyOf": [
+              {
+                "pattern": "^https://"
+              },
+              {
+                "not": {
+                  "pattern": "^([A-Za-z][A-Za-z0-9+.-]*://|[Ww][Ww][Ww]\\.)"
+                }
+              }
+            ]
           }
         }
-      }
+      },
+      "description": "A range from low to high, low at most high, with its confidence and sources."
     },
     "unknown": {
       "type": "object",
@@ -194,10 +204,14 @@
       "properties": {
         "unknown": {
           "description": "Why nothing can be said.",
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/$defs/text"
         }
       }
+    },
+    "text": {
+      "description": "A string with more than whitespace in it.",
+      "type": "string",
+      "pattern": "\\S"
     }
   }
 }

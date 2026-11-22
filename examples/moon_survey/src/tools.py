@@ -6,13 +6,15 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from html.parser import HTMLParser
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import asyncpg
 import httpx
-from rfnry_engine import Tool, current_call
+from rfnry_engine import InputError, Tool, current_call
+
+from sandbox import Sandboxes
 
 HOSTS = (
     "pds-geosciences.wustl.edu",
@@ -313,23 +315,13 @@ class FetchLog:
         return {row["url"] for row in rows}
 
 
-def sandbox_path(root: Path, save: str) -> Path:
-    refusal = FetchError(f"fetch: save must be a path inside your sandbox; got '{save}'")
-    if not save or save.startswith("/") or ".." in PurePosixPath(save).parts:
-        raise refusal
-    base = root.resolve()
-    target = (base / save).resolve()
-    if not target.is_relative_to(base) or target == base:
-        raise refusal
-    return target
+def inside(save: str) -> str:
+    if save.startswith("/") or ".." in PurePosixPath(save).parts:
+        raise FetchError(f"fetch: save must be a path inside your sandbox; got '{save}'")
+    return save
 
 
-def write_file(target: Path, body: bytes) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(body)
-
-
-def fetch_tool(web: Any, place: Callable[[str], Path], log: Any) -> Tool:
+def fetch_tool(web: Any, sandboxes: Sandboxes, log: Any) -> Tool:
     async def fetch(args: dict[str, Any]) -> dict[str, Any]:
         call = current_call()
         if call is None:
@@ -337,7 +329,7 @@ def fetch_tool(web: Any, place: Callable[[str], Path], log: Any) -> Tool:
         run_id = call.run_id
         url = args["url"]
         save = args.get("save")
-        target = sandbox_path(place(run_id), save) if save else None
+        target = inside(save) if save else None
         try:
             page = await web.get(url)
         except FetchError:
@@ -346,11 +338,9 @@ def fetch_tool(web: Any, place: Callable[[str], Path], log: Any) -> Tool:
         saved = None
         if target is not None and page.status == 200:
             try:
-                await asyncio.to_thread(write_file, target, page.body)
-            except OSError as error:
-                raise FetchError(
-                    f"fetch: could not write '{save}': {error.strerror or error}"
-                ) from None
+                await sandboxes.write(target, page.body)
+            except InputError as error:
+                raise FetchError(f"fetch: could not write '{save}': {error}") from None
             saved = save
         for logged in dict.fromkeys((url, page.url)):
             await log.write(

@@ -1,12 +1,17 @@
 import asyncio
 import secrets
+from pathlib import Path
 
 import httpx
 import pytest
 from rfnry_engine import CallInfo
 
+import sandbox as sandbox_module
 import tools as tools_module
+from sandbox import Sandboxes
 from tools import FakeWeb, FetchError, FetchLog, Web, fetch_tool
+
+EXAMPLE = Path(__file__).resolve().parent.parent
 
 HTML = (
     b"<html><head><style>p{}</style><script>var x=1;</script></head>"
@@ -36,20 +41,19 @@ class Recorder:
 @pytest.fixture
 def caller(monkeypatch, tmp_path):
     async def run(tool, args, run_id="a"):
-        monkeypatch.setattr(
-            tools_module,
-            "current_call",
-            lambda: CallInfo(
-                run_id=run_id, agent="surveyor", scope="moon", tool="fetch", call_id="c"
-            ),
-        )
+        call = CallInfo(run_id=run_id, agent="surveyor", scope="moon", tool="fetch", call_id="c")
+        monkeypatch.setattr(tools_module, "current_call", lambda: call)
+        monkeypatch.setattr(sandbox_module, "current_call", lambda: call)
         return await tool.body(args)
 
     return run
 
 
 def tool_of(web, tmp_path, log=None):
-    return fetch_tool(web, lambda run_id: tmp_path / run_id, log or Recorder())
+    sandboxes = Sandboxes(
+        tmp_path, agents=EXAMPLE / "agents", data=EXAMPLE / "tests" / "data" / "lp_cut"
+    )
+    return fetch_tool(web, sandboxes, log or Recorder())
 
 
 async def test_a_host_off_the_list_is_refused():
@@ -166,9 +170,35 @@ async def test_a_symlink_leaving_the_sandbox_is_refused(caller, tmp_path):
     (tmp_path / "outside").mkdir()
     (tmp_path / "a" / "link").symlink_to(tmp_path / "outside")
     tool = tool_of(web_over(lambda request: ok()), tmp_path)
-    with pytest.raises(FetchError, match="save must be a path inside your sandbox"):
+    with pytest.raises(FetchError, match="^fetch: could not write 'link/x': .*outside"):
         await caller(tool, {"url": "https://arxiv.org/a", "save": "link/x"})
     assert not (tmp_path / "outside" / "x").exists()
+
+
+@pytest.mark.parametrize("save", ["notes.txt", "data/x.bin"])
+async def test_a_symlink_swapped_in_during_the_fetch_is_not_written_through(caller, tmp_path, save):
+    place = tmp_path / "a"
+    (place / "data").mkdir(parents=True)
+    (place / "notes.txt").write_text("old")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "notes.txt").write_text("mine")
+
+    def swap(request):
+        first = Path(save).parts[0]
+        target = place / first
+        if target.is_dir():
+            target.rmdir()
+        else:
+            target.unlink()
+        target.symlink_to(outside / first if first == "notes.txt" else outside)
+        return ok(b"page")
+
+    tool = tool_of(web_over(swap), tmp_path)
+    with pytest.raises(FetchError, match=f"^fetch: could not write '{save}': .*outside"):
+        await caller(tool, {"url": "https://arxiv.org/a", "save": save})
+    assert (outside / "notes.txt").read_text() == "mine"
+    assert sorted(p.name for p in outside.iterdir()) == ["notes.txt"]
 
 
 async def test_a_body_past_the_save_cap_is_refused(caller, tmp_path):
@@ -439,14 +469,19 @@ async def test_a_3xx_with_a_body_and_no_content_type_is_not_a_hop():
     assert (page.status, page.body) == (300, b"choose")
 
 
-async def test_an_unwritable_save_error_never_says_none(caller, tmp_path, monkeypatch):
-    def broken(target, body):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(tools_module, "write_file", broken)
+async def test_an_unwritable_save_says_why(caller, tmp_path):
+    place = tmp_path / "a"
+    place.mkdir()
+    place.chmod(0o500)
     tool = tool_of(web_over(lambda request: ok()), tmp_path)
-    with pytest.raises(FetchError, match="could not write 'x': disk full"):
-        await caller(tool, {"url": "https://arxiv.org/a", "save": "x"})
+    try:
+        with pytest.raises(FetchError) as refused:
+            await caller(tool, {"url": "https://arxiv.org/a", "save": "x"})
+    finally:
+        place.chmod(0o700)
+    assert str(refused.value) == (
+        "fetch: could not write 'x': tools/workspace: cannot write x: Permission denied"
+    )
 
 
 async def test_a_3xx_with_an_empty_location_is_a_result():

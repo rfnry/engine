@@ -1,8 +1,10 @@
 import asyncio
 import json
 import secrets
+import shlex
 import shutil
 import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -12,18 +14,18 @@ from rfnry_engine import CallInfo, InputError, Workspace
 
 import moon
 import sandbox as sandbox_module
-from sandbox import SandboxError, Sandboxes
+from sandbox import SandboxError, Sandboxes, Slotted
 
 EXAMPLE = Path(__file__).resolve().parent.parent
 AGENTS = EXAMPLE / "agents"
 CUT = EXAMPLE / "tests" / "data" / "lp_cut"
 SKILL = "$RFNRY_TREE/surveyor/skills/dossier"
 
-pytestmark = pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap is not installed")
-
 
 @pytest.fixture
 def base():
+    if shutil.which("bwrap") is None:
+        pytest.skip("bwrap is not installed")
     made = EXAMPLE / ".work" / f"test-{secrets.token_hex(4)}"
     made.mkdir(parents=True)
     yield made
@@ -78,6 +80,7 @@ async def sleepers(sandboxes, place, count=16):
 async def test_a_command_runs_in_its_own_place(sandboxes, base, run_as):
     run_as("a")
     assert sandboxes.place("a") == base.resolve() / "a"
+    assert sandboxes.shell(sandboxes.place("a"))[0] == shutil.which("bwrap")
     assert await run(sandboxes, "pwd; echo $HOME") == (0, f"{base.resolve() / 'a'}\n" * 2, "")
     run_as("b")
     assert await run(sandboxes, "pwd") == (0, f"{base.resolve() / 'b'}\n", "")
@@ -282,3 +285,176 @@ async def test_measure_names_a_region_that_does_not_exist(sandboxes, run_as):
         "",
         "moon: region 'N00-15/40' does not exist\n",
     )
+
+
+async def test_a_sandbox_sees_none_of_the_rest_of_the_machine(sandboxes, run_as):
+    run_as("a")
+    hidden = [EXAMPLE / "data" / "truth.json", EXAMPLE / "pyproject.toml", Path.home() / ".bashrc"]
+    hidden = [path for path in hidden if path.exists()]
+    assert len(hidden) >= 2
+    tests = " ".join(
+        f"test -e {shlex.quote(str(path))} && echo {shlex.quote(str(path))};" for path in hidden
+    )
+    assert await run(sandboxes, f"{tests} true") == (0, "", "")
+    home = Path.home()
+    words = sandboxes.shell(sandboxes.place("a"))
+    reachable = {Path(w).relative_to(home).parts[0] for w in words if w.startswith(f"{home}/")}
+    code, out, err = await run(sandboxes, f"ls -A {shlex.quote(str(home))}")
+    assert (code, err) == (0, "")
+    assert set(out.split()) == reachable
+
+
+def lingering(marker):
+    inner = f': {marker}; trap "" TERM; while true; do date +%s%N > beat; sleep 0.1; done'
+    return f"setsid bash -c {shlex.quote(inner)} &"
+
+
+async def gone(place, marker):
+    await asyncio.sleep(0.3)
+    first = (place / "beat").read_text()
+    await asyncio.sleep(0.4)
+    found = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+    return (place / "beat").read_text() == first and found.stdout == ""
+
+
+async def test_a_child_that_leaves_its_session_ends_when_its_command_exits(sandboxes, run_as):
+    run_as("a")
+    marker = f"linger-{secrets.token_hex(4)}"
+    assert (await run(sandboxes, f"{lingering(marker)} sleep 0.5"))[0] == 0
+    assert await gone(sandboxes.place("a"), marker)
+
+
+async def test_a_child_that_leaves_its_session_ends_when_its_command_is_killed(sandboxes, run_as):
+    run_as("a")
+    place = sandboxes.place("a")
+    marker = f"linger-{secrets.token_hex(4)}"
+    process = await sandboxes.spawn(f"{lingering(marker)} exec sleep 1000", {})
+    await until(lambda: (place / "beat").exists())
+    await process.kill()
+    assert await process.wait() < 0
+    assert await gone(place, marker)
+
+
+async def test_a_queued_command_is_not_killed_by_waiting(base, run_as):
+    sandboxes = Sandboxes(base, agents=AGENTS, data=CUT, run_timeout=2)
+    run_as("a")
+    busy = [await sandboxes.spawn("sleep 1.5", {}) for _ in range(16)]
+    late = await sandboxes.spawn("sleep 1; echo done", {})
+    out, err = await asyncio.gather(drain(late.stdout), drain(late.stderr))
+    assert (await late.wait(), out, err) == (0, "done\n", "")
+    assert await asyncio.gather(*(process.wait() for process in busy)) == [0] * 16
+
+
+async def test_a_command_past_the_run_limit_is_stopped_and_frees_its_slot(base, run_as):
+    sandboxes = Sandboxes(base, agents=AGENTS, data=CUT, run_timeout=2)
+    run_as("a")
+    place = sandboxes.place("a")
+    shell = shell_of(Workspace(sandboxes, scope="moon", timeout=30))
+    began = time.time_ns()
+    stuck = [
+        asyncio.create_task(
+            shell.body(
+                {"command": f"touch started-{n}; echo working; while true; do sleep 1; done"}
+            )
+        )
+        for n in range(16)
+    ]
+    await until(lambda: len(list(place.glob("started-*"))) == 16)
+    assert await shell.body({"command": "date +%s%N > begun; echo done"}) == {
+        "exit_code": 0,
+        "stdout": "done\n",
+        "stderr": "",
+        "timed_out": False,
+    }
+    assert int((place / "begun").read_text()) >= began + 2_000_000_000
+    for result in await asyncio.gather(*stuck):
+        assert result["timed_out"] is False
+        assert result["exit_code"] < 0
+        assert result["stdout"] == "working\n"
+        assert result["stderr"] == "sandbox: stopped: a command may run for at most 2 seconds\n"
+
+
+async def test_a_background_job_is_stopped_at_the_run_limit(base, run_as):
+    sandboxes = Sandboxes(base, agents=AGENTS, data=CUT, run_timeout=1.5)
+    run_as("a")
+    async with Workspace(sandboxes, scope="moon", timeout=30) as workspace:
+        tools = {tool.name: tool for tool in workspace.tools()}
+        started = await tools["Shell"].body(
+            {"command": "echo working; sleep 1000", "background": True}
+        )
+        assert started == {"job": "j1"}
+        result = await tools["Job"].body({"id": "j1", "wait": 10})
+    assert result["running"] is False
+    assert result["exit_code"] < 0
+    assert result["output"] == (
+        "working\nsandbox: stopped: a command may run for at most 1.5 seconds\n"
+    )
+
+
+class Starting:
+    def __init__(self):
+        self.ended = asyncio.Event()
+
+    async def kill(self):
+        try:
+            await asyncio.wait_for(self.ended.wait(), 10)
+        finally:
+            self.ended.set()
+
+    async def wait(self):
+        await self.ended.wait()
+        return -signal.SIGKILL
+
+
+class Spawning:
+    def __init__(self, process):
+        self.process = process
+        self.go = asyncio.Event()
+
+    async def spawn(self, command, env):
+        await self.go.wait()
+        return self.process
+
+
+async def test_a_cancelled_kill_still_ends_a_command_that_was_starting():
+    process = Starting()
+    local = Spawning(process)
+    slotted = Slotted(local, "x", {}, asyncio.Semaphore(1), 120)
+    await asyncio.sleep(0)
+    assert slotted.holding
+    killing = asyncio.create_task(slotted.kill())
+    await asyncio.sleep(0)
+    killing.cancel()
+    await asyncio.sleep(0)
+    local.go.set()
+    with pytest.raises(asyncio.CancelledError):
+        await killing
+    assert process.ended.is_set()
+    assert await slotted.wait() == -signal.SIGKILL
+
+
+class Ended:
+    def __init__(self):
+        self.kills = 0
+
+    async def kill(self):
+        self.kills += 1
+
+    async def wait(self):
+        return 0
+
+
+class Started:
+    def __init__(self, process):
+        self.process = process
+
+    async def spawn(self, command, env):
+        return self.process
+
+
+async def test_a_kill_after_the_command_ended_signals_nothing():
+    process = Ended()
+    slotted = Slotted(Started(process), "x", {}, asyncio.Semaphore(1), 120)
+    assert await slotted.wait() == 0
+    await slotted.kill()
+    assert process.kills == 0

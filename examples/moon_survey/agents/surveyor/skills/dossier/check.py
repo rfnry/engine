@@ -1,33 +1,34 @@
+import importlib
 import json
 import math
+import os
 import re
 import sys
-from functools import cache
 from pathlib import Path
 
+if source := os.environ.get("MOON_SURVEY_SRC"):
+    sys.path.append(source)
+moon = importlib.import_module("moon")
+
 HERE = Path(__file__).resolve().parent
-SRC = HERE.parents[3] / "src"
 SCHEMA = json.loads((HERE / "dossier.schema.json").read_text(encoding="utf-8"))
-FIELDS = SCHEMA["required"]
+FIELDS = list(SCHEMA["properties"])
+REQUIRED = SCHEMA["required"]
 REGION = re.compile(SCHEMA["properties"]["region"]["pattern"])
 TERRAINS = SCHEMA["properties"]["terrain"]["enum"]
 VALUES = SCHEMA["properties"]["values"]["properties"]
+NAMES = SCHEMA["properties"]["values"]["required"]
 RANGE = SCHEMA["$defs"]["range"]
-RANGE_FIELDS = RANGE["required"]
+RANGE_FIELDS = list(RANGE["properties"])
+RANGE_REQUIRED = RANGE["required"]
 CONFIDENCES = RANGE["properties"]["confidence"]["enum"]
-URL = re.compile(r"[a-z][a-z0-9+.-]*://|www\.", re.IGNORECASE)
+SOURCES = RANGE["properties"]["sources"]
+LEAST = SOURCES["minItems"]
+HTTPS = re.compile(SOURCES["items"]["anyOf"][0]["pattern"])
+URL = re.compile(SOURCES["items"]["anyOf"][1]["not"]["pattern"])
+TEXT = re.compile(SCHEMA["$defs"]["text"]["pattern"])
+GRID = frozenset(moon.by_id())
 SHAPE = '{"low", "high", "confidence", "sources"} or {"unknown": "<why>"}'
-
-
-@cache
-def grid() -> frozenset[str] | None:
-    if str(SRC) not in sys.path:
-        sys.path.append(str(SRC))
-    try:
-        import moon
-    except ImportError:
-        return None
-    return frozenset(moon.by_id())
 
 
 def shown(value: object) -> str:
@@ -44,20 +45,23 @@ def listed(names: list[str]) -> str:
 
 
 def region_problems(region: object) -> list[str]:
-    if not isinstance(region, str) or not REGION.fullmatch(region):
+    if not isinstance(region, str) or not REGION.search(region):
         return [f"region: {shown(region)} is not a region id of the form N00-15/3"]
-    ids = grid()
-    if ids is not None and region not in ids:
+    if region not in GRID:
         return [f"region: {shown(region)} is no region of the grid"]
     return []
 
 
 def number(value: object) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    return isinstance(value, float) and math.isfinite(value)
 
 
 def range_problems(where: str, quantity: dict, spec: dict) -> list[str]:
-    found = [f"{where}: {key} is missing" for key in RANGE_FIELDS if key not in quantity]
+    found = [f"{where}: {key} is missing" for key in RANGE_REQUIRED if key not in quantity]
     found += [
         f"{where}: {shown(key)} is not a field of a value; its fields are {listed(RANGE_FIELDS)}"
         for key in quantity
@@ -86,14 +90,16 @@ def range_problems(where: str, quantity: dict, spec: dict) -> list[str]:
 
 
 def source_problems(where: str, sources: object) -> list[str]:
-    if not isinstance(sources, list) or not all(isinstance(s, str) and s.strip() for s in sources):
+    if not isinstance(sources, list) or not all(
+        isinstance(s, str) and TEXT.search(s) for s in sources
+    ):
         return [f"{where}: sources must be a list of non-empty strings"]
-    if not sources:
+    if len(sources) < LEAST:
         return [f"{where}: sources is empty; name at least one source"]
     return [
         f"{where}: source {shown(source)} is a URL; a URL source starts with https://"
         for source in sources
-        if URL.match(source) and not source.startswith("https://")
+        if URL.search(source) and not HTTPS.search(source)
     ]
 
 
@@ -106,17 +112,17 @@ def quantity_problems(name: str, quantity: object) -> list[str]:
     if len(quantity) > 1:
         return [f'{where}: is a range or {{"unknown": "<why>"}}, not both']
     reason = quantity["unknown"]
-    if not isinstance(reason, str) or not reason.strip():
+    if not isinstance(reason, str) or not TEXT.search(reason):
         return [f"{where}: unknown must say why, in a non-empty string"]
     return []
 
 
 def values_problems(values: object) -> list[str]:
     if not isinstance(values, dict):
-        return [f"values: must be an object of {listed(list(VALUES))}"]
+        return [f"values: must be an object of {listed(NAMES)}"]
     found = [
         f'values: {name} is missing; give its range, or {{"unknown": "<why>"}}'
-        for name in VALUES
+        for name in NAMES
         if name not in values
     ]
     found += [
@@ -133,7 +139,7 @@ def values_problems(values: object) -> list[str]:
 def problems(dossier: dict) -> list[str]:
     if not isinstance(dossier, dict):
         return [f"dossier: must be a JSON object of {listed(FIELDS)}"]
-    found = [f"dossier: {name} is missing" for name in FIELDS if name not in dossier]
+    found = [f"dossier: {name} is missing" for name in REQUIRED if name not in dossier]
     found += [
         f"dossier: {shown(name)} is not a field of a dossier; its fields are {listed(FIELDS)}"
         for name in dossier
