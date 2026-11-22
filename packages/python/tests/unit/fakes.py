@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import json
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -82,6 +82,37 @@ class Crew:
         if not held:
             raise AssertionError(f"Crew ran out of replies for {who}")
         return cast(Reply, held.pop(0))
+
+
+class MemoryStore:
+    def __init__(self, windows: Callable[[str, int], int] = lambda conversation, length: 0) -> None:
+        self.held: dict[tuple[str, str], list[Message]] = {}
+        self.log: list[tuple[str, str, str]] = []
+        self.windows = windows
+        self.fail: dict[str, BaseException] = {}
+
+    def called(self, method: str, scope: str, conversation: str) -> None:
+        self.log.append((method, scope, conversation))
+        if method in self.fail:
+            raise self.fail.pop(method)
+
+    async def length(self, scope: str, conversation: str) -> int:
+        self.called("length", scope, conversation)
+        return len(self.held.get((scope, conversation), []))
+
+    async def read(
+        self, scope: str, conversation: str, start: int, stop: int | None = None
+    ) -> Sequence[object]:
+        self.called("read", scope, conversation)
+        return self.held.get((scope, conversation), [])[start:stop]
+
+    async def append(self, scope: str, conversation: str, messages: Sequence[Message]) -> None:
+        self.called("append", scope, conversation)
+        self.held.setdefault((scope, conversation), []).extend(messages)
+
+    async def window(self, scope: str, conversation: str, length: int) -> int:
+        self.called("window", scope, conversation)
+        return self.windows(conversation, length)
 
 
 class Fixed:

@@ -1265,6 +1265,63 @@ oldest first, each on what it was sent, with `start=0` and so without `History`.
 `conversation=lambda run: Conversation(pool, run.tags["conversation"])` and each replays with the
 window it was given and `History` over what came before it, never past its own input.
 
+#### A conversation in your store
+
+A run can keep its conversation in a store of yours as it grows: pass `store=` and the name the
+store keeps the conversation under, `conversation=`. A store is anything with these four methods, a
+`ConversationStore`, each called with the run's scope and that name:
+
+```python
+class Conversations:
+    def __init__(self):
+        self.lists = {}
+
+    async def length(self, scope, conversation):
+        return len(self.lists.get((scope, conversation), []))
+
+    async def read(self, scope, conversation, start, stop=None):
+        return self.lists.get((scope, conversation), [])[start:stop]
+
+    async def append(self, scope, conversation, messages):
+        self.lists.setdefault((scope, conversation), []).extend(messages)
+
+    async def window(self, scope, conversation, length):
+        return 0
+
+
+store = Conversations()
+for message in ["My invoice was charged twice.", "And the second charge?"]:
+    run = await engine.run("support", scope="acme", input=message,
+                           store=store, conversation="dana-1")
+```
+
+The two arguments go together, and `history=` and `start=` are refused beside them: the store is
+the history. Each model call is sent the whole conversation, and the run does not call `window`.
+
+The run appends every message it adds, each a copy, its `usage`, `model`, `prefix` and `notice`
+included: the input, each reply as it arrives, the results of a batch of tool calls once the batch
+is answered, the notices and `inbox` messages it takes, and what a stop or a failure adds. Every
+message is appended before the model call that sends it, so whatever a model saw is stored first,
+and everything is stored before `RunEnded`.
+
+Calling again with the same name continues the conversation. The run reads it once, as it starts —
+`length`, then `read(scope, conversation, 0)` when it is not empty — sends it as its history, and
+appends `input=` as the next message, such as "the process restarted; carry on". It is a new run,
+with its own `run_id`, and its `start` is 0. A store whose `read` returns fewer messages than its
+`length`, or messages that do not fit `Message`, is refused before the run starts, and nothing is
+recorded.
+
+One run holds a conversation at a time in one engine: a second run of the same name and scope
+while the first is in flight is an `InputError` (`engine: conversation 'dana-1' of scope 'acme' is
+in use by a run in flight`), and the name is free again once the first returns; the same name in
+another scope is another conversation. A store shared by processes locks a conversation itself. A
+delegated run, in the background or not, keeps nothing in the store; a run a decision agent routes
+to keeps the conversation under its router's name, and a decision run calls no store.
+
+A store call that raises fails the run with that error, and the engine never retries one. A store
+retries what it can, such as a brief database error, before it raises. A lead that fails stops its
+helpers, and a resume reports each of them as `lost`.
+
 ### Decision agents
 
 A decision model is a discriminative model: given a state and questions whose answers you define,
@@ -3676,7 +3733,7 @@ them yourself; every row carries its run's tags.
 Everything the package exports, by role.
 
 - **Run things:** `Engine`, `AgentInfo`, `Provider`, `ModelChoice`, `ModelEntry`, `Stop`,
-  `HistoryLike`, `VoiceStart`, `Spoken`, `SpokenLine`.
+  `HistoryLike`, `ConversationStore`, `VoiceStart`, `Spoken`, `SpokenLine`.
 - **What a run returns:** `Generation`, `Decision`, `Voice`, `Run`, `Step`, `Fingerprint`; events
   `RunStarted`, `RunEnded`, `TextDelta`, `ReasoningDelta`, `MessagesTaken`, `ToolCallStarted`,
   `ToolResultReady`, `CommandOutput`, `Event`.
@@ -3750,7 +3807,11 @@ skills are escalate`), found when the run starts, a run the refinery does not, o
 `engine.send` or `engine.stop` does not find its engine running under its scope. `InputError` for a
 call the library refuses: an empty scope, an input that is not a string, a JSON object or a list of
 JSON values and parts, a workspace of another scope, a history that breaks a tool call from its
-result, a `start` outside the history or without one, tags outside their limits, runtime questions
+result, a `start` outside the history or without one, a `store=` without `conversation=` or a
+`conversation=` without `store=`, a store without `length`, `read`, `append` and `window`, a blank
+conversation name, `history=` or `start=` beside a store, a conversation a run in flight holds, a
+store whose `length` is not a whole number from 0 or whose `read` returns fewer messages than its
+`length` or messages that do not fit, tags outside their limits, runtime questions
 that do not fit, a runtime id the run already asks, questions for a generation agent, a skill for a
 decision agent, a run without a mode of an agent that needs one, a voice agent given to `engine.run`
 or `engine.tool` and another kind given to `engine.talk`, a run given a skill both by `skill=` and

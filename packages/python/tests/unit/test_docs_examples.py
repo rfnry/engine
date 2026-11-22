@@ -236,6 +236,17 @@ SETUPS = {
             )
         }
     ),
+    "class Conversations:": Setup(
+        replace={
+            'store=store, conversation="dana-1")': (
+                'store=store, conversation="dana-1")\n'
+                'assert store.lists[("acme", "dana-1")] == run.conversation\n'
+                "assert [m.content for m in run.conversation] == ["
+                '"My invoice was charged twice.", "ok", "And the second charge?", "ok"]\n'
+                "assert run.messages == run.conversation[:3] and run.start == 0"
+            )
+        }
+    ),
     "from rfnry_engine import Local, Workspace": Setup(
         replace={"/srv/tenants/acme/work": "work", '"bwrap",': '"env",'}
     ),

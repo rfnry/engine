@@ -61,6 +61,7 @@ EXPECTED = {
     "QuestionLike",
     "GenerationModel",
     "HistoryLike",
+    "ConversationStore",
     "StreamingGenerationModel",
     "DecisionModel",
     "VoiceModel",

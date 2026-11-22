@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 from rfnry_engine import chain
 from rfnry_engine.bundle import build_bundle
 from rfnry_engine.compiled import compile_folder
+from rfnry_engine.conversation import HISTORY, Conversation
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
@@ -52,6 +53,7 @@ from rfnry_engine.models import (
     Answer,
     ChoiceAnswer,
     Content,
+    ConversationStore,
     Decided,
     DecisionModel,
     GenerationModel,
@@ -158,6 +160,9 @@ class _Options:
     source: Sequence[object] | HistoryLike | None = None
     failed: list[Generation | Decision] = field(default_factory=list)
     lead: tuple[Helper, Helpers] | None = None
+    store: ConversationStore | None = None
+    key: str | None = None
+    written: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -191,7 +196,6 @@ class Recorder(Protocol):
 
 PART = TypeAdapter[Part](Part)
 STATE = TypeAdapter[State](State)
-HISTORY = TypeAdapter(list[Message])
 SETTINGS = TypeAdapter[dict[str, JsonValue] | None](dict[str, JsonValue] | None)
 QUESTIONS = TypeAdapter(dict[str, Annotated[Question, Field(discriminator="type")]])
 PART_TYPES = ("text", "image", "audio", "document")
@@ -312,6 +316,30 @@ def _paired(history: list[Message], start: int) -> None:
         raise InputError(
             f"engine: history breaks tool call {call_id!r} from its result "
             f"at position {position}; start at a message the person sent"
+        )
+
+
+def _stored(
+    store: ConversationStore | None,
+    conversation: str | None,
+    history: Sequence[object] | HistoryLike | None,
+    start: int,
+) -> None:
+    if conversation is None:
+        raise InputError(
+            "engine: store= needs conversation=, the name the store keeps the conversation under"
+        )
+    if store is None:
+        raise InputError("engine: conversation= needs store=, the store that keeps it")
+    if not isinstance(store, ConversationStore):
+        raise InputError(
+            f"engine: store must have length(), read(), append() and window(); got {type(store).__name__}"
+        )
+    if not isinstance(conversation, str) or not conversation.strip():
+        raise InputError(f"engine: conversation must be non-blank text; got {conversation!r}")
+    if history is not None or start != 0:
+        raise InputError(
+            "engine: a run with a store reads its history from it; leave out history= and start="
         )
 
 
@@ -977,6 +1005,7 @@ class Engine:
         _check_processes(self._workers, max_worker_processes, "raise Engine(max_worker_processes=)")
         self._closed = False
         self._running: dict[tuple[str, str], _Running] = {}
+        self._conversations: set[tuple[str, str]] = set()
         logger.info("engine: agents loaded [%s]", ", ".join(self._agents))
 
     async def close(self) -> None:
@@ -1094,6 +1123,8 @@ class Engine:
         skill: str | None = None,
         history: Sequence[object] | HistoryLike | None = None,
         start: int = 0,
+        store: ConversationStore | None = None,
+        conversation: str | None = None,
         context: str | None = None,
         expect: type[BaseModel] | None = None,
         on_event: EventHandler | None = None,
@@ -1114,6 +1145,8 @@ class Engine:
             skill=skill,
             history=history,
             start=start,
+            store=store,
+            conversation=conversation,
             context=context,
             expect=expect,
             on_event=on_event,
@@ -1140,6 +1173,8 @@ class Engine:
         skill: str | None = None,
         history: Sequence[object] | HistoryLike | None = None,
         start: int = 0,
+        store: ConversationStore | None = None,
+        conversation: str | None = None,
         context: str | None = None,
         expect: type[BaseModel] | None = None,
         on_event: EventHandler | None = None,
@@ -1180,6 +1215,8 @@ class Engine:
         invoked = _skilled(spec, skill)
         tagged = _tags(tags)
         merged = self._run_models(models)
+        if store is not None or conversation is not None:
+            _stored(store, conversation, history, start)
         held = history if history is None or isinstance(history, HistoryLike) else list(history)
         given = await _window(held, start)
         _paired(given, start)
@@ -1199,6 +1236,8 @@ class Engine:
             questions=asked,
             start=start,
             source=held,
+            store=store,
+            key=conversation,
         )
         recording = RECORDING.set(record)
         try:
@@ -1420,8 +1459,11 @@ class Engine:
         self._running[held] = _Running(
             kind, options.stop, options.inbox if kind == "generation" else None
         )
+        claimed: tuple[str, str] | None = None
         try:
             self._open()
+            if kind == "generation" and options.store is not None and options.key is not None:
+                claimed = self._claimed(scope, options.key)
             reach = folder_reach(spec.max_depth)
             async with enter(spec.name, _lowered(reach, self.max_depth), reach, routed=routed):
                 if kind == "generation":
@@ -1432,7 +1474,18 @@ class Engine:
                 return await self._decision(spec, scope, input, options, parent_run_id, run_id)
         finally:
             del self._running[held]
+            if claimed is not None:
+                self._conversations.discard(claimed)
             options.stop._drop()
+
+    def _claimed(self, scope: str, key: str) -> tuple[str, str]:
+        claimed = (scope, key)
+        if claimed in self._conversations:
+            raise InputError(
+                f"engine: conversation {key!r} of scope {scope!r} is in use by a run in flight"
+            )
+        self._conversations.add(claimed)
+        return claimed
 
     async def _decision(
         self,
@@ -1614,6 +1667,14 @@ class Engine:
             options.stop,
             options.inbox,
         )
+        conversation = (
+            None
+            if options.store is None or options.key is None
+            else Conversation(options.store, scope, options.key)
+        )
+        given = options.history if conversation is None else await conversation.opened()
+        if conversation is not None:
+            _paired(given, 0)
         surface = EngineTools(
             self,
             agent=spec.name,
@@ -1633,7 +1694,7 @@ class Engine:
         helpers = Helpers(
             spec.name,
             _capped(spec.background_parallel, self.max_background),
-            first_job(options.history) if spec.background else 1,
+            first_job(given) if spec.background else 1,
             children,
         )
         deadline = smallest(spec.tool_timeout, self.tool_timeout)
@@ -1696,7 +1757,7 @@ class Engine:
         )
         preload = [Message(role="user", content=list(spec.preload))] if spec.preload else []
         chained = chain.Chain(chain.opening(_declared(model_), system, specs, spec.preload_digest))
-        history = await chained.settle(options.history)
+        history = await chained.settle(given)
         opening = _content(input)
         if options.skill is not None:
             opening = _invoked(spec.skills[options.skill], opening)
@@ -1757,6 +1818,8 @@ class Engine:
                 source=None,
                 failed=failed,
                 lead=lead,
+                store=None,
+                key=None,
             )
 
         def begin(target: AgentSpec, args: DelegateArgs) -> tuple[Content, bool, str | None, bool]:
@@ -1969,10 +2032,15 @@ class Engine:
             if failures:
                 raise failures[0]
 
+        async def save() -> None:
+            if conversation is not None:
+                await conversation.save(messages)
+
         async def run_batch(batch: list[ToolCall]) -> bool:
             began = time.monotonic()
             if requested(stop) == "now":
                 await answer_all(batch, [None] * len(batch), began)
+                await save()
                 return True
             tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
 
@@ -1989,6 +2057,7 @@ class Engine:
 
             cut_short = await wait(tasks, stop, finishing)
             await answer_all(batch, tasks, began)
+            await save()
             return cut_short
 
         def drain(whole: bool = True) -> tuple[list[Message], list[Message]]:
@@ -2082,6 +2151,7 @@ class Engine:
             )
 
         async def finished(reply_text: str, stopped: Stopped | None = None) -> Generation:
+            await save()
             record = finish(reply_text, stopped)
             await announce(record)
             return record
@@ -2117,6 +2187,7 @@ class Engine:
                     mode = requested(stop)
                     if mode is not None:
                         return await halt(turn, said, mode)
+                await save()
                 streamed.clear()
                 asking = asyncio.ensure_future(ask())
                 if await wait([asking], stop):
@@ -2138,6 +2209,7 @@ class Engine:
                 messages.append(assistant)
                 asked = list(assistant.tool_calls)
                 ran.clear()
+                await save()
                 if not streaming and reply.text:
                     await delta(reply.text)
                 if reply.stop_reason != "tool_use" or not asked:
@@ -2212,6 +2284,10 @@ class Engine:
             await helpers.settle("now", stop)
             messages.extend(helpers.take())
             children.extend(sorted(delegated.values(), key=lambda run: (run.at, run.run_id)))
+            try:
+                await save()
+            except Exception:
+                logger.error("engine: the store failed while run %s ended", run_id, exc_info=True)
             failure = finish("", error=exc)
             options.failed.append(failure)
             await announce(failure)

@@ -413,6 +413,16 @@ class HistoryLike(Protocol):
 
 
 @runtime_checkable
+class ConversationStore(Protocol):
+    async def length(self, scope: str, conversation: str) -> int: ...
+    async def read(
+        self, scope: str, conversation: str, start: int, stop: int | None = None
+    ) -> Sequence[object]: ...
+    async def append(self, scope: str, conversation: str, messages: Sequence[Message]) -> None: ...
+    async def window(self, scope: str, conversation: str, length: int) -> int: ...
+
+
+@runtime_checkable
 class VoiceModel(Protocol):
     async def open(self, *, tools: list[ToolSpec], instructions: str | None) -> Any: ...
 
