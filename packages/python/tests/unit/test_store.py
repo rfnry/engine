@@ -5,6 +5,7 @@ import logging
 import re
 import threading
 from collections.abc import Awaitable, Callable, Sequence
+from itertools import accumulate
 from pathlib import Path
 from typing import Any, cast
 
@@ -31,6 +32,7 @@ from .fakes import (
     Seen,
     background,
     crew,
+    ended,
     released,
     said,
     team,
@@ -357,6 +359,48 @@ ENDINGS = [
     reads_its_inbox,
     model_fails_after_a_tool_round,
 ]
+
+
+async def stopped_in_a_batch(tmp_path: Path) -> Ending:
+    store, stop = MemoryStore(), Stop()
+
+    async def stopping(args: dict[str, Any]) -> str:
+        stop.now()
+        await asyncio.sleep(30)
+        return "never"
+
+    run = await chat(engine_for(tmp_path, Scripted(use())), store, body=stopping, stop=stop)
+    assert run.stopped == "now" and run.conversation[-1].tool_call_id == "c1"
+    return run, store
+
+
+def from_the_end(store: MemoryStore, conversation: str = "c1", opened: int = 0) -> bool:
+    given = [(start, count) for name, start, count in store.appended if name == conversation]
+    ends = list(accumulate((count for _, count in given), initial=opened))
+    held = store.held[("acme", conversation)]
+    return [start for start, _ in given] == ends[:-1] and ends[-1] == len(held)
+
+
+SAVED = [*ENDINGS, stopped_in_a_batch]
+
+
+@pytest.mark.parametrize("ending", SAVED, ids=[ending.__name__ for ending in SAVED])
+async def test_each_append_starts_where_the_run_knows_the_conversation_ends(
+    ending: Callable[[Path], Awaitable[Ending]], tmp_path: Path
+) -> None:
+    run, store = await ending(tmp_path)
+    assert len(store.appended) > 1 and from_the_end(store)
+    assert store.held[KEY] == run.conversation
+
+
+async def test_a_resumed_run_appends_from_the_length_it_read(tmp_path: Path) -> None:
+    store = MemoryStore()
+    cut = Message(role="assistant", tool_calls=[ToolCall(id="c0", name="slow")])
+    store.held[KEY] = [*earlier(), Message(role="user", content="u4"), cut]
+    run = await chat(engine_for(tmp_path, Scripted(use(), text_reply("Done."))), store, "go on")
+    assert store.appended == [("c1", 6, 2), ("c1", 8, 1), ("c1", 9, 1), ("c1", 10, 1)]
+    assert store.held[KEY][6] == ended("c0", "slow") and from_the_end(store, opened=6)
+    assert store.held[KEY] == run.conversation
 
 
 @pytest.mark.parametrize("ending", ENDINGS, ids=[ending.__name__ for ending in ENDINGS])
@@ -888,6 +932,24 @@ async def test_a_store_run_that_ends_before_its_first_model_call_records_only_it
     assert run.conversation == run.messages and store.held[KEY] == [*earlier(), *run.messages]
 
 
+@pytest.mark.parametrize("ending", BEFORE_A_CALL, ids=[ending.__name__ for ending in BEFORE_A_CALL])
+async def test_a_resumed_run_that_ends_before_a_model_call_records_after_its_ended_results(
+    ending: Callable[[Engine, MemoryStore], Awaitable[None]], tmp_path: Path
+) -> None:
+    store, kept, llm = MemoryStore(), Kept(), Scripted()
+    stored = [
+        *earlier()[:2],
+        Message(role="assistant", tool_calls=[ToolCall(id="c0", name="slow")]),
+    ]
+    store.held[KEY] = list(stored)
+    await ending(engine_for(tmp_path, llm, refinery=kept), store)
+    [run] = kept.runs
+    asked = Message(role="user", content="work")
+    assert isinstance(run, Generation) and llm.calls == [] and run.calls == 0
+    assert run.start == 4 and run.messages == [asked] and run.conversation == [asked]
+    assert store.held[KEY] == [*stored, ended("c0", "slow"), asked]
+
+
 async def test_job_ids_count_the_whole_stored_conversation(tmp_path: Path) -> None:
     def delegated(call_id: str, job: str) -> list[Message]:
         args = {"agent": "worker", "input": "a", "background": True}
@@ -932,6 +994,7 @@ class Pausing(MemoryStore):
         super().__init__()
         self.method: str | None = method
         self.entered, self.gate = asyncio.Event(), asyncio.Event()
+        self.given: list[int] = []
 
     async def paused(self, method: str) -> None:
         if method == self.method:
@@ -943,9 +1006,12 @@ class Pausing(MemoryStore):
         await self.paused("length")
         return await super().length(scope, conversation)
 
-    async def append(self, scope: str, conversation: str, messages: Sequence[Message]) -> None:
+    async def append(
+        self, scope: str, conversation: str, start: int, messages: Sequence[Message]
+    ) -> None:
+        self.given.append(start)
         await self.paused("append")
-        await super().append(scope, conversation, messages)
+        await super().append(scope, conversation, start, messages)
 
     async def window(self, scope: str, conversation: str, length: int) -> int:
         await self.paused("window")
@@ -971,3 +1037,46 @@ async def test_a_cancelled_store_call_is_not_a_store_failure(method: str) -> Non
     assert call.cancelled() and conversation.failed is None
     await conversation.save(held)
     assert store.held[KEY] == held and store.log[-1] == ("append", "acme", "c1")
+
+
+async def test_a_cancelled_append_counts_unsaved_so_the_next_passes_the_same_start() -> None:
+    store = Pausing("append")
+    store.held[KEY] = earlier()
+    conversation = Conversation(store, "acme", "c1")
+    await conversation.opened()
+    first = [Message(role="user", content="u4")]
+    call = asyncio.ensure_future(conversation.save([*earlier(), *first]))
+    await asyncio.wait_for(store.entered.wait(), 5)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    held = [*earlier(), *first, Message(role="assistant", content="a5")]
+    await conversation.save(held)
+    assert store.given == [4, 4] and store.appended == [("c1", 4, 2)]
+    assert store.held[KEY] == held and conversation.saved == 6
+
+
+@pytest.mark.parametrize("method", ["opened", "used", "window", "save"])
+async def test_after_a_store_call_raises_its_conversation_calls_the_store_no_more(
+    method: str,
+) -> None:
+    store, error = MemoryStore(), OSError("disk full")
+    conversation = Conversation(store, "acme", "c1")
+    held = [Message(role="user", content="hi")]
+    store.fail["append"] = error
+    with pytest.raises(OSError):
+        await conversation.save(held)
+    before = list(store.log)
+    calls: dict[str, Callable[[], Awaitable[object]]] = {
+        "opened": conversation.opened,
+        "used": lambda: conversation.used("c1/d1"),
+        "window": lambda: conversation.window(1),
+        "save": lambda: conversation.save([*held, Message(role="assistant", content="ok")]),
+    }
+    if method == "save":
+        assert await calls[method]() is None
+    else:
+        with pytest.raises(OSError) as caught:
+            await calls[method]()
+        assert caught.value is error
+    assert store.log == before and conversation.failed is error

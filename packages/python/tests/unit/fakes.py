@@ -93,6 +93,7 @@ class MemoryStore:
         self.log: list[tuple[str, str, str]] = []
         self.windows = windows
         self.fail: dict[str, BaseException] = {}
+        self.appended: list[tuple[str, int, int]] = []
 
     def called(self, method: str, scope: str, conversation: str) -> None:
         self.log.append((method, scope, conversation))
@@ -109,9 +110,17 @@ class MemoryStore:
         self.called("read", scope, conversation)
         return self.held.get((scope, conversation), [])[start:stop]
 
-    async def append(self, scope: str, conversation: str, messages: Sequence[Message]) -> None:
+    async def append(
+        self, scope: str, conversation: str, start: int, messages: Sequence[Message]
+    ) -> None:
         self.called("append", scope, conversation)
-        self.held.setdefault((scope, conversation), []).extend(messages)
+        held = self.held.setdefault((scope, conversation), [])
+        self.appended.append((conversation, start, len(messages)))
+        if start != len(held):
+            raise OSError(
+                f"store: conversation {conversation!r} holds {len(held)} messages, not {start}"
+            )
+        held.extend(messages)
 
     async def window(self, scope: str, conversation: str, length: int) -> int:
         self.called("window", scope, conversation)

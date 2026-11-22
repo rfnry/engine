@@ -287,8 +287,13 @@ class ListStore:
     ) -> list[Message]:
         return self.lists.get((scope, conversation), [])[start:stop]
 
-    async def append(self, scope: str, conversation: str, messages: Sequence[Message]) -> None:
-        self.lists.setdefault((scope, conversation), []).extend(messages)
+    async def append(
+        self, scope: str, conversation: str, start: int, messages: Sequence[Message]
+    ) -> None:
+        held = self.lists.setdefault((scope, conversation), [])
+        if start != len(held):
+            raise OSError(f"store: {conversation!r} holds {len(held)} messages, not {start}")
+        held.extend(messages)
 
     async def window(self, scope: str, conversation: str, length: int) -> int:
         return 0

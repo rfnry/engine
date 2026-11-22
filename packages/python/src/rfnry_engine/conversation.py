@@ -48,18 +48,20 @@ class Conversation:
         self.saved = 0
         self.failed: BaseException | None = None
 
-    async def _called[T](self, method: Callable[..., Awaitable[T]], *args: object) -> T:
+    async def _called[T](self, method: Callable[..., Awaitable[T]], key: str, *args: object) -> T:
+        if self.failed is not None:
+            raise self.failed
         try:
-            return await method(self.scope, self.key, *args)
+            return await method(self.scope, key, *args)
         except Exception as exc:
             self.failed = exc
             raise
 
     async def opened(self) -> list[Message]:
-        length = _measured(self.key, await self._called(self.store.length))
+        length = _measured(self.key, await self._called(self.store.length, self.key))
         if length == 0:
             return []
-        found = await self._called(self.store.read, 0)
+        found = await self._called(self.store.read, self.key, 0)
         try:
             held = HISTORY.validate_python(found, from_attributes=True)
         except ValidationError as exc:
@@ -75,16 +77,15 @@ class Conversation:
         return [_handed(message) for message in held]
 
     async def used(self, key: str) -> bool:
-        if self.failed is not None:
-            raise self.failed
+        length = await self._called(self.store.length, key)
         try:
-            return _measured(key, await self.store.length(self.scope, key)) > 0
-        except Exception as exc:
+            return _measured(key, length) > 0
+        except InputError as exc:
             self.failed = exc
             raise
 
     async def window(self, length: int) -> int:
-        start = await self._called(self.store.window, length)
+        start = await self._called(self.store.window, self.key, length)
         if not isinstance(start, int) or isinstance(start, bool) or not 0 <= start < length:
             raise InputError(
                 f"conversation: the store's window for conversation {self.key!r} must be a position from 0 to {length - 1}; got {start!r}"
@@ -96,5 +97,5 @@ class Conversation:
         if self.failed is not None or end <= self.saved:
             return
         fresh = [_handed(message) for message in held[self.saved : end]]
-        await self._called(self.store.append, fresh)
+        await self._called(self.store.append, self.key, self.saved, fresh)
         self.saved = end

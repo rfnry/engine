@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+import re
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
 
@@ -9,8 +11,16 @@ import pytest
 
 from rfnry_engine import Stop, ToolCallStarted
 from rfnry_engine.engine import Engine
-from rfnry_engine.errors import InputError
-from rfnry_engine.models import Message, Reply, ToolCall
+from rfnry_engine.errors import InputError, ModelError
+from rfnry_engine.models import (
+    ChoiceAnswer,
+    Message,
+    QuestionLike,
+    Reply,
+    State,
+    ToolCall,
+    ToolSpec,
+)
 from rfnry_engine.records import Decision, Generation
 
 from .fakes import (
@@ -152,6 +162,81 @@ async def test_a_routed_run_keeps_its_router_s_conversation(tmp_path: Path) -> N
     assert llm.calls[1][1] == said([*talked.conversation, asked])
     assert store.held[KEY] == [*talked.conversation, *again.added] == again.conversation
     assert keys(store) == {"c1"}
+
+
+class Gated:
+    def __init__(self) -> None:
+        self.gate, self.entered = asyncio.Event(), asyncio.Event()
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        self.entered.set()
+        await self.gate.wait()
+        return text_reply("ok")
+
+
+class Counted(Talking):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def decide(self, state: State, questions: Mapping[str, QuestionLike]) -> dict[str, Any]:
+        self.calls += 1
+        return await super().decide(state, questions)
+
+
+async def test_a_routing_top_run_is_refused_as_in_use_before_its_decision_call(
+    tmp_path: Path,
+) -> None:
+    llm, judge, kept, store = Gated(), Counted(), Kept(), MemoryStore()
+    providers = provided({"strong": llm, "judge": judge})
+    engine = Engine(routing(tmp_path), providers=providers, refinery=kept)
+    first = asyncio.create_task(
+        engine.run("front", "acme", "hello", store=store, conversation="c1")
+    )
+    await asyncio.wait_for(llm.entered.wait(), 5)
+    in_use = "engine: conversation 'c1' of scope 'acme' is in use by a run in flight"
+    for agent in ("front", "chat", "front"):
+        with pytest.raises(InputError, match=f"^{re.escape(in_use)}$"):
+            await engine.run(agent, "acme", "again", store=store, conversation="c1")
+    assert judge.calls == 1 and kept.runs == []
+    assert [method for method, _, _ in store.log] == ["length", "append", "window"]
+    llm.gate.set()
+    run = await asyncio.wait_for(first, 5)
+    assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
+    assert [each.run_id for each in kept.runs] == [run.run_id] and engine._conversations == set()
+
+
+class Elsewhere:
+    async def decide(self, state: State, questions: Mapping[str, QuestionLike]) -> dict[str, Any]:
+        return {"intent": ChoiceAnswer(choice="other", probabilities={"talk": 0.1, "other": 0.9})}
+
+
+class Down:
+    async def decide(self, state: State, questions: Mapping[str, QuestionLike]) -> dict[str, Any]:
+        raise ModelError("models: the judge is down")
+
+
+class Broken:
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        raise ModelError("models: the vendor is down")
+
+
+@pytest.mark.parametrize(
+    ("judge", "llm"),
+    [
+        (Talking(), Scripted(text_reply("ok"))),
+        (Elsewhere(), Scripted()),
+        (Down(), Scripted()),
+        (Talking(), Broken()),
+    ],
+    ids=["routed", "not-routed", "decision-failed", "routed-run-failed"],
+)
+async def test_a_routing_top_run_gives_its_name_back_however_it_ends(
+    judge: Any, llm: Any, tmp_path: Path
+) -> None:
+    engine = Engine(routing(tmp_path), providers=provided({"strong": llm, "judge": judge}))
+    with suppress(ModelError):
+        await engine.run("front", "acme", "hello", store=MemoryStore(), conversation="c1")
+    assert engine._conversations == set()
 
 
 def switching(root: Path) -> Path:
@@ -658,9 +743,11 @@ class Holding(MemoryStore):
                 self.cut += 1
                 raise
 
-    async def append(self, scope: str, conversation: str, messages: Sequence[Message]) -> None:
+    async def append(
+        self, scope: str, conversation: str, start: int, messages: Sequence[Message]
+    ) -> None:
         await self.held_up("append", conversation)
-        await super().append(scope, conversation, messages)
+        await super().append(scope, conversation, start, messages)
 
     async def window(self, scope: str, conversation: str, length: int) -> int:
         await self.held_up("window", conversation)

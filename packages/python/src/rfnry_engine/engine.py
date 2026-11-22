@@ -1437,7 +1437,7 @@ class Engine:
         try:
             self._open()
             if (
-                kind == "generation"
+                _named(spec)
                 and options.store is not None
                 and options.key is not None
                 and not options.claimed
@@ -1552,6 +1552,7 @@ class Engine:
                         failed=routing,
                         stop=options.stop._below(),
                         lead=None,
+                        claimed=True,
                     )
                     reached = self._agents[target]
                     options.stop._routed = forwarded.stop
@@ -1753,7 +1754,7 @@ class Engine:
         if options.skill is not None:
             opening = _invoked(spec.skills[options.skill], opening)
         messages.extend([*history, *repairs, *losses, Message(role="user", content=opening)])
-        begun = 0 if conversation is None else len(history)
+        begun = 0 if conversation is None else len(history) + len(repairs)
         sent = messages[begun:]
         seen = messages
         settled = False

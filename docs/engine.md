@@ -1288,8 +1288,11 @@ class Conversations:
     async def read(self, scope, conversation, start, stop=None):
         return self.lists.get((scope, conversation), [])[start:stop]
 
-    async def append(self, scope, conversation, messages):
-        self.lists.setdefault((scope, conversation), []).extend(messages)
+    async def append(self, scope, conversation, start, messages):
+        held = self.lists.setdefault((scope, conversation), [])
+        if start != len(held):
+            raise ValueError(f"{conversation} holds {len(held)} messages, not {start}")
+        held.extend(messages)
 
     async def window(self, scope, conversation, length):
         key = (scope, conversation)
@@ -1314,6 +1317,14 @@ included: the input, each reply as it arrives, the results of a batch of tool ca
 is answered, the notices and `inbox` messages it takes, and what a stop or a failure adds. Every
 message is appended before the model call that sends it, so whatever a model saw is stored first,
 and everything is stored before `RunEnded`.
+
+Each `append(scope, conversation, start, messages)` says where its messages land: `start` is the
+position of the first, the conversation's length as the run knows it — what it read and what it
+appended since — as `read` takes positions. A store may refuse an `append` whose `start` is not its
+length by raising, and the run fails as on any store error: that refuses a stale writer, such as a
+run of the same name in another process that read the conversation before this one appended. A
+retried `append` whose messages already sit from `start` on may return without writing, which makes
+a store's own retry safe.
 
 Where each model call starts is the store's whole say. Once that call's messages are appended, the
 run calls `window(scope, conversation, length)` and sends the messages from the position it
@@ -1352,7 +1363,9 @@ next message, after whatever it mends of a run that ended mid-way ([After a cras
 It is a new run, with its own `run_id`, whose helpers' job ids go on after the highest `dN` in the
 whole stored conversation, not only in its window. A store whose `read` returns a number of messages
 other than its `length`, or messages that do not fit `Message`, is refused before the run starts,
-and nothing is recorded.
+and nothing is recorded. A decision agent that routes reads nothing itself, so it meets these
+refusals, and a `length` or `read` that raises, in its routed run, after its decision model's call,
+and is recorded with that error, its `routed_to` `None`.
 
 A store run's record begins where its first window did, as a run's record begins at `start`:
 `run.start` is that window's start, `run.messages` that window as it was sent, the input last and a
@@ -1360,14 +1373,28 @@ reasoning it did not send left off, as `run.messages` always shows it, and `run.
 window and then every message the run added, so `run.added` is what the run added from its input on.
 The store keeps every message as it was appended, its reasoning included. A run that ends before its
 first model call — stopped at once, failed by its `RunStarted` handler or refused its first window —
-begins where its own messages do, at the conversation's length when it started, so its record holds
-only its own messages: what it mended ([After a crash](#after-a-crash)), the input and what it
-added.
+begins just after the results it ended a cut-off run's calls with ([After a crash](#after-a-crash)),
+so its record holds only its own messages from its `lost` notices on — those notices, the input and
+what it added — while those ended results stay in the store only, as a first window that starts past
+them leaves them. A record never begins with a result whose call it does not hold, so it replays as
+any record does.
+
+A store run replays as a run given its history does ([Long conversations](#long-conversations)),
+since a replay keeps no store: with `conversation=` it is offered `History` only when its recorded
+`start` is past 0, so a store run whose first window began at 0, offered `History` as every store
+run is, replays with another tool list and tools fingerprint than it ran with; without
+`conversation=` every replay starts at 0, without `History`.
 
 One run holds a conversation at a time in one engine: a second run of the same name and scope
 while the first is in flight is an `InputError` (`engine: conversation 'dana-1' of scope 'acme' is
-in use by a run in flight`), and the name is free again once the first returns; the same name in
-another scope is another conversation. A store shared by processes locks a conversation itself.
+in use by a run in flight`), refused before it starts and not recorded, and the name is free again
+once the first returns; the same name in another scope is another conversation. A decision agent
+that routes holds the name from before its decision model's call, and its routed run holds it on, so
+a second run of the name is refused before it asks anything. The engine's hold covers that engine
+only. Across processes, the app holds a lock on the top run's conversation name around the whole
+`engine.run` call — such as a Postgres advisory lock on a connection kept for the run — which covers
+the whole team, since every name below a run's is a path under it; a store that refuses an `append`
+whose `start` is not its length then refuses a writer the lock missed.
 
 Every generation run below a run with a store keeps a conversation of its own in the same store,
 with its own window and its own `History`, under a name that is a path below its lead's: a helper
@@ -1412,7 +1439,10 @@ records none of them. Without a store nothing changes: the lead's record holds i
 written once, when the lead ends.
 
 A store call that raises fails the run with that error, and the engine never retries one. A store
-retries what it can, such as a brief database error, before it raises. The `length` a lead asks
+retries what it can, such as a brief database error, before it raises. An `append` whose outcome it
+cannot tell, such as one whose connection dropped after its commit, it retries only once it has
+checked that its messages do not already sit from `start` on; retried blindly, without that check,
+an `append` can store its messages twice. The `length` a lead asks
 before a helper starts is its own call: a store that raises there fails the lead, as does a length
 that is not a whole number from 0, no helper starts and no store call follows — never a tool result,
 even when another call of the same batch fails too, whose error is then logged. A child's own store
@@ -1480,8 +1510,9 @@ own: `Job` on its id is the tool error `tools/helpers: there is no helper d2`. T
 lost notices in one `MessagesTaken` at turn 0, right after its `RunStarted`, with `messages=[]`. The
 ended results and lost notices are the run's own messages, appended after what it read and before
 its input: its record holds them when its first window does, a first window that starts past them
-leaves them in the store but out of `run.messages` and `run.conversation`, and `run.added`, which
-starts at the input, never holds them.
+leaves them in the store but out of `run.messages` and `run.conversation`, a run that ends before
+its first model call records its lost notices but not the ended results, whose calls its record does
+not hold, and `run.added`, which starts at the input, never holds them.
 
 With a refinery attached, a crash keeps every row written before it: those of each helper and
 synchronous child whose record was written, and of the runs below it that the record carried. It

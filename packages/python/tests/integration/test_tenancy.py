@@ -355,9 +355,11 @@ class Logged:
         self.log.append(("read", scope, conversation))
         return await self.store.read(scope, conversation, start, stop)
 
-    async def append(self, scope: str, conversation: str, messages: Sequence[Message]) -> None:
+    async def append(
+        self, scope: str, conversation: str, start: int, messages: Sequence[Message]
+    ) -> None:
         self.log.append(("append", scope, conversation))
-        await self.store.append(scope, conversation, messages)
+        await self.store.append(scope, conversation, start, messages)
 
     async def window(self, scope: str, conversation: str, length: int) -> int:
         self.log.append(("window", scope, conversation))

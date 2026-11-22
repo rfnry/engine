@@ -1508,3 +1508,34 @@ async def test_a_store_team_reads_back_by_its_tag(
     assert sorted(row.run_id for row in rows) == team_ids
     alone = await storage.run_tree("acme", tags={"conversation": "c2"})
     assert [row.run_id for row in alone] == [other.run_id]
+
+
+async def test_a_writer_whose_start_is_stale_is_refused_and_the_other_s_conversation_stays_whole(
+    tmp_path: Path, pool: Any, store: PostgresStore
+) -> None:
+    folder, gate = crew(tmp_path), asyncio.Event()
+    stale = Crew([gate, text_reply("one done")])
+    first = team(folder, stale)
+    work = asyncio.create_task(first.run("lead", "acme", "one", store=store, conversation="c1"))
+    await until(lambda: len(stale.calls["lead"]) == 1, "the first writer's model call")
+    async with team(folder, Crew([text_reply("two done")])) as second:
+        run = await second.run("lead", "acme", "two", store=PostgresStore(pool), conversation="c1")
+    assert isinstance(run, Generation)
+    gate.set()
+    refused = "store: conversation 'c1' holds 3 messages, so an append at 1 is stale"
+    with pytest.raises(ValueError, match=f"^{refused}$"):
+        await work
+    await first.close()
+    assert await held(store, "acme", "c1") == run.conversation
+    assert [message.content for message in run.conversation] == ["one", "two", "two done"]
+
+
+async def test_a_retried_append_that_already_landed_writes_nothing(store: PostgresStore) -> None:
+    messages = [Message(role="user", content="hi"), Message(role="assistant", content="hello")]
+    await store.append("acme", "c1", 0, messages)
+    await store.append("acme", "c1", 0, messages)
+    assert await held(store, "acme", "c1") == messages
+    for start in (0, 1, 3):
+        with pytest.raises(ValueError, match=f"holds 2 messages, so an append at {start} is stale"):
+            await store.append("acme", "c1", start, [Message(role="user", content="other")])
+    assert await held(store, "acme", "c1") == messages

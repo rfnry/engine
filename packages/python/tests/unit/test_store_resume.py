@@ -5,7 +5,15 @@ from typing import Any
 
 import pytest
 
-from rfnry_engine import MessagesTaken, Notice, Refinery, RunStarted, Storage, ToolCallStarted
+from rfnry_engine import (
+    MessagesTaken,
+    Notice,
+    Refinery,
+    RunStarted,
+    Stop,
+    Storage,
+    ToolCallStarted,
+)
 from rfnry_engine.engine import Engine
 from rfnry_engine.helpers import lost_notices
 from rfnry_engine.models import Message, Reply, ToolCall
@@ -208,6 +216,25 @@ async def test_a_lost_notice_reads_back_from_the_record(tmp_path: Path, storage:
     assert lost("d2") in run.conversation
     read = await refinery.run("acme", run.run_id)
     assert isinstance(read, Generation) and read.conversation == run.conversation
+
+
+async def test_a_resumed_run_stopped_at_once_records_from_after_its_ended_results_and_replays(
+    tmp_path: Path, storage: Storage
+) -> None:
+    store, refinery, stop = MemoryStore(), Refinery(storage), Stop()
+    store.held[KEY] = handed_out()
+    stop.now()
+    folder = crew(tmp_path, background=True)
+    run = await resumed(team(folder, Crew([]), refinery=refinery), store, stop=stop)
+    asked = Message(role="user", content=RESTART)
+    assert run.stopped == "now" and run.calls == 0 and run.start == 8
+    assert run.messages == [lost("d2"), asked] and run.conversation == run.messages
+    assert store.held[KEY] == [*handed_out(), ended("w1", "Job"), lost("d2"), asked]
+    model = Crew([text_reply("Carrying on.")])
+    [replay] = [pair async for pair in refinery.replay("acme", team(folder, model), agent="lead")]
+    assert replay.error is None and isinstance(replay.candidate, Generation)
+    assert model.calls["lead"] == [sent(run.messages)]
+    assert replay.candidate.messages == run.messages
 
 
 def test_only_a_background_delegate_s_job_without_an_outcome_is_lost() -> None:
