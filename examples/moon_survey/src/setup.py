@@ -98,6 +98,25 @@ create table if not exists fetches (
     at timestamptz not null default now()
 );
 create index if not exists fetches_by_run on fetches (scope, survey, run_id);
+create table if not exists spend (
+    scope text not null,
+    survey text not null,
+    total double precision not null default 0,
+    primary key (scope, survey)
+);
+create table if not exists gate_log (
+    id bigserial primary key,
+    scope text not null,
+    survey text not null,
+    run_id text not null,
+    agent text not null,
+    tool text not null,
+    allowed boolean,
+    probability double precision,
+    error text,
+    at timestamptz not null default now()
+);
+create index if not exists gate_log_by_run on gate_log (scope, survey, run_id);
 """
 
 

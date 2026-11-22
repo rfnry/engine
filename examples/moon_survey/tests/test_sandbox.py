@@ -460,3 +460,18 @@ async def test_a_kill_after_the_command_ended_signals_nothing():
     assert await slotted.wait() == 0
     await slotted.kill()
     assert process.kills == 0
+
+
+async def test_a_file_is_read_in_a_named_run_place_and_jailed(sandboxes, run_as):
+    run_as("a")
+    await sandboxes.write("dossier.json", b"{}")
+    run_as("b")
+    assert await sandboxes.read_at("a", "dossier.json", 10) == b"{}"
+    with pytest.raises(InputError):
+        await sandboxes.read_at("a", "../b/x", 10)
+    with pytest.raises(InputError):
+        await sandboxes.read_at("a", "dossier.json", 1)
+    with pytest.raises(FileNotFoundError):
+        await sandboxes.read_at("a", "missing.json", 10)
+    with pytest.raises(SandboxError, match="^sandbox: run id"):
+        await sandboxes.read_at("..", "x", 10)

@@ -1,4 +1,5 @@
 import asyncio
+import re
 import secrets
 from pathlib import Path
 
@@ -182,7 +183,7 @@ async def test_a_save_refused_after_the_download_is_still_logged(caller, tmp_pat
     (tmp_path / "a" / "link").symlink_to(tmp_path / "outside")
     log = Recorder()
     tool = tool_of(web_over(lambda request: ok(b"abc")), tmp_path, log)
-    with pytest.raises(FetchError, match=f"^fetch: could not write '{save}': "):
+    with pytest.raises(FetchError, match=f"^fetch: could not write '{re.escape(save)}': "):
         await caller(tool, {"url": "https://arxiv.org/a", "save": save})
     assert log.rows == [
         {
@@ -512,3 +513,16 @@ async def test_a_3xx_with_an_empty_location_is_a_result():
 
     page = await web_over(handler).get("https://arxiv.org/a")
     assert (page.status, page.body) == (302, b"moved")
+
+
+async def test_a_write_failing_for_any_reason_is_still_logged(caller, tmp_path, monkeypatch):
+    async def broken(self, path, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Sandboxes, "write", broken)
+    log = Recorder()
+    tool = tool_of(web_over(lambda request: ok(b"abc")), tmp_path, log)
+    with pytest.raises(OSError, match="disk full"):
+        await caller(tool, {"url": "https://arxiv.org/a", "save": "x"})
+    assert [r["url"] for r in log.rows] == ["https://arxiv.org/a"]
+    assert log.rows[0]["saved"] is None

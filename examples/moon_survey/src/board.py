@@ -87,6 +87,9 @@ class Board:
             raise BoardError(f"board: survey '{self.survey}' does not exist")
         return set(json.loads(found["second"])), json.loads(found["regions"])
 
+    async def regions(self) -> list[str]:
+        return (await self._survey())[1]
+
     async def second(self) -> set[str]:
         return (await self._survey())[0]
 
@@ -228,6 +231,26 @@ class Board:
                 *(json.dumps(row[name]) for name in JSON_COLUMNS),
             )
         return attempts == 1
+
+    async def update_landed(self, region: str, **fields: Any) -> None:
+        unknown = sorted(set(fields) - set(JSON_COLUMNS))
+        if unknown or not fields:
+            raise BoardError(
+                f"board: update_landed takes {', '.join(JSON_COLUMNS)}; got "
+                f"{', '.join(unknown) or 'nothing'}"
+            )
+        names = list(fields)
+        sets = ", ".join(f"{name} = ${i}" for i, name in enumerate(names, 4))
+        changed = await self.pool.fetchval(
+            f"update landed set {sets} where scope = $1 and survey = $2 and region = $3"
+            " returning 1",
+            self.scope,
+            self.survey,
+            region,
+            *(json.dumps(fields[name]) for name in names),
+        )
+        if changed is None:
+            raise BoardError(f"board: region '{region}' has not landed")
 
     async def landed(self, region: str | None = None) -> list[dict[str, Any]]:
         rows = await self.pool.fetch(

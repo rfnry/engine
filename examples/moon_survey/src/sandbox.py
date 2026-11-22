@@ -265,3 +265,10 @@ class Sandboxes:
 
     async def write(self, path: str, data: bytes) -> None:
         await self.files().write(path, data)
+
+    async def read_at(self, run_id: str, path: str, limit: int) -> bytes:
+        place = self.place(run_id)
+        target = (place / path).resolve()
+        if target.is_relative_to(place.resolve()) and not target.is_file():
+            raise FileNotFoundError(f"sandbox: '{path}' is not a file in the place of '{run_id}'")
+        return await Local(place, env=self.env(place)).read(path, limit)
