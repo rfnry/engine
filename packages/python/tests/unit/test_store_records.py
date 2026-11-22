@@ -29,6 +29,7 @@ from .fakes import (
     text_reply,
     until,
 )
+from .test_background import pending
 from .test_store import Failing, exactly
 from .test_store_tree import jobs, lead
 from .trees import write_folder
@@ -55,14 +56,14 @@ class Plain:
 
 
 class Holding:
-    def __init__(self, agent: str) -> None:
-        self.agent = agent
+    def __init__(self, agent: str, first: bool = False) -> None:
+        self.agent, self.first = agent, first
         self.runs: list[Run] = []
         self.writing, self.released = asyncio.Event(), asyncio.Event()
         self.cut = 0
 
     async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
-        if run.agent == self.agent:
+        if run.agent == self.agent and not (self.first and self.writing.is_set()):
             self.writing.set()
             try:
                 await self.released.wait()
@@ -442,3 +443,68 @@ async def test_a_record_whose_rows_are_all_skipped_calls_no_storage(
     assert counted.writes == []
     await Refinery(counted).record(run, skip={child.run_id})
     assert counted.writes == [[run.run_id]]
+
+
+async def test_with_a_store_helpers_join_children_in_the_order_their_lead_hears_them(
+    tmp_path: Path,
+) -> None:
+    holding, second, gate = Holding("worker", first=True), asyncio.Event(), asyncio.Event()
+    model = Crew(
+        [background("part one", "part two"), gate, *[text_reply("waiting")] * 4],
+        {"part one": [text_reply("one")], "part two": [second, text_reply("two")]},
+    )
+    engine = team(crew(tmp_path, background=True), model, refinery=holding)
+    work = asyncio.create_task(lead(engine, MemoryStore()))
+    await asyncio.wait_for(holding.writing.wait(), 5)
+    second.set()
+    await until(lambda: len(holding.runs) == 1, "the second helper's record")
+    holding.released.set()
+    await until(lambda: len(holding.runs) == 2, "the first helper's record")
+    gate.set()
+    run = await asyncio.wait_for(work, 5)
+    named = {child.run_id: job for job, child in jobs(run).items()}
+    joined = [named[child.run_id] for child in run.children]
+    heard = [message.notice.job for message in run.conversation if message.notice is not None]
+    assert joined == heard == ["d2", "d1"]
+
+
+async def test_job_stop_returns_once_the_helper_s_run_ends_while_its_record_is_written(
+    tmp_path: Path,
+) -> None:
+    holding, never = Holding("worker"), asyncio.Event()
+    stopping = Reply(
+        tool_calls=[ToolCall(id="j1", name="Job", args={"id": "d1", "stop": True})],
+        stop_reason="tool_use",
+    )
+    model = Crew(
+        [background("part one"), stopping, *[text_reply("waiting")] * 4],
+        {"part one": [never, text_reply("never")]},
+    )
+    engine = team(crew(tmp_path, background=True), model, refinery=holding)
+    work = asyncio.create_task(lead(engine, MemoryStore()))
+    await asyncio.wait_for(holding.writing.wait(), 5)
+    await until(lambda: len(model.calls["lead"]) == 3, "the lead's call 3")
+    assert holding.runs == []
+    read = json.loads(str(results(model.calls["lead"][2])["j1"].content))
+    assert read["running"] is False and "stopped" in read
+    holding.released.set()
+    run = await asyncio.wait_for(work, 5)
+    helper = jobs(run)["d1"]
+    assert isinstance(helper, Generation) and helper.stopped == "now"
+
+
+async def test_a_cancelled_lead_cuts_a_helper_s_record_in_flight(tmp_path: Path) -> None:
+    holding = Holding("worker")
+    model = Crew(
+        [background("part one"), *[text_reply("waiting")] * 3], {"part one": [text_reply("one")]}
+    )
+    engine = team(crew(tmp_path, background=True), model, refinery=holding)
+    before = asyncio.all_tasks()
+    work = asyncio.create_task(lead(engine, MemoryStore()))
+    await asyncio.wait_for(holding.writing.wait(), 5)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    work.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await work
+    assert holding.cut == 1 and holding.runs == [] and pending(before) == []

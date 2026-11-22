@@ -789,8 +789,9 @@ run.children                                         # runs made through Delegat
 ```
 
 `run.children` holds them in the order they joined the run: a synchronous child when its step is
-answered, so in step order, and a [helper](#in-the-background) when it ends. `refinery.run` reads
-them back in that order.
+answered, so in step order, and a [helper](#in-the-background) when it ends, or, in a run with a
+store, once its record is written ([A conversation in your store](#a-conversation-in-your-store)).
+`refinery.run` reads them back in that order.
 
 `run.model` is the model the replies reported, the resolved one — a dated snapshot, say. When no
 reply reported one — a run stopped during its first model call — it is the adapter's `model`
@@ -866,15 +867,15 @@ call with no result, when the run failed between the call and its result, and `r
 a history: go on from the history the run was given. A run refused before its first model call — a
 bad input, an agent or skill the folder does not have, a route loop — has nothing to record,
 and a run whose task you cancel is not recorded, though with a store the helpers and synchronous
-children that ended before the cancel stay recorded ([After a crash](#after-a-crash)); `stop=` ends
-a run with its record. A generation run whose `on_event` raises on its `RunStarted` had started: it
-is recorded with that `error` and no model call. A delegated run that fails stays under its parent
-in `children`, its step the error the parent's model was given, and the parent goes on; a routed run
-that fails fails its router, which is recorded with its answers and the failed run in `routed_to`,
-or `None` when the routed run was refused before its first model call. A run that failed keeps the
-delegated runs that had returned in `children`: those its steps answered and the helpers that ended,
-in the order they joined, then those it had not answered yet, in the order they started, as
-`refinery.run` reads them back.
+children whose records were written before the cancel stay recorded
+([After a crash](#after-a-crash)); `stop=` ends a run with its record. A generation run whose
+`on_event` raises on its `RunStarted` had started: it is recorded with that `error` and no model
+call. A delegated run that fails stays under its parent in `children`, its step the error the
+parent's model was given, and the parent goes on; a routed run that fails fails its router, which is
+recorded with its answers and the failed run in `routed_to`, or `None` when the routed run was
+refused before its first model call. A run that failed keeps the delegated runs that had returned in
+`children`: those its steps answered and the helpers that ended, in the order they joined, then
+those it had not answered yet, in the order they started, as `refinery.run` reads them back.
 
 Pass `tags=` to mark a run with what you will group it by later — the commit of the folder, an
 experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64
@@ -1393,15 +1394,16 @@ until the helper ends, so no other run on this engine takes it in between. The l
 run between two ids, so a stop or a cancel lands while it passes over many.
 
 With a refinery attached, a run with a store records each helper and each synchronous `Delegate`'s
-child when it ends, with the runs under it, so a crash keeps the records of those that ended before
-it ([After a crash](#after-a-crash)): a helper, generation or decision, once its run returns or
-fails and before its lead hears its notice, and a synchronous child once it returns or fails, before
-its `Delegate` is answered. While its record is written a helper reads as ended: `Job` and `Jobs`
-show how it ended, a `send` to it is refused, and it holds no `max_background` place and holds back
-no `Output`. Its lead hears it once the record is written, and never ends before: a reply with no
-tool call waits for it as for a notice, and an accepted `Output` waits for it before the run ends.
-The lead is recorded when it ends, as any run is. Every row is written once. A rewritten row would
-be stamped `recorded` again and reach a second `export(since=…)`, so the engine keeps the ids of the
+child when it ends, with the runs under it, so a crash keeps the records written before it
+([After a crash](#after-a-crash)): a helper, generation or decision, once its run returns or fails
+and before its lead hears its notice, and a synchronous child once it returns or fails, before its
+`Delegate` is answered. While its record is written a helper reads as ended: `Job` and `Jobs` show
+how it ended, a `send` to it is refused, and it holds no `max_background` place and holds back no
+`Output`. It joins its lead's `children` and its lead hears it once the record is written, so both
+follow the order the records were written in, and the lead never ends before: a reply with no tool
+call waits for it as for a notice, and an accepted `Output` waits for it before the run ends. The
+lead is recorded when it ends, as any run is. Every row is written once. A rewritten row would be
+stamped `recorded` again and reach a second `export(since=…)`, so the engine keeps the ids of the
 runs it has recorded since the top run started, and each later record leaves their rows out — a
 helper's, of the helpers it recorded below it, and the lead's, of all of them. A record that fails
 is logged as any recording is ([Refining](#refining)), and its rows go with the record of the run
@@ -1481,10 +1483,12 @@ its input: its record holds them when its first window does, a first window that
 leaves them in the store but out of `run.messages` and `run.conversation`, and `run.added`, which
 starts at the input, never holds them.
 
-With a refinery attached, a crash keeps the record of every helper and synchronous child that ended
-before it, and none of the runs it cut off: the lead's row is missing, as is a row whose own record
-failed and waited for a record the crash cut off. A cancelled run leaves the same, and so does a
-lead whose own record failed. A run the lead started still names it in `parent_run_id`.
+With a refinery attached, a crash keeps every row written before it: those of each helper and
+synchronous child whose record was written, and of the runs below it that the record carried. It
+keeps no other: the lead's row is missing, and so is the row of a run whose own record was still
+being written, had failed or was cut, since its rows were left for a record above it that the crash
+never wrote. A cancelled run leaves the same, a record the cancel cuts included, and so does a lead
+whose own record failed. A run the lead started still names it in `parent_run_id`.
 `refinery.run(scope, run_id)` reads such a run back by its own id, and the storage's
 `run_tree(scope, run_ids=…)` returns its row with the rows under it. An export writes its rows as it
 writes any row, and a replay passes over them, since a replay starts from the runs with no parent.
@@ -1812,13 +1816,13 @@ runs as a synchronous child does — the run's tools, workspace, tags, `approve`
 models, under the same scope, with a stop chained below the lead's and an inbox of its own — and the
 step that started it carries its `run_id` at once, so `engine.send` and `engine.stop` reach it from
 that step's `ToolResultReady` on; its record joins `children` when it ends, in the order helpers
-end, and is read back there, and a run with a store records it then, before its lead hears it, the
-helper reading as ended meanwhile ([A conversation in your store](#a-conversation-in-your-store)). A
-decision agent runs in the background too, its one call its whole run. A helper is a level below its
-lead, and one whose entry opts in may start helpers of its own. `approve` is asked about a
-background `Delegate` as about any call, and a `Delegate` refused before its helper starts — by
-`approve`, past `max_background`, or for `questions` that do not fit — starts no helper and spends
-no id.
+end, and is read back there. A run with a store records it then, the helper reading as ended
+meanwhile, and it joins `children` once its record is written, as its lead hears it, so in the order
+the records were written ([A conversation in your store](#a-conversation-in-your-store)). A decision
+agent runs in the background too, its one call its whole run. A helper is a level below its lead,
+and one whose entry opts in may start helpers of its own. `approve` is asked about a background
+`Delegate` as about any call, and a `Delegate` refused before its helper starts — by `approve`, past
+`max_background`, or for `questions` that do not fit — starts no helper and spends no id.
 
 When a helper ends, the lead hears it before its next model call, as a `role="user"` message whose
 first line names the helper and how it ended:
@@ -1843,7 +1847,8 @@ starting, and a helper that failed before its run made a record, such as one pas
 `lost` notice's is `None`. A helper's reply holds whatever the helper read, a hostile document
 included, so write the lead's instructions to treat a notice as it treats a tool result, not as the
 person. Every helper that ended since the last model call is taken at once, in the order they ended,
-so many helpers ending together are one wake-up and one model call.
+or with a store in the order their records were written, so many helpers ending together are one
+wake-up and one model call.
 
 The lead also gets two tools over its helpers, `Job` and `Jobs`, workspace or not.
 `Job(id, wait=0, stop=false, send=null)` reads one helper by its id: `{"running": true, "agent":

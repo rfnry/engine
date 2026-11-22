@@ -180,6 +180,7 @@ class Helper:
     said: str = ""
     record: Generation | Decision | None = None
     asks: list[Asking] = field(default_factory=list)
+    over: asyncio.Future[None] = field(init=False)
     task: asyncio.Task[None] = field(init=False)
 
     def pending(self) -> list[Asking]:
@@ -226,6 +227,7 @@ class Helpers:
         )
         self.skip()
         self._helpers[helper.job] = helper
+        helper.over = asyncio.get_running_loop().create_future()
         helper.task = asyncio.ensure_future(self._ran(helper, run, keep))
         return helper
 
@@ -252,14 +254,14 @@ class Helpers:
                 await keep(record)
             finally:
                 self._keeping.discard(helper.job)
+            self.children.append(record)
         self._noticed(helper, kind, body)
 
     def _ended(
         self, helper: Helper, record: Generation | Decision | None, kind: Ending, body: str
     ) -> None:
         helper.ended, helper.said, helper.record = kind, body, record
-        if record is not None:
-            self.children.append(record)
+        helper.over.set_result(None)
 
     def _noticed(self, helper: Helper, kind: Ending | Literal["asks"], body: str) -> None:
         self._notices.append(_notice(helper.job, helper.agent, helper.run_id, kind, body))
@@ -317,11 +319,11 @@ class Helpers:
                 await self.ready.wait()
 
     async def stop_one(self, job: str, seconds: float | None) -> None:
-        if job in self._keeping:
-            return
         helper = self._helpers[job]
         press(helper.stop)
-        await asyncio.wait([helper.task], timeout=seconds)
+        await asyncio.wait(
+            [helper.over, helper.task], timeout=seconds, return_when=asyncio.FIRST_COMPLETED
+        )
 
     async def send(self, job: str, text: str) -> None:
         helper = self._helpers[job]
