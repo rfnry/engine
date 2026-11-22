@@ -32,6 +32,60 @@ create table if not exists windows (
     since integer not null,
     primary key (scope, conversation)
 );
+create table if not exists surveys (
+    scope text not null,
+    survey text not null,
+    cap double precision not null,
+    second text not null,
+    regions text not null,
+    primary key (scope, survey)
+);
+create table if not exists claims (
+    scope text not null,
+    survey text not null,
+    region text not null,
+    run_id text not null,
+    at timestamptz not null default now(),
+    primary key (scope, survey, region)
+);
+create index if not exists claims_by_run on claims (scope, survey, run_id);
+create table if not exists notes (
+    id bigserial primary key,
+    scope text not null,
+    survey text not null,
+    region text not null,
+    author text not null,
+    kind text not null,
+    text text not null,
+    at timestamptz not null default now()
+);
+create index if not exists notes_by_region on notes (scope, survey, region, id);
+create index if not exists notes_by_author on notes (scope, survey, author, id);
+create table if not exists landed (
+    scope text not null,
+    survey text not null,
+    region text not null,
+    run_id text not null,
+    provider text not null,
+    simulated boolean not null,
+    dossier text not null,
+    checks text not null,
+    data_check text not null,
+    truth text not null,
+    disputes text not null,
+    attempts integer not null default 1,
+    at timestamptz not null default now(),
+    primary key (scope, survey, region)
+);
+create table if not exists failures (
+    scope text not null,
+    survey text not null,
+    region text not null,
+    run_id text not null,
+    reason text not null,
+    at timestamptz not null default now()
+);
+create index if not exists failures_by_region on failures (scope, survey, region);
 """
 
 
