@@ -4,7 +4,14 @@ from pathlib import Path
 import moon
 
 TRUTH = Path(__file__).resolve().parent.parent / "data" / "truth.json"
-UNITS = {"wt%", "ppm", "ppb"}
+UNIT_OF = {
+    "TiO2": "wt%",
+    "FeO": "wt%",
+    "Al2O3": "wt%",
+    "water_ice": "wt%",
+    "Th": "ppm",
+    "He3": "ppb",
+}
 SOILS = [
     "Apollo 11",
     "Apollo 12",
@@ -33,7 +40,7 @@ def test_every_value_has_a_unit_and_a_citation():
     for site in sites():
         assert site["values"]
         for name, entry in site["values"].items():
-            assert entry["unit"] in UNITS, (site["site"], name)
+            assert entry["unit"] == UNIT_OF[name], (site["site"], name)
             assert isinstance(entry["value"], (int, float))
             citation = entry["citation"]
             assert citation["source"] and citation["where"]
@@ -50,3 +57,25 @@ def test_cabeus_carries_water():
     by_site = {site["site"]: site for site in sites()}
     water = by_site["Cabeus"]["values"]["water_ice"]
     assert water["unit"] == "wt%"
+
+
+def test_every_position_is_cited_and_in_range():
+    for site in sites():
+        assert -90 <= site["lat"] <= 90
+        assert -180 <= site["lon"] <= 180
+        position = site["position"]
+        assert position["source"] and position["where"]
+        assert position["url"].startswith("https://")
+
+
+def test_cabeus_water_is_a_percentage():
+    by_site = {site["site"]: site for site in sites()}
+    value = by_site["Cabeus"]["values"]["water_ice"]["value"]
+    assert isinstance(value, (int, float)) and 0 < value < 100
+
+
+def test_every_soil_says_what_maturity_its_source_gives():
+    by_site = {site["site"]: site for site in sites()}
+    for name in SOILS:
+        for entry in by_site[name]["values"].values():
+            assert "Maturity:" in entry["citation"]["where"], name
