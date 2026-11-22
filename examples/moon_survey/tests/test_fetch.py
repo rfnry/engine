@@ -413,3 +413,37 @@ async def test_the_declared_charset_is_honoured(caller, tmp_path):
     odd = web_over(lambda request: ok(b"ok", "text/plain; charset=nonsense"))
     result = await caller(tool_of(odd, tmp_path), {"url": "https://arxiv.org/a"})
     assert result["text"] == "ok"
+
+
+async def test_the_deadline_starts_when_the_download_slot_is_held():
+    async def handler(request):
+        await asyncio.sleep(0.06)
+        return ok()
+
+    web = web_over(handler, downloads=1, timeout=0.1, default_pace=0)
+    pages = await asyncio.gather(*(web.get(f"https://pds.nasa.gov/{n}") for n in range(3)))
+    assert [p.status for p in pages] == [200, 200, 200]
+
+
+async def test_a_3xx_without_a_location_is_a_result(caller, tmp_path):
+    web = web_over(lambda request: httpx.Response(304, content=b""))
+    result = await caller(tool_of(web, tmp_path), {"url": "https://arxiv.org/a"})
+    assert result["status"] == 304
+    assert result["text"] == ""
+
+
+async def test_a_3xx_with_a_body_and_no_content_type_is_not_a_hop():
+    page = await web_over(lambda request: httpx.Response(300, content=b"choose")).get(
+        "https://arxiv.org/a"
+    )
+    assert (page.status, page.body) == (300, b"choose")
+
+
+async def test_an_unwritable_save_error_never_says_none(caller, tmp_path, monkeypatch):
+    def broken(target, body):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tools_module, "write_file", broken)
+    tool = tool_of(web_over(lambda request: ok()), tmp_path)
+    with pytest.raises(FetchError, match="could not write 'x': disk full"):
+        await caller(tool, {"url": "https://arxiv.org/a", "save": "x"})

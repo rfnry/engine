@@ -192,11 +192,11 @@ class Web:
                     await self.sleep(wait)
             self.started[host] = self.clock()
 
-    async def request(self, url: str) -> Page:
+    async def request(self, url: str) -> tuple[Page, str | None]:
         try:
             async with (
-                asyncio.timeout(self.timeout),
                 self.slots,
+                asyncio.timeout(self.timeout),
                 self.client.stream(
                     "GET",
                     url,
@@ -206,7 +206,7 @@ class Web:
                 ) as response,
             ):
                 if response.status_code in REDIRECTS and "location" in response.headers:
-                    return Page(response.headers["location"], response.status_code, "", b"")
+                    return Page(url, response.status_code, "", b""), response.headers["location"]
                 chunks: list[bytes] = []
                 size = 0
                 async for chunk in response.aiter_bytes():
@@ -216,12 +216,13 @@ class Web:
                             f"fetch: '{url}' is larger than the cap of {self.save_cap} bytes"
                         )
                     chunks.append(chunk)
-                return Page(
+                page = Page(
                     url,
                     response.status_code,
                     response.headers.get("content-type", ""),
                     b"".join(chunks),
                 )
+                return page, None
         except TimeoutError:
             raise FetchError(
                 f"fetch: '{url}' did not finish within {self.timeout} seconds"
@@ -246,9 +247,9 @@ class Web:
         host = self.check(current)
         for _ in range(MAX_REDIRECTS + 1):
             await self.wait_turn(host)
-            page = await self.request(current)
-            if page.status in REDIRECTS and not page.body and page.content_type == "":
-                current = urljoin(current, page.url)
+            page, location = await self.request(current)
+            if location is not None:
+                current = urljoin(current, location)
                 host = self.check(current, redirect=True)
                 continue
             self.keep(url, page)
@@ -344,7 +345,9 @@ def fetch_tool(web: Any, place: Callable[[str], Path], log: Any) -> Tool:
             try:
                 await asyncio.to_thread(write_file, target, page.body)
             except OSError as error:
-                raise FetchError(f"fetch: could not write '{save}': {error.strerror}") from None
+                raise FetchError(
+                    f"fetch: could not write '{save}': {error.strerror or error}"
+                ) from None
             saved = save
         for logged in dict.fromkeys((url, page.url)):
             await log.write(
