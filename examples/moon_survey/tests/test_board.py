@@ -25,6 +25,21 @@ class Flight:
         return run_id in self.running
 
 
+@pytest.fixture
+def caller(monkeypatch):
+    async def run(tools, name, args, run_id="a"):
+        monkeypatch.setattr(
+            board_module,
+            "current_call",
+            lambda: CallInfo(
+                run_id=run_id, agent="surveyor", scope="moon", tool=name, call_id="c1"
+            ),
+        )
+        return await tools.dispatch(name, args)
+
+    return run
+
+
 async def made(pool, scope, flight=None, regions=None, second=SECOND):
     flight = flight or Flight("a", "b", "c")
     await create_survey(pool, scope, "s", 5.0, second, regions or REGIONS)
@@ -192,21 +207,6 @@ async def test_counts_follow_claims_and_landings(pool, scope):
     assert [r["region"] for r in await board.landed()] == [REGIONS[0]]
 
 
-@pytest.fixture
-def caller(monkeypatch):
-    async def run(tools, name, args, run_id="a"):
-        monkeypatch.setattr(
-            board_module,
-            "current_call",
-            lambda: CallInfo(
-                run_id=run_id, agent="surveyor", scope="moon", tool=name, call_id="c1"
-            ),
-        )
-        return await tools.dispatch(name, args)
-
-    return run
-
-
 async def test_the_tools_act_for_the_run_that_calls(pool, scope, caller):
     board, _ = await made(pool, scope)
     tools = board_tools(board)
@@ -222,3 +222,93 @@ async def test_the_tools_refuse_outside_a_run(pool, scope):
     board, _ = await made(pool, scope)
     with pytest.raises(BoardError, match="board: no run is calling"):
         await board_tools(board).dispatch("claim", {"region": REGIONS[0]})
+
+
+async def test_counts_partition_the_regions_in_every_state(pool, scope):
+    flight = Flight("live", "again", "twice")
+    board, _ = await made(pool, scope, flight, regions=REGIONS[:8])
+    r = REGIONS
+    await board.claim(r[0], "live")
+    await board.claim(r[1], "dead")
+    await board.claim(r[2], "x")
+    await board.fail(r[2], "x", "ran out")
+    await board.claim(r[3], "x")
+    await board.fail(r[3], "x", "ran out")
+    await board.claim(r[3], "again")
+    await board.claim(r[4], "gone")
+    await board.land(row(r[4], "gone"))
+    await board.land(row(r[5], "twice"))
+    await board.land(row(r[5], "other"))
+    counts = await board.counts()
+    assert counts == {"landed": 2, "claimed": 2, "failed": 1, "free": 3}
+    assert sum(counts.values()) == 8
+
+
+async def test_a_claim_waits_for_a_landing_in_progress(pool, scope):
+    flight = Flight("a", "b")
+    board, _ = await made(pool, scope, flight)
+    await board.claim(REGIONS[0], "a")
+    flight.running.discard("a")
+    async with pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        await conn.fetchval(
+            "select 1 from claims where scope = $1 and survey = 's' and region = $2 for update",
+            scope,
+            REGIONS[0],
+        )
+        racing = asyncio.create_task(board.claim(REGIONS[0], "b"))
+        await asyncio.sleep(0.2)
+        assert not racing.done()
+        await conn.execute(
+            "insert into landed (scope, survey, region, run_id, provider, simulated,"
+            " dossier, checks, data_check, truth, disputes)"
+            " values ($1, 's', $2, 'a', 'fake', true, '{}', '{}', '{}', '{}', '[]')",
+            scope,
+            REGIONS[0],
+        )
+        await tx.commit()
+    assert await racing == {"claimed": False, "by": "a"}
+
+
+async def test_a_claim_over_a_row_that_a_failure_removes_still_owns_it(pool, scope):
+    flight = Flight("a", "b")
+    board, _ = await made(pool, scope, flight)
+    await board.claim(REGIONS[0], "a")
+    async with pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        await conn.execute(
+            "delete from claims where scope = $1 and survey = 's' and region = $2",
+            scope,
+            REGIONS[0],
+        )
+        racing = asyncio.create_task(board.claim(REGIONS[0], "b"))
+        await asyncio.sleep(0.2)
+        await tx.commit()
+    assert await racing == {"claimed": True, "by": "b"}
+    assert await board.claim_of("b") == REGIONS[0]
+
+
+async def test_a_note_outside_the_survey_is_refused(pool, scope):
+    board, _ = await made(pool, scope, regions=REGIONS[:10])
+    with pytest.raises(BoardError, match=f"board: region '{REGIONS[20]}' is not in survey 's'"):
+        await board.note(REGIONS[20], "a", "finding", "t")
+
+
+async def test_a_landing_waits_for_the_claim_row_lock(pool, scope):
+    board, _ = await made(pool, scope)
+    await board.claim(REGIONS[0], "a")
+    async with pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        await conn.fetchval(
+            "select 1 from claims where scope = $1 and survey = 's' and region = $2 for update",
+            scope,
+            REGIONS[0],
+        )
+        landing = asyncio.create_task(board.land(row(REGIONS[0], "a")))
+        await asyncio.sleep(0.2)
+        assert not landing.done()
+        await tx.commit()
+    assert await landing is True

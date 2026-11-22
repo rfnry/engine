@@ -33,6 +33,12 @@ returning attempts
 """
 
 
+RELEASE = "delete from claims where scope = $1 and survey = $2 and region = $3"
+LOCK = """
+select 1 from claims where scope = $1 and survey = $2 and region = $3 for update
+"""
+
+
 class BoardError(Exception):
     pass
 
@@ -85,10 +91,7 @@ class Board:
         return (await self._survey())[0]
 
     async def claim(self, region: str, run_id: str) -> dict[str, Any]:
-        checked_region(region)
-        _, regions = await self._survey()
-        if region not in regions:
-            raise BoardError(f"board: region '{region}' is not in survey '{self.survey}'")
+        await self._inside(region)
         async with self.pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "select pg_advisory_xact_lock(hashtext($1))",
@@ -100,39 +103,54 @@ class Board:
             held = await conn.fetchval(HELD, self.scope, self.survey, run_id, region)
             if held is not None:
                 raise BoardError(f"board: run '{run_id}' already holds region '{held}'")
-            taken = await conn.fetchval(
-                """
-                insert into claims (scope, survey, region, run_id) values ($1, $2, $3, $4)
-                on conflict (scope, survey, region) do nothing
-                returning run_id
-                """,
-                self.scope,
-                self.survey,
-                region,
-                run_id,
-            )
-            if taken is not None:
-                return {"claimed": True, "by": run_id}
-            holder = await conn.fetchval(HOLDER, self.scope, self.survey, region)
-            if holder == run_id:
-                return {"claimed": True, "by": run_id}
-            if self.live(holder):
-                return {"claimed": False, "by": holder}
-            await conn.execute(
-                """
-                update claims set run_id = $4, at = now()
-                where scope = $1 and survey = $2 and region = $3
-                """,
-                self.scope,
-                self.survey,
-                region,
-                run_id,
-            )
-            return {"claimed": True, "by": run_id}
+            while True:
+                taken = await conn.fetchval(
+                    """
+                    insert into claims (scope, survey, region, run_id) values ($1, $2, $3, $4)
+                    on conflict (scope, survey, region) do nothing
+                    returning run_id
+                    """,
+                    self.scope,
+                    self.survey,
+                    region,
+                    run_id,
+                )
+                holder = taken or await conn.fetchval(HOLDER, self.scope, self.survey, region)
+                if holder is None:
+                    continue
+                landed = await conn.fetchval(LANDED, self.scope, self.survey, region)
+                if landed is not None:
+                    if taken is not None:
+                        await conn.execute(RELEASE, self.scope, self.survey, region)
+                    return {"claimed": False, "by": landed}
+                if holder == run_id:
+                    return {"claimed": True, "by": run_id}
+                if self.live(holder):
+                    return {"claimed": False, "by": holder}
+                moved = await conn.fetchval(
+                    """
+                    update claims set run_id = $4, at = now()
+                    where scope = $1 and survey = $2 and region = $3
+                    returning run_id
+                    """,
+                    self.scope,
+                    self.survey,
+                    region,
+                    run_id,
+                )
+                if moved is not None:
+                    return {"claimed": True, "by": run_id}
+
+    async def _inside(self, region: str) -> None:
+        checked_region(region)
+        _, regions = await self._survey()
+        if region not in regions:
+            raise BoardError(f"board: region '{region}' is not in survey '{self.survey}'")
 
     async def claim_of(self, run_id: str) -> str | None:
         return await self.pool.fetchval(
-            "select region from claims where scope = $1 and survey = $2 and run_id = $3 limit 1",
+            "select region from claims where scope = $1 and survey = $2 and run_id = $3"
+            " order by at desc, region limit 1",
             self.scope,
             self.survey,
             run_id,
@@ -167,7 +185,7 @@ class Board:
     async def note(self, region: str, author: str, kind: str, text: str) -> int:
         if kind not in KINDS:
             raise BoardError(f"board: kind must be one of {', '.join(KINDS)}; got '{kind}'")
-        checked_region(region)
+        await self._inside(region)
         return await self.pool.fetchval(
             "insert into notes (scope, survey, region, author, kind, text)"
             " values ($1, $2, $3, $4, $5, $6) returning id",
@@ -197,16 +215,18 @@ class Board:
         return await self._notes("author", author)
 
     async def land(self, row: dict[str, Any]) -> bool:
-        attempts = await self.pool.fetchval(
-            LAND,
-            self.scope,
-            self.survey,
-            row["region"],
-            row["run_id"],
-            row["provider"],
-            bool(row["simulated"]),
-            *(json.dumps(row[name]) for name in JSON_COLUMNS),
-        )
+        async with self.pool.acquire() as conn, conn.transaction():
+            await conn.fetchval(LOCK, self.scope, self.survey, row["region"])
+            attempts = await conn.fetchval(
+                LAND,
+                self.scope,
+                self.survey,
+                row["region"],
+                row["run_id"],
+                row["provider"],
+                bool(row["simulated"]),
+                *(json.dumps(row[name]) for name in JSON_COLUMNS),
+            )
         return attempts == 1
 
     async def landed(self, region: str | None = None) -> list[dict[str, Any]]:
@@ -232,34 +252,38 @@ class Board:
 
     async def counts(self) -> dict[str, int]:
         _, regions = await self._survey()
-        row = await self.pool.fetchrow(
-            """
-            select
-                (select count(*) from landed
-                    where scope = $1 and survey = $2 and region = any($3::text[])) as landed,
-                (select count(distinct failures.region) from failures
-                    where scope = $1 and survey = $2 and region = any($3::text[])
-                        and not exists (
-                            select 1 from landed where landed.scope = $1
-                                and landed.survey = $2 and landed.region = failures.region
-                        )) as failed,
-                (select count(*) from claims
-                    where scope = $1 and survey = $2 and region = any($3::text[])
-                        and not exists (
-                            select 1 from landed where landed.scope = $1
-                                and landed.survey = $2 and landed.region = claims.region
-                        )) as claimed
-            """,
-            self.scope,
-            self.survey,
-            regions,
-        )
-        landed, failed, claimed = row["landed"], row["failed"], row["claimed"]
+        scoped = (self.scope, self.survey, regions)
+        landed = {
+            r["region"]
+            for r in await self.pool.fetch(
+                "select region from landed where scope = $1 and survey = $2"
+                " and region = any($3::text[])",
+                *scoped,
+            )
+        }
+        held = {
+            r["region"]: r["run_id"]
+            for r in await self.pool.fetch(
+                "select region, run_id from claims where scope = $1 and survey = $2"
+                " and region = any($3::text[])",
+                *scoped,
+            )
+        }
+        failed = {
+            r["region"]
+            for r in await self.pool.fetch(
+                "select distinct region from failures where scope = $1 and survey = $2"
+                " and region = any($3::text[])",
+                *scoped,
+            )
+        }
+        claimed = {r for r, run in held.items() if r not in landed and self.live(run)}
+        broken = failed - landed - claimed
         return {
-            "landed": landed,
-            "failed": failed,
-            "claimed": claimed,
-            "free": len(regions) - landed - claimed,
+            "landed": len(landed),
+            "failed": len(broken),
+            "claimed": len(claimed),
+            "free": len(regions) - len(landed) - len(claimed) - len(broken),
         }
 
 
