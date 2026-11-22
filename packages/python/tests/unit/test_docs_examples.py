@@ -238,13 +238,17 @@ SETUPS = {
     ),
     "class Conversations:": Setup(
         replace={
+            "store = Conversations()": (
+                "store = Conversations()\nassert store.turns == 20\nstore = Conversations(turns=1)"
+            ),
             'store=store, conversation="dana-1")': (
                 'store=store, conversation="dana-1")\n'
-                'assert store.lists[("acme", "dana-1")] == run.conversation\n'
-                "assert [m.content for m in run.conversation] == ["
+                'held = store.lists[("acme", "dana-1")]\n'
+                "assert [m.content for m in held] == ["
                 '"My invoice was charged twice.", "ok", "And the second charge?", "ok"]\n'
-                "assert run.messages == run.conversation[:3] and run.start == 0"
-            )
+                "assert store.starts == {('acme', 'dana-1'): 2} and run.start == 2\n"
+                "assert run.messages == held[2:3] and run.conversation == held[2:]"
+            ),
         }
     ),
     "from rfnry_engine import Local, Workspace": Setup(

@@ -1179,9 +1179,10 @@ class Conversation:
 
 A position is a message's index in the conversation from 0, and always holds the same message.
 
-When a run starts past the beginning, the model is offered `History`, which reads the messages
-before the first one it was given, each under its position — a page at a time going back, each
-page in the order it happened — or, with `pattern`, the ones whose text matches:
+When a run starts past the beginning, or keeps its conversation in your store (below), the model is
+offered `History`, which reads the messages before the first one it was given, each under its
+position — a page at a time going back, each page in the order it happened — or, with `pattern`, the
+ones whose text matches:
 
 ```json
 {"before": 340, "limit": 20, "pattern": "invoice", "case_insensitive": true}
@@ -1273,8 +1274,8 @@ store keeps the conversation under, `conversation=`. A store is anything with th
 
 ```python
 class Conversations:
-    def __init__(self):
-        self.lists = {}
+    def __init__(self, turns=20):
+        self.lists, self.starts, self.turns = {}, {}, turns
 
     async def length(self, scope, conversation):
         return len(self.lists.get((scope, conversation), []))
@@ -1286,7 +1287,12 @@ class Conversations:
         self.lists.setdefault((scope, conversation), []).extend(messages)
 
     async def window(self, scope, conversation, length):
-        return 0
+        key = (scope, conversation)
+        start = self.starts.get(key, 0)
+        starts = [i for i, m in enumerate(self.lists[key]) if m.role == "user" and i >= start]
+        if len(starts) >= 2 * self.turns:
+            start = self.starts[key] = starts[-self.turns]
+        return start
 
 
 store = Conversations()
@@ -1296,7 +1302,7 @@ for message in ["My invoice was charged twice.", "And the second charge?"]:
 ```
 
 The two arguments go together, and `history=` and `start=` are refused beside them: the store is
-the history. Each model call is sent the whole conversation, and the run does not call `window`.
+the history.
 
 The run appends every message it adds, each a copy, its `usage`, `model`, `prefix` and `notice`
 included: the input, each reply as it arrives, the results of a batch of tool calls once the batch
@@ -1304,12 +1310,48 @@ is answered, the notices and `inbox` messages it takes, and what a stop or a fai
 message is appended before the model call that sends it, so whatever a model saw is stored first,
 and everything is stored before `RunEnded`.
 
+Where each model call starts is the store's whole say. Once that call's messages are appended, the
+run calls `window(scope, conversation, length)` and sends the messages from the position it
+returns; `length` is how many the conversation holds then, so a store can answer without reading,
+and 0 sends everything. The run holds what it read and what it appended, so a window costs no
+`read`. A window must leave a message to send and must not cut a tool call from its result: a
+position that is not a whole number from 0 to `length - 1` — `-1`, `length`, `True`, `"3"`, `2.0` —
+fails the run with an `InputError` (`conversation: the store's window for conversation 'dana-1'
+must be a position from 0 to 6; got 7`), as does a window that starts between a call and its result
+(`engine: the window of conversation 'dana-1' breaks tool call 'c7' from its result at position 3;
+start at a message the person sent`), and no model is called with it. The `window` above is the
+policy of the `window` for a history you pass: it starts at a message the person sent, keeps 20 to
+39 of them with what answered them, and moves its start 20 at a time.
+
+Move the start rarely and in large steps. Each move makes that call miss the provider's prompt
+cache, so every message of the window is billed at full price again, and stops the reasoning given
+before the move going back to the model; a window that slides on every call pays both on every
+call.
+
+A run with a store is offered `History` from its first model call, whatever its window: it reads
+what the window left behind, the messages before the current window's start, and follows the start
+as it moves. It is never added or taken away mid-run, so every call of a run is offered the same
+tools, and a store that always returns 0 leaves it nothing to read.
+
+Reasoning goes back as it does from a history, over the window. At the run's first model call, and
+whenever the window's start moves, the window is settled as a history is when a run starts, and each
+reply's `prefix` is the hash of the window it was sent with — the model, the system prompt, the
+tools, the preloaded files and the messages from the window's start. A message's reasoning goes back only while the window still holds
+the prefix it was given after, so it goes on going back while the start holds still, a resume whose
+window starts where it did included, and stops once the start moves; the store keeps it as it was
+appended.
+
 Calling again with the same name continues the conversation. The run reads it once, as it starts —
-`length`, then `read(scope, conversation, 0)` when it is not empty — sends it as its history, and
-appends `input=` as the next message, such as "the process restarted; carry on". It is a new run,
-with its own `run_id`, and its `start` is 0. A store whose `read` returns a number of messages
-other than its `length`, or messages that do not fit `Message`, is refused before the run starts,
-and nothing is recorded.
+`length`, then `read(scope, conversation, 0)` when it is not empty — and appends `input=` as the
+next message, such as "the process restarted; carry on". It is a new run, with its own `run_id`,
+whose helpers' job ids go on after the highest `dN` in the whole stored conversation, not only in
+its window. A store whose `read` returns a number of messages other than its `length`, or messages
+that do not fit `Message`, is refused before the run starts, and nothing is recorded.
+
+A store run's record begins where its first window did: `run.start` is that window's start,
+`run.messages` that window as the store holds it, the input last, and `run.conversation` the
+conversation from that start to the run's end, so `run.added` is what the run added. A run that
+ends before its first model call begins at 0.
 
 One run holds a conversation at a time in one engine: a second run of the same name and scope
 while the first is in flight is an `InputError` (`engine: conversation 'dana-1' of scope 'acme' is
@@ -3083,7 +3125,8 @@ this run does not offer; its tools are Glob, Grep, LS, Load, Read, refund`). The
 `workspace: true`, and `Job` and `Jobs` with `orchestration.background` too, whether or not `allow`
 names them; naming one when its section is missing is a
 `ConfigurationError` naming the section, since no run can supply it. `History` comes with a run whose
-`start=` is past the beginning of its history and `Output` with `expect=`: the run decides them, so
+`start=` is past the beginning of its history or that keeps its conversation in a store, and
+`Output` with `expect=`: the run decides them, so
 either one in `allow` or `deny`, in any case, is a `ConfigurationError`. `deny` applies
 after `allow`, across the entry and its mode, and drops exactly the tool it names, a tool a
 section grants included: `deny: [Delegate]` takes delegation away, and `deny: [Write]` leaves

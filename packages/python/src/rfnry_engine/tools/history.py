@@ -1,7 +1,7 @@
 import asyncio
 import json
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import regex
@@ -186,7 +186,7 @@ async def _searching(
 
 def history_tool(
     history: Sequence[object] | HistoryLike,
-    start: int,
+    start: Callable[[], int],
     *,
     walk: int,
     chars: int,
@@ -194,7 +194,8 @@ def history_tool(
 ) -> Tool:
     async def body(args: dict[str, Any]) -> Result:
         a = HistoryArgs.model_validate(args)
-        before = start if a.before is None else min(a.before, start)
+        bound = start()
+        before = bound if a.before is None else min(a.before, bound)
         if a.pattern is None:
             return await _reading(history, before, a.limit, chars)
         pattern = _compiled(a.pattern, a.case_insensitive)

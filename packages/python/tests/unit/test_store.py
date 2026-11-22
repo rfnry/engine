@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import logging
 import re
 import threading
@@ -14,8 +15,10 @@ import rfnry_engine
 from rfnry_engine import RunEnded, Stop
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, ModelError, RunawayError
-from rfnry_engine.models import Message, Reply, ToolCall, ToolSpec, Usage
+from rfnry_engine.models import Message, Reply, Text, ToolCall, ToolSpec, Usage
 from rfnry_engine.records import Decision, Generation
+from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import (
@@ -27,6 +30,7 @@ from .fakes import (
     Seen,
     background,
     crew,
+    released,
     said,
     team,
     text_reply,
@@ -600,3 +604,258 @@ async def test_a_decision_run_makes_no_store_call(tmp_path: Path) -> None:
         "desk", "acme", "It is down", store=store, conversation="c1"
     )
     assert isinstance(run, Decision) and store.log == [] and store.held == {}
+
+
+def counting(*windows: object) -> tuple[MemoryStore, list[int]]:
+    asked: list[int] = []
+
+    def window(conversation: str, length: int) -> int:
+        asked.append(length)
+        return cast(int, windows[min(len(asked), len(windows)) - 1])
+
+    return MemoryStore(window), asked
+
+
+def earlier() -> list[Message]:
+    return [
+        Message(role="user", content="u0"),
+        Message(role="assistant", content="a1"),
+        Message(role="user", content="u2"),
+        Message(role="assistant", content="a3"),
+    ]
+
+
+class Ordered(Scripted):
+    def __init__(self, order: list[object], *replies: Reply) -> None:
+        super().__init__(*replies)
+        self.order = order
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        self.order.append("call")
+        return await super().generate(system, messages, tools)
+
+
+async def test_the_store_is_asked_for_the_window_before_every_model_call(tmp_path: Path) -> None:
+    order: list[object] = []
+
+    def window(conversation: str, length: int) -> int:
+        order.append((length, len(store.held[KEY]), store.log[-2][0]))
+        return 0
+
+    store = MemoryStore(window)
+    llm = Ordered(order, use("c1"), use("c2"), text_reply("Done."))
+    await chat(engine_for(tmp_path, llm), store)
+    assert order == [(1, 1, "append"), "call", (3, 3, "append"), "call", (5, 5, "append"), "call"]
+    assert store.log.count(("window", "acme", "c1")) == 3
+
+
+async def test_a_later_window_sends_only_the_messages_from_its_start(tmp_path: Path) -> None:
+    store, asked = counting(0, 0, 4)
+    store.held[KEY] = earlier()
+    llm = Watching(store, use("c1"), use("c2"), text_reply("Done."))
+    run = await chat(engine_for(tmp_path, llm), store)
+    assert asked == [5, 7, 9]
+    assert [messages for _, messages, _ in llm.calls[:2]] == [said(held) for held in llm.stored[:2]]
+    assert llm.calls[2][1] == said(llm.stored[2][4:])
+    assert llm.calls[2][1][0] == Message(role="user", content="work")
+    assert run.start == 0 and store.held[KEY] == run.conversation
+
+
+@pytest.mark.parametrize(
+    "window", [-1, "length", True, "3", 2.0], ids=["negative", "length", "bool", "text", "float"]
+)
+async def test_a_window_that_is_not_a_position_fails_the_run(
+    window: object, tmp_path: Path
+) -> None:
+    store, asked = counting(0, 3 if window == "length" else window)
+    kept, llm = Kept(), Scripted(use(), text_reply("never"))
+    shown = 3 if window == "length" else window
+    wrong = f"conversation: the store's window for conversation 'c1' must be a position from 0 to 2; got {shown!r}"
+    with pytest.raises(InputError, match=exactly(wrong)):
+        await chat(engine_for(tmp_path, llm, refinery=kept), store)
+    assert asked == [1, 3] and len(llm.calls) == 1
+    [failure] = kept.runs
+    assert failure.error == f"InputError: {wrong}"
+
+
+async def test_a_window_that_breaks_a_tool_call_from_its_result_fails_the_run(
+    tmp_path: Path,
+) -> None:
+    store, asked = counting(0, 3)
+    store.held[KEY] = [Message(role="user", content="earlier")]
+    llm = Scripted(use("call_1"), text_reply("never"))
+    broken = (
+        "engine: the window of conversation 'c1' breaks tool call 'call_1' from its result "
+        "at position 3; start at a message the person sent"
+    )
+    with pytest.raises(InputError, match=exactly(broken)):
+        await chat(engine_for(tmp_path, llm), store)
+    assert asked == [2, 4] and len(llm.calls) == 1
+
+
+def names(tools: list[ToolSpec]) -> list[str]:
+    return [tool.name for tool in tools]
+
+
+async def test_a_store_run_is_offered_history_from_its_first_call(tmp_path: Path) -> None:
+    replies = [use("c1"), use("c2"), text_reply("Done."), text_reply("Alone."), text_reply("Past.")]
+    llm = Scripted(*replies)
+    engine = engine_for(tmp_path, llm)
+    stored = await chat(engine, MemoryStore())
+    alone = await engine.run("chat", "acme", "work", tools=slow())
+    past = await engine.run(
+        "chat",
+        "acme",
+        "work",
+        tools=slow(),
+        history=[Message(role="user", content="earlier")],
+        start=1,
+    )
+    first = llm.calls[0][2]
+    assert "History" in names(first)
+    assert llm.calls[1][2] == first and llm.calls[2][2] == first
+    assert "History" not in names(llm.calls[3][2])
+    assert llm.calls[4][2] == first
+    assert isinstance(alone, Generation) and isinstance(past, Generation)
+    assert stored.fingerprint.tools == past.fingerprint.tools != alone.fingerprint.tools
+
+
+def reading(*calls: tuple[str, dict[str, Any]]) -> Reply:
+    return Reply(
+        tool_calls=[ToolCall(id=call_id, name="History", args=args) for call_id, args in calls],
+        stop_reason="tool_use",
+    )
+
+
+def positions(result: object) -> list[int]:
+    assert isinstance(result, list)
+    headers = [
+        part.text
+        for part in result
+        if isinstance(part, Text) and part.text.startswith('{"position"')
+    ]
+    return [json.loads(header)["position"] for header in headers]
+
+
+async def test_history_reads_what_the_window_left_behind(tmp_path: Path) -> None:
+    store, asked = counting(4, 5)
+    store.held[KEY] = earlier()
+    llm = Scripted(
+        reading(("h1", {}), ("h2", {"before": 10})), reading(("h3", {})), text_reply("Done.")
+    )
+    run = await chat(engine_for(tmp_path, llm), store)
+    assert asked == [5, 8, 10]
+    results = [message.content for message in store.held[KEY] if message.role == "tool"]
+    assert [positions(result) for result in results] == [
+        [0, 1, 2, 3],
+        [0, 1, 2, 3],
+        [0, 1, 2, 3, 4],
+    ]
+    assert run.start == 4
+
+
+THOUGHT = {"thought": "look it up"}
+
+
+def thinking(call_id: str = "c1") -> Reply:
+    return Reply(
+        tool_calls=[ToolCall(id=call_id, name="slow", args={})],
+        stop_reason="tool_use",
+        reasoning=THOUGHT,
+    )
+
+
+async def test_reasoning_goes_back_while_the_window_holds_still(tmp_path: Path) -> None:
+    store = MemoryStore()
+    llm = Scripted(thinking(), text_reply("Done."))
+    run = await chat(engine_for(tmp_path, llm), store)
+    assert run.conversation[1].prefix is not None
+    assert llm.calls[1][1][1].reasoning == THOUGHT
+
+
+async def test_reasoning_is_not_sent_once_the_window_moves_under_it(tmp_path: Path) -> None:
+    store, asked = counting(0, 2)
+    store.held[KEY] = [Message(role="user", content="u0"), Message(role="assistant", content="a1")]
+    llm = Scripted(thinking("c1"), thinking("c2"), text_reply("Done."), text_reply("Again."))
+    engine = engine_for(tmp_path, llm)
+    run = await chat(engine, store, "u2")
+    held = store.held[KEY]
+    moved = llm.calls[1][1]
+    assert said(moved) == said([held[2], held[3].model_copy(update={"reasoning": None}), held[4]])
+    assert moved[1].reasoning is None and held[3].reasoning == THOUGHT
+    still = llm.calls[2][1]
+    assert [message.reasoning for message in still] == [None, None, None, THOUGHT, None]
+    assert run.conversation[3].reasoning == THOUGHT and run.messages == held[:3]
+    await chat(engine, store, "u8")
+    resumed = [message.reasoning for message in llm.calls[3][1]]
+    assert resumed == [None, None, None, THOUGHT, None, None, None]
+
+
+async def test_a_resumed_conversation_sends_back_the_reasoning_its_prefix_still_holds(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore()
+    llm = Scripted(thinking(), text_reply("Done."), text_reply("Again."), text_reply("Changed."))
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    engine = engine_for(tmp_path / "a", llm)
+    await chat(engine, store)
+    await chat(engine, store, "and then?")
+    assert llm.calls[2][1][1].reasoning == THOUGHT
+    changed = folder(tmp_path / "b")
+    (changed / "chat.md").write_text("Talk briefly.\n")
+    other = Engine(changed, providers=provided({"strong": llm, "judge": Answering()}))
+    await chat(other, store, "and now?")
+    assert llm.calls[3][1][1].reasoning is None and store.held[KEY][1].reasoning == THOUGHT
+
+
+async def test_a_store_run_records_where_its_first_window_began(
+    tmp_path: Path, storage: Storage
+) -> None:
+    store = MemoryStore(lambda conversation, length: 2)
+    store.held[KEY] = [
+        *earlier(),
+        Message(role="user", content="u4"),
+        Message(role="assistant", content="a5"),
+    ]
+    refinery = Refinery(storage)
+    engine = engine_for(tmp_path, Scripted(use(), text_reply("Done.")), refinery=refinery)
+    run = await chat(engine, store)
+    held = store.held[KEY]
+    assert run.start == 2 and run.messages == held[2:7]
+    assert run.conversation == held[2:] and run.added == held[6:]
+    back = await refinery.run("acme", run.run_id)
+    assert isinstance(back, Generation)
+    assert (back.start, back.messages, back.conversation) == (2, held[2:7], held[2:])
+
+
+async def test_job_ids_count_the_whole_stored_conversation(tmp_path: Path) -> None:
+    def delegated(call_id: str, job: str) -> list[Message]:
+        args = {"agent": "worker", "input": "a", "background": True}
+        return [
+            Message(
+                role="assistant", tool_calls=[ToolCall(id=call_id, name="Delegate", args=args)]
+            ),
+            Message(role="tool", tool_call_id=call_id, content=json.dumps({"job": job})),
+            Message(role="assistant", content="ok"),
+        ]
+
+    store = MemoryStore(lambda conversation, length: 10)
+    store.held[KEY] = [
+        Message(role="user", content="earlier"),
+        *delegated("x1", "d1"),
+        *delegated("x2", "d2"),
+        *delegated("x3", "d3"),
+        Message(role="user", content="later"),
+        Message(role="assistant", content="noted"),
+    ]
+    gate = asyncio.Event()
+    model = Crew(
+        [background("part one"), text_reply("waiting"), text_reply("final")],
+        {"part one": [gate, text_reply("the answer")]},
+    )
+    engine = team(crew(tmp_path, background=True), model)
+    work = asyncio.create_task(engine.run("lead", "acme", "go", store=store, conversation="c1"))
+    run = await released(work, model, gate)
+    assert [message.content for message in model.calls["lead"][0]] == ["later", "noted", "go"]
+    assert run.steps[0].result == '{"job": "d4"}'

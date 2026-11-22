@@ -372,12 +372,12 @@ def test_an_engine_name_whose_section_is_missing_is_refused(
     ("key", "name", "how"),
     [
         ("allow", "Output", r"expect= on a run"),
-        ("allow", "History", r"a run's history= and start="),
+        ("allow", "History", r"a run's history= and start=, or its store="),
         ("deny", "Output", r"expect= on a run"),
-        ("deny", "History", r"a run's history= and start="),
+        ("deny", "History", r"a run's history= and start=, or its store="),
         ("allow", "output", r"expect= on a run"),
-        ("allow", "HISTORY", r"a run's history= and start="),
-        ("deny", "history", r"a run's history= and start="),
+        ("allow", "HISTORY", r"a run's history= and start=, or its store="),
+        ("deny", "history", r"a run's history= and start=, or its store="),
     ],
 )
 def test_what_the_run_decides_is_refused_in_a_tools_list(

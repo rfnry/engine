@@ -46,6 +46,14 @@ class Conversation:
         self.saved = length
         return [_handed(message) for message in held]
 
+    async def window(self, length: int) -> int:
+        start = await self._called(self.store.window, length)
+        if not isinstance(start, int) or isinstance(start, bool) or not 0 <= start < length:
+            raise InputError(
+                f"conversation: the store's window for conversation {self.key!r} must be a position from 0 to {length - 1}; got {start!r}"
+            )
+        return start
+
     async def save(self, held: Sequence[Message]) -> None:
         end = len(held)
         if self.failed is not None or end <= self.saved:

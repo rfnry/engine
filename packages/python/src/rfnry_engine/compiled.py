@@ -59,7 +59,7 @@ from rfnry_engine.workers.pool import Script
 
 RUN_DECIDES = {
     OUTPUT_TOOL: "expect= on a run",
-    HISTORY_TOOL: "a run's history= and start=",
+    HISTORY_TOOL: "a run's history= and start=, or its store=",
 }
 ENGINE_TOOLS = frozenset({*BUILTINS, DELEGATE_TOOL, *WORKSPACE_NAMES, *RUN_DECIDES})
 BACKGROUND_JOBS = frozenset({"Shell", *HELPER_TOOLS})

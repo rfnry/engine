@@ -122,7 +122,7 @@ from rfnry_engine.tools.delegate import (
     run_arguments,
     run_result,
 )
-from rfnry_engine.tools.engine_tools import EngineTools, refuse_builtin
+from rfnry_engine.tools.engine_tools import EngineTools, RunTools, refuse_builtin
 from rfnry_engine.tools.helpers import ASK_TOOL, HELPER_TOOLS, ask_tool, helper_tools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import JOB_TOOL, WORKSPACE_NAMES, WORKSPACE_TOOLS, Workspace
@@ -297,7 +297,7 @@ def _history(value: Sequence[object] | None) -> list[Message]:
     return [_handed(message) for message in given]
 
 
-def _paired(history: list[Message], start: int) -> None:
+def _paired(history: list[Message], start: int, named: str = "history") -> None:
     calls: dict[str, list[tuple[int, int]]] = {}
     broken: tuple[int, int, str | None] | None = None
     for position, message in enumerate(history, start):
@@ -317,7 +317,7 @@ def _paired(history: list[Message], start: int) -> None:
     if broken is not None:
         position, _, call_id = broken
         raise InputError(
-            f"engine: history breaks tool call {call_id!r} from its result "
+            f"engine: {named} breaks tool call {call_id!r} from its result "
             f"at position {position}; start at a message the person sent"
         )
 
@@ -1634,10 +1634,11 @@ class Engine:
             else Conversation(options.store, scope, options.key)
         )
         given = options.history if conversation is None else await conversation.opened()
-        if conversation is not None:
-            _paired(given, 0)
-        surface = EngineTools(
+        messages: list[Message] = []
+        window = 0
+        surface = RunTools(
             self,
+            held=None if conversation is None else (messages, lambda: window),
             agent=spec.name,
             mode=spec.mode,
             scope=scope,
@@ -1717,13 +1718,16 @@ class Engine:
             context=options.context,
         )
         preload = [Message(role="user", content=list(spec.preload))] if spec.preload else []
-        chained = chain.Chain(chain.opening(_declared(model_), system, specs, spec.preload_digest))
-        history = await chained.settle(given)
+        head = chain.opening(_declared(model_), system, specs, spec.preload_digest)
+        chained = chain.Chain(head)
+        history = given if conversation is not None else await chained.settle(given)
         opening = _content(input)
         if options.skill is not None:
             opening = _invoked(spec.skills[options.skill], opening)
-        messages = [*history, Message(role="user", content=opening)]
+        messages.extend([*history, Message(role="user", content=opening)])
         sent = list(messages)
+        seen = messages
+        begun: int | None = None
         steps: list[Step] = []
         delegated: dict[str, Generation | Decision] = {}
         woken: list[Any] = []
@@ -2046,8 +2050,23 @@ class Engine:
             )
             return True
 
+        async def windowed() -> None:
+            nonlocal chained, window, begun, seen, sent
+            if conversation is None:
+                return
+            at = await conversation.window(len(messages))
+            _paired(messages[at:], at, f"the window of conversation {conversation.key!r}")
+            if begun is None:
+                begun, sent = at, messages[at:]
+            elif at == window:
+                seen.extend(messages[at + len(seen) :])
+                return
+            chained = chain.Chain(head)
+            seen = await chained.settle(messages[at:])
+            window = at
+
         async def ask() -> Reply:
-            sending = [_handed(message, sent=True) for message in (*preload, *messages)]
+            sending = [_handed(message, sent=True) for message in (*preload, *seen)]
             offered = [_fresh(tool) for tool in specs]
             if streaming:
                 return as_reply(
@@ -2060,6 +2079,7 @@ class Engine:
         def finish(
             reply_text: str, stopped: Stopped | None = None, error: Exception | None = None
         ) -> Generation:
+            first = begun or 0
             return Generation(
                 run_id=run_id,
                 parent_run_id=parent_run_id,
@@ -2078,9 +2098,9 @@ class Engine:
                 input=input,
                 system=system,
                 preload=[part.model_copy() for part in spec.preload],
-                start=options.start,
+                start=options.start + first,
                 messages=sent,
-                conversation=list(messages),
+                conversation=messages[first:],
                 tools=specs,
                 steps=steps,
                 calls=calls,
@@ -2149,6 +2169,7 @@ class Engine:
                     if mode is not None:
                         return await halt(turn, said, mode)
                 await save()
+                await windowed()
                 streamed.clear()
                 asking = asyncio.ensure_future(ask())
                 if await wait([asking], stop):
@@ -2165,7 +2186,7 @@ class Engine:
                 if reply.model:
                     model = reply.model
                 settings = reply.settings if reply.settings is not None else _settings(model_)
-                prefix = await chained.stamp(messages) if reply.reasoning is not None else None
+                prefix = await chained.stamp(seen) if reply.reasoning is not None else None
                 assistant = _assistant(reply, prefix, _declared(model_), _settings(model_))
                 messages.append(assistant)
                 asked = list(assistant.tool_calls)
