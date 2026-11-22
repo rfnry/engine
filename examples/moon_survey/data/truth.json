@@ -1,0 +1,416 @@
+[
+  {
+    "site": "Apollo 11",
+    "lat": 0.67416,
+    "lon": 23.47314,
+    "region": "N00-15/18",
+    "position": {
+      "source": "NASA NSSDC, Apollo Landing Site Coordinates",
+      "where": "table, row Apollo 11 Lunar Module (degrees N, degrees E)",
+      "url": "https://nssdc.gsfc.nasa.gov/planetary/lunar/lunar_sites.html"
+    },
+    "values": {
+      "TiO2": {
+        "value": 7.54,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 10084 (Meyer 2009; Korotev and Gillis 2001)",
+          "where": "Table 2 'Summary 10084 and agglutinate', soil 10084, Korotev2001 average",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/10084.pdf"
+        }
+      },
+      "FeO": {
+        "value": 15.81,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 10084 (Meyer 2009; Korotev and Gillis 2001)",
+          "where": "Table 2 'Summary 10084 and agglutinate', soil 10084, Korotev2001 average",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/10084.pdf"
+        }
+      },
+      "Al2O3": {
+        "value": 13.55,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 10084 (Meyer 2009; Korotev and Gillis 2001)",
+          "where": "Table 2 'Summary 10084 and agglutinate', soil 10084, Korotev2001 average",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/10084.pdf"
+        }
+      },
+      "Th": {
+        "value": 1.94,
+        "unit": "ppm",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 10084 (Meyer 2009; Korotev and Gillis 2001)",
+          "where": "Table 2 'Summary 10084 and agglutinate', soil 10084, Korotev2001 average",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/10084.pdf"
+        }
+      }
+    }
+  },
+  {
+    "site": "Apollo 12",
+    "lat": -3.0128,
+    "lon": -23.4219,
+    "region": "S00-15/14",
+    "position": {
+      "source": "NASA NSSDC, Apollo Landing Site Coordinates",
+      "where": "table, row Apollo 12 Lunar Module (degrees N, degrees E)",
+      "url": "https://nssdc.gsfc.nasa.gov/planetary/lunar/lunar_sites.html"
+    },
+    "values": {
+      "TiO2": {
+        "value": 2.8,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 12001 (Meyer 2011)",
+          "where": "Table 1 'Chemical composition of 12001', column Papike 82 / Laul81, INAA",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/12001.pdf"
+        }
+      },
+      "FeO": {
+        "value": 17.2,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 12001 (Meyer 2011)",
+          "where": "Table 1 'Chemical composition of 12001', column Papike 82 / Laul81, INAA",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/12001.pdf"
+        }
+      },
+      "Al2O3": {
+        "value": 12.5,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 12001 (Meyer 2011)",
+          "where": "Table 1 'Chemical composition of 12001', column Papike 82 / Laul81, INAA",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/12001.pdf"
+        }
+      },
+      "Th": {
+        "value": 5.4,
+        "unit": "ppm",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 12001 (Meyer 2011)",
+          "where": "Table 1 'Chemical composition of 12001', column Papike 82 / Laul81, INAA",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/12001.pdf"
+        }
+      }
+    }
+  },
+  {
+    "site": "Apollo 15",
+    "lat": 26.13239,
+    "lon": 3.6333,
+    "region": "N15-30/15",
+    "position": {
+      "source": "NASA NSSDC, Apollo Landing Site Coordinates",
+      "where": "table, row Apollo 15 Lunar Module (degrees N, degrees E)",
+      "url": "https://nssdc.gsfc.nasa.gov/planetary/lunar/lunar_sites.html"
+    },
+    "values": {
+      "TiO2": {
+        "value": 1.5,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 15601",
+          "where": "Table 1 'Chemical composition of 15601', column Korotev87, INAA",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/15601.pdf"
+        }
+      },
+      "FeO": {
+        "value": 19.9,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 15601",
+          "where": "Table 1 'Chemical composition of 15601', column Korotev87, INAA",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/15601.pdf"
+        }
+      },
+      "Al2O3": {
+        "value": 10.7,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 15601",
+          "where": "Table 1 'Chemical composition of 15601', column Korotev87, INAA",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/15601.pdf"
+        }
+      },
+      "Th": {
+        "value": 1.31,
+        "unit": "ppm",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 15601",
+          "where": "Table 1 'Chemical composition of 15601', column Korotev87, INAA",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/15601.pdf"
+        }
+      }
+    }
+  },
+  {
+    "site": "Apollo 16",
+    "lat": -8.9734,
+    "lon": 15.5011,
+    "region": "S00-15/17",
+    "position": {
+      "source": "NASA NSSDC, Apollo Landing Site Coordinates",
+      "where": "table, row Apollo 16 Lunar Module (degrees N, degrees E)",
+      "url": "https://nssdc.gsfc.nasa.gov/planetary/lunar/lunar_sites.html"
+    },
+    "values": {
+      "TiO2": {
+        "value": 0.56,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 68501",
+          "where": "Table 1 'Chemical composition of 68501', column Taylor73, SSMS",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/68501.pdf"
+        }
+      },
+      "FeO": {
+        "value": 5.32,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 68501",
+          "where": "Table 1 'Chemical composition of 68501', column Taylor73, SSMS",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/68501.pdf"
+        }
+      },
+      "Al2O3": {
+        "value": 26.9,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 68501",
+          "where": "Table 1 'Chemical composition of 68501', column Taylor73, SSMS",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/68501.pdf"
+        }
+      },
+      "Th": {
+        "value": 2.45,
+        "unit": "ppm",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 68501",
+          "where": "Table 1 'Chemical composition of 68501', column Taylor73, SSMS",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/68501.pdf"
+        }
+      }
+    }
+  },
+  {
+    "site": "Apollo 17",
+    "lat": 20.1911,
+    "lon": 30.7723,
+    "region": "N15-30/18",
+    "position": {
+      "source": "NASA NSSDC, Apollo Landing Site Coordinates",
+      "where": "table, row Apollo 17 Lunar Module (degrees N, degrees E)",
+      "url": "https://nssdc.gsfc.nasa.gov/planetary/lunar/lunar_sites.html"
+    },
+    "values": {
+      "TiO2": {
+        "value": 8.99,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 70161",
+          "where": "Table 1 'Chemical composition of 70161', column LSPET73 / Rhodes74, XRF",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/70161.pdf"
+        }
+      },
+      "FeO": {
+        "value": 17.01,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 70161",
+          "where": "Table 1 'Chemical composition of 70161', column LSPET73 / Rhodes74, XRF",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/70161.pdf"
+        }
+      },
+      "Al2O3": {
+        "value": 11.6,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 70161",
+          "where": "Table 1 'Chemical composition of 70161', column LSPET73 / Rhodes74, XRF",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/70161.pdf"
+        }
+      },
+      "Th": {
+        "value": 0.84,
+        "unit": "ppm",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, soil 70161",
+          "where": "Table 1 'Chemical composition of 70161', column Korotev92, INAA",
+          "url": "https://curator.jsc.nasa.gov/lunar/lsc/70161.pdf"
+        }
+      }
+    }
+  },
+  {
+    "site": "Luna 16",
+    "lat": -0.5137,
+    "lon": 56.3638,
+    "region": "S00-15/21",
+    "position": {
+      "source": "NASA NSSDC, Lunar Artifact Impacts and Landings",
+      "where": "table, row Luna 16 soft landing (latitude, longitude, S and E)",
+      "url": "https://nssdc.gsfc.nasa.gov/planetary/lunar/lunar_artifact_impacts.html"
+    },
+    "values": {
+      "TiO2": {
+        "value": 3.5,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, Luna 16 core (Meyer 2009)",
+          "where": "Table 1a 'Chemical composition of Luna 16 soil', column Laul81, sample 21000,5, INAA",
+          "url": "https://www.lpi.usra.edu/lunar/samples/atlas/compendium/Luna16Core.pdf"
+        }
+      },
+      "FeO": {
+        "value": 16.5,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, Luna 16 core (Meyer 2009)",
+          "where": "Table 1a 'Chemical composition of Luna 16 soil', column Laul81, sample 21000,5, INAA",
+          "url": "https://www.lpi.usra.edu/lunar/samples/atlas/compendium/Luna16Core.pdf"
+        }
+      },
+      "Al2O3": {
+        "value": 15.5,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, Luna 16 core (Meyer 2009)",
+          "where": "Table 1a 'Chemical composition of Luna 16 soil', column Laul81, sample 21000,5, INAA",
+          "url": "https://www.lpi.usra.edu/lunar/samples/atlas/compendium/Luna16Core.pdf"
+        }
+      },
+      "Th": {
+        "value": 1.39,
+        "unit": "ppm",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, Luna 16 core (Meyer 2009)",
+          "where": "Table 1a 'Chemical composition of Luna 16 soil', column Laul81, sample 21000,5, INAA",
+          "url": "https://www.lpi.usra.edu/lunar/samples/atlas/compendium/Luna16Core.pdf"
+        }
+      }
+    }
+  },
+  {
+    "site": "Luna 24",
+    "lat": 12.7142,
+    "lon": 62.2129,
+    "region": "N00-15/22",
+    "position": {
+      "source": "NASA NSSDC, Lunar Artifact Impacts and Landings",
+      "where": "table, row Luna 24 soft landing (latitude, longitude, N and E)",
+      "url": "https://nssdc.gsfc.nasa.gov/planetary/lunar/lunar_artifact_impacts.html"
+    },
+    "values": {
+      "TiO2": {
+        "value": 1.0,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, Luna 24 core (Meyer 2009)",
+          "where": "Table 1a 'Chemical composition of Luna 24 soil', column Laul 81, sample 24999,6 bulk, INAA",
+          "url": "https://www.lpi.usra.edu/lunar/samples/atlas/compendium/Luna24Core.pdf"
+        }
+      },
+      "FeO": {
+        "value": 20.2,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, Luna 24 core (Meyer 2009)",
+          "where": "Table 1a 'Chemical composition of Luna 24 soil', column Laul 81, sample 24999,6 bulk, INAA",
+          "url": "https://www.lpi.usra.edu/lunar/samples/atlas/compendium/Luna24Core.pdf"
+        }
+      },
+      "Al2O3": {
+        "value": 11.7,
+        "unit": "wt%",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, Luna 24 core (Meyer 2009)",
+          "where": "Table 1a 'Chemical composition of Luna 24 soil', column Laul 81, sample 24999,6 bulk, INAA",
+          "url": "https://www.lpi.usra.edu/lunar/samples/atlas/compendium/Luna24Core.pdf"
+        }
+      },
+      "Th": {
+        "value": 0.4,
+        "unit": "ppm",
+        "citation": {
+          "source": "NASA Lunar Sample Compendium, Luna 24 core (Meyer 2009)",
+          "where": "Table 1a 'Chemical composition of Luna 24 soil', column Laul 81, sample 24999,6 bulk, INAA",
+          "url": "https://www.lpi.usra.edu/lunar/samples/atlas/compendium/Luna24Core.pdf"
+        }
+      }
+    }
+  },
+  {
+    "site": "Chang'e-5",
+    "lat": 43.0576,
+    "lon": -51.9161,
+    "region": "N30-45/9",
+    "position": {
+      "source": "NASA NSSDC, Lunar Artifact Impacts and Landings",
+      "where": "table, row Chang'e 5 soft landing (latitude, longitude, N and W)",
+      "url": "https://nssdc.gsfc.nasa.gov/planetary/lunar/lunar_artifact_impacts.html"
+    },
+    "values": {
+      "TiO2": {
+        "value": 5.0,
+        "unit": "wt%",
+        "citation": {
+          "source": "Li et al. 2021, Characteristics of the lunar samples returned by the Chang'E-5 mission, National Science Review 9(2) nwab188",
+          "where": "Table 1 'Bulk chemical composition for CE-5 lunar soils', XRF row, soil CE5C0800YJFM002, XRF",
+          "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8974359/"
+        }
+      },
+      "FeO": {
+        "value": 22.5,
+        "unit": "wt%",
+        "citation": {
+          "source": "Li et al. 2021, Characteristics of the lunar samples returned by the Chang'E-5 mission, National Science Review 9(2) nwab188",
+          "where": "Table 1 'Bulk chemical composition for CE-5 lunar soils', XRF row, soil CE5C0800YJFM002, XRF",
+          "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8974359/"
+        }
+      },
+      "Al2O3": {
+        "value": 10.8,
+        "unit": "wt%",
+        "citation": {
+          "source": "Li et al. 2021, Characteristics of the lunar samples returned by the Chang'E-5 mission, National Science Review 9(2) nwab188",
+          "where": "Table 1 'Bulk chemical composition for CE-5 lunar soils', XRF row, soil CE5C0800YJFM002, XRF",
+          "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8974359/"
+        }
+      },
+      "Th": {
+        "value": 4.72,
+        "unit": "ppm",
+        "citation": {
+          "source": "Li et al. 2021, Characteristics of the lunar samples returned by the Chang'E-5 mission, National Science Review 9(2) nwab188",
+          "where": "Table 1 'Bulk chemical composition for CE-5 lunar soils', INAA block, Th; CE5C0800YJFM002 and 003 were both analyzed by INAA, INAA",
+          "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8974359/"
+        }
+      }
+    }
+  },
+  {
+    "site": "Cabeus",
+    "lat": -84.6796,
+    "lon": -48.7093,
+    "region": "S75-90/0",
+    "position": {
+      "source": "NASA NSSDC, Lunar Artifact Impacts and Landings",
+      "where": "table, row LCROSS Centaur impact (latitude, longitude, S and W)",
+      "url": "https://nssdc.gsfc.nasa.gov/planetary/lunar/lunar_artifact_impacts.html"
+    },
+    "values": {
+      "water_ice": {
+        "value": 5.6,
+        "unit": "wt%",
+        "citation": {
+          "source": "Colaprete et al. 2010, Detection of Water in the LCROSS Ejecta Plume, Science 330, 463",
+          "where": "Abstract and Table 1 'Average' row: total water 5.6 +/- 2.9 % by mass of the regolith at the LCROSS impact site",
+          "url": "https://www.chem.uci.edu/~unicorn/old/H2A/handouts/PDFs/LCROSSPaper.pdf"
+        }
+      }
+    }
+  }
+]
