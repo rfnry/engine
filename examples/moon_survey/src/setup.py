@@ -20,6 +20,7 @@ create table if not exists messages (
     conversation text not null,
     position integer not null,
     body json not null,
+    prompt integer,
     at timestamptz not null default now(),
     primary key (scope, conversation, position)
 );

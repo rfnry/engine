@@ -58,8 +58,9 @@ class Refusing:
 
 
 class Dropping:
-    def __init__(self, pool, fault, *, after=False, closed=True):
-        self.pool, self.fault, self.after, self.closed = pool, fault, after, closed
+    def __init__(self, pool, fault, *, on=None, after=False, closed=True):
+        self.pool, self.fault, self.on = pool, fault, on
+        self.after, self.closed = after, closed
 
     @contextlib.asynccontextmanager
     async def acquire(self):
@@ -78,6 +79,8 @@ class Dropped:
         method = getattr(self.conn, name)
 
         async def called(*args):
+            if self.owner.on not in (None, name):
+                return await method(*args)
             fault, self.owner.fault = self.owner.fault, None
             if fault is None:
                 return await method(*args)
@@ -86,6 +89,19 @@ class Dropped:
             raise fault
 
         return called
+
+
+class Unreleased:
+    def __init__(self, pool, fault):
+        self.pool, self.fault = pool, fault
+
+    @contextlib.asynccontextmanager
+    async def acquire(self):
+        async with self.pool.acquire() as conn:
+            yield conn
+        fault, self.fault = self.fault, None
+        if fault is not None:
+            raise fault
 
 
 def sleeper():
@@ -291,11 +307,22 @@ async def test_an_interface_error_on_a_live_connection_or_a_closed_pool_is_not_r
     assert await Store(pool).length(scope, "c1") == 0
 
 
-async def test_an_error_that_is_not_brief_is_not_retried(pool, scope):
+@pytest.mark.parametrize(
+    "fault",
+    [
+        asyncpg.UndefinedTableError('relation "messages" does not exist'),
+        asyncpg.ProtocolViolationError("unexpected message type"),
+        asyncpg.ConnectionRejectionError("the server rejected the connection"),
+        asyncpg.PostgresConnectionError("connection exception"),
+    ],
+    ids=lambda fault: type(fault).__name__,
+)
+async def test_an_error_that_is_not_brief_is_not_retried(pool, scope, fault):
     slept, sleep = sleeper()
-    broken = Dropping(pool, asyncpg.UndefinedTableError('relation "messages" does not exist'))
-    with pytest.raises(asyncpg.UndefinedTableError):
-        await Store(broken, sleep=sleep).length(scope, "c1")
+    with pytest.raises(type(fault)):
+        await Store(Dropping(pool, fault), sleep=sleep).length(scope, "c1")
+    with pytest.raises(type(fault)):
+        await Store(Refusing(pool, fault), sleep=sleep).length(scope, "c1")
     assert slept == []
 
 
@@ -312,6 +339,52 @@ async def test_a_commit_whose_answer_was_lost_is_found_not_written_twice(pool, s
     await store.append(scope, "c1", 0, messages)
     assert await store.read(scope, "c1", 0) == messages
     assert (priced, slept) == ([7], [0.05])
+
+
+async def test_a_commit_whose_release_failed_is_priced_once(pool, scope):
+    priced = []
+
+    async def on_reply(scope, conversation, message):
+        priced.append(message.usage.input)
+
+    slept, sleep = sleeper()
+    unreleased = Unreleased(pool, asyncpg.ConnectionDoesNotExistError("connection was closed"))
+    store = Store(unreleased, on_reply=on_reply, sleep=sleep)
+    messages = [said("a"), reply("x", usage=prompt(8)), result("x")]
+    await store.append(scope, "c1", 0, messages)
+    assert await store.read(scope, "c1", 0) == messages
+    assert (priced, slept) == ([8], [0.05])
+
+
+async def test_a_repeat_whose_check_was_cut_is_not_priced_again(pool, scope):
+    priced = []
+
+    async def on_reply(scope, conversation, message):
+        priced.append(message.usage.input)
+
+    messages = [said("a"), reply("x", usage=prompt(9)), result("x")]
+    await Store(pool, on_reply=on_reply).append(scope, "c1", 0, messages)
+    slept, sleep = sleeper()
+    cut = Dropping(pool, asyncpg.ConnectionDoesNotExistError("connection was closed"), on="fetch")
+    await Store(cut, on_reply=on_reply, sleep=sleep).append(scope, "c1", 0, messages)
+    assert await Store(pool).length(scope, "c1") == 3
+    assert (priced, slept) == ([9], [0.05])
+
+
+async def test_a_lost_answer_is_found_even_when_json_changes_a_value(pool, scope):
+    shaped = Message(
+        role="assistant",
+        reasoning=({"type": "thinking", "thinking": "t", "signature": "s"},),
+        settings={"budget": 1e16},
+        usage=prompt(3),
+    )
+    slept, sleep = sleeper()
+    lost = Dropping(pool, asyncpg.ConnectionDoesNotExistError("connection was closed"), after=True)
+    await Store(lost, sleep=sleep).append(scope, "c1", 0, [said("a"), shaped])
+    back = await Store(pool).read(scope, "c1", 0)
+    assert back[1].reasoning == [{"type": "thinking", "thinking": "t", "signature": "s"}]
+    assert back[1].model_dump_json() == shaped.model_dump_json()
+    assert slept == [0.05]
 
 
 async def test_the_window_holds_until_the_size_then_jumps_to_a_person_message(pool, scope):
@@ -400,6 +473,20 @@ async def test_the_window_measures_the_latest_reply_that_carries_usage(pool, sco
     ]
     await store.append(scope, "c1", 0, held)
     assert await store.window(scope, "c1", 5) == 4
+
+
+async def test_the_window_reads_past_a_nul_in_a_result(pool, scope):
+    store = Store(pool, size=1000)
+    nul = Message(role="tool", tool_call_id="x", content="ELF\x00\x01")
+    await store.append(scope, "c1", 0, [said("dump it"), reply("x", usage=prompt(100)), nul])
+    await store.append(scope, "c1", 3, [said("again")])
+    assert await store.window(scope, "c1", 4) == 0
+
+    later = nul.model_copy(update={"tool_call_id": "y"})
+    await store.append(scope, "c1", 4, [reply("y", usage=prompt(2000)), later, told("d1")])
+    assert await store.window(scope, "c1", 7) == 6
+    assert await store.moves(scope, "c1") == 1
+    assert (await store.read(scope, "c1", 0))[2].content == "ELF\x00\x01"
 
 
 async def test_the_window_never_splits_a_call_from_its_result(pool, scope):

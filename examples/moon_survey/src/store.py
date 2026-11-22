@@ -6,7 +6,8 @@ import asyncpg
 from rfnry_engine import Message
 
 BRIEF = (
-    asyncpg.PostgresConnectionError,
+    asyncpg.ConnectionDoesNotExistError,
+    asyncpg.ConnectionFailureError,
     asyncpg.AdminShutdownError,
     asyncpg.CannotConnectNowError,
     asyncpg.SerializationError,
@@ -17,9 +18,9 @@ FIRST_WAIT = 0.05
 LAST_WAIT = 1.0
 
 WRITE = """
-insert into messages (scope, conversation, position, body)
-select $1, $2, $3::integer + given.n::integer - 1, given.body::json
-from unnest($4::text[]) with ordinality as given (body, n)
+insert into messages (scope, conversation, position, body, prompt)
+select $1, $2, $3::integer + given.n::integer - 1, given.body::json, given.prompt
+from unnest($4::text[], $5::integer[]) with ordinality as given (body, prompt, n)
 where $3::integer = 0 or exists (
     select 1 from messages
     where scope = $1 and conversation = $2 and position = $3::integer - 1
@@ -31,10 +32,10 @@ where scope = $1 and conversation = $2 and position >= $3
     and ($4::integer is null or position < $4::integer)
 order by position
 """
-LAST_REPLY = """
-select body::text from messages
+LAST_PROMPT = """
+select prompt from messages
 where scope = $1 and conversation = $2 and position >= $3 and position < $4
-    and body->>'role' = 'assistant' and body->>'usage' is not null
+    and prompt is not null
 order by position desc
 limit 1
 """
@@ -59,6 +60,13 @@ def _whole(messages: Sequence[Message]) -> bool:
             return False
         called.update(call.id for call in message.tool_calls)
     return True
+
+
+def _prompt(message: Message) -> int | None:
+    usage = message.usage
+    if message.role != "assistant" or usage is None:
+        return None
+    return usage.input + usage.cache_read + usage.cache_creation
 
 
 def _held(rows: Sequence[asyncpg.Record]) -> list[Message]:
@@ -106,21 +114,25 @@ class Store:
         if not given:
             return
         bodies = [message.model_dump_json() for message in given]
-        tries = 0
+        prompts = [_prompt(message) for message in given]
+        ours = False
 
         async def write(conn: asyncpg.Connection) -> bool:
-            nonlocal tries
-            tries += 1
+            nonlocal ours
             try:
-                status = await conn.execute(WRITE, scope, conversation, start, bodies)
+                status = await conn.execute(WRITE, scope, conversation, start, bodies, prompts)
             except asyncpg.UniqueViolationError:
-                held = _held(await conn.fetch(READ, scope, conversation, start, start + len(given)))
-                if held != given:
+                held = await conn.fetch(READ, scope, conversation, start, start + len(bodies))
+                if [row["body"] for row in held] != bodies:
                     raise StoreError(
                         f"store: conversation {conversation!r} already holds a message at "
                         f"position {start}; this writer is stale"
                     ) from None
-                return tries > 1
+                return ours
+            except Exception:
+                ours = True
+                raise
+            ours = True
             if status == "INSERT 0 0":
                 raise StoreError(
                     f"store: conversation {conversation!r} holds fewer than {start} messages; "
@@ -141,9 +153,10 @@ class Store:
                 conversation,
             )
             start, since = (row["start"], row["since"]) if row else (0, 0)
-            body = await conn.fetchval(LAST_REPLY, scope, conversation, max(start, since), length)
-            usage = None if body is None else Message.model_validate_json(body).usage
-            if usage is None or usage.input + usage.cache_read + usage.cache_creation <= self.size:
+            prompt = await conn.fetchval(
+                LAST_PROMPT, scope, conversation, max(start, since), length
+            )
+            if prompt is None or prompt <= self.size:
                 return start
             first = max(start + 1, start + math.floor((length - start) * (1 - self.keep)))
             held = _held(await conn.fetch(READ, scope, conversation, first, length))
