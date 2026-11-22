@@ -50,6 +50,7 @@ from rfnry_engine.frontmatter import plainly
 from rfnry_engine.helpers import Helper, Helpers, first_job, given_back
 from rfnry_engine.manifest import Kind, ModelEntry, read_manifest
 from rfnry_engine.models import (
+    CONTAINERS,
     Answer,
     ChoiceAnswer,
     Content,
@@ -74,6 +75,10 @@ from rfnry_engine.models import (
     ToolSpec,
     Usage,
     VoiceModel,
+    _call,
+    _copied,
+    _handed,
+    _own,
     as_decided,
     as_reply,
     settle,
@@ -200,8 +205,6 @@ SETTINGS = TypeAdapter[dict[str, JsonValue] | None](dict[str, JsonValue] | None)
 QUESTIONS = TypeAdapter(dict[str, Annotated[Question, Field(discriminator="type")]])
 PART_TYPES = ("text", "image", "audio", "document")
 SCALARS = (str, int)
-CONTAINERS = (dict, list)
-SENT = {"prefix": None, "usage": None, "model": None, "settings": None, "notice": None}
 _LEAVE = object()
 MAX_TAGS = 32
 MAX_TAG_KEY = 64
@@ -480,24 +483,6 @@ def _slashed(spec: AgentSpec, input: State) -> tuple[str, State] | None:
     return named, kept or ""
 
 
-def _copied(value: Any) -> Any:
-    if not isinstance(value, CONTAINERS):
-        return value
-    top = dict(value) if isinstance(value, dict) else list(value)
-    made: dict[int, Any] = {id(value): top}
-    pending: list[Any] = [top]
-    while pending:
-        target = pending.pop()
-        for key, item in target.items() if isinstance(target, dict) else enumerate(target):
-            if isinstance(item, CONTAINERS):
-                held = made.get(id(item))
-                if held is None:
-                    held = made[id(item)] = dict(item) if isinstance(item, dict) else list(item)
-                    pending.append(held)
-                target[key] = held
-    return top
-
-
 def _given(state: State) -> State:
     held: State = _copied(state)
     if isinstance(held, list):
@@ -515,30 +500,6 @@ def _fresh[M: BaseModel](model: M) -> M:
             if isinstance(value, CONTAINERS)
         }
     )
-
-
-def _own(content: Content) -> Content:
-    return content if isinstance(content, str) else [part.model_copy() for part in content]
-
-
-def _call(call: ToolCall) -> ToolCall:
-    return call.model_copy(update={"args": _copied(call.args)})
-
-
-def _handed(message: Message, sent: bool = False) -> Message:
-    update: dict[str, Any] = {
-        "content": _own(message.content),
-        "tool_calls": [_call(call) for call in message.tool_calls],
-    }
-    if message.reasoning is not None:
-        update["reasoning"] = _copied(message.reasoning)
-    if message.notice is not None:
-        update["notice"] = message.notice.model_copy()
-    if sent:
-        update.update(SENT)
-    elif message.settings is not None:
-        update["settings"] = _copied(message.settings)
-    return message.model_copy(update=update)
 
 
 def _now() -> datetime:
@@ -2286,7 +2247,9 @@ class Engine:
             children.extend(sorted(delegated.values(), key=lambda run: (run.at, run.run_id)))
             try:
                 await save()
-            except Exception:
+            except Exception as error:
+                if conversation is None or conversation.failed is not error:
+                    raise
                 logger.error("engine: the store failed while run %s ended", run_id, exc_info=True)
             failure = finish("", error=exc)
             options.failed.append(failure)

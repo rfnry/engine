@@ -1307,9 +1307,9 @@ and everything is stored before `RunEnded`.
 Calling again with the same name continues the conversation. The run reads it once, as it starts —
 `length`, then `read(scope, conversation, 0)` when it is not empty — sends it as its history, and
 appends `input=` as the next message, such as "the process restarted; carry on". It is a new run,
-with its own `run_id`, and its `start` is 0. A store whose `read` returns fewer messages than its
-`length`, or messages that do not fit `Message`, is refused before the run starts, and nothing is
-recorded.
+with its own `run_id`, and its `start` is 0. A store whose `read` returns a number of messages
+other than its `length`, or messages that do not fit `Message`, is refused before the run starts,
+and nothing is recorded.
 
 One run holds a conversation at a time in one engine: a second run of the same name and scope
 while the first is in flight is an `InputError` (`engine: conversation 'dana-1' of scope 'acme' is
@@ -3810,8 +3810,8 @@ JSON values and parts, a workspace of another scope, a history that breaks a too
 result, a `start` outside the history or without one, a `store=` without `conversation=` or a
 `conversation=` without `store=`, a store without `length`, `read`, `append` and `window`, a blank
 conversation name, `history=` or `start=` beside a store, a conversation a run in flight holds, a
-store whose `length` is not a whole number from 0 or whose `read` returns fewer messages than its
-`length` or messages that do not fit, tags outside their limits, runtime questions
+store whose `length` is not a whole number from 0 or whose `read` returns a number of messages
+other than its `length` or messages that do not fit, tags outside their limits, runtime questions
 that do not fit, a runtime id the run already asks, questions for a generation agent, a skill for a
 decision agent, a run without a mode of an agent that needs one, a voice agent given to `engine.run`
 or `engine.tool` and another kind given to `engine.talk`, a run given a skill both by `skill=` and

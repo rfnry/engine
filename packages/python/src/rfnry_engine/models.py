@@ -406,6 +406,51 @@ class DecisionModel(Protocol):
 
 Message.model_rebuild()
 
+CONTAINERS = (dict, list)
+SENT = {"prefix": None, "usage": None, "model": None, "settings": None, "notice": None}
+
+
+def _copied(value: Any) -> Any:
+    if not isinstance(value, CONTAINERS):
+        return value
+    top = dict(value) if isinstance(value, dict) else list(value)
+    made: dict[int, Any] = {id(value): top}
+    pending: list[Any] = [top]
+    while pending:
+        target = pending.pop()
+        for key, item in target.items() if isinstance(target, dict) else enumerate(target):
+            if isinstance(item, CONTAINERS):
+                held = made.get(id(item))
+                if held is None:
+                    held = made[id(item)] = dict(item) if isinstance(item, dict) else list(item)
+                    pending.append(held)
+                target[key] = held
+    return top
+
+
+def _own(content: Content) -> Content:
+    return content if isinstance(content, str) else [part.model_copy() for part in content]
+
+
+def _call(call: ToolCall) -> ToolCall:
+    return call.model_copy(update={"args": _copied(call.args)})
+
+
+def _handed(message: Message, sent: bool = False) -> Message:
+    update: dict[str, Any] = {
+        "content": _own(message.content),
+        "tool_calls": [_call(call) for call in message.tool_calls],
+    }
+    if message.reasoning is not None:
+        update["reasoning"] = _copied(message.reasoning)
+    if message.notice is not None:
+        update["notice"] = message.notice.model_copy()
+    if sent:
+        update.update(SENT)
+    elif message.settings is not None:
+        update["settings"] = _copied(message.settings)
+    return message.model_copy(update=update)
+
 
 @runtime_checkable
 class HistoryLike(Protocol):

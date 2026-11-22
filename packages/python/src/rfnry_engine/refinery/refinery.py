@@ -8,9 +8,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from rfnry_engine.engine import Approve, Engine, _copied
+from rfnry_engine.engine import Approve, Engine
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
-from rfnry_engine.models import DecisionModel, GenerationModel, HistoryLike, ModelChoice
+from rfnry_engine.models import DecisionModel, GenerationModel, HistoryLike, ModelChoice, _copied
 from rfnry_engine.records import READ_BACK, Decision, Fingerprint, Generation, Run, Voice
 from rfnry_engine.refinery.conflicts import find_conflicts
 from rfnry_engine.refinery.export import (

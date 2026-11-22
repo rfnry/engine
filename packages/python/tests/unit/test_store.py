@@ -1,6 +1,8 @@
 import asyncio
+import copy
 import logging
 import re
+import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
@@ -168,6 +170,36 @@ async def test_a_new_conversation_is_stored_as_the_run_adds_it(tmp_path: Path) -
     assert store.log[0] == ("length", "acme", "c1")
     assert all(scope == "acme" for _, scope, _ in store.log)
     assert ("read", "acme", "c1") not in store.log
+
+
+class Opaque:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+
+
+async def test_a_store_run_copies_an_opaque_reasoning_as_a_run_without_a_store_does(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    opaque = Opaque()
+    with pytest.raises(TypeError):
+        copy.deepcopy(opaque)
+    thought = Reply(
+        tool_calls=[ToolCall(id="c1", name="slow", args={})],
+        stop_reason="tool_use",
+        reasoning=opaque,
+    )
+    llm = Scripted(thought, text_reply("Done."), thought, text_reply("Done."))
+    engine, store = engine_for(tmp_path, llm), MemoryStore()
+    alone = await engine.run("chat", "acme", "work", tools=slow())
+    assert isinstance(alone, Generation)
+    with caplog.at_level(logging.ERROR, logger="rfnry_engine.engine"):
+        kept = await chat(engine, store)
+    assert caplog.records == [] and kept.reply == alone.reply == "Done."
+    assert said(kept.conversation) == said(alone.conversation)
+    assert kept.conversation[1].reasoning is alone.conversation[1].reasoning is opaque
+    assert store.held[KEY] == kept.conversation and store.held[KEY][1].reasoning is opaque
+    assert [m.reasoning for m in llm.calls[3][1]] == [m.reasoning for m in llm.calls[1][1]]
+    assert llm.calls[3][1][1].reasoning is opaque
 
 
 class Watching(Scripted):
@@ -417,6 +449,23 @@ async def test_a_failed_run_s_last_messages_are_stored(tmp_path: Path) -> None:
     assert store.held[KEY] == failure.conversation and not gate.is_set()
 
 
+async def test_a_failed_run_s_messages_are_stored_before_its_run_ended(tmp_path: Path) -> None:
+    gate, store, kept = asyncio.Event(), MemoryStore(), Kept()
+    at_end: dict[str, int] = {}
+
+    async def on_event(event: Any) -> None:
+        if isinstance(event, RunEnded):
+            at_end[event.run_id] = len(store.held.get(KEY, []))
+
+    model = Failing([background("look")], {"look": [gate, text_reply("never")]})
+    engine = team(crew(tmp_path, background=True), model, refinery=kept)
+    with pytest.raises(ValueError, match=exactly("the lead's model broke")):
+        await engine.run("lead", "acme", "go", store=store, conversation="c1", on_event=on_event)
+    [failure] = kept.runs
+    assert isinstance(failure, Generation) and failure.conversation[-1].notice is not None
+    assert at_end[failure.run_id] == len(failure.conversation)
+
+
 async def test_a_store_error_while_a_failed_run_ends_is_logged_and_the_run_s_error_raised(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -443,20 +492,32 @@ async def test_a_store_error_while_a_failed_run_ends_is_logged_and_the_run_s_err
     assert failure.conversation[-1].notice is not None
 
 
-class Overstated(MemoryStore):
+class Miscounted(MemoryStore):
+    def __init__(self, by: int) -> None:
+        super().__init__()
+        self.by = by
+        self.held[KEY] = [
+            Message(role="user", content="a"),
+            Message(role="assistant", content="b"),
+            Message(role="user", content="c"),
+        ]
+
     async def length(self, scope: str, conversation: str) -> int:
-        return await super().length(scope, conversation) + 2
+        return await super().length(scope, conversation) + self.by
 
 
 async def test_a_store_that_reads_back_less_than_its_length_is_refused(tmp_path: Path) -> None:
-    store, kept, seen, llm = Overstated(), Kept(), Seen(), Scripted(text_reply("never"))
-    store.held[KEY] = [
-        Message(role="user", content="a"),
-        Message(role="assistant", content="b"),
-        Message(role="user", content="c"),
-    ]
+    store, kept, seen, llm = Miscounted(2), Kept(), Seen(), Scripted(text_reply("never"))
     short = "conversation: the store holds 5 messages of conversation 'c1' but read returned 3"
     with pytest.raises(InputError, match=exactly(short)):
+        await chat(engine_for(tmp_path, llm, refinery=kept), store, on_event=seen)
+    assert seen.events == [] and kept.runs == [] and llm.calls == []
+
+
+async def test_a_store_that_reads_back_more_than_its_length_is_refused(tmp_path: Path) -> None:
+    store, kept, seen, llm = Miscounted(-1), Kept(), Seen(), Scripted(text_reply("never"))
+    more = "conversation: the store holds 2 messages of conversation 'c1' but read returned 3"
+    with pytest.raises(InputError, match=exactly(more)):
         await chat(engine_for(tmp_path, llm, refinery=kept), store, on_event=seen)
     assert seen.events == [] and kept.runs == [] and llm.calls == []
 

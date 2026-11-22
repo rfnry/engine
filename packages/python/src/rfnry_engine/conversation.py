@@ -3,7 +3,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from pydantic import TypeAdapter, ValidationError
 
 from rfnry_engine.errors import InputError
-from rfnry_engine.models import ConversationStore, Message
+from rfnry_engine.models import ConversationStore, Message, _handed
 
 HISTORY = TypeAdapter(list[Message])
 
@@ -44,12 +44,12 @@ class Conversation:
                 f"conversation: the store holds {length} messages of conversation {self.key!r} but read returned {len(held)}"
             )
         self.saved = length
-        return [message.model_copy(deep=True) for message in held]
+        return [_handed(message) for message in held]
 
     async def save(self, held: Sequence[Message]) -> None:
         end = len(held)
         if self.failed is not None or end <= self.saved:
             return
-        fresh = [message.model_copy(deep=True) for message in held[self.saved : end]]
+        fresh = [_handed(message) for message in held[self.saved : end]]
         await self._called(self.store.append, fresh)
         self.saved = end
