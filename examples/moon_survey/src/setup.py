@@ -117,6 +117,15 @@ create table if not exists gate_log (
     at timestamptz not null default now()
 );
 create index if not exists gate_log_by_run on gate_log (scope, survey, run_id);
+create table if not exists provider_log (
+    id bigserial primary key,
+    provider text not null,
+    model text not null,
+    status integer,
+    wait double precision not null,
+    headers json not null,
+    at timestamptz not null default now()
+);
 """
 
 
