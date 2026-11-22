@@ -24,6 +24,7 @@ from rfnry_engine import (
     RunStarted,
     Stop,
     ToolCall,
+    ToolCallStarted,
     Tools,
     Workspace,
     current_call,
@@ -54,6 +55,7 @@ NORTH_CAP = "N75-90/0"
 SECOND = 30
 DRAWN = 20
 GATE_TIMEOUT = 20.0
+LOG_TIMEOUT = 2.0
 FITS = 0.5
 WORKSPACE_TIMEOUT = 1800.0
 LOCK = 7_461_001
@@ -489,13 +491,18 @@ async def fail_left(board: Board, run_id: str) -> None:
 
 
 def gate(
-    opened: Opened, board: Board, spend: Spend, name: str, models: dict[str, Any] | None
+    opened: Opened,
+    board: Board,
+    spend: Spend,
+    name: str,
+    models: dict[str, Any] | None,
+    tasks: dict[str, str | None],
 ) -> Callable[[str, ToolCall], Any]:
     async def approve(agent: str, call: ToolCall) -> bool:
         deadline = asyncio.get_running_loop().time() + GATE_TIMEOUT
         found = current_call()
         run_id = "" if found is None else found.run_id
-        allowed, probability, error = False, None, None
+        allowed, probability, error, expired = False, None, None, False
         try:
             async with asyncio.timeout_at(deadline) as budget:
                 region = None if found is None else await board.claim_of(run_id)
@@ -505,6 +512,7 @@ def gate(
                     "args": call.args,
                     "run_id": run_id,
                     "region": region,
+                    "task": tasks.get(run_id),
                 }
                 decision = await opened.engine.run(
                     "gate", SCOPE, state, record=False, models=models
@@ -516,14 +524,11 @@ def gate(
                 await spend.decision(decision.model or "", decision.usage)
                 allowed = probability >= FITS
         except Exception as failed:
-            allowed = False
-            error = (
-                f"TimeoutError: survey: the gate's call took over {GATE_TIMEOUT:g}s"
-                if budget.expired()
-                else f"{type(failed).__name__}: {failed}"
-            )
+            allowed, expired = False, budget.expired()
+            error = "timeout" if expired else f"{type(failed).__name__}: {failed}"
+        writing = asyncio.timeout(LOG_TIMEOUT) if expired else asyncio.timeout_at(deadline)
         try:
-            async with asyncio.timeout_at(deadline):
+            async with writing:
                 await opened.pool.execute(
                     GATE_LOG, SCOPE, name, run_id, agent, call.name, allowed, probability, error
                 )
@@ -554,6 +559,8 @@ async def work(
 ) -> None:
     name = survey.name
     top: list[str] = []
+    tasks: dict[str, str | None] = {}
+    asked: dict[tuple[str, str], str | None] = {}
     try:
         stop = Stop()
         spend = Spend(opened.pool, SCOPE, name, cap, stop)
@@ -586,15 +593,22 @@ async def work(
         )
 
         async def on_event(event: Event) -> None:
+            if isinstance(event, ToolCallStarted) and event.tool == "Delegate":
+                started = event.args.get("input")
+                asked[(event.run_id, event.call_id)] = started if isinstance(started, str) else None
             if isinstance(event, RunStarted):
                 survey.live.add(event.run_id)
                 if event.call is None:
                     top.append(event.run_id)
+                    tasks[event.run_id] = given
+                else:
+                    tasks[event.run_id] = asked.pop((event.call.run_id, event.call.call_id), None)
             try:
                 await merge.on_event(event)
             finally:
                 if isinstance(event, RunEnded):
                     survey.live.discard(event.run_id)
+                    tasks.pop(event.run_id, None)
 
         provider_log.use(opened.pool, scope=SCOPE, survey=name)
         async with Workspace(
@@ -615,7 +629,7 @@ async def work(
                 workspace=workspace,
                 stop=stop,
                 tags={"survey": name},
-                approve=gate(opened, board, spend, name, models),
+                approve=gate(opened, board, spend, name, models, tasks),
                 models=models,
             )
         survey.reply = result.reply
@@ -632,9 +646,13 @@ async def work(
         try:
             board = Board(opened.pool, SCOPE, name, live=lambda _: False)
             await fail_left(board, top[0] if top else name)
-            await mark(opened.pool, name, "failed")
         except Exception:
-            logger.exception("survey: survey '%s' could not record how it failed", name)
+            logger.exception("survey: the regions of survey '%s' were not failed", name)
+        finally:
+            try:
+                await mark(opened.pool, name, "failed")
+            except Exception:
+                logger.exception("survey: survey '%s' could not be marked failed", name)
     finally:
         survey.live.clear()
         try:

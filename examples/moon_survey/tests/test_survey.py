@@ -426,6 +426,13 @@ async def test_a_gate_check_that_never_answers_is_refused_at_the_deadline(
     done = await asyncio.wait_for(harness.wait(name), 20)
     assert done["status"] == "done"
     assert done["counts"] == {"landed": 0, "failed": 4, "claimed": 0, "free": 0}
+    gated = await pool.fetch(
+        "select allowed, probability, error from gate_log where scope = 'moon' and survey = $1",
+        name,
+    )
+    assert gated and all(
+        (g["allowed"], g["probability"], g["error"]) == (False, None, "timeout") for g in gated
+    )
 
 
 async def test_a_region_the_merge_failed_is_not_failed_again_as_the_survey_ends(service, pool):
@@ -467,3 +474,55 @@ async def test_the_harness_refuses_to_open_without_bubblewrap(pool, engine_pool,
     with pytest.raises(harness.SurveyError, match="survey: bwrap was not found"):
         await harness.open(pool, engine_pool)
     assert harness.held is None
+
+
+class Recording(FakeGate):
+    def __init__(self):
+        super().__init__()
+        self.states = []
+
+    async def decide(self, state, questions):
+        self.states.append(state)
+        return await super().decide(state, questions)
+
+
+async def test_the_gate_sees_each_callers_task(service):
+    gate = Recording()
+    await service(gate=gate)
+    name = fresh()
+    walk = [r for share in moon.shares(25) for r in share][:2]
+    await harness.run(name, mode="fake", shape="crews", size=2, cap=2.0, crews=1)
+    assert (await ended(name))["status"] == "done"
+    assert gate.states and all(isinstance(state["task"], str) for state in gate.states)
+    by = {state["agent"]: [] for state in gate.states}
+    for state in gate.states:
+        by[state["agent"]].append(state)
+    assert {state["task"] for state in by["lead"]} == {harness.START}
+    assert [json.loads(state["task"])["share"] for state in by["captain"]] == [walk] * len(
+        by["captain"]
+    )
+    looked = [state for state in by["crosscheck_second"] if state["tool"] == "dossier"]
+    assert len(looked) == 2 and all(state["region"] is None for state in looked)
+    assert {state["task"] for state in looked} == {json.dumps({"region": r}) for r in walk}
+    assert all(json.loads(state["task"]) == {"region": state["args"]["region"]} for state in looked)
+    for state in by["surveyor"]:
+        assert json.loads(state["task"])["region"] in walk
+
+
+async def test_a_survey_whose_regions_cannot_be_failed_still_ends_failed(
+    service, pool, monkeypatch
+):
+    async def broken(board, run_id):
+        raise RuntimeError("board: the database went away")
+
+    monkeypatch.setattr(harness, "fail_left", broken)
+    await service(gate=FakeGate(down=True))
+    name = fresh()
+    await harness.run(name, mode="fake", shape="crews", size=2, cap=2.0)
+    done = await ended(name)
+    assert done["status"] == "failed"
+    assert done["error"] == "RuntimeError: board: the database went away"
+    stored = await pool.fetchval(
+        "select status from surveys where scope = 'moon' and survey = $1", name
+    )
+    assert stored == "failed"
