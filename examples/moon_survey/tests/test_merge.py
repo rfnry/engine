@@ -11,7 +11,7 @@ from rfnry_engine import Message as EngineMessage
 
 import moon
 from board import Board, create_survey
-from merge import PRICES, Merge, MergeError, Price, Spend, SpendError, export_map
+from merge import PRICES, Merge, Price, Spend, SpendError, export_map
 from moon import Value
 
 EXAMPLE = Path(__file__).resolve().parent.parent
@@ -64,8 +64,11 @@ class Fetches:
 
 
 class Flight:
+    def __init__(self):
+        self.gone = set()
+
     def __call__(self, run_id):
-        return True
+        return run_id not in self.gone
 
 
 def stub_measured(region):
@@ -86,7 +89,16 @@ def site(region, name="Apollo X", **values):
     }
 
 
-async def made(pool, scope, regions, truth=(), measured=stub_measured, fetches=None, places=None):
+async def made(
+    pool,
+    scope,
+    regions,
+    truth=(),
+    measured=stub_measured,
+    fetches=None,
+    places=None,
+    provider="anthropic",
+):
     await create_survey(pool, scope, "s", 5.0, set(), regions)
     board = Board(pool, scope, "s", live=Flight())
     places = places or Places()
@@ -97,7 +109,7 @@ async def made(pool, scope, regions, truth=(), measured=stub_measured, fetches=N
         truth=list(truth),
         measured=measured,
         problems=PROBLEMS,
-        provider=lambda agent: "fake",
+        provider=lambda agent: provider,
     )
     return board, places, merge
 
@@ -130,7 +142,7 @@ async def test_a_clean_dossier_lands(pool, scope, dossier):
     await merge.on_event(ended("a"))
     [row] = await board.landed(REGION)
     assert row["run_id"] == "a"
-    assert row["provider"] == "fake"
+    assert row["provider"] == "anthropic"
     assert row["simulated"] is False
     assert row["checks"] == {"problems": []}
     assert row["disputes"] == []
@@ -507,7 +519,7 @@ async def test_the_map_holds_every_measured_region_and_no_simulated_dossier(
     ]
     by = {r["region"]: r for r in found["regions"]}
     assert by[inside[0]]["dossier"]["region"] == inside[0]
-    assert by[inside[0]]["provider"] == "fake"
+    assert by[inside[0]]["provider"] == "anthropic"
     assert by[inside[1]]["dossier"] is None
     assert by[inside[1]]["data_check"] is None
     assert by[inside[1]]["measured"] == {
@@ -526,5 +538,81 @@ async def test_the_map_holds_every_measured_region_and_no_simulated_dossier(
     assert list(path.parent.iterdir()) == [path]
 
 
-def test_the_errors_name_their_module():
-    assert str(MergeError("merge: x")).startswith("merge: ")
+async def test_a_dossier_of_nested_brackets_fails_its_region_and_raises_nothing(pool, scope):
+    board, places, merge = await made(pool, scope, [REGION])
+    await board.claim(REGION, "a")
+    places.put("a", b"[" * 200_000)
+    await merge.on_event(ended("a"))
+    [found] = await failures(pool, scope)
+    assert found["reason"].startswith("merge: dossier.json cannot be checked: RecursionError")
+
+
+async def test_a_stopped_run_with_no_error_and_no_dossier_fails_its_region(pool, scope):
+    board, places, merge = await made(pool, scope, [REGION])
+    await board.claim(REGION, "a")
+    await merge.on_event(ended("a", stopped="now"))
+    [found] = await failures(pool, scope)
+    assert found["reason"] == "merge: no dossier.json"
+
+
+async def test_a_checker_that_raises_fails_its_region(pool, scope, dossier):
+    board, places, merge = await made(pool, scope, [REGION])
+    merge.problems = lambda found: 1 / 0
+    await board.claim(REGION, "a")
+    places.put("a", dossier)
+    await merge.on_event(ended("a"))
+    [found] = await failures(pool, scope)
+    assert "ZeroDivisionError" in found["reason"]
+
+
+async def test_a_fake_dossier_is_simulated_whatever_it_wrote(
+    pool, scope, dossier, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MOON_SURVEY_DATA", str(CUT))
+    board, places, merge = await made(pool, scope, [REGION], provider="fake")
+    await board.claim(REGION, "a")
+    places.put("a", dossier)
+    await merge.on_event(ended("a"))
+    [row] = await board.landed()
+    assert row["simulated"] is True
+    await export_map(board, tmp_path / "moon.json")
+    [shown] = json.loads((tmp_path / "moon.json").read_text())["regions"]
+    assert shown["dossier"] is None
+
+
+async def test_a_failed_attempts_crosscheck_dispute_does_not_reach_the_next_landing(
+    pool, scope, dossier
+):
+    board, places, merge = await made(pool, scope, [REGION])
+    flight = board.live
+    await board.claim(REGION, "a")
+    await board.note(REGION, "x", "dispute", "FeO: wrong")
+    await merge.on_event(ended("x", agent="crosscheck"))
+    await merge.on_event(ended("a"))
+    flight.gone.add("a")
+    await board.claim(REGION, "b")
+    places.put("b", dossier)
+    await merge.on_event(ended("b"))
+    [row] = await board.landed()
+    assert row["run_id"] == "b"
+    assert row["disputes"] == []
+    assert "disputed" not in row["dossier"]["values"]["FeO"]
+
+
+async def test_the_prompt_counts_cache_creation_toward_the_threshold(pool, scope):
+    spend = await spend_of(pool, scope)
+    await spend.reply(
+        scope,
+        "c",
+        reply("claude-haiku-5-5", input=50_000, cache_read=40_000, cache_creation=10_001),
+    )
+    assert spend.total == pytest.approx((50_000 * 0.50 + 40_000 * 0.05 + 10_001 * 0.625) / 1e6)
+
+
+async def test_two_exports_at_once_do_not_collide(pool, scope, tmp_path, monkeypatch):
+    monkeypatch.setenv("MOON_SURVEY_DATA", str(CUT))
+    board, places, merge = await made(pool, scope, sorted(moon.pixels_by_region(CUT))[:2])
+    path = tmp_path / "moon.json"
+    await asyncio.gather(export_map(board, path), export_map(board, path))
+    assert list(tmp_path.iterdir()) == [path]
+    assert len(json.loads(path.read_text())["regions"]) == 2

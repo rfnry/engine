@@ -1,6 +1,8 @@
 import asyncio
 import json
+import os
 import re
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,10 +32,6 @@ insert into spend (scope, survey, total) values ($1, $2, $3)
 on conflict (scope, survey) do update set total = spend.total + excluded.total
 returning total
 """
-
-
-class MergeError(Exception):
-    pass
 
 
 class SpendError(Exception):
@@ -92,7 +90,9 @@ class Spend:
 
     async def _add(self, model: str | None, usage: Usage) -> None:
         added = cost_of(model, usage)
-        self.total = await self.pool.fetchval(SPEND, self.scope, self.survey, added)
+        self.total = max(
+            self.total, await self.pool.fetchval(SPEND, self.scope, self.survey, added)
+        )
         if self.total >= self.cap and not self.pressed:
             self.pressed = True
             self.stop.after_step()
@@ -176,7 +176,7 @@ def truth_check(
 def disputed(dossier: dict[str, Any], name: str, reason: str) -> None:
     value = dossier["values"][name]
     earlier = value.get("disputed")
-    value["disputed"] = reason if earlier is None or reason in earlier else f"{earlier}; {reason}"
+    value["disputed"] = reason if earlier is None else f"{earlier}; {reason}"
     if "confidence" in value:
         value["confidence"] = "low"
 
@@ -211,7 +211,7 @@ class Merge:
         elif event.agent in ("crosscheck", "crosscheck_second"):
             await self.crosscheck(event)
 
-    async def read(self, run_id: str) -> tuple[dict[str, Any] | None, str | None]:
+    async def read(self, run_id: str, region: str) -> tuple[dict[str, Any] | None, str | None]:
         try:
             body = await self.sandboxes.read_at(run_id, DOSSIER, DOSSIER_LIMIT)
         except FileNotFoundError:
@@ -222,30 +222,38 @@ class Merge:
             dossier = json.loads(body)
         except ValueError as error:
             return None, f"merge: {DOSSIER} is not valid JSON: {error}"
-        problems = self.problems(dossier)
-        if problems:
-            return None, f"merge: {DOSSIER} fails its checks: {'; '.join(problems)}"
+        except Exception as error:
+            return None, f"merge: {DOSSIER} cannot be checked: {type(error).__name__}: {error}"
+        try:
+            problems = self.problems(dossier)
+            if problems:
+                return None, f"merge: {DOSSIER} fails its checks: {'; '.join(problems)}"
+            if dossier["region"] != region:
+                return None, (
+                    f"merge: {DOSSIER} is for region '{dossier['region']}'; the claim is '{region}'"
+                )
+        except Exception as error:
+            return None, f"merge: {DOSSIER} cannot be checked: {type(error).__name__}: {error}"
         return dossier, None
 
     async def surveyor(self, event: RunEnded) -> None:
         region = await self.board.claim_of(event.run_id)
         if region is None:
             return
-        dossier, reason = await self.read(event.run_id)
-        if dossier is not None and dossier["region"] != region:
-            reason = (
-                f"merge: {DOSSIER} is for region '{dossier['region']}'; the claim is '{region}'"
-            )
-        if reason is not None or dossier is None:
+        dossier, reason = await self.read(event.run_id, region)
+        if dossier is None:
             absent = reason == f"merge: no {DOSSIER}"
-            await self.board.fail(region, event.run_id, event.error or reason if absent else reason)
+            await self.board.fail(
+                region, event.run_id, event.error or reason or "" if absent else reason or ""
+            )
             return
         fetched = await self.fetches.urls(event.run_id)
+        provider = self.provider(event.agent)
         row = {
             "region": region,
             "run_id": event.run_id,
-            "provider": self.provider(event.agent),
-            "simulated": bool(dossier["simulated"]),
+            "provider": provider,
+            "simulated": bool(dossier["simulated"]) or provider == "fake",
             "dossier": marked(dossier, fetched),
             "checks": {"problems": []},
             "data_check": data_check(dossier, self.measured(region)),
@@ -253,10 +261,11 @@ class Merge:
             "disputes": [],
         }
         async with self.lock:
-            await self.board.land(row)
+            since = await self.board.claimed_at(event.run_id)
             for note in await self.board.notes(region):
-                if note["author"] in self.crosschecks:
-                    await self.attach(region, note["author"], [note])
+                if note["author"] in self.crosschecks and since is not None and note["at"] >= since:
+                    fold(row["dossier"], row["disputes"], note["author"], note)
+            await self.board.land(row)
 
     async def crosscheck(self, event: RunEnded) -> None:
         async with self.lock:
@@ -269,26 +278,34 @@ class Merge:
         [row] = await self.board.landed(region) or [None]
         if row is None:
             return
+        since = await self.board.claimed_at(row["run_id"])
         dossier, disputes = row["dossier"], list(row["disputes"])
         seen = {d["note"] for d in disputes}
         for note in notes:
-            if note["kind"] not in ("agree", "dispute") or note["id"] in seen:
-                continue
-            name, _, rest = note["text"].partition(":")
-            named = name in VALUES
-            reason = rest.strip() if named else note["text"]
-            disputes.append(
-                {
-                    "note": note["id"],
-                    "run_id": run_id,
-                    "kind": note["kind"],
-                    "name": name if named else None,
-                    "text": reason,
-                }
-            )
-            if named and note["kind"] == "dispute":
-                disputed(dossier, name, reason)
+            if note["id"] not in seen and since is not None and note["at"] >= since:
+                fold(dossier, disputes, run_id, note)
         await self.board.update_landed(region, dossier=dossier, disputes=disputes)
+
+
+def fold(
+    dossier: dict[str, Any], disputes: list[dict[str, Any]], run_id: str, note: dict[str, Any]
+) -> None:
+    if note["kind"] not in ("agree", "dispute"):
+        return
+    name, _, rest = note["text"].partition(":")
+    named = name in VALUES
+    reason = rest.strip() if named else note["text"]
+    disputes.append(
+        {
+            "note": note["id"],
+            "run_id": run_id,
+            "kind": note["kind"],
+            "name": name if named else None,
+            "text": reason,
+        }
+    )
+    if named and note["kind"] == "dispute":
+        disputed(dossier, name, reason)
 
 
 def bounds_of(region: moon.Region) -> dict[str, float]:
@@ -325,9 +342,13 @@ async def export_map(board: Board, path: Path) -> None:
         "regions": regions,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_name(f"{path.name}.part")
+    handle, name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".part")
+    partial = Path(name)
     try:
-        partial.write_text(json.dumps(body, indent=2) + "\n")
+        with os.fdopen(handle, "w") as out:
+            out.write(json.dumps(body, indent=2) + "\n")
+            out.flush()
+            os.fsync(out.fileno())
         partial.replace(path)
     except BaseException:
         partial.unlink(missing_ok=True)

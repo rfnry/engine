@@ -160,7 +160,7 @@ async def test_save_writes_into_the_callers_sandbox_only(caller, tmp_path):
 async def test_a_save_path_leaving_the_sandbox_is_refused(caller, tmp_path, bad):
     tool = tool_of(web_over(lambda request: ok()), tmp_path)
     with pytest.raises(
-        FetchError, match=f"fetch: save must be a path inside your sandbox; got '{bad}'"
+        FetchError, match=f"fetch: save must be a path inside your sandbox; got '{re.escape(bad)}'"
     ):
         await caller(tool, {"url": "https://arxiv.org/a", "save": bad})
     assert not (tmp_path / "x").exists()
@@ -218,7 +218,7 @@ async def test_a_symlink_swapped_in_during_the_fetch_is_not_written_through(call
         return ok(b"page")
 
     tool = tool_of(web_over(swap), tmp_path)
-    with pytest.raises(FetchError, match=f"^fetch: could not write '{save}': .*outside"):
+    with pytest.raises(FetchError, match=f"^fetch: could not write '{re.escape(save)}': .*outside"):
         await caller(tool, {"url": "https://arxiv.org/a", "save": save})
     assert (outside / "notes.txt").read_text() == "mine"
     assert sorted(p.name for p in outside.iterdir()) == ["notes.txt"]

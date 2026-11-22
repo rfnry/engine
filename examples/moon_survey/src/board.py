@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 import asyncpg
@@ -153,6 +154,15 @@ class Board:
     async def claim_of(self, run_id: str) -> str | None:
         return await self.pool.fetchval(
             "select region from claims where scope = $1 and survey = $2 and run_id = $3"
+            " order by at desc, region limit 1",
+            self.scope,
+            self.survey,
+            run_id,
+        )
+
+    async def claimed_at(self, run_id: str) -> datetime | None:
+        return await self.pool.fetchval(
+            "select at from claims where scope = $1 and survey = $2 and run_id = $3"
             " order by at desc, region limit 1",
             self.scope,
             self.survey,
