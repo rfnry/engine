@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -222,18 +223,72 @@ async def test_a_decision_helper_keeps_no_conversation(started: str, tmp_path: P
     run = await lead(Engine(switching(tmp_path), providers=providers), store)
     desk, switch = sorted(run.children, key=lambda child: child.agent)
     assert isinstance(desk, Decision) and isinstance(switch, Decision)
-    assert isinstance(switch.routed_to, Generation) and switch.routed_to.reply == "talked"
-    assert keys(store) == {"c1"} and set(store.held) == {KEY}
+    routed = switch.routed_to
+    assert isinstance(routed, Generation) and routed.reply == "talked"
+    below = "c1/d2" if started == "background" else f"c1/{switch.run_id}"
+    assert kept(store, below, routed)
+    assert keys(store) == {"c1", below} and set(store.held) == {KEY, at(below)}
 
 
-@pytest.mark.parametrize("taken", ["kept", "in-flight"])
-async def test_a_helper_moves_past_a_key_already_in_use(taken: str, tmp_path: Path) -> None:
+def routed_by(started: str, text: str) -> Reply:
+    extra = {"background": True} if started == "background" else {}
+    call = ToolCall(id="s1", name="Delegate", args={"agent": "switch", "input": text, **extra})
+    return Reply(tool_calls=[call], stop_reason="tool_use")
+
+
+@pytest.mark.parametrize("started", ["background", "synchronous"])
+async def test_a_delegated_router_s_routed_run_keeps_its_conversation_under_the_router_s_key(
+    started: str, tmp_path: Path
+) -> None:
+    store = MemoryStore()
+    model = Crew(
+        [routed_by(started, "routed"), *[text_reply("waiting")] * 3],
+        {"routed": [text_reply("talked")]},
+    )
+    providers = provided({"crew": model, "judge": Answering(), "switch": Talking()})
+    engine = Engine(switching(tmp_path), providers=providers)
+    run = await lead(engine, store)
+    [switch] = run.children
+    assert isinstance(switch, Decision)
+    routed = switch.routed_to
+    assert isinstance(routed, Generation) and routed.parent_run_id == switch.run_id
+    below = "c1/d1" if started == "background" else f"c1/{switch.run_id}"
+    assert kept(store, below, routed) and keys(store) == {"c1", below}
+    assert engine._conversations == set()
+
+
+async def test_a_routing_decision_helper_moves_past_a_key_already_in_use(tmp_path: Path) -> None:
+    store = MemoryStore()
+    old = [Message(role="user", content="old")]
+    store.held[at("c1/d1")] = list(old)
+    model = Crew(
+        [routed_by("background", "routed"), *[text_reply("waiting")] * 3],
+        {"routed": [text_reply("talked")]},
+    )
+    providers = provided({"crew": model, "judge": Answering(), "switch": Talking()})
+    run = await lead(Engine(switching(tmp_path), providers=providers), store)
+    assert [step.result for step in run.steps] == ['{"job": "d2"}']
+    switch = jobs(run)["d2"]
+    assert isinstance(switch, Decision) and isinstance(switch.routed_to, Generation)
+    assert store.held[at("c1/d1")] == old and kept(store, "c1/d2", switch.routed_to)
+
+
+async def test_a_helper_moves_past_a_key_the_store_holds(tmp_path: Path) -> None:
+    store = MemoryStore()
+    old = [Message(role="user", content="old"), Message(role="assistant", content="old")]
+    store.held[at("c1/d1")] = list(old)
+    model = Crew(
+        [background("part one"), *[text_reply("waiting")] * 3], {"part one": [text_reply("one")]}
+    )
+    run = await lead(team(crew(tmp_path, background=True), model), store)
+    assert [step.result for step in run.steps] == ['{"job": "d2"}']
+    assert store.held[at("c1/d1")] == old and kept(store, "c1/d2", jobs(run)["d2"])
+
+
+async def test_a_helper_moves_past_a_key_a_run_in_flight_holds(tmp_path: Path) -> None:
     store, hold = MemoryStore(), asyncio.Event()
     model = Crew(
-        [
-            background("part one") if taken == "kept" else background("part one", "part two"),
-            *[text_reply("waiting")] * 3,
-        ],
+        [background("part one", "part two"), *[text_reply("waiting")] * 3],
         {
             "part one": [text_reply("one")],
             "part two": [text_reply("two")],
@@ -241,13 +296,6 @@ async def test_a_helper_moves_past_a_key_already_in_use(taken: str, tmp_path: Pa
         },
     )
     engine = team(crew(tmp_path, background=True), model)
-    if taken == "kept":
-        old = [Message(role="user", content="old"), Message(role="assistant", content="old")]
-        store.held[at("c1/d1")] = list(old)
-        run = await lead(engine, store)
-        assert [step.result for step in run.steps] == ['{"job": "d2"}']
-        assert store.held[at("c1/d1")] == old and kept(store, "c1/d2", jobs(run)["d2"])
-        return
     there = asyncio.create_task(
         engine.run("worker", "acme", "elsewhere", store=store, conversation="c1/d2")
     )
@@ -344,7 +392,7 @@ async def test_a_lead_whose_store_raises_stops_its_helpers_and_fails(tmp_path: P
     assert isinstance(helper, Generation) and helper.stopped == "now"
     assert store.held[at("c1/d1")] == stored == helper.conversation
     assert store.held[KEY] == held == failure.conversation[: len(held)]
-    assert store.log[-1] == ("append", "acme", "c1")
+    assert store.log[-1] == ("append", "acme", "c1") and engine._conversations == set()
 
 
 @pytest.mark.parametrize("started", ["background", "synchronous"])
@@ -391,6 +439,7 @@ async def test_a_store_error_while_a_helper_starts_fails_the_lead(
     assert store.held[KEY] == failure.conversation
     assert store.log[-1] == ("length", "acme", "c1/d1") and keys(store) == {"c1", "c1/d1"}
     assert store.log.count(("length", "acme", "c1/d1")) == 1 and caplog.records == []
+    assert engine._conversations == set()
 
 
 class Miscounted(MemoryStore):
@@ -407,25 +456,37 @@ class Miscounted(MemoryStore):
 
 @pytest.mark.parametrize("length", [-1, True, "3", 2.0])
 async def test_a_helper_key_s_length_that_is_not_a_whole_number_fails_the_lead(
-    length: object, tmp_path: Path
+    length: object, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     store, kept_runs = Miscounted(length), Kept()
-    model = Crew([background("part one"), text_reply("never")], {"part one": [text_reply("never")]})
+    model = Crew(
+        [background("part one", "part two"), text_reply("never")],
+        {"part one": [text_reply("never")], "part two": [text_reply("never")]},
+    )
     engine = team(crew(tmp_path, background=True), model, refinery=kept_runs)
     wrong = f"conversation: the store's length of conversation 'c1/d1' must be a whole number from 0; got {length!r}"
-    with pytest.raises(InputError) as caught:
+    with (
+        caplog.at_level(logging.ERROR, logger="rfnry_engine.engine"),
+        pytest.raises(InputError) as caught,
+    ):
         await lead(engine, store)
-    assert str(caught.value) == wrong and model.calls["part one"] == []
+    assert str(caught.value) == wrong
+    assert model.calls["part one"] == model.calls["part two"] == []
     [failure] = kept_runs.runs
     assert isinstance(failure, Generation) and failure.steps == [] and failure.children == []
-    assert store.held[KEY] == failure.conversation
+    assert store.held[KEY] == failure.conversation and keys(store) == {"c1", "c1/d1"}
+    assert store.log.count(("length", "acme", "c1/d1")) == 1 and caplog.records == []
+    assert engine._conversations == set()
 
 
+@pytest.mark.parametrize("failing", ["raises", "not-a-number"])
 async def test_a_store_error_is_what_its_lead_raises_when_another_call_of_the_batch_fails(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    failing: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    error, broken = OSError("disk full"), ValueError("the handler broke")
-    store = Below("length", error)
+    broken = ValueError("the handler broke")
+    store: MemoryStore = Below("length", OSError("disk full"))
+    if failing == "not-a-number":
+        store = Miscounted(-1)
 
     async def on_event(event: object) -> None:
         if isinstance(event, ToolCallStarted) and event.call_id == "b1":
@@ -435,10 +496,11 @@ async def test_a_store_error_is_what_its_lead_raises_when_another_call_of_the_ba
     engine = team(crew(tmp_path, background=True), model)
     with (
         caplog.at_level(logging.ERROR, logger="rfnry_engine.engine"),
-        pytest.raises(OSError) as caught,
+        pytest.raises((OSError, InputError, ValueError)) as caught,
     ):
         await lead(engine, store, on_event=on_event)
-    assert caught.value is error and model.calls["part two"] == []
+    error = OSError if failing == "raises" else InputError
+    assert type(caught.value) is error and model.calls["part two"] == []
     [line] = caplog.records
     assert line.getMessage() == "engine: a further call of the same batch failed: the handler broke"
     assert line.exc_info is not None and line.exc_info[1] is broken
@@ -500,3 +562,86 @@ async def test_helpers_of_one_batch_are_checked_and_started_one_at_a_time(
         )
         assert model.calls["part two"] == []
     assert store.held[at("c1/d2")] == [Message(role="user", content="old")]
+
+
+class Crowded(MemoryStore):
+    def __init__(self, stop: Stop) -> None:
+        super().__init__()
+        self.stop, self.asked = stop, 0
+
+    async def length(self, scope: str, conversation: str) -> int:
+        if conversation == "c1":
+            return await super().length(scope, conversation)
+        self.asked += 1
+        if self.asked == 50:
+            self.stop.now()
+        return 1 if self.asked < 100_000 else 0
+
+
+async def test_a_stop_lands_while_its_lead_passes_over_keys_in_use(tmp_path: Path) -> None:
+    stop = Stop()
+    store = Crowded(stop)
+    model = Crew([background("part one"), text_reply("never")], {"part one": [text_reply("never")]})
+    engine = team(crew(tmp_path, background=True), model)
+    before = asyncio.all_tasks()
+    run = await asyncio.wait_for(lead(engine, store, stop=stop), 30)
+    assert run.stopped == "now" and run.steps[0].result == "stopped by the user"
+    assert run.children == [] and model.calls["part one"] == [] and store.asked < 100
+    assert store.held[KEY] == run.conversation and engine._conversations == set()
+    assert pending(before) == []
+
+
+class Racing(MemoryStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.race: Callable[[], Awaitable[Any]] | None = None
+        self.raced: asyncio.Future[Any] | None = None
+
+    async def length(self, scope: str, conversation: str) -> int:
+        if conversation == "c1/d1" and self.race is not None and self.raced is None:
+            self.raced = asyncio.ensure_future(self.race())
+        return await super().length(scope, conversation)
+
+
+async def test_no_run_takes_a_helper_s_key_between_its_check_and_its_start(
+    tmp_path: Path,
+) -> None:
+    store = Racing()
+    model = Crew(
+        [background("part one"), *[text_reply("waiting")] * 3],
+        {"part one": [text_reply("one")], "elsewhere": [text_reply("there")]},
+    )
+    engine = team(crew(tmp_path, background=True), model)
+    store.race = lambda: engine.run(
+        "worker", "acme", "elsewhere", store=store, conversation="c1/d1"
+    )
+    run = await lead(engine, store)
+    assert store.raced is not None
+    in_use = "engine: conversation 'c1/d1' of scope 'acme' is in use by a run in flight"
+    with pytest.raises(InputError, match=f"^{in_use}$"):
+        await store.raced
+    assert kept(store, "c1/d1", jobs(run)["d1"]) and model.calls["elsewhere"] == []
+    assert engine._conversations == set()
+
+
+class Cancelling(MemoryStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.work: asyncio.Task[Any] | None = None
+
+    async def length(self, scope: str, conversation: str) -> int:
+        if conversation == "c1/d1" and self.work is not None:
+            self.work.cancel()
+        return await super().length(scope, conversation)
+
+
+async def test_a_helper_that_never_starts_gives_its_key_back(tmp_path: Path) -> None:
+    store = Cancelling()
+    model = Crew([background("part one"), text_reply("never")], {"part one": [text_reply("never")]})
+    engine = team(crew(tmp_path, background=True), model)
+    before = asyncio.all_tasks()
+    store.work = asyncio.create_task(lead(engine, store))
+    with pytest.raises(asyncio.CancelledError):
+        await store.work
+    assert model.calls["part one"] == [] and at("c1/d1") not in store.held
+    assert engine._conversations == set() and pending(before) == []

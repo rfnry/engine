@@ -168,6 +168,7 @@ class _Options:
     store: ConversationStore | None = None
     key: str | None = None
     written: set[str] = field(default_factory=set)
+    claimed: bool = False
 
 
 @dataclass
@@ -1423,7 +1424,12 @@ class Engine:
         claimed: tuple[str, str] | None = None
         try:
             self._open()
-            if kind == "generation" and options.store is not None and options.key is not None:
+            if (
+                kind == "generation"
+                and options.store is not None
+                and options.key is not None
+                and not options.claimed
+            ):
                 claimed = self._claimed(scope, options.key)
             reach = folder_reach(spec.max_depth)
             async with enter(spec.name, _lowered(reach, self.max_depth), reach, routed=routed):
@@ -1773,6 +1779,7 @@ class Engine:
             failed: list[Generation | Decision],
             lead: tuple[Helper, Helpers] | None,
             key: str | None,
+            claimed: bool = False,
         ) -> _Options:
             return replace(
                 options,
@@ -1788,17 +1795,28 @@ class Engine:
                 lead=lead,
                 store=None if key is None else options.store,
                 key=key,
+                claimed=claimed,
             )
 
         def keyed(target: AgentSpec, below: str) -> str | None:
-            if conversation is None or target.kind != "generation":
+            if conversation is None or (target.kind != "generation" and target.route is None):
                 return None
             return f"{conversation.key}/{below}"
 
-        async def taken(key: str | None) -> bool:
+        async def claim(key: str | None) -> bool:
             if conversation is None or key is None:
+                return True
+            held = (scope, key)
+            if held in self._conversations:
                 return False
-            return (scope, key) in self._conversations or await conversation.used(key)
+            self._conversations.add(held)
+            free = False
+            try:
+                free = not await conversation.used(key)
+            finally:
+                if not free:
+                    self._conversations.discard(held)
+            return free
 
         async def begin(
             target: AgentSpec, args: DelegateArgs
@@ -1811,35 +1829,47 @@ class Engine:
                     questions = _asked(target, args.questions)
                 except Exception as exc:
                     return error_text(exc), True, None, False
-                while await taken(keyed(target, helpers.upcoming())):
+                while not await claim(key := keyed(target, helpers.upcoming())):
                     helpers.skip()
-                return launch(target, args, questions)
+                    await asyncio.sleep(0)
+                return launch(target, args, questions, key)
 
         def launch(
-            target: AgentSpec, args: DelegateArgs, questions: dict[str, Question]
+            target: AgentSpec, args: DelegateArgs, questions: dict[str, Question], key: str | None
         ) -> tuple[Content, bool, str | None, bool]:
             failed: list[Generation | Decision] = []
+            claimed = None if key is None else (scope, key)
+
+            def release() -> None:
+                nonlocal claimed
+                if claimed is not None:
+                    self._conversations.discard(claimed)
+                    claimed = None
 
             async def run(helper: Helper) -> Generation | Decision | None:
-                if kind == "decision" and requested(helper.stop) == "now":
-                    return None
-                forwarded = forward(
-                    questions,
-                    helper.stop,
-                    helper.inbox,
-                    failed,
-                    (helper, helpers),
-                    keyed(target, helper.job),
-                )
-                running = self._run(
-                    target, scope, args.input, forwarded, run_id, run_id=helper.run_id
-                )
                 try:
-                    return await self._owned(target, helper.stop, running)
-                except Exception:
-                    if not failed:
-                        raise
-                    return failed[-1]
+                    if kind == "decision" and requested(helper.stop) == "now":
+                        return None
+                    forwarded = forward(
+                        questions,
+                        helper.stop,
+                        helper.inbox,
+                        failed,
+                        (helper, helpers),
+                        key,
+                        claimed=key is not None,
+                    )
+                    running = self._run(
+                        target, scope, args.input, forwarded, run_id, run_id=helper.run_id
+                    )
+                    try:
+                        return await self._owned(target, helper.stop, running)
+                    except Exception:
+                        if not failed:
+                            raise
+                        return failed[-1]
+                finally:
+                    release()
 
             kind: Literal["generation", "decision"] = (
                 "generation" if target.kind == "generation" else "decision"
@@ -1853,6 +1883,7 @@ class Engine:
             def gone(_: object) -> None:
                 self._running.pop(held, None)
                 helper.stop._drop()
+                release()
 
             helper.task.add_done_callback(gone)
             return json.dumps({"job": helper.job}), False, helper.run_id, False

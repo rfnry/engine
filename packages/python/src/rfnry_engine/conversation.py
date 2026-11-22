@@ -54,11 +54,10 @@ class Conversation:
         if self.failed is not None:
             raise self.failed
         try:
-            length = await self.store.length(self.scope, key)
+            return _measured(key, await self.store.length(self.scope, key)) > 0
         except Exception as exc:
             self.failed = exc
             raise
-        return _measured(key, length) > 0
 
     async def window(self, length: int) -> int:
         start = await self._called(self.store.window, length)
