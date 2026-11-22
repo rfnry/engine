@@ -1,9 +1,11 @@
+import asyncio
 import json
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
 import asyncpg
+from asyncpg.pool import PoolConnectionProxy
 from rfnry_engine import Tool, Tools, current_call
 
 import moon
@@ -40,6 +42,9 @@ select 1 from claims where scope = $1 and survey = $2 and region = $3 for update
 """
 
 
+Executor = asyncpg.Pool | asyncpg.Connection | PoolConnectionProxy
+
+
 class BoardError(Exception):
     pass
 
@@ -52,25 +57,79 @@ def checked_region(region: str) -> moon.Region:
 
 
 async def create_survey(
-    pool: asyncpg.Pool,
+    db: Executor,
     scope: str,
     survey: str,
     cap: float,
     second: set[str],
     regions: list[str],
+    *,
+    mode: str,
+    shape: str,
+    crews: int,
+    status: str,
 ) -> None:
-    await pool.execute(
+    await db.execute(
         """
-        insert into surveys (scope, survey, cap, second, regions) values ($1, $2, $3, $4, $5)
+        insert into surveys (scope, survey, cap, second, regions, mode, shape, crews, status)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         on conflict (scope, survey) do update
-        set cap = excluded.cap, second = excluded.second, regions = excluded.regions
+        set cap = excluded.cap, second = excluded.second, regions = excluded.regions,
+            mode = excluded.mode, shape = excluded.shape, crews = excluded.crews,
+            status = excluded.status
         """,
         scope,
         survey,
         cap,
         json.dumps(sorted(second)),
         json.dumps(list(regions)),
+        mode,
+        shape,
+        crews,
+        status,
     )
+
+
+async def read_survey(db: Executor, scope: str, survey: str) -> tuple[set[str], list[str]]:
+    found = await db.fetchrow(SURVEY, scope, survey)
+    if found is None:
+        raise BoardError(f"board: survey '{survey}' does not exist")
+    return set(json.loads(found["second"])), json.loads(found["regions"])
+
+
+async def write_note(
+    db: Executor, scope: str, survey: str, region: str, author: str, kind: str, text: str
+) -> int:
+    if kind not in KINDS:
+        raise BoardError(f"board: kind must be one of {', '.join(KINDS)}; got '{kind}'")
+    checked_region(region)
+    _, regions = await read_survey(db, scope, survey)
+    if region not in regions:
+        raise BoardError(f"board: region '{region}' is not in survey '{survey}'")
+    return await db.fetchval(
+        "insert into notes (scope, survey, region, author, kind, text)"
+        " values ($1, $2, $3, $4, $5, $6) returning id",
+        scope,
+        survey,
+        region,
+        author,
+        kind,
+        text,
+    )
+
+
+def measured_of(region: str) -> dict[str, dict[str, Any] | None]:
+    return {
+        name: None
+        if value is None
+        else {
+            "mean": value.mean,
+            "error": value.error,
+            "pixels": value.pixels,
+            "unit": moon.UNITS[name],
+        }
+        for name, value in moon.measured(region).items()
+    }
 
 
 class Board:
@@ -83,10 +142,7 @@ class Board:
         self.live = live
 
     async def _survey(self) -> tuple[set[str], list[str]]:
-        found = await self.pool.fetchrow(SURVEY, self.scope, self.survey)
-        if found is None:
-            raise BoardError(f"board: survey '{self.survey}' does not exist")
-        return set(json.loads(found["second"])), json.loads(found["regions"])
+        return await read_survey(self.pool, self.scope, self.survey)
 
     async def regions(self) -> list[str]:
         return (await self._survey())[1]
@@ -196,19 +252,15 @@ class Board:
             )
 
     async def note(self, region: str, author: str, kind: str, text: str) -> int:
-        if kind not in KINDS:
-            raise BoardError(f"board: kind must be one of {', '.join(KINDS)}; got '{kind}'")
-        await self._inside(region)
-        return await self.pool.fetchval(
-            "insert into notes (scope, survey, region, author, kind, text)"
-            " values ($1, $2, $3, $4, $5, $6) returning id",
+        return await write_note(self.pool, self.scope, self.survey, region, author, kind, text)
+
+    async def failed(self) -> set[str]:
+        rows = await self.pool.fetch(
+            "select distinct region from failures where scope = $1 and survey = $2",
             self.scope,
             self.survey,
-            region,
-            author,
-            kind,
-            text,
         )
+        return {row["region"] for row in rows}
 
     async def _notes(self, column: str, value: str) -> list[dict[str, Any]]:
         rows = await self.pool.fetch(
@@ -356,6 +408,16 @@ def board_tools(board: Board) -> Tools:
             "crosscheck": "crosscheck_second" if found.id in second else "crosscheck",
         }
 
+    async def dossier(args: dict[str, Any]) -> dict[str, Any]:
+        caller()
+        found = checked_region(args["region"])
+        [row] = await board.landed(found.id) or [None]
+        return {
+            "region": found.id,
+            "landed": None if row is None else row["dossier"],
+            "measured": await asyncio.to_thread(measured_of, found.id),
+        }
+
     named = {
         "type": "object",
         "properties": {"region": {"type": "string", "description": "A region id, such as R17"}},
@@ -396,6 +458,14 @@ def board_tools(board: Board) -> Tools:
                 "Read a region's bounds, centre, neighbouring regions and the crosscheck"
                 " agent that checks it.",
                 body=region,
+                input_schema=named,
+            ),
+            Tool(
+                "dossier",
+                "Read the dossier landed for a region, null before one lands, beside the region's"
+                " measured values from the Lunar Prospector data, each with its error, pixel count"
+                " and unit.",
+                body=dossier,
                 input_schema=named,
             ),
         ]

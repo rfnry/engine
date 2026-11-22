@@ -99,7 +99,9 @@ async def made(
     places=None,
     provider="anthropic",
 ):
-    await create_survey(pool, scope, "s", 5.0, set(), regions)
+    await create_survey(
+        pool, scope, "s", 5.0, set(), regions, mode="fake", shape="crews", crews=1, status="running"
+    )
     board = Board(pool, scope, "s", live=Flight())
     places = places or Places()
     merge = Merge(

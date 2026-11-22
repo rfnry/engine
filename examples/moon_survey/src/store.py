@@ -14,6 +14,7 @@ BRIEF = (
     asyncpg.DeadlockDetectedError,
     OSError,
 )
+SIZE = 80_000
 FIRST_WAIT = 0.05
 LAST_WAIT = 1.0
 
@@ -78,7 +79,7 @@ class Store:
         self,
         pool: asyncpg.Pool,
         *,
-        size: int = 80_000,
+        size: int = SIZE,
         keep: float = 1 / 3,
         attempts: int = 4,
         on_reply: OnReply | None = None,

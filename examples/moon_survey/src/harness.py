@@ -12,6 +12,8 @@ from typing import Any
 
 import asyncpg
 import httpx
+import yaml
+from asyncpg.pool import PoolConnectionProxy
 from rfnry_engine import (
     CheckAnswer,
     Engine,
@@ -28,12 +30,12 @@ from rfnry_engine import (
 )
 
 import moon
-from board import Board, board_tools, create_survey
+from board import Board, board_tools, create_survey, write_note
 from fakes import FakeGate, Limits, Profile, fakes
 from merge import Merge, Spend, map_of
 from providers import GEMINI_PER_MINUTE, anthropic, gemini, provider_log, typesafe
 from sandbox import Sandboxes
-from store import Store
+from store import SIZE, Store
 from tools import FakeWeb, FetchLog, Web, fetch_tool
 
 EXAMPLE = Path(__file__).resolve().parent.parent
@@ -44,6 +46,7 @@ TRUTH = EXAMPLE / "data" / "truth.json"
 CHECK = AGENTS / "surveyor" / "skills" / "dossier" / "check.py"
 SCOPE = "moon"
 MODES = ("fake", "real", "hostile")
+SHAPES = ("crews", "flat", "app")
 TOP = {"crews": "lead", "flat": "flat"}
 PROVIDERS = {"anthropic": anthropic, "gemini": gemini, "typesafe": typesafe}
 CREW = 25
@@ -56,10 +59,11 @@ WORKSPACE_TIMEOUT = 1800.0
 LOCK = 7_461_001
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 ENDED = "the survey ended without it"
+START = "start the survey"
 RESTARTED = "the process restarted; carry on"
 WHY = {
     "stopped": "the survey stopped at its spending cap; carry on",
-    "ended": "the survey ended before these regions landed; carry on",
+    "done": "the survey ended before these regions landed; carry on",
     "failed": "the survey failed before these regions landed; carry on",
 }
 PLANTED = (
@@ -73,7 +77,11 @@ PAGES = {
         b" spectrometers, in 2 degree pixels.</p></body></html>",
     ),
 }
-SURVEY = "select cap, mode, shape, crews from surveys where scope = $1 and survey = $2"
+SURVEY = """
+select cap, mode, shape, crews, status from surveys where scope = $1 and survey = $2
+"""
+SPENT = "select total from spend where scope = $1 and survey = $2"
+MARK = "update surveys set status = $3 where scope = $1 and survey = $2"
 GATE_LOG = """
 insert into gate_log (scope, survey, run_id, agent, tool, allowed, probability, error)
 values ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -95,6 +103,7 @@ class Settings:
     per_minute: int | None = GEMINI_PER_MINUTE
     account: int | None = None
     gate: FakeGate | None = None
+    size: int = SIZE
 
 
 @dataclass
@@ -102,7 +111,6 @@ class Survey:
     name: str
     mode: str
     shape: str
-    status: str = "idle"
     task: asyncio.Task[None] | None = None
     error: str | None = None
     reply: str | None = None
@@ -123,8 +131,11 @@ class Opened:
     settings: Settings
     problems: Callable[[Any], list[str]]
     truth: list[dict[str, Any]]
+    crews: int
+    share: int
     surveys: dict[str, Survey] = field(default_factory=dict)
     last: str | None = None
+    starting: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def model_of(self, agent: str) -> str:
         return self.engine.models[self.engine.agents[agent].model].model or agent
@@ -142,6 +153,11 @@ def checker() -> Callable[[Any], list[str]]:
     return module.problems
 
 
+def background_of(agent: str) -> int:
+    folder = yaml.safe_load((AGENTS / "rfnry.yaml").read_text(encoding="utf-8"))
+    return int(folder["agents"][agent]["orchestration"]["max_background"])
+
+
 async def open(
     app_pool: asyncpg.Pool, engine_pool: asyncpg.Pool, settings: Settings | None = None
 ) -> None:
@@ -154,6 +170,7 @@ async def open(
         raise SurveyError("survey: bwrap was not found; install bubblewrap", 503)
     problems = checker()
     truth = json.loads(TRUTH.read_text(encoding="utf-8"))
+    crews, share = background_of("lead"), background_of("captain")
     refinery = Refinery(PostgresStorage(engine_pool))
     await refinery.check()
     engine = Engine(
@@ -174,6 +191,8 @@ async def open(
         settings=settings,
         problems=problems,
         truth=truth,
+        crews=crews,
+        share=share,
     )
 
 
@@ -200,7 +219,7 @@ def here() -> Opened:
     return held
 
 
-def checked_name(name: str) -> str:
+def checked_name(name: Any) -> str:
     if not isinstance(name, str) or not NAME.fullmatch(name):
         raise SurveyError(
             "survey: a name is 1 to 64 letters, digits, '.', '_' or '-', starting with a letter"
@@ -209,7 +228,7 @@ def checked_name(name: str) -> str:
     return name
 
 
-def checked_cap(cap: float) -> float:
+def checked_cap(cap: Any) -> float:
     if isinstance(cap, bool) or not isinstance(cap, int | float) or not math.isfinite(cap):
         raise SurveyError(f"survey: cap must be a number of dollars; got {cap!r}")
     if cap <= 0:
@@ -221,24 +240,26 @@ def walk() -> list[str]:
     return [region for share in moon.shares(CREW) for region in share]
 
 
-def chosen(size: int, regions: list[str] | None) -> list[str]:
+def chosen(size: Any, regions: Any) -> list[str]:
     if regions is None:
         found = walk()
         if isinstance(size, bool) or not isinstance(size, int) or not 1 <= size <= len(found):
             raise SurveyError(f"survey: size must be from 1 to {len(found)}; got {size!r}")
         return found[:size]
+    if not isinstance(regions, list) or not all(isinstance(r, str) for r in regions):
+        raise SurveyError(f"survey: regions must be a list of region ids; got {regions!r}")
     if not regions:
         raise SurveyError("survey: regions must name at least one region")
     unknown = [r for r in regions if r not in moon.by_id()]
     if unknown:
-        raise SurveyError(f"survey: these regions do not exist: {', '.join(map(str, unknown))}")
+        raise SurveyError(f"survey: these regions do not exist: {', '.join(unknown)}")
     twice = sorted({r for r in regions if regions.count(r) > 1})
     if twice:
         raise SurveyError(f"survey: these regions are named twice: {', '.join(twice)}")
     return list(regions)
 
 
-def crews_of(count: int, crews: int | None) -> int:
+def crews_of(count: int, crews: Any) -> int:
     if crews is None:
         crews = max(2, math.ceil(count / CREW))
     if isinstance(crews, bool) or not isinstance(crews, int) or crews < 1:
@@ -256,6 +277,24 @@ def split(regions: list[str], crews: int) -> list[list[str]]:
     return shares
 
 
+def fitted(opened: Opened, shape: str, regions: list[str], crews: Any) -> list[list[str]]:
+    shares = split(regions, crews_of(len(regions), crews))
+    if shape != "crews":
+        return shares
+    asked = len(shares) if crews is None else crews
+    if asked > opened.crews:
+        raise SurveyError(
+            f"survey: crews must be at most {opened.crews}, the lead's max_background; got {asked}"
+        )
+    largest = max(len(share) for share in shares)
+    if largest > opened.share:
+        raise SurveyError(
+            f"survey: a share of {largest} regions is over the captain's max_background of"
+            f" {opened.share}; give the survey more crews"
+        )
+    return shares
+
+
 def second_of(name: str, regions: list[str], truth: list[dict[str, Any]]) -> set[str]:
     known = {site["region"] for site in truth} | {NORTH_CAP}
     fixed = [r for r in regions if r in known]
@@ -264,7 +303,7 @@ def second_of(name: str, regions: list[str], truth: list[dict[str, Any]]) -> set
     return set(fixed) | set(drawn)
 
 
-async def lock(pool: asyncpg.Pool, name: str) -> Any:
+async def lock(pool: asyncpg.Pool, name: str) -> PoolConnectionProxy:
     conn = await pool.acquire()
     try:
         got = await conn.fetchval(
@@ -279,84 +318,131 @@ async def lock(pool: asyncpg.Pool, name: str) -> Any:
     return conn
 
 
-async def unlock(pool: asyncpg.Pool, conn: Any, name: str) -> None:
+async def unlock(pool: asyncpg.Pool, conn: PoolConnectionProxy, name: str) -> None:
     try:
         await conn.execute("select pg_advisory_unlock($1, hashtext($2))", LOCK, f"{SCOPE}/{name}")
     finally:
         await pool.release(conn)
 
 
-def free(opened: Opened, name: str) -> None:
-    survey = opened.surveys.get(name)
-    if survey is not None and survey.running:
-        raise SurveyError(f"survey: survey '{name}' is running", 409)
+def free(opened: Opened) -> None:
+    running = next((s for s in opened.surveys.values() if s.running), None)
+    if running is not None:
+        raise SurveyError(f"survey: '{running.name}' is running", 409)
+
+
+def planned(name: str, regions: list[str], shares: list[list[str]], second: set[str]) -> str:
+    return json.dumps(
+        {
+            "name": name,
+            "regions": regions,
+            "shares": shares,
+            "second": [r for r in regions if r in second],
+        }
+    )
 
 
 async def run(
-    name: str,
+    name: Any,
     *,
-    mode: str,
-    shape: str,
-    size: int = 250,
-    regions: list[str] | None = None,
-    cap: float,
-    crews: int | None = None,
+    mode: Any,
+    shape: Any,
+    size: Any = 250,
+    regions: Any = None,
+    cap: Any,
+    crews: Any = None,
 ) -> dict[str, Any]:
     opened = here()
     checked_name(name)
-    if mode not in MODES:
+    if not isinstance(mode, str) or mode not in MODES:
         raise SurveyError(f"survey: mode must be one of {', '.join(MODES)}; got {mode!r}")
+    if not isinstance(shape, str) or shape not in SHAPES:
+        raise SurveyError(f"survey: shape must be one of {', '.join(SHAPES)}; got {shape!r}")
     if shape == "app":
         raise SurveyError("survey: shape 'app' comes with the boss")
-    if shape not in TOP:
-        raise SurveyError(f"survey: shape must be one of crews, flat, app; got {shape!r}")
     cap = checked_cap(cap)
     picked = chosen(size, regions)
-    teams = crews_of(len(picked), crews)
+    shares = fitted(opened, shape, picked, crews)
     second = second_of(name, picked, opened.truth)
-    free(opened, name)
-    conn = await lock(opened.pool, name)
+    async with opened.starting:
+        free(opened)
+        conn = await lock(opened.pool, name)
+        await created(opened, conn, name, mode, shape, cap, second, picked, shares)
+        context = planned(name, picked, shares, second)
+        begin(opened, Survey(name, mode, shape), START, context, cap, conn)
+    return await progress(name)
+
+
+async def created(
+    opened: Opened,
+    conn: PoolConnectionProxy,
+    name: str,
+    mode: str,
+    shape: str,
+    cap: float,
+    second: set[str],
+    picked: list[str],
+    shares: list[list[str]],
+) -> None:
     try:
         if await conn.fetchval(SURVEY, SCOPE, name) is not None:
             raise SurveyError(f"survey: survey '{name}' exists; resume it", 409)
         async with conn.transaction():
-            await create_survey(conn, SCOPE, name, cap, second, picked)
-            await conn.execute(
-                "update surveys set mode = $3, shape = $4, crews = $5"
-                " where scope = $1 and survey = $2",
+            await create_survey(
+                conn,
                 SCOPE,
                 name,
-                mode,
-                shape,
-                teams,
+                cap,
+                second,
+                picked,
+                mode=mode,
+                shape=shape,
+                crews=len(shares),
+                status="running",
             )
             if mode == "hostile":
-                planted = Board(conn, SCOPE, name, live=lambda _: False)
-                await planted.note(picked[0], "planted", "finding", PLANTED)
+                await write_note(conn, SCOPE, name, picked[0], "planted", "finding", PLANTED)
     except BaseException:
         await unlock(opened.pool, conn, name)
         raise
-    given = {
-        "name": name,
-        "regions": picked,
-        "shares": split(picked, teams),
-        "second": [r for r in picked if r in second],
-    }
-    begin(opened, Survey(name, mode, shape), json.dumps(given), cap, conn)
-    return await progress(name)
 
 
-async def resume(name: str, *, cap: float | None = None) -> dict[str, Any]:
+async def resume(name: Any, *, cap: Any = None) -> dict[str, Any]:
     opened = here()
     checked_name(name)
     if cap is not None:
         cap = checked_cap(cap)
-    free(opened, name)
-    conn = await lock(opened.pool, name)
+    async with opened.starting:
+        free(opened)
+        conn = await lock(opened.pool, name)
+        row, left, second = await reopened(opened, conn, name, cap)
+        shares = split(left, min(row["crews"], len(left)))
+        context = planned(name, left, shares, second)
+        why = WHY.get(row["status"], RESTARTED)
+        survey = Survey(name, row["mode"], row["shape"])
+        begin(opened, survey, why, context, row["cap"] if cap is None else cap, conn)
+    return await progress(name)
+
+
+async def reopened(
+    opened: Opened, conn: PoolConnectionProxy, name: str, cap: float | None
+) -> tuple[asyncpg.Record, list[str], set[str]]:
     try:
         row = await conn.fetchrow(SURVEY, SCOPE, name)
         if row is None:
             raise SurveyError(f"survey: survey '{name}' does not exist", 404)
+        spent = await conn.fetchval(SPENT, SCOPE, name) or 0.0
+        if cap is not None and cap <= spent:
+            raise SurveyError(
+                f"survey: a cap of ${cap:g} is at or below the ${spent:g} '{name}' has spent"
+                " so far; resume with a higher cap",
+                409,
+            )
+        if cap is None and row["cap"] <= spent:
+            raise SurveyError(
+                f"survey: '{name}' stopped at its cap of ${row['cap']:g}; resume with a higher cap",
+                409,
+            )
         board = Board(opened.pool, SCOPE, name, live=lambda _: False)
         landed = {found["region"] for found in await board.landed()}
         left = [region for region in await board.regions() if region not in landed]
@@ -366,37 +452,39 @@ async def resume(name: str, *, cap: float | None = None) -> dict[str, Any]:
                 409,
             )
         second = await board.second()
-        if cap is not None:
-            await conn.execute(
-                "update surveys set cap = $3 where scope = $1 and survey = $2", SCOPE, name, cap
-            )
+        async with conn.transaction():
+            if cap is not None:
+                await conn.execute(
+                    "update surveys set cap = $3 where scope = $1 and survey = $2",
+                    SCOPE,
+                    name,
+                    cap,
+                )
+            await conn.execute(MARK, SCOPE, name, "running")
     except BaseException:
         await unlock(opened.pool, conn, name)
         raise
-    known = opened.surveys.get(name)
-    given = {
-        "name": name,
-        "regions": left,
-        "shares": split(left, min(row["crews"], len(left))),
-        "second": [r for r in left if r in second],
-        "resumed": WHY.get(known.status, RESTARTED) if known else RESTARTED,
-    }
-    survey = Survey(name, row["mode"], row["shape"])
-    begin(opened, survey, json.dumps(given), row["cap"] if cap is None else cap, conn)
-    return await progress(name)
+    return row, left, second
 
 
-def begin(opened: Opened, survey: Survey, given: str, cap: float, conn: Any) -> None:
+def begin(
+    opened: Opened,
+    survey: Survey,
+    given: str,
+    context: str,
+    cap: float,
+    conn: PoolConnectionProxy,
+) -> None:
     opened.surveys[survey.name] = survey
     opened.last = survey.name
-    survey.status = "running"
-    survey.task = asyncio.create_task(work(opened, survey, given, cap, conn))
+    survey.task = asyncio.create_task(work(opened, survey, given, context, cap, conn))
 
 
 async def fail_left(board: Board, run_id: str) -> None:
     landed = {row["region"] for row in await board.landed()}
+    failed = await board.failed()
     for region in await board.regions():
-        if region not in landed:
+        if region not in landed and region not in failed:
             await board.fail(region, run_id, ENDED)
 
 
@@ -404,37 +492,47 @@ def gate(
     opened: Opened, board: Board, spend: Spend, name: str, models: dict[str, Any] | None
 ) -> Callable[[str, ToolCall], Any]:
     async def approve(agent: str, call: ToolCall) -> bool:
+        deadline = asyncio.get_running_loop().time() + GATE_TIMEOUT
         found = current_call()
         run_id = "" if found is None else found.run_id
         allowed, probability, error = False, None, None
         try:
-            region = None if found is None else await board.claim_of(run_id)
-            state = {
-                "agent": agent,
-                "tool": call.name,
-                "args": call.args,
-                "run_id": run_id,
-                "region": region,
-            }
-            async with asyncio.timeout(GATE_TIMEOUT):
+            async with asyncio.timeout_at(deadline) as budget:
+                region = None if found is None else await board.claim_of(run_id)
+                state = {
+                    "agent": agent,
+                    "tool": call.name,
+                    "args": call.args,
+                    "run_id": run_id,
+                    "region": region,
+                }
                 decision = await opened.engine.run(
                     "gate", SCOPE, state, record=False, models=models
                 )
-            answer = decision.answers.get("fits")
-            if not isinstance(answer, CheckAnswer):
-                raise SurveyError("survey: the gate gave no answer to fits")
-            probability = answer.probability
-            await spend.decision(decision.model or "", decision.usage)
-            allowed = probability >= FITS
+                answer = decision.answers.get("fits")
+                if not isinstance(answer, CheckAnswer):
+                    raise SurveyError("survey: the gate gave no answer to fits")
+                probability = answer.probability
+                await spend.decision(decision.model or "", decision.usage)
+                allowed = probability >= FITS
         except Exception as failed:
-            allowed, error = False, f"{type(failed).__name__}: {failed}"
-        try:
-            await opened.pool.execute(
-                GATE_LOG, SCOPE, name, run_id, agent, call.name, allowed, probability, error
+            allowed = False
+            error = (
+                f"TimeoutError: survey: the gate's call took over {GATE_TIMEOUT:g}s"
+                if budget.expired()
+                else f"{type(failed).__name__}: {failed}"
             )
+        try:
+            async with asyncio.timeout_at(deadline):
+                await opened.pool.execute(
+                    GATE_LOG, SCOPE, name, run_id, agent, call.name, allowed, probability, error
+                )
         except Exception as failed:
             logger.warning(
-                "survey: the gate's log of a %s call did not write: %s", call.name, failed
+                "survey: the gate's log of a %s call did not write: %s: %s",
+                call.name,
+                type(failed).__name__,
+                failed,
             )
             return False
         return allowed
@@ -442,7 +540,18 @@ def gate(
     return approve
 
 
-async def work(opened: Opened, survey: Survey, given: str, cap: float, conn: Any) -> None:
+async def mark(pool: asyncpg.Pool, name: str, status: str) -> None:
+    await pool.execute(MARK, SCOPE, name, status)
+
+
+async def work(
+    opened: Opened,
+    survey: Survey,
+    given: str,
+    context: str,
+    cap: float,
+    conn: PoolConnectionProxy,
+) -> None:
     name = survey.name
     top: list[str] = []
     try:
@@ -498,7 +607,8 @@ async def work(opened: Opened, survey: Survey, given: str, cap: float, conn: Any
                 TOP[survey.shape],
                 SCOPE,
                 given,
-                store=Store(opened.pool, on_reply=spend.reply),
+                context=context,
+                store=Store(opened.pool, size=settings.size, on_reply=spend.reply),
                 conversation=name,
                 on_event=on_event,
                 tools=Tools([board_tools(board), fetch_tool(web, opened.sandboxes, fetches)]),
@@ -510,49 +620,51 @@ async def work(opened: Opened, survey: Survey, given: str, cap: float, conn: Any
             )
         survey.reply = result.reply
         if result.stopped:
-            survey.status = "stopped"
+            await mark(opened.pool, name, "stopped")
         else:
             await fail_left(board, result.run_id)
-            survey.status = "ended"
+            await mark(opened.pool, name, "done")
     except asyncio.CancelledError:
-        survey.status = "cancelled"
         raise
     except Exception as failed:
-        survey.status = "failed"
+        logger.exception("survey: survey '%s' failed", name)
         survey.error = f"{type(failed).__name__}: {failed}"
         try:
-            await fail_left(
-                Board(opened.pool, SCOPE, name, live=lambda _: False), top[0] if top else name
-            )
-        except Exception as broken:
-            logger.warning("survey: the regions of survey '%s' were not failed: %s", name, broken)
+            board = Board(opened.pool, SCOPE, name, live=lambda _: False)
+            await fail_left(board, top[0] if top else name)
+            await mark(opened.pool, name, "failed")
+        except Exception:
+            logger.exception("survey: survey '%s' could not record how it failed", name)
     finally:
         survey.live.clear()
         try:
             await unlock(opened.pool, conn, name)
-        except Exception as broken:
-            logger.warning("survey: the lock of survey '%s' was not released: %s", name, broken)
+        except Exception:
+            logger.exception("survey: the lock of survey '%s' was not released", name)
 
 
-async def progress(name: str) -> dict[str, Any]:
+async def progress(name: Any) -> dict[str, Any]:
     opened = here()
+    checked_name(name)
     row = await opened.pool.fetchrow(SURVEY, SCOPE, name)
     if row is None:
         raise SurveyError(f"survey: survey '{name}' does not exist", 404)
     survey = opened.surveys.get(name)
     live = survey.live if survey is not None else set()
     board = Board(opened.pool, SCOPE, name, live=live.__contains__)
-    total = await opened.pool.fetchval(
-        "select total from spend where scope = $1 and survey = $2", SCOPE, name
-    )
+    status = row["status"]
+    if survey is not None and survey.running:
+        status = "running"
+    elif status == "running":
+        status = "interrupted"
     return {
         "survey": name,
         "mode": row["mode"],
         "shape": row["shape"],
         "crews": row["crews"],
-        "status": "idle" if survey is None else survey.status,
+        "status": status,
         "counts": await board.counts(),
-        "spend": total or 0.0,
+        "spend": await opened.pool.fetchval(SPENT, SCOPE, name) or 0.0,
         "cap": row["cap"],
         "error": None if survey is None else survey.error,
         "reply": None if survey is None else survey.reply,
@@ -566,7 +678,7 @@ async def wait(name: str) -> dict[str, Any]:
     return await progress(name)
 
 
-async def map(name: str | None = None) -> dict[str, Any]:
+async def map(name: Any = None) -> dict[str, Any]:
     opened = here()
     picked = name or opened.last
     if picked is None:
@@ -575,6 +687,7 @@ async def map(name: str | None = None) -> dict[str, Any]:
         )
     if picked is None:
         raise SurveyError("survey: no survey has run yet", 404)
+    checked_name(picked)
     if await opened.pool.fetchval(SURVEY, SCOPE, picked) is None:
         raise SurveyError(f"survey: survey '{picked}' does not exist", 404)
     return await map_of(Board(opened.pool, SCOPE, picked, live=lambda _: False))

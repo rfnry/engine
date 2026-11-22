@@ -44,6 +44,8 @@ ROUNDS = 3
 POLAR = 75
 ROLES = ("lead", "flat", "captain", "surveyor", "crosscheck", "crosscheck_second", "boss")
 NOTICE = re.compile(r"\[helper (d\d+) · (\S+) · (finished|failed|stopped|asks|lost)\]")
+REGION_ID = re.compile(r"[NS]\d\d-\d\d/\d+")
+CONTEXT = "<<<CONTEXT>>>\n"
 
 
 class FakeError(Exception):
@@ -133,18 +135,35 @@ def usage_of(system: str, messages: list[Message], tools: list[ToolSpec], reply:
     return Usage(input=sent // 4, output=made // 4)
 
 
-def notice_of(message: Message) -> tuple[str, str] | None:
+def notice_of(message: Message) -> tuple[str, str, str, str] | None:
     if message.role != "user":
         return None
-    found = NOTICE.fullmatch(text_of(message.content).split("\n", 1)[0])
-    return None if found is None else (found.group(1), found.group(3))
+    head, _, body = text_of(message.content).partition("\n")
+    found = NOTICE.fullmatch(head)
+    return None if found is None else (found.group(1), found.group(2), found.group(3), body)
 
 
 def inputs(messages: list[Message]) -> list[int]:
-    found = [n for n, m in enumerate(messages) if m.role == "user" and notice_of(m) is None]
+    return [n for n, m in enumerate(messages) if m.role == "user" and notice_of(m) is None]
+
+
+def context_of(system: str) -> Any:
+    _, found, rest = system.partition(CONTEXT)
     if not found:
-        raise FakeError("fakes: the conversation holds no input")
-    return found
+        return None
+    try:
+        return json.loads(rest)
+    except ValueError as error:
+        raise FakeError(f"fakes: the context is not JSON: {error}") from error
+
+
+def region_in(text: str) -> str | None:
+    try:
+        given = json.loads(text)
+    except ValueError:
+        return None
+    region = given.get("region") if isinstance(given, dict) else None
+    return region if isinstance(region, str) else None
 
 
 def parsed(message: Message) -> Any:
@@ -155,7 +174,10 @@ def parsed(message: Message) -> Any:
 
 
 def first_input(messages: list[Message]) -> Any:
-    return parsed(messages[inputs(messages)[0]])
+    found = inputs(messages)
+    if not found:
+        raise FakeError("fakes: the conversation holds no input")
+    return parsed(messages[found[0]])
 
 
 def one_line(text: str, limit: int = 300) -> str:
@@ -213,7 +235,7 @@ class Fake:
             await self.limits.wait()
         key = f"{text_of(messages[0].content) if messages else ''}|{len(messages)}"
         await self.sleep(self.profile.delay(self.role, key))
-        text, planned = self.script(messages)
+        text, planned = self.script(system, messages)
         turn = sum(1 for m in messages if m.role == "assistant")
         calls = [
             ToolCall(id=f"{self.role}-{turn}-{n}", name=name, args=args)
@@ -234,7 +256,7 @@ class Fake:
         )
         return reply.model_copy(update={"usage": usage_of(system, messages, tools, reply)})
 
-    def script(self, messages: list[Message]) -> Script:
+    def script(self, system: str, messages: list[Message]) -> Script:
         raise NotImplementedError
 
 
@@ -245,7 +267,7 @@ class Surveyor(Fake):
         super().__init__(profile, sleep)
         self.pages = sorted(getattr(web, "pages", {}))
 
-    def script(self, messages: list[Message]) -> Script:
+    def script(self, system: str, messages: list[Message]) -> Script:
         region = first_input(messages)["region"]
         found = exchanges(messages)
         stopped = failure(found)
@@ -266,8 +288,6 @@ class Surveyor(Fake):
         neighbours = list(around.get("neighbours", []))
         if neighbours and "notes" not in by_name:
             return "", [("notes", {"region": n}) for n in neighbours]
-        if self.pages and "fetch" not in by_name:
-            return "", [("fetch", {"url": self.pages[0]})]
         shells = by_name.get("Shell", [])
         measure = next((s for s in shells if "measure.py" in s.call.args["command"]), None)
         if measure is None:
@@ -275,6 +295,8 @@ class Surveyor(Fake):
             return "", [("Shell", {"command": command})]
         if (output := self.outcome(measure, "measure")) is not None:
             return f"{region}: stopped, {output}", []
+        if self.pages and "fetch" not in by_name:
+            return "", [("fetch", {"url": self.pages[0]})]
         if "Write" not in by_name:
             dossier = self.dossier(region, json.loads(measure.data()["stdout"]), around)
             return "", [("Write", {"path": "dossier.json", "content": json.dumps(dossier)})]
@@ -358,20 +380,105 @@ class Crosscheck(Fake):
         super().__init__(profile, sleep, limits)
         self.role = role
 
-    def script(self, messages: list[Message]) -> Script:
+    def script(self, system: str, messages: list[Message]) -> Script:
         region = first_input(messages)["region"]
         found = exchanges(messages)
         stopped = failure(found)
         if stopped is not None:
             return f"{region}: stopped, {stopped}", []
-        by_name = {item.call.name: item for item in found}
-        if "notes" not in by_name:
-            return "", [("notes", {"region": region})]
-        seen = (by_name["notes"].data() or {}).get("notes", [])
+        by_name: dict[str, list[Exchange]] = {}
+        for item in found:
+            by_name.setdefault(item.call.name, []).append(item)
+        if "dossier" not in by_name:
+            return "", [("dossier", {"region": region})]
+        if (by_name["dossier"][0].data() or {}).get("landed") is None:
+            return f"{region}: no landed dossier to check", []
+        if "region" not in by_name:
+            return "", [("region", {"region": region})]
+        neighbours = list((by_name["region"][0].data() or {}).get("neighbours", []))
+        if neighbours and "notes" not in by_name:
+            return "", [("notes", {"region": n}) for n in neighbours]
         if "note" not in by_name:
-            text = f"agree: read {len(seen)} notes on the region and found nothing to dispute"
+            read = sum(len((e.data() or {}).get("notes", [])) for e in by_name.get("notes", []))
+            text = (
+                f"read the landed dossier, its measured values and {read} notes of its"
+                " neighbours, and found nothing to dispute"
+            )
             return "", [("note", {"region": region, "kind": "agree", "text": text})]
         return f"{region}: checked, agree", []
+
+
+@dataclass
+class Table:
+    jobs: dict[str, str] = field(default_factory=dict)
+    regions: dict[str, str] = field(default_factory=dict)
+    ended: dict[str, str] = field(default_factory=dict)
+    asked: set[str] = field(default_factory=set)
+    refused: dict[str, int] = field(default_factory=dict)
+    unanswered: dict[str, int] = field(default_factory=dict)
+
+    def read(self, messages: list[Message]) -> Table:
+        results = {m.tool_call_id: m for m in messages if m.role == "tool"}
+        for message in messages:
+            told = notice_of(message)
+            if told is not None:
+                job, agent, kind, body = told
+                self.jobs.setdefault(job, agent)
+                if kind in ENDED:
+                    self.ended[job] = kind
+                named = REGION_ID.match(body)
+                if named is not None:
+                    self.regions.setdefault(job, named.group(0))
+            elif message.role == "assistant":
+                for call in message.tool_calls:
+                    self.took(Exchange(call, results.get(call.id)))
+        return self
+
+    def took(self, item: Exchange) -> None:
+        data = item.data()
+        if item.call.name == "Jobs" and isinstance(data, dict):
+            for row in data.get("jobs", []):
+                job = row.get("job", "")
+                if job.startswith("d"):
+                    self.jobs.setdefault(job, row.get("agent", ""))
+                    if not row.get("running") and row.get("ended") in ENDED:
+                        self.ended[job] = row["ended"]
+        if item.call.name != "Delegate":
+            return
+        agent = item.call.args["agent"]
+        region = region_in(item.call.args["input"])
+        if agent.startswith("crosscheck") and region is not None:
+            self.asked.add(region)
+        if item.result is None:
+            self.unanswered[agent] = self.unanswered.get(agent, 0) + 1
+        elif item.error or not isinstance(data, dict) or "job" not in data:
+            self.refused[agent] = self.refused.get(agent, 0) + 1
+        else:
+            self.jobs[data["job"]] = agent
+            if region is not None:
+                self.regions[data["job"]] = region
+
+    def unchecked(self) -> list[str]:
+        found = [
+            self.regions[job]
+            for job, agent in self.jobs.items()
+            if agent == "surveyor" and self.ended.get(job) == "finished" and job in self.regions
+        ]
+        return [r for r in dict.fromkeys(found) if r not in self.asked]
+
+    def counts(self) -> str:
+        agents = dict.fromkeys([*self.jobs.values(), *self.refused, *self.unanswered])
+        parts = []
+        for agent in agents:
+            kinds = [self.ended.get(job, "running") for job, a in self.jobs.items() if a == agent]
+            kinds += ["failed"] * self.refused.get(agent, 0)
+            kinds += ["lost"] * self.unanswered.get(agent, 0)
+            parts.append(
+                f"{len(kinds)} {agent}s: {kinds.count('finished')} finished, "
+                f"{kinds.count('failed')} failed, {kinds.count('lost')} lost, "
+                f"{kinds.count('stopped')} stopped"
+            )
+        return "; ".join(parts)
 
 
 class Team(Fake):
@@ -379,66 +486,39 @@ class Team(Fake):
         super().__init__(profile, sleep)
         self.role = role
 
-    def plan(self, given: Any) -> tuple[list[str], list[tuple[str, dict[str, Any]]]]:
+    def plan(self, given: Any) -> list[tuple[str, dict[str, Any]]]:
         if self.role == "lead":
-            shares = given["shares"]
-            if isinstance(shares, int):
-                regions = given["regions"]
-                shares = [regions[n::shares] for n in range(shares)]
             second = set(given.get("second", ()))
-            return [r for share in shares for r in share], [
-                (
-                    "captain",
-                    {"share": list(share), "second": [r for r in share if r in second]},
-                )
-                for share in shares
+            return [
+                ("captain", {"share": list(share), "second": [r for r in share if r in second]})
+                for share in given["shares"]
             ]
         regions = given["share"] if "share" in given else given["regions"]
-        return list(regions), [("surveyor", {"region": r}) for r in regions]
+        return [("surveyor", {"region": r}) for r in regions]
 
-    def script(self, messages: list[Message]) -> Script:
-        messages = messages[inputs(messages)[-1] :]
-        given = parsed(messages[0])
-        regions, firsts = self.plan(given)
-        second = set(given.get("second", ()))
-        found = exchanges(messages)
-        delegated = [e for e in found if e.call.name == "Delegate"]
-        if not delegated:
+    def script(self, system: str, messages: list[Message]) -> Script:
+        survey = context_of(system)
+        starts = inputs(messages)
+        at = starts[-1] if starts else None
+        mine = messages if at is None else messages[at:]
+        given = survey
+        if self.role == "captain":
+            given = None if at is None else parsed(messages[at])
+        elif survey is None:
+            raise FakeError(f"fakes: the {self.role}'s survey is not in its context")
+        found = exchanges(mine)
+        named = {item.call.name for item in found}
+        if at is not None and not {"Delegate", "Jobs"} & named:
             return "", [
-                (
-                    "Delegate",
-                    {"agent": agent, "input": json.dumps(args), "background": True},
-                )
-                for agent, args in firsts
+                ("Delegate", {"agent": agent, "input": json.dumps(args), "background": True})
+                for agent, args in self.plan(given)
             ]
-        told = [notice_of(m) for m in messages]
-        ended = {found[0]: found[1] for found in told if found is not None and found[1] in ENDED}
-        jobs: dict[str, tuple[str, str]] = {}
-        refused: dict[str, int] = {}
-        unanswered: dict[str, int] = {}
-        for item in delegated:
-            agent = item.call.args["agent"]
-            data = item.data()
-            if item.result is None:
-                unanswered[agent] = unanswered.get(agent, 0) + 1
-                continue
-            if item.error or not isinstance(data, dict) or "job" not in data:
-                refused[agent] = refused.get(agent, 0) + 1
-                continue
-            jobs[data["job"]] = (item.call.args["agent"], item.call.args["input"])
+        if at is None and "Jobs" not in named:
+            return "", [("Jobs", {})]
+        table = Table().read(mine)
         if self.role != "lead":
-            checked = {
-                json.loads(e.call.args["input"])["region"]
-                for e in delegated
-                if e.call.args["agent"].startswith("crosscheck")
-            }
-            todo = [
-                json.loads(text)["region"]
-                for job, (agent, text) in jobs.items()
-                if agent == "surveyor"
-                and ended.get(job) == "finished"
-                and json.loads(text)["region"] not in checked
-            ]
+            second = set((given or survey or {}).get("second", ()))
+            todo = table.unchecked()
             if todo:
                 return "", [
                     (
@@ -451,39 +531,34 @@ class Team(Fake):
                     )
                     for r in todo
                 ]
-        running = [job for job in jobs if job not in ended]
+        running = [job for job in table.jobs if job not in table.ended]
         if running:
             return f"waiting for {len(running)} helpers", []
-        counts = self.counts(jobs, ended, refused, unanswered)
-        if not any(e.call.name == "note" for e in found):
-            return "", [("note", {"region": regions[0], "kind": "summary", "text": counts})]
+        counts = table.counts()
+        if "note" not in named:
+            return "", [
+                (
+                    "note",
+                    {"region": self.first(given, survey, table), "kind": "summary", "text": counts},
+                )
+            ]
         stopped = failure([e for e in found if e.call.name == "note"])
         return stopped or f"survey done: {counts}", []
 
-    def counts(
-        self,
-        jobs: dict[str, tuple[str, str]],
-        ended: dict[str, str],
-        refused: dict[str, int],
-        unanswered: dict[str, int],
-    ) -> str:
-        agents = dict.fromkeys([*(a for a, _ in jobs.values()), *refused, *unanswered])
-        parts = []
-        for agent in agents:
-            kinds = [ended[job] for job, (a, _) in jobs.items() if a == agent]
-            kinds += ["failed"] * refused.get(agent, 0) + ["lost"] * unanswered.get(agent, 0)
-            parts.append(
-                f"{len(kinds)} {agent}s: {kinds.count('finished')} finished, "
-                f"{kinds.count('failed')} failed, {kinds.count('lost')} lost, "
-                f"{kinds.count('stopped')} stopped"
-            )
-        return "; ".join(parts)
+    def first(self, given: Any, survey: Any, table: Table) -> str:
+        if given is not None:
+            return (given.get("share") or given["regions"])[0]
+        if table.regions:
+            return next(iter(table.regions.values()))
+        if survey is not None:
+            return survey["regions"][0]
+        raise FakeError("fakes: the captain knows no region to leave its summary on")
 
 
 class Boss(Fake):
     role = "boss"
 
-    def script(self, messages: list[Message]) -> Script:
+    def script(self, system: str, messages: list[Message]) -> Script:
         found = exchanges(messages)
         stopped = failure(found)
         if stopped is not None:

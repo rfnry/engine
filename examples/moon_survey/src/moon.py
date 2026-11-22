@@ -10,6 +10,7 @@ COUNTS = (33, 31, 27, 20, 13, 1)
 STEP = 15
 GRS_FILE = "lpgrs_high1_elem_abundance_2deg.tab"
 HYDROGEN_FILE = "hydrogenlow.txt"
+UNITS = {"FeO": "wt%", "TiO2": "wt%", "Al2O3": "wt%", "Th": "ppm", "H": "ppm"}
 GRS_COLUMNS = {
     "Al2O3": (8, 25, 100.0),
     "TiO2": (11, 46, 100.0),

@@ -10,7 +10,7 @@ models:
   boss: {provider: anthropic, model: claude-haiku-5-5, effort: low}
   gate: {provider: typesafe, model: jev-latest}
 
-runtime_tools: [claim, note, notes, region, fetch]
+runtime_tools: [claim, note, notes, region, fetch, dossier]
 
 agents:
   lead:
@@ -61,21 +61,24 @@ agents:
     kind: generation
     model: crosscheck
     instructions: crosscheck/instructions.md
+    max_model_calls: 12
     tools:
-      allow: [note, notes, region, fetch]
+      allow: [dossier, note, notes, region, fetch]
 
   crosscheck_second:
     kind: generation
     model: crosscheck_second
     description: Checks a landed region's dossier on a second vendor's model, for the regions region() names it for
     instructions: crosscheck/instructions.md
+    max_model_calls: 12
     tools:
-      allow: [note, notes, region, fetch]
+      allow: [dossier, note, notes, region, fetch]
 
   boss:
     kind: generation
     model: boss
     instructions: boss/instructions.md
+    max_model_calls: 20
 
   gate:
     kind: decision

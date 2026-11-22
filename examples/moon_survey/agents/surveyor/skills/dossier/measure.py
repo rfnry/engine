@@ -7,7 +7,6 @@ from dataclasses import asdict
 NODE = "https://pds-geosciences.wustl.edu"
 GRS = f"{NODE}/lunar/lp-l-grs-5-elem-abundance-v1/lp_9001/data/lpgrs_high1_elem_abundance_2deg.tab"
 HYDROGEN = f"{NODE}/missions/lunarp/reduced/hydrogenlow.txt"
-UNITS = {"FeO": "wt%", "TiO2": "wt%", "Al2O3": "wt%", "Th": "ppm", "H": "ppm"}
 SOURCE = {"FeO": GRS, "TiO2": GRS, "Al2O3": GRS, "Th": GRS, "H": HYDROGEN}
 
 
@@ -25,7 +24,7 @@ def main(argv: list[str]) -> int:
         print(error, file=sys.stderr)
         return 1
     values = {name: None if value is None else asdict(value) for name, value in found.items()}
-    print(json.dumps({"region": argv[0], "values": values, "units": UNITS, "source": SOURCE}))
+    print(json.dumps({"region": argv[0], "values": values, "units": moon.UNITS, "source": SOURCE}))
     return 0
 
 

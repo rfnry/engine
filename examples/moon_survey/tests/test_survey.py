@@ -1,4 +1,6 @@
 import asyncio
+import json
+import logging
 import re
 import secrets
 import subprocess
@@ -12,6 +14,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from rfnry_engine import PostgresStorage
 
+import board as board_module
 import harness
 import merge
 import moon
@@ -97,7 +100,7 @@ async def test_a_fake_survey_of_ten_lands_every_region(service, pool, engine_poo
     started = await harness.run(name, mode="fake", shape="crews", size=10, cap=2.0)
     assert started["status"] == "running"
     done = await ended(name)
-    assert done["status"] == "ended" and done["error"] is None
+    assert done["status"] == "done" and done["error"] is None
     assert done["counts"] == {"landed": 10, "failed": 0, "claimed": 0, "free": 0}
 
     rows = await board_of(pool, name).landed()
@@ -114,6 +117,20 @@ async def test_a_fake_survey_of_ten_lands_every_region(service, pool, engine_poo
         "crosscheck_second": 10,
     }
     assert all(r.body["tags"] == {"survey": name} for r in records)
+    [lead] = [r for r in records if r.agent == "lead"]
+    planned = json.loads(lead.body["context"])
+    assert planned["name"] == name and set(planned["regions"]) == {row["region"] for row in rows}
+    assert [len(share) for share in planned["shares"]] == [5, 5]
+    assert all(r.body["context"] == lead.body["context"] for r in records)
+    looked = [
+        json.loads(step["result"])
+        for r in records
+        if r.agent.startswith("crosscheck")
+        for step in r.body["steps"]
+        if step["tool"] == "dossier"
+    ]
+    assert len(looked) == 10 and all(found["landed"] is not None for found in looked)
+    assert {found["region"] for found in looked} == {row["region"] for row in rows}
     steps = [step for r in records for step in r.body["steps"]]
     assert steps and all(step["approved"] is True for step in steps)
     gated = await pool.fetch(
@@ -137,7 +154,7 @@ async def test_a_gate_that_cannot_answer_ends_the_survey(service, pool, engine_p
     name = fresh()
     await harness.run(name, mode="fake", shape="crews", size=10, cap=2.0)
     done = await ended(name)
-    assert done["status"] == "ended" and done["error"] is None
+    assert done["status"] == "done" and done["error"] is None
     assert done["counts"] == {"landed": 0, "failed": 10, "claimed": 0, "free": 0}
     reasons = await pool.fetch(
         "select distinct reason from failures where scope = 'moon' and survey = $1", name
@@ -168,13 +185,25 @@ async def test_the_cap_stops_the_survey_and_a_resume_goes_on(service, pool, monk
     assert stopped["spend"] >= CAP and stopped["spend"] == await spent(pool, name)
     assert stopped["cap"] == CAP
 
-    with pytest.raises(harness.SurveyError, match="survey: "):
+    with pytest.raises(harness.SurveyError, match=f"survey: survey '{name}' exists; resume it"):
         await harness.run(name, mode="fake", shape="crews", size=10, cap=CAP)
+    with pytest.raises(harness.SurveyError) as at_cap:
+        await harness.resume(name)
+    assert at_cap.value.status == 409
+    assert str(at_cap.value) == (
+        f"survey: '{name}' stopped at its cap of $2; resume with a higher cap"
+    )
+    with pytest.raises(harness.SurveyError, match="at or below the .* so far") as below:
+        await harness.resume(name, cap=stopped["spend"])
+    assert below.value.status == 409
 
+    await harness.close()
+    await service()
+    assert (await harness.progress(name))["status"] == "stopped"
     resumed = await harness.resume(name, cap=100.0)
     assert resumed["status"] == "running" and resumed["cap"] == 100.0
     done = await ended(name)
-    assert done["status"] == "ended"
+    assert done["status"] == "done"
     assert done["counts"] == {"landed": 10, "failed": 0, "claimed": 0, "free": 0}
     assert done["spend"] > stopped["spend"] and done["spend"] == await spent(pool, name)
 
@@ -221,13 +250,13 @@ async def test_a_crashed_survey_resumes(service, pool):
     task.cancel()
     await asyncio.wait([task])
     cut = await harness.progress(name)
-    assert cut["status"] == "cancelled"
+    assert cut["status"] == "interrupted"
     assert cut["counts"] == {"landed": 5, "failed": 0, "claimed": 0, "free": 5}
     gate.released.set()
 
     await harness.resume(name)
     done = await ended(name)
-    assert done["status"] == "ended"
+    assert done["status"] == "done"
     assert done["counts"] == {"landed": 10, "failed": 0, "claimed": 0, "free": 0}
     rows = {row["region"]: row for row in await board_of(pool, name).landed()}
     assert set(rows) == set(walk) and all(row["attempts"] == 1 for row in rows.values())
@@ -246,10 +275,11 @@ async def test_a_crashed_survey_resumes(service, pool):
     inputs = [n for n, m in enumerate(messages) if m.role == "user" and m.notice is None]
     assert len(inputs) == 2
     assert all(messages.index(m) < inputs[1] for m in lost)
-    assert "the process restarted" in messages[inputs[1]].content
+    assert [messages[n].content for n in inputs] == [harness.START, harness.RESTARTED]
 
 
-async def test_hostile_mode_plants_its_note(service, pool):
+async def test_hostile_mode_plants_its_note(service, pool, caplog):
+    caplog.set_level(logging.ERROR, logger="harness")
     await service()
     name = fresh()
     walk = [r for share in moon.shares(25) for r in share]
@@ -262,6 +292,11 @@ async def test_hostile_mode_plants_its_note(service, pool):
     done = await ended(name)
     assert done["status"] == "failed" and "ANTHROPIC_API_KEY is not set" in done["error"]
     assert done["mode"] == "hostile"
+    [logged] = [r for r in caplog.records if r.getMessage() == f"survey: survey '{name}' failed"]
+    assert logged.exc_info is not None and "ANTHROPIC_API_KEY" in str(logged.exc_info[1])
+    await harness.close()
+    await service()
+    assert (await harness.progress(name))["status"] == "failed"
 
 
 async def test_the_routes_start_read_and_resume_a_survey(service, monkeypatch):
@@ -282,21 +317,46 @@ async def test_the_routes_start_read_and_resume_a_survey(service, monkeypatch):
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://moon") as client:
-        refused = await client.post("/surveys", json={**body, "shape": "app"})
-        assert refused.status_code == 400
-        assert refused.json()["detail"] == "survey: shape 'app' comes with the boss"
+        invalid = [
+            ({**body, "shape": "app"}, "survey: shape 'app' comes with the boss"),
+            ({**body, "mode": "pretend"}, "survey: mode must be one of fake, real, hostile"),
+            ({**body, "shape": "ring"}, "survey: shape must be one of crews, flat, app"),
+            ({**body, "size": 0}, "survey: size must be from 1 to 250"),
+            ({**body, "size": 251}, "survey: size must be from 1 to 250"),
+            ({**body, "regions": ["N99-99/1"]}, "survey: these regions do not exist: N99-99/1"),
+            (
+                {**body, "regions": ["S75-90/0", "S75-90/0"]},
+                "survey: these regions are named twice: S75-90/0",
+            ),
+            ({**body, "name": "a/b"}, "survey: a name is 1 to 64"),
+            ({**body, "cap": "lots"}, "survey: cap must be a number of dollars"),
+            ({**body, "crews": 11}, "survey: crews must be at most 10"),
+            ({**body, "colour": "red"}, "survey: the body takes name, mode, shape"),
+            (["not", "an", "object"], "survey: the body must be a JSON object"),
+        ]
+        for sent, said in invalid:
+            refused = await client.post("/surveys", json=sent)
+            assert refused.status_code == 400, sent
+            assert refused.json()["detail"].startswith(said), refused.json()
         assert (await client.get("/surveys/nobody")).status_code == 404
 
         started = await client.post("/surveys", json=body)
         assert started.status_code == 202 and started.json()["status"] == "running"
-        assert (await client.post("/surveys", json=body)).status_code == 409
+        other = await client.post("/surveys", json={**body, "name": fresh()})
+        assert other.status_code == 409
+        assert other.json()["detail"] == f"survey: '{name}' is running"
         stopped = await read(client)
         assert stopped["status"] == "stopped"
+        twice = await client.post("/surveys", json=body)
+        assert twice.status_code == 409
+        assert twice.json()["detail"] == f"survey: survey '{name}' exists; resume it"
+        at_cap = await client.post(f"/surveys/{name}/resume")
+        assert at_cap.status_code == 409 and "stopped at its cap" in at_cap.json()["detail"]
 
         resumed = await client.post(f"/surveys/{name}/resume", json={"cap": 100.0})
         assert resumed.status_code == 202 and resumed.json()["cap"] == 100.0
         done = await read(client)
-        assert done["status"] == "ended" and done["counts"]["landed"] == 10
+        assert done["status"] == "done" and done["counts"]["landed"] == 10
 
         shown = await client.get("/map", params={"survey": name})
         assert shown.status_code == 200
@@ -304,6 +364,80 @@ async def test_the_routes_start_read_and_resume_a_survey(service, monkeypatch):
         assert len(regions) == 10 and all(r["provider"] == "fake" for r in regions)
         assert all(r["dossier"] is None for r in regions)
         assert shown.json()["survey"] == name
+
+
+async def test_a_window_that_moves_mid_survey_still_lands_every_region_once(service, pool):
+    await service(size=1)
+    name = fresh()
+    await harness.run(name, mode="fake", shape="crews", size=10, cap=2.0)
+    done = await ended(name)
+    assert done["status"] == "done" and done["error"] is None
+    assert done["counts"] == {"landed": 10, "failed": 0, "claimed": 0, "free": 0}
+    rows = await board_of(pool, name).landed()
+    assert len(rows) == 10 and all(row["attempts"] == 1 for row in rows)
+    store = Store(pool)
+    for conversation in (name, f"{name}/d1", f"{name}/d2"):
+        assert await store.moves("moon", conversation) > 0, conversation
+    messages = await store.read("moon", name, 0)
+    assert any(call.name == "Jobs" for m in messages for call in m.tool_calls)
+
+
+async def test_one_survey_runs_at_a_time(service):
+    await service(gate=Holding(set(moon.by_id())))
+    first, second = fresh(), fresh()
+    raced = await asyncio.gather(
+        *(harness.run(n, mode="fake", shape="crews", size=4, cap=2.0) for n in (first, second)),
+        return_exceptions=True,
+    )
+    assert isinstance(raced[0], dict) and isinstance(raced[1], harness.SurveyError)
+    assert str(raced[1]) == f"survey: '{first}' is running"
+    with pytest.raises(harness.SurveyError, match=f"survey: '{first}' is running") as refused:
+        await harness.run(second, mode="fake", shape="crews", size=4, cap=2.0)
+    assert refused.value.status == 409
+    with pytest.raises(harness.SurveyError, match=f"survey: '{first}' is running"):
+        await harness.resume(first)
+    task = harness.held.surveys[first].task
+    task.cancel()
+    await asyncio.wait([task])
+    await harness.run(second, mode="fake", shape="flat", size=1, cap=2.0)
+
+
+async def test_crews_and_shares_past_the_folders_max_background_are_refused(service):
+    await service()
+    walk = [r for share in moon.shares(25) for r in share]
+    with pytest.raises(harness.SurveyError, match="survey: crews must be at most 10"):
+        await harness.run(fresh(), mode="fake", shape="crews", size=20, cap=2.0, crews=11)
+    with pytest.raises(harness.SurveyError, match="a share of 30 regions is over .* of 25"):
+        await harness.run(fresh(), mode="fake", shape="crews", regions=walk[:30], cap=2.0, crews=1)
+    assert harness.held.surveys == {}
+
+
+async def test_a_gate_check_that_never_answers_is_refused_at_the_deadline(
+    service, pool, monkeypatch
+):
+    async def hangs(self, run_id):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(harness, "GATE_TIMEOUT", 0.2)
+    monkeypatch.setattr(board_module.Board, "claim_of", hangs)
+    await service()
+    name = fresh()
+    await harness.run(name, mode="fake", shape="crews", size=4, cap=2.0)
+    done = await asyncio.wait_for(harness.wait(name), 20)
+    assert done["status"] == "done"
+    assert done["counts"] == {"landed": 0, "failed": 4, "claimed": 0, "free": 0}
+
+
+async def test_a_region_the_merge_failed_is_not_failed_again_as_the_survey_ends(service, pool):
+    await service(gate=FakeGate(refuse=frozenset({"Write"})))
+    name = fresh()
+    await harness.run(name, mode="fake", shape="crews", size=4, cap=2.0)
+    done = await ended(name)
+    assert done["counts"] == {"landed": 0, "failed": 4, "claimed": 0, "free": 0}
+    rows = await pool.fetch(
+        "select region, reason from failures where scope = 'moon' and survey = $1", name
+    )
+    assert len(rows) == 4 and {r["reason"] for r in rows} == {"merge: no dossier.json"}
 
 
 def test_shares_are_even_contiguous_runs_and_crews_follow_the_size():

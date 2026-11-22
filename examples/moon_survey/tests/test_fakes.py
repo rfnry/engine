@@ -46,25 +46,28 @@ def notice(job, agent, kind="finished"):
     )
 
 
-def survey_input(regions, shares=None, second=()):
-    return json.dumps(
-        {
-            "name": "s",
-            "regions": regions,
-            "shares": shares if shares is not None else [regions],
-            "second": list(second),
-        }
-    )
+def survey(regions, shares=None, second=()):
+    given = {
+        "name": "s",
+        "regions": regions,
+        "shares": shares if shares is not None else [regions],
+        "second": list(second),
+    }
+    return f"<<<AGENT>>>\nlead\n\n<<<CONTEXT>>>\n{json.dumps(given)}"
+
+
+START = "start the survey"
 
 
 class Convo:
-    def __init__(self, model, first):
+    def __init__(self, model, first, system="system"):
         self.model = model
+        self.system = system
         self.messages = [person(first)]
         self.n = 0
 
     async def next(self):
-        reply = await self.model.generate("system", self.messages, [])
+        reply = await self.model.generate(self.system, self.messages, [])
         self.messages.append(
             Message(
                 role="assistant",
@@ -159,16 +162,16 @@ async def test_the_surveyor_claims_reads_measures_writes_checks_and_notes(tmp_pa
         ["claim"],
         ["region"],
         ["notes"] * len(neighbours),
-        ["fetch"],
         ["Shell"],
+        ["fetch"],
         ["Write"],
         ["Shell"],
         ["note"],
     ]
     assert seen[0].tool_calls[0].args == {"region": REGION}
     assert [c.args["region"] for c in seen[2].tool_calls] == neighbours
-    assert seen[3].tool_calls[0].args == {"url": GRS}
-    assert "measure.py" in seen[4].tool_calls[0].args["command"]
+    assert "measure.py" in seen[3].tool_calls[0].args["command"]
+    assert seen[4].tool_calls[0].args == {"url": GRS}
     assert seen[5].tool_calls[0].args["path"] == "dossier.json"
     assert 'check.py" dossier.json' in seen[6].tool_calls[0].args["command"]
     assert seen[7].tool_calls[0].args["kind"] == "finding"
@@ -365,15 +368,8 @@ async def test_a_resumed_captain_goes_on_from_the_conversation_it_is_given():
 
 async def test_the_lead_starts_a_captain_for_each_share():
     models = build()
-    first = json.dumps(
-        {
-            "name": "s",
-            "regions": ["R1", "R2", "R3", "R4"],
-            "shares": [["R1", "R2"], ["R3", "R4"]],
-            "second": ["R2", "R4"],
-        }
-    )
-    convo = Convo(models["lead"], first)
+    plan = survey(["R1", "R2", "R3", "R4"], [["R1", "R2"], ["R3", "R4"]], ["R2", "R4"])
+    convo = Convo(models["lead"], START, system=plan)
     reply = await convo.next()
     assert [c.args["agent"] for c in reply.tool_calls] == ["captain", "captain"]
     assert all(c.args["background"] is True for c in reply.tool_calls)
@@ -395,29 +391,14 @@ async def test_the_lead_starts_a_captain_for_each_share():
 
 async def test_a_lead_given_a_later_input_starts_captains_for_the_regions_left():
     models = build()
-    convo = Convo(
-        models["lead"],
-        json.dumps(
-            {
-                "name": "s",
-                "regions": ["R1", "R2", "R3", "R4"],
-                "shares": [["R1", "R2"], ["R3", "R4"]],
-                "second": ["R2", "R4"],
-            }
-        ),
-    )
+    plan = survey(["R1", "R2", "R3", "R4"], [["R1", "R2"], ["R3", "R4"]], ["R2", "R4"])
+    convo = Convo(models["lead"], START, system=plan)
     reply = await convo.next()
     convo.answer(reply, {"job": "d1"}, {"job": "d2"})
     convo.tell("d1", "captain")
     convo.tell("d2", "captain", "lost")
-    later = {
-        "name": "s",
-        "regions": ["R3", "R4"],
-        "shares": [["R3"], ["R4"]],
-        "second": ["R4"],
-        "resumed": "the process restarted; carry on",
-    }
-    convo.messages.append(person(json.dumps(later)))
+    convo.system = survey(["R3", "R4"], [["R3"], ["R4"]], ["R4"])
+    convo.messages.append(person("the process restarted; carry on"))
     reply = await convo.next()
     assert [c.args["agent"] for c in reply.tool_calls] == ["captain", "captain"]
     assert [json.loads(c.args["input"]) for c in reply.tool_calls] == [
@@ -435,19 +416,80 @@ async def test_a_lead_given_a_later_input_starts_captains_for_the_regions_left()
 
 async def test_flat_given_a_later_input_starts_surveyors_for_the_regions_left():
     models = build()
-    convo = Convo(models["flat"], survey_input(["R1", "R2"]))
+    convo = Convo(models["flat"], START, system=survey(["R1", "R2"]))
     reply = await convo.next()
     convo.answer(reply, {"job": "d1"}, {"job": "d2"})
     convo.tell("d1", "surveyor", "lost")
     convo.tell("d2", "surveyor", "lost")
-    convo.messages.append(person(survey_input(["R2"])))
+    convo.system = survey(["R2"])
+    convo.messages.append(person("the process restarted; carry on"))
     reply = await convo.next()
     assert [json.loads(c.args["input"]) for c in reply.tool_calls] == [{"region": "R2"}]
 
 
+async def test_a_lead_without_its_survey_in_the_context_is_refused():
+    with pytest.raises(Exception, match="fakes: the lead's survey is not in its context"):
+        await build()["lead"].generate("system", [person(START)], [])
+
+
+async def test_a_lead_whose_window_moved_past_its_input_reads_its_jobs():
+    plan = survey(["R1", "R2", "R3", "R4"], [["R1", "R2"], ["R3", "R4"]])
+    convo = Convo(build()["lead"], START, system=plan)
+    convo.messages = [notice("d1", "captain")]
+    reply = await convo.next()
+    assert names(reply) == ["Jobs"]
+    convo.answer(
+        reply,
+        {
+            "jobs": [
+                {"job": "d1", "agent": "captain", "running": False, "ended": "finished"},
+                {"job": "d2", "agent": "captain", "running": True},
+            ]
+        },
+    )
+    waiting = await convo.next()
+    assert waiting.tool_calls == [] and "1 helpers" in waiting.text
+    convo.tell("d2", "captain")
+    note = await convo.next()
+    assert names(note) == ["note"] and note.tool_calls[0].args["region"] == "R1"
+    assert "2 captains: 2 finished" in note.tool_calls[0].args["text"]
+
+
+async def test_a_captain_whose_window_moved_crosschecks_from_its_notices():
+    plan = survey(["R1", "R2"], [["R1", "R2"]], ["R2"])
+    convo = Convo(build()["captain"], json.dumps({"share": ["R1", "R2"]}), system=plan)
+    convo.messages = [
+        person("[helper d1 · surveyor · finished]\nN00-15/3: dossier written"),
+        person("[helper d2 · surveyor · finished]\nN00-15/4: dossier written"),
+    ]
+    plan = survey(["N00-15/3", "N00-15/4"], second=["N00-15/4"])
+    convo.system = plan
+    reply = await convo.next()
+    assert names(reply) == ["Jobs"]
+    convo.answer(
+        reply,
+        {
+            "jobs": [
+                {"job": "d1", "agent": "surveyor", "running": False, "ended": "finished"},
+                {"job": "d2", "agent": "surveyor", "running": False, "ended": "finished"},
+            ]
+        },
+    )
+    reply = await convo.next()
+    assert [(c.args["agent"], json.loads(c.args["input"])) for c in reply.tool_calls] == [
+        ("crosscheck", {"region": "N00-15/3"}),
+        ("crosscheck_second", {"region": "N00-15/4"}),
+    ]
+    convo.answer(reply, {"job": "d3"}, {"job": "d4"})
+    convo.tell("d3", "crosscheck")
+    convo.tell("d4", "crosscheck_second")
+    note = await convo.next()
+    assert names(note) == ["note"] and note.tool_calls[0].args["region"] == "N00-15/3"
+
+
 async def test_flat_starts_a_surveyor_for_each_region_and_crosschecks_its_finished():
     models = build()
-    convo = Convo(models["flat"], survey_input(["R1", "R2", "R3"], second=["R3"]))
+    convo = Convo(models["flat"], START, system=survey(["R1", "R2", "R3"], second=["R3"]))
     reply = await convo.next()
     assert [c.args["agent"] for c in reply.tool_calls] == ["surveyor"] * 3
     assert [json.loads(c.args["input"]) for c in reply.tool_calls] == [
@@ -461,24 +503,39 @@ async def test_flat_starts_a_surveyor_for_each_region_and_crosschecks_its_finish
     assert reply.tool_calls[0].args["agent"] == "crosscheck_second"
 
 
-async def test_the_crosscheck_reads_the_notes_agrees_and_ends():
+async def test_the_crosscheck_reads_the_dossier_and_the_neighbours_notes_then_agrees():
     convo = Convo(build()["crosscheck"], json.dumps({"region": REGION}))
     reply = await convo.next()
-    assert names(reply) == ["notes"] and reply.tool_calls[0].args == {"region": REGION}
-    convo.answer(reply, {"notes": [{"kind": "finding"}, {"kind": "finding"}]})
+    assert names(reply) == ["dossier"] and reply.tool_calls[0].args == {"region": REGION}
+    convo.answer(reply, {"region": REGION, "landed": {"region": REGION}, "measured": {}})
+    reply = await convo.next()
+    assert names(reply) == ["region"]
+    convo.answer(reply, {"region": REGION, "neighbours": ["N15-30/1", "N15-30/3"]})
+    reply = await convo.next()
+    assert names(reply) == ["notes", "notes"]
+    assert [c.args["region"] for c in reply.tool_calls] == ["N15-30/1", "N15-30/3"]
+    convo.answer(reply, {"notes": [{"kind": "finding"}]}, {"notes": [{"kind": "finding"}]})
     reply = await convo.next()
     assert names(reply) == ["note"]
     args = reply.tool_calls[0].args
     assert (args["region"], args["kind"]) == (REGION, "agree")
-    assert "2" in args["text"]
+    assert "2 notes" in args["text"]
     convo.answer(reply, {"note": 3})
     final = await convo.next()
     assert final.tool_calls == [] and final.text and "\n" not in final.text
 
 
+async def test_a_crosscheck_with_no_landed_dossier_ends_at_once():
+    convo = Convo(build()["crosscheck"], json.dumps({"region": REGION}))
+    reply = await convo.next()
+    convo.answer(reply, {"region": REGION, "landed": None, "measured": {}})
+    final = await convo.next()
+    assert final.tool_calls == [] and "no landed dossier" in final.text
+
+
 async def test_the_second_crosscheck_plays_the_same_script():
     convo = Convo(build()["crosscheck_second"], json.dumps({"region": REGION}))
-    assert names(await convo.next()) == ["notes"]
+    assert names(await convo.next()) == ["dossier"]
 
 
 async def test_the_crosscheck_ends_quoting_an_error():

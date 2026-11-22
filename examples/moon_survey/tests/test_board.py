@@ -1,14 +1,16 @@
 import asyncio
 import secrets
+from pathlib import Path
 
 import pytest
 from rfnry_engine import CallInfo
 
 import board as board_module
 import moon
-from board import Board, BoardError, board_tools, create_survey
+from board import Board, BoardError, board_tools, create_survey, write_note
 
 REGIONS = [r.id for r in moon.regions()]
+CUT = Path(__file__).resolve().parent / "data" / "lp_cut"
 SECOND = {REGIONS[3], REGIONS[4]}
 
 
@@ -42,7 +44,18 @@ def caller(monkeypatch):
 
 async def made(pool, scope, flight=None, regions=None, second=SECOND):
     flight = flight or Flight("a", "b", "c")
-    await create_survey(pool, scope, "s", 5.0, second, regions or REGIONS)
+    await create_survey(
+        pool,
+        scope,
+        "s",
+        5.0,
+        second,
+        regions or REGIONS,
+        mode="fake",
+        shape="crews",
+        crews=1,
+        status="running",
+    )
     return Board(pool, scope, "s", live=flight), flight
 
 
@@ -174,7 +187,18 @@ async def test_an_unknown_region_is_refused(pool, scope):
 
 async def test_surveys_do_not_see_each_other(pool, scope):
     board, flight = await made(pool, scope)
-    await create_survey(pool, scope, "other", 1.0, set(), REGIONS)
+    await create_survey(
+        pool,
+        scope,
+        "other",
+        1.0,
+        set(),
+        REGIONS,
+        mode="fake",
+        shape="crews",
+        crews=1,
+        status="running",
+    )
     other = Board(pool, scope, "other", live=flight)
     await board.claim(REGIONS[0], "a")
     await board.note(REGIONS[0], "a", "finding", "x")
@@ -210,7 +234,7 @@ async def test_counts_follow_claims_and_landings(pool, scope):
 async def test_the_tools_act_for_the_run_that_calls(pool, scope, caller):
     board, _ = await made(pool, scope)
     tools = board_tools(board)
-    assert sorted(tools.names) == ["claim", "note", "notes", "region"]
+    assert sorted(tools.names) == ["claim", "dossier", "note", "notes", "region"]
     got = await caller(tools, "claim", {"region": REGIONS[0]}, "a")
     assert got == {"claimed": True, "by": "a"}
     await caller(tools, "note", {"region": REGIONS[0], "kind": "finding", "text": "x"}, "a")
@@ -312,3 +336,60 @@ async def test_a_landing_waits_for_the_claim_row_lock(pool, scope):
         assert not landing.done()
         await tx.commit()
     assert await landing is True
+
+
+async def test_the_dossier_tool_reads_the_landed_dossier_beside_the_measured_values(
+    pool, scope, caller, monkeypatch
+):
+    monkeypatch.setenv("MOON_SURVEY_DATA", str(CUT))
+    board, _ = await made(pool, scope)
+    tools = board_tools(board)
+    region = "S75-90/0"
+    before = await caller(tools, "dossier", {"region": region})
+    assert before["region"] == region and before["landed"] is None
+    measured = moon.measured(region)
+    assert before["measured"]["FeO"] == {
+        "mean": measured["FeO"].mean,
+        "error": measured["FeO"].error,
+        "pixels": measured["FeO"].pixels,
+        "unit": "wt%",
+    }
+    assert before["measured"]["H"]["unit"] == "ppm" and before["measured"]["Th"]["unit"] == "ppm"
+    await board.claim(region, "a")
+    await board.land(row(region, dossier={"region": region, "values": {}}))
+    after = await caller(tools, "dossier", {"region": region})
+    assert after["landed"] == {"region": region, "values": {}}
+    assert set(after) == {"region", "landed", "measured"}
+    empty = await caller(tools, "dossier", {"region": "N60-75/5"})
+    assert empty["measured"]["FeO"] is None
+
+
+async def test_a_note_is_written_on_the_connection_that_creates_the_survey(pool, scope):
+    async with pool.acquire() as conn, conn.transaction():
+        await create_survey(
+            conn,
+            scope,
+            "s",
+            5.0,
+            set(),
+            REGIONS[:2],
+            mode="hostile",
+            shape="crews",
+            crews=1,
+            status="running",
+        )
+        note = await write_note(conn, scope, "s", REGIONS[0], "planted", "finding", "x")
+        assert await pool.fetchval("select count(*) from notes where scope = $1", scope) == 0
+    found = await Board(pool, scope, "s", live=Flight()).notes(REGIONS[0])
+    assert [(n["id"], n["author"], n["kind"]) for n in found] == [(note, "planted", "finding")]
+    with pytest.raises(BoardError, match="board: region .* is not in survey 's'"):
+        await write_note(pool, scope, "s", REGIONS[5], "planted", "finding", "x")
+
+
+async def test_failed_lists_each_region_with_a_failure_once(pool, scope):
+    board, _ = await made(pool, scope)
+    assert await board.failed() == set()
+    await board.fail(REGIONS[0], "a", "first")
+    await board.fail(REGIONS[0], "b", "second")
+    await board.fail(REGIONS[1], "a", "third")
+    assert await board.failed() == {REGIONS[0], REGIONS[1]}
