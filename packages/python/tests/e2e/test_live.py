@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -6,7 +7,17 @@ import pytest
 from unit.fakes import MemoryBucket
 from unit.trees import provided, write_folder
 
-from rfnry_engine import ChoiceAnswer, Decision, Engine, Generation, Refinery, Step, Storage
+from rfnry_engine import (
+    ChoiceAnswer,
+    Decision,
+    Engine,
+    Generation,
+    Message,
+    Refinery,
+    Step,
+    Storage,
+    ToolSpec,
+)
 
 pytestmark = pytest.mark.live
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "agents"
@@ -209,10 +220,7 @@ def handed_out(step: Step) -> str | None:
     return None
 
 
-@pytest.mark.xfail(strict=False)
-async def test_a_live_lead_starts_two_helpers_and_answers_after_both(
-    adapters: Any, tmp_path: Path
-) -> None:
+def team_folder(tmp_path: Path) -> Path:
     agents = tmp_path / "agents"
     agents.mkdir()
     write_folder(
@@ -248,6 +256,14 @@ async def test_a_live_lead_starts_two_helpers_and_answers_after_both(
             "summarizer.md": "Summarize the input in five words. Reply with the summary only.\n",
         },
     )
+    return agents
+
+
+@pytest.mark.xfail(strict=False)
+async def test_a_live_lead_starts_two_helpers_and_answers_after_both(
+    adapters: Any, tmp_path: Path
+) -> None:
+    agents = team_folder(tmp_path)
     async with Engine(
         agents, providers=provided({"strong": adapters.generation(), "judge": None})
     ) as engine:
@@ -257,3 +273,67 @@ async def test_a_live_lead_starts_two_helpers_and_answers_after_both(
     assert len(run.children) == len(started)
     noticed = {m.notice.job for m in run.conversation if m.notice is not None}
     assert noticed == set(started)
+
+
+class ListStore:
+    def __init__(self) -> None:
+        self.lists: dict[tuple[str, str], list[Message]] = {}
+
+    async def length(self, scope: str, conversation: str) -> int:
+        return len(self.lists.get((scope, conversation), []))
+
+    async def read(
+        self, scope: str, conversation: str, start: int, stop: int | None = None
+    ) -> list[Message]:
+        return self.lists.get((scope, conversation), [])[start:stop]
+
+    async def append(self, scope: str, conversation: str, messages: Sequence[Message]) -> None:
+        self.lists.setdefault((scope, conversation), []).extend(messages)
+
+    async def window(self, scope: str, conversation: str, length: int) -> int:
+        return 0
+
+
+class Recorder:
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.sent: list[list[Message]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Any:
+        self.sent.append(list(messages))
+        return await self.inner.generate(system, messages, tools)
+
+
+@pytest.mark.xfail(strict=False)
+async def test_a_live_lead_keeps_its_team_in_a_store(adapters: Any, tmp_path: Path) -> None:
+    agents = team_folder(tmp_path)
+    store, recorder = ListStore(), Recorder(adapters.generation())
+    async with Engine(agents, providers=provided({"strong": recorder, "judge": None})) as engine:
+        run = await engine.run(
+            "lead",
+            "live",
+            "The harbor was calm and the boats rested at dawn.",
+            store=store,
+            conversation="live-1",
+        )
+        assert isinstance(run, Generation) and run.reply
+        assert store.lists[("live", "live-1")] == run.conversation
+        started = [
+            job for step in run.steps if step.tool == "Delegate" if (job := handed_out(step))
+        ]
+        assert started, "the live lead started no helper, so the helpers' keys prove nothing"
+        for job in started:
+            assert store.lists.get(("live", f"live-1/{job}")), f"live-1/{job} is empty"
+        stored = list(store.lists[("live", "live-1")])
+        recorder.sent.clear()
+        again = await engine.run(
+            "lead", "live", "Name the helpers you used.", store=store, conversation="live-1"
+        )
+    assert isinstance(again, Generation) and again.reply
+    first = recorder.sent[0]
+    assert [(m.role, m.content) for m in first[: len(stored)]] == [
+        (m.role, m.content) for m in stored
+    ]
