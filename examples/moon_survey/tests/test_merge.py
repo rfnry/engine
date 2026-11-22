@@ -616,3 +616,22 @@ async def test_two_exports_at_once_do_not_collide(pool, scope, tmp_path, monkeyp
     await asyncio.gather(export_map(board, path), export_map(board, path))
     assert list(tmp_path.iterdir()) == [path]
     assert len(json.loads(path.read_text())["regions"]) == 2
+
+
+@pytest.mark.parametrize("step", ["marked", "data_check", "truth_check"])
+async def test_a_step_over_a_dossier_that_raises_fails_its_region(
+    pool, scope, dossier, monkeypatch, step
+):
+    import merge as merge_module
+
+    def broken(*args):
+        raise KeyError("boom")
+
+    monkeypatch.setattr(merge_module, step, broken)
+    board, places, merge = await made(pool, scope, [REGION])
+    await board.claim(REGION, "a")
+    places.put("a", dossier)
+    await merge.on_event(ended("a"))
+    [found] = await failures(pool, scope)
+    assert found["reason"].startswith("merge: dossier.json cannot be merged: KeyError")
+    assert await board.landed() == []

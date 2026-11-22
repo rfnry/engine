@@ -248,8 +248,28 @@ class Merge:
             )
             return
         fetched = await self.fetches.urls(event.run_id)
+        async with self.lock:
+            since = await self.board.claimed_at(event.run_id)
+            notes = [
+                n
+                for n in await self.board.notes(region)
+                if n["author"] in self.crosschecks and since is not None and n["at"] >= since
+            ]
+            try:
+                row = self.row(event, region, dossier, fetched)
+                for note in notes:
+                    fold(row["dossier"], row["disputes"], note["author"], note)
+            except Exception as error:
+                reason = f"merge: {DOSSIER} cannot be merged: {type(error).__name__}: {error}"
+                await self.board.fail(region, event.run_id, reason)
+                return
+            await self.board.land(row)
+
+    def row(
+        self, event: RunEnded, region: str, dossier: dict[str, Any], fetched: set[str]
+    ) -> dict[str, Any]:
         provider = self.provider(event.agent)
-        row = {
+        return {
             "region": region,
             "run_id": event.run_id,
             "provider": provider,
@@ -260,12 +280,6 @@ class Merge:
             "truth": truth_check(dossier, self.truth),
             "disputes": [],
         }
-        async with self.lock:
-            since = await self.board.claimed_at(event.run_id)
-            for note in await self.board.notes(region):
-                if note["author"] in self.crosschecks and since is not None and note["at"] >= since:
-                    fold(row["dossier"], row["disputes"], note["author"], note)
-            await self.board.land(row)
 
     async def crosscheck(self, event: RunEnded) -> None:
         async with self.lock:
