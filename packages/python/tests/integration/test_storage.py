@@ -1,7 +1,7 @@
 import asyncio
 import json
 import shutil
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,6 +18,7 @@ from unit.fakes import (
     Desk,
     MemoryBucket,
     Scripted,
+    Seen,
     ask,
     background,
     crew,
@@ -31,8 +32,11 @@ from unit.fakes import (
     text_reply,
     until,
 )
+from unit.test_store_resume import RESTART, ended, lost, sent
+from unit.test_store_tree import jobs
 from unit.trees import provided, write_folder
 
+from integration.stores import PostgresStore, held
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import NotFoundError, StorageError
 from rfnry_engine.models import (
@@ -1366,3 +1370,138 @@ async def test_a_lead_s_children_are_stored_and_read_back_in_the_order_they_ende
     body = row.body["conversation"]
     assert sum("notice" in m for m in body) == len(notices)
     assert "notice" not in body[0]
+
+
+class Written(PostgresStorage):
+    def __init__(self, pool: Any) -> None:
+        super().__init__(pool)
+        self.written: list[str] = []
+
+    async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
+        await super().put_runs(scope, rows)
+        self.written.extend(row.run_id for row in rows)
+
+
+def waiting_on(job: str, call_id: str) -> Reply:
+    call = ToolCall(id=call_id, name="Job", args={"id": job, "wait": 600})
+    return Reply(tool_calls=[call], stop_reason="tool_use")
+
+
+async def stored(
+    store: PostgresStore, conversation: str, check: Callable[[list[Message]], bool], what: str
+) -> None:
+    try:
+        async with asyncio.timeout(10):
+            while not check(await held(store, "acme", conversation)):
+                await asyncio.sleep(0.01)
+    except TimeoutError:
+        pytest.fail(f"{what} never happened")
+
+
+def exported(bucket: MemoryBucket) -> list[tuple[str, str | None]]:
+    rows = [
+        json.loads(line) for data in bucket.objects.values() for line in data.decode().splitlines()
+    ]
+    return sorted((row["run_id"], row["parent_run_id"]) for row in rows)
+
+
+async def test_a_run_cut_off_mid_flight_resumes_in_a_new_engine(
+    tmp_path: Path, pool: Any, storage: Storage, store: PostgresStore
+) -> None:
+    folder = crew(tmp_path, background=True)
+    recorded, gate, never, seen = Written(pool), asyncio.Event(), asyncio.Event(), Seen()
+    model = Crew(
+        [
+            background("one", prefix="a"),
+            gate,
+            waiting_on("d1", "j1"),
+            background("two", prefix="c"),
+            waiting_on("d2", "j2"),
+        ],
+        {"one": [text_reply("one done")], "two": [never, text_reply("never")]},
+    )
+    first = team(folder, model, refinery=Refinery(recorded), tool_timeout=None)
+    work = asyncio.create_task(
+        first.run("lead", "acme", "go", store=store, conversation="c1", on_event=seen)
+    )
+    await until(lambda: len(recorded.written) == 1, "d1's record")
+    gate.set()
+    cut = waiting_on("d2", "j2").tool_calls
+    await stored(store, "c1", lambda m: bool(m) and m[-1].tool_calls == cut, "reply 4 stored")
+    await until(lambda: len(model.calls["two"]) == 1, "d2's model call")
+    work.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await work
+    await first.close()
+    [lost_lead] = seen.started(below=False)
+    old = await held(store, "acme", "c1")
+    assert old[-1].role == "assistant" and old[-1].tool_calls == cut
+    assert all(message.tool_call_id != "j2" for message in old)
+    [finished] = [m.notice for m in old if m.notice is not None]
+    assert (finished.job, finished.kind) == ("d1", "finished") and finished.run_id is not None
+    one = finished.run_id
+    refinery = Refinery(storage)
+    helper = await refinery.run("acme", one)
+    assert isinstance(helper, Generation) and helper.input == "one"
+    assert helper.parent_run_id == lost_lead
+    assert await held(store, "acme", "c1/d1") == helper.conversation
+    assert await held(store, "acme", "c1/d2") == [Message(role="user", content="two")]
+    assert await storage.get_run("acme", lost_lead) is None
+    with pytest.raises(NotFoundError):
+        await refinery.run("acme", lost_lead)
+
+    again, later = Written(pool), asyncio.Event()
+    resumed = Crew(
+        [background("three", prefix="e"), later, waiting_on("d3", "j3"), text_reply("resumed")],
+        {"three": [text_reply("three done")]},
+    )
+    refinery = Refinery(again)
+    async with team(folder, resumed, refinery=refinery, tool_timeout=None) as second:
+        work = asyncio.create_task(
+            second.run("lead", "acme", RESTART, store=PostgresStore(pool), conversation="c1")
+        )
+        await until(lambda: len(again.written) == 1, "d3's record")
+        later.set()
+        run = await asyncio.wait_for(work, 5)
+        assert isinstance(run, Generation) and run.reply == "resumed"
+        asked = Message(role="user", content=RESTART)
+        mended = [ended("j2", "Job"), lost("d2")]
+        assert resumed.calls["lead"][0][-3:] == sent([*mended, asked])
+        assert [step.result for step in run.steps if step.tool == "Delegate"] == ['{"job": "d3"}']
+        three = jobs(run)["d3"]
+        assert isinstance(three, Generation) and three.conversation[0].content == "three"
+        assert await held(store, "acme", "c1/d3") == three.conversation
+        after = await held(store, "acme", "c1")
+        assert after == [*old, *mended, *run.added] == run.conversation
+        assert run.run_id != lost_lead
+        assert await refinery.run("acme", run.run_id) == run
+        tree = await storage.run_tree("acme", run_ids=[one])
+        assert [(row.run_id, row.parent_run_id) for row in tree] == [(one, lost_lead)]
+        assert [pair async for pair in refinery.replay("acme", second, agent="worker")] == []
+        bucket = MemoryBucket()
+        await refinery.export("acme", bucket)
+        assert exported(bucket) == sorted(
+            [(one, lost_lead), (three.run_id, run.run_id), (run.run_id, None)]
+        )
+
+
+async def test_a_store_team_reads_back_by_its_tag(
+    tmp_path: Path, storage: Storage, store: PostgresStore
+) -> None:
+    model = Crew(
+        [background("part one", "part two"), *[text_reply("waiting")] * 4],
+        {"part one": [text_reply("one")], "part two": [text_reply("two")]},
+    )
+    engine = team(crew(tmp_path, background=True), model, refinery=Refinery(storage))
+    run = await engine.run(
+        "lead", "acme", "go", store=store, conversation="c1", tags={"conversation": "c1"}
+    )
+    other = await engine.run(
+        "lead", "acme", "go on", store=store, conversation="c2", tags={"conversation": "c2"}
+    )
+    assert isinstance(run, Generation) and len(run.children) == 2
+    team_ids = sorted([run.run_id, *[child.run_id for child in run.children]])
+    rows = await storage.run_tree("acme", tags={"conversation": "c1"})
+    assert sorted(row.run_id for row in rows) == team_ids
+    alone = await storage.run_tree("acme", tags={"conversation": "c2"})
+    assert [row.run_id for row in alone] == [other.run_id]

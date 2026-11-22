@@ -1,7 +1,7 @@
 import asyncio
 import copy
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -10,18 +10,22 @@ from unit.fakes import (
     SORTER,
     SORTER_ENTRY,
     Answering,
+    Crew,
     Desk,
     MemoryBucket,
     Scripted,
     Seen,
     answer_to,
+    background,
     crew,
     delegate_triage,
+    team,
     text_reply,
     until,
 )
 from unit.trees import provided, tooled, write_folder
 
+from integration.stores import PostgresStore, held
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import NotFoundError
 from rfnry_engine.models import (
@@ -334,3 +338,71 @@ async def test_one_tenant_cannot_send_to_or_stop_another_tenant_s_run(
         assert isinstance(run, Generation)
         assert run.stopped is None and run.reply == "done"
         assert [m.content for m in run.conversation if m.role == "user"] == ["go"]
+
+
+class Logged:
+    def __init__(self, store: PostgresStore) -> None:
+        self.store = store
+        self.log: list[tuple[str, str, str]] = []
+
+    async def length(self, scope: str, conversation: str) -> int:
+        self.log.append(("length", scope, conversation))
+        return await self.store.length(scope, conversation)
+
+    async def read(
+        self, scope: str, conversation: str, start: int, stop: int | None = None
+    ) -> Sequence[object]:
+        self.log.append(("read", scope, conversation))
+        return await self.store.read(scope, conversation, start, stop)
+
+    async def append(self, scope: str, conversation: str, messages: Sequence[Message]) -> None:
+        self.log.append(("append", scope, conversation))
+        await self.store.append(scope, conversation, messages)
+
+    async def window(self, scope: str, conversation: str, length: int) -> int:
+        self.log.append(("window", scope, conversation))
+        return await self.store.window(scope, conversation, length)
+
+
+async def test_store_conversations_stay_inside_their_tenant(
+    tmp_path: Path, store: PostgresStore
+) -> None:
+    model = Crew(
+        [],
+        {
+            "acme go": [background("acme part"), *[text_reply("acme waits")] * 3],
+            "other go": [background("other part"), *[text_reply("other waits")] * 3],
+            "acme part": [text_reply("acme done")],
+            "other part": [text_reply("other done")],
+        },
+        marker="no lead is told apart by its system prompt",
+    )
+    engine = team(crew(tmp_path, background=True), model)
+    acme, other, again = Logged(store), Logged(store), Logged(store)
+    first = await engine.run("lead", "acme", "acme go", store=acme, conversation="c1")
+    assert isinstance(first, Generation)
+    assert await store.length("acme", "c1") == len(first.conversation)
+    theirs = await engine.run("lead", "other", "other go", store=other, conversation="c1")
+    second = await engine.run("lead", "acme", "and now?", store=again, conversation="c1")
+    assert isinstance(theirs, Generation) and isinstance(second, Generation)
+    assert [(m.role, m.content) for m in model.calls["other go"][0]] == [("user", "other go")]
+    assert await held(store, "other", "c1") == theirs.conversation
+    assert await held(store, "acme", "c1") == second.conversation
+    assert second.conversation[: len(first.conversation)] == first.conversation
+    for logged, scope, methods in (
+        (acme, "acme", {"length", "append", "window"}),
+        (other, "other", {"length", "append", "window"}),
+        (again, "acme", {"length", "read", "append", "window"}),
+    ):
+        assert {called for called, _, _ in logged.log} == methods
+        assert {given for _, given, _ in logged.log} == {scope}
+    assert {key for _, _, key in other.log} == {"c1", "c1/d1"}
+    assert ("length", "other", "c1/d1") in other.log
+    for run in (first, theirs):
+        assert [step.result for step in run.steps if step.tool == "Delegate"] == ['{"job": "d1"}']
+    [mine], [yours] = first.children, theirs.children
+    assert isinstance(mine, Generation) and isinstance(yours, Generation)
+    assert await held(store, "acme", "c1/d1") == mine.conversation
+    assert await held(store, "other", "c1/d1") == yours.conversation
+    assert mine.conversation[0].content == "acme part"
+    assert yours.conversation[0].content == "other part"
