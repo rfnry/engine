@@ -19,7 +19,9 @@ async def pool():
         made = await asyncpg.create_pool(url, server_settings={"search_path": schema})
         yield made
     finally:
-        if made is not None:
-            await made.close()
-        await admin.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
-        await admin.close()
+        try:
+            if made is not None:
+                await made.close()
+            await admin.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        finally:
+            await admin.close()

@@ -1,5 +1,6 @@
 import json
 import math
+import os
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -7,6 +8,14 @@ from types import MappingProxyType
 
 COUNTS = (33, 31, 27, 20, 13, 1)
 STEP = 15
+GRS_FILE = "lpgrs_high1_elem_abundance_2deg.tab"
+HYDROGEN_FILE = "hydrogenlow.txt"
+GRS_COLUMNS = {
+    "Al2O3": (8, 25, 100.0),
+    "TiO2": (11, 46, 100.0),
+    "FeO": (12, 51, 100.0),
+    "Th": (14, 58, 1.0),
+}
 
 
 @dataclass(frozen=True)
@@ -28,7 +37,25 @@ class Region:
         return math.radians(self.lon_max - self.lon_min) * height
 
 
+@dataclass(frozen=True)
+class Value:
+    mean: float
+    error: float
+    pixels: int
+
+
+@dataclass(frozen=True)
+class Pixel:
+    lat: float
+    lon: float
+    values: dict[str, tuple[float, float]]
+
+
 class RegionError(LookupError):
+    pass
+
+
+class DataError(FileNotFoundError):
     pass
 
 
@@ -128,6 +155,68 @@ def shares(size: int = 25) -> list[list[str]]:
         cells = [cell_id(key, k) for k in range(COUNTS[key[1]])]
         walk.extend(cells if n % 2 == 0 else reversed(cells))
     return [walk[i : i + size] for i in range(0, len(walk), size)]
+
+
+def data_dir() -> Path:
+    given = os.environ.get("MOON_SURVEY_DATA")
+    if given:
+        return Path(given)
+    return Path(__file__).resolve().parent.parent / "data" / "lp"
+
+
+def read_lines(directory: Path, name: str) -> list[str]:
+    path = directory / name
+    if not path.is_file():
+        raise DataError(f"moon: data/lp/{name} is missing; run uv run src/setup.py data")
+    return [line for line in path.read_text().splitlines() if line.strip()]
+
+
+def read_grs(directory: Path) -> list[Pixel]:
+    found = []
+    for line in read_lines(directory, GRS_FILE):
+        cells = line.split()
+        values = {
+            key: (float(cells[value]) * scale, math.sqrt(float(cells[error])) * scale)
+            for key, (value, error, scale) in GRS_COLUMNS.items()
+        }
+        lat = (float(cells[1]) + float(cells[2])) / 2
+        lon = (float(cells[3]) + float(cells[4])) / 2
+        found.append(Pixel(lat, lon, values))
+    return found
+
+
+def read_hydrogen(directory: Path) -> list[Pixel]:
+    found = []
+    for line in read_lines(directory, HYDROGEN_FILE):
+        if line.startswith("#"):
+            continue
+        low, high, west, east, value = (float(x) for x in line.split(","))
+        found.append(Pixel((low + high) / 2, (west + east) / 2, {"H": (value, 0.0)}))
+    return found
+
+
+@cache
+def pixels_by_region(directory: Path) -> MappingProxyType[str, tuple[Pixel, ...]]:
+    grouped: dict[str, list[Pixel]] = {}
+    for pixel in read_grs(directory) + read_hydrogen(directory):
+        grouped.setdefault(region_of(pixel.lat, pixel.lon), []).append(pixel)
+    return MappingProxyType({k: tuple(v) for k, v in grouped.items()})
+
+
+def measured(region_id: str) -> dict[str, Value | None]:
+    region(region_id)
+    inside = pixels_by_region(data_dir()).get(region_id, ())
+    found: dict[str, Value | None] = {}
+    for key in ("FeO", "TiO2", "Al2O3", "Th", "H"):
+        taken = [p.values[key] for p in inside if key in p.values]
+        if not taken:
+            found[key] = None
+            continue
+        n = len(taken)
+        mean = sum(v for v, _ in taken) / n
+        error = math.sqrt(sum(e * e for _, e in taken)) / n
+        found[key] = Value(mean, error, n)
+    return found
 
 
 def write_regions(path: Path) -> None:
