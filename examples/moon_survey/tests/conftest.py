@@ -1,5 +1,8 @@
+import asyncio
 import os
 import secrets
+import sys
+from pathlib import Path
 
 import asyncpg
 import pytest
@@ -19,6 +22,40 @@ async def pool():
     try:
         await admin.execute(f"CREATE SCHEMA {schema}")
         await setup.create_tables(admin, schema)
+        made = await asyncpg.create_pool(url, server_settings={"search_path": schema})
+        yield made
+    finally:
+        try:
+            if made is not None:
+                await made.close()
+            await admin.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        finally:
+            await admin.close()
+
+
+@pytest_asyncio.fixture(scope="session")
+async def engine_pool():
+    url = os.environ.get("RFNRY_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("RFNRY_TEST_POSTGRES_URL is not set")
+    schema = f"moon_engine_test_{secrets.token_hex(6)}"
+    cli = Path(sys.executable).parent / "rfnry-engine"
+    admin = await asyncpg.connect(url)
+    made = None
+    try:
+        created = await asyncio.create_subprocess_exec(
+            str(cli),
+            "create",
+            "--schema",
+            schema,
+            "--url",
+            url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await created.communicate()
+        if created.returncode:
+            raise RuntimeError(f"rfnry-engine create failed: {err.decode()}")
         made = await asyncpg.create_pool(url, server_settings={"search_path": schema})
         yield made
     finally:

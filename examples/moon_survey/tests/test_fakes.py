@@ -293,6 +293,23 @@ async def test_a_captain_waits_with_no_tool_call_while_its_helpers_run():
     assert (await convo.next()).tool_calls == []
 
 
+async def test_a_captain_reads_a_notice_by_its_first_line_as_the_engine_sends_it():
+    convo = captain()
+    reply = await convo.next()
+    convo.answer(reply, {"job": "d1"}, {"job": "d2"}, {"job": "d3"})
+    convo.messages.append(person("[helper d1 · surveyor · finished]\nR1: dossier written"))
+    reply = await convo.next()
+    assert names(reply) == ["Delegate"]
+    assert json.loads(reply.tool_calls[0].args["input"]) == {"region": "R1"}
+    for job in ("d2", "d3"):
+        convo.messages.append(person(f"[helper {job} · surveyor · lost]\nwhat it did is unknown"))
+    convo.answer(reply, {"job": "d4"})
+    convo.messages.append(person("[helper d4 · crosscheck · finished]\nR1: agree"))
+    note = await convo.next()
+    assert names(note) == ["note"] and "1 finished" in note.tool_calls[0].args["text"]
+    assert "2 lost" in note.tool_calls[0].args["text"]
+
+
 async def test_a_captain_takes_the_second_crosscheck_for_a_region_of_its_second_list():
     convo = captain()
     reply = await convo.next()
@@ -374,6 +391,58 @@ async def test_the_lead_starts_a_captain_for_each_share():
     assert "2 captains" in note.tool_calls[0].args["text"]
     convo.answer(note, {"note": 1})
     assert (await convo.next()).tool_calls == []
+
+
+async def test_a_lead_given_a_later_input_starts_captains_for_the_regions_left():
+    models = build()
+    convo = Convo(
+        models["lead"],
+        json.dumps(
+            {
+                "name": "s",
+                "regions": ["R1", "R2", "R3", "R4"],
+                "shares": [["R1", "R2"], ["R3", "R4"]],
+                "second": ["R2", "R4"],
+            }
+        ),
+    )
+    reply = await convo.next()
+    convo.answer(reply, {"job": "d1"}, {"job": "d2"})
+    convo.tell("d1", "captain")
+    convo.tell("d2", "captain", "lost")
+    later = {
+        "name": "s",
+        "regions": ["R3", "R4"],
+        "shares": [["R3"], ["R4"]],
+        "second": ["R4"],
+        "resumed": "the process restarted; carry on",
+    }
+    convo.messages.append(person(json.dumps(later)))
+    reply = await convo.next()
+    assert [c.args["agent"] for c in reply.tool_calls] == ["captain", "captain"]
+    assert [json.loads(c.args["input"]) for c in reply.tool_calls] == [
+        {"share": ["R3"], "second": []},
+        {"share": ["R4"], "second": ["R4"]},
+    ]
+    convo.answer(reply, {"job": "d3"}, {"job": "d4"})
+    assert (await convo.next()).tool_calls == []
+    convo.tell("d3", "captain")
+    convo.tell("d4", "captain")
+    note = await convo.next()
+    args = note.tool_calls[0].args
+    assert args["region"] == "R3" and "2 captains: 2 finished, 0 failed, 0 lost" in args["text"]
+
+
+async def test_flat_given_a_later_input_starts_surveyors_for_the_regions_left():
+    models = build()
+    convo = Convo(models["flat"], survey_input(["R1", "R2"]))
+    reply = await convo.next()
+    convo.answer(reply, {"job": "d1"}, {"job": "d2"})
+    convo.tell("d1", "surveyor", "lost")
+    convo.tell("d2", "surveyor", "lost")
+    convo.messages.append(person(survey_input(["R2"])))
+    reply = await convo.next()
+    assert [json.loads(c.args["input"]) for c in reply.tool_calls] == [{"region": "R2"}]
 
 
 async def test_flat_starts_a_surveyor_for_each_region_and_crosschecks_its_finished():
@@ -472,6 +541,13 @@ async def test_the_gate_says_no_to_a_named_tool():
 async def test_the_gate_raises_a_provider_error_when_down():
     with pytest.raises(ProviderError, match="providers: "):
         await FakeGate(down=True).decide({"tool": "claim"}, questions())
+
+
+async def test_the_gate_reads_the_tool_of_the_state_and_nothing_else():
+    gate = FakeGate(refuse=frozenset({"Shell"}))
+    for state in ({"name": "Shell"}, {"call": {"tool": "Shell"}}, "Shell", {"tool": 3}):
+        decided = await gate.decide(state, questions())
+        assert decided.answers["fits"] == CheckAnswer(probability=1.0)
 
 
 async def test_the_fakes_are_keyed_by_the_folders_model_names():

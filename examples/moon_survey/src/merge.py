@@ -331,7 +331,7 @@ def bounds_of(region: moon.Region) -> dict[str, float]:
     }
 
 
-async def export_map(board: Board, path: Path) -> None:
+async def map_of(board: Board) -> dict[str, Any]:
     landed = {row["region"]: row for row in await board.landed()}
     regions = []
     for region_id in await board.regions():
@@ -350,11 +350,15 @@ async def export_map(board: Board, path: Path) -> None:
                 "provider": row["provider"] if row else None,
             }
         )
-    body = {
+    return {
         "survey": board.survey,
         "made": datetime.now(UTC).isoformat(),
         "regions": regions,
     }
+
+
+async def export_map(board: Board, path: Path) -> None:
+    body = await map_of(board)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".part")
     partial = Path(name)

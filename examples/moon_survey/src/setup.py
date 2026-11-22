@@ -38,6 +38,9 @@ create table if not exists surveys (
     cap double precision not null,
     second text not null,
     regions text not null,
+    mode text not null default 'fake',
+    shape text not null default 'crews',
+    crews integer not null default 1,
     primary key (scope, survey)
 );
 create table if not exists claims (

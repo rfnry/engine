@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import random
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -42,6 +43,7 @@ ENDED = ("finished", "failed", "lost", "stopped")
 ROUNDS = 3
 POLAR = 75
 ROLES = ("lead", "flat", "captain", "surveyor", "crosscheck", "crosscheck_second", "boss")
+NOTICE = re.compile(r"\[helper (d\d+) · (\S+) · (finished|failed|stopped|asks|lost)\]")
 
 
 class FakeError(Exception):
@@ -131,15 +133,29 @@ def usage_of(system: str, messages: list[Message], tools: list[ToolSpec], reply:
     return Usage(input=sent // 4, output=made // 4)
 
 
+def notice_of(message: Message) -> tuple[str, str] | None:
+    if message.role != "user":
+        return None
+    found = NOTICE.fullmatch(text_of(message.content).split("\n", 1)[0])
+    return None if found is None else (found.group(1), found.group(3))
+
+
+def inputs(messages: list[Message]) -> list[int]:
+    found = [n for n, m in enumerate(messages) if m.role == "user" and notice_of(m) is None]
+    if not found:
+        raise FakeError("fakes: the conversation holds no input")
+    return found
+
+
+def parsed(message: Message) -> Any:
+    try:
+        return json.loads(text_of(message.content))
+    except ValueError as error:
+        raise FakeError(f"fakes: the input is not JSON: {error}") from error
+
+
 def first_input(messages: list[Message]) -> Any:
-    for message in messages:
-        if message.role == "user" and message.notice is None:
-            text = text_of(message.content)
-            try:
-                return json.loads(text)
-            except ValueError as error:
-                raise FakeError(f"fakes: the input is not JSON: {error}") from error
-    raise FakeError("fakes: the conversation holds no input")
+    return parsed(messages[inputs(messages)[0]])
 
 
 def one_line(text: str, limit: int = 300) -> str:
@@ -381,7 +397,8 @@ class Team(Fake):
         return list(regions), [("surveyor", {"region": r}) for r in regions]
 
     def script(self, messages: list[Message]) -> Script:
-        given = first_input(messages)
+        messages = messages[inputs(messages)[-1] :]
+        given = parsed(messages[0])
         regions, firsts = self.plan(given)
         second = set(given.get("second", ()))
         found = exchanges(messages)
@@ -394,11 +411,8 @@ class Team(Fake):
                 )
                 for agent, args in firsts
             ]
-        ended = {
-            m.notice.job: m.notice.kind
-            for m in messages
-            if m.notice is not None and m.notice.kind in ENDED
-        }
+        told = [notice_of(m) for m in messages]
+        ended = {found[0]: found[1] for found in told if found is not None and found[1] in ENDED}
         jobs: dict[str, tuple[str, str]] = {}
         refused: dict[str, int] = {}
         unanswered: dict[str, int] = {}
@@ -503,14 +517,8 @@ class FakeGate:
         self.refuse, self.down = frozenset(refuse), down
 
     def tool_of(self, state: Any) -> str | None:
-        if isinstance(state, dict):
-            for name in ("tool", "name"):
-                if isinstance(state.get(name), str):
-                    return state[name]
-            call = state.get("call")
-            if isinstance(call, dict):
-                return self.tool_of(call)
-        return None
+        tool = state.get("tool") if isinstance(state, dict) else None
+        return tool if isinstance(tool, str) else None
 
     async def decide(self, state: Any, questions: Mapping[str, Any]) -> Decided:
         if self.down:

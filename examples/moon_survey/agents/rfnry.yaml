@@ -1,0 +1,84 @@
+version: 1
+
+models:
+  lead: {provider: anthropic, model: claude-haiku-5-5, effort: medium}
+  flat: {provider: anthropic, model: claude-haiku-5-5, effort: medium}
+  captain: {provider: anthropic, model: claude-haiku-5-5, effort: medium}
+  surveyor: {provider: anthropic, model: claude-haiku-5-5, effort: low}
+  crosscheck: {provider: anthropic, model: claude-haiku-5-5, effort: low}
+  crosscheck_second: {provider: gemini, model: gemini-3.5-flash-lite, effort: low}
+  boss: {provider: anthropic, model: claude-haiku-5-5, effort: low}
+  gate: {provider: typesafe, model: jev-latest}
+
+runtime_tools: [claim, note, notes, region, fetch]
+
+agents:
+  lead:
+    kind: generation
+    model: lead
+    instructions: lead/instructions.md
+    tools:
+      allow: [note, notes]
+    orchestration:
+      delegate_to: [captain]
+      background: true
+      max_background: 10
+
+  flat:
+    kind: generation
+    model: flat
+    instructions: flat/instructions.md
+    tools:
+      allow: [note, notes]
+    orchestration:
+      delegate_to: [surveyor, crosscheck, crosscheck_second]
+      background: true
+      max_background: 250
+
+  captain:
+    kind: generation
+    model: captain
+    instructions: captain/instructions.md
+    tools:
+      allow: [note, notes]
+    orchestration:
+      delegate_to: [surveyor, crosscheck, crosscheck_second]
+      background: true
+      max_background: 25
+
+  surveyor:
+    kind: generation
+    model: surveyor
+    instructions: surveyor/instructions.md
+    max_model_calls: 40
+    workspace: true
+    skills:
+      allow: [surveyor/skills/dossier]
+    tools:
+      allow: [claim, note, notes, region, fetch]
+
+  crosscheck:
+    kind: generation
+    model: crosscheck
+    instructions: crosscheck/instructions.md
+    tools:
+      allow: [note, notes, region, fetch]
+
+  crosscheck_second:
+    kind: generation
+    model: crosscheck_second
+    description: Checks a landed region's dossier on a second vendor's model, for the regions region() names it for
+    instructions: crosscheck/instructions.md
+    tools:
+      allow: [note, notes, region, fetch]
+
+  boss:
+    kind: generation
+    model: boss
+    instructions: boss/instructions.md
+
+  gate:
+    kind: decision
+    model: gate
+    instructions: gate/instructions.md
+    questions: [gate/questions/*.json]
