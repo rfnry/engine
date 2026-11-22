@@ -63,8 +63,12 @@ def download(sources: Path, into: Path, opener: Callable[[str], bytes]) -> list[
                     f"setup: {source.name} has {len(body)} bytes; SOURCES.md says {source.size}"
                 )
             partial = target.with_name(f"{source.name}.part")
-            partial.write_bytes(body)
-            partial.replace(target)
+            try:
+                partial.write_bytes(body)
+                partial.replace(target)
+            except BaseException:
+                partial.unlink(missing_ok=True)
+                raise
         kept.append(target)
     return kept
 

@@ -179,6 +179,21 @@ def test_download_refuses_a_wrong_size(tmp_path):
     assert list(into.iterdir()) == []
 
 
+def test_a_failed_write_leaves_nothing_behind(tmp_path, monkeypatch):
+    sources = tmp_path / "SOURCES.md"
+    sources.write_text(sources_table({"a.bin": b"alpha"}))
+    into = tmp_path / "lp"
+
+    def failing(self, data):
+        self.touch()
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", failing)
+    with pytest.raises(OSError, match="no space left"):
+        setup.download(sources, into, lambda url: b"alpha")
+    assert list(into.iterdir()) == []
+
+
 def test_download_skips_a_file_already_there(tmp_path):
     sources = tmp_path / "SOURCES.md"
     sources.write_text(sources_table({"a.bin": b"alpha"}))

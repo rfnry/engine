@@ -41,4 +41,4 @@ and a download whose sha256 or size differs from the table is refused and writes
 - Feldman, W. C., et al., Evidence for water ice near lunar poles, J. Geophys. Res., in press, 2001c. As the node cites
   the hydrogen product on its Lunar Prospector special products page
   (https://pds-geosciences.wustl.edu/missions/lunarp/reduced_special.html), which names the file `hydrogenlow.txt`
-  ("Hydrogen_low" of June 2001, Feldman et al.).
+  (shown there as "Version: July 6, 2001").
