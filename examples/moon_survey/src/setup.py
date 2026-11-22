@@ -1,9 +1,12 @@
+import asyncio
 import hashlib
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import asyncpg
 import httpx
 
 import moon
@@ -11,6 +14,24 @@ import moon
 SOURCES = Path(__file__).resolve().parent.parent / "data" / "lp" / "SOURCES.md"
 USER_AGENT = "moon-survey-example/0"
 TIMEOUT = 120.0
+TABLES = """
+create table if not exists messages (
+    scope text not null,
+    conversation text not null,
+    position integer not null,
+    body json not null,
+    at timestamptz not null default now(),
+    primary key (scope, conversation, position)
+);
+create table if not exists windows (
+    scope text not null,
+    conversation text not null,
+    start integer not null,
+    moves integer not null,
+    since integer not null,
+    primary key (scope, conversation)
+);
+"""
 
 
 class SetupError(Exception):
@@ -73,14 +94,40 @@ def download(sources: Path, into: Path, opener: Callable[[str], bytes]) -> list[
     return kept
 
 
+def quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+async def create_tables(conn: asyncpg.Connection, schema: str = "moon") -> None:
+    async with conn.transaction():
+        await conn.execute(f"create schema if not exists {quoted(schema)}")
+        await conn.execute(f"set local search_path to {quoted(schema)}")
+        await conn.execute(TABLES)
+
+
+async def tables(url: str) -> None:
+    conn = await asyncpg.connect(url)
+    try:
+        await create_tables(conn)
+    finally:
+        await conn.close()
+
+
 def main(argv: list[str]) -> int:
-    if argv != ["data"]:
-        print("usage: uv run src/setup.py data", file=sys.stderr)
+    if argv not in (["data"], ["tables"]):
+        print("usage: uv run src/setup.py data | tables", file=sys.stderr)
         return 2
     try:
-        for path in download(SOURCES, moon.data_dir(), open_url):
-            print(f"{path.name} ok")
-    except (SetupError, httpx.HTTPError) as error:
+        if argv == ["data"]:
+            for path in download(SOURCES, moon.data_dir(), open_url):
+                print(f"{path.name} ok")
+        else:
+            url = os.environ.get("RFNRY_EXAMPLES_POSTGRES_URL")
+            if not url:
+                raise SetupError("setup: RFNRY_EXAMPLES_POSTGRES_URL is not set")
+            asyncio.run(tables(url))
+            print("tables ok")
+    except (SetupError, httpx.HTTPError, OSError, asyncpg.PostgresError) as error:
         print(error, file=sys.stderr)
         return 1
     return 0

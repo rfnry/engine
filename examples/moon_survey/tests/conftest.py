@@ -5,6 +5,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+import setup
+
 
 @pytest_asyncio.fixture(scope="session")
 async def pool():
@@ -16,6 +18,7 @@ async def pool():
     made = None
     try:
         await admin.execute(f"CREATE SCHEMA {schema}")
+        await setup.create_tables(admin, schema)
         made = await asyncpg.create_pool(url, server_settings={"search_path": schema})
         yield made
     finally:
