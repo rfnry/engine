@@ -1,18 +1,17 @@
 import json
-import os
 from datetime import UTC, datetime
 from email.utils import format_datetime
 from types import SimpleNamespace
 
 import anthropic
 import httpx
+import openai
 import pytest
 from rfnry_engine import (
     Check,
     CheckAnswer,
     Message,
     Notice,
-    Reply,
     ToolCall,
     ToolSpec,
 )
@@ -161,7 +160,12 @@ async def test_haiku_keeps_its_thinking_as_reasoning():
     first = await model.generate("s", [Message(role="user", content="go")], [SPEC])
     assert first.stop_reason == "tool_use"
     assert first.tool_calls == [ToolCall(id="tu_1", name="fetch", args={"u": "x"})]
-    assert first.reasoning == [{"type": "thinking", "thinking": "hmm", "signature": "sig"}]
+    blocks = [
+        {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+        {"type": "text", "text": "looking"},
+        {"type": "tool_use", "id": "tu_1", "name": "fetch", "input": {"u": "x"}},
+    ]
+    assert first.reasoning == blocks
     json.dumps(first.reasoning)
     history = [
         Message(role="user", content="go"),
@@ -180,15 +184,48 @@ async def test_haiku_keeps_its_thinking_as_reasoning():
     ]
     await model.generate("s", history, [SPEC])
     turns = sent.calls[1]["messages"]
-    assert turns[1]["content"] == [
-        {"type": "thinking", "thinking": "hmm", "signature": "sig"},
-        {"type": "text", "text": "looking"},
-        {"type": "tool_use", "id": "tu_1", "name": "fetch", "input": {"u": "x"}},
-    ]
+    assert turns[1]["content"] == blocks
     assert len(turns) == 3
     assert turns[2]["content"] == [
         {"type": "tool_result", "tool_use_id": "tu_1", "content": "boom", "is_error": True},
         {"type": "text", "text": "a helper finished"},
+    ]
+
+
+async def test_an_assistant_turn_the_engine_stripped_is_built_without_thinking():
+    model, sent = haiku([answer([text_block("ok")])])
+    history = [
+        Message(role="user", content="go"),
+        Message(
+            role="assistant",
+            content="looking",
+            tool_calls=[ToolCall(id="tu_1", name="fetch", args={"u": "x"})],
+        ),
+        Message(role="tool", content="body", tool_call_id="tu_1"),
+    ]
+    await model.generate("s", history, [SPEC])
+    assert sent.calls[0]["messages"][1] == {
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "looking"},
+            {"type": "tool_use", "id": "tu_1", "name": "fetch", "input": {"u": "x"}},
+        ],
+    }
+
+
+async def test_an_empty_assistant_turn_is_left_out():
+    model, sent = haiku([answer([text_block("ok")])])
+    history = [
+        Message(role="user", content="a"),
+        Message(role="assistant", content=""),
+        Message(role="user", content="b"),
+    ]
+    await model.generate("s", history, [])
+    assert sent.calls[0]["messages"] == [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}],
+        }
     ]
 
 
@@ -252,7 +289,7 @@ async def test_jitter_is_added_to_the_wait():
     await Haiku(client, "claude-haiku-5-5", None, spread).generate(
         "s", [Message(role="user", content="hi")], []
     )
-    assert time.slept == [10.0 + 0.5 * (1 + 0.5 * 10.0)]
+    assert time.slept == [15.0]
 
 
 @pytest.mark.parametrize("status", [529, 500, 502, 503])
@@ -274,19 +311,22 @@ async def test_a_connection_error_is_retried():
     assert logged.entries[0][2] is None
 
 
-async def test_a_400_is_not_retried():
-    model, sent = haiku([status_error(400), answer([text_block("ok")])])
-    with pytest.raises(anthropic.APIStatusError):
+async def test_a_400_is_not_retried_and_is_a_provider_error_with_its_cause():
+    cause = status_error(400, {"x-api-key": "sk-secret"})
+    model, sent = haiku([cause, answer([text_block("ok")])])
+    with pytest.raises(ProviderError) as raised:
         await model.generate("s", [Message(role="user", content="hi")], [])
+    assert str(raised.value).startswith("providers: claude-haiku-5-5 answered 400: ")
+    assert raised.value.__cause__ is cause
+    assert "sk-secret" not in str(raised.value)
     assert len(sent.calls) == 1
 
 
-async def test_retries_end_at_the_deadline():
+async def test_retries_end_at_the_deadline_and_the_last_429_is_logged():
     time, logged = Time(), Logged()
     last = status_error(429, {"retry-after": "100"})
     model, sent = haiku(
         [
-            status_error(429, {"retry-after": "100"}),
             status_error(429, {"retry-after": "100"}),
             status_error(429, {"retry-after": "100"}),
             last,
@@ -298,8 +338,79 @@ async def test_retries_end_at_the_deadline():
     with pytest.raises(anthropic.APIStatusError) as raised:
         await model.generate("s", [Message(role="user", content="hi")], [])
     assert raised.value is last
-    assert time.slept == [100.0, 100.0, 50.0]
-    assert len(sent.calls) == 4
+    assert time.slept == [100.0, 100.0]
+    assert len(sent.calls) == 3
+    assert [entry[3] for entry in logged.entries] == [100.0, 100.0, 0.0]
+
+
+async def test_successive_429s_with_the_same_retry_after_wait_longer_each_time():
+    time, logged = Time(), Logged()
+    script = [status_error(429, {"retry-after": "1"}) for _ in range(5)]
+    model, _ = haiku([*script, answer([text_block("ok")])], time, logged)
+    await model.generate("s", [Message(role="user", content="hi")], [])
+    assert time.slept == [1.0, 2.0, 4.0, 8.0, 16.0]
+    slower = Time()
+    script = [status_error(429, {"retry-after": "7"}) for _ in range(6)]
+    model, _ = haiku([*script, answer([text_block("ok")])], slower, Logged())
+    await model.generate("s", [Message(role="user", content="hi")], [])
+    assert slower.slept == sorted(slower.slept)
+    assert slower.slept[0] == 7.0 and slower.slept[-1] > 7.0
+
+
+async def test_a_retry_after_that_is_not_a_number_or_a_date_backs_off():
+    time = Time()
+    model, _ = haiku([status_error(429, {"retry-after": "soon"}), answer([text_block("ok")])], time)
+    await model.generate("s", [Message(role="user", content="hi")], [])
+    assert time.slept == [1.0]
+
+
+async def test_retry_after_ms_is_honoured():
+    time = Time()
+    model, _ = haiku(
+        [status_error(429, {"retry-after-ms": "1500"}), answer([text_block("ok")])], time
+    )
+    await model.generate("s", [Message(role="user", content="hi")], [])
+    assert time.slept == [1.5]
+
+
+@pytest.mark.parametrize("status", [408, 409])
+async def test_a_408_and_a_409_are_retried(status):
+    model, sent = haiku([status_error(status), answer([text_block("ok")])])
+    await model.generate("s", [Message(role="user", content="hi")], [])
+    assert len(sent.calls) == 2
+
+
+async def test_x_should_retry_decides_over_the_status():
+    model, sent = haiku([status_error(400, {"x-should-retry": "true"}), answer([text_block("ok")])])
+    await model.generate("s", [Message(role="user", content="hi")], [])
+    assert len(sent.calls) == 2
+    model, sent = haiku(
+        [status_error(500, {"x-should-retry": "false"}), answer([text_block("ok")])]
+    )
+    with pytest.raises(ProviderError, match="answered 500"):
+        await model.generate("s", [Message(role="user", content="hi")], [])
+    assert len(sent.calls) == 1
+
+
+class Failing:
+    async def __call__(self, *args) -> None:
+        raise RuntimeError("the pool is gone")
+
+
+async def test_a_log_that_cannot_write_neither_fails_nor_replaces_the_error():
+    time = Time()
+    client = SimpleNamespace(
+        messages=Messages([status_error(429, {"retry-after": "3"}), answer([text_block("ok")])])
+    )
+    model = Haiku(client, "claude-haiku-5-5", None, retry(time, Failing()))
+    reply = await model.generate("s", [Message(role="user", content="hi")], [])
+    assert reply.text == "ok" and time.slept == [3.0]
+    last = status_error(429, {"retry-after": "100"})
+    client = SimpleNamespace(messages=Messages([last]))
+    model = Haiku(client, "claude-haiku-5-5", None, retry(Time(), Failing(), deadline=50.0))
+    with pytest.raises(anthropic.APIStatusError) as raised:
+        await model.generate("s", [Message(role="user", content="hi")], [])
+    assert raised.value is last
 
 
 async def test_retries_end_at_the_attempts():
@@ -328,7 +439,8 @@ def test_a_missing_key_names_the_variable_and_nothing_else(monkeypatch):
 
 
 def test_keys_are_read_when_a_model_is_built_and_each_is_built_once(monkeypatch):
-    providers.built.clear()
+    monkeypatch.setattr(providers, "built", {})
+    monkeypatch.setattr(providers, "limiters", {})
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k-1")
     monkeypatch.setenv("GEMINI_API_KEY", "k-2")
     monkeypatch.setenv("TYPESAFE_API_KEY", "k-3")
@@ -336,9 +448,10 @@ def test_keys_are_read_when_a_model_is_built_and_each_is_built_once(monkeypatch)
     assert providers.anthropic("claude-haiku-5-5", "high") is first
     assert providers.anthropic("claude-haiku-5-5", "low") is not first
     assert providers.gemini(None, None) is providers.gemini(None, None)
-    assert providers.typesafe("jev-latest", None) is providers.typesafe("jev-latest", None)
+    assert providers.typesafe("jev-latest", "high") is providers.typesafe("jev-latest", None)
+    assert providers.gemini(None, "low").limiter is providers.gemini(None, "high").limiter
+    assert providers.gemini(None, "low").limiter is not providers.gemini("other", "low").limiter
     assert first.model == "claude-haiku-5-5"
-    providers.built.clear()
 
 
 class Completions:
@@ -394,8 +507,22 @@ async def test_gemini_maps_a_completion():
     assert (reply.usage.input, reply.usage.cache_read, reply.usage.output) == (70, 30, 9)
     sent = chat.calls[0]
     assert sent["reasoning_effort"] == "low"
-    assert sent["messages"][0] == {"role": "system", "content": "sys"}
-    assert sent["messages"][3]["name"] == "fetch"
+    assert sent["messages"] == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c0",
+                    "type": "function",
+                    "function": {"name": "fetch", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c0", "content": "body"},
+    ]
 
 
 async def test_gemini_ignores_an_effort_the_api_does_not_name():
@@ -429,9 +556,46 @@ async def test_gemini_keeps_to_fifteen_a_minute():
     assert len(time.slept) == before
 
 
+async def test_gemini_leaves_out_an_empty_turn():
+    chat = Completions([completion("hi")])
+    time = Time()
+    model = Gemini(
+        SimpleNamespace(chat=SimpleNamespace(completions=chat)),
+        "gemini-3.5-flash-lite",
+        None,
+        retry(time, Logged()),
+        Limiter(15, time.clock, time.sleep),
+    )
+    history = [Message(role="user", content="a"), Message(role="assistant", content="")]
+    await model.generate("s", history, [])
+    assert chat.calls[0]["messages"] == [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "a"},
+    ]
+
+
+INFO = {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "37s"}
+
+
+@pytest.mark.parametrize("body", [[{"error": {"details": [INFO]}}], {"error": {"details": [INFO]}}])
+async def test_gemini_reads_the_retry_delay_from_the_body_when_no_header_names_one(body):
+    time = Time()
+    err = openai.APIStatusError("x", response=httpx.Response(429, request=REQUEST), body=body)
+    chat = Completions([err, completion("ok")])
+    model = Gemini(
+        SimpleNamespace(chat=SimpleNamespace(completions=chat)),
+        "gemini-3.5-flash-lite",
+        None,
+        retry(time, Logged()),
+        Limiter(15, time.clock, time.sleep),
+    )
+    await model.generate("s", [Message(role="user", content="hi")], [])
+    assert time.slept == [37.0]
+
+
 async def test_gemini_retries_pass_the_limiter_each_time():
     time = Time()
-    err = anthropic.APIStatusError("x", response=httpx.Response(429, request=REQUEST), body=None)
+    err = openai.APIStatusError("x", response=httpx.Response(429, request=REQUEST), body=None)
     chat = Completions([err, completion("ok")])
     model = Gemini(
         SimpleNamespace(chat=SimpleNamespace(completions=chat)),
@@ -477,6 +641,10 @@ async def test_typesafe_maps_a_check_answer():
     decided = await model.decide("state", {"safe": Check(instructions="is it safe?")})
     assert decided.answers == {"safe": CheckAnswer(probability=0.8)}
     assert decided.model == "jev-latest"
+    other = await TypeSafe(
+        Posts([reply_of(200, {"answers": {"safe": {"noul": 0.1}}})]), "jev-2"
+    ).decide("state", {"safe": Check(instructions="is it safe?")})
+    assert other.model == "jev-2"
     assert (decided.usage.input, decided.usage.output) == (12, 1)
     assert len(client.calls) == 2
     assert client.calls[0][1]["questions"]["safe"] == {
@@ -502,37 +670,73 @@ async def test_the_gate_gives_up_sooner_than_the_models():
     assert providers.GATE_DEADLINE < providers.DEADLINE
 
 
-async def test_the_log_writes_a_row_a_without_a_pool_only_logs(pool, caplog):
+async def test_the_log_writes_a_row_with_its_scope_and_survey(pool):
     log = ProviderLog()
-    await log("anthropic", "claude-haiku-5-5", 429, 1.0, {"retry-after": "1"})
     log.use(pool)
-    await log("anthropic", "claude-haiku-5-5", 429, 7.5, {"retry-after": "7"})
+    log.set_survey("s1")
+    await log("anthropic", "logged-model", 429, 7.5, {"retry-after": "7"})
+    log.set_survey(None)
+    await log("gemini", "logged-model", None, 1.0, {})
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "select provider, model, status, wait, headers::text from provider_log"
+            "select scope, survey, provider, status, wait, headers::text as headers"
+            " from provider_log where model = 'logged-model' order by id"
         )
-    assert [(r["provider"], r["status"], r["wait"]) for r in rows] == [("anthropic", 429, 7.5)]
+    assert [(r["scope"], r["survey"], r["provider"], r["status"], r["wait"]) for r in rows] == [
+        ("moon", "s1", "anthropic", 429, 7.5),
+        ("moon", None, "gemini", None, 1.0),
+    ]
     assert json.loads(rows[0]["headers"]) == {"retry-after": "7"}
+
+
+async def test_without_a_pool_the_log_only_warns(caplog):
+    with caplog.at_level("WARNING", logger="providers"):
+        await ProviderLog()("anthropic", "claude-haiku-5-5", 429, 1.0, {"retry-after": "1"})
+    assert "answered 429" in caplog.text
+
+
+ECHO = ToolSpec(
+    name="echo",
+    description="Returns the text it is given.",
+    input_schema={
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+    },
+)
+
+
+async def round_trip(model):
+    ask = Message(
+        role="user", content="Call the echo tool with the text ready, then say what it returned."
+    )
+    system = "Use the tools you are given."
+    first = await model.generate(system, [ask], [ECHO])
+    assert first.tool_calls and first.stop_reason == "tool_use" and first.usage.output > 0
+    call = first.tool_calls[0]
+    history = [
+        ask,
+        Message(
+            role="assistant",
+            content=first.text,
+            tool_calls=first.tool_calls,
+            reasoning=first.reasoning,
+        ),
+        Message(role="tool", content="ready", tool_call_id=call.id),
+    ]
+    final = await model.generate(system, history, [ECHO])
+    assert final.text and final.stop_reason == "end_turn"
+    return first, final
 
 
 @pytest.mark.live
 async def test_the_live_providers_answer_once():
-    from rfnry_engine import Decided
-
-    ask = [Message(role="user", content="Reply with the single word: ready")]
-    haiku_reply = await providers.anthropic("claude-haiku-5-5", "low").generate(
-        "Be brief.", ask, []
-    )
-    assert isinstance(haiku_reply, Reply)
-    assert haiku_reply.model == "claude-haiku-5-5" and haiku_reply.text
-    assert haiku_reply.usage.output > 0
-    gemini_reply = await providers.gemini(providers.GEMINI_MODEL, None).generate(
-        "Be brief.", ask, []
-    )
-    assert gemini_reply.model == providers.GEMINI_MODEL and gemini_reply.text
+    first, final = await round_trip(providers.anthropic("claude-haiku-5-5", "low"))
+    assert first.model == final.model == "claude-haiku-5-5"
+    first, final = await round_trip(providers.gemini(providers.GEMINI_MODEL, None))
+    assert first.model == final.model == providers.GEMINI_MODEL
     decided = await providers.typesafe("jev-latest", None).decide(
         "The sky is blue.", {"true": Check(instructions="Is the state about the sky?")}
     )
-    assert isinstance(decided, Decided)
+    assert decided.model == "jev-latest"
     assert 0.0 <= decided.answers["true"].probability <= 1.0
-    assert os.environ.get("ANTHROPIC_API_KEY") not in {haiku_reply.text, gemini_reply.text}

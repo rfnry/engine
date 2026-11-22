@@ -63,16 +63,19 @@ def key(name: str) -> str:
     return value
 
 
-def kept_headers(response: Any) -> dict[str, str]:
+def lowered(response: Any) -> dict[str, str]:
     headers = getattr(response, "headers", None)
     if headers is None:
         return {}
-    found = {}
-    for name, value in headers.items():
-        lowered = name.lower()
-        if lowered == "retry-after" or "ratelimit" in lowered or lowered.endswith("request-id"):
-            found[lowered] = str(value)
-    return found
+    return {name.lower(): str(value) for name, value in headers.items()}
+
+
+def kept_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    return {
+        name: value
+        for name, value in headers.items()
+        if name.startswith("retry-after") or "ratelimit" in name or name.endswith("request-id")
+    }
 
 
 def status_of(error: BaseException) -> int | None:
@@ -82,19 +85,46 @@ def status_of(error: BaseException) -> int | None:
     return status
 
 
-def is_retryable(error: BaseException) -> bool:
+def should_retry(error: BaseException, headers: Mapping[str, str]) -> bool:
+    flagged = headers.get("x-should-retry")
+    if flagged in ("true", "false"):
+        return flagged == "true"
     status = status_of(error)
     if status is not None:
-        return status in (429, 529) or status >= 500
+        return status in (408, 409, 429) or status >= 500
     return isinstance(error, TRANSIENT)
+
+
+def body_delay(error: BaseException) -> float | None:
+    body = getattr(error, "body", None)
+    if isinstance(body, list) and body:
+        body = body[0]
+    if isinstance(body, Mapping) and isinstance(body.get("error"), Mapping):
+        body = body["error"]
+    details = body.get("details") if isinstance(body, Mapping) else None
+    for detail in details if isinstance(details, list) else []:
+        delay = detail.get("retryDelay") if isinstance(detail, Mapping) else None
+        if isinstance(delay, str) and delay.endswith("s"):
+            try:
+                return max(0.0, float(delay[:-1]))
+            except ValueError:
+                continue
+    return None
 
 
 class ProviderLog:
     def __init__(self) -> None:
         self.pool: asyncpg.Pool | None = None
+        self.scope = "moon"
+        self.survey: str | None = None
 
-    def use(self, pool: asyncpg.Pool | None) -> None:
-        self.pool = pool
+    def use(
+        self, pool: asyncpg.Pool | None, scope: str = "moon", survey: str | None = None
+    ) -> None:
+        self.pool, self.scope, self.survey = pool, scope, survey
+
+    def set_survey(self, survey: str | None) -> None:
+        self.survey = survey
 
     async def __call__(
         self, provider: str, model: str, status: int | None, wait: float, headers: dict[str, str]
@@ -105,8 +135,10 @@ class ProviderLog:
         if self.pool is None:
             return
         await self.pool.execute(
-            "insert into provider_log (provider, model, status, wait, headers)"
-            " values ($1, $2, $3, $4, $5)",
+            "insert into provider_log (scope, survey, provider, model, status, wait, headers)"
+            " values ($1, $2, $3, $4, $5, $6, $7)",
+            self.scope,
+            self.survey,
             provider,
             model,
             status,
@@ -132,23 +164,36 @@ class Retry:
         self.attempts, self.deadline, self.sleep, self.log = attempts, deadline, sleep, log
         self.clock, self.wall, self.rng = clock, wall, rng
 
-    def named(self, headers: Mapping[str, str]) -> float | None:
-        value = headers.get("retry-after")
-        if value is None:
-            return None
+    def named(self, headers: Mapping[str, str], error: BaseException) -> float | None:
+        millis = headers.get("retry-after-ms")
         try:
-            return max(0.0, float(value))
+            if millis is not None:
+                return max(0.0, float(millis) / 1000)
         except ValueError:
             pass
-        try:
-            return max(0.0, parsedate_to_datetime(value).timestamp() - self.wall())
-        except TypeError, ValueError:
-            return None
+        value = headers.get("retry-after")
+        if value is not None:
+            try:
+                return max(0.0, float(value))
+            except ValueError:
+                pass
+            try:
+                return max(0.0, parsedate_to_datetime(value).timestamp() - self.wall())
+            except TypeError, ValueError:
+                pass
+        return body_delay(error)
 
-    def wait_for(self, headers: Mapping[str, str], attempt: int) -> float:
-        named = self.named(headers)
-        base = named if named is not None else min(BACKOFF_CAP, 2.0**attempt)
-        return base + self.rng() * (1 + 0.5 * base)
+    def wait_for(self, named: float | None, attempt: int) -> float:
+        base = max(named or 0.0, min(BACKOFF_CAP, 2.0**attempt))
+        return base + self.rng() * base
+
+    async def note(
+        self, provider: str, model: str, status: int | None, wait: float, headers: dict[str, str]
+    ) -> None:
+        try:
+            await self.log(provider, model, status, wait, headers)
+        except Exception as failure:
+            logger.warning("providers: the log did not write: %s", failure)
 
     async def call(self, provider: str, model: str, attempt: Callable[[], Awaitable[T]]) -> T:
         started = self.clock()
@@ -158,12 +203,22 @@ class Retry:
                 return await attempt()
             except Exception as error:
                 tried += 1
-                left = self.deadline - (self.clock() - started)
-                if not is_retryable(error) or tried >= self.attempts or left <= 0:
+                headers = lowered(getattr(error, "response", None))
+                status = status_of(error)
+                if not should_retry(error, headers):
+                    if status is not None:
+                        raise ProviderError(
+                            f"providers: {model} answered {status}: {error}"
+                        ) from error
                     raise
-                headers = kept_headers(getattr(error, "response", None))
-                wait = min(self.wait_for(headers, tried - 1), left)
-                await self.log(provider, model, status_of(error), wait, headers)
+                kept = kept_headers(headers)
+                left = self.deadline - (self.clock() - started)
+                named = self.named(headers, error)
+                if tried >= self.attempts or left <= 0 or (named is not None and named > left):
+                    await self.note(provider, model, status, 0.0, kept)
+                    raise
+                wait = min(self.wait_for(named, tried - 1), left)
+                await self.note(provider, model, status, wait, kept)
                 await self.sleep(wait)
 
 
@@ -236,7 +291,7 @@ class Haiku:
         if response.stop_reason == "refusal":
             raise ProviderError(f"providers: {self.model} refused the request")
         blocks = [block.model_dump(exclude_none=True) for block in response.content]
-        thinking = [b for b in blocks if b["type"] in ("thinking", "redacted_thinking")]
+        thinking = any(b["type"] in ("thinking", "redacted_thinking") for b in blocks)
         usage = response.usage
         return Reply(
             text="".join(b["text"] for b in blocks if b["type"] == "text"),
@@ -258,7 +313,7 @@ class Haiku:
                 "thinking": "adaptive",
                 "effort": self.effort,
             },
-            reasoning=thinking or None,
+            reasoning=blocks if thinking else None,
         )
 
     def turns(self, messages: list[Message]) -> list[dict[str, Any]]:
@@ -279,9 +334,11 @@ class Haiku:
                     for c in message.tool_calls
                 ]
                 role = "assistant"
-                content = [*(message.reasoning or []), *self.text(message.content), *calls]
+                content = message.reasoning or [*self.text(message.content), *calls]
             else:
                 role, content = "user", self.text(message.content)
+            if not content:
+                continue
             if turns and turns[-1]["role"] == role:
                 turns[-1]["content"] = turns[-1]["content"] + content
             else:
@@ -368,22 +425,21 @@ class Gemini:
 
     def turns(self, messages: list[Message]) -> list[dict[str, Any]]:
         turns: list[dict[str, Any]] = []
-        names: dict[str, str] = {}
         for message in messages:
             text = text_of(message.content)
+            if not text and not message.tool_calls and message.role != "tool":
+                continue
             if message.role == "tool":
                 turns.append(
                     {
                         "role": "tool",
                         "tool_call_id": message.tool_call_id,
-                        "name": names.get(message.tool_call_id or "", ""),
                         "content": text,
                     }
                 )
             elif message.role == "assistant":
                 turn: dict[str, Any] = {"role": "assistant", "content": text or None}
                 if message.tool_calls:
-                    names.update({c.id: c.name for c in message.tool_calls})
                     turn["tool_calls"] = [
                         {
                             "id": c.id,
@@ -426,7 +482,7 @@ class TypeSafe:
         return Decided(
             answers={qid: self.answer(q, data["answers"][qid]) for qid, q in questions.items()},
             usage=Usage(input=usage.get("input_tokens", 0), output=usage.get("output_tokens", 0)),
-            model=DECISION_MODEL,
+            model=self.model,
         )
 
     def question(self, question: QuestionLike) -> dict[str, Any]:
@@ -471,6 +527,7 @@ class TypeSafe:
 
 
 built: dict[tuple[str, str | None, str | None], Any] = {}
+limiters: dict[str, Limiter] = {}
 
 
 def anthropic(model: str | None, effort: str | None) -> Haiku:
@@ -487,15 +544,16 @@ def gemini(model: str | None, effort: str | None) -> Gemini:
     cached = built.get(("gemini", name, effort))
     if cached is None:
         client = AsyncOpenAI(base_url=GEMINI_URL, api_key=key("GEMINI_API_KEY"), max_retries=0)
-        cached = built[("gemini", name, effort)] = Gemini(client, name, effort)
+        limiter = limiters.setdefault(name, Limiter())
+        cached = built[("gemini", name, effort)] = Gemini(client, name, effort, limiter=limiter)
     return cached
 
 
 def typesafe(model: str | None, effort: str | None) -> TypeSafe:
     name = model or DECISION_MODEL
-    cached = built.get(("typesafe", name, effort))
+    cached = built.get(("typesafe", name, None))
     if cached is None:
         bearer = {"Authorization": f"Bearer {key('TYPESAFE_API_KEY')}"}
         client = httpx.AsyncClient(timeout=60, headers=bearer)
-        cached = built[("typesafe", name, effort)] = TypeSafe(client, name)
+        cached = built[("typesafe", name, None)] = TypeSafe(client, name)
     return cached
