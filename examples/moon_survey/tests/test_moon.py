@@ -76,3 +76,53 @@ def test_regions_json_matches_the_code(tmp_path):
     moon.write_regions(target)
     assert (ROOT / "data" / "regions.json").read_text() == target.read_text()
     assert json.loads(target.read_text())[0]["id"]
+
+
+def test_region_of_returns_every_region_at_its_centre_and_its_western_edge():
+    for r in moon.regions():
+        lat, lon = r.centre
+        assert moon.region_of(lat, lon) == r.id
+        assert moon.region_of(lat, r.lon_min) == r.id
+
+
+@pytest.mark.parametrize(
+    ("lat", "expected"),
+    [
+        (0, "N00-15/0"),
+        (-0.0, "N00-15/0"),
+        (15, "N15-30/0"),
+        (-15, "S15-30/0"),
+        (30, "N30-45/0"),
+        (-30, "S30-45/0"),
+        (45, "N45-60/0"),
+        (-45, "S45-60/0"),
+        (60, "N60-75/0"),
+        (-60, "S60-75/0"),
+        (75, "N75-90/0"),
+        (-75, "S75-90/0"),
+        (90, "N75-90/0"),
+        (-90, "S75-90/0"),
+    ],
+)
+def test_a_latitude_edge_falls_in_the_band_away_from_the_equator_and_the_poles_in_the_caps(
+    lat, expected
+):
+    assert moon.region_of(lat, -180.0) == expected
+
+
+def test_region_of_refuses_what_is_not_a_place():
+    for lat, lon in ((float("nan"), 0.0), (0.0, float("inf")), (91.0, 0.0)):
+        with pytest.raises(ValueError, match="^moon: "):
+            moon.region_of(lat, lon)
+
+
+def test_an_unknown_region_says_so():
+    with pytest.raises(LookupError, match=r"^moon: region 'X9/1' does not exist$"):
+        moon.region("X9/1")
+
+
+def test_the_grid_cannot_be_corrupted_by_a_caller():
+    moon.regions().clear()
+    assert len(moon.regions()) == 250
+    with pytest.raises(TypeError):
+        moon.by_id()["N00-15/0"] = None

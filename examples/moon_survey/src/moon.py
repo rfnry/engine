@@ -3,6 +3,7 @@ import math
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from types import MappingProxyType
 
 COUNTS = (33, 31, 27, 20, 13, 1)
 STEP = 15
@@ -27,8 +28,16 @@ class Region:
         return math.radians(self.lon_max - self.lon_min) * height
 
 
+class RegionError(LookupError):
+    pass
+
+
 def band_name(hemisphere: str, index: int) -> str:
     return f"{hemisphere}{index * STEP:02d}-{(index + 1) * STEP:02d}"
+
+
+def cell_id(key: tuple[str, int], cell: int) -> str:
+    return f"{band_name(*key)}/{cell}"
 
 
 def band_order() -> list[tuple[str, int]]:
@@ -47,9 +56,9 @@ def overlaps(first: tuple[float, float], second: tuple[float, float]) -> bool:
 
 
 @cache
-def regions() -> list[Region]:
+def table() -> tuple[Region, ...]:
     bands = band_order()
-    ids = {key: [f"{band_name(*key)}/{k}" for k in range(COUNTS[key[1]])] for key in bands}
+    ids = {key: [cell_id(key, k) for k in range(COUNTS[key[1]])] for key in bands}
     links: dict[str, set[str]] = {i: set() for cells in ids.values() for i in cells}
 
     def join(a: str, b: str) -> None:
@@ -71,41 +80,52 @@ def regions() -> list[Region]:
     for key in bands:
         hemisphere, index = key
         low, high = index * STEP, (index + 1) * STEP
-        lats = (low, high) if hemisphere == "N" else (-high, -low)
+        lats = (float(low), float(high)) if hemisphere == "N" else (float(-high), float(-low))
         for k, cell in enumerate(ids[key]):
             lon_min, lon_max = cell_span(index, k)
             found.append(
                 Region(cell, lats[0], lats[1], lon_min, lon_max, tuple(sorted(links[cell])))
             )
-    return found
+    return tuple(found)
+
+
+def regions() -> list[Region]:
+    return list(table())
 
 
 @cache
-def by_id() -> dict[str, Region]:
-    return {r.id: r for r in regions()}
+def by_id() -> MappingProxyType[str, Region]:
+    return MappingProxyType({r.id: r for r in table()})
 
 
 def region(id: str) -> Region:
     try:
         return by_id()[id]
     except KeyError:
-        raise KeyError(f"moon: no region {id}") from None
+        raise RegionError(f"moon: region '{id}' does not exist") from None
 
 
 def region_of(lat: float, lon: float) -> str:
+    if not math.isfinite(lat) or not math.isfinite(lon):
+        raise ValueError(f"moon: latitude {lat} and longitude {lon} must be finite")
     if not -90 <= lat <= 90:
         raise ValueError(f"moon: latitude {lat} is outside -90 to 90")
     hemisphere = "N" if lat >= 0 else "S"
     index = min(int(abs(lat) // STEP), len(COUNTS) - 1)
-    wrapped = (lon + 180) % 360
-    cell = min(int(wrapped // (360 / COUNTS[index])), COUNTS[index] - 1)
-    return f"{band_name(hemisphere, index)}/{cell}"
+    if not -180 <= lon < 180:
+        lon = (lon + 180) % 360 - 180
+    cell = min(max(int((lon + 180) // (360 / COUNTS[index])), 0), COUNTS[index] - 1)
+    while cell > 0 and lon < cell_span(index, cell)[0]:
+        cell -= 1
+    while cell < COUNTS[index] - 1 and lon >= cell_span(index, cell)[1]:
+        cell += 1
+    return cell_id((hemisphere, index), cell)
 
 
 def shares(size: int = 25) -> list[list[str]]:
     walk: list[str] = []
     for n, key in enumerate(band_order()):
-        cells = [f"{band_name(*key)}/{k}" for k in range(COUNTS[key[1]])]
+        cells = [cell_id(key, k) for k in range(COUNTS[key[1]])]
         walk.extend(cells if n % 2 == 0 else reversed(cells))
     return [walk[i : i + size] for i in range(0, len(walk), size)]
 
@@ -121,7 +141,7 @@ def write_regions(path: Path) -> None:
             "centre": list(r.centre),
             "neighbours": list(r.neighbours),
         }
-        for r in regions()
+        for r in table()
     ]
     path.write_text(json.dumps(rows, indent=2) + "\n")
 
