@@ -294,6 +294,11 @@ class ListStore:
         return 0
 
 
+def seen(message: Message) -> tuple[Any, ...]:
+    calls = [(call.id, call.name) for call in message.tool_calls]
+    return (message.role, message.content, calls, message.tool_call_id, message.is_error)
+
+
 class Recorder:
     def __init__(self, inner: Any) -> None:
         self.inner = inner
@@ -334,6 +339,4 @@ async def test_a_live_lead_keeps_its_team_in_a_store(adapters: Any, tmp_path: Pa
         )
     assert isinstance(again, Generation) and again.reply
     first = recorder.sent[0]
-    assert [(m.role, m.content) for m in first[: len(stored)]] == [
-        (m.role, m.content) for m in stored
-    ]
+    assert [seen(m) for m in first[: len(stored)]] == [seen(m) for m in stored]
