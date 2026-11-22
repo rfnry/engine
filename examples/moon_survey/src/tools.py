@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlsplit
 
 import asyncpg
 import httpx
-from rfnry_engine import InputError, Tool, current_call
+from rfnry_engine import InputError, Tool, Tools, current_call
 
 from sandbox import Sandboxes
 
@@ -398,4 +398,51 @@ def fetch_tool(web: Any, sandboxes: Sandboxes, log: Any) -> Tool:
             },
             "required": ["url"],
         },
+    )
+
+
+def boss_tools(surveyors: Any) -> Tools:
+    async def progress(args: dict[str, Any]) -> dict[str, Any]:
+        return await surveyors.progress()
+
+    async def start(args: dict[str, Any]) -> dict[str, Any]:
+        return await surveyors.start(args["region"])
+
+    async def check(args: dict[str, Any]) -> dict[str, Any]:
+        return await surveyors.check(args["job"])
+
+    return Tools(
+        [
+            Tool(
+                "progress",
+                "Read the survey's board: its counts of landed, failed, claimed and free regions,"
+                " the regions you may start now, and how many surveyors are running.",
+                body=progress,
+                input_schema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                "start",
+                "Start a surveyor on a region that progress says you may start. Answers its job id"
+                " at once, such as s1; the surveyor works while you go on.",
+                body=start,
+                input_schema={
+                    "type": "object",
+                    "properties": {"region": {"type": "string", "description": "A region id"}},
+                    "required": ["region"],
+                },
+            ),
+            Tool(
+                "check",
+                "Read a surveyor you started, by its job id: running, or how it ended, with its"
+                " reply, its error and whether its region landed.",
+                body=check,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "job": {"type": "string", "description": "A job id, such as s1"}
+                    },
+                    "required": ["job"],
+                },
+            ),
+        ]
     )

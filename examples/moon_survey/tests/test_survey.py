@@ -7,47 +7,32 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
-import pytest_asyncio
 from fastapi import FastAPI
-from rfnry_engine import PostgresStorage
+from rfnry_engine import PostgresStorage, RunEnded
 
 import board as board_module
 import harness
 import merge
 import moon
 import routes
-from board import Board
+from board import Board, create_survey
 from fakes import FakeGate
 from merge import Price
 from store import Store
 
 EXAMPLE = Path(__file__).resolve().parent.parent
-CUT = EXAMPLE / "tests" / "data" / "lp_cut"
-KEYS = ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "TYPESAFE_API_KEY")
 PRICE = Price(10.0, 10.0, 10.0, 10.0, 100_000)
 CAP = 2.0
+APP_CAP = 0.5
 ENDED = 120
 
 
 def fresh():
     return f"t-{secrets.token_hex(4)}"
-
-
-@pytest_asyncio.fixture
-async def service(pool, engine_pool, tmp_path, monkeypatch):
-    monkeypatch.setenv("MOON_SURVEY_DATA", str(CUT))
-    for key in KEYS:
-        monkeypatch.delenv(key, raising=False)
-
-    async def opening(**given):
-        settings = harness.Settings(work=tmp_path / "work", scale=0.0, per_minute=None, **given)
-        await harness.open(pool, engine_pool, settings)
-
-    yield opening
-    await harness.close()
 
 
 async def ended(name):
@@ -318,7 +303,6 @@ async def test_the_routes_start_read_and_resume_a_survey(service, monkeypatch):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://moon") as client:
         invalid = [
-            ({**body, "shape": "app"}, "survey: shape 'app' comes with the boss"),
             ({**body, "mode": "pretend"}, "survey: mode must be one of fake, real, hostile"),
             ({**body, "shape": "ring"}, "survey: shape must be one of crews, flat, app"),
             ({**body, "size": 0}, "survey: size must be from 1 to 250"),
@@ -468,8 +452,9 @@ def test_the_second_vendor_takes_the_truth_regions_the_north_cap_and_twenty_draw
     assert harness.second_of("survey-a", walk[:10], truth) == set(walk[:10])
 
 
-async def test_the_harness_refuses_to_open_without_bubblewrap(pool, engine_pool, monkeypatch):
-    monkeypatch.setenv("MOON_SURVEY_DATA", str(CUT))
+async def test_the_harness_refuses_to_open_without_bubblewrap(
+    pool, engine_pool, offline, monkeypatch
+):
     monkeypatch.setattr("sandbox.shutil.which", lambda *_, **__: None)
     with pytest.raises(harness.SurveyError, match="survey: bwrap was not found"):
         await harness.open(pool, engine_pool)
@@ -512,8 +497,10 @@ async def test_the_gate_sees_each_callers_task(service):
 async def test_a_survey_whose_regions_cannot_be_failed_still_ends_failed(
     service, pool, monkeypatch
 ):
+    said = iter(["board: the database went away", "board: the database is still away"])
+
     async def broken(board, run_id):
-        raise RuntimeError("board: the database went away")
+        raise RuntimeError(next(said))
 
     monkeypatch.setattr(harness, "fail_left", broken)
     await service(gate=FakeGate(down=True))
@@ -522,7 +509,221 @@ async def test_a_survey_whose_regions_cannot_be_failed_still_ends_failed(
     done = await ended(name)
     assert done["status"] == "failed"
     assert done["error"] == "RuntimeError: board: the database went away"
+    assert next(said, None) is None
     stored = await pool.fetchval(
         "select status from surveys where scope = 'moon' and survey = $1", name
     )
     assert stored == "failed"
+
+
+def boss_runs(records):
+    return sorted((r for r in records if r.agent == "boss"), key=lambda r: r.at)
+
+
+async def test_the_app_shape_lands_every_region(service, pool, engine_pool):
+    await service()
+    name = fresh()
+    started = await harness.run(name, mode="fake", shape="app", size=10, cap=2.0)
+    assert started["status"] == "running" and started["shape"] == "app"
+    done = await ended(name)
+    assert done["status"] == "done" and done["error"] is None
+    assert done["counts"] == {"landed": 10, "failed": 0, "claimed": 0, "free": 0}
+    rows = await board_of(pool, name).landed()
+    assert len(rows) == 10 and all(row["attempts"] == 1 for row in rows)
+    assert all(row["simulated"] and row["provider"] == "fake" for row in rows)
+
+    records = await records_of(engine_pool, name)
+    agents = Counter(r.agent for r in records)
+    assert set(agents) == {"boss", "surveyor"} and agents["surveyor"] == 10
+    assert all(r.parent_run_id is None and r.body["call"] is None for r in records)
+    assert all(r.body["tags"] == {"survey": name} for r in records)
+    bosses = boss_runs(records)
+    assert bosses[0].body["input"] == harness.START
+    assert all(boss.body["input"] == harness.NEXT for boss in bosses[1:])
+    first = bosses[0].body["steps"]
+    assert [step["tool"] for step in first] == ["progress"] + ["start"] * 10 + ["check"] * 10
+    walk = [r for share in moon.shares(25) for r in share][:10]
+    read = json.loads(first[0]["result"])
+    assert read == {
+        "counts": {"landed": 0, "failed": 0, "claimed": 0, "free": 10},
+        "free": walk,
+        "running": 0,
+    }
+    starts = [step for step in first if step["tool"] == "start"]
+    assert [step["args"]["region"] for step in starts] == walk
+    jobs = [json.loads(step["result"])["job"] for step in starts]
+    assert sorted(jobs, key=lambda job: int(job[1:])) == [f"s{n}" for n in range(1, 11)]
+    checked = [json.loads(step["result"]) for step in first if step["tool"] == "check"]
+    assert [(found["job"], found["region"]) for found in checked] == list(
+        zip(jobs, walk, strict=True)
+    )
+    assert all(boss.body["steps"][0]["tool"] == "progress" for boss in bosses)
+    surveyed = {json.loads(r.body["input"])["region"] for r in records if r.agent == "surveyor"}
+    assert surveyed == {row["region"] for row in rows}
+
+    kept = await conversations_of(pool, name)
+    assert kept == {f"{name}/boss/{n}" for n in range(1, len(bosses) + 1)} | {
+        f"{name}/s/{region}/1" for region in surveyed
+    }
+    steps = [step for r in records for step in r.body["steps"]]
+    gated = await pool.fetch(
+        "select tool, allowed from gate_log where scope = 'moon' and survey = $1", name
+    )
+    assert Counter(g["tool"] for g in gated) == Counter(step["tool"] for step in steps)
+    assert all(g["allowed"] for g in gated)
+
+
+async def test_the_app_shape_ends_when_its_gate_cannot_answer(service, pool, engine_pool):
+    await service(gate=FakeGate(down=True))
+    name = fresh()
+    await harness.run(name, mode="fake", shape="app", size=4, cap=2.0)
+    done = await ended(name)
+    assert done["status"] == "done" and done["error"] is None
+    assert done["counts"] == {"landed": 0, "failed": 4, "claimed": 0, "free": 0}
+    [boss] = await records_of(engine_pool, name)
+    assert boss.agent == "boss" and boss.body["error"] is None
+    assert boss.body["steps"] and all(step["approved"] is False for step in boss.body["steps"])
+
+
+async def test_the_app_shape_starts_a_region_at_most_twice(service, pool, engine_pool):
+    await service(gate=FakeGate(refuse=frozenset({"Write"})))
+    name = fresh()
+    await harness.run(name, mode="fake", shape="app", size=3, cap=2.0)
+    done = await ended(name)
+    assert done["status"] == "done"
+    assert done["counts"] == {"landed": 0, "failed": 3, "claimed": 0, "free": 0}
+    records = await records_of(engine_pool, name)
+    surveyed = Counter(
+        json.loads(r.body["input"])["region"] for r in records if r.agent == "surveyor"
+    )
+    assert len(surveyed) == 3 and set(surveyed.values()) == {2}
+    kept = await conversations_of(pool, name)
+    assert {c for c in kept if "/s/" in c} == {
+        f"{name}/s/{region}/{attempt}" for region in surveyed for attempt in (1, 2)
+    }
+    reasons = await pool.fetch(
+        "select region, reason from failures where scope = 'moon' and survey = $1", name
+    )
+    assert Counter(r["region"] for r in reasons) == {region: 2 for region in surveyed}
+    assert {r["reason"] for r in reasons} == {"merge: no dossier.json"}
+    refused = [
+        step
+        for boss in boss_runs(records)
+        for step in boss.body["steps"]
+        if step["tool"] == "start" and step["is_error"]
+    ]
+    assert refused == []
+
+
+async def test_the_app_shape_stops_at_its_cap_and_a_resume_lands_the_rest(
+    service, pool, engine_pool, monkeypatch
+):
+    monkeypatch.setitem(merge.PRICES, "fake", PRICE)
+    await service()
+    name = fresh()
+    await harness.run(name, mode="fake", shape="app", size=10, cap=APP_CAP)
+    stopped = await ended(name)
+    assert stopped["status"] == "stopped" and stopped["error"] is None
+    assert stopped["counts"]["landed"] < 10 and stopped["counts"]["claimed"] == 0
+    assert stopped["spend"] >= APP_CAP
+
+    await harness.resume(name, cap=100.0)
+    done = await ended(name)
+    assert done["status"] == "done"
+    assert done["counts"] == {"landed": 10, "failed": 0, "claimed": 0, "free": 0}
+    rows = await board_of(pool, name).landed()
+    assert all(row["attempts"] == 1 for row in rows)
+
+    records = await records_of(engine_pool, name)
+    bosses = boss_runs(records)
+    inputs = [boss.body["input"] for boss in bosses]
+    assert inputs[0] == harness.START and harness.WHY["stopped"] in inputs
+    assert inputs.count(harness.START) == 1 and inputs.count(harness.WHY["stopped"]) == 1
+    kept = await conversations_of(pool, name)
+    numbers = sorted(int(c.rsplit("/", 1)[1]) for c in kept if c.startswith(f"{name}/boss/"))
+    assert numbers == list(range(1, len(bosses) + 1))
+    attempts = Counter(c.rsplit("/", 1)[0] for c in kept if c.startswith(f"{name}/s/"))
+    for key, count in attempts.items():
+        assert {f"{key}/{n}" for n in range(1, count + 1)} <= kept
+
+
+async def test_the_boss_tools_refuse_what_cannot_start(pool):
+    name = fresh()
+    first, second = [r for share in moon.shares(25) for r in share][:2]
+    await create_survey(
+        pool,
+        "moon",
+        name,
+        2.0,
+        set(),
+        [first, second],
+        mode="fake",
+        shape="app",
+        crews=1,
+        status="running",
+    )
+    keys, released = [], [asyncio.Event(), asyncio.Event()]
+
+    async def run(agent, given, key, *, tools, ended):
+        keys.append(key)
+        await released[len(keys) - 1].wait()
+        ended(RunEnded(run_id=f"r-{len(keys)}", agent=agent, call=None, stopped=None, error=None))
+        return SimpleNamespace(reply=f"{json.loads(given)['region']}: done", stopped=None)
+
+    spend = SimpleNamespace(pressed=False)
+    shared = SimpleNamespace(
+        survey=SimpleNamespace(name=name),
+        board=board_of(pool, name),
+        opened=SimpleNamespace(pool=pool),
+        spend=spend,
+        tools=None,
+        run=run,
+    )
+    surveyors = harness.Surveyors(shared, {first: 1})
+    assert (await surveyors.progress())["free"] == [first, second]
+    assert await surveyors.start(first) == {"job": "s1"}
+    with pytest.raises(
+        harness.SurveyError, match=f"survey: region '{first}' has a surveyor running, job s1"
+    ):
+        await surveyors.start(first)
+    with pytest.raises(
+        harness.SurveyError, match=f"survey: region 'N75-90/0' is not in survey '{name}'"
+    ):
+        await surveyors.start("N75-90/0")
+    with pytest.raises(harness.SurveyError, match="survey: there is no job 's9'"):
+        await surveyors.check("s9")
+    assert await surveyors.check("s1") == {"job": "s1", "region": first, "running": True}
+    assert await surveyors.progress() == {
+        "counts": {"landed": 0, "failed": 0, "claimed": 0, "free": 2},
+        "free": [second],
+        "running": 1,
+    }
+    released[0].set()
+    await asyncio.wait_for(surveyors.finished(), 10)
+    assert await surveyors.check("s1") == {
+        "job": "s1",
+        "region": first,
+        "running": False,
+        "ended": "finished",
+        "reply": f"{first}: done",
+        "error": None,
+        "landed": False,
+    }
+    assert await surveyors.start(first) == {"job": "s2"}
+    released[1].set()
+    await asyncio.wait_for(surveyors.finished(), 10)
+    with pytest.raises(harness.SurveyError, match=f"survey: region '{first}' was started 2 times"):
+        await surveyors.start(first)
+    assert keys == [f"{name}/s/{first}/2", f"{name}/s/{first}/3"]
+
+    landed = {"region": second, "run_id": "r-x", "provider": "fake", "simulated": True}
+    columns = {"dossier": {}, "checks": {}, "data_check": {}, "truth": None, "disputes": []}
+    await board_of(pool, name).land({**landed, **columns})
+    with pytest.raises(harness.SurveyError, match=f"survey: region '{second}' has landed"):
+        await surveyors.start(second)
+    assert (await surveyors.progress())["free"] == [] and await surveyors.settled()
+    spend.pressed = True
+    with pytest.raises(
+        harness.SurveyError, match="survey: the survey is stopping at its spending cap"
+    ):
+        await surveyors.start(second)

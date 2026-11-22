@@ -10,7 +10,7 @@ models:
   boss: {provider: anthropic, model: claude-haiku-5-5, effort: low}
   gate: {provider: typesafe, model: jev-latest}
 
-runtime_tools: [claim, note, notes, region, fetch, dossier]
+runtime_tools: [claim, note, notes, region, fetch, dossier, progress, start, check]
 
 agents:
   lead:
@@ -79,6 +79,8 @@ agents:
     model: boss
     instructions: boss/instructions.md
     max_model_calls: 20
+    tools:
+      allow: [progress, start, check]
 
   gate:
     kind: decision

@@ -8,7 +8,11 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+import harness
 import setup
+
+CUT = Path(__file__).resolve().parent / "data" / "lp_cut"
+KEYS = ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "TYPESAFE_API_KEY")
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -65,6 +69,25 @@ async def engine_pool():
             await admin.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         finally:
             await admin.close()
+
+
+@pytest.fixture
+def offline(monkeypatch):
+    monkeypatch.setenv("MOON_SURVEY_DATA", str(CUT))
+    for key in KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest_asyncio.fixture
+async def service(pool, engine_pool, tmp_path, offline):
+    async def opening(**given):
+        settings = harness.Settings(
+            **{"work": tmp_path / "work", "scale": 0.0, "per_minute": None, **given}
+        )
+        await harness.open(pool, engine_pool, settings)
+
+    yield opening
+    await harness.close()
 
 
 GRS_URL = (

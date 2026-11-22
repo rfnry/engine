@@ -546,27 +546,34 @@ async def test_the_crosscheck_ends_quoting_an_error():
     assert final.tool_calls == [] and "BoardError: board: no such region" in final.text
 
 
-async def test_the_boss_checks_progress_starts_the_free_regions_and_checks_their_jobs():
-    convo = Convo(build()["boss"], "{}")
+async def test_the_boss_reads_progress_starts_the_free_regions_checks_them_once_and_ends():
+    convo = Convo(build()["boss"], "start the survey")
     reply = await convo.next()
-    assert names(reply) == ["progress"]
-    convo.answer(reply, {"counts": {"landed": 0, "free": 2}, "free": ["R1", "R2"]})
+    assert names(reply) == ["progress"] and reply.tool_calls[0].args == {}
+    counts = {"landed": 0, "failed": 0, "claimed": 0, "free": 2}
+    convo.answer(reply, {"counts": counts, "free": ["R1", "R2"], "running": 0})
     reply = await convo.next()
     assert names(reply) == ["start", "start"]
     assert [c.args for c in reply.tool_calls] == [{"region": "R1"}, {"region": "R2"}]
-    convo.answer(reply, {"job": "d1"}, {"job": "d2"})
+    convo.answer(reply, {"job": "s1"}, {"job": "s2"})
     reply = await convo.next()
     assert names(reply) == ["check", "check"]
-    assert [c.args for c in reply.tool_calls] == [{"job": "d1"}, {"job": "d2"}]
-    convo.answer(reply, {"running": False}, {"running": True})
-    reply = await convo.next()
-    assert [c.args for c in reply.tool_calls] == [{"job": "d2"}]
-    convo.answer(reply, {"running": False})
-    reply = await convo.next()
-    assert names(reply) == ["progress"]
-    convo.answer(reply, {"counts": {"landed": 2, "free": 0}, "free": []})
+    assert [c.args for c in reply.tool_calls] == [{"job": "s1"}, {"job": "s2"}]
+    ended = {"job": "s1", "region": "R1", "running": False, "ended": "finished", "landed": True}
+    convo.answer(reply, ended, {"job": "s2", "region": "R2", "running": True})
     final = await convo.next()
-    assert final.tool_calls == [] and "landed" in final.text and "\n" not in final.text
+    assert final.tool_calls == [] and "\n" not in final.text
+    assert final.text == f"boss: 1 of 2 started still running; {json.dumps(counts)}"
+
+
+async def test_the_boss_ends_after_progress_when_nothing_is_free():
+    convo = Convo(build()["boss"], "read the board and carry on")
+    reply = await convo.next()
+    counts = {"landed": 3, "failed": 0, "claimed": 2, "free": 0}
+    convo.answer(reply, {"counts": counts, "free": [], "running": 2})
+    final = await convo.next()
+    assert final.tool_calls == []
+    assert final.text == f"boss: 0 of 0 started still running; {json.dumps(counts)}"
 
 
 async def test_the_boss_ends_quoting_a_tool_error():

@@ -1,11 +1,14 @@
 import asyncio
+import contextvars
 import importlib.util
 import json
 import logging
 import math
 import random
 import re
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -37,7 +40,7 @@ from merge import Merge, Spend, map_of
 from providers import GEMINI_PER_MINUTE, anthropic, gemini, provider_log, typesafe
 from sandbox import Sandboxes
 from store import SIZE, Store
-from tools import FakeWeb, FetchLog, Web, fetch_tool
+from tools import FakeWeb, FetchLog, Web, boss_tools, fetch_tool
 
 EXAMPLE = Path(__file__).resolve().parent.parent
 AGENTS = EXAMPLE / "agents"
@@ -49,6 +52,9 @@ SCOPE = "moon"
 MODES = ("fake", "real", "hostile")
 SHAPES = ("crews", "flat", "app")
 TOP = {"crews": "lead", "flat": "flat"}
+BOSS = "boss"
+ATTEMPTS = 2
+WAKE = 10.0
 PROVIDERS = {"anthropic": anthropic, "gemini": gemini, "typesafe": typesafe}
 CREW = 25
 NORTH_CAP = "N75-90/0"
@@ -63,6 +69,7 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 ENDED = "the survey ended without it"
 START = "start the survey"
 RESTARTED = "the process restarted; carry on"
+NEXT = "read the board and carry on"
 WHY = {
     "stopped": "the survey stopped at its spending cap; carry on",
     "done": "the survey ended before these regions landed; carry on",
@@ -84,6 +91,10 @@ select cap, mode, shape, crews, status from surveys where scope = $1 and survey 
 """
 SPENT = "select total from spend where scope = $1 and survey = $2"
 MARK = "update surveys set status = $3 where scope = $1 and survey = $2"
+LANDED = "select region from landed where scope = $1 and survey = $2"
+KEPT = """
+select distinct conversation from messages where scope = $1 and starts_with(conversation, $2)
+"""
 GATE_LOG = """
 insert into gate_log (scope, survey, run_id, agent, tool, allowed, probability, error)
 values ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -360,8 +371,6 @@ async def run(
         raise SurveyError(f"survey: mode must be one of {', '.join(MODES)}; got {mode!r}")
     if not isinstance(shape, str) or shape not in SHAPES:
         raise SurveyError(f"survey: shape must be one of {', '.join(SHAPES)}; got {shape!r}")
-    if shape == "app":
-        raise SurveyError("survey: shape 'app' comes with the boss")
     cap = checked_cap(cap)
     picked = chosen(size, regions)
     shares = fitted(opened, shape, picked, crews)
@@ -549,6 +558,276 @@ async def mark(pool: asyncpg.Pool, name: str, status: str) -> None:
     await pool.execute(MARK, SCOPE, name, status)
 
 
+def boss_prefix(name: str) -> str:
+    return f"{name}/boss/"
+
+
+def surveyor_prefix(name: str) -> str:
+    return f"{name}/s/"
+
+
+def boss_key(name: str, n: int) -> str:
+    return f"{boss_prefix(name)}{n}"
+
+
+def surveyor_key(name: str, region: str, attempt: int) -> str:
+    return f"{surveyor_prefix(name)}{region}/{attempt}"
+
+
+@dataclass
+class Shared:
+    opened: Opened
+    survey: Survey
+    spend: Spend
+    stop: Stop
+    board: Board
+    store: Store
+    merge: Merge
+    tools: Tools
+    workspace: Workspace
+    models: dict[str, Any] | None
+    approve: Callable[[str, ToolCall], Any]
+    tasks: dict[str, str | None]
+    top: list[str]
+    asked: dict[tuple[str, str], str | None] = field(default_factory=dict)
+
+    def on_event(
+        self, given: str, ended: Callable[[RunEnded], None] | None = None
+    ) -> Callable[[Event], Awaitable[None]]:
+        async def handle(event: Event) -> None:
+            if isinstance(event, ToolCallStarted) and event.tool == "Delegate":
+                started = event.args.get("input")
+                self.asked[(event.run_id, event.call_id)] = (
+                    started if isinstance(started, str) else None
+                )
+            if isinstance(event, RunStarted):
+                self.survey.live.add(event.run_id)
+                if event.call is None:
+                    self.top.append(event.run_id)
+                    self.tasks[event.run_id] = given
+                else:
+                    self.tasks[event.run_id] = self.asked.pop(
+                        (event.call.run_id, event.call.call_id), None
+                    )
+            try:
+                await self.merge.on_event(event)
+            finally:
+                if isinstance(event, RunEnded):
+                    self.survey.live.discard(event.run_id)
+                    self.tasks.pop(event.run_id, None)
+                    if ended is not None and event.call is None:
+                        ended(event)
+
+        return handle
+
+    async def run(
+        self,
+        agent: str,
+        given: str,
+        conversation: str,
+        *,
+        tools: Tools,
+        context: str | None = None,
+        ended: Callable[[RunEnded], None] | None = None,
+    ) -> Any:
+        return await self.opened.engine.run(
+            agent,
+            SCOPE,
+            given,
+            context=context,
+            store=self.store,
+            conversation=conversation,
+            on_event=self.on_event(given, ended),
+            tools=tools,
+            workspace=self.workspace,
+            stop=self.stop,
+            tags={"survey": self.survey.name},
+            approve=self.approve,
+            models=self.models,
+        )
+
+
+@dataclass
+class Job:
+    job: str
+    region: str
+    task: asyncio.Task[None] | None = None
+    ended: str | None = None
+    reply: str | None = None
+    error: str | None = None
+
+
+class Surveyors:
+    def __init__(self, shared: Shared, before: dict[str, int]) -> None:
+        self.shared = shared
+        self.before = before
+        self.jobs: dict[str, Job] = {}
+        self.attempts: Counter[str] = Counter()
+        self.woke = asyncio.Event()
+        self.context = contextvars.copy_context()
+
+    def running(self) -> list[Job]:
+        return [job for job in self.jobs.values() if job.ended is None]
+
+    async def landed(self) -> set[str]:
+        rows = await self.shared.opened.pool.fetch(LANDED, SCOPE, self.shared.survey.name)
+        return {row["region"] for row in rows}
+
+    async def progress(self) -> dict[str, Any]:
+        regions = await self.shared.board.regions()
+        landed = await self.landed()
+        counts = await self.shared.board.counts()
+        busy = {job.region for job in self.running()}
+        free = [
+            region
+            for region in regions
+            if region not in landed and region not in busy and self.attempts[region] < ATTEMPTS
+        ]
+        return {"counts": counts, "free": free, "running": len(busy)}
+
+    async def start(self, region: Any) -> dict[str, str]:
+        name = self.shared.survey.name
+        regions = await self.shared.board.regions()
+        landed = await self.landed()
+        if self.shared.spend.pressed:
+            raise SurveyError(
+                "survey: the survey is stopping at its spending cap; nothing more starts"
+            )
+        if region not in regions:
+            raise SurveyError(f"survey: region '{region}' is not in survey '{name}'")
+        if region in landed:
+            raise SurveyError(f"survey: region '{region}' has landed")
+        held = next((job for job in self.running() if job.region == region), None)
+        if held is not None:
+            raise SurveyError(f"survey: region '{region}' has a surveyor running, job {held.job}")
+        if self.attempts[region] >= ATTEMPTS:
+            raise SurveyError(
+                f"survey: region '{region}' was started {ATTEMPTS} times; it is not started again"
+            )
+        self.attempts[region] += 1
+        job = Job(f"s{len(self.jobs) + 1}", region)
+        self.jobs[job.job] = job
+        key = surveyor_key(name, region, self.before.get(region, 0) + self.attempts[region])
+        job.task = asyncio.create_task(self.survey(job, key), context=self.context.copy())
+        return {"job": job.job}
+
+    async def survey(self, job: Job, key: str) -> None:
+        given = json.dumps({"region": job.region})
+        try:
+            result = await self.shared.run(
+                "surveyor",
+                given,
+                key,
+                tools=self.shared.tools,
+                ended=lambda event: self.end(job, event),
+            )
+            job.reply = result.reply
+            self.finish(job, "stopped" if result.stopped else "finished", None)
+        except Exception as failed:
+            logger.warning(
+                "survey: job %s of survey '%s' failed: %s: %s",
+                job.job,
+                self.shared.survey.name,
+                type(failed).__name__,
+                failed,
+            )
+            self.finish(job, "failed", f"{type(failed).__name__}: {failed}")
+
+    def end(self, job: Job, event: RunEnded) -> None:
+        kind = "stopped" if event.stopped else "failed" if event.error else "finished"
+        self.finish(job, kind, event.error)
+
+    def finish(self, job: Job, kind: str, error: str | None) -> None:
+        if job.ended is None:
+            job.ended, job.error = kind, error
+        self.woke.set()
+
+    async def check(self, wanted: Any) -> dict[str, Any]:
+        job = self.jobs.get(wanted) if isinstance(wanted, str) else None
+        if job is None:
+            raise SurveyError(f"survey: there is no job '{wanted}'")
+        if job.ended is None:
+            return {"job": job.job, "region": job.region, "running": True}
+        return {
+            "job": job.job,
+            "region": job.region,
+            "running": False,
+            "ended": job.ended,
+            "reply": job.reply,
+            "error": job.error,
+            "landed": job.region in await self.landed(),
+        }
+
+    async def settled(self) -> bool:
+        if self.running():
+            return False
+        landed = await self.landed()
+        regions = await self.shared.board.regions()
+        return all(region in landed or self.attempts[region] >= ATTEMPTS for region in regions)
+
+    def unfinished(self) -> list[asyncio.Task[None]]:
+        return [
+            job.task for job in self.jobs.values() if job.task is not None and not job.task.done()
+        ]
+
+    async def finished(self) -> None:
+        left = self.unfinished()
+        if left:
+            await asyncio.wait(left)
+
+    async def close(self) -> None:
+        left = self.unfinished()
+        for task in left:
+            task.cancel()
+        if left:
+            await asyncio.wait(left)
+
+
+async def numbered(pool: asyncpg.Pool, name: str) -> tuple[int, dict[str, int]]:
+    bosses, attempts = 0, {}
+    for row in await pool.fetch(KEPT, SCOPE, f"{name}/"):
+        key = row["conversation"]
+        if key.startswith(boss_prefix(name)):
+            bosses = max(bosses, int(key.removeprefix(boss_prefix(name))))
+        elif key.startswith(surveyor_prefix(name)):
+            region, _, attempt = key.removeprefix(surveyor_prefix(name)).rpartition("/")
+            attempts[region] = max(attempts.get(region, 0), int(attempt))
+    return bosses, attempts
+
+
+async def team(shared: Shared, given: str, context: str) -> tuple[bool, str, str | None]:
+    result = await shared.run(
+        TOP[shared.survey.shape], given, shared.survey.name, tools=shared.tools, context=context
+    )
+    return bool(result.stopped), result.run_id, result.reply
+
+
+async def app(shared: Shared, given: str) -> tuple[bool, str, str | None]:
+    name = shared.survey.name
+    bosses, before = await numbered(shared.opened.pool, name)
+    surveyors = Surveyors(shared, before)
+    tools = boss_tools(surveyors)
+    run_id, reply, told = name, None, given
+    try:
+        while not shared.spend.pressed and not await surveyors.settled():
+            bosses += 1
+            surveyors.woke.clear()
+            began = len(surveyors.jobs)
+            result = await shared.run(BOSS, told, boss_key(name, bosses), tools=tools)
+            run_id, reply, told = result.run_id, result.reply, NEXT
+            if result.stopped:
+                break
+            idle = len(surveyors.jobs) == began and not surveyors.running()
+            if idle and not surveyors.woke.is_set():
+                break
+            with suppress(TimeoutError):
+                await asyncio.wait_for(surveyors.woke.wait(), WAKE)
+        await surveyors.finished()
+    finally:
+        await surveyors.close()
+    return shared.spend.pressed, run_id, reply
+
+
 async def work(
     opened: Opened,
     survey: Survey,
@@ -560,7 +839,6 @@ async def work(
     name = survey.name
     top: list[str] = []
     tasks: dict[str, str | None] = {}
-    asked: dict[tuple[str, str], str | None] = {}
     try:
         stop = Stop()
         spend = Spend(opened.pool, SCOPE, name, cap, stop)
@@ -591,25 +869,6 @@ async def work(
             problems=opened.problems,
             provider=(lambda _: "fake") if fake else opened.model_of,
         )
-
-        async def on_event(event: Event) -> None:
-            if isinstance(event, ToolCallStarted) and event.tool == "Delegate":
-                started = event.args.get("input")
-                asked[(event.run_id, event.call_id)] = started if isinstance(started, str) else None
-            if isinstance(event, RunStarted):
-                survey.live.add(event.run_id)
-                if event.call is None:
-                    top.append(event.run_id)
-                    tasks[event.run_id] = given
-                else:
-                    tasks[event.run_id] = asked.pop((event.call.run_id, event.call.call_id), None)
-            try:
-                await merge.on_event(event)
-            finally:
-                if isinstance(event, RunEnded):
-                    survey.live.discard(event.run_id)
-                    tasks.pop(event.run_id, None)
-
         provider_log.use(opened.pool, scope=SCOPE, survey=name)
         async with Workspace(
             opened.sandboxes,
@@ -617,26 +876,30 @@ async def work(
             timeout=WORKSPACE_TIMEOUT,
             tree=str(opened.sandboxes.agents),
         ) as workspace:
-            result = await opened.engine.run(
-                TOP[survey.shape],
-                SCOPE,
-                given,
-                context=context,
+            shared = Shared(
+                opened=opened,
+                survey=survey,
+                spend=spend,
+                stop=stop,
+                board=board,
                 store=Store(opened.pool, size=settings.size, on_reply=spend.reply),
-                conversation=name,
-                on_event=on_event,
+                merge=merge,
                 tools=Tools([board_tools(board), fetch_tool(web, opened.sandboxes, fetches)]),
                 workspace=workspace,
-                stop=stop,
-                tags={"survey": name},
-                approve=gate(opened, board, spend, name, models, tasks),
                 models=models,
+                approve=gate(opened, board, spend, name, models, tasks),
+                tasks=tasks,
+                top=top,
             )
-        survey.reply = result.reply
-        if result.stopped:
+            if survey.shape == "app":
+                stopped, run_id, reply = await app(shared, given)
+            else:
+                stopped, run_id, reply = await team(shared, given, context)
+        survey.reply = reply
+        if stopped:
             await mark(opened.pool, name, "stopped")
         else:
-            await fail_left(board, result.run_id)
+            await fail_left(board, run_id)
             await mark(opened.pool, name, "done")
     except asyncio.CancelledError:
         raise

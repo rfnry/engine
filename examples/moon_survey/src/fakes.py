@@ -40,7 +40,6 @@ WEH_PER_H = 9 / 10_000
 SIGMAS = 2
 MEASURED = ("TiO2", "FeO", "Al2O3", "Th")
 ENDED = ("finished", "failed", "lost", "stopped")
-ROUNDS = 3
 POLAR = 75
 ROLES = ("lead", "flat", "captain", "surveyor", "crosscheck", "crosscheck_second", "boss")
 NOTICE = re.compile(r"\[helper (d\d+) · (\S+) · (finished|failed|stopped|asks|lost)\]")
@@ -563,28 +562,23 @@ class Boss(Fake):
         stopped = failure(found)
         if stopped is not None:
             return f"boss: stopped, {stopped}", []
-        progresses = [n for n, e in enumerate(found) if e.call.name == "progress"]
-        if not progresses:
+        by_name: dict[str, list[Exchange]] = {}
+        for item in found:
+            by_name.setdefault(item.call.name, []).append(item)
+        if "progress" not in by_name:
             return "", [("progress", {})]
-        last = progresses[-1]
-        latest = found[last].data() or {}
-        after = found[last + 1 :]
-        starts = [e for e in after if e.call.name == "start"]
+        latest = by_name["progress"][0].data() or {}
         free = list(latest.get("free", []))
+        starts = by_name.get("start", [])
         if free and not starts:
             return "", [("start", {"region": r}) for r in free]
-        if starts:
-            jobs = [(e.data() or {}).get("job") for e in starts]
-            state: dict[str, bool] = {}
-            for e in after:
-                if e.call.name == "check":
-                    state[e.call.args["job"]] = (e.data() or {}).get("running") is True
-            open_ = [j for j in jobs if j is not None and state.get(j, True)]
-            if open_:
-                return "", [("check", {"job": j}) for j in open_]
-            if len(progresses) < ROUNDS:
-                return "", [("progress", {})]
-        return f"boss: done, {json.dumps(latest.get('counts', latest))}", []
+        jobs = [job for e in starts if (job := (e.data() or {}).get("job")) is not None]
+        checks = by_name.get("check", [])
+        if jobs and not checks:
+            return "", [("check", {"job": job}) for job in jobs]
+        running = sum(1 for e in checks if (e.data() or {}).get("running") is True)
+        counts = json.dumps(latest.get("counts", {}))
+        return f"boss: {running} of {len(jobs)} started still running; {counts}", []
 
 
 class FakeGate:
