@@ -1,5 +1,5 @@
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from pathlib import Path
 from typing import Any
 
@@ -1015,7 +1015,7 @@ class _Kept:
     def __init__(self) -> None:
         self.runs: list[object] = []
 
-    async def record(self, run: object) -> None:
+    async def record(self, run: object, *, skip: Collection[str] = ()) -> None:
         self.runs.append(run)
 
 

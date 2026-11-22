@@ -447,8 +447,8 @@ async def test_a_failed_run_s_last_messages_are_stored(tmp_path: Path) -> None:
     engine = team(crew(tmp_path, background=True), model, refinery=kept)
     with pytest.raises(ValueError, match=exactly("the lead's model broke")):
         await engine.run("lead", "acme", "go", store=store, conversation="c1")
-    [failure] = kept.runs
-    assert isinstance(failure, Generation)
+    [helper, failure] = kept.runs
+    assert isinstance(failure, Generation) and failure.children == [helper]
     notice = store.held[KEY][-1].notice
     assert notice is not None and (notice.job, notice.kind) == ("d1", "stopped")
     assert store.held[KEY] == failure.conversation and not gate.is_set()
@@ -466,8 +466,9 @@ async def test_a_failed_run_s_messages_are_stored_before_its_run_ended(tmp_path:
     engine = team(crew(tmp_path, background=True), model, refinery=kept)
     with pytest.raises(ValueError, match=exactly("the lead's model broke")):
         await engine.run("lead", "acme", "go", store=store, conversation="c1", on_event=on_event)
-    [failure] = kept.runs
-    assert isinstance(failure, Generation) and failure.conversation[-1].notice is not None
+    [helper, failure] = kept.runs
+    assert isinstance(failure, Generation) and failure.children == [helper]
+    assert failure.conversation[-1].notice is not None
     assert at_end[failure.run_id] == len(failure.conversation)
 
 
@@ -486,8 +487,8 @@ async def test_a_store_error_while_a_failed_run_ends_is_logged_and_the_run_s_err
         pytest.raises(ValueError, match=exactly("the lead's model broke")),
     ):
         await engine.run("lead", "acme", "go", store=store, conversation="c1")
-    [failure] = kept.runs
-    assert isinstance(failure, Generation)
+    [helper, failure] = kept.runs
+    assert isinstance(failure, Generation) and failure.children == [helper]
     [line] = [record for record in caplog.records if "store" in record.getMessage()]
     assert line.levelno == logging.ERROR and line.name == "rfnry_engine.engine"
     assert line.getMessage() == f"engine: the store failed while run {failure.run_id} ended"

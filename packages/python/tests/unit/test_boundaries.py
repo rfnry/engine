@@ -1,7 +1,7 @@
 import asyncio
 import copy
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -537,7 +537,7 @@ async def test_a_question_asked_at_run_time_is_the_record_s_own(tmp_path: Path) 
         def __init__(self) -> None:
             self.runs: list[Any] = []
 
-        async def record(self, run: Any) -> None:
+        async def record(self, run: Any, *, skip: Collection[str] = ()) -> None:
             self.runs.append(run)
 
     area = Choice(

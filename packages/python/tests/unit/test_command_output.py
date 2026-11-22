@@ -3,7 +3,7 @@ import json
 import re
 import sys
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,7 @@ class Kept:
     def __init__(self) -> None:
         self.runs: list[Any] = []
 
-    async def record(self, run: Any) -> None:
+    async def record(self, run: Any, *, skip: Collection[str] = ()) -> None:
         self.runs.append(run)
 
 

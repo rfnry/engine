@@ -1,7 +1,7 @@
 import asyncio
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -178,7 +178,7 @@ class SlowRecord:
         self.gate = asyncio.Event()
         self.cancelled = False
 
-    async def record(self, run: Run) -> None:
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
         self.writing.append(run)
         self.started.set()
         try:
@@ -193,7 +193,7 @@ class Kept:
     def __init__(self) -> None:
         self.runs: list[Run] = []
 
-    async def record(self, run: Run) -> None:
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
         self.runs.append(run)
 
 

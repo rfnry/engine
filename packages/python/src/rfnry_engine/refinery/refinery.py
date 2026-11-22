@@ -1,7 +1,7 @@
 import asyncio
 import json
 from collections import deque
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
@@ -185,10 +185,12 @@ class Refinery:
     async def check(self) -> None:
         await self.storage.check()
 
-    async def record(self, run: Run) -> None:
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
         if not run.scope:
             raise InputError("refinery: scope is required")
-        await self.storage.put_runs(run.scope, flatten(run, datetime.now(UTC)))
+        rows = [row for row in flatten(run, datetime.now(UTC)) if row.run_id not in skip]
+        if rows:
+            await self.storage.put_runs(run.scope, rows)
 
     async def run(self, scope: str, run_id: str) -> Run:
         if not scope:

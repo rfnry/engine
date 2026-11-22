@@ -1391,6 +1391,19 @@ first free id, so `Delegate` returns `{"job": "d4"}`, and its lead holds that na
 until the helper ends, so no other run on this engine takes it in between. The lead lets other tasks
 run between two ids, so a stop or a cancel lands while it passes over many.
 
+With a refinery attached, a run with a store records each helper and each synchronous `Delegate`'s
+child when it ends, with the runs under it, so a crash loses only the records of the runs it cut off
+([After a crash](#after-a-crash)): a helper, generation or decision, once its run returns or fails
+and before its lead hears its notice, and a synchronous child once it returns or fails, before its
+`Delegate` is answered. The lead is recorded when it ends, as any run is. Every row is written once.
+A rewritten row would be stamped `recorded` again and reach a second `export(since=…)`, so the
+engine keeps the ids of the runs it has recorded since the top run started, and each later record
+leaves their rows out — a helper's, of the helpers it recorded below it, and the lead's, of all of
+them. A record that fails is logged as any recording is ([Refining](#refining)), and its rows go
+with the record of the run above it. A stop never cuts a child's record: the run waits for it, then
+stops. `record=False` records none of them. Without a store nothing changes: the lead's record holds
+its whole tree, written once, when the lead ends.
+
 A store call that raises fails the run with that error, and the engine never retries one. A store
 retries what it can, such as a brief database error, before it raises. The `length` a lead asks
 before a helper starts is its own call: a store that raises there fails the lead, as does a length
@@ -1450,17 +1463,29 @@ the run that started it ended before its outcome reached you, and what it did is
 
 The body says what the lead can know: the helper's outcome never reached it, so what the helper did
 is unknown — it may have finished while its notice still waited to be read, its conversation then
-stored whole — and it ends with the name the helper's conversation is kept under, for you or a board
-of the team to read what it did. A decision helper that does not route keeps no conversation, so its
-body stops after `unknown`; an agent the folder no longer holds is named as one that keeps it. The
-notice's `Notice` has `kind` `lost` and `run_id` `None`, since the helper's `run_id` was on its
-`Delegate` step, not in the conversation. A `lost` notice is an outcome, so a later resume tells it
-no more, and the helper is not one of the run's own: `Job` on its id is the tool error
-`tools/helpers: there is no helper d2`. The run sends its lost notices in one `MessagesTaken` at
-turn 0, right after its `RunStarted`, with `messages=[]`. The ended results and lost notices are the
-run's own messages, appended after what it read and before its input: its record holds them when its
-first window does, a first window that starts past them leaves them in the store but out of
-`run.messages` and `run.conversation`, and `run.added`, which starts at the input, never holds them.
+stored whole, and its record too with a refinery attached — and it ends with the name the helper's
+conversation is kept under, for you or a board of the team to read what it did. A decision helper
+that does not route keeps no conversation, so its body stops after `unknown`; an agent the folder no
+longer holds is named as one that keeps it. The notice's `Notice` has `kind` `lost` and `run_id`
+`None`, since the helper's `run_id` was on its `Delegate` step, not in the conversation. A `lost`
+notice is an outcome, so a later resume tells it no more, and the helper is not one of the run's
+own: `Job` on its id is the tool error `tools/helpers: there is no helper d2`. The run sends its
+lost notices in one `MessagesTaken` at turn 0, right after its `RunStarted`, with `messages=[]`. The
+ended results and lost notices are the run's own messages, appended after what it read and before
+its input: its record holds them when its first window does, a first window that starts past them
+leaves them in the store but out of `run.messages` and `run.conversation`, and `run.added`, which
+starts at the input, never holds them.
+
+With a refinery attached, a crash keeps the record of every helper and synchronous child that ended
+before it, and none of the runs it cut off: the lead's row is missing, as is a row whose own record
+failed and waited for a record the crash cut off. A run the lead started still names it in
+`parent_run_id`. `refinery.run(scope, run_id)` reads such a run back by its own id, and the
+storage's `run_tree(scope, run_ids=…)` returns its row with the rows under it. An export writes its
+rows as it writes any row, and a replay passes over them, since a replay starts from the runs with
+no parent.
+Give each run of the conversation the same tag, `tags={"conversation": "dana-1"}`, and
+`run_tree(scope, tags=…)` reads the whole team back, since every run below a run carries its tags.
+The resumed lead is a new run, with its own record.
 
 ### Decision agents
 
@@ -1782,11 +1807,12 @@ runs as a synchronous child does — the run's tools, workspace, tags, `approve`
 models, under the same scope, with a stop chained below the lead's and an inbox of its own — and the
 step that started it carries its `run_id` at once, so `engine.send` and `engine.stop` reach it from
 that step's `ToolResultReady` on; its record joins `children` when it ends, in the order helpers
-end, and is read back there. A decision agent runs in the background too, its one call its whole
-run. A helper is a level below its lead, and one whose entry opts in may start helpers of its own.
-`approve` is asked about a background `Delegate` as about any call, and a `Delegate` refused before
-its helper starts — by `approve`, past `max_background`, or for `questions` that do not fit — starts
-no helper and spends no id.
+end, and is read back there, and a run with a store records it then, before its lead hears it
+([A conversation in your store](#a-conversation-in-your-store)). A decision agent runs in the
+background too, its one call its whole run. A helper is a level below its lead, and one whose entry
+opts in may start helpers of its own. `approve` is asked about a background `Delegate` as about any
+call, and a `Delegate` refused before its helper starts — by `approve`, past `max_background`, or
+for `questions` that do not fit — starts no helper and spends no id.
 
 When a helper ends, the lead hears it before its next model call, as a `role="user"` message whose
 first line names the helper and how it ended:
@@ -3771,8 +3797,10 @@ refinery = Refinery(rfnry_engine.PostgresStorage(engine_pool))
 
 A storage of your own is any object with the methods below. `scope` comes first in every one, and
 each reads and writes that scope only. `refinery.storage` is the storage the refinery was given, to
-read its rows back yourself, and `refinery.record(run)` stores a run and every child run under it —
-what an engine with a refinery does after each run not made with `record=False`:
+read its rows back yourself, and `refinery.record(run, skip=…)` stores a run and every child run
+under it but those whose ids `skip` holds — what an engine with a refinery does after each run not
+made with `record=False`, passing `skip`, the runs it has already recorded, only in a run with a
+store:
 
 ```python
 class Storage(Protocol):
@@ -3794,7 +3822,7 @@ class Storage(Protocol):
 
 class Refinery:
     storage: Storage
-    async def record(self, run: Run) -> None
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None
 
 class RunRow(BaseModel):   scope, run_id, parent_run_id, agent, kind, at, recorded, duration_ms, model, mode, body
 class LabelRow(BaseModel): scope, label_id, run_id, source, at, body

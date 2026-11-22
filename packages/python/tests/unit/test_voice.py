@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -72,7 +72,7 @@ class Recording:
     def __init__(self) -> None:
         self.runs: list[Run] = []
 
-    async def record(self, run: Run) -> None:
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
         self.runs.append(run)
 
 

@@ -1,6 +1,6 @@
 import asyncio
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +56,7 @@ class Kept:
     def __init__(self) -> None:
         self.runs: list[Run] = []
 
-    async def record(self, run: Run) -> None:
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
         self.runs.append(run)
 
     def of(self, agent: str) -> list[Generation]:
@@ -396,7 +396,7 @@ class Writing(Kept):
         super().__init__()
         self.writing = asyncio.Event()
 
-    async def record(self, run: Run) -> None:
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
         if run.agent == "billing":
             self.writing.set()
             await asyncio.sleep(0.3)
@@ -638,7 +638,7 @@ class Hung(Kept):
         super().__init__()
         self.writing = asyncio.Event()
 
-    async def record(self, run: Run) -> None:
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
         self.writing.set()
         await asyncio.Event().wait()
 

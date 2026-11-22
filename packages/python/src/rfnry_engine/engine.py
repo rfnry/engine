@@ -197,7 +197,7 @@ MAX_WORKER_PROCESSES = 16
 
 
 class Recorder(Protocol):
-    async def record(self, run: Run) -> None: ...
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None: ...
 
 
 PART = TypeAdapter[Part](Part)
@@ -300,6 +300,14 @@ def _history(value: Sequence[object] | None) -> list[Message]:
 
 def _named(agent: AgentSpec) -> bool:
     return agent.kind == "generation" or agent.route is not None
+
+
+def _tree(run: Run) -> set[str]:
+    if isinstance(run, Generation):
+        return {run.run_id}.union(*map(_tree, run.children))
+    if isinstance(run, Decision) and run.routed_to is not None:
+        return {run.run_id, *_tree(run.routed_to)}
+    return {run.run_id}
 
 
 def _paired(history: list[Message], start: int, named: str = "history") -> None:
@@ -1205,6 +1213,7 @@ class Engine:
             store=store,
             key=conversation,
         )
+        written = None if store is None else options.written
         recording = RECORDING.set(record)
         try:
             running = self._run(spec, scope, input, options, None)
@@ -1212,7 +1221,7 @@ class Engine:
         except Exception:
             if record and options.failed:
                 with taking(options.stop):
-                    await self._record(options.failed[-1])
+                    await self._record(options.failed[-1], written)
             raise
         finally:
             RECORDING.reset(recording)
@@ -1220,16 +1229,23 @@ class Engine:
             return None
         if record:
             with taking(options.stop):
-                await self._record(run)
+                await self._record(run, written)
         return run
 
-    async def _record(self, run: Run) -> None:
+    async def _record(self, run: Run, skip: set[str] | None = None) -> bool:
         if self.refinery is None:
-            return
+            return False
         try:
-            await self.refinery.record(run)
+            if skip is None:
+                await self.refinery.record(run)
+            else:
+                await self.refinery.record(run, skip=frozenset(skip))
         except Exception:
             logger.warning("engine: refinery.record failed for run %s", run.run_id, exc_info=True)
+            return False
+        if skip is not None:
+            skip.update(_tree(run))
+        return True
 
     def tool(
         self,
@@ -1817,6 +1833,10 @@ class Engine:
                 return None
             return f"{conversation.key}/{below}"
 
+        async def recorded(child: Generation | Decision) -> None:
+            if conversation is not None and RECORDING.get():
+                await self._record(child, options.written)
+
         async def claim(key: str | None) -> bool:
             if conversation is None or key is None:
                 return True
@@ -1877,11 +1897,14 @@ class Engine:
                         target, scope, args.input, forwarded, run_id, run_id=helper.run_id
                     )
                     try:
-                        return await self._owned(target, helper.stop, running)
+                        ended = await self._owned(target, helper.stop, running)
                     except Exception:
                         if not failed:
                             raise
-                        return failed[-1]
+                        ended = failed[-1]
+                    if ended is not None:
+                        await recorded(ended)
+                    return ended
                 finally:
                     release()
 
@@ -1933,10 +1956,14 @@ class Engine:
             except Exception as exc:
                 kept = failed[-1] if failed else None
                 if kept is not None:
+                    with taking(stop):
+                        await recorded(kept)
                     delegated[kept.run_id] = kept
                 return error_text(exc), True, None if kept is None else kept.run_id, False
             if child is None:
                 return STOPPED, True, None, True
+            with taking(stop):
+                await recorded(child)
             delegated[child.run_id] = child
             if halted(child) or answers_stopped():
                 return STOPPED, True, child.run_id, True

@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -622,7 +622,7 @@ async def test_a_script_reads_the_tags_of_the_run_it_serves(tmp_path: Path) -> N
     recorded: list[Run] = []
 
     class Recording:
-        async def record(self, run: Run) -> None:
+        async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
             recorded.append(run)
 
     async with Engine(

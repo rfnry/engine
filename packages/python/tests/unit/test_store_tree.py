@@ -386,9 +386,9 @@ async def test_a_lead_whose_store_raises_stops_its_helpers_and_fails(tmp_path: P
         await asyncio.wait_for(work, 5)
     assert caught.value is error
     assert pending(before) == [] and not gate.is_set()
-    [failure] = kept_runs.runs
+    [helper, failure] = kept_runs.runs
     assert isinstance(failure, Generation) and failure.error == "OSError: disk full"
-    [helper] = failure.children
+    assert failure.children == [helper]
     assert isinstance(helper, Generation) and helper.stopped == "now"
     assert store.held[at("c1/d1")] == stored == helper.conversation
     assert store.held[KEY] == held == failure.conversation[: len(held)]

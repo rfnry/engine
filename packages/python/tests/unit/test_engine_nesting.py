@@ -1,6 +1,6 @@
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -234,7 +234,7 @@ async def test_dispatch_delegate_asks_a_decision_agent_the_questions_it_is_given
         def __init__(self) -> None:
             self.runs: list[Any] = []
 
-        async def record(self, run: Any) -> None:
+        async def record(self, run: Any, *, skip: Collection[str] = ()) -> None:
             self.runs.append(run)
 
     recorder = Recorded()

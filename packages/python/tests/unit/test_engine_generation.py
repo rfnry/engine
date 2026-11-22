@@ -5,7 +5,7 @@ import re
 import shutil
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from enum import Enum
 from itertools import groupby
 from pathlib import Path
@@ -487,7 +487,7 @@ async def test_recording_is_opt_in_per_run(fixtures: Path) -> None:
         def __init__(self) -> None:
             self.runs: list[Run] = []
 
-        async def record(self, run: Run) -> None:
+        async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
             self.runs.append(run)
 
     recorder = Recorder()
@@ -690,7 +690,7 @@ async def test_a_failed_recording_is_logged_and_the_run_returned(
     fixtures: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     class Broken:
-        async def record(self, run: Run) -> None:
+        async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
             raise RuntimeError("database down")
 
     engine = engine_for(fixtures, Scripted(text_reply("fine")), refinery=Broken())
@@ -1006,7 +1006,7 @@ async def test_an_input_that_is_not_a_state_is_refused_before_any_model_call(
         def __init__(self) -> None:
             self.runs: list[Run] = []
 
-        async def record(self, run: Run) -> None:
+        async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
             self.runs.append(run)
 
     kept = Kept()

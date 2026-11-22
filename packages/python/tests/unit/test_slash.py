@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -191,7 +192,7 @@ class Recorded:
     def __init__(self) -> None:
         self.runs: list[Run] = []
 
-    async def record(self, run: Run) -> None:
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
         self.runs.append(run)
 
 

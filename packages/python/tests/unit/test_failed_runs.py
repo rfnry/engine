@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import sys
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -53,12 +53,12 @@ class Kept:
     def __init__(self) -> None:
         self.runs: list[Run] = []
 
-    async def record(self, run: Run) -> None:
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
         self.runs.append(run)
 
 
 class Down:
-    async def record(self, run: Run) -> None:
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
         raise OSError("storage is down")
 
 
