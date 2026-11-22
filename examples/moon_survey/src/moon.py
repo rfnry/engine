@@ -164,33 +164,39 @@ def data_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "data" / "lp"
 
 
-def read_lines(directory: Path, name: str) -> list[str]:
+def read_lines(directory: Path, name: str) -> list[tuple[int, str]]:
     path = directory / name
     if not path.is_file():
         raise DataError(f"moon: data/lp/{name} is missing; run uv run src/setup.py data")
-    return [line for line in path.read_text().splitlines() if line.strip()]
+    return [(n, line) for n, line in enumerate(path.read_text().splitlines(), 1) if line.strip()]
 
 
 def read_grs(directory: Path) -> list[Pixel]:
     found = []
-    for line in read_lines(directory, GRS_FILE):
+    for n, line in read_lines(directory, GRS_FILE):
         cells = line.split()
-        values = {
-            key: (float(cells[value]) * scale, math.sqrt(float(cells[error])) * scale)
-            for key, (value, error, scale) in GRS_COLUMNS.items()
-        }
-        lat = (float(cells[1]) + float(cells[2])) / 2
-        lon = (float(cells[3]) + float(cells[4])) / 2
+        try:
+            values = {
+                key: (float(cells[value]) * scale, math.sqrt(float(cells[error])) * scale)
+                for key, (value, error, scale) in GRS_COLUMNS.items()
+            }
+            lat = (float(cells[1]) + float(cells[2])) / 2
+            lon = (float(cells[3]) + float(cells[4])) / 2
+        except (IndexError, ValueError) as error:
+            raise DataError(f"moon: {GRS_FILE} line {n} does not parse: {error}") from None
         found.append(Pixel(lat, lon, values))
     return found
 
 
 def read_hydrogen(directory: Path) -> list[Pixel]:
     found = []
-    for line in read_lines(directory, HYDROGEN_FILE):
+    for n, line in read_lines(directory, HYDROGEN_FILE):
         if line.startswith("#"):
             continue
-        low, high, west, east, value = (float(x) for x in line.split(","))
+        try:
+            low, high, west, east, value = (float(x) for x in line.split(","))
+        except ValueError as error:
+            raise DataError(f"moon: {HYDROGEN_FILE} line {n} does not parse: {error}") from None
         found.append(Pixel((low + high) / 2, (west + east) / 2, {"H": (value, 0.0)}))
     return found
 

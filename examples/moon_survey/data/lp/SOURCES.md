@@ -23,16 +23,22 @@ file whose sha256 differs. Each row reads: file, url, size in bytes, sha256, res
   grid, not equal-area pixels, so the 2 degree one is used.
 - A region with no pixel of a quantity reads `None` for it.
 
+## Where the files go
+
+`MOON_SURVEY_DATA` moves the data folder (default `data/lp`, this folder), and `uv run src/setup.py data` downloads into
+whichever folder it names. A file already there is hashed: one that matches is kept, one that does not is fetched again,
+and a download whose sha256 or size differs from the table is refused and writes nothing.
+
 ## Citations
 
-- Prettyman, T. H. (2012). Lunar Prospector Gamma Ray Spectrometer derived elemental abundances, data set
-  LP-L-GRS-5-ELEM-ABUNDANCE-V1.0. NASA Planetary Data System, Geosciences Node.
+- Data set `LP-L-GRS-5-ELEM-ABUNDANCE-V1.0`, "Lunar Prospector GRS Elemental Abundance V1.0" (the name in the node's
+  catalog/dataset.cat), by T. H. Prettyman (label revision 2012-06-15), NASA Planetary Data System, Geosciences Node.
   https://pds-geosciences.wustl.edu/lunar/lp-l-grs-5-elem-abundance-v1/
-- Prettyman, T. H., J. J. Hagerty, R. C. Elphic, W. C. Feldman, D. J. Lawrence, G. W. McKinney, and D. T. Vaniman
-  (2006). Elemental composition of the lunar surface: Analysis of gamma ray spectroscopy data from Lunar Prospector.
-  Journal of Geophysical Research, 111, E12007.
-- Feldman, W. C., S. Maurice, D. J. Lawrence, R. C. Little, S. L. Lawson, O. Gasnault, R. C. Wiens, B. L. Barraclough,
-  R. C. Elphic, T. H. Prettyman, J. T. Steinberg, and A. B. Binder (2001). Evidence for water ice near the lunar poles.
-  Journal of Geophysical Research, 106(E10), 23231-23251. The hydrogen product is the Lunar Prospector Neutron
-  Spectrometer "Hydrogen_low" data set of June 2001 (Feldman et al.), published on the Geosciences Node's Lunar
-  Prospector special products page: https://pds-geosciences.wustl.edu/missions/lunarp/reduced_special.html
+- Prettyman, T.H., J.J. Hagerty, R.C. Elphic, W.C. Feldman, D.J. Lawrence, G.W. McKinney, and D.T. Vaniman, Elemental
+  composition of the lunar surface: Analysis of gamma ray spectroscopy data from Lunar Prospector, J. Geophys. Res.,
+  Vol. 111, E12007, doi:10.1029/2005JE002656, 2006. As the node cites it in the data set's catalog/ref.cat
+  (https://pds-geosciences.wustl.edu/lunar/lp-l-grs-5-elem-abundance-v1/lp_9001/catalog/ref.cat).
+- Feldman, W. C., et al., Evidence for water ice near lunar poles, J. Geophys. Res., in press, 2001c. As the node cites
+  the hydrogen product on its Lunar Prospector special products page
+  (https://pds-geosciences.wustl.edu/missions/lunarp/reduced_special.html), which names the file `hydrogenlow.txt`
+  ("Hydrogen_low" of June 2001, Feldman et al.).

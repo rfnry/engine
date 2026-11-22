@@ -157,6 +157,28 @@ def test_download_refuses_a_wrong_checksum(tmp_path):
     assert not (into / "a.bin").exists()
 
 
+def test_download_replaces_an_existing_corrupt_file(tmp_path):
+    sources = tmp_path / "SOURCES.md"
+    sources.write_text(sources_table({"a.bin": b"alpha"}))
+    into = tmp_path / "lp"
+    into.mkdir()
+    (into / "a.bin").write_bytes(b"alp")
+    setup.download(sources, into, lambda url: b"alpha")
+    assert (into / "a.bin").read_bytes() == b"alpha"
+    assert sorted(p.name for p in into.iterdir()) == ["a.bin"]
+
+
+def test_download_refuses_a_wrong_size(tmp_path):
+    body = b"alpha"
+    sources = tmp_path / "SOURCES.md"
+    sources.write_text(sources_table({"a.bin": body}).replace(f"| {len(body)} |", "| 99 |"))
+    into = tmp_path / "lp"
+    with pytest.raises(setup.SetupError) as raised:
+        setup.download(sources, into, lambda url: body)
+    assert str(raised.value) == "setup: a.bin has 5 bytes; SOURCES.md says 99"
+    assert list(into.iterdir()) == []
+
+
 def test_download_skips_a_file_already_there(tmp_path):
     sources = tmp_path / "SOURCES.md"
     sources.write_text(sources_table({"a.bin": b"alpha"}))
@@ -177,3 +199,22 @@ def test_the_real_sources_list_the_files_the_loader_reads():
         assert source.url.startswith("https://pds-geosciences.wustl.edu/")
         assert len(source.sha256) == 64
         assert source.size > 0
+
+
+def test_a_malformed_row_says_where(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOON_SURVEY_DATA", str(tmp_path))
+    rows = (CUT / GRS).read_text().splitlines()
+    (tmp_path / GRS).write_text("\n".join([*rows[:2], rows[2][:60], *rows[3:]]))
+    (tmp_path / HYDROGEN).write_bytes((CUT / HYDROGEN).read_bytes())
+    with pytest.raises(moon.DataError, match=f"moon: {GRS} line 3 does not parse: "):
+        moon.measured("N75-90/0")
+
+
+def test_a_malformed_hydrogen_row_says_where(tmp_path, monkeypatch):
+    monkeypatch.setenv("MOON_SURVEY_DATA", str(tmp_path))
+    (tmp_path / GRS).write_bytes((CUT / GRS).read_bytes())
+    lines = (CUT / HYDROGEN).read_text().splitlines()
+    lines[13] = "  -90.00, nope"
+    (tmp_path / HYDROGEN).write_text("\n".join(lines))
+    with pytest.raises(moon.DataError, match=f"moon: {HYDROGEN} line 14 does not parse: "):
+        moon.measured("N75-90/0")

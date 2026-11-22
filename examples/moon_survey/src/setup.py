@@ -42,19 +42,29 @@ def open_url(url: str) -> bytes:
     return response.content
 
 
+def digest_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def download(sources: Path, into: Path, opener: Callable[[str], bytes]) -> list[Path]:
     into.mkdir(parents=True, exist_ok=True)
     kept = []
     for source in parse_sources(sources):
         target = into / source.name
-        if not target.exists():
+        if not (target.is_file() and digest_of(target) == source.sha256):
             body = opener(source.url)
             digest = hashlib.sha256(body).hexdigest()
             if digest != source.sha256:
                 raise SetupError(
                     f"setup: {source.name} has sha256 {digest}; SOURCES.md says {source.sha256}"
                 )
-            target.write_bytes(body)
+            if len(body) != source.size:
+                raise SetupError(
+                    f"setup: {source.name} has {len(body)} bytes; SOURCES.md says {source.size}"
+                )
+            partial = target.with_name(f"{source.name}.part")
+            partial.write_bytes(body)
+            partial.replace(target)
         kept.append(target)
     return kept
 
