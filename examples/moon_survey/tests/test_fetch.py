@@ -291,3 +291,125 @@ async def test_the_fake_web_serves_its_pages_and_404s_the_rest(caller, tmp_path)
     assert missing.status == 404
     result = await caller(tool_of(web, tmp_path), {"url": "https://arxiv.org/a"})
     assert result["text"] == "Title\none\ntwo"
+
+
+async def test_only_a_2xx_body_is_cached():
+    count = 0
+
+    def handler(request):
+        nonlocal count
+        count += 1
+        return ok(status=503) if count == 1 else ok()
+
+    web = web_over(handler)
+    assert (await web.get("https://pds.nasa.gov/a")).status == 503
+    again = await web.get("https://pds.nasa.gov/a")
+    assert (again.status, again.cached) == (200, False)
+    assert (await web.get("https://pds.nasa.gov/a")).cached is True
+
+
+async def test_a_body_past_two_megabytes_is_fetched_again():
+    count = 0
+
+    def handler(request):
+        nonlocal count
+        count += 1
+        return ok(b"x" * 2_000_001)
+
+    web = web_over(handler)
+    await web.get("https://pds.nasa.gov/a")
+    again = await web.get("https://pds.nasa.gov/a")
+    assert count == 2
+    assert again.cached is False
+
+
+async def test_the_cache_drops_the_least_recently_used_past_its_budget():
+    count = {}
+
+    def handler(request):
+        count[request.url.path] = count.get(request.url.path, 0) + 1
+        return ok(b"x" * 10)
+
+    web = web_over(handler, cache_bytes=25, default_pace=0)
+    await web.get("https://pds.nasa.gov/a")
+    await web.get("https://pds.nasa.gov/b")
+    await web.get("https://pds.nasa.gov/a")
+    await web.get("https://pds.nasa.gov/c")
+    assert web.cached_total == 20
+    await web.get("https://pds.nasa.gov/a")
+    await web.get("https://pds.nasa.gov/b")
+    assert count == {"/a": 1, "/b": 2, "/c": 1}
+
+
+async def test_real_downloads_are_bounded():
+    running = 0
+    peak = 0
+
+    async def handler(request):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+        return ok()
+
+    web = web_over(handler, downloads=2, default_pace=0)
+    await asyncio.gather(*(web.get(f"https://pds.nasa.gov/{n}") for n in range(8)))
+    assert peak == 2
+
+
+async def test_a_client_that_follows_redirects_cannot_bypass_the_hop_check():
+    def handler(request):
+        return httpx.Response(302, headers={"location": "https://evil.example/x"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
+    with pytest.raises(FetchError, match="leaves the list"):
+        await Web(client).get("https://arxiv.org/a")
+
+
+@pytest.mark.parametrize("url", ["https://arxiv.org:8443/x", "https://arxiv.org:bad/x"])
+async def test_a_port_other_than_443_is_refused(url):
+    with pytest.raises(FetchError, match="only port 443"):
+        await web_over(lambda request: ok()).get(url)
+
+
+async def test_port_443_is_allowed():
+    page = await web_over(lambda request: ok()).get("https://arxiv.org:443/x")
+    assert page.status == 200
+
+
+async def test_a_slow_drip_body_stops_at_the_deadline():
+    async def drip():
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            yield b"x"
+
+    def handler(request):
+        return httpx.Response(200, content=drip(), headers={"content-type": "text/plain"})
+
+    with pytest.raises(FetchError, match="did not finish within"):
+        await web_over(handler, timeout=0.05).get("https://arxiv.org/a")
+
+
+async def test_a_save_path_that_is_a_directory_is_a_fetch_error(caller, tmp_path):
+    (tmp_path / "a" / "d").mkdir(parents=True)
+    tool = tool_of(web_over(lambda request: ok()), tmp_path)
+    with pytest.raises(FetchError, match="^fetch: could not write 'd'"):
+        await caller(tool, {"url": "https://arxiv.org/a", "save": "d"})
+
+
+async def test_a_non_200_binary_body_is_not_read(caller, tmp_path):
+    web = web_over(lambda request: ok(b"\x00\x01", "application/octet-stream", status=500))
+    result = await caller(tool_of(web, tmp_path), {"url": "https://arxiv.org/a"})
+    assert result["status"] == 500
+    assert "text" not in result
+    assert result["note"].startswith("binary;")
+
+
+async def test_the_declared_charset_is_honoured(caller, tmp_path):
+    web = web_over(lambda request: ok("café".encode("latin-1"), "text/plain; charset=iso-8859-1"))
+    result = await caller(tool_of(web, tmp_path), {"url": "https://arxiv.org/a"})
+    assert result["text"] == "café"
+    odd = web_over(lambda request: ok(b"ok", "text/plain; charset=nonsense"))
+    result = await caller(tool_of(odd, tmp_path), {"url": "https://arxiv.org/a"})
+    assert result["text"] == "ok"

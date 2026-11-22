@@ -1,5 +1,8 @@
 import asyncio
+import codecs
+import re
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from html.parser import HTMLParser
@@ -23,6 +26,8 @@ HOSTS = (
 )
 USER_AGENT = "moon-survey-example/0"
 MAX_REDIRECTS = 5
+CACHE_ITEM = 2_000_000
+CHARSET = re.compile(r'charset=["\']?([\w.-]+)', re.IGNORECASE)
 REDIRECTS = (301, 302, 303, 307, 308)
 SKIPPED = ("script", "style")
 BLOCKS = (
@@ -108,17 +113,22 @@ def html_text(source: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def decode(body: bytes) -> str:
-    return body.decode("utf-8", errors="replace")
+def decode(body: bytes, content_type: str) -> str:
+    found = CHARSET.search(content_type)
+    encoding = "utf-8"
+    if found:
+        try:
+            encoding = codecs.lookup(found.group(1)).name
+        except LookupError:
+            encoding = "utf-8"
+    return body.decode(encoding, errors="replace")
 
 
-def reading(page: Page) -> str:
-    text = decode(page.body)
-    return (
-        html_text(text)
-        if base_type(page.content_type) in ("text/html", "application/xhtml+xml")
-        else text
-    )
+def read_page(page: Page) -> str:
+    text = decode(page.body, page.content_type)
+    if base_type(page.content_type) in ("text/html", "application/xhtml+xml"):
+        return html_text(text)
+    return text
 
 
 class Web:
@@ -134,6 +144,8 @@ class Web:
         default_pace: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        cache_bytes: int = 200_000_000,
+        downloads: int = 4,
     ) -> None:
         self.client = client
         self.hosts = hosts
@@ -144,7 +156,10 @@ class Web:
         self.default_pace = default_pace
         self.clock = clock
         self.sleep = sleep
-        self.cache: dict[str, Page] = {}
+        self.cache_bytes = cache_bytes
+        self.cache: OrderedDict[str, Page] = OrderedDict()
+        self.cached_total = 0
+        self.slots = asyncio.Semaphore(downloads)
         self.flying: dict[str, asyncio.Task[Page]] = {}
         self.locks: dict[str, asyncio.Lock] = {}
         self.started: dict[str, float] = {}
@@ -152,15 +167,18 @@ class Web:
     def check(self, url: str, *, redirect: bool = False) -> str:
         parts = urlsplit(url)
         host = (parts.hostname or "").lower()
-        if redirect:
-            if host not in self.hosts:
-                raise FetchError(f"fetch: a redirect to '{url}' leaves the list")
-        elif parts.scheme != "https":
-            raise FetchError(f"fetch: only https is allowed; got '{url}'")
-        elif host not in self.hosts:
-            raise FetchError(f"fetch: host '{host}' is not on the list")
+        if redirect and host not in self.hosts:
+            raise FetchError(f"fetch: a redirect to '{url}' leaves the list")
         if parts.scheme != "https":
             raise FetchError(f"fetch: only https is allowed; got '{url}'")
+        if host not in self.hosts:
+            raise FetchError(f"fetch: host '{host}' is not on the list")
+        try:
+            port = parts.port
+        except ValueError:
+            port = -1
+        if port not in (None, 443):
+            raise FetchError(f"fetch: only port 443 is allowed; got '{url}'")
         return host
 
     async def wait_turn(self, host: str) -> None:
@@ -176,26 +194,52 @@ class Web:
 
     async def request(self, url: str) -> Page:
         try:
-            async with self.client.stream(
-                "GET", url, headers={"User-Agent": USER_AGENT}, timeout=self.timeout
-            ) as response:
+            async with (
+                asyncio.timeout(self.timeout),
+                self.slots,
+                self.client.stream(
+                    "GET",
+                    url,
+                    headers={"User-Agent": USER_AGENT},
+                    timeout=self.timeout,
+                    follow_redirects=False,
+                ) as response,
+            ):
                 if response.status_code in REDIRECTS and "location" in response.headers:
                     return Page(response.headers["location"], response.status_code, "", b"")
-                body = bytearray()
+                chunks: list[bytes] = []
+                size = 0
                 async for chunk in response.aiter_bytes():
-                    body.extend(chunk)
-                    if len(body) > self.save_cap:
+                    size += len(chunk)
+                    if size > self.save_cap:
                         raise FetchError(
                             f"fetch: '{url}' is larger than the cap of {self.save_cap} bytes"
                         )
+                    chunks.append(chunk)
                 return Page(
                     url,
                     response.status_code,
                     response.headers.get("content-type", ""),
-                    bytes(body),
+                    b"".join(chunks),
                 )
+        except TimeoutError:
+            raise FetchError(
+                f"fetch: '{url}' did not finish within {self.timeout} seconds"
+            ) from None
         except httpx.HTTPError as error:
             raise FetchError(f"fetch: {type(error).__name__} for '{url}': {error}") from None
+
+    def keep(self, url: str, page: Page) -> None:
+        if not 200 <= page.status < 300 or len(page.body) > CACHE_ITEM:
+            return
+        old = self.cache.pop(url, None)
+        if old is not None:
+            self.cached_total -= len(old.body)
+        self.cache[url] = page
+        self.cached_total += len(page.body)
+        while self.cached_total > self.cache_bytes and self.cache:
+            _, dropped = self.cache.popitem(last=False)
+            self.cached_total -= len(dropped.body)
 
     async def load(self, url: str) -> Page:
         current = url
@@ -207,13 +251,14 @@ class Web:
                 current = urljoin(current, page.url)
                 host = self.check(current, redirect=True)
                 continue
-            self.cache[url] = page
+            self.keep(url, page)
             return page
         raise FetchError(f"fetch: more than {MAX_REDIRECTS} redirects from '{url}'")
 
     async def get(self, url: str) -> Page:
         found = self.cache.get(url)
         if found is not None:
+            self.cache.move_to_end(url)
             return replace(found, cached=True)
         flying = self.flying.get(url)
         if flying is not None:
@@ -275,6 +320,11 @@ def sandbox_path(root: Path, save: str) -> Path:
     return target
 
 
+def write_file(target: Path, body: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(body)
+
+
 def fetch_tool(web: Any, place: Callable[[str], Path], log: Any) -> Tool:
     async def fetch(args: dict[str, Any]) -> dict[str, Any]:
         call = current_call()
@@ -291,8 +341,10 @@ def fetch_tool(web: Any, place: Callable[[str], Path], log: Any) -> Tool:
             raise
         saved = None
         if target is not None and page.status == 200:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(page.body)
+            try:
+                await asyncio.to_thread(write_file, target, page.body)
+            except OSError as error:
+                raise FetchError(f"fetch: could not write '{save}': {error.strerror}") from None
             saved = save
         for logged in dict.fromkeys((url, page.url)):
             await log.write(
@@ -312,7 +364,7 @@ def fetch_tool(web: Any, place: Callable[[str], Path], log: Any) -> Tool:
                 "saved": saved,
                 "bytes": len(page.body),
             }
-        if not is_text(content_type) and page.status == 200:
+        if page.body and not is_text(content_type):
             return {
                 "url": page.url,
                 "status": page.status,
@@ -320,7 +372,7 @@ def fetch_tool(web: Any, place: Callable[[str], Path], log: Any) -> Tool:
                 "bytes": len(page.body),
                 "note": "binary; fetch it again with save to write it into your sandbox",
             }
-        text = reading(page)
+        text = await asyncio.to_thread(read_page, page)
         return {
             "url": page.url,
             "status": page.status,
