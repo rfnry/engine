@@ -2,7 +2,7 @@ import json
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Required, TypedDict, Unpack
 
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_engine.models import HistoryLike, RunModel, ToolCall
@@ -20,7 +20,7 @@ from rfnry_engine.tree import AgentSpec, no_such_skill
 if TYPE_CHECKING:
     from rfnry_engine.engine import Engine
 
-Reading = tuple[Sequence[object] | HistoryLike, Callable[[], int]]
+HistorySource = tuple[Sequence[object] | HistoryLike, Callable[[], int]]
 
 
 def _own(item: Tool | ToolsLike) -> Tool | ToolsLike:
@@ -111,11 +111,11 @@ class EngineTools(Tools):
         ]
         items: list[Tool | ToolsLike] = [tool for tool in files if tool.name in spec.keep]
         deadline = smallest(spec.tool_timeout, engine.tool_timeout)
-        reading = self._reading(history, start)
-        if reading is not None:
+        source = self._history_source(history, start)
+        if source is not None:
             items.append(
                 history_tool(
-                    *reading,
+                    *source,
                     walk=engine.history_walk,
                     chars=engine.history_chars,
                     timeout=deadline,
@@ -139,20 +139,40 @@ class EngineTools(Tools):
         super().__init__(map(_own, [*items, given]))
         self._in_workers = frozenset(tool.name for tool in folder)
 
-    def _reading(
+    def _history_source(
         self, history: Sequence[object] | HistoryLike | None, start: int
-    ) -> Reading | None:
+    ) -> HistorySource | None:
         if history is None or start <= 0:
             return None
         return history, lambda: start
 
 
-class RunTools(EngineTools):
-    def __init__(self, engine: Engine, *, held: Reading | None, **given: Any) -> None:
-        self._held = held
-        super().__init__(engine, **given)
+class Offered(TypedDict, total=False):
+    agent: Required[str]
+    scope: Required[str]
+    mode: str | None
+    tools: ToolsLike | None
+    workspace: Workspace | None
+    tags: Mapping[str, str] | None
+    approve: Callable[[str, ToolCall], Awaitable[bool]] | None
+    history: Sequence[object] | HistoryLike | None
+    start: int
+    on_event: EventHandler | None
+    stop: Callable[[], Stop | None] | None
+    invoked: str | None
+    models: Mapping[str, RunModel] | None
 
-    def _reading(
+
+class RunTools(EngineTools):
+    def __init__(
+        self, engine: Engine, *, source: HistorySource | None, **offered: Unpack[Offered]
+    ) -> None:
+        self._source = source
+        super().__init__(engine, **offered)
+
+    def _history_source(
         self, history: Sequence[object] | HistoryLike | None, start: int
-    ) -> Reading | None:
-        return super()._reading(history, start) if self._held is None else self._held
+    ) -> HistorySource | None:
+        if self._source is None:
+            return super()._history_source(history, start)
+        return self._source

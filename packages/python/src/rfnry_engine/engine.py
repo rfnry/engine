@@ -1638,7 +1638,7 @@ class Engine:
         window = 0
         surface = RunTools(
             self,
-            held=None if conversation is None else (messages, lambda: window),
+            source=None if conversation is None else (messages, lambda: window),
             agent=spec.name,
             mode=spec.mode,
             scope=scope,
@@ -1725,9 +1725,10 @@ class Engine:
         if options.skill is not None:
             opening = _invoked(spec.skills[options.skill], opening)
         messages.extend([*history, Message(role="user", content=opening)])
-        sent = list(messages)
+        begun = 0 if conversation is None else len(history)
+        sent = messages[begun:]
         seen = messages
-        begun: int | None = None
+        settled = False
         steps: list[Step] = []
         delegated: dict[str, Generation | Decision] = {}
         woken: list[Any] = []
@@ -2051,19 +2052,19 @@ class Engine:
             return True
 
         async def windowed() -> None:
-            nonlocal chained, window, begun, seen, sent
+            nonlocal chained, window, begun, seen, sent, settled
             if conversation is None:
                 return
             at = await conversation.window(len(messages))
             _paired(messages[at:], at, f"the window of conversation {conversation.key!r}")
-            if begun is None:
-                begun, sent = at, messages[at:]
-            elif at == window:
+            if settled and at == window:
                 seen.extend(messages[at + len(seen) :])
                 return
             chained = chain.Chain(head)
             seen = await chained.settle(messages[at:])
             window = at
+            if not settled:
+                begun, sent, settled = at, list(seen), True
 
         async def ask() -> Reply:
             sending = [_handed(message, sent=True) for message in (*preload, *seen)]
@@ -2079,7 +2080,6 @@ class Engine:
         def finish(
             reply_text: str, stopped: Stopped | None = None, error: Exception | None = None
         ) -> Generation:
-            first = begun or 0
             return Generation(
                 run_id=run_id,
                 parent_run_id=parent_run_id,
@@ -2098,9 +2098,9 @@ class Engine:
                 input=input,
                 system=system,
                 preload=[part.model_copy() for part in spec.preload],
-                start=options.start + first,
+                start=options.start + begun,
                 messages=sent,
-                conversation=messages[first:],
+                conversation=[*sent, *messages[begun + len(sent) :]],
                 tools=specs,
                 steps=steps,
                 calls=calls,

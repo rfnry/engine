@@ -12,7 +12,7 @@ import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 import rfnry_engine
-from rfnry_engine import RunEnded, Stop
+from rfnry_engine import RunEnded, RunStarted, Stop
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, ModelError, RunawayError
 from rfnry_engine.models import Message, Reply, Text, ToolCall, ToolSpec, Usage
@@ -827,6 +827,63 @@ async def test_a_store_run_records_where_its_first_window_began(
     back = await refinery.run("acme", run.run_id)
     assert isinstance(back, Generation)
     assert (back.start, back.messages, back.conversation) == (2, held[2:7], held[2:])
+
+
+async def test_a_store_run_records_its_first_window_as_it_was_sent(
+    tmp_path: Path, storage: Storage
+) -> None:
+    store, refinery = MemoryStore(), Refinery(storage)
+    llm = Scripted(thinking(), text_reply("Done."), text_reply("Again."))
+    engine = engine_for(tmp_path, llm, refinery=refinery)
+    await chat(engine, store)
+    run = await chat(engine, store, "and then?", context="Today is Monday.")
+    held = store.held[KEY]
+    assert llm.calls[2][1][1].reasoning is None and held[1].reasoning == THOUGHT
+    assert run.messages[1] == held[1].model_copy(update={"reasoning": None})
+    assert run.messages == [held[0], run.messages[1], *held[2:5]]
+    assert run.conversation == [*run.messages, *held[5:]]
+    back = await refinery.run("acme", run.run_id)
+    assert isinstance(back, Generation)
+    assert back.messages == run.messages and back.conversation == run.conversation
+    assert back.messages[1].reasoning is None and back.conversation[1].reasoning is None
+
+
+async def stopped_at_once(engine: Engine, store: MemoryStore) -> None:
+    stop = Stop()
+    stop.now()
+    run = await chat(engine, store, stop=stop)
+    assert run.stopped == "now"
+
+
+async def started_by_a_handler_that_raises(engine: Engine, store: MemoryStore) -> None:
+    async def on_event(event: Any) -> None:
+        if isinstance(event, RunStarted):
+            raise ValueError("the handler broke")
+
+    with pytest.raises(ValueError, match=exactly("the handler broke")):
+        await chat(engine, store, on_event=on_event)
+
+
+async def refused_its_first_window(engine: Engine, store: MemoryStore) -> None:
+    store.windows = lambda conversation, length: -1
+    with pytest.raises(InputError, match="must be a position from 0 to 4; got -1"):
+        await chat(engine, store)
+
+
+BEFORE_A_CALL = [stopped_at_once, started_by_a_handler_that_raises, refused_its_first_window]
+
+
+@pytest.mark.parametrize("ending", BEFORE_A_CALL, ids=[ending.__name__ for ending in BEFORE_A_CALL])
+async def test_a_store_run_that_ends_before_its_first_model_call_records_only_its_own_messages(
+    ending: Callable[[Engine, MemoryStore], Awaitable[None]], tmp_path: Path
+) -> None:
+    store, kept, llm = MemoryStore(), Kept(), Scripted()
+    store.held[KEY] = earlier()
+    await ending(engine_for(tmp_path, llm, refinery=kept), store)
+    [run] = kept.runs
+    assert isinstance(run, Generation) and llm.calls == [] and run.calls == 0
+    assert run.start == 4 and run.messages == [Message(role="user", content="work")]
+    assert run.conversation == run.messages and store.held[KEY] == [*earlier(), *run.messages]
 
 
 async def test_job_ids_count_the_whole_stored_conversation(tmp_path: Path) -> None:
