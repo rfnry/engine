@@ -865,15 +865,16 @@ an error, `engine: a further call of the same batch failed: …`. Its conversati
 call with no result, when the run failed between the call and its result, and `run()` refuses such
 a history: go on from the history the run was given. A run refused before its first model call — a
 bad input, an agent or skill the folder does not have, a route loop — has nothing to record,
-and a run whose task you cancel is not recorded; `stop=` ends a run with its record. A generation
-run whose `on_event` raises on its `RunStarted` had started: it is recorded with that `error` and
-no model call. A delegated run that fails stays under its parent in `children`, its step the error
-the parent's model was given, and the parent goes on; a routed run that fails fails its router,
-which is recorded with its answers and the failed run in `routed_to`, or `None` when the routed run
-was refused before its first model call. A run that failed keeps the delegated runs that had
-returned in `children`: those its steps answered and the helpers that ended, in the order they
-joined, then those it had not answered yet, in the order they started, as `refinery.run` reads them
-back.
+and a run whose task you cancel is not recorded, though with a store the helpers and synchronous
+children that ended before the cancel stay recorded ([After a crash](#after-a-crash)); `stop=` ends
+a run with its record. A generation run whose `on_event` raises on its `RunStarted` had started: it
+is recorded with that `error` and no model call. A delegated run that fails stays under its parent
+in `children`, its step the error the parent's model was given, and the parent goes on; a routed run
+that fails fails its router, which is recorded with its answers and the failed run in `routed_to`,
+or `None` when the routed run was refused before its first model call. A run that failed keeps the
+delegated runs that had returned in `children`: those its steps answered and the helpers that ended,
+in the order they joined, then those it had not answered yet, in the order they started, as
+`refinery.run` reads them back.
 
 Pass `tags=` to mark a run with what you will group it by later — the commit of the folder, an
 experiment arm, a release. Keys and values are strings — at most 32 tags, keys of 1 to 64
@@ -1392,17 +1393,21 @@ until the helper ends, so no other run on this engine takes it in between. The l
 run between two ids, so a stop or a cancel lands while it passes over many.
 
 With a refinery attached, a run with a store records each helper and each synchronous `Delegate`'s
-child when it ends, with the runs under it, so a crash loses only the records of the runs it cut off
-([After a crash](#after-a-crash)): a helper, generation or decision, once its run returns or fails
-and before its lead hears its notice, and a synchronous child once it returns or fails, before its
-`Delegate` is answered. The lead is recorded when it ends, as any run is. Every row is written once.
-A rewritten row would be stamped `recorded` again and reach a second `export(since=…)`, so the
-engine keeps the ids of the runs it has recorded since the top run started, and each later record
-leaves their rows out — a helper's, of the helpers it recorded below it, and the lead's, of all of
-them. A record that fails is logged as any recording is ([Refining](#refining)), and its rows go
-with the record of the run above it. A stop never cuts a child's record: the run waits for it, then
-stops. `record=False` records none of them. Without a store nothing changes: the lead's record holds
-its whole tree, written once, when the lead ends.
+child when it ends, with the runs under it, so a crash keeps the records of those that ended before
+it ([After a crash](#after-a-crash)): a helper, generation or decision, once its run returns or
+fails and before its lead hears its notice, and a synchronous child once it returns or fails, before
+its `Delegate` is answered. While its record is written a helper reads as ended: `Job` and `Jobs`
+show how it ended, a `send` to it is refused, and it holds no `max_background` place and holds back
+no `Output`. Its lead hears it once the record is written, and never ends before: a reply with no
+tool call waits for it as for a notice, and an accepted `Output` waits for it before the run ends.
+The lead is recorded when it ends, as any run is. Every row is written once. A rewritten row would
+be stamped `recorded` again and reach a second `export(since=…)`, so the engine keeps the ids of the
+runs it has recorded since the top run started, and each later record leaves their rows out — a
+helper's, of the helpers it recorded below it, and the lead's, of all of them. A record that fails
+is logged as any recording is ([Refining](#refining)), and its rows go with the record of the run
+above it. A stop never cuts a child's record: the run waits for it, then stops. `record=False`
+records none of them. Without a store nothing changes: the lead's record holds its whole tree,
+written once, when the lead ends.
 
 A store call that raises fails the run with that error, and the engine never retries one. A store
 retries what it can, such as a brief database error, before it raises. The `length` a lead asks
@@ -1478,11 +1483,11 @@ starts at the input, never holds them.
 
 With a refinery attached, a crash keeps the record of every helper and synchronous child that ended
 before it, and none of the runs it cut off: the lead's row is missing, as is a row whose own record
-failed and waited for a record the crash cut off. A run the lead started still names it in
-`parent_run_id`. `refinery.run(scope, run_id)` reads such a run back by its own id, and the
-storage's `run_tree(scope, run_ids=…)` returns its row with the rows under it. An export writes its
-rows as it writes any row, and a replay passes over them, since a replay starts from the runs with
-no parent.
+failed and waited for a record the crash cut off. A cancelled run leaves the same, and so does a
+lead whose own record failed. A run the lead started still names it in `parent_run_id`.
+`refinery.run(scope, run_id)` reads such a run back by its own id, and the storage's
+`run_tree(scope, run_ids=…)` returns its row with the rows under it. An export writes its rows as it
+writes any row, and a replay passes over them, since a replay starts from the runs with no parent.
 Give each run of the conversation the same tag, `tags={"conversation": "dana-1"}`, and
 `run_tree(scope, tags=…)` reads the whole team back, since every run below a run carries its tags.
 The resumed lead is a new run, with its own record.
@@ -1807,12 +1812,13 @@ runs as a synchronous child does — the run's tools, workspace, tags, `approve`
 models, under the same scope, with a stop chained below the lead's and an inbox of its own — and the
 step that started it carries its `run_id` at once, so `engine.send` and `engine.stop` reach it from
 that step's `ToolResultReady` on; its record joins `children` when it ends, in the order helpers
-end, and is read back there, and a run with a store records it then, before its lead hears it
-([A conversation in your store](#a-conversation-in-your-store)). A decision agent runs in the
-background too, its one call its whole run. A helper is a level below its lead, and one whose entry
-opts in may start helpers of its own. `approve` is asked about a background `Delegate` as about any
-call, and a `Delegate` refused before its helper starts — by `approve`, past `max_background`, or
-for `questions` that do not fit — starts no helper and spends no id.
+end, and is read back there, and a run with a store records it then, before its lead hears it, the
+helper reading as ended meanwhile ([A conversation in your store](#a-conversation-in-your-store)). A
+decision agent runs in the background too, its one call its whole run. A helper is a level below its
+lead, and one whose entry opts in may start helpers of its own. `approve` is asked about a
+background `Delegate` as about any call, and a `Delegate` refused before its helper starts — by
+`approve`, past `max_background`, or for `questions` that do not fit — starts no helper and spends
+no id.
 
 When a helper ends, the lead hears it before its next model call, as a `role="user"` message whose
 first line names the helper and how it ended:
@@ -1907,22 +1913,22 @@ the tool`), and a run's `tools=` holding one answers every background `Delegate`
 agent with a tool error (`tools/engine_tools: a tool named 'Ask' collides with the builtin`),
 starting no helper and spending no id. A folder that does not opt in keeps any tool named `Ask`.
 
-A run with helpers ends when its model replies with no tool call, no helper of its own runs and no
-notice waits; such a reply first answers with a tool error every `Ask` it was given, as above.
-A reply with no tool call while a helper runs, or while a notice waits, stays in the conversation
-and streams as any reply, and the run waits for the next notice, a message on its inbox or its
-stop, then calls the model again. Each such call counts toward `max_model_calls`, so a lead
-that waits through many ends needs a higher one, and such a reply on the run's last allowed call
-raises `RunawayError` at once, unless its stop is pending, rather than wait for a call it cannot
-make. A message on the inbox wakes a waiting run, so a reminder reaches a lead whose helpers still
-work, but it never keeps a run going: a lead with no helper running ends as any run does, and what
-is left on its inbox stays there. The message that wakes it is the run's from then on, never put
-back while the run waits: it goes first among the inbox's messages at the run's next boundary, and
-joins the conversation, with its `MessagesTaken`, even when the run's stop ends it before its next
-model call, while the rest of the inbox stays there. An `Output` (with `expect=`) while a helper
-runs is answered with a tool error naming them, `engine: still running: d1, d3; stop them or wait
-for them, then call Output again`, and the run goes on: a typed reply is a final answer, given once
-the helpers have ended.
+A run with helpers ends when its model replies with no tool call, no helper of its own runs or is
+being recorded, and no notice waits; such a reply first answers with a tool error every `Ask` it was
+given, as above. A reply with no tool call while a helper runs or is being recorded, or while a
+notice waits, stays in the conversation and streams as any reply, and the run waits for the next
+notice, a message on its inbox or its stop, then calls the model again. Each such call counts toward
+`max_model_calls`, so a lead that waits through many ends needs a higher one, and such a reply on
+the run's last allowed call raises `RunawayError` at once, unless its stop is pending, rather than
+wait for a call it cannot make. A message on the inbox wakes a waiting run, so a reminder reaches a
+lead whose helpers still work, but it never keeps a run going: a lead with no helper running or
+being recorded ends as any run does, and what is left on its inbox stays there. The message that
+wakes it is the run's from then on, never put back while the run waits: it goes first among the
+inbox's messages at the run's next boundary, and joins the conversation, with its `MessagesTaken`,
+even when the run's stop ends it before its next model call, while the rest of the inbox stays
+there. An `Output` (with `expect=`) while a helper runs is answered with a tool error naming them,
+`engine: still running: d1, d3; stop them or wait for them, then call Output again`, and the run
+goes on: a typed reply is a final answer, given once the helpers have ended.
 
 A run returns, or raises, only once every helper of its own has ended, whichever way it ends, so no
 helper outlives its lead. The lead's stop reaches its helpers: `now()` stops a generation helper as
@@ -3784,9 +3790,11 @@ runs, `check()` and the command point at it whenever engine's schema is missing 
 tables `initialize()` made sit in another.
 
 A run's row keeps `at`, when the run started, and `recorded`, when the refinery stored it — one
-stamp for a run and every child run under it — and `runs(since=)` reads `recorded`. The tables are
-prefixed `engine_`, and each rfnry library keeps a schema of its own, so one database holds
-rfnry-memory's and rfnry-thread's beside them, each through a pool that names its schema:
+stamp for the rows one record writes, a run and the runs under it, so the stamps of a run with a
+store, which records each helper and child as it ends, differ along its tree — and `runs(since=)`
+reads `recorded`. The tables are prefixed `engine_`, and each rfnry library keeps a schema of its
+own, so one database holds rfnry-memory's and rfnry-thread's beside them, each through a pool that
+names its schema:
 
 ```python
 memory_pool = await asyncpg.create_pool(dsn, server_settings={"search_path": "memory, public"})
@@ -3805,7 +3813,7 @@ store:
 ```python
 class Storage(Protocol):
     async def check(self) -> None
-    async def put_runs(self, scope: str, rows: list[RunRow]) -> None  # every row of one recorded tree, in one transaction
+    async def put_runs(self, scope: str, rows: list[RunRow]) -> None  # the rows it is given, in one transaction, each kept whatever its parent
     async def get_run(self, scope: str, run_id: str) -> RunRow | None
     async def runs(self, scope: str, *, run_ids: list[str] | None = None, kind: str | None = None,
                    since: datetime | None = None, unlabeled_by: str | None = None,

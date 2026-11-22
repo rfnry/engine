@@ -103,6 +103,7 @@ from rfnry_engine.records import (
     ToolResultReady,
     Voice,
     VoiceStart,
+    runs_of,
 )
 from rfnry_engine.stop import Stop, Stopped, cancel, press, requested, unless_cut, wait
 from rfnry_engine.tools.declared import chosen, smallest
@@ -300,14 +301,6 @@ def _history(value: Sequence[object] | None) -> list[Message]:
 
 def _named(agent: AgentSpec) -> bool:
     return agent.kind == "generation" or agent.route is not None
-
-
-def _tree(run: Run) -> set[str]:
-    if isinstance(run, Generation):
-        return {run.run_id}.union(*map(_tree, run.children))
-    if isinstance(run, Decision) and run.routed_to is not None:
-        return {run.run_id, *_tree(run.routed_to)}
-    return {run.run_id}
 
 
 def _paired(history: list[Message], start: int, named: str = "history") -> None:
@@ -1232,20 +1225,19 @@ class Engine:
                 await self._record(run, written)
         return run
 
-    async def _record(self, run: Run, skip: set[str] | None = None) -> bool:
+    async def _record(self, run: Run, written: set[str] | None = None) -> None:
         if self.refinery is None:
-            return False
+            return
         try:
-            if skip is None:
+            if written is None:
                 await self.refinery.record(run)
             else:
-                await self.refinery.record(run, skip=frozenset(skip))
+                await self.refinery.record(run, skip=frozenset(written))
         except Exception:
             logger.warning("engine: refinery.record failed for run %s", run.run_id, exc_info=True)
-            return False
-        if skip is not None:
-            skip.update(_tree(run))
-        return True
+            return
+        if written is not None:
+            written.update(each.run_id for each in runs_of(run))
 
     def tool(
         self,
@@ -1897,21 +1889,20 @@ class Engine:
                         target, scope, args.input, forwarded, run_id, run_id=helper.run_id
                     )
                     try:
-                        ended = await self._owned(target, helper.stop, running)
+                        return await self._owned(target, helper.stop, running)
                     except Exception:
                         if not failed:
                             raise
-                        ended = failed[-1]
-                    if ended is not None:
-                        await recorded(ended)
-                    return ended
+                        return failed[-1]
                 finally:
                     release()
 
             kind: Literal["generation", "decision"] = (
                 "generation" if target.kind == "generation" else "decision"
             )
-            helper = helpers.start(args.agent, target.kind, uuid4().hex, stop._below(), run)
+            helper = helpers.start(
+                args.agent, target.kind, uuid4().hex, stop._below(), run, recorded
+            )
             held = (scope, helper.run_id)
             self._running[held] = _Running(
                 kind, helper.stop, helper.inbox if kind == "generation" else None
@@ -2369,6 +2360,7 @@ class Engine:
                     )
                     for call in rest:
                         not_run(call, f"{OUTPUT_TOOL} ended the run")
+                    await helpers.settled()
                     await took(turn + 1, *drain(whole=False))
                     return await finished(parsed.model_dump_json())
             mode = requested(stop)

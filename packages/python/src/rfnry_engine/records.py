@@ -1,4 +1,4 @@
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
@@ -308,6 +308,16 @@ class Voice(BaseModel):
 
 
 Run = Generation | Decision | Voice
+
+
+def runs_of(run: Run) -> Iterator[Run]:
+    yield run
+    if isinstance(run, Generation):
+        for child in run.children:
+            yield from runs_of(child)
+    elif isinstance(run, Decision) and run.routed_to is not None:
+        yield from runs_of(run.routed_to)
+
 
 Generation.model_rebuild()
 Decision.model_rebuild()

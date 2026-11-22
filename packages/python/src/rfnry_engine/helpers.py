@@ -197,6 +197,7 @@ class Helpers:
         self._next = first
         self._helpers: dict[str, Helper] = {}
         self._notices: list[Message] = []
+        self._keeping: set[str] = set()
         self._settling = False
 
     def upcoming(self) -> str:
@@ -212,6 +213,7 @@ class Helpers:
         run_id: str,
         stop: Stop,
         run: Callable[[Helper], Awaitable[Generation | Decision | None]],
+        keep: Callable[[Generation | Decision], Awaitable[None]],
     ) -> Helper:
         helper = Helper(
             job=self.upcoming(),
@@ -224,20 +226,33 @@ class Helpers:
         )
         self.skip()
         self._helpers[helper.job] = helper
-        helper.task = asyncio.ensure_future(self._ran(helper, run))
+        helper.task = asyncio.ensure_future(self._ran(helper, run, keep))
         return helper
 
     async def _ran(
-        self, helper: Helper, run: Callable[[Helper], Awaitable[Generation | Decision | None]]
+        self,
+        helper: Helper,
+        run: Callable[[Helper], Awaitable[Generation | Decision | None]],
+        keep: Callable[[Generation | Decision], Awaitable[None]],
     ) -> None:
         here = Foreground(None, None)
         FOREGROUND.set(here)
         try:
             record = await run(helper)
         except Exception as exc:
-            self._ended(helper, None, "failed", error_text(exc))
+            said = error_text(exc)
+            self._ended(helper, None, "failed", said)
+            self._noticed(helper, "failed", said)
             return
-        self._ended(helper, record, *_ending(record, here.stopped))
+        kind, body = _ending(record, here.stopped)
+        self._ended(helper, record, kind, body)
+        if record is not None:
+            self._keeping.add(helper.job)
+            try:
+                await keep(record)
+            finally:
+                self._keeping.discard(helper.job)
+        self._noticed(helper, kind, body)
 
     def _ended(
         self, helper: Helper, record: Generation | Decision | None, kind: Ending, body: str
@@ -245,7 +260,6 @@ class Helpers:
         helper.ended, helper.said, helper.record = kind, body, record
         if record is not None:
             self.children.append(record)
-        self._noticed(helper, kind, body)
 
     def _noticed(self, helper: Helper, kind: Ending | Literal["asks"], body: str) -> None:
         self._notices.append(_notice(helper.job, helper.agent, helper.run_id, kind, body))
@@ -303,6 +317,8 @@ class Helpers:
                 await self.ready.wait()
 
     async def stop_one(self, job: str, seconds: float | None) -> None:
+        if job in self._keeping:
+            return
         helper = self._helpers[job]
         press(helper.stop)
         await asyncio.wait([helper.task], timeout=seconds)
@@ -316,7 +332,14 @@ class Helpers:
         await helper.inbox.put(text)
 
     def waiting(self) -> bool:
-        return bool(self._notices)
+        return bool(self._notices or self._keeping)
+
+    def _unfinished(self) -> list[asyncio.Task[None]]:
+        return [helper.task for helper in self._helpers.values() if not helper.task.done()]
+
+    async def settled(self) -> None:
+        if kept := [self._helpers[job].task for job in self._keeping]:
+            await asyncio.wait(kept)
 
     def take(self) -> list[Message]:
         taken, self._notices = self._notices, []
@@ -360,7 +383,7 @@ class Helpers:
         for helper in self.running():
             for asking in helper.pending():
                 asking.answer.set_result(Unanswered.STOPPED)
-        tasks = [helper.task for helper in self.running()]
+        tasks = self._unfinished()
         if mode == "after_step":
             for helper in self.running():
                 helper.stop.after_step()
@@ -375,7 +398,7 @@ class Helpers:
             await asyncio.wait(running)
 
     async def cancel(self) -> None:
-        tasks = [helper.task for helper in self.running()]
+        tasks = self._unfinished()
         for task in tasks:
             task.cancel()
         await wait(tasks, None)

@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
-from rfnry_engine.models import Reply, ToolCall
-from rfnry_engine.records import Generation, Run
+from rfnry_engine.models import Message, Reply, ToolCall
+from rfnry_engine.records import Decision, Generation, Run
 from rfnry_engine.refinery.postgres import PostgresStorage
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import RunRow
@@ -16,11 +17,13 @@ from rfnry_engine.stop import Stop
 
 from .fakes import (
     Crew,
+    Ledger,
     MemoryBucket,
     MemoryStore,
     background,
     crew,
     delegating,
+    generation_record,
     released,
     team,
     text_reply,
@@ -28,6 +31,9 @@ from .fakes import (
 )
 from .test_store import Failing, exactly
 from .test_store_tree import jobs, lead
+from .trees import write_folder
+
+ROUTED = '{"type": "choice", "instructions": "Which?", "options": {"talk": null, "work": null}}'
 
 
 class Logged:
@@ -73,7 +79,7 @@ class Counted(PostgresStorage):
         self.failing = failing
 
     async def put_runs(self, scope: str, rows: list[RunRow]) -> None:
-        if rows[0].agent == self.failing:
+        if rows and rows[0].agent == self.failing:
             self.failing = None
             raise OSError("storage is down")
         self.writes.append([row.run_id for row in rows])
@@ -85,6 +91,58 @@ def sorting(text: str = "sort it") -> Reply:
         id="b2", name="Delegate", args={"agent": "desk", "input": text, "background": True}
     )
     return Reply(tool_calls=[call], stop_reason="tool_use")
+
+
+class Done(BaseModel):
+    done: bool
+
+
+def routing(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    return write_folder(
+        root,
+        {
+            "lead": {
+                "kind": "generation",
+                "model": "crew",
+                "description": "Leads",
+                "instructions": "lead.md",
+                "orchestration": {"delegate_to": ["router", "worker"], "background": True},
+            },
+            "router": {
+                "kind": "decision",
+                "model": "judge",
+                "description": "Routes",
+                "instructions": "router.md",
+                "questions": ["router/*.json"],
+                "orchestration": {"route": {"by": "intent", "to": {"work": "worker"}}},
+            },
+            "worker": {
+                "kind": "generation",
+                "model": "crew",
+                "description": "Works",
+                "instructions": "worker.md",
+                "orchestration": {"delegate_to": ["deep"], "background": True},
+            },
+            "deep": {
+                "kind": "generation",
+                "model": "crew",
+                "description": "Digs",
+                "instructions": "deep.md",
+            },
+        },
+        files={
+            "lead.md": "Lead.\n",
+            "router.md": "",
+            "worker.md": "Work.\n",
+            "deep.md": "Dig.\n",
+            "router/intent.json": ROUTED,
+        },
+    )
+
+
+def results(messages: list[Message]) -> dict[str, Message]:
+    return {str(message.tool_call_id): message for message in messages if message.role == "tool"}
 
 
 def exported(bucket: MemoryBucket) -> list[str]:
@@ -237,3 +295,150 @@ async def test_a_stop_pressed_while_a_child_is_recorded_keeps_its_record(
     [child] = run.children
     assert run.stopped == "now" and holding.cut == 0
     assert holding.runs == [child, run] and child.error is None
+
+
+async def test_a_routing_helper_s_routed_run_is_written_once(
+    tmp_path: Path, pool: Any, storage: PostgresStorage
+) -> None:
+    counted = Counted(pool)
+    model = Crew(
+        [background("part one", agent="router"), *[text_reply("waiting")] * 3],
+        {
+            "part one": [background("deep", agent="deep"), *[text_reply("waiting below")] * 3],
+            "deep": [text_reply("found")],
+        },
+    )
+    engine = team(routing(tmp_path), model, refinery=Refinery(counted))
+    run = await lead(engine, MemoryStore())
+    [router] = run.children
+    assert isinstance(router, Decision) and isinstance(router.routed_to, Generation)
+    [deep] = router.routed_to.children
+    assert counted.writes == [
+        [deep.run_id],
+        [router.run_id, router.routed_to.run_id],
+        [run.run_id],
+    ]
+
+
+async def test_a_row_whose_record_failed_is_written_once_with_the_run_above_it(
+    tmp_path: Path, pool: Any, storage: PostgresStorage
+) -> None:
+    counted = Counted(pool, failing="deep")
+    model = Crew(
+        [background("part one"), *[text_reply("waiting")] * 3],
+        {
+            "part one": [background("deep", agent="deep"), *[text_reply("waiting below")] * 3],
+            "deep": [text_reply("found")],
+        },
+    )
+    engine = team(routing(tmp_path), model, refinery=Refinery(counted))
+    run = await lead(engine, MemoryStore())
+    captain = jobs(run)["d1"]
+    assert isinstance(captain, Generation)
+    deep = jobs(captain)["d1"]
+    assert counted.writes == [[captain.run_id, deep.run_id], [run.run_id]]
+
+
+async def test_a_failed_helper_is_recorded_when_it_ends(
+    tmp_path: Path, pool: Any, storage: PostgresStorage
+) -> None:
+    counted, gate = Counted(pool), asyncio.Event()
+    model = Crew([background("part one"), gate, *[text_reply("waiting")] * 3], {"part one": []})
+    engine = team(crew(tmp_path, background=True), model, refinery=Refinery(counted))
+    work = asyncio.create_task(lead(engine, MemoryStore()))
+    await until(lambda: len(counted.writes) == 1, "the helper's record")
+    run = await released(work, model, gate)
+    helper = jobs(run)["d1"]
+    assert helper.error is not None
+    assert counted.writes == [[helper.run_id], [run.run_id]]
+
+
+async def test_a_failed_synchronous_child_is_recorded_when_it_ends(
+    tmp_path: Path, pool: Any, storage: PostgresStorage
+) -> None:
+    counted, gate = Counted(pool), asyncio.Event()
+    model = Crew([delegating("worker", "part one"), gate, text_reply("done")], {"part one": []})
+    engine = team(crew(tmp_path), model, refinery=Refinery(counted))
+    work = asyncio.create_task(lead(engine, MemoryStore()))
+    await until(lambda: len(model.calls["lead"]) == 2, "the lead's call 2")
+    assert len(counted.writes) == 1 and not work.done()
+    gate.set()
+    run = await asyncio.wait_for(work, 5)
+    [child] = run.children
+    assert child.error is not None
+    assert counted.writes == [[child.run_id], [run.run_id]]
+
+
+async def test_a_helper_reads_as_ended_while_its_record_is_written(
+    tmp_path: Path, pool: Any, storage: PostgresStorage
+) -> None:
+    ledger, gate, later = Ledger(pool, "worker"), asyncio.Event(), asyncio.Event()
+    asking = Reply(
+        tool_calls=[
+            ToolCall(id="j1", name="Job", args={"id": "d1", "send": "one more thing"}),
+            ToolCall(id="j2", name="Job", args={"id": "d1"}),
+            ToolCall(id="j3", name="Job", args={"id": "d1", "stop": True}),
+            *background("part two", prefix="c").tool_calls,
+        ],
+        stop_reason="tool_use",
+    )
+    model = Crew(
+        [background("part one"), gate, asking, later, *[text_reply("waiting")] * 3],
+        {"part one": [text_reply("one")], "part two": [text_reply("two")]},
+    )
+    folder = crew(tmp_path, background=True, max_background=1)
+    engine = team(folder, model, refinery=Refinery(ledger))
+    work = asyncio.create_task(lead(engine, MemoryStore()))
+    await asyncio.wait_for(ledger.writing.wait(), 5)
+    gate.set()
+    await until(lambda: len(model.calls["lead"]) == 3, "the lead's call 3")
+    assert not ledger.written.is_set()
+    answered = results(model.calls["lead"][2])
+    assert answered["j1"].is_error and answered["j1"].content == (
+        "InputError: tools/helpers: helper d1 has ended; send reaches only a helper still running"
+    )
+    ended = {"running": False, "agent": "worker", "asking": None, "reply": "one"}
+    assert json.loads(str(answered["j2"].content)) == ended
+    assert json.loads(str(answered["j3"].content)) == ended
+    assert not answered["c1"].is_error and answered["c1"].content == '{"job": "d2"}'
+    ledger.released.set()
+    later.set()
+    run = await asyncio.wait_for(work, 5)
+    assert sorted(jobs(run)) == ["d1", "d2"]
+
+
+async def test_an_output_waits_only_for_the_record_of_a_helper_that_ended(
+    tmp_path: Path, pool: Any, storage: PostgresStorage
+) -> None:
+    ledger, gate = Ledger(pool, "worker"), asyncio.Event()
+    output = Reply(
+        tool_calls=[ToolCall(id="o1", name="Output", args={"done": True})], stop_reason="tool_use"
+    )
+    model = Crew([background("part one"), gate, output], {"part one": [text_reply("one")]})
+    engine = team(crew(tmp_path, background=True), model, refinery=Refinery(ledger))
+    work = asyncio.create_task(lead(engine, MemoryStore(), expect=Done))
+    await asyncio.wait_for(ledger.writing.wait(), 5)
+    gate.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert not work.done() and len(model.calls["lead"]) == 2
+    ledger.released.set()
+    run = await asyncio.wait_for(work, 5)
+    assert run.steps[-1].tool == "Output" and run.steps[-1].result == "accepted"
+    notice = run.conversation[-1].notice
+    assert notice is not None and (notice.job, notice.kind) == ("d1", "finished")
+    assert run.conversation[-2].content == "accepted"
+    assert [child.run_id for child in run.children] == [jobs(run)["d1"].run_id]
+    assert (await Refinery(ledger).run("acme", run.run_id)).run_id == run.run_id
+
+
+async def test_a_record_whose_rows_are_all_skipped_calls_no_storage(
+    pool: Any, storage: PostgresStorage
+) -> None:
+    counted = Counted(pool)
+    child = generation_record(agent="worker")
+    run = generation_record(children=[child])
+    await Refinery(counted).record(run, skip={run.run_id, child.run_id})
+    assert counted.writes == []
+    await Refinery(counted).record(run, skip={child.run_id})
+    assert counted.writes == [[run.run_id]]

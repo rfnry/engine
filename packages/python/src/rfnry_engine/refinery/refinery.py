@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from rfnry_engine.engine import Approve, Engine
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_engine.models import DecisionModel, GenerationModel, HistoryLike, ModelChoice, _copied
-from rfnry_engine.records import READ_BACK, Decision, Fingerprint, Generation, Run, Voice
+from rfnry_engine.records import READ_BACK, Decision, Fingerprint, Generation, Run, Voice, runs_of
 from rfnry_engine.refinery.conflicts import find_conflicts
 from rfnry_engine.refinery.export import (
     Bucket,
@@ -49,9 +49,8 @@ def _by_step(body: dict[str, Any]) -> dict[str, int]:
     return {run_id: index for index, run_id in enumerate(named) if run_id is not None}
 
 
-def flatten(run: Run, recorded: datetime) -> list[RunRow]:
+def _row(run: Run, recorded: datetime) -> RunRow:
     body = run.model_dump(mode="json")
-    children: list[Run] = []
     if isinstance(run, Generation):
         if run.conversation[: len(run.messages)] != run.messages:
             raise InputError(
@@ -66,11 +65,9 @@ def flatten(run: Run, recorded: datetime) -> list[RunRow]:
             key=lambda child: (order.get(child.run_id, len(order)), child.at, child.run_id),
         )
         body["children"] = [] if [child.run_id for child in stepped] == joined else joined
-        children = list(run.children)
     elif isinstance(run, Decision):
         body["routed_to"] = None
-        children = [run.routed_to] if run.routed_to is not None else []
-    row = RunRow(
+    return RunRow(
         scope=run.scope,
         run_id=run.run_id,
         parent_run_id=run.parent_run_id,
@@ -83,10 +80,10 @@ def flatten(run: Run, recorded: datetime) -> list[RunRow]:
         mode=run.mode,
         body=body,
     )
-    rows = [row]
-    for child in children:
-        rows.extend(flatten(child, recorded))
-    return rows
+
+
+def flatten(run: Run, recorded: datetime, skip: Collection[str] = ()) -> list[RunRow]:
+    return [_row(each, recorded) for each in runs_of(run) if each.run_id not in skip]
 
 
 def children_of(rows: list[RunRow]) -> dict[str, list[RunRow]]:
@@ -188,7 +185,7 @@ class Refinery:
     async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
         if not run.scope:
             raise InputError("refinery: scope is required")
-        rows = [row for row in flatten(run, datetime.now(UTC)) if row.run_id not in skip]
+        rows = flatten(run, datetime.now(UTC), skip)
         if rows:
             await self.storage.put_runs(run.scope, rows)
 
