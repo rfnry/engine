@@ -1,6 +1,6 @@
 [project]
 name = "rfnry-engine"
-version = "0.1.14"
+version = "0.1.15"
 description = "Agent harness with built-in dataset generation"
 readme = "README.md"
 license = "MIT"
