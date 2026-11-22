@@ -41,6 +41,7 @@ MEASURED = ("TiO2", "FeO", "Al2O3", "Th")
 ENDED = ("finished", "failed", "lost", "stopped")
 ROUNDS = 3
 POLAR = 75
+ROLES = ("lead", "flat", "captain", "surveyor", "crosscheck", "crosscheck_second", "boss")
 
 
 class FakeError(Exception):
@@ -62,6 +63,11 @@ class Profile:
     @classmethod
     def load(cls, path: Path | str, scale: float = 1.0) -> Profile:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        for role in ROLES:
+            if not raw["latency"].get(role):
+                raise FakeError(f"fakes: the profile has no latencies for '{role}'")
+            if not raw["size"].get(role):
+                raise FakeError(f"fakes: the profile has no sizes for '{role}'")
         return cls(
             source=raw["source"],
             latency={name: list(found) for name, found in raw["latency"].items()},
@@ -394,11 +400,16 @@ class Team(Fake):
             if m.notice is not None and m.notice.kind in ENDED
         }
         jobs: dict[str, tuple[str, str]] = {}
-        refused = 0
+        refused: dict[str, int] = {}
+        unanswered: dict[str, int] = {}
         for item in delegated:
+            agent = item.call.args["agent"]
             data = item.data()
+            if item.result is None:
+                unanswered[agent] = unanswered.get(agent, 0) + 1
+                continue
             if item.error or not isinstance(data, dict) or "job" not in data:
-                refused += 1
+                refused[agent] = refused.get(agent, 0) + 1
                 continue
             jobs[data["job"]] = (item.call.args["agent"], item.call.args["input"])
         if self.role != "lead":
@@ -429,25 +440,29 @@ class Team(Fake):
         running = [job for job in jobs if job not in ended]
         if running:
             return f"waiting for {len(running)} helpers", []
-        counts = self.counts(jobs, ended, refused)
+        counts = self.counts(jobs, ended, refused, unanswered)
         if not any(e.call.name == "note" for e in found):
             return "", [("note", {"region": regions[0], "kind": "summary", "text": counts})]
         stopped = failure([e for e in found if e.call.name == "note"])
         return stopped or f"survey done: {counts}", []
 
-    def counts(self, jobs: dict[str, tuple[str, str]], ended: dict[str, str], refused: int) -> str:
+    def counts(
+        self,
+        jobs: dict[str, tuple[str, str]],
+        ended: dict[str, str],
+        refused: dict[str, int],
+        unanswered: dict[str, int],
+    ) -> str:
+        agents = dict.fromkeys([*(a for a, _ in jobs.values()), *refused, *unanswered])
         parts = []
-        for agent in dict.fromkeys(a for a, _ in jobs.values()):
+        for agent in agents:
             kinds = [ended[job] for job, (a, _) in jobs.items() if a == agent]
-            name = "surveyors" if agent == "surveyor" else f"{agent}s"
-            failed = kinds.count("failed") + (refused if agent in ("surveyor", "captain") else 0)
+            kinds += ["failed"] * refused.get(agent, 0) + ["lost"] * unanswered.get(agent, 0)
             parts.append(
-                f"{len(kinds) + (refused if agent in ('surveyor', 'captain') else 0)} {name}: "
-                f"{kinds.count('finished')} finished, {failed} failed, "
-                f"{kinds.count('lost')} lost, {kinds.count('stopped')} stopped"
+                f"{len(kinds)} {agent}s: {kinds.count('finished')} finished, "
+                f"{kinds.count('failed')} failed, {kinds.count('lost')} lost, "
+                f"{kinds.count('stopped')} stopped"
             )
-        if not parts and refused:
-            parts.append(f"{refused} helpers: 0 finished, {refused} failed, 0 lost, 0 stopped")
         return "; ".join(parts)
 
 
@@ -516,14 +531,21 @@ def fakes(
     *,
     web: Any,
     sleep: Sleep = asyncio.sleep,
+    gate: FakeGate | None = None,
+    account: Limits | None = None,
 ) -> dict[str, GenerationModel | DecisionModel]:
-    return {
+    made: dict[str, Fake] = {
         "lead": Team("lead", profile, sleep),
         "flat": Team("flat", profile, sleep),
         "captain": Team("captain", profile, sleep),
         "surveyor": Surveyor(profile, sleep, web),
         "crosscheck": Crosscheck("crosscheck", profile, sleep, None),
-        "crosscheck_second": Crosscheck("crosscheck_second", profile, sleep, limits),
         "boss": Boss(profile, sleep),
-        "gate": FakeGate(),
+    }
+    for fake in made.values():
+        fake.limits = account
+    return {
+        **made,
+        "crosscheck_second": Crosscheck("crosscheck_second", profile, sleep, limits),
+        "gate": FakeGate() if gate is None else gate,
     }

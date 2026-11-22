@@ -604,3 +604,69 @@ async def test_the_second_crosscheck_is_spaced_by_the_limits():
     for _ in range(2):
         await model.generate("s", [person(json.dumps({"region": REGION}))], [])
     assert clock.slept == [1.0] and rows[0][0] == "fake"
+
+
+async def test_a_refused_crosscheck_is_counted_under_crosschecks_not_surveyors():
+    convo = captain(shares=("R1",), second=())
+    reply = await convo.next()
+    convo.answer(reply, {"job": "d1"})
+    convo.tell("d1", "surveyor")
+    reply = await convo.next()
+    convo.answer(reply, "ConfigurationError: past max_background", error=True)
+    note = await convo.next()
+    text = note.tool_calls[0].args["text"]
+    assert "1 surveyors: 1 finished, 0 failed" in text
+    assert "1 crosschecks: 0 finished, 1 failed" in text
+
+
+async def test_a_delegate_with_no_result_counts_as_lost():
+    convo = captain(shares=("R1",), second=())
+    reply = await convo.next()
+    note = await convo.model.generate("s", convo.messages, [])
+    assert names(note) == ["note"]
+    assert "1 surveyors: 0 finished, 0 failed, 1 lost" in note.tool_calls[0].args["text"]
+    assert reply.tool_calls
+
+
+async def test_fakes_take_the_gate_it_is_given():
+    gate = FakeGate(down=True)
+    assert build_with(gate=gate)["gate"] is gate
+    assert isinstance(build_with()["gate"], FakeGate)
+
+
+def build_with(**kw):
+    web = FakeWeb({})
+    return fakes(profile(), Limits(None), web=web, **kw)
+
+
+async def test_a_profile_missing_a_role_is_refused_at_load(tmp_path):
+    raw = json.loads((HERE / "data" / "fake_profile.json").read_text())
+    del raw["latency"]["captain"]
+    path = tmp_path / "p.json"
+    path.write_text(json.dumps(raw))
+    with pytest.raises(Exception, match="fakes: the profile has no latencies for 'captain'"):
+        Profile.load(path)
+    raw = json.loads((HERE / "data" / "fake_profile.json").read_text())
+    del raw["size"]["boss"]
+    path.write_text(json.dumps(raw))
+    with pytest.raises(Exception, match="fakes: the profile has no sizes for 'boss'"):
+        Profile.load(path)
+
+
+async def test_one_account_limiter_spaces_calls_across_agents():
+    clock = Clock()
+    rows = []
+
+    async def log(*row):
+        rows.append(row)
+
+    account = Limits(60, clock=clock, sleep=clock.sleep, log=log)
+    models = build_with(account=account, sleep=clock.sleep)
+    first = [person(json.dumps({"region": REGION}))]
+    await models["crosscheck"].generate("s", first, [])
+    await models["surveyor"].generate("s", first, [])
+    await models["boss"].generate("s", [person("{}")], [])
+    assert [w for w in clock.slept if w] == [1.0, 1.0]
+    assert len(rows) == 2
+    await models["crosscheck_second"].generate("s", first, [])
+    assert [w for w in clock.slept if w] == [1.0, 1.0]
