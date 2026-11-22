@@ -1322,9 +1322,11 @@ Each `append(scope, conversation, start, messages)` says where its messages land
 position of the first, the conversation's length as the run knows it — what it read and what it
 appended since — as `read` takes positions. A store may refuse an `append` whose `start` is not its
 length by raising, and the run fails as on any store error: that refuses a stale writer, such as a
-run of the same name in another process that read the conversation before this one appended. A
-retried `append` whose messages already sit from `start` on may return without writing, which makes
-a store's own retry safe.
+run of the same name in another process that read the conversation before this one appended. The
+check must hold at the write itself, as a unique key on the position makes it, so two writers with
+the same `start` cannot both land: two that each read the length before they write both pass a check
+made before the write. A retried `append` whose messages already sit from `start` on may return
+without writing, which makes a store's own retry safe.
 
 Where each model call starts is the store's whole say. Once that call's messages are appended, the
 run calls `window(scope, conversation, length)` and sends the messages from the position it

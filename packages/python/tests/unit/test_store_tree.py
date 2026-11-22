@@ -239,6 +239,37 @@ async def test_a_routing_top_run_gives_its_name_back_however_it_ends(
     assert engine._conversations == set()
 
 
+class Deciding(Talking):
+    def __init__(self) -> None:
+        self.entered, self.gate = asyncio.Event(), asyncio.Event()
+
+    async def decide(self, state: State, questions: Mapping[str, QuestionLike]) -> dict[str, Any]:
+        self.entered.set()
+        await self.gate.wait()
+        return await super().decide(state, questions)
+
+
+async def test_a_routing_top_run_stopped_during_its_decision_gives_its_name_back(
+    tmp_path: Path,
+) -> None:
+    judge, llm, store, stop = Deciding(), Scripted(text_reply("Again.")), MemoryStore(), Stop()
+    engine = Engine(routing(tmp_path), providers=provided({"strong": llm, "judge": judge}))
+    work = asyncio.create_task(
+        engine.run("front", "acme", "hello", store=store, conversation="c1", stop=stop)
+    )
+    await asyncio.wait_for(judge.entered.wait(), 5)
+    stop.now()
+    judge.gate.set()
+    run = await asyncio.wait_for(work, 5)
+    assert isinstance(run, Decision) and isinstance(run.routed_to, Generation)
+    assert run.routed_to.stopped == "now" and llm.calls == []
+    assert engine._conversations == set()
+    again = await engine.run("front", "acme", "and now?", store=store, conversation="c1")
+    assert isinstance(again, Decision) and isinstance(again.routed_to, Generation)
+    assert again.routed_to.reply == "Again." and engine._conversations == set()
+    assert [message.content for message in store.held[KEY]] == ["hello", "and now?", "Again."]
+
+
 def switching(root: Path) -> Path:
     return write_folder(
         root,
