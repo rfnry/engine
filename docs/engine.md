@@ -1405,9 +1405,10 @@ call, as any call is, and starts no helper. A cancel of the run's task cuts the 
 which is not the store's error: the cancelled run calls the store no more, and the next run of the
 name starts from what `length` and `read` show, so a store keeps each `append` whole or not at all.
 When its store fails a lead, the lead stops its helpers as any failing lead does, but the store gets
-no message after the failure, their notices included, so a resume tells the lead each of them was
-`lost`; one whose `Delegate` result never reached the store either has that call ended instead
-([After a crash](#after-a-crash)).
+no message after the failure, their notices included: a resume tells the lead each of them whose job
+id the store holds was `lost`, and when the store failed during a batch, the reply whose results it
+never took has each of its calls ended on the resume, a `Shell` and a `Delegate` alike, so a helper
+that reply started is not told `lost` ([After a crash](#after-a-crash)).
 
 ##### After a crash
 
@@ -1428,12 +1429,15 @@ Ended: Shell did not return; the run that made the call ended, and what it did i
 
 What it did is unknown because the engine cannot tell how far the call got: a command may have done
 its work, a payment gone through, and a model told so checks before it does it again. A run that
-fails during a batch, its store still working, ends its own unanswered calls the same way before it
-appends the notices of the helpers it stops, so what it stores always keeps each result right after
-its call and a resume finds nothing of it to end. A background `Delegate` the end cut off is
-answered the same way. Its lead never saw its job id, so nothing more is said of it; if the helper
-started, its conversation stays under its name, which a later helper passes over. A conversation
-broken anywhere else, which a run never leaves, still fails the window's check.
+fails during a batch can leave calls of its reply unanswered too, whatever their tools. While its
+store still works, it ends every one of them itself as it fails, with the same result, before it
+appends the notices of the helpers it stops, so what it stores keeps each result right after its
+call and a resume finds nothing of it to end. When the store is what failed, nothing after the
+failure reaches the store, the reply stays the last message there, and the resume ends every one of
+its calls. A background `Delegate` the end cut off is answered the same way. Its lead never saw its
+job id, so nothing more is said of it; if the helper started, its conversation stays under its name,
+which a later helper passes over. A conversation broken anywhere else, which a run never leaves,
+still fails the window's check.
 
 A helper whose job id the lead did see — its `{"job": "d2"}` is stored — but whose outcome
 (`finished`, `failed` or `stopped`) the store never took is told to the lead as a notice of kind
