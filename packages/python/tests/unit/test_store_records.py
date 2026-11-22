@@ -24,6 +24,7 @@ from .fakes import (
     crew,
     delegating,
     generation_record,
+    jobs,
     released,
     team,
     text_reply,
@@ -31,7 +32,7 @@ from .fakes import (
 )
 from .test_background import pending
 from .test_store import Failing, exactly
-from .test_store_tree import jobs, lead
+from .test_store_tree import lead
 from .trees import write_folder
 
 ROUTED = '{"type": "choice", "instructions": "Which?", "options": {"talk": null, "work": null}}'

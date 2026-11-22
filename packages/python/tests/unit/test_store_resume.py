@@ -12,6 +12,7 @@ from rfnry_engine.models import Message, Reply, ToolCall
 from rfnry_engine.records import Generation
 
 from .fakes import (
+    RESTART,
     Answering,
     Crew,
     MemoryStore,
@@ -19,7 +20,10 @@ from .fakes import (
     Seen,
     background,
     crew,
+    ended,
+    lost,
     released,
+    sent,
     team,
     text_reply,
 )
@@ -27,29 +31,6 @@ from .test_background import Talking
 from .test_store import KEY, chat, engine_for, use
 from .test_store_tree import switching
 from .trees import provided
-
-RESTART = "the process restarted; carry on"
-
-
-def ended(call_id: str, name: str) -> Message:
-    return Message(
-        role="tool",
-        tool_call_id=call_id,
-        content=f"Ended: {name} did not return; the run that made the call ended, and what it did is unknown",
-        is_error=True,
-    )
-
-
-def lost(job: str, agent: str = "worker", kept: bool = True) -> Message:
-    body = (
-        "the run that started it ended before its outcome reached you, and what it did is unknown"
-    )
-    return Message(
-        role="user",
-        content=f"[helper {job} · {agent} · lost]\n{body}"
-        + (f"; its conversation is c1/{job}" if kept else ""),
-        notice=Notice(job=job, agent=agent, run_id=None, kind="lost"),
-    )
 
 
 def outcome(job: str, kind: Any, body: str) -> Message:
@@ -67,10 +48,6 @@ def in_place(messages: list[Message]) -> bool:
         for n, message in enumerate(messages)
         if message.tool_calls
     )
-
-
-def sent(messages: list[Message]) -> list[Message]:
-    return [message.model_copy(update={"notice": None}) for message in messages]
 
 
 def started(call_id: str, text: str, agent: str = "worker") -> ToolCall:

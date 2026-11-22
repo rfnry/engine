@@ -22,6 +22,7 @@ from .fakes import (
     background,
     crew,
     delegating,
+    jobs,
     said,
     team,
     text_reply,
@@ -40,15 +41,6 @@ def at(conversation: str) -> tuple[str, str]:
 
 def keys(store: MemoryStore) -> set[str]:
     return {conversation for _, _, conversation in store.log}
-
-
-def jobs(run: Generation) -> dict[str, Generation | Decision]:
-    children = {child.run_id: child for child in run.children}
-    return {
-        json.loads(str(step.result))["job"]: children[str(step.child_run_id)]
-        for step in run.steps
-        if step.tool == "Delegate"
-    }
 
 
 def kept(store: MemoryStore, conversation: str, child: Generation | Decision) -> bool:

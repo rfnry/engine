@@ -19,6 +19,7 @@ from rfnry_engine.models import (
     ChoiceAnswer,
     Decided,
     Message,
+    Notice,
     QuestionLike,
     Reply,
     ScoreAnswer,
@@ -34,6 +35,8 @@ from rfnry_engine.refinery.storage import RunRow
 from .trees import provided, write_folder
 
 NO_QUESTIONS = "engine: decision agent 'questionless' has no questions to ask; give it questions: on its entry, or ask it through Delegate"
+
+RESTART = "the process restarted; carry on"
 
 
 class Scripted:
@@ -511,3 +514,37 @@ async def released(
     run = await asyncio.wait_for(work, 5)
     assert isinstance(run, Generation)
     return run
+
+
+def ended(call_id: str, name: str) -> Message:
+    return Message(
+        role="tool",
+        tool_call_id=call_id,
+        content=f"Ended: {name} did not return; the run that made the call ended, and what it did is unknown",
+        is_error=True,
+    )
+
+
+def lost(job: str, agent: str = "worker", kept: bool = True) -> Message:
+    body = (
+        "the run that started it ended before its outcome reached you, and what it did is unknown"
+    )
+    return Message(
+        role="user",
+        content=f"[helper {job} · {agent} · lost]\n{body}"
+        + (f"; its conversation is c1/{job}" if kept else ""),
+        notice=Notice(job=job, agent=agent, run_id=None, kind="lost"),
+    )
+
+
+def sent(messages: list[Message]) -> list[Message]:
+    return [message.model_copy(update={"notice": None}) for message in messages]
+
+
+def jobs(run: Generation) -> dict[str, Generation | Decision]:
+    children = {child.run_id: child for child in run.children}
+    return {
+        json.loads(str(step.result))["job"]: children[str(step.child_run_id)]
+        for step in run.steps
+        if step.tool == "Delegate"
+    }

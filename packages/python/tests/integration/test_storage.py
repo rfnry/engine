@@ -13,6 +13,7 @@ import pytest
 from database import SCHEMA, URL
 from unit.fakes import (
     PICK,
+    RESTART,
     Answering,
     Crew,
     Desk,
@@ -25,15 +26,17 @@ from unit.fakes import (
     decision_record,
     delegate_triage,
     delegating,
+    ended,
     generation_record,
+    jobs,
     lead,
+    lost,
+    sent,
     sorter,
     team,
     text_reply,
     until,
 )
-from unit.test_store_resume import RESTART, ended, lost, sent
-from unit.test_store_tree import jobs
 from unit.trees import provided, write_folder
 
 from integration.stores import PostgresStore, held
