@@ -24,7 +24,7 @@ def ended_calls(history: Sequence[Message]) -> list[Message]:
         Message(
             role="tool",
             tool_call_id=call.id,
-            content=f"Ended: {call.name} did not return; the process that ran it ended, and what it did is unknown",
+            content=f"Ended: {call.name} did not return; the run that made the call ended, and what it did is unknown",
             is_error=True,
         )
         for call in history[last].tool_calls

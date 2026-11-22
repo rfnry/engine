@@ -1,7 +1,7 @@
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -102,7 +102,7 @@ def _started(message: Message) -> str | None:
     return job if isinstance(job, str) and _number(job) else None
 
 
-def lost_notices(history: Sequence[Message], key: str) -> list[Message]:
+def lost_notices(history: Sequence[Message], key: str, nameless: Collection[str]) -> list[Message]:
     calls = {
         call.id: agent
         for message in history
@@ -121,13 +121,16 @@ def lost_notices(history: Sequence[Message], key: str) -> list[Message]:
         for message in history
         if message.notice is not None and message.notice.kind in OUTCOMES
     }
+    unknown = (
+        "the run that started it ended before its outcome reached you, and what it did is unknown"
+    )
     return [
         _notice(
             job,
             jobs[job],
             None,
             "lost",
-            f"the process that ran it ended before it did; its conversation is {key}/{job}",
+            unknown if jobs[job] in nameless else f"{unknown}; its conversation is {key}/{job}",
         )
         for job in sorted(jobs.keys() - ended, key=_number)
     ]

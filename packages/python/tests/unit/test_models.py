@@ -271,8 +271,12 @@ def test_a_notice_s_run_id_is_none_only_when_lost() -> None:
         job="d2", agent="worker", run_id=None, kind="lost"
     )
     refused = {
-        "models: a finished notice names its helper's run_id": {**lost, "kind": "finished"},
-        "models: a lost notice names no run_id; got 'r1'": {**lost, "run_id": "r1"},
+        "models: a notice of kind 'finished' names its helper's run_id": {
+            **lost,
+            "kind": "finished",
+        },
+        "models: a notice of kind 'asks' names its helper's run_id": {**lost, "kind": "asks"},
+        "models: a notice of kind 'lost' names no run_id; got 'r1'": {**lost, "run_id": "r1"},
     }
     for why, odd in refused.items():
         with pytest.raises(ValidationError, match=why):

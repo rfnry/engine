@@ -298,6 +298,10 @@ def _history(value: Sequence[object] | None) -> list[Message]:
     return [_handed(message) for message in given]
 
 
+def _named(agent: AgentSpec) -> bool:
+    return agent.kind == "generation" or agent.route is not None
+
+
 def _paired(history: list[Message], start: int, named: str = "history") -> None:
     calls: dict[str, list[tuple[int, int]]] = {}
     broken: tuple[int, int, str | None] | None = None
@@ -1641,7 +1645,15 @@ class Engine:
         )
         given = options.history if conversation is None else await conversation.opened()
         repairs = [] if conversation is None else ended_calls(given)
-        losses = [] if conversation is None else lost_notices(given, conversation.key)
+        losses = (
+            []
+            if conversation is None
+            else lost_notices(
+                given,
+                conversation.key,
+                {name for name, agent in self._agents.items() if not _named(agent)},
+            )
+        )
         messages: list[Message] = []
         window = 0
         surface = RunTools(
@@ -1801,7 +1813,7 @@ class Engine:
             )
 
         def keyed(target: AgentSpec, below: str) -> str | None:
-            if conversation is None or (target.kind != "generation" and target.route is None):
+            if conversation is None or not _named(target):
                 return None
             return f"{conversation.key}/{below}"
 
@@ -2341,6 +2353,8 @@ class Engine:
                 built = next((step for done, step in ran if done is call), None)
                 if built is not None and not any(built is kept for kept in steps):
                     answer(call, built)
+            if conversation is not None and conversation.failed is None:
+                messages.extend(ended_calls(messages))
             await helpers.settle("now", stop)
             messages.extend(helpers.take())
             children.extend(sorted(delegated.values(), key=lambda run: (run.at, run.run_id)))

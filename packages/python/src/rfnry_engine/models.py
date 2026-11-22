@@ -114,9 +114,11 @@ class Notice(BaseModel):
     @model_validator(mode="after")
     def _run_id_unless_lost(self) -> Self:
         if self.run_id is None and self.kind != "lost":
-            raise ValueError(f"models: a {self.kind} notice names its helper's run_id")
+            raise ValueError(f"models: a notice of kind {self.kind!r} names its helper's run_id")
         if self.run_id is not None and self.kind == "lost":
-            raise ValueError(f"models: a lost notice names no run_id; got {self.run_id!r}")
+            raise ValueError(
+                f"models: a notice of kind 'lost' names no run_id; got {self.run_id!r}"
+            )
         return self
 
 

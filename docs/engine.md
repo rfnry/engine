@@ -1355,11 +1355,12 @@ and nothing is recorded.
 A store run's record begins where its first window did, as a run's record begins at `start`:
 `run.start` is that window's start, `run.messages` that window as it was sent, the input last and a
 reasoning it did not send left off, as `run.messages` always shows it, and `run.conversation` that
-window and then every message the run added, so `run.added` is what the run added. The store keeps
-every message as it was appended, its reasoning included. A run that ends before its first model
-call — stopped at once, failed by its `RunStarted` handler or refused its first window — begins
-where its own messages do, at the conversation's length when it started, so its record holds only
-its own messages: what it mended, the input and what it added.
+window and then every message the run added, so `run.added` is what the run added from its input on.
+The store keeps every message as it was appended, its reasoning included. A run that ends before its
+first model call — stopped at once, failed by its `RunStarted` handler or refused its first window —
+begins where its own messages do, at the conversation's length when it started, so its record holds
+only its own messages: what it mended ([After a crash](#after-a-crash)), the input and what it
+added.
 
 One run holds a conversation at a time in one engine: a second run of the same name and scope
 while the first is in flight is an `InputError` (`engine: conversation 'dana-1' of scope 'acme' is
@@ -1403,34 +1404,36 @@ the stop adds is stored too. The `length` a lead asks for a helper's name is cut
 call, as any call is, and starts no helper. A cancel of the run's task cuts the call in flight,
 which is not the store's error: the cancelled run calls the store no more, and the next run of the
 name starts from what `length` and `read` show, so a store keeps each `append` whole or not at all.
-A lead its store fails stops its helpers, as any failing lead does, but the store takes no message
-more, their notices included: a resume reports each helper whose job id the store holds as `lost`,
-and ends each `Delegate` call whose result it never took ([After a crash](#after-a-crash)).
+When its store fails a lead, the lead stops its helpers as any failing lead does, but the store gets
+no message after the failure, their notices included, so a resume tells the lead each of them was
+`lost`; one whose `Delegate` result never reached the store either has that call ended instead
+([After a crash](#after-a-crash)).
 
 ##### After a crash
 
-A process that ends in the middle of a run — a crash, a deploy, a cancel of the run's task —
-leaves the conversation as far as the store took it. To go on, call `engine.run` again with the same
-`conversation=` and an input that says what happened, such as "the process restarted; carry on".
-The run first mends what the end cut off, then appends the input, and appends all of it before its
-first model call, which sends it.
+A run cut off in the middle — its process crashing or redeployed, or its task cancelled — leaves the
+conversation as far as the store took it. To go on, call `engine.run` again with the same
+`conversation=` and an input that says what happened, such as "the process restarted; carry on". The
+run first mends what the end cut off, then appends the input, and appends all of it before its first
+model call, which sends it.
 
-A batch's results are stored once the batch is answered, so a run that ends while its tools work —
-a long `Shell` command, a lead in `Job(wait=…)`, a synchronous child working for hours — leaves the
-conversation ending in a reply whose calls have no result, as a run that fails during a batch can.
-The run answers each call of the last reply with calls that has none, in call order, with a tool
-error:
+A batch's results are stored once the batch is answered, so a run cut off while its tools work — a
+long `Shell` command, a lead in `Job(wait=…)`, a synchronous child working for hours — leaves the
+conversation ending in a reply whose calls have no result. The resumed run answers each call of the
+last reply with calls that has none, in call order, with a tool error:
 
 ```
-Ended: Shell did not return; the process that ran it ended, and what it did is unknown
+Ended: Shell did not return; the run that made the call ended, and what it did is unknown
 ```
 
 What it did is unknown because the engine cannot tell how far the call got: a command may have done
-its work, a payment gone through, and a model told so checks before it does it again. A background
-`Delegate` the end cut off is answered the same way. Its lead never saw its job id, so nothing more
-is said of it; if the helper started, its conversation stays under its name, which a later helper
-passes over. A conversation broken anywhere else, which a run never leaves, still fails the window's
-check.
+its work, a payment gone through, and a model told so checks before it does it again. A run that
+fails during a batch, its store still working, ends its own unanswered calls the same way before it
+appends the notices of the helpers it stops, so what it stores always keeps each result right after
+its call and a resume finds nothing of it to end. A background `Delegate` the end cut off is
+answered the same way. Its lead never saw its job id, so nothing more is said of it; if the helper
+started, its conversation stays under its name, which a later helper passes over. A conversation
+broken anywhere else, which a run never leaves, still fails the window's check.
 
 A helper whose job id the lead did see — its `{"job": "d2"}` is stored — but whose outcome
 (`finished`, `failed` or `stopped`) the store never took is told to the lead as a notice of kind
@@ -1438,18 +1441,22 @@ A helper whose job id the lead did see — its `{"job": "d2"}` is stored — but
 
 ```
 [helper d2 · worker · lost]
-the process that ran it ended before it did; its conversation is dana-1/d2
+the run that started it ended before its outcome reached you, and what it did is unknown; its conversation is dana-1/d2
 ```
 
-The body names the name the helper's conversation is kept under, so you or a board of the team can
-read what it did; a decision helper that does not route keeps none, and that name holds nothing. Its
-`Notice` has `kind` `lost` and `run_id` `None`, since the helper's `run_id` was on its `Delegate`
-step, not in the conversation. A `lost` notice is an outcome, so a later resume tells it no more,
-and the helper is not one of the run's own: `Job` on its id is the tool error `tools/helpers: there
-is no helper d2`. A helper that finished while its notice still waited to be read reads `lost` too,
-though it ended and its conversation is stored under that name: its lead never heard how. The run
-sends its lost notices in one `MessagesTaken` at turn 0, right after its `RunStarted`, with
-`messages=[]`, and the ended results and lost notices are the run's own messages, in its record.
+The body says what the lead can know: the helper's outcome never reached it, so what the helper did
+is unknown — it may have finished while its notice still waited to be read, its conversation then
+stored whole — and it ends with the name the helper's conversation is kept under, for you or a board
+of the team to read what it did. A decision helper that does not route keeps no conversation, so its
+body stops after `unknown`; an agent the folder no longer holds is named as one that keeps it. The
+notice's `Notice` has `kind` `lost` and `run_id` `None`, since the helper's `run_id` was on its
+`Delegate` step, not in the conversation. A `lost` notice is an outcome, so a later resume tells it
+no more, and the helper is not one of the run's own: `Job` on its id is the tool error
+`tools/helpers: there is no helper d2`. The run sends its lost notices in one `MessagesTaken` at
+turn 0, right after its `RunStarted`, with `messages=[]`. The ended results and lost notices are the
+run's own messages, appended after what it read and before its input: its record holds them when its
+first window does, a first window that starts past them leaves them in the store but out of
+`run.messages` and `run.conversation`, and `run.added`, which starts at the input, never holds them.
 
 ### Decision agents
 
@@ -1787,19 +1794,20 @@ Lemma 4 holds; the proof is on branch prover-d1.
 
 What follows is the helper's reply — a decision helper's answers as JSON, as `Delegate` returns them
 — or, after `failed`, its error as a tool's result would show it, and after `stopped`, what it had
-said. A run with a store that continues a conversation its process left mid-way reads a fourth,
-`lost`, for a helper whose outcome the store never took, after it the name its conversation is kept
-under ([After a crash](#after-a-crash)). A helper that fails, or runs past its own
-`max_model_calls`, never fails its lead: the lead reads `failed` and goes on, and the helper's
-record joins `children` with its `error`. The message carries `notice`, a `Notice` naming the
-helper's `job`, `agent` and `run_id` and the `kind` of notice, so the record and a dataset tell it
-from the person's words; a model is sent only the text and reads the first line. That `run_id`, as
-the step's `child_run_id`, names no record when the helper left none: a decision helper whose call a
-stop cut or kept from starting, and a helper that failed before its run made a record, such as one
-past `max_depth`; a `lost` notice's is `None`. A helper's reply holds whatever the helper read, a
-hostile document included, so write the lead's instructions to treat a notice as it treats a tool
-result, not as the person. Every helper that ended since the last model call is taken at once, in
-the order they ended, so many helpers ending together are one wake-up and one model call.
+said. A run with a store that continues a conversation cut off mid-way reads a fourth, `lost`, for a
+helper whose outcome never reached the store, its body saying that what the helper did is unknown
+and, for a helper that keeps one, the name its conversation is kept under
+([After a crash](#after-a-crash)). A helper that fails, or runs past its own `max_model_calls`,
+never fails its lead: the lead reads `failed` and goes on, and the helper's record joins `children`
+with its `error`. The message carries `notice`, a `Notice` naming the helper's `job`, `agent` and
+`run_id` and the `kind` of notice, so the record and a dataset tell it from the person's words; a
+model is sent only the text and reads the first line. That `run_id`, as the step's `child_run_id`,
+names no record when the helper left none: a decision helper whose call a stop cut or kept from
+starting, and a helper that failed before its run made a record, such as one past `max_depth`; a
+`lost` notice's is `None`. A helper's reply holds whatever the helper read, a hostile document
+included, so write the lead's instructions to treat a notice as it treats a tool result, not as the
+person. Every helper that ended since the last model call is taken at once, in the order they ended,
+so many helpers ending together are one wake-up and one model call.
 
 The lead also gets two tools over its helpers, `Job` and `Jobs`, workspace or not.
 `Job(id, wait=0, stop=false, send=null)` reads one helper by its id: `{"running": true, "agent":
