@@ -27,7 +27,7 @@ class Conversation:
     async def _called[T](self, method: Callable[..., Awaitable[T]], *args: object) -> T:
         try:
             return await method(self.scope, self.key, *args)
-        except BaseException as exc:
+        except Exception as exc:
             self.failed = exc
             raise
 

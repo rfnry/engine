@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,6 +13,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 import rfnry_engine
 from rfnry_engine import RunEnded, RunStarted, Stop
+from rfnry_engine.conversation import Conversation
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError, ModelError, RunawayError
 from rfnry_engine.models import Message, Reply, Text, ToolCall, ToolSpec, Usage
@@ -918,3 +919,49 @@ async def test_job_ids_count_the_whole_stored_conversation(tmp_path: Path) -> No
     assert run.steps[0].result == '{"job": "d4"}'
     [helper] = run.children
     assert isinstance(helper, Generation) and store.held[("acme", "c1/d4")] == helper.conversation
+
+
+class Pausing(MemoryStore):
+    def __init__(self, method: str) -> None:
+        super().__init__()
+        self.method: str | None = method
+        self.entered, self.gate = asyncio.Event(), asyncio.Event()
+
+    async def paused(self, method: str) -> None:
+        if method == self.method:
+            self.method = None
+            self.entered.set()
+            await self.gate.wait()
+
+    async def length(self, scope: str, conversation: str) -> int:
+        await self.paused("length")
+        return await super().length(scope, conversation)
+
+    async def append(self, scope: str, conversation: str, messages: Sequence[Message]) -> None:
+        await self.paused("append")
+        await super().append(scope, conversation, messages)
+
+    async def window(self, scope: str, conversation: str, length: int) -> int:
+        await self.paused("window")
+        return await super().window(scope, conversation, length)
+
+
+@pytest.mark.parametrize("method", ["length", "append", "window"])
+async def test_a_cancelled_store_call_is_not_a_store_failure(method: str) -> None:
+    store, held = Pausing(method), [Message(role="user", content="hi")]
+    conversation = Conversation(store, "acme", "c1")
+    if method == "window":
+        await conversation.save(held)
+    calls: dict[str, Callable[[], Awaitable[object]]] = {
+        "length": conversation.opened,
+        "append": lambda: conversation.save(held),
+        "window": lambda: conversation.window(1),
+    }
+    call = asyncio.ensure_future(calls[method]())
+    await asyncio.wait_for(store.entered.wait(), 5)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert call.cancelled() and conversation.failed is None
+    await conversation.save(held)
+    assert store.held[KEY] == held and store.log[-1] == ("append", "acme", "c1")

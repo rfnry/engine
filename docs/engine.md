@@ -1396,8 +1396,13 @@ that is not a whole number from 0, no helper starts and no store call follows �
 even when another call of the same batch fails too, whose error is then logged. A child's own store
 call fails only that child, as its model's error does: a helper's notice reads `failed` (`[helper d1
 · worker · failed]`, then `OSError: disk full`), and a synchronous child's `Delegate` is answered
-with it as a tool error. A lead that fails stops its helpers, and a resume reports each of them as
-`lost`.
+with it as a tool error. A stop never cuts the run's own store calls, its opening `length` and
+`read`, each `append` and each `window`: the run waits for the call in flight, then stops, so what
+the stop adds is stored too. The `length` a lead asks for a helper's name is cut with its `Delegate`
+call, as any call is, and starts no helper. A cancel of the run's task cuts the call in flight,
+which is not the store's error: the cancelled run calls the store no more, and the next run of the
+name starts from what `length` and `read` show, so a store keeps each `append` whole or not at all.
+A lead that fails stops its helpers, and a resume reports each of them as `lost`.
 
 ### Decision agents
 

@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -483,10 +483,8 @@ async def test_a_helper_key_s_length_that_is_not_a_whole_number_fails_the_lead(
 async def test_a_store_error_is_what_its_lead_raises_when_another_call_of_the_batch_fails(
     failing: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    broken = ValueError("the handler broke")
-    store: MemoryStore = Below("length", OSError("disk full"))
-    if failing == "not-a-number":
-        store = Miscounted(-1)
+    broken, error = ValueError("the handler broke"), OSError("disk full")
+    store: MemoryStore = Below("length", error) if failing == "raises" else Miscounted(-1)
 
     async def on_event(event: object) -> None:
         if isinstance(event, ToolCallStarted) and event.call_id == "b1":
@@ -499,8 +497,11 @@ async def test_a_store_error_is_what_its_lead_raises_when_another_call_of_the_ba
         pytest.raises((OSError, InputError, ValueError)) as caught,
     ):
         await lead(engine, store, on_event=on_event)
-    error = OSError if failing == "raises" else InputError
-    assert type(caught.value) is error and model.calls["part two"] == []
+    if failing == "raises":
+        assert caught.value is error
+    else:
+        assert type(caught.value) is InputError and "'c1/d1'" in str(caught.value)
+    assert model.calls["part two"] == []
     [line] = caplog.records
     assert line.getMessage() == "engine: a further call of the same batch failed: the handler broke"
     assert line.exc_info is not None and line.exc_info[1] is broken
@@ -645,3 +646,74 @@ async def test_a_helper_that_never_starts_gives_its_key_back(tmp_path: Path) -> 
         await store.work
     assert model.calls["part one"] == [] and at("c1/d1") not in store.held
     assert engine._conversations == set() and pending(before) == []
+
+
+class Holding(MemoryStore):
+    def __init__(self, method: str, below: bool) -> None:
+        super().__init__()
+        self.method: str | None = method
+        self.below = below
+        self.entered, self.gate = asyncio.Event(), asyncio.Event()
+        self.cut = 0
+
+    async def held_up(self, method: str, conversation: str) -> None:
+        if method == self.method and (conversation != "c1") is self.below:
+            self.method = None
+            self.entered.set()
+            try:
+                await self.gate.wait()
+            except asyncio.CancelledError:
+                self.cut += 1
+                raise
+
+    async def append(self, scope: str, conversation: str, messages: Sequence[Message]) -> None:
+        await self.held_up("append", conversation)
+        await super().append(scope, conversation, messages)
+
+    async def window(self, scope: str, conversation: str, length: int) -> int:
+        await self.held_up("window", conversation)
+        return await super().window(scope, conversation, length)
+
+
+@pytest.mark.parametrize("method", ["append", "window"])
+@pytest.mark.parametrize("who", ["lead", "synchronous child", "helper"])
+async def test_a_stop_pressed_while_a_store_call_waits_stores_every_message_once(
+    who: str, method: str, tmp_path: Path
+) -> None:
+    stop, store = Stop(), Holding(method, below=who != "lead")
+    if who == "lead":
+        model = Crew([text_reply("never")])
+    elif who == "synchronous child":
+        model = Crew(
+            [delegating("worker", "part one"), text_reply("never")],
+            {"part one": [text_reply("never")]},
+        )
+    else:
+        model = Crew(
+            [background("part one"), *[text_reply("waiting")] * 3],
+            {"part one": [text_reply("never")]},
+        )
+    engine = team(crew(tmp_path, background=who == "helper"), model)
+    before = asyncio.all_tasks()
+    work = asyncio.create_task(lead(engine, store, stop=stop))
+    await asyncio.wait_for(store.entered.wait(), 5)
+    stop.now()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert not work.done()
+    store.gate.set()
+    run = await asyncio.wait_for(work, 5)
+    assert run.stopped == "now" and store.cut == 0
+    runs = [run, *run.children]
+    named = {"c1": run} if who == "lead" else {"c1": run, f"c1/{jobs_or_id(run)}": runs[1]}
+    assert set(store.held) == {at(key) for key in named}
+    for key, kept_run in named.items():
+        assert isinstance(kept_run, Generation) and store.held[at(key)] == kept_run.conversation
+    assert engine._conversations == set() and pending(before) == []
+
+
+def jobs_or_id(run: Generation) -> str:
+    [step] = run.steps
+    if str(step.result).startswith("{"):
+        return str(json.loads(str(step.result))["job"])
+    return str(step.child_run_id)
