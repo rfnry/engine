@@ -1,0 +1,4 @@
+.work/
+.venv/
+data/lp/*
+!data/lp/SOURCES.md
