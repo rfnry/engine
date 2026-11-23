@@ -2285,7 +2285,15 @@ class Engine:
             )
 
         try:
-            await emit(RunStarted(run_id=run_id, agent=spec.name, call=started_call))
+            await emit(
+                RunStarted(
+                    run_id=run_id,
+                    agent=spec.name,
+                    call=started_call,
+                    input=_copied(input),
+                    tools=[_fresh(tool) for tool in specs],
+                )
+            )
             await took(0, losses, [])
             for turn in range(most_calls):
                 mode = requested(stop)

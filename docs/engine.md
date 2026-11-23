@@ -969,7 +969,10 @@ run started outside any tool call. A frontend places every later event of that `
 call, so a sub-agent's text, reasoning and tool calls show nested under the call that asked for
 them, at any depth. The event names the call even when it was made in another scope, so a consult
 in a shared scope still nests where it was asked; the run's record keeps a `call` only from its own
-scope, so no stored row holds another tenant's ids. A
+scope, so no stored row holds another tenant's ids. It also carries the run's `input` and the
+`tools` it offers, the same values as the run's record, as copies: a handler that changes them
+changes nothing the model is sent or the record keeps, so a helper's observer reads what it was
+asked without matching events by call id. A
 decision run sends no `RunStarted`: the `ToolCallStarted` and `ToolResultReady` of the call that
 asked it show it, and its one event is a `ReplyReady`. A `ReasoningDelta` is the model's reasoning
 as the adapter streams it, with its turn, to show apart from the reply: it never becomes part of
@@ -2803,6 +2806,21 @@ step records `approved` — `True`, `False`, or `None` when nobody was asked —
 keep it, so a person's refusals become labels. A
 workspace's calls carry what a person needs to decide: `background` on `Shell`, `wait` and `stop` on
 `Job`, a lead's `Job` its `send` too, and a helper's `Ask` its `question`.
+
+To know what a tool does, keep each run's tools from its `RunStarted` and find the run through
+`current_call().run_id`:
+
+```python
+offered = {}
+
+async def on_event(event):
+    if isinstance(event, RunStarted):
+        offered[event.run_id] = {tool.name: tool.description for tool in event.tools}
+
+async def approve(agent, call):
+    what = offered[current_call().run_id][call.name]
+    return await ask_a_person(agent, call, what)
+```
 
 Time spent waiting is not a tool's time: the deadline starts when the call runs. `stop.now()` ends
 a wait. Delegated and routed runs are asked through the same function, with their own agent's name;

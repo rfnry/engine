@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from rfnry_engine import Event, RunStarted, current_call
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError
 from rfnry_engine.models import Answer, ChoiceAnswer, Reply, ToolCall
@@ -124,6 +125,33 @@ async def test_an_approved_call_runs_and_the_step_says_so(tmp_path: Path) -> Non
         and run.steps[0].approved is True
         and not run.steps[0].is_error
     )
+
+
+async def test_an_approver_learns_what_a_tool_does_from_run_started(tmp_path: Path) -> None:
+    refunds = Refunds()
+    kept: dict[str, dict[str, str]] = {}
+    learned: list[str | None] = []
+
+    async def remember(event: Event) -> None:
+        if isinstance(event, RunStarted):
+            kept[event.run_id] = {spec.name: spec.description for spec in event.tools}
+
+    async def approve(agent: str, call: ToolCall) -> bool:
+        here = current_call()
+        assert here is not None
+        learned.append(kept[here.run_id].get(call.name))
+        return True
+
+    engine = Engine(
+        make_tree(tmp_path, run_tools={"desk": ["refund"]}),
+        providers=provided(
+            {"strong": Scripted(use("refund", order="A-1"), text_reply("done")), "judge": None}
+        ),
+    )
+    await engine.run(
+        "desk", "acme", "refund A-1", tools=refunds.tools(), approve=approve, on_event=remember
+    )
+    assert learned == ["Refund an order"]
 
 
 async def test_a_refused_call_never_runs_and_the_model_reads_why(tmp_path: Path) -> None:

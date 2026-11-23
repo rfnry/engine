@@ -793,9 +793,11 @@ class RunStarted(BaseModel):
     run_id: str
     agent: str
     call: CallInfo | None
+    input: State = ""
+    tools: list[ToolSpec] = []
 ```
 
-Sent to `on_event` once by every generation run, before anything else it sends — also by a run that a stop set before it started ends before its first model call. `call` is the tool call the run works for, as `current_call` sees it when the run starts: the caller's `Delegate` call for a delegated run, the caller's call for a run an `engine.tool` call started inside a run, the call that started the decision run for a run it routes to, `None` for a run started outside any tool call. It names the call even when it was made in another scope, where the run's record holds `None`. Every later event with this `run_id` belongs under `call`, so sub-agents nest at any depth. A decision run sends no `RunStarted`; the `ToolCallStarted` and `ToolResultReady` of the call that asked it show it. A stop waits for its handler, and one the handler sets ends the run before its first model call; a handler that raises fails the run, recorded with that `error` and no model call.
+Sent to `on_event` once by every generation run, before anything else it sends — also by a run that a stop set before it started ends before its first model call. `call` is the tool call the run works for, as `current_call` sees it when the run starts: the caller's `Delegate` call for a delegated run, the caller's call for a run an `engine.tool` call started inside a run, the call that started the decision run for a run it routes to, `None` for a run started outside any tool call. It names the call even when it was made in another scope, where the run's record holds `None`. Every later event with this `run_id` belongs under `call`, so sub-agents nest at any depth. `input` and `tools` are what the run's record keeps as `input` and `tools`, as copies: a handler that changes them changes nothing the model is sent or the record keeps. An approver finds the tools of the run it is asked in through `current_call().run_id`. A decision run sends no `RunStarted`; the `ToolCallStarted` and `ToolResultReady` of the call that asked it show it. A stop waits for its handler, and one the handler sets ends the run before its first model call; a handler that raises fails the run, recorded with that `error` and no model call.
 
 ### `RunEnded`
 

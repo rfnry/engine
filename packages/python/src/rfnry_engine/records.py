@@ -102,6 +102,8 @@ class RunStarted(BaseModel):
     run_id: str
     agent: str
     call: CallInfo | None
+    input: State = ""
+    tools: list[ToolSpec] = Field(default_factory=list)
 
 
 class RunEnded(BaseModel):

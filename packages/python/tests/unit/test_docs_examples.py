@@ -254,6 +254,24 @@ SETUPS = {
     "from rfnry_engine import Local, Workspace": Setup(
         replace={"/srv/tenants/acme/work": "work", '"bwrap",': '"env",'}
     ),
+    "offered = {}": Setup(
+        replies=(
+            Reply(
+                tool_calls=[ToolCall(id="s1", name="Shell", args={"command": "echo hi"})],
+                stop_reason="tool_use",
+            ),
+        ),
+        replace={
+            "    return await ask_a_person(agent, call, what)": (
+                "    told.append(what)\n    return True\n\n"
+                "told = []\n"
+                'run = await engine.run("coder", scope="acme", input="go", workspace=workspace,\n'
+                "                       approve=approve, on_event=on_event)\n"
+                "assert len(told) == 1 and told[0] and "
+                "told[0] == next(t.description for t in run.tools if t.name == 'Shell')"
+            )
+        },
+    ),
     "async def approve(agent, call):": Setup(
         replies=(
             Reply(

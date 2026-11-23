@@ -1102,13 +1102,68 @@ async def test_a_run_says_it_started_before_anything_else(tmp_path: Path) -> Non
         make_tree(tmp_path),
         providers=provided({"strong": Scripted(text_reply("Hi.")), "judge": None}),
     ).run("chat", "acme", "Hi", on_event=collect)
-    assert collect.events[0] == RunStarted(run_id=run.run_id, agent="chat", call=None)
+    assert collect.events[0] == RunStarted(
+        run_id=run.run_id, agent="chat", call=None, input="Hi", tools=run.tools
+    )
     assert [type(e) for e in collect.events] == [
         RunStarted,
         ReplyReady,
         TextDelta,
         RunEnded,
     ]
+
+
+async def test_run_started_carries_the_input_and_the_tools_offered(tmp_path: Path) -> None:
+    delegate = ToolCall(id="d", name="Delegate", args={"agent": "chat", "input": "Look up A-1"})
+    collect = Collect()
+    run = await Engine(
+        make_tree(tmp_path, run_tools={"lead": ["lookup", "refund"]}),
+        providers=provided(
+            {
+                "strong": ByAgent(
+                    [Reply(tool_calls=[delegate], stop_reason="tool_use"), text_reply("Done.")],
+                    chat=looking,
+                ),
+                "judge": None,
+            }
+        ),
+    ).run("lead", "acme", {"order": "A-1"}, tools=TOOLS, on_event=collect)
+    assert isinstance(run, Generation) and run.tools
+    runs = started(collect)
+    assert runs[run.run_id].input == run.input == {"order": "A-1"}
+    assert runs[run.run_id].tools == run.tools
+    assert {spec.name for spec in runs[run.run_id].tools} >= {"lookup", "refund", "Delegate"}
+    [child] = run.children
+    assert isinstance(child, Generation)
+    assert runs[child.run_id].input == child.input == "Look up A-1"
+    assert runs[child.run_id].tools == child.tools
+
+
+async def test_a_run_started_built_by_hand_needs_no_input_or_tools() -> None:
+    event = RunStarted(run_id="r", agent="a", call=None)
+    assert event.input == "" and event.tools == []
+
+
+async def test_a_handler_changing_run_started_changes_nothing_sent(tmp_path: Path) -> None:
+    async def meddle(event: Event) -> None:
+        if isinstance(event, RunStarted):
+            event.tools.append(event.tools[0].model_copy(update={"name": "extra"}))
+            event.tools[0].description = "changed"
+            if isinstance(event.input, dict):
+                event.input["order"]["id"] = "B-2"
+
+    llm = Scripted(text_reply("Done."))
+    run = await Engine(
+        make_tree(tmp_path, run_tools={"lead": ["lookup", "refund"]}),
+        providers=provided({"strong": llm, "judge": None}),
+    ).run("lead", "acme", {"order": {"id": "A-1"}}, tools=TOOLS, on_event=meddle)
+    assert isinstance(run, Generation)
+    names = [spec.name for spec in run.tools]
+    assert "extra" not in names and run.input == {"order": {"id": "A-1"}}
+    [(_, messages, sent)] = llm.calls
+    assert [spec.name for spec in sent] == names
+    assert all(spec.description != "changed" for spec in sent + run.tools)
+    assert "B-2" not in str(messages) and "A-1" in str(messages)
 
 
 async def test_each_sub_agent_names_the_call_it_works_for_before_its_first_tool(
@@ -1290,7 +1345,7 @@ async def test_a_run_stopped_before_it_starts_still_says_it_started(tmp_path: Pa
     ).run("chat", "acme", "Hi", on_event=collect, stop=stop)
     assert isinstance(run, Generation) and run.stopped == "now"
     assert collect.events == [
-        RunStarted(run_id=run.run_id, agent="chat", call=None),
+        RunStarted(run_id=run.run_id, agent="chat", call=None, input="Hi"),
         RunEnded(run_id=run.run_id, agent="chat", call=None, stopped="now", error=None),
     ]
 
