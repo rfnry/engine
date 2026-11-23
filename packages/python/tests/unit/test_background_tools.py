@@ -42,7 +42,8 @@ from .trees import provided, write_folder
 
 HELPER = (
     "whether it is running, its agent, its input, under asking the question it waits on you to "
-    "answer through Ask (null when none), and once it has ended its reply (a decision agent's answers), "
+    "answer through Ask (null when none), and once it has ended its reply (a decision agent's "
+    "answers), "
     "its error, or what it had said when it was stopped. wait is seconds, up to 30, to wait "
     "first; it returns as soon as the helper ends or any notice from a helper reaches you, and at "
     "once while the helper waits on your answer. "
