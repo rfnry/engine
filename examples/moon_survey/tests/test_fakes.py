@@ -46,12 +46,13 @@ def notice(job, agent, kind="finished"):
     )
 
 
-def survey(regions, shares=None, second=()):
+def survey(regions, shares=None, second=(), check=()):
     given = {
         "name": "s",
         "regions": regions,
         "shares": shares if shares is not None else [regions],
         "second": list(second),
+        "check": list(check),
     }
     return f"<<<AGENT>>>\nlead\n\n<<<CONTEXT>>>\n{json.dumps(given)}"
 
@@ -347,6 +348,32 @@ async def test_a_captain_ends_with_a_summary_note_and_a_verdict_once_every_job_h
     assert final.tool_calls == [] and final.text and "\n" not in final.text
 
 
+async def test_a_captain_crosschecks_its_check_regions_at_once_and_surveys_the_rest():
+    given = {"share": ["R1", "R2", "R3"], "second": ["R2"], "check": ["R1", "R2"]}
+    convo = Convo(build()["captain"], json.dumps(given))
+    reply = await convo.next()
+    assert [(c.args["agent"], json.loads(c.args["input"])) for c in reply.tool_calls] == [
+        ("crosscheck", {"region": "R1"}),
+        ("crosscheck_second", {"region": "R2"}),
+        ("surveyor", {"region": "R3"}),
+    ]
+    assert all(c.args["background"] is True for c in reply.tool_calls)
+    convo.answer(reply, {"job": "d1"}, {"job": "d2"}, {"job": "d3"})
+    convo.tell("d1", "crosscheck")
+    convo.tell("d2", "crosscheck_second")
+    convo.tell("d3", "surveyor")
+    reply = await convo.next()
+    assert [(c.args["agent"], json.loads(c.args["input"])) for c in reply.tool_calls] == [
+        ("crosscheck", {"region": "R3"})
+    ]
+    convo.answer(reply, {"job": "d4"})
+    convo.tell("d4", "crosscheck")
+    note = await convo.next()
+    text = note.tool_calls[0].args["text"]
+    assert names(note) == ["note"] and "1 surveyors: 1 finished" in text
+    assert "2 crosschecks: 2 finished" in text and "1 crosscheck_seconds: 1 finished" in text
+
+
 async def test_a_helper_that_could_not_start_counts_as_ended():
     convo = captain(shares=("R1",), second=())
     reply = await convo.next()
@@ -374,8 +401,8 @@ async def test_the_lead_starts_a_captain_for_each_share():
     assert [c.args["agent"] for c in reply.tool_calls] == ["captain", "captain"]
     assert all(c.args["background"] is True for c in reply.tool_calls)
     assert [json.loads(c.args["input"]) for c in reply.tool_calls] == [
-        {"share": ["R1", "R2"], "second": ["R2"]},
-        {"share": ["R3", "R4"], "second": ["R4"]},
+        {"share": ["R1", "R2"], "second": ["R2"], "check": []},
+        {"share": ["R3", "R4"], "second": ["R4"], "check": []},
     ]
     convo.answer(reply, {"job": "d1"}, {"job": "d2"})
     assert (await convo.next()).tool_calls == []
@@ -397,13 +424,13 @@ async def test_a_lead_given_a_later_input_starts_captains_for_the_regions_left()
     convo.answer(reply, {"job": "d1"}, {"job": "d2"})
     convo.tell("d1", "captain")
     convo.tell("d2", "captain", "lost")
-    convo.system = survey(["R3", "R4"], [["R3"], ["R4"]], ["R4"])
+    convo.system = survey(["R2", "R3", "R4"], [["R2", "R3"], ["R4"]], ["R2", "R4"], ["R2"])
     convo.messages.append(person("the process restarted; carry on"))
     reply = await convo.next()
     assert [c.args["agent"] for c in reply.tool_calls] == ["captain", "captain"]
     assert [json.loads(c.args["input"]) for c in reply.tool_calls] == [
-        {"share": ["R3"], "second": []},
-        {"share": ["R4"], "second": ["R4"]},
+        {"share": ["R2", "R3"], "second": ["R2"], "check": ["R2"]},
+        {"share": ["R4"], "second": ["R4"], "check": []},
     ]
     convo.answer(reply, {"job": "d3"}, {"job": "d4"})
     assert (await convo.next()).tool_calls == []
@@ -411,20 +438,24 @@ async def test_a_lead_given_a_later_input_starts_captains_for_the_regions_left()
     convo.tell("d4", "captain")
     note = await convo.next()
     args = note.tool_calls[0].args
-    assert args["region"] == "R3" and "2 captains: 2 finished, 0 failed, 0 lost" in args["text"]
+    assert args["region"] == "R2" and "2 captains: 2 finished, 0 failed, 0 lost" in args["text"]
 
 
-async def test_flat_given_a_later_input_starts_surveyors_for_the_regions_left():
+async def test_flat_given_a_later_input_surveys_the_regions_left_and_crosschecks_its_check():
     models = build()
-    convo = Convo(models["flat"], START, system=survey(["R1", "R2"]))
+    convo = Convo(models["flat"], START, system=survey(["R1", "R2", "R3"]))
     reply = await convo.next()
-    convo.answer(reply, {"job": "d1"}, {"job": "d2"})
+    convo.answer(reply, {"job": "d1"}, {"job": "d2"}, {"job": "d3"})
     convo.tell("d1", "surveyor", "lost")
     convo.tell("d2", "surveyor", "lost")
-    convo.system = survey(["R2"])
+    convo.tell("d3", "surveyor", "lost")
+    convo.system = survey(["R1", "R3"], second=["R1"], check=["R1"])
     convo.messages.append(person("the process restarted; carry on"))
     reply = await convo.next()
-    assert [json.loads(c.args["input"]) for c in reply.tool_calls] == [{"region": "R2"}]
+    assert [(c.args["agent"], json.loads(c.args["input"])) for c in reply.tool_calls] == [
+        ("crosscheck_second", {"region": "R1"}),
+        ("surveyor", {"region": "R3"}),
+    ]
 
 
 async def test_a_lead_without_its_survey_in_the_context_is_refused():

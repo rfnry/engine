@@ -21,6 +21,7 @@ DOSSIER = "dossier.json"
 DOSSIER_LIMIT = 1_000_000
 VALUES = ("water_ice", "TiO2", "FeO", "Al2O3", "Th", "He3")
 MEASURED = ("FeO", "TiO2", "Al2O3", "Th")
+VERDICTS = ("agree", "dispute")
 SIGMAS = 2
 PER_MILLION = 1_000_000
 CACHE_READ = 0.1
@@ -304,7 +305,7 @@ class Merge:
 def fold(
     dossier: dict[str, Any], disputes: list[dict[str, Any]], run_id: str, note: dict[str, Any]
 ) -> None:
-    if note["kind"] not in ("agree", "dispute"):
+    if note["kind"] not in VERDICTS:
         return
     name, _, rest = note["text"].partition(":")
     named = name in VALUES
@@ -320,6 +321,10 @@ def fold(
     )
     if named and note["kind"] == "dispute":
         disputed(dossier, name, reason)
+
+
+def crosschecked(row: Mapping[str, Any]) -> bool:
+    return any(found["kind"] in VERDICTS for found in row["disputes"])
 
 
 def bounds_of(region: moon.Region) -> dict[str, float]:

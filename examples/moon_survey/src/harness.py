@@ -36,7 +36,7 @@ from rfnry_engine import (
 import moon
 from board import Board, board_tools, create_survey, write_note
 from fakes import FakeGate, Limits, Profile, fakes
-from merge import Merge, Spend, map_of
+from merge import Merge, Spend, crosschecked, map_of
 from providers import GEMINI_PER_MINUTE, anthropic, gemini, provider_log, typesafe
 from sandbox import Sandboxes
 from store import SIZE, Store
@@ -344,13 +344,16 @@ def free(opened: Opened) -> None:
         raise SurveyError(f"survey: '{running.name}' is running", 409)
 
 
-def planned(name: str, regions: list[str], shares: list[list[str]], second: set[str]) -> str:
+def planned(
+    name: str, regions: list[str], shares: list[list[str]], second: set[str], check: set[str]
+) -> str:
     return json.dumps(
         {
             "name": name,
             "regions": regions,
             "shares": shares,
             "second": [r for r in regions if r in second],
+            "check": [r for r in regions if r in check],
         }
     )
 
@@ -379,7 +382,7 @@ async def run(
         free(opened)
         conn = await lock(opened.pool, name)
         await created(opened, conn, name, mode, shape, cap, second, picked, shares)
-        context = planned(name, picked, shares, second)
+        context = planned(name, picked, shares, second, set())
         begin(opened, Survey(name, mode, shape), START, context, cap, conn)
     return await progress(name)
 
@@ -426,9 +429,9 @@ async def resume(name: Any, *, cap: Any = None) -> dict[str, Any]:
     async with opened.starting:
         free(opened)
         conn = await lock(opened.pool, name)
-        row, left, second = await reopened(opened, conn, name, cap)
+        row, left, second, check = await reopened(opened, conn, name, cap)
         shares = split(left, min(row["crews"], len(left)))
-        context = planned(name, left, shares, second)
+        context = planned(name, left, shares, second, check)
         why = WHY.get(row["status"], RESTARTED)
         survey = Survey(name, row["mode"], row["shape"])
         begin(opened, survey, why, context, row["cap"] if cap is None else cap, conn)
@@ -437,7 +440,7 @@ async def resume(name: Any, *, cap: Any = None) -> dict[str, Any]:
 
 async def reopened(
     opened: Opened, conn: PoolConnectionProxy, name: str, cap: float | None
-) -> tuple[asyncpg.Record, list[str], set[str]]:
+) -> tuple[asyncpg.Record, list[str], set[str], set[str]]:
     try:
         row = await conn.fetchrow(SURVEY, SCOPE, name)
         if row is None:
@@ -455,11 +458,14 @@ async def reopened(
                 409,
             )
         board = Board(opened.pool, SCOPE, name, live=lambda _: False)
-        landed = {found["region"] for found in await board.landed()}
-        left = [region for region in await board.regions() if region not in landed]
+        landed = {found["region"]: found for found in await board.landed()}
+        crosschecking = row["shape"] in TOP
+        check = {r for r, found in landed.items() if crosschecking and not crosschecked(found)}
+        left = [r for r in await board.regions() if r not in landed or r in check]
         if not left:
+            done = "landed and been crosschecked" if crosschecking else "landed"
             raise SurveyError(
-                f"survey: every region of survey '{name}' has landed; there is nothing to resume",
+                f"survey: every region of survey '{name}' has {done}; there is nothing to resume",
                 409,
             )
         second = await board.second()
@@ -475,7 +481,7 @@ async def reopened(
     except BaseException:
         await unlock(opened.pool, conn, name)
         raise
-    return row, left, second
+    return row, left, second, check
 
 
 def begin(

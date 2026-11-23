@@ -150,7 +150,16 @@ async def test_measure_reads_the_numbers_of_a_survey(service, pool, engine_pool,
     assert found["gate"] == {"calls": gated, "refused": 0}
     assert found["records"] == dict(Counter(r.agent for r in records))
     assert found["lost"] == {"notices": 0, "agents": {}}
-    assert found["dossiers"] == {"landed": 10, "naming_a_neighbour": 0}
+    checkers = [r.run_id for r in records if r.agent.startswith("crosscheck")]
+    checked = await pool.fetchval(
+        "select count(distinct notes.region) from notes join landed using (scope, survey, region)"
+        " where notes.scope = 'moon' and notes.survey = $1 and notes.author = any($2::text[])"
+        " and notes.kind in ('agree', 'dispute')",
+        name,
+        checkers,
+    )
+    assert checked > 0
+    assert found["dossiers"] == {"landed": 10, "naming_a_neighbour": 0, "crosschecked": checked}
 
     board = Board(pool, "moon", name, live=lambda _: False)
     rows = await board.landed()
@@ -176,6 +185,8 @@ async def test_measure_reads_the_numbers_of_a_survey(service, pool, engine_pool,
     await board.note(near, "test", "finding", "ok")
     quoting["dossier"]["notes"] += " ok"
     await board.update_landed(quoting["region"], dossier=quoting["dossier"])
+    crossed = next(row for row in rows if row["disputes"])
+    await board.update_landed(crossed["region"], disputes=[])
     store = Store(pool)
     told = Message(
         role="user",
@@ -187,7 +198,7 @@ async def test_measure_reads_the_numbers_of_a_survey(service, pool, engine_pool,
     again = await measure.measure(pool, engine_pool, name)
     assert again["landed_twice"] == 1
     assert again["lost"] == {"notices": 1, "agents": {"captain": 1}}
-    assert again["dossiers"] == {"landed": 10, "naming_a_neighbour": 2}
+    assert again["dossiers"] == {"landed": 10, "naming_a_neighbour": 2, "crosschecked": checked - 1}
 
 
 async def test_measure_reads_the_boss_runs_of_the_app_shape(service, pool, engine_pool):

@@ -480,20 +480,34 @@ class Table:
         return "; ".join(parts)
 
 
+def crosscheck_of(region: str, second: set[str]) -> str:
+    return "crosscheck_second" if region in second else "crosscheck"
+
+
 class Team(Fake):
     def __init__(self, role: str, profile: Profile, sleep: Sleep) -> None:
         super().__init__(profile, sleep)
         self.role = role
 
     def plan(self, given: Any) -> list[tuple[str, dict[str, Any]]]:
+        second = set(given.get("second", ()))
+        check = set(given.get("check", ()))
         if self.role == "lead":
-            second = set(given.get("second", ()))
             return [
-                ("captain", {"share": list(share), "second": [r for r in share if r in second]})
+                (
+                    "captain",
+                    {
+                        "share": list(share),
+                        "second": [r for r in share if r in second],
+                        "check": [r for r in share if r in check],
+                    },
+                )
                 for share in given["shares"]
             ]
         regions = given["share"] if "share" in given else given["regions"]
-        return [("surveyor", {"region": r}) for r in regions]
+        return [
+            (crosscheck_of(r, second) if r in check else "surveyor", {"region": r}) for r in regions
+        ]
 
     def script(self, system: str, messages: list[Message]) -> Script:
         survey = context_of(system)
@@ -523,7 +537,7 @@ class Team(Fake):
                     (
                         "Delegate",
                         {
-                            "agent": "crosscheck_second" if r in second else "crosscheck",
+                            "agent": crosscheck_of(r, second),
                             "input": json.dumps({"region": r}),
                             "background": True,
                         },

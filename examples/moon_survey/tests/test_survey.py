@@ -105,7 +105,7 @@ async def test_a_fake_survey_of_ten_lands_every_region(service, pool, engine_poo
     [lead] = [r for r in records if r.agent == "lead"]
     planned = json.loads(lead.body["context"])
     assert planned["name"] == name and set(planned["regions"]) == {row["region"] for row in rows}
-    assert [len(share) for share in planned["shares"]] == [5, 5]
+    assert [len(share) for share in planned["shares"]] == [5, 5] and planned["check"] == []
     assert all(r.body["context"] == lead.body["context"] for r in records)
     looked = [
         json.loads(step["result"])
@@ -194,14 +194,16 @@ async def test_the_cap_stops_the_survey_and_a_resume_goes_on(service, pool, monk
 
 
 class Holding(FakeGate):
-    def __init__(self, regions):
+    def __init__(self, regions, agents=()):
         super().__init__()
         self.regions = set(regions)
+        self.agents = set(agents)
         self.released = asyncio.Event()
         self.waiting = 0
 
     async def decide(self, state, questions):
-        if state.get("tool") == "Shell" and state.get("region") in self.regions:
+        shell = state.get("tool") == "Shell" and state.get("region") in self.regions
+        if shell or state.get("agent") in self.agents:
             self.waiting += 1
             try:
                 await self.released.wait()
@@ -216,18 +218,21 @@ async def until(check, seconds=ENDED):
             await asyncio.sleep(0.05)
 
 
-async def test_a_crashed_survey_resumes(service, pool):
+async def test_a_crashed_survey_resumes(service, pool, engine_pool):
     walk = [r for share in moon.shares(25) for r in share][:10]
-    gate = Holding(walk[5:])
+    gate = Holding(walk[5:], agents={"crosscheck", "crosscheck_second"})
     await service(gate=gate)
     name = fresh()
     await harness.run(name, mode="fake", shape="crews", size=10, cap=2.0)
 
     async def half():
         counts = (await harness.progress(name))["counts"]
-        return counts["landed"] == 5 and counts["claimed"] == 5
+        return counts["landed"] == 5 and counts["claimed"] == 5 and gate.waiting == 10
 
     await until(half)
+    unchecked = await board_of(pool, name).landed()
+    assert {row["region"] for row in unchecked} == set(walk[:5])
+    assert all(row["disputes"] == [] for row in unchecked)
     held = {
         row["region"]: row["run_id"]
         for row in await pool.fetch(
@@ -250,6 +255,17 @@ async def test_a_crashed_survey_resumes(service, pool):
     assert done["counts"] == {"landed": 10, "failed": 0, "claimed": 0, "free": 0}
     rows = {row["region"]: row for row in await board_of(pool, name).landed()}
     assert set(rows) == set(walk) and all(row["attempts"] == 1 for row in rows.values())
+    assert all(any(d["kind"] == "agree" for d in row["disputes"]) for row in rows.values())
+    records = await records_of(engine_pool, name)
+    [resumed] = [r for r in records if r.agent == "lead"]
+    planned = json.loads(resumed.body["context"])
+    assert planned["regions"] == walk and planned["check"] == walk[:5]
+    assert Counter(r.agent for r in records) == {
+        "lead": 1,
+        "captain": 2,
+        "surveyor": 10,
+        "crosscheck_second": 10,
+    }
     claims = {
         row["region"]: row["run_id"]
         for row in await pool.fetch(
@@ -266,6 +282,29 @@ async def test_a_crashed_survey_resumes(service, pool):
     assert len(inputs) == 2
     assert all(messages.index(m) < inputs[1] for m in lost)
     assert [messages[n].content for n in inputs] == [harness.START, harness.RESTARTED]
+
+
+async def test_a_survey_landed_and_crosschecked_throughout_has_nothing_to_resume(service, pool):
+    await service()
+    walk = [r for share in moon.shares(25) for r in share][:2]
+    agreed = [{"note": 1, "run_id": "r-c", "kind": "agree", "name": None, "text": "fine"}]
+    columns = {"dossier": {}, "checks": {}, "data_check": {}, "truth": None}
+    said = {"crews": "has landed and been crosschecked", "app": "has landed"}
+    for shape, done in said.items():
+        name = fresh()
+        await create_survey(
+            pool, "moon", name, 2.0, set(), walk, mode="fake", shape=shape, crews=1, status="done"
+        )
+        for region in walk:
+            row = {"region": region, "run_id": f"r-{region}", "provider": "fake", "simulated": True}
+            disputes = agreed if shape == "crews" else []
+            await board_of(pool, name).land({**row, **columns, "disputes": disputes})
+        with pytest.raises(harness.SurveyError) as refused:
+            await harness.resume(name)
+        assert refused.value.status == 409
+        assert str(refused.value) == (
+            f"survey: every region of survey '{name}' {done}; there is nothing to resume"
+        )
 
 
 async def test_hostile_mode_plants_its_note(service, pool, caplog):

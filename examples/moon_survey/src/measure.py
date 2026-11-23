@@ -16,7 +16,7 @@ from rfnry_engine import Message, PostgresStorage, Text, ToolCall
 import harness
 import moon
 from board import Board
-from merge import cost_of
+from merge import cost_of, crosschecked
 
 SCOPE = "moon"
 LABELS = ("real", "fake", "arithmetic")
@@ -280,6 +280,7 @@ async def measure(pool: asyncpg.Pool, engine_pool: asyncpg.Pool, name: str) -> d
             "naming_a_neighbour": sum(
                 1 for row in landed if names_a_neighbour(row["region"], row["dossier"])
             ),
+            "crosschecked": sum(1 for row in landed if crosschecked(row)),
         },
         "models": by_model(stored),
         "spend": await pool.fetchval(SPENT, SCOPE, name) or 0.0,
