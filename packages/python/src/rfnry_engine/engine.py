@@ -876,19 +876,29 @@ class _ToolCalls:
     async def cut(self, call: ToolCall, began: float, by: str | None = None) -> Step:
         return await self.hand_over(call, self.stopped(call, began, by))
 
+    def started(self, call: ToolCall, by: str | None = None) -> ToolCallStarted:
+        return ToolCallStarted(
+            run_id=self.run_id,
+            agent=self.spec.name,
+            call_id=call.id,
+            tool=call.name,
+            args=_copied(call.args),
+            by=by,
+        )
+
+    async def answered(self, call: ToolCall, step: Step) -> None:
+        if self.on_event is not None:
+            token = CALL.set(self.called(call))
+            try:
+                await self.emit(self.started(call))
+            finally:
+                CALL.reset(token)
+        await self.hand_over(call, step)
+
     async def run(self, call: ToolCall, by: str | None = None) -> Step:
         CALL.set(self.called(call, by))
         if self.on_event is not None:
-            await self.emit(
-                ToolCallStarted(
-                    run_id=self.run_id,
-                    agent=self.spec.name,
-                    call_id=call.id,
-                    tool=call.name,
-                    args=_copied(call.args),
-                    by=by,
-                )
-            )
+            await self.emit(self.started(call, by))
         began = time.monotonic()
         if requested(self.stop) == "now":
             return await self.cut(call, began, by)
@@ -2467,7 +2477,7 @@ class Engine:
             failures: list[Exception] = []
             for call, step in refused:
                 try:
-                    await hand_over(call, step)
+                    await tool_calls.answered(call, step)
                 except Exception as exc:
                     failures.append(exc)
             asked = [_call(waiting.call) for waiting in answered if answers[waiting.id] is True]

@@ -739,8 +739,15 @@ async def test_a_refusal_on_resume_reads_its_reason(
     assert refunds.done == []
     [answered] = [m for m in sent_last(model) if m.tool_call_id == "c-refund"]
     assert (answered.content, answered.is_error) == (result, True)
-    assert [e.call_id for e in seen.events if isinstance(e, ToolResultReady)] == ["c-refund"]
-    assert not [e for e in seen.events if isinstance(e, ToolCallStarted)]
+    told = [e for e in seen.events if isinstance(e, ToolCallStarted | ToolResultReady)]
+    assert [(type(e), e.run_id, e.call_id) for e in told] == [
+        (ToolCallStarted, again.run_id, "c-refund"),
+        (ToolResultReady, again.run_id, "c-refund"),
+    ]
+    started, ready = told
+    assert isinstance(started, ToolCallStarted) and isinstance(ready, ToolResultReady)
+    assert (started.tool, started.args, started.by) == ("refund", {"amount": 10}, None)
+    assert ready.step == step
 
 
 async def test_a_resume_with_a_store_continues_the_stored_conversation(tmp_path: Path) -> None:
@@ -756,8 +763,14 @@ async def test_a_resume_with_a_store_continues_the_stored_conversation(tmp_path:
     refund, lookup = run.paused
     before = len(store.held[KEY])
     appends = len(store.appended)
+    seen = Seen()
     again = await going_on(
-        engine, run, refunds, {refund.id: True, lookup.id: Refused("no need")}, store
+        engine,
+        run,
+        refunds,
+        {refund.id: True, lookup.id: Refused("no need")},
+        store,
+        on_event=seen,
     )
     assert isinstance(again, Generation) and again.resumed and again.error is None
     held = store.held[KEY]
@@ -777,7 +790,17 @@ async def test_a_resume_with_a_store_continues_the_stored_conversation(tmp_path:
     assert held[-1].role == "assistant" and held[-1].content == "refunded, not looked up"
     assert refunds.done == [{"amount": 10}] and no_mark_in(sent_last(model))
     assert [s.tool for s in again.steps] == ["lookup", "refund"]
-    assert again.added[0].tool_call_id == "c-refund"
+    assert again.added[0].tool_call_id == "c-lookup" and again.added == held[before:]
+    assert [
+        (type(e).__name__, e.call_id)
+        for e in seen.events
+        if isinstance(e, ToolCallStarted | ToolResultReady)
+    ] == [
+        ("ToolCallStarted", "c-lookup"),
+        ("ToolResultReady", "c-lookup"),
+        ("ToolCallStarted", "c-refund"),
+        ("ToolResultReady", "c-refund"),
+    ]
 
 
 class Blocking(Refunds):
@@ -967,6 +990,43 @@ async def test_a_resumed_runs_added_starts_at_its_answers(tmp_path: Path) -> Non
     assert isinstance(third, Generation) and third.error is None and not third.resumed
     assert third.added == third.conversation[len(kept) :]
     assert live(kept) is None and run.conversation[-1].pause == live(run.conversation)
+
+
+async def test_a_resume_of_a_resume_adds_from_the_mark_it_resumed(tmp_path: Path) -> None:
+    second = ToolCall(id="c-refund-2", name="refund", args={"amount": 5})
+    engine, run, refunds, _ = await pausing(
+        tmp_path, calling(REFUND, LOOKUP), calling(second), text_reply("both done")
+    )
+    assert isinstance(run, Generation)
+    (refund,) = run.paused
+    paused_again = await going_on(
+        engine, run, refunds, {refund.id: Refused("not yet")}, approve=later_for("refund")
+    )
+    assert isinstance(paused_again, Generation) and paused_again.paused
+    assert [(m.role, m.tool_call_id) for m in paused_again.added] == [
+        ("tool", "c-refund"),
+        ("user", None),
+        ("assistant", None),
+        ("assistant", None),
+    ]
+    kept = [*run.conversation, *paused_again.added]
+    assert live(kept) == paused_again.conversation[-1].pause
+    last = await engine.run(
+        "desk",
+        "acme",
+        "go on",
+        history=kept,
+        tools=desk_tools(refunds),
+        answers={paused_again.paused[0].id: True},
+    )
+    assert isinstance(last, Generation) and last.resumed
+    assert sum(m.pause is not None for m in last.messages) == 2
+    assert [(m.role, m.tool_call_id) for m in last.added] == [
+        ("tool", "c-refund-2"),
+        ("user", None),
+        ("assistant", None),
+    ]
+    assert refunds.done == [{"amount": 5}]
 
 
 @pytest.mark.parametrize("with_store", [False, True], ids=["history", "store"])

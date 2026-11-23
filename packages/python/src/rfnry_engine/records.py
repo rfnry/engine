@@ -244,10 +244,14 @@ class Generation(BaseModel):
 
     @property
     def added(self) -> list[Message]:
-        if self.resumed:
-            marks = [n for n, message in enumerate(self.messages) if message.pause is not None]
-            if marks:
-                return self.conversation[marks[-1] + 1 :]
+        resumed: int | None = None
+        for n in reversed(range(len(self.messages) if self.resumed else 0)):
+            if self.messages[n].pause is not None:
+                resumed = n
+            elif self.messages[n].role == "assistant":
+                break
+        if resumed is not None:
+            return self.conversation[resumed + 1 :]
         return self.conversation[max(len(self.messages) - 1, 0) :]
 
 
