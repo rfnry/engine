@@ -159,10 +159,10 @@ async def test_a_clean_dossier_lands(pool, scope, dossier):
     }
     assert marks == {
         "water_ice": ["dataset"],
-        "TiO2": ["fetched"],
-        "FeO": ["fetched"],
+        "TiO2": ["dataset"],
+        "FeO": ["dataset"],
         "Al2O3": ["dataset"],
-        "Th": ["fetched"],
+        "Th": ["dataset"],
     }
     assert row["dossier"]["values"]["He3"] == dossier["values"]["He3"]
     assert row["data_check"]["verdicts"] == {
@@ -180,7 +180,7 @@ async def test_a_clean_dossier_lands(pool, scope, dossier):
 
 
 async def test_sources_are_marked_by_what_they_are(pool, scope, dossier):
-    fetches = Fetches(a={GRS})
+    fetches = Fetches(a={GRS, "https://arxiv.org/abs/1"})
     board, places, merge = await made(pool, scope, [REGION], fetches=fetches)
     await board.claim(REGION, "a")
     mixed = copy.deepcopy(dossier)
@@ -195,8 +195,8 @@ async def test_sources_are_marked_by_what_they_are(pool, scope, dossier):
     await merge.on_event(ended("a"))
     [row] = await board.landed(REGION)
     assert row["dossier"]["values"]["FeO"]["sources"] == [
-        {"source": GRS, "mark": "fetched"},
-        {"source": "https://arxiv.org/abs/1", "mark": "cited"},
+        {"source": GRS, "mark": "dataset"},
+        {"source": "https://arxiv.org/abs/1", "mark": "fetched"},
         {"source": "data/lp/hydrogenlow.txt", "mark": "dataset"},
         {"source": "a textbook", "mark": "cited"},
         {

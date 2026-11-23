@@ -10,8 +10,8 @@ A dossier is one region's resources, written as `dossier.json` in your working d
 - `values`: each of `water_ice` (wt%), `TiO2` (wt%), `FeO` (wt%), `Al2O3` (wt%), `Th` (ppm) and `He3` (ppb), as
   `{"low": …, "high": …, "confidence": "low" | "medium" | "high", "sources": […]}`, or `{"unknown": "<why>"}` when
   nothing you found says. `low` and `high` are the range of the value across the region, what a mission would find in
-  it: take them from the spread of its pixels (`min`, `p10`, `p90`, `max`) and widen them by what the sources show,
-  never to the uncertainty of the mean. `confidence` is how sure you are of that range. A source is the dataset, a
+  it: take `p10` and `p90` of its pixels, widened to `min` and `max` or beyond where the sources show the region holds
+  more, never the uncertainty of the mean. `confidence` is how sure you are of that range. A source is the dataset, a
   mission, an instrument, a paper or a page you fetched; a URL starts with `https://`. `water_ice` is the region's
   average in the top metre of regolith, its range likewise across the region; concentrations in cold traps go in
   `notes`.
@@ -22,9 +22,8 @@ A dossier is one region's resources, written as `dossier.json` in your working d
 the Lunar Prospector gamma-ray spectrometer and its hydrogen (H) from the neutron spectrometer, each as the mean, error,
 pixel count and spread (`min`, `p10`, `p90`, `max`) of the region's 2 degree pixels, `null` where none falls in it,
 with their units and source URLs. Those files are already mounted (`$MOON_SURVEY_DATA`) and `measure.py` reads them, so
-`fetch` is for what they do not hold. Your
-FeO, TiO2, Al2O3 and Th are compared with these within their errors, and your `water_ice` low must not exceed the
-hydrogen read as water, H ppm × 9 / 10,000 wt%.
+`fetch` is for what they do not hold. Your FeO, TiO2, Al2O3 and Th are compared with these within their errors, and
+your `water_ice` low must not exceed the hydrogen read as water, H ppm × 9 / 10,000 wt%.
 
 `python "$RFNRY_TREE/surveyor/skills/dossier/check.py" dossier.json` prints each problem of the dossier on a line of
 its own and exits 1, or prints nothing and exits 0 when the dossier passes.

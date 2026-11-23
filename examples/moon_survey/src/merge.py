@@ -115,10 +115,10 @@ def dataset_urls() -> frozenset[str]:
 
 
 def mark(source: str, fetched: set[str]) -> dict[str, str]:
-    if source in fetched:
-        return {"source": source, "mark": "fetched"}
     if source in dataset_urls():
         return {"source": source, "mark": "dataset"}
+    if source in fetched:
+        return {"source": source, "mark": "fetched"}
     if source.startswith("https://"):
         return {"source": source, "mark": "cited"}
     if LUNAR_PROSPECTOR.search(source) or "data/lp" in source:

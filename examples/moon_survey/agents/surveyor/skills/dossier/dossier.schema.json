@@ -40,7 +40,7 @@
       ],
       "properties": {
         "water_ice": {
-          "description": "Water ice, the average in the top metre of regolith, its range across the region, in wt%. Concentrations in cold traps go in notes, not here.",
+          "description": "Water ice, the average in the top metre of regolith, in wt%. Concentrations in cold traps go in notes, not here.",
           "unit": "wt%",
           "$ref": "#/$defs/quantity",
           "properties": {
@@ -55,7 +55,7 @@
           }
         },
         "TiO2": {
-          "description": "Titanium dioxide, the range across the region at the surface, in wt%.",
+          "description": "Titanium dioxide at the surface, in wt%.",
           "unit": "wt%",
           "$ref": "#/$defs/quantity",
           "properties": {
@@ -70,7 +70,7 @@
           }
         },
         "FeO": {
-          "description": "Iron oxide, the range across the region at the surface, in wt%.",
+          "description": "Iron oxide at the surface, in wt%.",
           "unit": "wt%",
           "$ref": "#/$defs/quantity",
           "properties": {
@@ -85,7 +85,7 @@
           }
         },
         "Al2O3": {
-          "description": "Aluminium oxide, the range across the region at the surface, in wt%.",
+          "description": "Aluminium oxide at the surface, in wt%.",
           "unit": "wt%",
           "$ref": "#/$defs/quantity",
           "properties": {
@@ -100,7 +100,7 @@
           }
         },
         "Th": {
-          "description": "Thorium, the range across the region at the surface, in ppm.",
+          "description": "Thorium at the surface, in ppm.",
           "unit": "ppm",
           "$ref": "#/$defs/quantity",
           "properties": {
@@ -115,7 +115,7 @@
           }
         },
         "He3": {
-          "description": "Helium-3 implanted by the solar wind, the range across the region in the regolith, in ppb.",
+          "description": "Helium-3 implanted by the solar wind in the regolith, in ppb.",
           "unit": "ppb",
           "$ref": "#/$defs/quantity",
           "properties": {
@@ -193,7 +193,7 @@
           }
         }
       },
-      "description": "The range of the value across the region, from low to high, low at most high, taken from the spread of the region's pixels and widened by what the sources show; confidence is how sure the surveyor is of that range."
+      "description": "A range from low to high, low at most high, with its confidence and sources."
     },
     "unknown": {
       "type": "object",

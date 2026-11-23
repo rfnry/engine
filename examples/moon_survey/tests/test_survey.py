@@ -534,6 +534,29 @@ async def test_the_gate_is_told_what_each_tool_does(service):
     assert "\n" not in claim
 
 
+async def test_each_tool_has_one_description_for_every_agent_that_offers_it(service, monkeypatch):
+    seen = {}
+
+    def learning(tools):
+        delegating = any(tool.name == "Delegate" for tool in tools)
+        for tool in tools:
+            seen.setdefault((delegating, tool.name), set()).add(
+                tool.description.strip().splitlines()[0].split(". ")[0].rstrip(".")
+            )
+
+    monkeypatch.setattr("fakes.learn", learning)
+    gate = Recording()
+    await service(gate=gate)
+    for shape, size in (("crews", 4), ("flat", 3), ("app", 2)):
+        name = fresh()
+        await harness.run(name, mode="fake", shape=shape, size=size, cap=2.0)
+        assert (await ended(name))["status"] == "done"
+    assert (True, "Jobs") in seen and (False, "Shell") in seen and (False, "claim") in seen
+    gated = {state["tool"] for state in gate.states}
+    assert {"Shell", "claim", "Delegate"} <= gated
+    assert {k: v for k, v in seen.items() if k[1] in gated and len(v) > 1} == {}
+
+
 async def test_the_gate_sees_each_callers_task(service):
     gate = Recording()
     await service(gate=gate)

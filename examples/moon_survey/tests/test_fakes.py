@@ -712,6 +712,8 @@ async def test_the_profile_loads_with_a_scale_and_names_its_calibration():
         assert loaded.latency[name] and loaded.size[name]
     assert json.loads(path.read_text())["source"] == "the calibration cal-1, 2026-11-23"
     assert set(loaded.latency) >= set(ROLES) and set(loaded.size) >= set(ROLES)
+    assert max(loaded.latency["crosscheck_second"]) < 10
+    assert all(min(loaded.size[role]) > 0 for role in ROLES)
 
 
 async def test_a_scale_of_zero_runs_instantly():
