@@ -119,17 +119,11 @@ async def write_note(
 
 
 def measured_of(region: str) -> dict[str, dict[str, Any] | None]:
-    return {
-        name: None
-        if value is None
-        else {
-            "mean": value.mean,
-            "error": value.error,
-            "pixels": value.pixels,
-            "unit": moon.UNITS[name],
-        }
-        for name, value in moon.measured(region).items()
-    }
+    return {name: moon.value_of(name, value) for name, value in moon.measured(region).items()}
+
+
+def crosscheck_of(region: str, second: set[str]) -> str:
+    return "crosscheck_second" if region in second else "crosscheck"
 
 
 class Board:
@@ -397,15 +391,10 @@ def board_tools(board: Board) -> Tools:
         second = await board.second()
         return {
             "region": found.id,
-            "bounds": {
-                "lat_min": found.lat_min,
-                "lat_max": found.lat_max,
-                "lon_min": found.lon_min,
-                "lon_max": found.lon_max,
-            },
+            "bounds": found.bounds,
             "centre": list(found.centre),
             "neighbours": list(found.neighbours),
-            "crosscheck": "crosscheck_second" if found.id in second else "crosscheck",
+            "crosscheck": crosscheck_of(found.id, second),
         }
 
     async def dossier(args: dict[str, Any]) -> dict[str, Any]:
@@ -420,7 +409,9 @@ def board_tools(board: Board) -> Tools:
 
     named = {
         "type": "object",
-        "properties": {"region": {"type": "string", "description": "A region id, such as R17"}},
+        "properties": {
+            "region": {"type": "string", "description": "A region id, such as N00-15/3"}
+        },
         "required": ["region"],
     }
     return Tools(
@@ -463,8 +454,8 @@ def board_tools(board: Board) -> Tools:
             Tool(
                 "dossier",
                 "Read the dossier landed for a region, null before one lands, beside the region's"
-                " measured values from the Lunar Prospector data, each with its error, pixel count"
-                " and unit.",
+                " measured values from the Lunar Prospector data, each with its error, pixel count,"
+                " spread (min, p10, p90, max) and unit.",
                 body=dossier,
                 input_schema=named,
             ),

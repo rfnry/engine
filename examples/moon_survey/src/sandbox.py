@@ -9,6 +9,8 @@ from typing import Any
 
 from rfnry_engine import Local, current_call
 
+import moon
+
 EXAMPLE = Path(__file__).resolve().parent.parent
 VENV = EXAMPLE / ".venv"
 SRC = EXAMPLE / "src"
@@ -208,6 +210,7 @@ class Sandboxes:
             *read_only(SRC),
             *read_only(self.agents),
             *read_only(self.data),
+            *read_only(moon.SOURCES),
         ]
         self.slots = asyncio.Semaphore(slots)
 

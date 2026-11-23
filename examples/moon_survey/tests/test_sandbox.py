@@ -255,15 +255,16 @@ async def test_the_skill_runs_its_scripts_in_a_sandbox(sandboxes, run_as, monkey
     printed = json.loads(out)
     assert printed["region"] == "N75-90/0"
     assert printed["values"] == {
-        name: None if value is None else vars(value) for name, value in expected.items()
+        name: moon.value_of(name, value) for name, value in expected.items()
     }
-    assert printed["units"] == {
+    assert {name: value["unit"] for name, value in printed["values"].items()} == {
         "FeO": "wt%",
         "TiO2": "wt%",
         "Al2O3": "wt%",
         "Th": "ppm",
         "H": "ppm",
     }
+    assert printed["source"] == moon.sources()
     assert printed["source"]["H"].endswith("/hydrogenlow.txt")
     assert printed["source"]["FeO"].endswith("/lpgrs_high1_elem_abundance_2deg.tab")
     await sandboxes.write("dossier.json", json.dumps(dossier).encode())

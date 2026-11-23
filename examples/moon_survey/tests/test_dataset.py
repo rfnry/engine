@@ -212,7 +212,7 @@ def test_download_skips_a_file_already_there(tmp_path):
 
 
 def test_the_real_sources_list_the_files_the_loader_reads():
-    listed = setup.parse_sources(Path(moon.__file__).resolve().parent.parent / "data/lp/SOURCES.md")
+    listed = moon.parse_sources(moon.SOURCES)
     assert {s.name for s in listed} == {GRS, HYDROGEN}
     for source in listed:
         assert source.url.startswith("https://pds-geosciences.wustl.edu/")
@@ -275,6 +275,7 @@ def test_the_measure_script_prints_the_spread_beside_the_mean(cut, monkeypatch, 
     for key in ("FeO", "TiO2", "Al2O3", "Th", "H"):
         inside = region_rows(key, region_id)
         expected = spread_of(inside)
-        assert set(printed[key]) == {"mean", "error", "pixels", "min", "p10", "p90", "max"}
+        assert set(printed[key]) == {"mean", "error", "pixels", "min", "p10", "p90", "max", "unit"}
+        assert printed[key]["unit"] == moon.UNITS[key]
         for name, value in expected.items():
             assert printed[key][name] == pytest.approx(value)

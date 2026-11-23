@@ -15,20 +15,16 @@ from rfnry_engine import Event, RunEnded, Stop, Usage
 from rfnry_engine import Message as EngineMessage
 
 import moon
-import setup
 from board import Board
 from sandbox import Sandboxes
 
 DOSSIER = "dossier.json"
 DOSSIER_LIMIT = 1_000_000
 VALUES = ("water_ice", "TiO2", "FeO", "Al2O3", "Th", "He3")
-MEASURED = ("FeO", "TiO2", "Al2O3", "Th")
 VERDICTS = ("agree", "dispute")
-SIGMAS = 2
 PER_MILLION = 1_000_000
 CACHE_READ = 0.1
 CACHE_CREATION = 1.25
-WEH_PER_H = 9 / 10_000
 LUNAR_PROSPECTOR = re.compile(r"lunar\s+prospector", re.IGNORECASE)
 SPEND = """
 insert into spend (scope, survey, total) values ($1, $2, $3)
@@ -111,7 +107,7 @@ class Spend:
 
 @cache
 def dataset_urls() -> frozenset[str]:
-    return frozenset(source.url for source in setup.parse_sources(setup.SOURCES))
+    return frozenset(source.url for source in moon.parse_sources(moon.SOURCES))
 
 
 def mark(source: str, fetched: set[str]) -> dict[str, str]:
@@ -134,12 +130,6 @@ def marked(dossier: dict[str, Any], fetched: set[str]) -> dict[str, Any]:
     return found
 
 
-def figure(value: moon.Value | None) -> dict[str, float | int] | None:
-    if value is None:
-        return None
-    return {"mean": value.mean, "error": value.error, "pixels": value.pixels}
-
-
 def data_check(dossier: dict[str, Any], found: Mapping[str, moon.Value | None]) -> dict[str, Any]:
     verdicts = {}
     for name in VALUES:
@@ -152,17 +142,20 @@ def data_check(dossier: dict[str, Any], found: Mapping[str, moon.Value | None]) 
             if hydrogen is None:
                 verdicts[name] = "unchecked"
             else:
-                verdicts[name] = "pass" if value["low"] <= hydrogen.mean * WEH_PER_H else "fail"
+                weh = hydrogen.mean * moon.WEH_PER_H
+                verdicts[name] = "pass" if value["low"] <= weh else "fail"
         else:
             assert reference is not None
-            margin = SIGMAS * reference.error
+            margin = moon.SIGMAS * reference.error
             near = (
                 value["low"] <= reference.mean + margin and value["high"] >= reference.mean - margin
             )
             verdicts[name] = "pass" if near else "fail"
     hydrogen = found.get("H")
-    used: dict[str, Any] = {name: figure(found.get(name)) for name in (*MEASURED, "H")}
-    used["WEH"] = None if hydrogen is None else hydrogen.mean * WEH_PER_H
+    used: dict[str, Any] = {
+        name: moon.value_of(name, found.get(name)) for name in (*moon.MEASURED, "H")
+    }
+    used["WEH"] = None if hydrogen is None else hydrogen.mean * moon.WEH_PER_H
     return {"verdicts": verdicts, "measured": used}
 
 
@@ -336,15 +329,6 @@ def crosschecked(row: Mapping[str, Any]) -> bool:
     return any(found["kind"] in VERDICTS for found in row["disputes"])
 
 
-def bounds_of(region: moon.Region) -> dict[str, float]:
-    return {
-        "lat_min": region.lat_min,
-        "lat_max": region.lat_max,
-        "lon_min": region.lon_min,
-        "lon_max": region.lon_max,
-    }
-
-
 async def map_of(board: Board) -> dict[str, Any]:
     landed = {row["region"]: row for row in await board.landed()}
     regions = []
@@ -354,8 +338,11 @@ async def map_of(board: Board) -> dict[str, Any]:
         regions.append(
             {
                 "region": region_id,
-                "bounds": bounds_of(moon.region(region_id)),
-                "measured": {k: figure(v) for k, v in moon.measured(region_id).items()},
+                "bounds": moon.region(region_id).bounds,
+                "measured": {
+                    name: moon.value_of(name, value)
+                    for name, value in moon.measured(region_id).items()
+                },
                 "dossier": shown["dossier"] if shown else None,
                 "checks": shown["checks"] if shown else None,
                 "data_check": shown["data_check"] if shown else None,

@@ -18,12 +18,13 @@ A dossier is one region's resources, written as `dossier.json` in your working d
 - `notes`: what else you found, in words.
 - `simulated`: `false`.
 
-`python "$RFNRY_TREE/surveyor/skills/dossier/measure.py" <region>` prints the region's FeO, TiO2, Al2O3 and Th from
-the Lunar Prospector gamma-ray spectrometer and its hydrogen (H) from the neutron spectrometer, each as the mean, error,
-pixel count and spread (`min`, `p10`, `p90`, `max`) of the region's 2 degree pixels, `null` where none falls in it,
-with their units and source URLs. Those files are already mounted (`$MOON_SURVEY_DATA`) and `measure.py` reads them, so
-`fetch` is for what they do not hold. Your FeO, TiO2, Al2O3 and Th are compared with these within their errors, and
-your `water_ice` low must not exceed the hydrogen read as water, H ppm × 9 / 10,000 wt%.
+`python "$RFNRY_TREE/surveyor/skills/dossier/measure.py" <region>` prints the region's FeO, TiO2, Al2O3 and Th from the
+Lunar Prospector gamma-ray spectrometer and its hydrogen (H) from the neutron spectrometer, each as the mean, error,
+pixel count, spread (`min`, `p10`, `p90`, `max`) and unit of the region's 2 degree pixels, `null` where none falls in
+it, with each one's source URL. Those files are already mounted (`$MOON_SURVEY_DATA`) and `measure.py` reads them, so
+`fetch` is for what they do not hold. Your FeO, TiO2, Al2O3 and Th are compared with these within their errors. The
+hydrogen read as water, H ppm × 9 / 10,000 wt%, is a ceiling for `water_ice`, not its value: some of the hydrogen is
+implanted by the solar wind, so your `water_ice` low must not exceed it.
 
 `python "$RFNRY_TREE/surveyor/skills/dossier/check.py" dossier.json` prints each problem of the dossier on a line of
 its own and exits 1, or prints nothing and exits 0 when the dossier passes.

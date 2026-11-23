@@ -67,7 +67,7 @@ curl -s "localhost:8000/map?survey=readme-fake"
 ```
 
 ```json
-{"survey":"readme-fake","made":"2026-11-23T07:01:09.969596+00:00","regions":[{"region":"S75-90/0","bounds":{"lat_min":-90.0,"lat_max":-75.0,"lon_min":-180.0,"lon_max":180.0},"measured":{"FeO":{"mean":5.282289230769231,"error":0.033179831567982446,"pixels":195},"TiO2":{...},"Al2O3":{...},"Th":{...},"H":{...}},"dossier":null,"checks":null,"data_check":null,"truth":null,"disputes":null,"provider":"fake"}, ...]}
+{"survey":"readme-fake","made":"2026-11-23T07:01:09.969596+00:00","regions":[{"region":"S75-90/0","bounds":{"lat_min":-90.0,"lat_max":-75.0,"lon_min":-180.0,"lon_max":180.0},"measured":{"FeO":{"mean":5.282289230769231,"error":0.033179831567982446,"pixels":195,"min":2.8418,"p10":4.06902,"p90":6.88676,"max":10.027,"unit":"wt%"},"TiO2":{...},"Al2O3":{...},"Th":{...},"H":{...}},"dossier":null,"checks":null,"data_check":null,"truth":null,"disputes":null,"provider":"fake"}, ...]}
 ```
 
 A fake survey's regions land with `provider: "fake"` and are not shown: their dossiers are null, because a fake model

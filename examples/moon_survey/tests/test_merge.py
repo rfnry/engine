@@ -9,6 +9,7 @@ import pytest
 from rfnry_engine import InputError, RunEnded, Usage
 from rfnry_engine import Message as EngineMessage
 
+import merge as merge_module
 import moon
 from board import Board, create_survey
 from merge import PRICES, Merge, Price, Spend, SpendError, export_map
@@ -173,7 +174,16 @@ async def test_a_clean_dossier_lands(pool, scope, dossier):
         "Th": "pass",
         "He3": "unchecked",
     }
-    assert row["data_check"]["measured"]["FeO"] == {"mean": 8.0, "error": 1.0, "pixels": 10}
+    assert row["data_check"]["measured"]["FeO"] == {
+        "mean": 8.0,
+        "error": 1.0,
+        "pixels": 10,
+        "min": 8.0,
+        "p10": 8.0,
+        "p90": 8.0,
+        "max": 8.0,
+        "unit": "wt%",
+    }
     assert row["data_check"]["measured"]["WEH"] == pytest.approx(0.09)
     assert row["truth"] is None
     assert await failures(pool, scope) == []
@@ -534,8 +544,7 @@ async def test_the_map_holds_every_measured_region_and_no_simulated_dossier(
     assert by[inside[1]]["dossier"] is None
     assert by[inside[1]]["data_check"] is None
     assert by[inside[1]]["measured"] == {
-        k: (None if v is None else {"mean": v.mean, "error": v.error, "pixels": v.pixels})
-        for k, v in moon.measured(inside[1]).items()
+        k: moon.value_of(k, v) for k, v in moon.measured(inside[1]).items()
     }
     assert by[inside[2]]["dossier"] is None
     assert by[inside[2]]["provider"] is None
@@ -633,8 +642,6 @@ async def test_two_exports_at_once_do_not_collide(pool, scope, tmp_path, monkeyp
 async def test_a_step_over_a_dossier_that_raises_fails_its_region(
     pool, scope, dossier, monkeypatch, step
 ):
-    import merge as merge_module
-
     def broken(*args):
         raise KeyError("boom")
 

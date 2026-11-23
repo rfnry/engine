@@ -1,5 +1,10 @@
 import asyncio
+import json
+import os
+import re
 import secrets
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -8,6 +13,7 @@ from rfnry_engine import CallInfo
 import board as board_module
 import moon
 from board import Board, BoardError, board_tools, create_survey, write_note
+from merge import map_of
 
 REGIONS = [r.id for r in moon.regions()]
 CUT = Path(__file__).resolve().parent / "data" / "lp_cut"
@@ -348,12 +354,7 @@ async def test_the_dossier_tool_reads_the_landed_dossier_beside_the_measured_val
     before = await caller(tools, "dossier", {"region": region})
     assert before["region"] == region and before["landed"] is None
     measured = moon.measured(region)
-    assert before["measured"]["FeO"] == {
-        "mean": measured["FeO"].mean,
-        "error": measured["FeO"].error,
-        "pixels": measured["FeO"].pixels,
-        "unit": "wt%",
-    }
+    assert before["measured"]["FeO"] == {**vars(measured["FeO"]), "unit": "wt%"}
     assert before["measured"]["H"]["unit"] == "ppm" and before["measured"]["Th"]["unit"] == "ppm"
     await board.claim(region, "a")
     await board.land(row(region, dossier={"region": region, "values": {}}))
@@ -393,3 +394,52 @@ async def test_failed_lists_each_region_with_a_failure_once(pool, scope):
     await board.fail(REGIONS[0], "b", "second")
     await board.fail(REGIONS[1], "a", "third")
     assert await board.failed() == {REGIONS[0], REGIONS[1]}
+
+
+def skill_measure(region):
+    src = Path(moon.__file__).resolve().parent
+    script = src.parent / "agents" / "surveyor" / "skills" / "dossier" / "measure.py"
+    env = {**os.environ, "MOON_SURVEY_SRC": str(src), "MOON_SURVEY_DATA": str(CUT)}
+    done = subprocess.run(
+        [sys.executable, str(script), region], capture_output=True, text=True, check=True, env=env
+    )
+    return json.loads(done.stdout)
+
+
+async def test_the_skill_the_dossier_tool_and_the_map_give_a_measured_value_one_shape(
+    pool, scope, caller, monkeypatch
+):
+    monkeypatch.setenv("MOON_SURVEY_DATA", str(CUT))
+    regions = ["S75-90/0", "N60-75/5"]
+    board, _ = await made(pool, scope, regions=regions)
+    tools = board_tools(board)
+    mapped = {r["region"]: r["measured"] for r in (await map_of(board))["regions"]}
+    for region in regions:
+        expected = {
+            name: None if value is None else {**vars(value), "unit": moon.UNITS[name]}
+            for name, value in moon.measured(region).items()
+        }
+        told = (await caller(tools, "dossier", {"region": region}))["measured"]
+        printed = skill_measure(region)
+        assert told == mapped[region] == printed["values"] == expected
+        assert set(printed) == {"region", "values", "source"}
+    assert all(value is not None for value in mapped["S75-90/0"].values())
+    assert all(value is None for value in mapped["N60-75/5"].values())
+    urls = {source.name: source.url for source in moon.parse_sources(moon.SOURCES)}
+    assert skill_measure("S75-90/0")["source"] == {
+        "FeO": urls[moon.GRS_FILE],
+        "TiO2": urls[moon.GRS_FILE],
+        "Al2O3": urls[moon.GRS_FILE],
+        "Th": urls[moon.GRS_FILE],
+        "H": urls[moon.HYDROGEN_FILE],
+    }
+
+
+async def test_each_example_region_id_in_the_tools_is_a_region(pool, scope):
+    board, _ = await made(pool, scope)
+    said = [
+        found
+        for definition in board_tools(board).definitions()
+        for found in re.findall(r"such as ([^\s\"]+)", json.dumps(definition))
+    ]
+    assert said and all(found in moon.by_id() for found in said), said

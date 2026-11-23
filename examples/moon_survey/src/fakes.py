@@ -21,6 +21,8 @@ from rfnry_engine import (
     Usage,
 )
 
+import moon
+from board import crosscheck_of
 from providers import ProviderError, learn, provider_log, text_of
 
 Sleep = Callable[[float], Awaitable[object]]
@@ -36,9 +38,6 @@ SCHEMA = (
     / "dossier.schema.json"
 )
 TREE = "$RFNRY_TREE/surveyor/skills/dossier"
-WEH_PER_H = 9 / 10_000
-SIGMAS = 2
-MEASURED = ("TiO2", "FeO", "Al2O3", "Th")
 ENDED = ("finished", "failed", "lost", "stopped")
 POLAR = 75
 ROLES = ("lead", "flat", "captain", "surveyor", "crosscheck", "crosscheck_second", "boss")
@@ -327,8 +326,8 @@ class Surveyor(Fake):
 
         def ranged(name: str, mean: float, error: float, source: str) -> dict[str, Any]:
             bounds = schema[name]["properties"]
-            low = max(bounds["low"]["minimum"], mean - SIGMAS * error)
-            high = min(bounds["high"]["maximum"], mean + SIGMAS * error)
+            low = max(bounds["low"]["minimum"], mean - moon.SIGMAS * error)
+            high = min(bounds["high"]["maximum"], mean + moon.SIGMAS * error)
             return {
                 "low": low,
                 "high": high,
@@ -340,14 +339,14 @@ class Surveyor(Fake):
         if hydrogen is None:
             values["water_ice"] = {"unknown": "no neutron-spectrometer pixel falls in the region"}
         else:
-            weh = hydrogen["mean"] * WEH_PER_H
+            weh = hydrogen["mean"] * moon.WEH_PER_H
             values["water_ice"] = ranged(
                 "water_ice",
                 weh,
-                hydrogen["error"] * WEH_PER_H,
+                hydrogen["error"] * moon.WEH_PER_H,
                 "Lunar Prospector neutron spectrometer, data/lp",
             )
-        for name in MEASURED:
+        for name in moon.MEASURED:
             value = found.get(name)
             if value is None:
                 values[name] = {"unknown": "no gamma-ray pixel falls in the region"}
@@ -479,10 +478,6 @@ class Table:
                 f"{kinds.count('stopped')} stopped"
             )
         return "; ".join(parts)
-
-
-def crosscheck_of(region: str, second: set[str]) -> str:
-    return "crosscheck_second" if region in second else "crosscheck"
 
 
 class Team(Fake):

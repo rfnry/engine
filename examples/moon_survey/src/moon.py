@@ -1,16 +1,22 @@
 import json
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import cache
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 COUNTS = (33, 31, 27, 20, 13, 1)
 STEP = 15
+SOURCES = Path(__file__).resolve().parent.parent / "data" / "lp" / "SOURCES.md"
 GRS_FILE = "lpgrs_high1_elem_abundance_2deg.tab"
 HYDROGEN_FILE = "hydrogenlow.txt"
+MEASURED = ("FeO", "TiO2", "Al2O3", "Th")
 UNITS = {"FeO": "wt%", "TiO2": "wt%", "Al2O3": "wt%", "Th": "ppm", "H": "ppm"}
+FILES = {**dict.fromkeys(MEASURED, GRS_FILE), "H": HYDROGEN_FILE}
+WEH_PER_H = 9 / 10_000
+SIGMAS = 2
 GRS_COLUMNS = {
     "Al2O3": (8, 25, 100.0),
     "TiO2": (11, 46, 100.0),
@@ -37,6 +43,15 @@ class Region:
         height = math.sin(math.radians(self.lat_max)) - math.sin(math.radians(self.lat_min))
         return math.radians(self.lon_max - self.lon_min) * height
 
+    @property
+    def bounds(self) -> dict[str, float]:
+        return {
+            "lat_min": self.lat_min,
+            "lat_max": self.lat_max,
+            "lon_min": self.lon_min,
+            "lon_max": self.lon_max,
+        }
+
 
 @dataclass(frozen=True)
 class Value:
@@ -47,6 +62,14 @@ class Value:
     p10: float
     p90: float
     max: float
+
+
+@dataclass(frozen=True)
+class Source:
+    name: str
+    url: str
+    size: int
+    sha256: str
 
 
 @dataclass(frozen=True)
@@ -169,6 +192,20 @@ def data_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "data" / "lp"
 
 
+def parse_sources(path: Path) -> list[Source]:
+    found = []
+    for line in path.read_text().splitlines():
+        cells = [c.strip().strip("`") for c in line.strip().strip("|").split("|")]
+        if line.startswith("|") and len(cells) >= 4 and cells[1].startswith("https://"):
+            found.append(Source(cells[0], cells[1], int(cells[2]), cells[3]))
+    return found
+
+
+def sources() -> dict[str, str]:
+    urls = {source.name: source.url for source in parse_sources(SOURCES)}
+    return {name: urls[FILES[name]] for name in UNITS}
+
+
 def read_lines(directory: Path, name: str) -> list[tuple[int, str]]:
     path = directory / name
     if not path.is_file():
@@ -225,7 +262,7 @@ def measured(region_id: str) -> dict[str, Value | None]:
     region(region_id)
     inside = pixels_by_region(data_dir()).get(region_id, ())
     found: dict[str, Value | None] = {}
-    for key in ("FeO", "TiO2", "Al2O3", "Th", "H"):
+    for key in (*MEASURED, "H"):
         taken = [p.values[key] for p in inside if key in p.values]
         if not taken:
             found[key] = None
@@ -244,6 +281,12 @@ def measured(region_id: str) -> dict[str, Value | None]:
             ordered[-1],
         )
     return found
+
+
+def value_of(name: str, value: Value | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return {**asdict(value), "unit": UNITS[name]}
 
 
 def write_regions(path: Path) -> None:

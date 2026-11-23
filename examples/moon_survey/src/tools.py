@@ -15,6 +15,7 @@ import httpx
 from rfnry_engine import InputError, Tool, Tools, current_call
 
 from sandbox import Sandboxes
+from setup import USER_AGENT
 
 HOSTS = (
     "pds-geosciences.wustl.edu",
@@ -26,7 +27,6 @@ HOSTS = (
     "arxiv.org",
     "export.arxiv.org",
 )
-USER_AGENT = "moon-survey-example/0"
 MAX_REDIRECTS = 5
 CACHE_ITEM = 2_000_000
 CHARSET = re.compile(r'charset=["\']?([\w.-]+)', re.IGNORECASE)
