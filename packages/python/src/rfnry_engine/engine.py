@@ -65,6 +65,7 @@ from rfnry_engine.models import (
     Provider,
     Question,
     QuestionLike,
+    Refused,
     Reply,
     RunModel,
     State,
@@ -143,7 +144,7 @@ from rfnry_engine.workers.pool import Script, Workers
 STOPPED = "stopped by the user"
 NO_TOOLS = tools_fingerprint([])
 
-Approve = Callable[[str, ToolCall], Awaitable[bool]]
+Approve = Callable[[str, ToolCall], Awaitable[bool | Refused]]
 
 logger = logging.getLogger(__name__)
 
@@ -797,7 +798,8 @@ class _ToolCalls:
         child_run_id: str | None = None
         cut_short = False
         content: Content
-        approved = None
+        approved: bool | None = None
+        refusal = ""
         if self.approve is not None and call.name in self.surface:
             asking = asyncio.ensure_future(self.approve(self.spec.name, _call(call)))
             self.approving.add(id(call))
@@ -807,9 +809,15 @@ class _ToolCalls:
                 self.approving.discard(id(call))
             if pressed:
                 return await self.cut(call, began, by)
-            approved = asking.result()
-        if approved is not None and not isinstance(approved, bool):
-            raise ConfigurationError(f"engine: approve must return True or False; got {approved!r}")
+            answer = asking.result()
+            if isinstance(answer, Refused):
+                approved, refusal = False, answer.reason.strip()
+            elif isinstance(answer, bool):
+                approved = answer
+            else:
+                raise ConfigurationError(
+                    f"engine: approve must return True, False, Refused(reason) or Later(); got {answer!r}"
+                )
         here = Foreground(self.stop, self.on_event, asyncio.current_task(), approved=approved)
         if self.lend is not None:
             self.lend(call, here)
@@ -818,6 +826,8 @@ class _ToolCalls:
         try:
             if approved is False:
                 content, is_error = f"NotApproved: {call.name} was not approved", True
+                if refusal:
+                    content = f"{content}: {refusal}"
             elif call.name == DELEGATE_TOOL and self.delegate is not None:
                 content, is_error, child_run_id, cut_short = await self.delegate(call)
             else:

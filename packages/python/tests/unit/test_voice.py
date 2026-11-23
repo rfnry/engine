@@ -667,7 +667,7 @@ async def test_an_approve_that_fails_leaves_an_error_step_and_reaches_the_sessio
     written = (
         "RuntimeError: the gate is down"
         if fails == "raises"
-        else "ConfigurationError: engine: approve must return True or False; got 'yes'"
+        else "ConfigurationError: engine: approve must return True, False, Refused(reason) or Later(); got 'yes'"
     )
 
     async def session(start: VoiceStart) -> Spoken:

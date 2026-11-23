@@ -485,6 +485,11 @@ class VoiceModel(Protocol):
 
 
 @dataclass(frozen=True)
+class Refused:
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class ModelChoice:
     provider: str | None = None
     model: str | None = None

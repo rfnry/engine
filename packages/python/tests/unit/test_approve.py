@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,7 @@ import pytest
 from rfnry_engine import Event, RunStarted, current_call
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError
-from rfnry_engine.models import Answer, ChoiceAnswer, Reply, ToolCall
+from rfnry_engine.models import Answer, ChoiceAnswer, Refused, Reply, ToolCall
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
@@ -400,9 +401,66 @@ async def test_an_approve_that_answers_something_else_is_the_consumers_bug(tmp_p
         ),
     )
     with pytest.raises(
-        ConfigurationError, match=r"^engine: approve must return True or False; got 'yes'$"
+        ConfigurationError,
+        match=re.escape(
+            "engine: approve must return True, False, Refused(reason) or Later(); got 'yes'"
+        ),
     ):
         await engine.run("desk", "acme", "x", tools=Refunds().tools(), approve=maybe)
+
+
+async def refusing(reason: str, tmp_path: Path) -> tuple[Generation, Refunds, Scripted]:
+    async def refuse(agent: str, call: ToolCall) -> Refused:
+        return Refused(reason)
+
+    refunds = Refunds()
+    llm = Scripted(use("refund", order="A-1"), text_reply("ok"))
+    engine = Engine(
+        make_tree(tmp_path, run_tools={"desk": ["refund"]}),
+        providers=provided({"strong": llm, "judge": None}),
+    )
+    run = await engine.run("desk", "acme", "refund it", tools=refunds.tools(), approve=refuse)
+    assert isinstance(run, Generation)
+    return run, refunds, llm
+
+
+async def test_an_approve_that_answers_none_is_a_configuration_error(tmp_path: Path) -> None:
+    async def none(agent: str, call: ToolCall) -> Any:
+        return None
+
+    refunds = Refunds()
+    engine = Engine(
+        make_tree(tmp_path, run_tools={"desk": ["refund"]}),
+        providers=provided(
+            {"strong": Scripted(use("refund", order="A-1"), text_reply("x")), "judge": None}
+        ),
+    )
+    with pytest.raises(
+        ConfigurationError,
+        match=re.escape(
+            "engine: approve must return True, False, Refused(reason) or Later(); got None"
+        ),
+    ):
+        await engine.run("desk", "acme", "refund it", tools=refunds.tools(), approve=none)
+    assert refunds.done == []
+
+
+async def test_a_refusal_with_a_reason_reaches_the_model(tmp_path: Path) -> None:
+    run, refunds, llm = await refusing("over the limit", tmp_path)
+    step = run.steps[0]
+    assert refunds.done == []
+    assert (step.result, step.is_error, step.approved) == (
+        "NotApproved: refund was not approved: over the limit",
+        True,
+        False,
+    )
+    assert llm.calls[1][1][-1].content == "NotApproved: refund was not approved: over the limit"
+
+
+async def test_a_refusal_with_a_blank_reason_reads_as_a_plain_refusal(tmp_path: Path) -> None:
+    run, refunds, _ = await refusing("  ", tmp_path)
+    assert run.steps[0].result == "NotApproved: refund was not approved"
+    assert refunds.done == []
 
 
 async def test_the_exported_generation_row_keeps_each_approval(

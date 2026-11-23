@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Required, TypedDict, Unpack
 
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
-from rfnry_engine.models import HistoryLike, RunModel, ToolCall
+from rfnry_engine.models import HistoryLike, Refused, RunModel, ToolCall
 from rfnry_engine.records import EventHandler
 from rfnry_engine.stop import Stop
 from rfnry_engine.tools.builtins import builtins, load_tool
@@ -53,7 +53,7 @@ class EngineTools(Tools):
         tools: ToolsLike | None = None,
         workspace: Workspace | None = None,
         tags: Mapping[str, str] | None = None,
-        approve: Callable[[str, ToolCall], Awaitable[bool]] | None = None,
+        approve: Callable[[str, ToolCall], Awaitable[bool | Refused]] | None = None,
         history: Sequence[object] | HistoryLike | None = None,
         start: int = 0,
         on_event: EventHandler | None = None,
@@ -154,7 +154,7 @@ class Offered(TypedDict, total=False):
     tools: ToolsLike | None
     workspace: Workspace | None
     tags: Mapping[str, str] | None
-    approve: Callable[[str, ToolCall], Awaitable[bool]] | None
+    approve: Callable[[str, ToolCall], Awaitable[bool | Refused]] | None
     history: Sequence[object] | HistoryLike | None
     start: int
     on_event: EventHandler | None

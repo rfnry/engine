@@ -2799,7 +2799,8 @@ another scope refuses it before anything runs — `engine: workspace belongs to 
 
 By default an agent calls any tool it has. Pass `approve` and every tool call waits for your answer
 first — the shell, a `Write`, a refund, a `Delegate`. It receives the agent's name and the call, and
-returns `True` to run it or `False` to refuse:
+returns `True` to run it, `False` to refuse, or `Refused(reason)` to refuse with a reason the model reads
+(`NotApproved: Shell was not approved: it writes outside the repo`):
 
 ```python
 async def approve(agent, call):
@@ -2814,8 +2815,8 @@ run = await engine.run("coder", scope="acme", input="make the failing test pass"
 Where the person is — a thread, a dashboard, a chat app — is yours; the engine only waits. "Allow
 everything" is no `approve`; "ask every time" is one that always asks; "allow edits, ask for the
 rest" is the function above; "always allow this command" is a set the function keeps. A refused call
-does not run: the model reads `NotApproved: Shell was not approved` and carries on, and a reason
-reaches it through the `inbox`. A call to a name the run does not offer is never put to `approve`:
+does not run: the model reads `NotApproved: Shell was not approved`, or with a reason the text after
+it, and carries on; a `Refused` whose reason is blank reads as a plain `False`. A call to a name the run does not offer is never put to `approve`:
 it is answered `InputError: tools: unknown tool 'ghost'` at once and leaves its error step. Each
 step records `approved` — `True`, `False`, or `None` when nobody was asked — and the exported rows
 keep it, so a person's refusals become labels. A
@@ -2840,7 +2841,8 @@ async def approve(agent, call):
 Time spent waiting is not a tool's time: the deadline starts when the call runs. `stop.now()` ends a
 wait. Delegated and routed runs are asked through the same function, with their own agent's name;
 `engine.tool()` and `EngineTools` take `approve=` for the runs they start. An `approve` that returns
-anything but `True` or `False` is a `ConfigurationError`. An `approve` that raises fails the run:
+anything but `True`, `False` or a `Refused` is a `ConfigurationError` (`engine: approve must return
+True, False, Refused(reason) or Later(); got None`). An `approve` that raises fails the run:
 `run` raises what it raised, and the record keeps the error (`PermissionError: approval service
 down`) with no step for that call. Refusing on an error is yours, a `try` in `approve` that returns
 `False`. The run waits in memory, so an approval that takes hours is better refused now and
@@ -4038,7 +4040,7 @@ Everything the package exports, by role.
   `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`;
   `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a
   result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
-- **Give models tools:** `Tool`, `Tools`, `EngineTools`, `current_call`, `CallInfo`, `Jail`,
+- **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Refused`, `current_call`, `CallInfo`, `Jail`,
   `Workspace`, `JobInfo`, `Backend`, `Process`, `Local`.
 - **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Replay`,
   `Bucket`, `is_holdout`.
@@ -4095,7 +4097,7 @@ engine gives, and a missing workspace; and a tool of the run named `Ask` when it
 generation helper, which that `Delegate` call reads as a tool error. And a `Local` root that is not
 a directory, a `shell` that is not a list of strings or whose first word is not on `PATH`, a backend
 without `spawn`, `read` and `write`, a `Workspace` without a scope, a `timeout` or `output_bytes`
-that is not positive, an `approve` that returns anything but `True` or `False`, a judge that is not
+that is not positive, an `approve` that returns anything but `True`, `False`, `Refused(reason)` or `Later()`, a judge that is not
 a decision agent or a teacher that is not a generation agent. `NotFoundError` for an agent the
 folder does not have — a judge, a teacher or a replay's agent in the candidate included — a mode it
 does not have, a skill the agent does not have (`engine: agent 'support' has no skill 'refund'; its
