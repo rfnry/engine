@@ -42,6 +42,7 @@ create table if not exists surveys (
     status text not null,
     primary key (scope, survey)
 );
+alter table surveys add column if not exists error text;
 create table if not exists claims (
     scope text not null,
     survey text not null,

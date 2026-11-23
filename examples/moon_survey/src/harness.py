@@ -15,7 +15,6 @@ from typing import Any
 
 import asyncpg
 import httpx
-import yaml
 from asyncpg.pool import PoolConnectionProxy
 from rfnry_engine import (
     CheckAnswer,
@@ -32,12 +31,23 @@ from rfnry_engine import (
     Workspace,
     current_call,
 )
+from rfnry_engine.manifest import read_manifest
 
 import moon
 from board import Board, board_tools, create_survey, write_note
 from fakes import FakeGate, Limits, Profile, fakes
 from merge import Merge, Spend, crosschecked, map_of
-from providers import GEMINI_PER_MINUTE, anthropic, gemini, provider_log, tools_do, typesafe
+from providers import (
+    GEMINI_PER_MINUTE,
+    KEYS,
+    ProviderError,
+    anthropic,
+    gemini,
+    key,
+    provider_log,
+    tools_do,
+    typesafe,
+)
 from sandbox import Sandboxes
 from store import SIZE, Store
 from tools import FakeWeb, FetchLog, Web, boss_tools, fetch_tool
@@ -87,10 +97,10 @@ PAGES = {
     ),
 }
 SURVEY = """
-select cap, mode, shape, crews, status from surveys where scope = $1 and survey = $2
+select cap, mode, shape, crews, status, error from surveys where scope = $1 and survey = $2
 """
 SPENT = "select total from spend where scope = $1 and survey = $2"
-MARK = "update surveys set status = $3 where scope = $1 and survey = $2"
+MARK = "update surveys set status = $3, error = $4 where scope = $1 and survey = $2"
 LANDED = "select region from landed where scope = $1 and survey = $2"
 KEPT = """
 select distinct conversation from messages where scope = $1 and starts_with(conversation, $2)
@@ -167,8 +177,17 @@ def checker() -> Callable[[Any], list[str]]:
 
 
 def background_of(agent: str) -> int:
-    folder = yaml.safe_load((AGENTS / "rfnry.yaml").read_text(encoding="utf-8"))
-    return int(folder["agents"][agent]["orchestration"]["max_background"])
+    return int(read_manifest(AGENTS).agents[agent].orchestration.max_background)
+
+
+def keyed(mode: str) -> None:
+    if mode == "fake":
+        return
+    for name in KEYS:
+        try:
+            key(name)
+        except ProviderError:
+            raise SurveyError(f"survey: {name} is not set", 503) from None
 
 
 async def open(
@@ -378,6 +397,7 @@ async def run(
     picked = chosen(size, regions)
     shares = fitted(opened, shape, picked, crews)
     second = second_of(name, picked, opened.truth)
+    keyed(mode)
     async with opened.starting:
         free(opened)
         conn = await lock(opened.pool, name)
@@ -445,6 +465,7 @@ async def reopened(
         row = await conn.fetchrow(SURVEY, SCOPE, name)
         if row is None:
             raise SurveyError(f"survey: survey '{name}' does not exist", 404)
+        keyed(row["mode"])
         spent = await conn.fetchval(SPENT, SCOPE, name) or 0.0
         if cap is not None and cap <= spent:
             raise SurveyError(
@@ -477,7 +498,7 @@ async def reopened(
                     name,
                     cap,
                 )
-            await conn.execute(MARK, SCOPE, name, "running")
+            await conn.execute(MARK, SCOPE, name, "running", None)
     except BaseException:
         await unlock(opened.pool, conn, name)
         raise
@@ -579,8 +600,8 @@ def gate(
     return approve
 
 
-async def mark(pool: asyncpg.Pool, name: str, status: str) -> None:
-    await pool.execute(MARK, SCOPE, name, status)
+async def mark(pool: asyncpg.Pool, name: str, status: str, error: str | None = None) -> None:
+    await pool.execute(MARK, SCOPE, name, status, error)
 
 
 def boss_prefix(name: str) -> str:
@@ -944,7 +965,7 @@ async def work(
             logger.exception("survey: the regions of survey '%s' were not failed", name)
         finally:
             try:
-                await mark(opened.pool, name, "failed")
+                await mark(opened.pool, name, "failed", survey.error)
             except Exception:
                 logger.exception("survey: survey '%s' could not be marked failed", name)
     finally:
@@ -978,7 +999,7 @@ async def progress(name: Any) -> dict[str, Any]:
         "counts": await board.counts(),
         "spend": await opened.pool.fetchval(SPENT, SCOPE, name) or 0.0,
         "cap": row["cap"],
-        "error": None if survey is None else survey.error,
+        "error": row["error"] if survey is None or survey.error is None else survey.error,
         "reply": None if survey is None else survey.reply,
     }
 

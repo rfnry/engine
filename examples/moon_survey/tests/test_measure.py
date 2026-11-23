@@ -45,6 +45,37 @@ def prompts(messages):
     return [m.usage.input + m.usage.cache_read + m.usage.cache_creation for m in replies(messages)]
 
 
+def kind_of(key, name, messages):
+    if key == name:
+        return "lead"
+    if key.startswith(f"{name}/boss/"):
+        return "boss"
+    called = {call.name for m in messages for call in m.tool_calls}
+    if "Delegate" in called or "Jobs" in called:
+        return "captain"
+    if "claim" in called:
+        return "surveyor"
+    return "crosscheck_second"
+
+
+def kinds_of(kept, name, records):
+    found = {}
+    for key, messages in kept.items():
+        entry = found.setdefault(
+            kind_of(key, name, messages), {"conversations": 0, "calls": 0, "largest_prompt": 0}
+        )
+        entry["conversations"] += 1
+        entry["calls"] += len(prompts(messages))
+        entry["largest_prompt"] = max([entry["largest_prompt"], *prompts(messages)])
+    recorded = Counter()
+    for record in records:
+        recorded[record.agent] += record.body["calls"]
+    assert {kind: entry["calls"] for kind, entry in found.items()} == dict(recorded)
+    ran = Counter(record.agent for record in records)
+    assert {kind: entry["conversations"] for kind, entry in found.items()} == dict(ran)
+    return found
+
+
 async def records_of(engine_pool, name):
     return await PostgresStorage(engine_pool).run_tree("moon", tags={"survey": name})
 
@@ -84,6 +115,9 @@ async def test_measure_reads_the_numbers_of_a_survey(service, pool, engine_pool,
     [lead] = [r for r in records if r.agent == "lead"]
     assert found["agents"][name]["wall_s"] == pytest.approx(lead.duration_ms / 1000, abs=1.0)
     assert found["agents"][name]["wall_s"] <= found["running_s"] <= found["elapsed_s"]
+    assert found["kinds"] == kinds_of(kept, name, records)
+    assert set(found["kinds"]) == {"lead", "captain", "surveyor", "crosscheck_second"}
+    assert found["kinds"]["surveyor"]["conversations"] == 10
 
     jobs = sorted(
         (step["at"], len(step["result"].encode()))
@@ -218,6 +252,8 @@ async def test_measure_reads_the_boss_runs_of_the_app_shape(service, pool, engin
         entry["calls"] for entry in found["agents"].values()
     )
     assert found["records"] == {"boss": len(bosses), "surveyor": 4}
+    assert found["kinds"] == kinds_of(kept, name, records)
+    assert set(found["kinds"]) == {"boss", "surveyor"}
     assert found["notes"]["surveyors"] == 4 and found["notes"]["written"] == 4
     assert found["jobs"] == {"calls": 0, "bytes": [], "max": 0, "total": 0}
     with pytest.raises(measure.MeasureError, match="measure: survey 'nobody' does not exist"):

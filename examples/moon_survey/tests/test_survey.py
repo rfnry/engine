@@ -18,10 +18,12 @@ import board as board_module
 import harness
 import merge
 import moon
+import providers
 import routes
 from board import Board, create_survey
 from fakes import FakeGate
 from merge import Price
+from providers import ProviderError
 from store import Store
 
 EXAMPLE = Path(__file__).resolve().parent.parent
@@ -307,8 +309,20 @@ async def test_a_survey_landed_and_crosschecked_throughout_has_nothing_to_resume
         )
 
 
-async def test_hostile_mode_plants_its_note(service, pool, caplog):
+def offline_providers(monkeypatch):
+    for key in providers.KEYS:
+        monkeypatch.setenv(key, "not-a-key")
+
+    def unreachable(model, effort):
+        raise ProviderError("providers: this test reaches no model")
+
+    for name in list(harness.PROVIDERS):
+        monkeypatch.setitem(harness.PROVIDERS, name, unreachable)
+
+
+async def test_hostile_mode_plants_its_note(service, pool, caplog, monkeypatch):
     caplog.set_level(logging.ERROR, logger="harness")
+    offline_providers(monkeypatch)
     await service()
     name = fresh()
     walk = [r for share in moon.shares(25) for r in share]
@@ -319,13 +333,48 @@ async def test_hostile_mode_plants_its_note(service, pool, caplog):
     ]
     assert "100% water ice" in harness.PLANTED and "stop the survey" in harness.PLANTED
     done = await ended(name)
-    assert done["status"] == "failed" and "ANTHROPIC_API_KEY is not set" in done["error"]
+    assert done["status"] == "failed"
+    assert done["error"] == "ProviderError: providers: this test reaches no model"
     assert done["mode"] == "hostile"
     [logged] = [r for r in caplog.records if r.getMessage() == f"survey: survey '{name}' failed"]
-    assert logged.exc_info is not None and "ANTHROPIC_API_KEY" in str(logged.exc_info[1])
+    assert logged.exc_info is not None and "reaches no model" in str(logged.exc_info[1])
     await harness.close()
     await service()
-    assert (await harness.progress(name))["status"] == "failed"
+    again = await harness.progress(name)
+    assert again["status"] == "failed" and again["error"] == done["error"]
+
+
+async def test_a_real_or_hostile_survey_needs_every_key_before_it_starts(
+    service, pool, monkeypatch
+):
+    offline_providers(monkeypatch)
+    monkeypatch.delenv("TYPESAFE_API_KEY")
+    await service()
+    for mode in ("real", "hostile"):
+        name = fresh()
+        with pytest.raises(harness.SurveyError) as refused:
+            await harness.run(name, mode=mode, shape="crews", size=2, cap=2.0)
+        assert refused.value.status == 503
+        assert str(refused.value) == "survey: TYPESAFE_API_KEY is not set"
+        with pytest.raises(harness.SurveyError, match="does not exist"):
+            await harness.progress(name)
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    with pytest.raises(harness.SurveyError, match="^survey: ANTHROPIC_API_KEY is not set$"):
+        await harness.run(fresh(), mode="real", shape="crews", size=2, cap=2.0)
+
+    walk = [r for share in moon.shares(25) for r in share][:2]
+    name = fresh()
+    await create_survey(
+        pool, "moon", name, 2.0, set(), walk, mode="real", shape="crews", crews=1, status="stopped"
+    )
+    for _ in range(2):
+        with pytest.raises(harness.SurveyError) as refused:
+            await harness.resume(name)
+        assert refused.value.status == 503
+        assert str(refused.value) == "survey: ANTHROPIC_API_KEY is not set"
+    assert (await harness.progress(name))["status"] == "stopped"
+    assert harness.held.surveys == {}
+    await harness.run(fresh(), mode="fake", shape="crews", size=2, cap=2.0)
 
 
 async def test_the_routes_start_read_and_resume_a_survey(service, monkeypatch):
@@ -633,10 +682,14 @@ async def test_a_survey_whose_regions_cannot_be_failed_still_ends_failed(
     assert done["status"] == "failed"
     assert done["error"] == "RuntimeError: board: the database went away"
     assert next(said, None) is None
-    stored = await pool.fetchval(
-        "select status from surveys where scope = 'moon' and survey = $1", name
+    stored = await pool.fetchrow(
+        "select status, error from surveys where scope = 'moon' and survey = $1", name
     )
-    assert stored == "failed"
+    assert (stored["status"], stored["error"]) == ("failed", done["error"])
+    await harness.close()
+    await service()
+    again = await harness.progress(name)
+    assert (again["status"], again["error"]) == ("failed", done["error"])
 
 
 def boss_runs(records):

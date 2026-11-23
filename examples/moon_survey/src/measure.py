@@ -21,6 +21,7 @@ from merge import cost_of, crosschecked
 SCOPE = "moon"
 LABELS = ("real", "fake", "arithmetic")
 LEADS = ("lead", "flat", "captain", "boss")
+UNKNOWN = "unknown"
 USAGE = {"fake": "characters / 4, the fakes' estimate", "real": "as each provider reported it"}
 REGION_ID = re.compile(r"[NS]\d\d-\d\d/\d+")
 DIGITS = re.compile(r"(\d+)")
@@ -158,6 +159,19 @@ def agents_of(
     return table
 
 
+def kinds_of(stored: dict[str, list[Stored]], agents: dict[str, str]) -> dict[str, dict[str, int]]:
+    table: dict[str, dict[str, int]] = {}
+    for key in sorted(stored, key=natural):
+        prompt = [row.prompt for row in stored[key] if row.prompt is not None]
+        entry = table.setdefault(
+            agents.get(key, UNKNOWN), {"conversations": 0, "calls": 0, "largest_prompt": 0}
+        )
+        entry["conversations"] += 1
+        entry["calls"] += len(prompt)
+        entry["largest_prompt"] = max([entry["largest_prompt"], *prompt])
+    return table
+
+
 def by_model(stored: dict[str, list[Stored]]) -> dict[str, dict[str, Any]]:
     models: dict[str, dict[str, Any]] = {}
     for rows in stored.values():
@@ -271,6 +285,7 @@ async def measure(pool: asyncpg.Pool, engine_pool: asyncpg.Pool, name: str) -> d
         "elapsed_s": round((max(times) - min(times)).total_seconds(), 3) if times else 0.0,
         "running_s": seconds(span for rows in stored.values() for span in spans(rows)),
         "agents": agents_of(stored, agents, moves),
+        "kinds": kinds_of(stored, agents),
         "jobs": jobs_of(stored),
         "moves": sum(moves.values()),
         "rate_limits": {"429s": waits["count"], "waited_s": round(waits["waited"], 3)},

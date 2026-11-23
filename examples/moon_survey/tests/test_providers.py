@@ -742,10 +742,9 @@ async def test_the_gate_gives_up_sooner_than_the_models():
 
 async def test_the_log_writes_a_row_with_its_scope_and_survey(pool):
     log = ProviderLog()
-    log.use(pool)
-    log.set_survey("s1")
+    log.use(pool, survey="s1")
     await log("anthropic", "logged-model", 429, 7.5, {"retry-after": "7"})
-    log.set_survey(None)
+    log.use(pool)
     await log("gemini", "logged-model", None, 1.0, {})
     async with pool.acquire() as conn:
         rows = await conn.fetch(

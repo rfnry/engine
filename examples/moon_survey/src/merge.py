@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -15,9 +16,12 @@ from rfnry_engine import Event, RunEnded, Stop, Usage
 from rfnry_engine import Message as EngineMessage
 
 import moon
-from board import Board
+from board import Board, BoardError
 from sandbox import Sandboxes
 
+SCOPE = "moon"
+MAP_MODE = 0o644
+USAGE_LINE = "usage: uv run src/merge.py <survey> <map.json>"
 DOSSIER = "dossier.json"
 DOSSIER_LIMIT = 1_000_000
 VALUES = ("water_ice", "TiO2", "FeO", "Al2O3", "Th", "He3")
@@ -89,9 +93,10 @@ class Spend:
 
     async def _add(self, model: str | None, usage: Usage) -> None:
         added = cost_of(model, usage)
-        self.total = max(
-            self.total, await self.pool.fetchval(SPEND, self.scope, self.survey, added)
-        )
+        if added:
+            self.total = max(
+                self.total, await self.pool.fetchval(SPEND, self.scope, self.survey, added)
+            )
         if self.total >= self.cap and not self.pressed:
             self.pressed = True
             self.stop.after_step()
@@ -368,7 +373,37 @@ async def export_map(board: Board, path: Path) -> None:
             out.write(json.dumps(body, indent=2) + "\n")
             out.flush()
             os.fsync(out.fileno())
+        partial.chmod(MAP_MODE)
         partial.replace(path)
     except BaseException:
         partial.unlink(missing_ok=True)
         raise
+
+
+async def exported(url: str, survey: str, path: Path, schema: str = SCOPE) -> None:
+    pool = await asyncpg.create_pool(url, server_settings={"search_path": schema})
+    try:
+        await export_map(Board(pool, SCOPE, survey, live=lambda _: False), path)
+    finally:
+        await pool.close()
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print(USAGE_LINE, file=sys.stderr)
+        return 2
+    url = os.environ.get("RFNRY_EXAMPLES_POSTGRES_URL")
+    if not url:
+        print("merge: RFNRY_EXAMPLES_POSTGRES_URL is not set", file=sys.stderr)
+        return 1
+    try:
+        asyncio.run(exported(url, argv[0], Path(argv[1])))
+    except (BoardError, OSError, asyncpg.PostgresError) as error:
+        print(error, file=sys.stderr)
+        return 1
+    print(f"{argv[1]} ok")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

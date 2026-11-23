@@ -76,7 +76,7 @@ async def create_survey(
         on conflict (scope, survey) do update
         set cap = excluded.cap, second = excluded.second, regions = excluded.regions,
             mode = excluded.mode, shape = excluded.shape, crews = excluded.crews,
-            status = excluded.status
+            status = excluded.status, error = null
         """,
         scope,
         survey,

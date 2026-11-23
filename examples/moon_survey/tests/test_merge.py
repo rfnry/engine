@@ -2,7 +2,9 @@ import asyncio
 import copy
 import importlib.util
 import json
+import os
 import secrets
+import stat
 from pathlib import Path
 
 import pytest
@@ -11,7 +13,7 @@ from rfnry_engine import Message as EngineMessage
 
 import merge as merge_module
 import moon
-from board import Board, create_survey
+from board import Board, BoardError, create_survey
 from merge import PRICES, Merge, Price, Spend, SpendError, export_map
 from moon import Value
 
@@ -491,6 +493,19 @@ async def test_the_spend_survives_a_restart(pool, scope):
     assert again.total == pytest.approx(0.01)
 
 
+async def test_a_reply_that_costs_nothing_writes_no_spend(pool, scope):
+    spend = await spend_of(pool, scope)
+    for model in ("gemini-3.5-flash-lite", "jev-latest", "fake"):
+        await spend.reply(scope, "c", reply(model, input=10**6, output=10**6))
+        await spend.decision(model, Usage(input=10**6))
+    rows = await pool.fetchval("select count(*) from spend where scope = $1", scope)
+    assert rows == 0 and spend.total == 0
+    await spend.reply(scope, "c", reply("claude-haiku-5-5", input=1000))
+    assert await pool.fetchval("select total from spend where scope = $1", scope) == (
+        pytest.approx(1000 * 0.10 / 1e6)
+    )
+
+
 async def test_a_spend_loaded_at_its_cap_presses_on_its_first_reply(pool, scope):
     first = await spend_of(pool, scope, cap=0.01)
     await first.reply(scope, "c", reply("claude-haiku-5-5", input=100_000))
@@ -521,6 +536,7 @@ async def test_the_map_holds_every_measured_region_and_no_simulated_dossier(
         await merge.on_event(ended(run_id))
     path = tmp_path / "map" / "moon.json"
     await export_map(board, path)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
     text = path.read_text()
     assert text.endswith("}\n")
     found = json.loads(text)
@@ -556,6 +572,33 @@ async def test_the_map_holds_every_measured_region_and_no_simulated_dossier(
     }
     assert "true" not in json.dumps([by[inside[1]]["dossier"]])
     assert list(path.parent.iterdir()) == [path]
+
+
+async def test_the_merge_command_writes_a_map_anyone_can_read(pool, tmp_path, monkeypatch):
+    monkeypatch.setenv("MOON_SURVEY_DATA", str(CUT))
+    name = f"t-{secrets.token_hex(4)}"
+    regions = sorted(moon.pixels_by_region(CUT))[:2]
+    await create_survey(
+        pool, "moon", name, 5.0, set(), regions, mode="fake", shape="crews", crews=1, status="done"
+    )
+    schema = await pool.fetchval("select current_schema()")
+    url = os.environ["RFNRY_TEST_POSTGRES_URL"]
+    path = tmp_path / "map" / "moon.json"
+    await merge_module.exported(url, name, path, schema=schema)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    found = json.loads(path.read_text())
+    assert found["survey"] == name and [r["region"] for r in found["regions"]] == regions
+    with pytest.raises(BoardError, match="board: survey 'nobody' does not exist"):
+        await merge_module.exported(url, "nobody", tmp_path / "none.json", schema=schema)
+    assert not (tmp_path / "none.json").exists()
+
+
+def test_the_merge_command_says_how_it_is_used(capsys, monkeypatch):
+    assert merge_module.main([]) == 2
+    assert "usage: uv run src/merge.py <survey> <map.json>" in capsys.readouterr().err
+    monkeypatch.delenv("RFNRY_EXAMPLES_POSTGRES_URL", raising=False)
+    assert merge_module.main(["t-1", "map/moon.json"]) == 1
+    assert "merge: RFNRY_EXAMPLES_POSTGRES_URL is not set" in capsys.readouterr().err
 
 
 async def test_a_dossier_of_nested_brackets_fails_its_region_and_raises_nothing(pool, scope):

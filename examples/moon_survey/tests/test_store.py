@@ -589,6 +589,30 @@ async def test_the_tables_are_made_once_in_their_schema(pool):
             await conn.execute(f"drop schema if exists {fresh} cascade")
 
 
+async def test_the_tables_give_an_older_surveys_table_its_error_column_once(pool):
+    fresh = f"moon_test_{secrets.token_hex(6)}"
+    async with pool.acquire() as conn:
+        try:
+            await conn.execute(f"create schema {fresh}")
+            await conn.execute(
+                f"create table {fresh}.surveys (scope text not null, survey text not null,"
+                " cap double precision not null, second text not null, regions text not null,"
+                " mode text not null, shape text not null, crews integer not null,"
+                " status text not null, primary key (scope, survey))"
+            )
+            await setup.create_tables(conn, fresh)
+            await setup.create_tables(conn, fresh)
+            columns = await conn.fetch(
+                "select column_name::text as name, data_type::text as type"
+                " from information_schema.columns"
+                " where table_schema = $1 and table_name = 'surveys' and column_name = 'error'",
+                fresh,
+            )
+            assert [(c["name"], c["type"]) for c in columns] == [("error", "text")]
+        finally:
+            await conn.execute(f"drop schema if exists {fresh} cascade")
+
+
 def test_the_tables_command_needs_the_examples_url(monkeypatch, capsys):
     monkeypatch.delenv("RFNRY_EXAMPLES_POSTGRES_URL", raising=False)
     assert setup.main(["tables"]) == 1

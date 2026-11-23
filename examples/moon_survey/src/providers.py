@@ -43,6 +43,7 @@ GATE_DEADLINE = 120.0
 BACKOFF_CAP = 60.0
 GEMINI_PER_MINUTE = 15
 GEMINI_EFFORTS = ("minimal", "low", "medium", "high")
+KEYS = ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "TYPESAFE_API_KEY")
 TRANSIENT = (httpx.TransportError, AnthropicConnectionError, OpenAIConnectionError, TimeoutError)
 
 T = TypeVar("T")
@@ -122,9 +123,6 @@ class ProviderLog:
         self, pool: asyncpg.Pool | None, scope: str = "moon", survey: str | None = None
     ) -> None:
         self.pool, self.scope, self.survey = pool, scope, survey
-
-    def set_survey(self, survey: str | None) -> None:
-        self.survey = survey
 
     async def __call__(
         self, provider: str, model: str, status: int | None, wait: float, headers: dict[str, str]
