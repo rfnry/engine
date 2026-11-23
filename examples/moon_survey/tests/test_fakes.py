@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from rfnry_engine import CheckAnswer, Message, Notice, Reply, ToolCall, ToolSpec
+from rfnry_engine import CheckAnswer, Message, Notice, Reply, Text, ToolCall, ToolSpec
 
 import moon
 from fakes import ROLES, FakeGate, Limits, Profile, fakes
@@ -463,6 +463,16 @@ async def test_a_lead_without_its_survey_in_the_context_is_refused():
         await build()["lead"].generate("system", [person(START)], [])
 
 
+def job(name, agent, given, ended=None):
+    row = {"job": name, "agent": agent, "input": json.dumps(given), "started": "2026-11-23T10:00"}
+    return {**row, "running": ended is None, **({"ended": ended} if ended else {})}
+
+
+def answered(call, *parts):
+    content = [Text(text=part) for part in parts] if len(parts) != 1 else parts[0]
+    return Message(role="tool", tool_call_id=call.id, content=content)
+
+
 async def test_a_lead_whose_window_moved_past_its_input_reads_its_jobs():
     plan = survey(["R1", "R2", "R3", "R4"], [["R1", "R2"], ["R3", "R4"]])
     convo = Convo(build()["lead"], START, system=plan)
@@ -473,8 +483,8 @@ async def test_a_lead_whose_window_moved_past_its_input_reads_its_jobs():
         reply,
         {
             "jobs": [
-                {"job": "d1", "agent": "captain", "running": False, "ended": "finished"},
-                {"job": "d2", "agent": "captain", "running": True},
+                job("d1", "captain", {"share": ["R1", "R2"]}, "finished"),
+                job("d2", "captain", {"share": ["R3", "R4"]}),
             ]
         },
     )
@@ -486,36 +496,54 @@ async def test_a_lead_whose_window_moved_past_its_input_reads_its_jobs():
     assert "2 captains: 2 finished" in note.tool_calls[0].args["text"]
 
 
-async def test_a_captain_whose_window_moved_crosschecks_from_its_notices():
-    plan = survey(["R1", "R2"], [["R1", "R2"]], ["R2"])
-    convo = Convo(build()["captain"], json.dumps({"share": ["R1", "R2"]}), system=plan)
+async def test_a_captain_whose_window_moved_reads_its_input_back_and_its_jobs_by_input():
+    given = {"share": ["N00-15/3", "N00-15/4", "N00-15/5"], "second": ["N00-15/4"], "check": []}
+    convo = Convo(build()["captain"], json.dumps(given))
     convo.messages = [
-        person("[helper d1 · surveyor · finished]\nN00-15/3: dossier written"),
-        person("[helper d2 · surveyor · finished]\nN00-15/4: dossier written"),
+        person("[helper d1 · surveyor · finished]\ndossier written"),
+        person("[helper d2 · surveyor · finished]\ndossier written"),
     ]
-    plan = survey(["N00-15/3", "N00-15/4"], second=["N00-15/4"])
-    convo.system = plan
     reply = await convo.next()
-    assert names(reply) == ["Jobs"]
-    convo.answer(
-        reply,
-        {
-            "jobs": [
-                {"job": "d1", "agent": "surveyor", "running": False, "ended": "finished"},
-                {"job": "d2", "agent": "surveyor", "running": False, "ended": "finished"},
-            ]
-        },
-    )
+    assert [(c.name, c.args) for c in reply.tool_calls] == [
+        ("History", {"before": 1, "limit": 1}),
+        ("Jobs", {}),
+    ]
+    head = json.dumps({"position": 0, "role": "user"})
+    rows = [
+        job("d1", "surveyor", {"region": "N00-15/3"}, "finished"),
+        job("d2", "surveyor", {"region": "N00-15/4"}, "finished"),
+        job("d3", "surveyor", {"region": "N00-15/5"}, "finished"),
+        job("d4", "crosscheck", {"region": "N00-15/5"}),
+    ]
+    history, jobs = reply.tool_calls
+    convo.messages.append(answered(history, head, json.dumps(given)))
+    convo.messages.append(answered(jobs, json.dumps({"jobs": rows})))
     reply = await convo.next()
     assert [(c.args["agent"], json.loads(c.args["input"])) for c in reply.tool_calls] == [
         ("crosscheck", {"region": "N00-15/3"}),
         ("crosscheck_second", {"region": "N00-15/4"}),
     ]
-    convo.answer(reply, {"job": "d3"}, {"job": "d4"})
-    convo.tell("d3", "crosscheck")
-    convo.tell("d4", "crosscheck_second")
+    convo.answer(reply, {"job": "d5"}, {"job": "d6"})
+    assert (await convo.next()).tool_calls == []
+    convo.tell("d4", "crosscheck")
+    convo.tell("d5", "crosscheck")
+    convo.tell("d6", "crosscheck_second")
     note = await convo.next()
-    assert names(note) == ["note"] and note.tool_calls[0].args["region"] == "N00-15/3"
+    args = note.tool_calls[0].args
+    assert names(note) == ["note"] and args["region"] == "N00-15/3"
+    assert "3 surveyors: 3 finished" in args["text"] and "2 crosschecks: 2 finished" in args["text"]
+    assert "1 crosscheck_seconds: 1 finished" in args["text"]
+
+
+async def test_a_captain_that_cannot_read_its_input_back_is_refused():
+    convo = Convo(build()["captain"], json.dumps({"share": ["R1"]}))
+    convo.messages = [notice("d1", "surveyor")]
+    reply = await convo.next()
+    history, jobs = reply.tool_calls
+    convo.messages.append(answered(history, "no earlier messages"))
+    convo.messages.append(answered(jobs, json.dumps({"jobs": []})))
+    with pytest.raises(Exception, match="fakes: the captain cannot read its input back"):
+        await convo.next()
 
 
 async def test_flat_starts_a_surveyor_for_each_region_and_crosschecks_its_finished():

@@ -39,6 +39,7 @@ agents:
     kind: generation
     model: captain
     instructions: captain/instructions.md
+    context: own
     tools:
       allow: [note, notes]
     orchestration:
@@ -50,6 +51,7 @@ agents:
     kind: generation
     model: surveyor
     instructions: surveyor/instructions.md
+    context: own
     max_model_calls: 40
     workspace: true
     skills:
@@ -61,6 +63,7 @@ agents:
     kind: generation
     model: crosscheck
     instructions: crosscheck/instructions.md
+    context: own
     max_model_calls: 12
     tools:
       allow: [dossier, note, notes, region, fetch]
@@ -70,6 +73,7 @@ agents:
     model: crosscheck_second
     description: Checks a landed region's dossier on a second vendor's model, for the regions region() names it for
     instructions: crosscheck/instructions.md
+    context: own
     max_model_calls: 12
     tools:
       allow: [dossier, note, notes, region, fetch]

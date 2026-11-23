@@ -15,7 +15,6 @@ from typing import Any
 
 import asyncpg
 import httpx
-import yaml
 from asyncpg.pool import PoolConnectionProxy
 from rfnry_engine import (
     CheckAnswer,
@@ -23,11 +22,12 @@ from rfnry_engine import (
     Event,
     PostgresStorage,
     Refinery,
+    ReplyReady,
     RunEnded,
     RunStarted,
+    State,
     Stop,
     ToolCall,
-    ToolCallStarted,
     Tools,
     Workspace,
     current_call,
@@ -45,7 +45,6 @@ from providers import (
     gemini,
     key,
     provider_log,
-    tools_do,
     typesafe,
 )
 from sandbox import Sandboxes
@@ -137,7 +136,7 @@ class Survey:
     task: asyncio.Task[None] | None = None
     error: str | None = None
     reply: str | None = None
-    live: set[str] = field(default_factory=set)
+    live: dict[str, RunStarted] = field(default_factory=dict)
 
     @property
     def running(self) -> bool:
@@ -154,8 +153,8 @@ class Opened:
     settings: Settings
     problems: Callable[[Any], list[str]]
     truth: list[dict[str, Any]]
-    crews: int
-    share: int
+    crews: int | None
+    share: int | None
     surveys: dict[str, Survey] = field(default_factory=dict)
     last: str | None = None
     starting: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -176,9 +175,8 @@ def checker() -> Callable[[Any], list[str]]:
     return module.problems
 
 
-def background_of(agent: str) -> int:
-    folder = yaml.safe_load((AGENTS / "rfnry.yaml").read_text(encoding="utf-8"))
-    return int(folder["agents"][agent]["orchestration"]["max_background"])
+def background_of(engine: Engine, agent: str) -> int | None:
+    return engine.agents[agent].orchestration.max_background
 
 
 def keyed(mode: str) -> None:
@@ -203,7 +201,6 @@ async def open(
         raise SurveyError("survey: bwrap was not found; install bubblewrap", 503)
     problems = checker()
     truth = json.loads(TRUTH.read_text(encoding="utf-8"))
-    crews, share = background_of("lead"), background_of("captain")
     refinery = Refinery(PostgresStorage(engine_pool))
     await refinery.check()
     engine = Engine(
@@ -224,8 +221,8 @@ async def open(
         settings=settings,
         problems=problems,
         truth=truth,
-        crews=crews,
-        share=share,
+        crews=background_of(engine, "lead"),
+        share=background_of(engine, "captain"),
     )
 
 
@@ -315,12 +312,12 @@ def fitted(opened: Opened, shape: str, regions: list[str], crews: Any) -> list[l
     if shape != "crews":
         return shares
     asked = len(shares) if crews is None else crews
-    if asked > opened.crews:
+    if opened.crews is not None and asked > opened.crews:
         raise SurveyError(
             f"survey: crews must be at most {opened.crews}, the lead's max_background; got {asked}"
         )
     largest = max(len(share) for share in shares)
-    if largest > opened.share:
+    if opened.share is not None and largest > opened.share:
         raise SurveyError(
             f"survey: a share of {largest} regions is over the captain's max_background of"
             f" {opened.share}; give the survey more crews"
@@ -527,11 +524,11 @@ async def fail_left(board: Board, run_id: str) -> None:
             await board.fail(region, run_id, ENDED)
 
 
-def call_region(held: str | None, task: str | None, args: Any) -> str | None:
+def call_region(held: str | None, task: State | None, args: Any) -> str | None:
     named = args.get("region") if isinstance(args, dict) else None
     if held is None:
         try:
-            given = json.loads(task) if task else None
+            given = json.loads(task) if isinstance(task, str) else task
         except ValueError:
             given = None
         held = given.get("region") if isinstance(given, dict) else None
@@ -542,20 +539,34 @@ def call_region(held: str | None, task: str | None, args: Any) -> str | None:
     return "a neighbour of its region" if named in moon.region(held).neighbours else "neither"
 
 
+def first_sentence(text: str) -> str | None:
+    lines = text.strip().splitlines()
+    return lines[0].split(". ")[0].rstrip(".") if lines else None
+
+
+def does(began: RunStarted | None, tool: str) -> str | None:
+    found = None if began is None else next((t for t in began.tools if t.name == tool), None)
+    return None if found is None else first_sentence(found.description)
+
+
 def gate(
     opened: Opened,
     board: Board,
     spend: Spend,
     name: str,
     models: dict[str, Any] | None,
-    tasks: dict[str, str | None],
+    live: dict[str, RunStarted],
 ) -> Callable[[str, ToolCall], Any]:
-    delegating = {name for name, info in opened.engine.agents.items() if info.delegate_to}
+    async def priced(event: Event) -> None:
+        if isinstance(event, ReplyReady):
+            await spend.replied(event)
 
     async def approve(agent: str, call: ToolCall) -> bool:
         deadline = asyncio.get_running_loop().time() + GATE_TIMEOUT
         found = current_call()
         run_id = "" if found is None else found.run_id
+        began = live.get(run_id)
+        task = None if began is None else began.input
         allowed, probability, error, expired = False, None, None, False
         try:
             async with asyncio.timeout_at(deadline) as budget:
@@ -566,18 +577,17 @@ def gate(
                     "args": call.args,
                     "run_id": run_id,
                     "region": region,
-                    "call_region": call_region(region, tasks.get(run_id), call.args),
-                    "task": tasks.get(run_id),
-                    "tool_does": tools_do.get((agent in delegating, call.name)),
+                    "call_region": call_region(region, task, call.args),
+                    "task": task,
+                    "tool_does": does(began, call.name),
                 }
                 decision = await opened.engine.run(
-                    "gate", SCOPE, state, record=False, models=models
+                    "gate", SCOPE, state, record=False, models=models, on_event=priced
                 )
                 answer = decision.answers.get("fits")
                 if not isinstance(answer, CheckAnswer):
                     raise SurveyError("survey: the gate gave no answer to fits")
                 probability = answer.probability
-                await spend.decision(decision.model or "", decision.usage)
                 allowed = probability >= FITS
         except Exception as failed:
             allowed, expired = False, budget.expired()
@@ -634,34 +644,23 @@ class Shared:
     workspace: Workspace
     models: dict[str, Any] | None
     approve: Callable[[str, ToolCall], Any]
-    tasks: dict[str, str | None]
     top: list[str]
-    asked: dict[tuple[str, str], str | None] = field(default_factory=dict)
 
     def on_event(
-        self, given: str, ended: Callable[[RunEnded], None] | None = None
+        self, ended: Callable[[RunEnded], None] | None = None
     ) -> Callable[[Event], Awaitable[None]]:
         async def handle(event: Event) -> None:
-            if isinstance(event, ToolCallStarted) and event.tool == "Delegate":
-                started = event.args.get("input")
-                self.asked[(event.run_id, event.call_id)] = (
-                    started if isinstance(started, str) else None
-                )
             if isinstance(event, RunStarted):
-                self.survey.live.add(event.run_id)
+                self.survey.live[event.run_id] = event
                 if event.call is None:
                     self.top.append(event.run_id)
-                    self.tasks[event.run_id] = given
-                else:
-                    self.tasks[event.run_id] = self.asked.pop(
-                        (event.call.run_id, event.call.call_id), None
-                    )
+            elif isinstance(event, ReplyReady):
+                await self.spend.replied(event)
             try:
                 await self.merge.on_event(event)
             finally:
                 if isinstance(event, RunEnded):
-                    self.survey.live.discard(event.run_id)
-                    self.tasks.pop(event.run_id, None)
+                    self.survey.live.pop(event.run_id, None)
                     if ended is not None and event.call is None:
                         ended(event)
 
@@ -684,7 +683,7 @@ class Shared:
             context=context,
             store=self.store,
             conversation=conversation,
-            on_event=self.on_event(given, ended),
+            on_event=self.on_event(ended),
             tools=tools,
             workspace=self.workspace,
             stop=self.stop,
@@ -891,7 +890,6 @@ async def work(
 ) -> None:
     name = survey.name
     top: list[str] = []
-    tasks: dict[str, str | None] = {}
     try:
         stop = Stop()
         spend = Spend(opened.pool, SCOPE, name, cap, stop)
@@ -935,13 +933,12 @@ async def work(
                 spend=spend,
                 stop=stop,
                 board=board,
-                store=Store(opened.pool, size=settings.size, on_reply=spend.reply),
+                store=Store(opened.pool, size=settings.size),
                 merge=merge,
                 tools=Tools([board_tools(board), fetch_tool(web, opened.sandboxes, fetches)]),
                 workspace=workspace,
                 models=models,
-                approve=gate(opened, board, spend, name, models, tasks),
-                tasks=tasks,
+                approve=gate(opened, board, spend, name, models, survey.live),
                 top=top,
             )
             if survey.shape == "app":
@@ -984,7 +981,7 @@ async def progress(name: Any) -> dict[str, Any]:
     if row is None:
         raise SurveyError(f"survey: survey '{name}' does not exist", 404)
     survey = opened.surveys.get(name)
-    live = survey.live if survey is not None else set()
+    live = survey.live if survey is not None else {}
     board = Board(opened.pool, SCOPE, name, live=live.__contains__)
     status = row["status"]
     if survey is not None and survey.running:

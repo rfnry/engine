@@ -327,48 +327,33 @@ async def test_an_error_that_is_not_brief_is_not_retried(pool, scope, fault):
 
 
 async def test_a_commit_whose_answer_was_lost_is_found_not_written_twice(pool, scope):
-    priced = []
-
-    async def on_reply(scope, conversation, message):
-        priced.append(message.usage.input)
-
     slept, sleep = sleeper()
     lost = Dropping(pool, asyncpg.ConnectionDoesNotExistError("connection was closed"), after=True)
-    store = Store(lost, on_reply=on_reply, sleep=sleep)
+    store = Store(lost, sleep=sleep)
     messages = [said("a"), reply("x", usage=prompt(7)), result("x")]
     await store.append(scope, "c1", 0, messages)
     assert await store.read(scope, "c1", 0) == messages
-    assert (priced, slept) == ([7], [0.05])
+    assert slept == [0.05]
 
 
-async def test_a_commit_whose_release_failed_is_priced_once(pool, scope):
-    priced = []
-
-    async def on_reply(scope, conversation, message):
-        priced.append(message.usage.input)
-
+async def test_a_commit_whose_release_failed_is_kept_once(pool, scope):
     slept, sleep = sleeper()
     unreleased = Unreleased(pool, asyncpg.ConnectionDoesNotExistError("connection was closed"))
-    store = Store(unreleased, on_reply=on_reply, sleep=sleep)
+    store = Store(unreleased, sleep=sleep)
     messages = [said("a"), reply("x", usage=prompt(8)), result("x")]
     await store.append(scope, "c1", 0, messages)
     assert await store.read(scope, "c1", 0) == messages
-    assert (priced, slept) == ([8], [0.05])
+    assert slept == [0.05]
 
 
-async def test_a_repeat_whose_check_was_cut_is_not_priced_again(pool, scope):
-    priced = []
-
-    async def on_reply(scope, conversation, message):
-        priced.append(message.usage.input)
-
+async def test_a_repeat_whose_check_was_cut_is_not_written_again(pool, scope):
     messages = [said("a"), reply("x", usage=prompt(9)), result("x")]
-    await Store(pool, on_reply=on_reply).append(scope, "c1", 0, messages)
+    await Store(pool).append(scope, "c1", 0, messages)
     slept, sleep = sleeper()
     cut = Dropping(pool, asyncpg.ConnectionDoesNotExistError("connection was closed"), on="fetch")
-    await Store(cut, on_reply=on_reply, sleep=sleep).append(scope, "c1", 0, messages)
-    assert await Store(pool).length(scope, "c1") == 3
-    assert (priced, slept) == ([9], [0.05])
+    await Store(cut, sleep=sleep).append(scope, "c1", 0, messages)
+    assert await Store(pool).read(scope, "c1", 0) == messages
+    assert slept == [0.05]
 
 
 async def test_a_lost_answer_is_found_even_when_json_changes_a_value(pool, scope):
@@ -542,34 +527,6 @@ async def test_the_window_holds_without_a_person_message_to_start_at(pool, scope
     await store.append(scope, "c1", 0, held)
     assert await store.window(scope, "c1", 5) == 0
     assert await store.moves(scope, "c1") == 0
-
-
-async def test_on_reply_sees_each_reply_once(pool, scope):
-    seen = []
-
-    async def on_reply(scope, conversation, message):
-        seen.append((conversation, message.usage.input, await store.length(scope, conversation)))
-
-    store = Store(pool, on_reply=on_reply)
-    first = [said("a"), reply("x", usage=prompt(100)), result("x"), reply(usage=prompt(200))]
-    await store.append(scope, "c1", 0, first)
-    await store.append(scope, "c1", 0, first)
-    assert seen == [("c1", 100, 4), ("c1", 200, 4)]
-
-    await store.append(scope, "c1", 4, [said("b"), Message(role="assistant", content="cut")])
-    await store.append(scope, "c1", 6, [reply(usage=prompt(300))])
-    await store.append(scope, "c1/d1", 0, [said("c"), reply(usage=prompt(400))])
-    assert seen[2:] == [("c1", 300, 7), ("c1/d1", 400, 2)]
-
-
-async def test_a_failing_on_reply_fails_the_append_after_its_messages_are_kept(pool, scope):
-    async def on_reply(scope, conversation, message):
-        raise RuntimeError("spend: the spend table is gone")
-
-    store = Store(pool, on_reply=on_reply)
-    with pytest.raises(RuntimeError, match="spend: the spend table is gone"):
-        await store.append(scope, "c1", 0, [said("a"), reply(usage=prompt(1))])
-    assert await store.length(scope, "c1") == 2
 
 
 async def test_the_tables_are_made_once_in_their_schema(pool):

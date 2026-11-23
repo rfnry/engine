@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import itertools
 import json
 import random
 import re
@@ -16,6 +17,7 @@ from rfnry_engine import (
     GenerationModel,
     Message,
     Reply,
+    Text,
     ToolCall,
     ToolSpec,
     Usage,
@@ -23,7 +25,7 @@ from rfnry_engine import (
 
 import moon
 from board import crosscheck_of
-from providers import ProviderError, learn, provider_log, text_of
+from providers import ProviderError, provider_log, text_of
 
 Sleep = Callable[[float], Awaitable[object]]
 Log = Callable[[str, str, int | None, float, dict[str, str]], Awaitable[object]]
@@ -42,8 +44,8 @@ ENDED = ("finished", "failed", "lost", "stopped")
 POLAR = 75
 ROLES = ("lead", "flat", "captain", "surveyor", "crosscheck", "crosscheck_second", "boss")
 NOTICE = re.compile(r"\[helper (d\d+) · (\S+) · (finished|failed|stopped|asks|lost)\]")
-REGION_ID = re.compile(r"[NS]\d\d-\d\d/\d+")
 CONTEXT = "<<<CONTEXT>>>\n"
+FIRST = json.dumps({"position": 0, "role": "user"})
 
 
 class FakeError(Exception):
@@ -133,12 +135,11 @@ def usage_of(system: str, messages: list[Message], tools: list[ToolSpec], reply:
     return Usage(input=sent // 4, output=made // 4)
 
 
-def notice_of(message: Message) -> tuple[str, str, str, str] | None:
+def notice_of(message: Message) -> tuple[str, str, str] | None:
     if message.role != "user":
         return None
-    head, _, body = text_of(message.content).partition("\n")
-    found = NOTICE.fullmatch(head)
-    return None if found is None else (found.group(1), found.group(2), found.group(3), body)
+    found = NOTICE.fullmatch(text_of(message.content).partition("\n")[0])
+    return None if found is None else (found.group(1), found.group(2), found.group(3))
 
 
 def inputs(messages: list[Message]) -> list[int]:
@@ -164,11 +165,15 @@ def region_in(text: str) -> str | None:
     return region if isinstance(region, str) else None
 
 
-def parsed(message: Message) -> Any:
+def loaded(text: str) -> Any:
     try:
-        return json.loads(text_of(message.content))
+        return json.loads(text)
     except ValueError as error:
         raise FakeError(f"fakes: the input is not JSON: {error}") from error
+
+
+def parsed(message: Message) -> Any:
+    return loaded(text_of(message.content))
 
 
 def first_input(messages: list[Message]) -> Any:
@@ -212,6 +217,17 @@ def exchanges(messages: list[Message]) -> list[Exchange]:
     ]
 
 
+def recalled(item: Exchange) -> Any:
+    content = [] if item.result is None else item.result.content
+    if isinstance(content, str):
+        return None
+    texts = [part.text for part in content if isinstance(part, Text)]
+    for head, body in itertools.pairwise(texts):
+        if head == FIRST:
+            return loaded(body)
+    return None
+
+
 def failure(found: list[Exchange]) -> str | None:
     for item in found:
         if item.error:
@@ -229,7 +245,6 @@ class Fake:
         self.profile, self.sleep, self.limits = profile, sleep, limits
 
     async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
-        learn(tools)
         if self.limits is not None:
             await self.limits.wait()
         key = f"{text_of(messages[0].content) if messages else ''}|{len(messages)}"
@@ -421,13 +436,10 @@ class Table:
         for message in messages:
             told = notice_of(message)
             if told is not None:
-                job, agent, kind, body = told
+                job, agent, kind = told
                 self.jobs.setdefault(job, agent)
                 if kind in ENDED:
                     self.ended[job] = kind
-                named = REGION_ID.match(body)
-                if named is not None:
-                    self.regions.setdefault(job, named.group(0))
             elif message.role == "assistant":
                 for call in message.tool_calls:
                     self.took(Exchange(call, results.get(call.id)))
@@ -437,11 +449,17 @@ class Table:
         data = item.data()
         if item.call.name == "Jobs" and isinstance(data, dict):
             for row in data.get("jobs", []):
-                job = row.get("job", "")
-                if job.startswith("d"):
-                    self.jobs.setdefault(job, row.get("agent", ""))
-                    if not row.get("running") and row.get("ended") in ENDED:
-                        self.ended[job] = row["ended"]
+                job, agent = row.get("job", ""), row.get("agent", "")
+                if not job.startswith("d"):
+                    continue
+                self.jobs.setdefault(job, agent)
+                region = region_in(row["input"])
+                if region is not None:
+                    self.regions[job] = region
+                    if agent.startswith("crosscheck"):
+                        self.asked.add(region)
+                if not row.get("running") and row.get("ended") in ENDED:
+                    self.ended[job] = row["ended"]
         if item.call.name != "Delegate":
             return
         agent = item.call.args["agent"]
@@ -507,26 +525,25 @@ class Team(Fake):
 
     def script(self, system: str, messages: list[Message]) -> Script:
         survey = context_of(system)
+        if self.role != "captain" and survey is None:
+            raise FakeError(f"fakes: the {self.role}'s survey is not in its context")
         starts = inputs(messages)
         at = starts[-1] if starts else None
         mine = messages if at is None else messages[at:]
-        given = survey
-        if self.role == "captain":
-            given = None if at is None else parsed(messages[at])
-        elif survey is None:
-            raise FakeError(f"fakes: the {self.role}'s survey is not in its context")
         found = exchanges(mine)
         named = {item.call.name for item in found}
+        if at is None and "Jobs" not in named:
+            recall = [("History", {"before": 1, "limit": 1})] if self.role == "captain" else []
+            return "", [*recall, ("Jobs", {})]
+        given = survey if self.role != "captain" else self.input(messages, at, found)
         if at is not None and not {"Delegate", "Jobs"} & named:
             return "", [
                 ("Delegate", {"agent": agent, "input": json.dumps(args), "background": True})
                 for agent, args in self.plan(given)
             ]
-        if at is None and "Jobs" not in named:
-            return "", [("Jobs", {})]
         table = Table().read(mine)
         if self.role != "lead":
-            second = set((given or survey or {}).get("second", ()))
+            second = set(given.get("second", ()))
             todo = table.unchecked()
             if todo:
                 return "", [
@@ -545,23 +562,18 @@ class Team(Fake):
             return f"waiting for {len(running)} helpers", []
         counts = table.counts()
         if "note" not in named:
-            return "", [
-                (
-                    "note",
-                    {"region": self.first(given, survey, table), "kind": "summary", "text": counts},
-                )
-            ]
+            region = (given.get("share") or given["regions"])[0]
+            return "", [("note", {"region": region, "kind": "summary", "text": counts})]
         stopped = failure([e for e in found if e.call.name == "note"])
         return stopped or f"survey done: {counts}", []
 
-    def first(self, given: Any, survey: Any, table: Table) -> str:
-        if given is not None:
-            return (given.get("share") or given["regions"])[0]
-        if table.regions:
-            return next(iter(table.regions.values()))
-        if survey is not None:
-            return survey["regions"][0]
-        raise FakeError("fakes: the captain knows no region to leave its summary on")
+    def input(self, messages: list[Message], at: int | None, found: list[Exchange]) -> Any:
+        if at is not None:
+            return parsed(messages[at])
+        for item in found:
+            if item.call.name == "History" and (given := recalled(item)) is not None:
+                return given
+        raise FakeError("fakes: the captain cannot read its input back")
 
 
 class Boss(Fake):

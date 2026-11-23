@@ -120,16 +120,16 @@ async def test_measure_reads_the_numbers_of_a_survey(service, pool, engine_pool,
     assert found["kinds"]["surveyor"]["conversations"] == 10
 
     jobs = sorted(
-        (step["at"], len(step["result"].encode()))
+        len(step["result"].encode())
         for r in records
         for step in r.body["steps"]
         if step["tool"] == "Jobs" and not step["is_error"]
     )
-    assert jobs and found["jobs"] == {
+    assert jobs and {**found["jobs"], "bytes": sorted(found["jobs"]["bytes"])} == {
         "calls": len(jobs),
-        "bytes": [size for _, size in jobs],
-        "max": max(size for _, size in jobs),
-        "total": sum(size for _, size in jobs),
+        "bytes": jobs,
+        "max": max(jobs),
+        "total": sum(jobs),
     }
 
     moves = await pool.fetch(

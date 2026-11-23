@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import asyncpg
-from rfnry_engine import Event, RunEnded, Stop, Usage
-from rfnry_engine import Message as EngineMessage
+from rfnry_engine import Event, ReplyReady, RunEnded, Stop, Usage
 
 import moon
 from board import Board, BoardError
@@ -92,8 +91,8 @@ class Spend:
         )
         self.total = found or 0.0
 
-    async def _add(self, model: str | None, usage: Usage) -> None:
-        added = cost_of(model, usage)
+    async def replied(self, event: ReplyReady) -> None:
+        added = cost_of(event.model, event.usage)
         if added:
             self.total = max(
                 self.total, await self.pool.fetchval(SPEND, self.scope, self.survey, added)
@@ -101,14 +100,6 @@ class Spend:
         if self.total >= self.cap and not self.pressed:
             self.pressed = True
             self.stop.after_step()
-
-    async def reply(self, scope: str, conversation: str, message: EngineMessage) -> None:
-        if message.usage is None:
-            return
-        await self._add(message.model, message.usage)
-
-    async def decision(self, model: str, usage: Usage) -> None:
-        await self._add(model, usage)
 
 
 @cache

@@ -47,8 +47,6 @@ set start = excluded.start, moves = windows.moves + 1, since = excluded.since
 where windows.start < excluded.start
 """
 
-OnReply = Callable[[str, str, Message], Awaitable[object]]
-
 
 class StoreError(Exception):
     pass
@@ -82,14 +80,12 @@ class Store:
         size: int = SIZE,
         keep: float = 1 / 3,
         attempts: int = 4,
-        on_reply: OnReply | None = None,
         sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
     ) -> None:
         self.pool = pool
         self.size = size
         self.keep = keep
         self.attempts = attempts
-        self.on_reply = on_reply
         self.sleep = sleep
 
     async def length(self, scope: str, conversation: str) -> int:
@@ -116,10 +112,8 @@ class Store:
             return
         bodies = [message.model_dump_json() for message in given]
         prompts = [_prompt(message) for message in given]
-        ours = False
 
-        async def write(conn: asyncpg.Connection) -> bool:
-            nonlocal ours
+        async def write(conn: asyncpg.Connection) -> None:
             try:
                 status = await conn.execute(WRITE, scope, conversation, start, bodies, prompts)
             except asyncpg.UniqueViolationError:
@@ -129,22 +123,14 @@ class Store:
                         f"store: conversation {conversation!r} already holds a message at "
                         f"position {start}; this writer is stale"
                     ) from None
-                return ours
-            except Exception:
-                ours = True
-                raise
-            ours = True
+                return
             if status == "INSERT 0 0":
                 raise StoreError(
                     f"store: conversation {conversation!r} holds fewer than {start} messages; "
                     f"an append at position {start} leaves a gap"
                 )
-            return True
 
-        if await self._retried(write) and self.on_reply is not None:
-            for message in given:
-                if message.role == "assistant" and message.usage is not None:
-                    await self.on_reply(scope, conversation, message)
+        await self._retried(write)
 
     async def window(self, scope: str, conversation: str, length: int) -> int:
         async def find(conn: asyncpg.Connection) -> int:

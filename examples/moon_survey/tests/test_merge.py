@@ -8,8 +8,7 @@ import stat
 from pathlib import Path
 
 import pytest
-from rfnry_engine import InputError, RunEnded, Usage
-from rfnry_engine import Message as EngineMessage
+from rfnry_engine import InputError, ReplyReady, RunEnded, Usage
 
 import merge as merge_module
 import moon
@@ -400,7 +399,9 @@ async def test_a_note_from_a_run_that_is_no_crosscheck_changes_nothing(pool, sco
 
 
 def reply(model, **usage):
-    return EngineMessage(role="assistant", content="x", model=model, usage=Usage(**usage))
+    return ReplyReady(
+        run_id="r", agent="surveyor", turn=1, model=model, usage=Usage(**usage), settings=None
+    )
 
 
 class Presses:
@@ -419,25 +420,21 @@ async def spend_of(pool, scope, cap=5.0, stop=None):
 
 async def test_a_reply_is_priced_by_its_model(pool, scope):
     spend = await spend_of(pool, scope)
-    await spend.reply(
-        scope,
-        "c",
-        reply("claude-haiku-5-5", input=1000, output=500, cache_read=2000, cache_creation=400),
+    await spend.replied(
+        reply("claude-haiku-5-5", input=1000, output=500, cache_read=2000, cache_creation=400)
     )
     assert spend.total == pytest.approx(
         (1000 * 0.10 + 2000 * 0.01 + 400 * 0.125 + 500 * 0.50) / 1e6
     )
     before = spend.total
-    await spend.reply(scope, "c", reply("claude-haiku-5-5", input=100_000, output=10))
+    await spend.replied(reply("claude-haiku-5-5", input=100_000, output=10))
     assert spend.total - before == pytest.approx((100_000 * 0.10 + 10 * 0.50) / 1e6)
     before = spend.total
-    await spend.reply(
-        scope, "c", reply("claude-haiku-5-5", input=60_000, output=10, cache_read=40_001)
-    )
+    await spend.replied(reply("claude-haiku-5-5", input=60_000, output=10, cache_read=40_001))
     assert spend.total - before == pytest.approx((60_000 * 0.50 + 40_001 * 0.05 + 10 * 2.50) / 1e6)
     before = spend.total
     for model in ("gemini-3.5-flash-lite", "jev-latest", "fake"):
-        await spend.reply(scope, "c", reply(model, input=10**6, output=10**6))
+        await spend.replied(reply(model, input=10**6, output=10**6))
     assert spend.total == before
 
 
@@ -449,29 +446,23 @@ def test_the_prices_are_the_plans():
 async def test_an_unknown_model_is_refused(pool, scope):
     spend = await spend_of(pool, scope)
     with pytest.raises(SpendError, match="^spend: no price for model 'gpt-x'"):
-        await spend.reply(scope, "c", reply("gpt-x", input=1))
+        await spend.replied(reply("gpt-x", input=1))
     with pytest.raises(SpendError, match="^spend: no price for model 'None'"):
-        await spend.reply(scope, "c", EngineMessage(role="assistant", usage=Usage(input=1)))
+        await spend.replied(reply(None, input=1))
     assert spend.total == 0
-
-
-async def test_a_decision_is_priced_like_a_reply(pool, scope):
-    spend = await spend_of(pool, scope)
-    await spend.decision("claude-haiku-5-5", Usage(input=1000, output=100))
-    assert spend.total == pytest.approx((1000 * 0.10 + 100 * 0.50) / 1e6)
 
 
 async def test_the_cap_presses_after_step_once(pool, scope):
     stop = Presses()
     spend = await spend_of(pool, scope, cap=0.001, stop=stop)
     each = reply("claude-haiku-5-5", input=4000, output=0)
-    await spend.reply(scope, "c", each)
-    await spend.reply(scope, "c", each)
+    await spend.replied(each)
+    await spend.replied(each)
     assert stop.count == 0
-    await spend.reply(scope, "c", each)
+    await spend.replied(each)
     assert stop.count == 1
-    await spend.reply(scope, "c", each)
-    await spend.decision("claude-haiku-5-5", Usage(input=10))
+    await spend.replied(each)
+    await spend.replied(reply("claude-haiku-5-5", input=10))
     assert stop.count == 1
     assert spend.total == pytest.approx(4 * 4000 * 0.10 / 1e6 + 10 * 0.10 / 1e6)
 
@@ -480,7 +471,7 @@ async def test_replies_landing_together_are_all_kept_and_press_once(pool, scope)
     stop = Presses()
     spend = await spend_of(pool, scope, cap=0.01, stop=stop)
     each = reply("claude-haiku-5-5", input=1000, output=0)
-    await asyncio.gather(*(spend.reply(scope, "c", each) for _ in range(250)))
+    await asyncio.gather(*(spend.replied(each) for _ in range(250)))
     assert spend.total == pytest.approx(250 * 1000 * 0.10 / 1e6)
     assert stop.count == 1
     assert (await spend_of(pool, scope)).total == pytest.approx(spend.total)
@@ -488,7 +479,7 @@ async def test_replies_landing_together_are_all_kept_and_press_once(pool, scope)
 
 async def test_the_spend_survives_a_restart(pool, scope):
     first = await spend_of(pool, scope)
-    await first.reply(scope, "c", reply("claude-haiku-5-5", input=100_000))
+    await first.replied(reply("claude-haiku-5-5", input=100_000))
     again = await spend_of(pool, scope)
     assert again.total == pytest.approx(0.01)
 
@@ -496,11 +487,10 @@ async def test_the_spend_survives_a_restart(pool, scope):
 async def test_a_reply_that_costs_nothing_writes_no_spend(pool, scope):
     spend = await spend_of(pool, scope)
     for model in ("gemini-3.5-flash-lite", "jev-latest", "fake"):
-        await spend.reply(scope, "c", reply(model, input=10**6, output=10**6))
-        await spend.decision(model, Usage(input=10**6))
+        await spend.replied(reply(model, input=10**6, output=10**6))
     rows = await pool.fetchval("select count(*) from spend where scope = $1", scope)
     assert rows == 0 and spend.total == 0
-    await spend.reply(scope, "c", reply("claude-haiku-5-5", input=1000))
+    await spend.replied(reply("claude-haiku-5-5", input=1000))
     assert await pool.fetchval("select total from spend where scope = $1", scope) == (
         pytest.approx(1000 * 0.10 / 1e6)
     )
@@ -508,13 +498,13 @@ async def test_a_reply_that_costs_nothing_writes_no_spend(pool, scope):
 
 async def test_a_spend_loaded_at_its_cap_presses_on_its_first_reply(pool, scope):
     first = await spend_of(pool, scope, cap=0.01)
-    await first.reply(scope, "c", reply("claude-haiku-5-5", input=100_000))
+    await first.replied(reply("claude-haiku-5-5", input=100_000))
     stop = Presses()
     again = await spend_of(pool, scope, cap=0.01, stop=stop)
     assert stop.count == 0
-    await again.reply(scope, "c", reply("fake", input=1))
+    await again.replied(reply("fake", input=1))
     assert stop.count == 1
-    await again.reply(scope, "c", reply("fake", input=1))
+    await again.replied(reply("fake", input=1))
     assert stop.count == 1
 
 
@@ -664,10 +654,8 @@ async def test_a_failed_attempts_crosscheck_dispute_does_not_reach_the_next_land
 
 async def test_the_prompt_counts_cache_creation_toward_the_threshold(pool, scope):
     spend = await spend_of(pool, scope)
-    await spend.reply(
-        scope,
-        "c",
-        reply("claude-haiku-5-5", input=50_000, cache_read=40_000, cache_creation=10_001),
+    await spend.replied(
+        reply("claude-haiku-5-5", input=50_000, cache_read=40_000, cache_creation=10_001)
     )
     assert spend.total == pytest.approx((50_000 * 0.50 + 40_000 * 0.05 + 10_001 * 0.625) / 1e6)
 

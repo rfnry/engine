@@ -3,11 +3,13 @@
 ## Description
 
 A team of agents surveys the Moon's 250 regions. A lead splits the regions among captains, each captain starts
-surveyors, and a surveyor writes one region's dossier, and a second agent cross-checks some of them. The agents share a
-Postgres board where a region is claimed, noted and landed, and the board never lets a landed region be claimed again.
-Every surveyor command runs in a bubblewrap sandbox with no network, every tool call passes a fail-closed gate, and a
-store keeps each conversation in Postgres so a crashed survey resumes where it stopped. The map is the result: a
-region's bounds, its measured values, and its dossier checked against the Lunar Prospector data.
+surveyors, and a surveyor writes one region's dossier, and a second agent cross-checks some of them. The lead holds
+the survey's plan in its context; the captains, surveyors and crosschecks under it read only the input they are
+handed (`context: own` in `agents/rfnry.yaml`). The agents share a Postgres board where a region is claimed, noted
+and landed, and the board never lets a landed region be claimed again. Every surveyor command runs in a bubblewrap
+sandbox with no network, every tool call passes a fail-closed gate, and a store keeps each conversation in Postgres
+so a crashed survey resumes where it stopped. The map is the result: a region's bounds, its measured values, and its
+dossier checked against the Lunar Prospector data.
 
 `mode: "fake"` runs every agent on fake models at no cost. `mode: "real"` uses Claude Haiku 5.5, Gemini and TypeSafe.
 

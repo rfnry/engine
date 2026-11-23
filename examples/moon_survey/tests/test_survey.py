@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
-from rfnry_engine import PostgresStorage, RunEnded
+from rfnry_engine import PostgresStorage, RunEnded, RunStarted
 
 import board as board_module
 import harness
@@ -22,7 +22,7 @@ import providers
 import routes
 from board import Board, create_survey
 from fakes import FakeGate
-from merge import Price
+from merge import Price, cost_of
 from providers import ProviderError
 from store import Store
 
@@ -442,7 +442,9 @@ async def test_the_routes_start_read_and_resume_a_survey(service, monkeypatch):
         assert shown.json()["survey"] == name
 
 
-async def test_a_window_that_moves_mid_survey_still_lands_every_region_once(service, pool):
+async def test_a_window_that_moves_mid_survey_still_lands_and_crosschecks_every_region_once(
+    service, pool, engine_pool
+):
     await service(size=1)
     name = fresh()
     await harness.run(name, mode="fake", shape="crews", size=10, cap=2.0)
@@ -451,11 +453,22 @@ async def test_a_window_that_moves_mid_survey_still_lands_every_region_once(serv
     assert done["counts"] == {"landed": 10, "failed": 0, "claimed": 0, "free": 0}
     rows = await board_of(pool, name).landed()
     assert len(rows) == 10 and all(row["attempts"] == 1 for row in rows)
+    assert all(any(d["kind"] == "agree" for d in row["disputes"]) for row in rows)
+    records = await records_of(engine_pool, name)
+    assert Counter(r.agent for r in records) == {
+        "lead": 1,
+        "captain": 2,
+        "surveyor": 10,
+        "crosscheck_second": 10,
+    }
     store = Store(pool)
     for conversation in (name, f"{name}/d1", f"{name}/d2"):
         assert await store.moves("moon", conversation) > 0, conversation
     messages = await store.read("moon", name, 0)
     assert any(call.name == "Jobs" for m in messages for call in m.tool_calls)
+    for captain in (f"{name}/d1", f"{name}/d2"):
+        held = await store.read("moon", captain, 0)
+        assert {"History", "Jobs"} <= {call.name for m in held for call in m.tool_calls}
 
 
 async def test_one_survey_runs_at_a_time(service):
@@ -563,23 +576,50 @@ class Recording(FakeGate):
         return await super().decide(state, questions)
 
 
-async def test_the_gate_is_told_what_each_tool_does(service):
-    gate = Recording()
+class Watching(FakeGate):
+    def __init__(self):
+        super().__init__()
+        self.seen = []
+
+    async def decide(self, state, questions):
+        live = harness.held.surveys[harness.held.last].live
+        self.seen.append((state, live.get(state["run_id"]), set(live)))
+        return await super().decide(state, questions)
+
+
+def first_sentence(text):
+    return text.strip().splitlines()[0].split(". ")[0].rstrip(".")
+
+
+async def test_the_gate_is_told_what_each_tool_does(service, engine_pool):
+    gate = Watching()
     await service(gate=gate, size=1)
     name = fresh()
     await harness.run(name, mode="fake", shape="crews", size=10, cap=2.0)
     assert (await ended(name))["status"] == "done"
+    records = {r.run_id: r for r in await records_of(engine_pool, name)}
     does = {}
-    for state in gate.states:
+    for state, began, _ in gate.seen:
+        assert isinstance(began, RunStarted) and began.run_id == state["run_id"]
+        [spec] = [tool for tool in began.tools if tool.name == state["tool"]]
+        assert state["tool_does"] == first_sentence(spec.description)
+        body = records[state["run_id"]].body
+        offered = {tool["name"]: tool["description"] for tool in body["tools"]}
+        assert offered[state["tool"]] == spec.description
+        assert state["task"] == began.input == body["input"]
         does.setdefault((state["agent"], state["tool"]), set()).add(state["tool_does"])
-    assert all(isinstance(told, str) and told for found in does.values() for told in found), does
     [jobs] = does[("lead", "Jobs")]
     assert jobs.startswith("List the helpers you started in the background")
     assert does[("captain", "Jobs")] == {jobs}
+    [history] = does[("captain", "History")]
+    assert history.startswith("Read the earlier messages of this conversation")
     assert does[("surveyor", "Shell")] == {"Run a shell command"}
     [claim] = does[("surveyor", "claim")]
     assert claim.startswith("Take a region for yourself")
     assert "\n" not in claim
+    summed = [(s, live) for s, _, live in gate.seen if (s["agent"], s["tool"]) == ("lead", "note")]
+    assert summed and all(live == {s["run_id"]} for s, live in summed)
+    assert harness.held.surveys[name].live == {}
 
 
 def test_a_calls_region_stands_to_the_reference_region():
@@ -617,29 +657,6 @@ async def test_the_gate_is_told_how_a_calls_region_stands_to_the_callers(service
     ]
     assert looked and all(s["region"] is None for s in looked)
     assert {s["call_region"] for s in looked} == {"its own region"}
-
-
-async def test_each_tool_has_one_description_for_every_agent_that_offers_it(service, monkeypatch):
-    seen = {}
-
-    def learning(tools):
-        delegating = any(tool.name == "Delegate" for tool in tools)
-        for tool in tools:
-            seen.setdefault((delegating, tool.name), set()).add(
-                tool.description.strip().splitlines()[0].split(". ")[0].rstrip(".")
-            )
-
-    monkeypatch.setattr("fakes.learn", learning)
-    gate = Recording()
-    await service(gate=gate)
-    for shape, size in (("crews", 4), ("flat", 3), ("app", 2)):
-        name = fresh()
-        await harness.run(name, mode="fake", shape=shape, size=size, cap=2.0)
-        assert (await ended(name))["status"] == "done"
-    assert (True, "Jobs") in seen and (False, "Shell") in seen and (False, "claim") in seen
-    gated = {state["tool"] for state in gate.states}
-    assert {"Shell", "claim", "Delegate"} <= gated
-    assert {k: v for k, v in seen.items() if k[1] in gated and len(v) > 1} == {}
 
 
 async def test_the_gate_sees_each_callers_task(service):
@@ -689,6 +706,73 @@ async def test_a_survey_whose_regions_cannot_be_failed_still_ends_failed(
     await service()
     again = await harness.progress(name)
     assert (again["status"], again["error"]) == ("failed", done["error"])
+
+
+async def test_only_the_top_run_reads_the_survey(service, engine_pool):
+    await service()
+    for shape, size, top in (("crews", 4, "lead"), ("flat", 3, "flat")):
+        name = fresh()
+        await harness.run(name, mode="fake", shape=shape, size=size, cap=2.0)
+        assert (await ended(name))["status"] == "done"
+        records = await records_of(engine_pool, name)
+        [lead] = [r for r in records if r.agent == top]
+        assert json.loads(lead.body["context"])["name"] == name
+        helpers = [r for r in records if r.agent != top]
+        assert helpers and all(r.body["context"] is None for r in helpers)
+        assert {r.agent for r in helpers} >= {"surveyor", "crosscheck_second"}
+
+
+class Counting(FakeGate):
+    def __init__(self):
+        super().__init__()
+        self.used = []
+
+    async def decide(self, state, questions):
+        decided = await super().decide(state, questions)
+        self.used.append(decided.usage)
+        return decided
+
+
+async def test_every_model_call_is_priced_once(service, pool, monkeypatch):
+    monkeypatch.setitem(merge.PRICES, "fake", PRICE)
+    priced = []
+    replied = merge.Spend.replied
+
+    async def counted(self, event):
+        priced.append(event)
+        await replied(self, event)
+
+    monkeypatch.setattr(merge.Spend, "replied", counted)
+    gate = Counting()
+    await service(gate=gate)
+    store = Store(pool)
+    for shape, size in (("crews", 4), ("flat", 3), ("app", 2)):
+        priced.clear()
+        gate.used.clear()
+        name = fresh()
+        await harness.run(name, mode="fake", shape=shape, size=size, cap=1000.0)
+        assert (await ended(name))["status"] == "done"
+        replies = [
+            m
+            for conversation in await conversations_of(pool, name)
+            for m in await store.read("moon", conversation, 0)
+            if m.role == "assistant"
+        ]
+        assert replies and gate.used and all(m.usage is not None for m in replies)
+        kept = Counter((m.model, m.usage.input, m.usage.output) for m in replies)
+        decided = Counter(("fake", u.input, u.output) for u in gate.used)
+        assert Counter((e.model, e.usage.input, e.usage.output) for e in priced) == kept + decided
+        total = sum(cost_of(m.model, m.usage) for m in replies)
+        total += sum(cost_of("fake", u) for u in gate.used)
+        assert await spent(pool, name) == pytest.approx(total)
+
+
+async def test_the_crew_limits_are_the_engines_view_of_the_folder(service):
+    await service()
+    engine = harness.held.engine
+    assert harness.background_of(engine, "lead") == 10 == harness.held.crews
+    assert harness.background_of(engine, "captain") == 25 == harness.held.share
+    assert harness.background_of(engine, "surveyor") is None
 
 
 def boss_runs(records):
