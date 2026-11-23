@@ -1116,9 +1116,11 @@ async def test_reasoning_survives_a_pause_and_its_resume(tmp_path: Path, with_st
     assert sent[1].reasoning == reasoning and no_mark_in(sent)
 
 
+@pytest.mark.parametrize("with_store", [False, True], ids=["history", "store"])
 async def test_a_resume_appends_the_held_notices_after_its_answers_and_tells_them(
-    tmp_path: Path,
+    tmp_path: Path, with_store: bool
 ) -> None:
+    store = MemoryStore() if with_store else None
     began, ended = asyncio.Event(), asyncio.Event()
     model = Overlapping(
         began,
@@ -1132,7 +1134,12 @@ async def test_a_resume_appends_the_held_notices_after_its_answers_and_tells_the
     )
     engine = team(crew(tmp_path, background=True), model)
     run = await engine.run(
-        "lead", "acme", "go", approve=later_for("Jobs"), on_event=ended_below(ended)
+        "lead",
+        "acme",
+        "go",
+        approve=later_for("Jobs"),
+        on_event=ended_below(ended),
+        **stored(store),
     )
     assert isinstance(run, Generation)
     mark = run.conversation[-1].pause
@@ -1142,9 +1149,9 @@ async def test_a_resume_appends_the_held_notices_after_its_answers_and_tells_the
         "lead",
         "acme",
         "go on",
-        history=run.conversation,
         answers={run.paused[0].id: True},
         on_event=seen,
+        **({"history": run.conversation} if store is None else stored(store)),
     )
     assert isinstance(again, Generation) and again.reply == "all done"
     sent = model.calls["lead"][-1]

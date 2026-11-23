@@ -1,5 +1,6 @@
 import asyncio
 import re
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,14 @@ from rfnry_engine.conversation import live
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError
 from rfnry_engine.models import Message, Pause, Refused, Reply, ToolCall
-from rfnry_engine.records import Decision, Generation, RunEnded, ToolCallStarted, ToolResultReady
+from rfnry_engine.records import (
+    Decision,
+    Generation,
+    Run,
+    RunEnded,
+    ToolCallStarted,
+    ToolResultReady,
+)
 
 from .fakes import Crew, Fixed, MemoryStore, Seen, delegating, text_reply, until
 from .test_approve import INTENT, Refunds
@@ -35,7 +43,7 @@ class Reported(BaseModel):
     text: str
 
 
-def tree(tmp_path: Path) -> Path:
+def tree(tmp_path: Path, background: bool = False) -> Path:
     root = tmp_path / "agents"
     root.mkdir(parents=True)
     return write_folder(
@@ -47,7 +55,10 @@ def tree(tmp_path: Path) -> Path:
                 "description": "Leads the work",
                 "instructions": "lead.md",
                 "tools": {"allow": ["refund"]},
-                "orchestration": {"delegate_to": ["mid", "desk", "front"]},
+                "orchestration": {
+                    "delegate_to": ["mid", "desk", "front"],
+                    **({"background": True} if background else {}),
+                },
             },
             "mid": {
                 "kind": "generation",
@@ -89,8 +100,12 @@ def mark_of(messages: list[Message]) -> Pause:
     return pause
 
 
-def engine_of(tmp_path: Path, model: Crew, judge: Any = None, **engine: Any) -> Engine:
-    return Engine(tree(tmp_path), providers=provided({"crew": model, "judge": judge}), **engine)
+def engine_of(
+    tmp_path: Path, model: Crew, judge: Any = None, background: bool = False, **engine: Any
+) -> Engine:
+    return Engine(
+        tree(tmp_path, background), providers=provided({"crew": model, "judge": judge}), **engine
+    )
 
 
 async def lead_run(
@@ -403,3 +418,109 @@ async def test_output_is_refused_while_a_delegate_of_its_run_waits(tmp_path: Pat
     assert run.steps[1].result == (
         "engine: waiting for an answer: Delegate; call Output again once they have one"
     )
+
+
+class Stalling(Recording):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stalled = asyncio.Event()
+
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
+        if run.agent == "desk" and isinstance(run, Generation) and run.resumed:
+            self.stalled.set()
+            await asyncio.Event().wait()
+        await super().record(run, skip=skip)
+
+
+async def test_a_child_that_replied_before_a_crash_answers_with_its_stored_reply(
+    tmp_path: Path,
+) -> None:
+    store, refunds, recording = MemoryStore(), Refunds(), Stalling()
+    model = Crew(
+        [delegating("desk", "refund it"), text_reply("done")],
+        {"refund it": [calling(REFUND), text_reply("refunded")]},
+    )
+    engine = engine_of(tmp_path, model, refinery=recording)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"))
+    [w] = first.paused
+    [desk] = first.children
+    desk_key = ("acme", f"c1/{desk.run_id}")
+    cut = asyncio.create_task(lead_run(engine, store, refunds, "go on", answers={w.id: True}))
+    await asyncio.wait_for(recording.stalled.wait(), 5)
+    cut.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cut
+    assert (store.held[desk_key][-1].role, store.held[desk_key][-1].content) == (
+        "assistant",
+        "refunded",
+    )
+    calls = len(model.calls["refund it"])
+    third = await lead_run(engine, store, refunds, "go on", answers={})
+    assert third.error is None and third.reply == "done"
+    assert len(model.calls["refund it"]) == calls
+    assert third.steps[0].result == "refunded" and refunds.done == [{"amount": 10}]
+    [again] = third.children
+    assert isinstance(again, Generation)
+    assert (again.calls, again.reply, again.messages, again.added) == (0, "refunded", [], [])
+    assert store.held[desk_key][-1].content == "refunded"
+
+
+async def test_a_router_below_goes_on_as_the_agent_its_inert_mark_names(tmp_path: Path) -> None:
+    store, refunds, judge = MemoryStore(), Blocking(), Fixed(HELPS)
+    model = Crew(
+        [delegating("front", "refund it"), text_reply("done")],
+        {"refund it": [calling(REFUND), text_reply("it was cut off")]},
+    )
+    engine = engine_of(tmp_path, model, judge)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"))
+    [w] = first.paused
+    [front] = first.children
+    cut = asyncio.create_task(lead_run(engine, store, refunds, "go on", answers={w.id: True}))
+    await until(lambda: refunds.started == 1, "the approved refund started")
+    cut.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cut
+    assert live(store.held[("acme", f"c1/{front.run_id}")]) is None
+    third = await lead_run(engine, store, refunds, "go on", answers={})
+    assert third.error is None and third.reply == "done" and len(judge.calls) == 1
+    [desk] = third.children
+    assert isinstance(desk, Generation) and desk.agent == "desk"
+    assert third.steps[0].result == "it was cut off" and refunds.started == 1
+
+
+async def test_a_lost_job_is_told_once_across_two_resumes(tmp_path: Path) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    calls = [
+        ToolCall(
+            id="b1",
+            name="Delegate",
+            args={"agent": "mid", "input": "slow part", "background": True},
+        ),
+        *delegating("desk", "refund it", call_id="s1").tool_calls,
+    ]
+    model = Crew(
+        [Reply(tool_calls=calls, stop_reason="tool_use"), text_reply("all done")],
+        {
+            "slow part": [asyncio.Event()],
+            "refund it": [calling(REFUND), calling(SECOND), text_reply("refunded both")],
+        },
+    )
+    engine = engine_of(tmp_path, model, background=True)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"))
+    [w] = first.paused
+    again = await lead_run(
+        engine, store, refunds, "go on", answers={w.id: True}, approve=later_for("refund")
+    )
+    [w2] = again.paused
+    held = mark_of(store.held[KEY]).held
+    assert [(m.notice.job, m.notice.kind) for m in held if m.notice] == [("d1", "lost")]
+    assert held[-1].content == "go on"
+    third = await lead_run(engine, store, refunds, "and now", answers={w2.id: True})
+    assert third.error is None and third.reply == "all done"
+    sent = model.calls["lead"][-1]
+    lost = [m for m in sent if "· lost]" in str(m.content)]
+    assert len(lost) == 1 and str(lost[0].content).startswith("[helper d1 · mid · lost]")
+    stored = [m for m in store.held[KEY] if m.notice is not None]
+    assert [(m.notice.job, m.notice.kind) for m in stored if m.notice] == [("d1", "lost")]
+    assert [m.content for m in sent if m.role == "user"][-2:] == ["go on", "and now"]
+    assert refunds.done == [{"amount": 10}, {"amount": 5}]

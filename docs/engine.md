@@ -1539,16 +1539,17 @@ conversation is kept under, for you or a board of the team to read what it did. 
 that does not route keeps no conversation, so its body stops after `unknown`; an agent the folder no
 longer holds is named as one that keeps it. The notice's `Notice` has `kind` `lost` and `run_id`
 `None`, since the helper's `run_id` was on its `Delegate` step, not in the conversation. A `lost`
-notice is an outcome, so a later resume tells it no more, and the helper is not one of the run's
-own: `Job` on its id is the tool error `tools/helpers: there is no helper d2`. The `Delegate` call
-that started it stays in the stored conversation, where `History` reads it once the window has
-passed it. The run sends its lost notices in one `MessagesTaken` at turn 0, right after its
-`RunStarted`, with `messages=[]`. The ended results and lost notices are the run's own messages,
-appended after what it read and before its input: its record holds them when its first window does,
-a first window that starts past them leaves them in the store but out of `run.messages` and
-`run.conversation`, a run that ends before its first model call records its lost notices but not the
-ended results, whose calls its record does not hold, and `run.added`, which starts at the input,
-never holds them.
+notice is an outcome, so a later resume tells it no more, as is a notice a paused run's mark holds
+for its resume ([Approving tool calls](#approving-tool-calls)): its helper is never told `lost`. The
+helper of a `lost` notice is not one of the run's own: `Job` on its id is the tool error
+`tools/helpers: there is no helper d2`. The `Delegate` call that started it stays in the stored
+conversation, where `History` reads it once the window has passed it. The run sends its lost notices
+in one `MessagesTaken` at turn 0, right after its `RunStarted`, with `messages=[]`. The ended
+results and lost notices are the run's own messages, appended after what it read and before its
+input: its record holds them when its first window does, a first window that starts past them leaves
+them in the store but out of `run.messages` and `run.conversation`, a run that ends before its first
+model call records its lost notices but not the ended results, whose calls its record does not hold,
+and `run.added`, which starts at the input, never holds them.
 
 With a refinery attached, a crash keeps every row written before it: those of each helper and
 synchronous child whose record was written, and of the runs below it that the record carried. It
@@ -2917,15 +2918,18 @@ in. The resume is an ordinary `engine.run` of the top-level agent with the same 
 `conversation=`, and its `answers` cover every call that waits below its own `Delegate` calls too,
 since the lead cannot go on before its child replies. It walks back down: each `Delegate` whose
 child an answer reaches runs again, asked of nobody, and the child goes on from its stored
-conversation under the same name, as a new run of its agent with `input` `""` and `resumed`,
-answering its own calls and walking down to its own children the same way; its reply answers the
-`Delegate`, and the lead goes on with its `input` to its next model call. The lead stores its fresh
-mark, less the calls this resume answers, before any child runs, so an answer sent again after a
-crash is refused as at the top; a child left with nothing to answer, its own call cut off, is
-continued on the next resume all the same, and reads its cut call `Ended: refund did not return; …`.
-A child that pauses again leaves its `Delegate` waiting, and the lead pauses again at once, with no
-model call, its fresh mark holding its `input` for the next resume, which appends it after the
-notices the old mark held. The pause names no new conversation: every run keeps the name it had.
+conversation under the same name, as a new run of its agent with `input` `""`, `resumed` while its
+conversation is still paused, answering its own calls and walking down to its own children the same
+way; its reply answers the `Delegate`, and the lead goes on with its `input` to its next model call.
+The lead stores its fresh mark, less the calls this resume answers, before any child runs, so an
+answer sent again after a crash is refused as at the top; a child left with nothing to answer, its
+own call cut off, is continued on the next resume all the same, and reads its cut call `Ended:
+refund did not return; …`. One whose own reply was stored before the crash ends at once with that
+reply, with no model call, and a router delegated to goes on as the agent its last mark names, never
+deciding again. A child that pauses again leaves its `Delegate` waiting, and the lead pauses again
+at once, with no model call, its fresh mark holding its `input` for the next resume, which appends
+it after the notices the old mark held. The pause names no new conversation: every run keeps the
+name it had.
 
 ### Refining
 

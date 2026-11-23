@@ -420,6 +420,19 @@ def _in_place(
     return agents[paused.agent]
 
 
+def _replied(history: Sequence[Message]) -> str | None:
+    last = history[-1] if history else None
+    if (
+        last is None
+        or last.role != "assistant"
+        or last.tool_calls
+        or last.pause is not None
+        or not isinstance(last.content, str)
+    ):
+        return None
+    return last.content if any(message.pause is not None for message in history) else None
+
+
 def _under(conversation: str | None, key: str) -> bool:
     return conversation is not None and (conversation == key or conversation.startswith(f"{key}/"))
 
@@ -1920,6 +1933,7 @@ class Engine:
                 {name for name, agent in self._agents.items() if not _named(agent)},
             )
         )
+        replied = _replied(given) if options.reattached and not repairs and not losses else None
         messages: list[Message] = []
         window = 0
         surface = RunTools(
@@ -2232,7 +2246,10 @@ class Engine:
                         claimed = self._claimed(scope, again)
                         stored = Conversation(cast(ConversationStore, options.store), scope, again)
                         opened = stored, await stored.opened()
-                        target = _in_place(target, live(opened[1]), NO_ANSWERS, self._agents)
+                        marked = next(
+                            (m.pause for m in reversed(opened[1]) if m.pause is not None), None
+                        )
+                        target = _in_place(target, marked, NO_ANSWERS, self._agents)
                         forwarded = replace(forwarded, questions={}, opened=opened, claimed=True)
                     child = await self._owned(
                         target,
@@ -2756,6 +2773,8 @@ class Engine:
                     tools=[_fresh(tool) for tool in specs],
                 )
             )
+            if replied is not None:
+                return await finished(replied)
             if resuming is None:
                 await took(0, losses, [])
             else:

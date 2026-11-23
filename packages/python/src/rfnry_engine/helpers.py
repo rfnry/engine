@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
+from rfnry_engine.conversation import live
 from rfnry_engine.errors import _Unpausable, error_text
 from rfnry_engine.foreground import FOREGROUND, Foreground, halted
 from rfnry_engine.manifest import Kind
@@ -116,9 +117,10 @@ def lost_notices(history: Sequence[Message], key: str, nameless: Collection[str]
         and (agent := calls.get(message.tool_call_id or "")) is not None
         and (job := _started(message)) is not None
     }
+    paused = live(history)
     ended = {
         message.notice.job
-        for message in history
+        for message in [*history, *([] if paused is None else paused.held)]
         if message.notice is not None and message.notice.kind in OUTCOMES
     }
     unknown = (
