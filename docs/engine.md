@@ -970,11 +970,24 @@ call, so a sub-agent's text, reasoning and tool calls show nested under the call
 them, at any depth. The event names the call even when it was made in another scope, so a consult
 in a shared scope still nests where it was asked; the run's record keeps a `call` only from its own
 scope, so no stored row holds another tenant's ids. A
-decision run sends no events: the `ToolCallStarted` and `ToolResultReady` of the call that asked it
-show it. A `ReasoningDelta` is the model's reasoning as the adapter streams it, with its turn, to show
-apart from the reply: it never becomes part of the reply or the conversation, which keeps the
+decision run sends no `RunStarted`: the `ToolCallStarted` and `ToolResultReady` of the call that
+asked it show it, and its one event is a `ReplyReady`. A `ReasoningDelta` is the model's reasoning
+as the adapter streams it, with its turn, to show apart from the reply: it never becomes part of
+the reply or the conversation, which keeps the
 reasoning as the adapter returned it, and reasoning streamed before `stop.now()` is not kept. A model
 that does not stream its reasoning sends none.
+
+Every model reply sends one `ReplyReady`: `run_id`, `agent`, `turn`, the `model` and `settings`
+the reply's message records, its `usage` (`Usage()` when the adapter reported none) and its
+`stop_reason`. A generation run sends it once its reply is saved to the conversation, before the
+reply's tool calls run, so a reply that is not streamed sends its single `TextDelta` after it,
+while a streamed reply's deltas came during the model call, before it. A decision run sends one,
+`turn=0` with no `stop_reason`, right after the model decided and before its answers are checked
+against the questions, so answers that do not fit still send it; a decision run without `on_event`
+sends nothing. A model call a stop cut off, or that raised, sends none, and a value the adapter
+returned that is no reply or decision never parsed, so it sends none either. A handler that raises
+on it fails the run as for any event, with the reply already in the store. The `usage` of a run's
+events sum to its `usage`, so a consumer counts spend as it happens, with no store.
 
 Every generation run also ends with a `RunEnded`, after its last other event: `run_id`, `agent`, the
 same `call` its `RunStarted` carried, `stopped` (`"now"` or `"after_step"`, whether set by the
@@ -2179,15 +2192,18 @@ routed.routed_to.agent                  # the department the router chose
 One run after another, runs side by side, and a route: the three patterns a workflow is made of.
 
 A budget across a tree is an `on_event` that counts `RunStarted`, which every generation run in the
-tree sends, and presses a `Stop` when the count runs out. Decision runs send no events, so they are
-not counted:
+tree sends, and adds up the `usage` of every `ReplyReady`, which every model reply sends, a decision
+run's too. It presses a `Stop` when the count runs out. Decision runs send no `RunStarted`, so they
+are not counted as runs, and their spend is in `spent`:
 
 ```python
 class Budget:
     def __init__(self, runs):
-        self.left, self.stop = runs, Stop()
+        self.left, self.spent, self.stop = runs, 0, Stop()
 
     async def __call__(self, event):
+        if isinstance(event, ReplyReady):
+            self.spent += event.usage.input + event.usage.output
         if isinstance(event, RunStarted):
             self.left -= 1
             if self.left < 0:
@@ -3977,8 +3993,8 @@ Everything the package exports, by role.
 - **Run things:** `Engine`, `AgentInfo`, `Provider`, `ModelChoice`, `ModelEntry`, `Stop`,
   `HistoryLike`, `ConversationStore`, `VoiceStart`, `Spoken`, `SpokenLine`.
 - **What a run returns:** `Generation`, `Decision`, `Voice`, `Run`, `Step`, `Fingerprint`; events
-  `RunStarted`, `RunEnded`, `TextDelta`, `ReasoningDelta`, `MessagesTaken`, `ToolCallStarted`,
-  `ToolResultReady`, `CommandOutput`, `Event`.
+  `RunStarted`, `RunEnded`, `TextDelta`, `ReplyReady`, `ReasoningDelta`, `MessagesTaken`,
+  `ToolCallStarted`, `ToolResultReady`, `CommandOutput`, `Event`.
 - **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `OnDelta`, `DecisionModel`,
   `VoiceModel`; `Message`, `Notice`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts
   `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`;

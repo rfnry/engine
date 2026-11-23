@@ -29,6 +29,7 @@ EXPECTED = {
     "RunStarted",
     "MessagesTaken",
     "ReasoningDelta",
+    "ReplyReady",
     "OnDelta",
     "Fingerprint",
     "Stop",

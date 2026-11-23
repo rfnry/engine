@@ -119,6 +119,16 @@ class TextDelta(BaseModel):
     text: str
 
 
+class ReplyReady(BaseModel):
+    run_id: str
+    agent: str
+    turn: int
+    model: str | None
+    usage: Usage
+    settings: dict[str, JsonValue] | None
+    stop_reason: StopReason | None = None
+
+
 class ReasoningDelta(BaseModel):
     run_id: str
     agent: str
@@ -166,6 +176,7 @@ Event = (
     RunStarted
     | RunEnded
     | TextDelta
+    | ReplyReady
     | ReasoningDelta
     | MessagesTaken
     | ToolCallStarted

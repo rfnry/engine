@@ -434,12 +434,17 @@ async def test_each_delta_names_its_turn_and_the_reply_is_the_last_turns_text(
         run = await engine.run("support", "acme", "Where is A-1?", on_event=collect)
     assert isinstance(run, Generation)
     order = [e.turn if isinstance(e, TextDelta) else type(e).__name__ for e in seen]
+    streamed = model is not Scripted
     assert [kind for kind, _ in groupby(order)] == [
         "RunStarted",
+        *(["ReplyReady"] if not streamed else []),
         0,
+        *(["ReplyReady"] if streamed else []),
         "ToolCallStarted",
         "ToolResultReady",
+        *(["ReplyReady"] if not streamed else []),
         1,
+        *(["ReplyReady"] if streamed else []),
         "RunEnded",
     ]
     deltas = [e for e in seen if isinstance(e, TextDelta)]

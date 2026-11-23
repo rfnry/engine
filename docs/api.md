@@ -795,7 +795,7 @@ class RunStarted(BaseModel):
     call: CallInfo | None
 ```
 
-Sent to `on_event` once by every generation run, before anything else it sends — also by a run that a stop set before it started ends before its first model call. `call` is the tool call the run works for, as `current_call` sees it when the run starts: the caller's `Delegate` call for a delegated run, the caller's call for a run an `engine.tool` call started inside a run, the call that started the decision run for a run it routes to, `None` for a run started outside any tool call. It names the call even when it was made in another scope, where the run's record holds `None`. Every later event with this `run_id` belongs under `call`, so sub-agents nest at any depth. A decision run sends no events; the `ToolCallStarted` and `ToolResultReady` of the call that asked it show it. A stop waits for its handler, and one the handler sets ends the run before its first model call; a handler that raises fails the run, recorded with that `error` and no model call.
+Sent to `on_event` once by every generation run, before anything else it sends — also by a run that a stop set before it started ends before its first model call. `call` is the tool call the run works for, as `current_call` sees it when the run starts: the caller's `Delegate` call for a delegated run, the caller's call for a run an `engine.tool` call started inside a run, the call that started the decision run for a run it routes to, `None` for a run started outside any tool call. It names the call even when it was made in another scope, where the run's record holds `None`. Every later event with this `run_id` belongs under `call`, so sub-agents nest at any depth. A decision run sends no `RunStarted`; the `ToolCallStarted` and `ToolResultReady` of the call that asked it show it. A stop waits for its handler, and one the handler sets ends the run before its first model call; a handler that raises fails the run, recorded with that `error` and no model call.
 
 ### `RunEnded`
 
@@ -821,6 +821,21 @@ class TextDelta(BaseModel):
 ```
 
 Text from the model, sent to `on_event` as it is produced; from a model that does not stream, the whole text of each reply. `turn` is the model call of the run that said it, from 0: text of a turn that ended in tool calls was said beside them, and a run that ends in text replies with its last turn's text. A delegated or routed run sends its own `run_id` and counts its own turns.
+
+### `ReplyReady`
+
+```python
+class ReplyReady(BaseModel):
+    run_id: str
+    agent: str
+    turn: int
+    model: str | None
+    usage: Usage
+    settings: dict[str, JsonValue] | None
+    stop_reason: StopReason | None = None
+```
+
+Sent to `on_event` once for each model reply, with the `usage` it cost, the `model` and `settings` the reply's message records, and its `stop_reason`, where `StopReason` is `Literal["end_turn", "tool_use", "max_tokens", "error"]`; `usage` is `Usage()` when the adapter reported none. A generation run sends it right after the reply is saved to the conversation, before its tool calls run and before the `TextDelta` of a reply that is not streamed; a streamed reply's deltas came during the model call, before it. A decision run sends one, its only event, with `turn=0` and no `stop_reason`, right after the model decides and before the answers are checked against the questions; a decision run given no `on_event` sends nothing. A model call cut off by a stop or that raised sends none, and neither does a value the adapter returned that is not a reply or a decision. The `usage` of every `ReplyReady` of a run sums to the run's `usage`. A handler that raises on it fails the run as a handler of any event does, with the reply already saved to the store.
 
 ### `ReasoningDelta`
 
@@ -894,6 +909,7 @@ Event = (
     RunStarted
     | RunEnded
     | TextDelta
+    | ReplyReady
     | ReasoningDelta
     | MessagesTaken
     | ToolCallStarted

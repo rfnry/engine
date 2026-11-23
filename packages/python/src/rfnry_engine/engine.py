@@ -93,6 +93,7 @@ from rfnry_engine.records import (
     MessagesTaken,
     Pipe,
     ReasoningDelta,
+    ReplyReady,
     Run,
     RunEnded,
     RunStarted,
@@ -1537,6 +1538,19 @@ class Engine:
                     _given(state), {qid: _fresh(question) for qid, question in questions.items()}
                 )
             )
+            if options.on_event is not None:
+                await options.on_event(
+                    ReplyReady(
+                        run_id=run_id,
+                        agent=spec.name,
+                        turn=0,
+                        model=decided.model or _declared(model_),
+                        usage=decided.usage or Usage(),
+                        settings=decided.settings
+                        if decided.settings is not None
+                        else _settings(model_),
+                    )
+                )
             answers = {
                 qid: _fresh(answer) for qid, answer in settle(questions, decided.answers).items()
             }
@@ -2305,6 +2319,17 @@ class Engine:
                 asked = list(assistant.tool_calls)
                 ran.clear()
                 await save()
+                await emit(
+                    ReplyReady(
+                        run_id=run_id,
+                        agent=spec.name,
+                        turn=turn,
+                        model=assistant.model,
+                        usage=reply.usage or Usage(),
+                        settings=assistant.settings,
+                        stop_reason=reply.stop_reason,
+                    )
+                )
                 if not streaming and reply.text:
                     await delta(reply.text)
                 if reply.stop_reason != "tool_use" or not asked:

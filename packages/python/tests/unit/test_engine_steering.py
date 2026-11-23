@@ -759,9 +759,11 @@ async def test_taken_messages_are_announced_before_the_turn_that_reads_them(tmp_
     ]
     assert kinds(seen) == [
         "RunStarted",
+        "ReplyReady",
         "ToolCallStarted",
         "ToolResultReady",
         "MessagesTaken",
+        "ReplyReady",
         "TextDelta",
         "RunEnded",
     ]

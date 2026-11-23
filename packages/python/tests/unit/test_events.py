@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from rfnry_engine import (
     ChoiceAnswer,
     Event,
+    ReplyReady,
     RunEnded,
     RunStarted,
     Stop,
@@ -20,11 +21,11 @@ from rfnry_engine import (
 )
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import RunawayError
-from rfnry_engine.models import Message, Reply, ToolCall
+from rfnry_engine.models import Message, Reply, ToolCall, Usage
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.tools import Tool, Tools
 
-from .fakes import Fixed, Scripted, Streaming, text_reply
+from .fakes import Fixed, MemoryStore, Scripted, Streaming, text_reply
 from .trees import provided, runtime, write_folder
 
 STOPPED = "stopped by the user"
@@ -1102,7 +1103,12 @@ async def test_a_run_says_it_started_before_anything_else(tmp_path: Path) -> Non
         providers=provided({"strong": Scripted(text_reply("Hi.")), "judge": None}),
     ).run("chat", "acme", "Hi", on_event=collect)
     assert collect.events[0] == RunStarted(run_id=run.run_id, agent="chat", call=None)
-    assert [type(e) for e in collect.events] == [RunStarted, TextDelta, RunEnded]
+    assert [type(e) for e in collect.events] == [
+        RunStarted,
+        ReplyReady,
+        TextDelta,
+        RunEnded,
+    ]
 
 
 async def test_each_sub_agent_names_the_call_it_works_for_before_its_first_tool(
@@ -1137,8 +1143,10 @@ async def test_each_sub_agent_names_the_call_it_works_for_before_its_first_tool(
         own = [e for e in collect.events if e.run_id == child.run_id]
         assert [type(e) for e in own] == [
             RunStarted,
+            ReplyReady,
             ToolCallStarted,
             ToolResultReady,
+            ReplyReady,
             TextDelta,
             RunEnded,
         ]
@@ -1237,7 +1245,7 @@ async def test_a_run_routed_under_a_delegated_decision_names_the_delegate_call(
     assert isinstance(router, Decision) and isinstance(router.routed_to, Generation)
     call = started(collect)[router.routed_to.run_id].call
     assert call is not None and (call.run_id, call.call_id) == (run.run_id, "d1")
-    assert all(e.run_id != router.run_id for e in collect.events)
+    assert [type(e) for e in collect.events if e.run_id == router.run_id] == [ReplyReady]
 
 
 async def test_a_consult_made_inside_a_tool_names_that_tool_call(tmp_path: Path) -> None:
@@ -1429,7 +1437,7 @@ async def test_a_decision_run_sends_no_run_ended(tmp_path: Path) -> None:
         ),
     ).run("router", "acme", "Help", on_event=collect)
     assert isinstance(run, Decision)
-    assert collect.events == []
+    assert [type(e) for e in collect.events] == [ReplyReady]
 
 
 class Ending(Collect):
@@ -1529,3 +1537,121 @@ async def test_a_stop_while_the_model_is_called_ends_with_now(tmp_path: Path) ->
     assert isinstance(run, Generation) and run.stopped == "now"
     event = ended_last(collect, run)
     assert event.stopped == "now" and event.error is None
+
+
+def lookup_call() -> Reply:
+    return Reply(
+        tool_calls=[ToolCall(id="c1", name="lookup", args={"order_id": "A-1"})],
+        stop_reason="tool_use",
+        usage=Usage(input=10, output=2),
+        model="m1",
+        settings={"temperature": 0.5},
+    )
+
+
+async def two_replies(tmp_path: Path, collect: Collect) -> Generation:
+    llm = Scripted(lookup_call(), text_reply("Done.", usage=Usage(input=20, output=4), model="m2"))
+    run = await Engine(
+        make_tree(tmp_path, run_tools={"lead": ["lookup"]}),
+        providers=provided({"strong": llm, "judge": None}),
+    ).run("lead", "acme", "Check A-1", tools=TOOLS, on_event=collect)
+    assert isinstance(run, Generation)
+    return run
+
+
+async def test_each_model_reply_sends_reply_ready(tmp_path: Path) -> None:
+    collect = Collect()
+    run = await two_replies(tmp_path, collect)
+    ready = [e for e in collect.events if isinstance(e, ReplyReady)]
+    assert ready == [
+        ReplyReady(
+            run_id=run.run_id,
+            agent="lead",
+            turn=0,
+            model="m1",
+            usage=Usage(input=10, output=2),
+            settings={"temperature": 0.5},
+            stop_reason="tool_use",
+        ),
+        ReplyReady(
+            run_id=run.run_id,
+            agent="lead",
+            turn=1,
+            model="m2",
+            usage=Usage(input=20, output=4),
+            settings=ready[1].settings,
+            stop_reason="end_turn",
+        ),
+    ]
+    first_tool = next(i for i, e in enumerate(collect.events) if isinstance(e, ToolCallStarted))
+    assert collect.events.index(ready[0]) < first_tool < collect.events.index(ready[1])
+
+
+async def test_reply_ready_sums_to_the_run_s_usage(tmp_path: Path) -> None:
+    collect = Collect()
+    run = await two_replies(tmp_path, collect)
+    total = Usage()
+    for e in collect.events:
+        if isinstance(e, ReplyReady):
+            total = total + e.usage
+    assert total == run.usage == Usage(input=30, output=6)
+
+
+async def test_a_refused_output_reply_still_sends_reply_ready(tmp_path: Path) -> None:
+    collect = Collect()
+    bad = Reply(
+        tool_calls=[ToolCall(id="o1", name="Output", args={"ok": "nope"})],
+        stop_reason="tool_use",
+        usage=Usage(input=3),
+    )
+    good = Reply(
+        tool_calls=[ToolCall(id="o2", name="Output", args={"ok": True})],
+        stop_reason="tool_use",
+        usage=Usage(input=4),
+    )
+    await Engine(
+        make_tree(tmp_path), providers=provided({"strong": Scripted(bad, good), "judge": None})
+    ).run("chat", "acme", "Hi", expect=Verdict, on_event=collect)
+    ready = [e for e in collect.events if isinstance(e, ReplyReady)]
+    assert [(e.turn, e.usage) for e in ready] == [(0, Usage(input=3)), (1, Usage(input=4))]
+
+
+class Raising:
+    async def generate(self, system: str, messages: list[Message], tools: list[Any]) -> Reply:
+        raise RuntimeError("the model is down")
+
+
+async def test_a_stopped_or_failed_model_call_sends_no_reply_ready(tmp_path: Path) -> None:
+    stop, collect, waiting = Stop(), Collect(), Waiting()
+    work = asyncio.create_task(
+        Engine(make_tree(tmp_path), providers=provided({"strong": waiting, "judge": None})).run(
+            "chat", "acme", "Hi", stop=stop, on_event=collect
+        )
+    )
+    await asyncio.wait_for(waiting.asked.wait(), 5)
+    stop.now()
+    await asyncio.wait_for(work, 5)
+    failed = Collect()
+    with pytest.raises(RuntimeError, match="the model is down"):
+        await Engine(
+            make_tree(tmp_path / "again"), providers=provided({"strong": Raising(), "judge": None})
+        ).run("chat", "acme", "Hi", on_event=failed)
+    assert not any(isinstance(e, ReplyReady) for e in [*collect.events, *failed.events])
+
+
+async def test_a_raising_reply_ready_handler_fails_the_run_after_the_store_has_the_reply(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore()
+
+    async def handler(event: Event) -> None:
+        if isinstance(event, ReplyReady):
+            raise OSError("handler broke")
+
+    with pytest.raises(OSError, match="handler broke"):
+        await Engine(
+            make_tree(tmp_path),
+            providers=provided({"strong": Scripted(text_reply("Hello.")), "judge": None}),
+        ).run("chat", "acme", "Hi", store=store, conversation="c1", on_event=handler)
+    held = store.held[("acme", "c1")]
+    assert [m.content for m in held if m.role == "assistant"] == ["Hello."]

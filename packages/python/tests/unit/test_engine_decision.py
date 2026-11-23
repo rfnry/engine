@@ -26,7 +26,7 @@ from rfnry_engine.models import (
     ToolCall,
     Usage,
 )
-from rfnry_engine.records import Decision, Generation
+from rfnry_engine.records import Decision, Generation, ReplyReady
 from rfnry_engine.refinery.refinery import Refinery
 from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Tool, Tools
@@ -257,9 +257,12 @@ async def test_a_route_forwards_everything_the_run_was_given(
     assert {"ping", "Output"} <= {spec.name for spec in specs}
     assert Verdict.model_validate_json(run.routed_to.reply).refund is True
     assert [type(e).__name__ for e in events] == [
+        "ReplyReady",
         "RunStarted",
+        "ReplyReady",
         "ToolCallStarted",
         "ToolResultReady",
+        "ReplyReady",
         "RunEnded",
     ]
 
@@ -449,3 +452,49 @@ async def test_media_the_decision_model_does_not_declare_is_refused_naming_what_
             "sorter", "acme", [Text(text="x"), part]
         )
     assert model.calls == []
+
+
+async def test_a_decision_run_sends_one_reply_ready(fixtures: Path) -> None:
+    seen: list[Any] = []
+
+    async def handler(event: Any) -> None:
+        seen.append(event)
+
+    decided = Decided(
+        answers={
+            "urgent": CheckAnswer(probability=0.9),
+            "severity": ScoreAnswer(score=2.4, probabilities=[0.0, 0.1, 0.4, 0.5]),
+        },
+        usage=Usage(input=40),
+        model="d1",
+    )
+    run = await Engine(
+        fixtures, providers=provided({"judge": Fixed(lambda state: decided), "strong": None})
+    ).run("triage", "acme", "x", on_event=handler)
+    assert isinstance(run, Decision)
+    assert seen == [
+        ReplyReady(
+            run_id=run.run_id,
+            agent="triage",
+            turn=0,
+            model="d1",
+            usage=Usage(input=40),
+            settings=run.settings,
+            stop_reason=None,
+        )
+    ]
+
+
+async def test_answers_that_do_not_fit_still_send_reply_ready(fixtures: Path) -> None:
+    seen: list[Any] = []
+
+    async def handler(event: Any) -> None:
+        seen.append(event)
+
+    short = Decided(answers={"urgent": CheckAnswer(probability=0.9)}, usage=Usage(input=5))
+    dm = Fixed(lambda state: short)
+    with pytest.raises(ModelError):
+        await Engine(fixtures, providers=provided({"judge": dm, "strong": None})).run(
+            "triage", "acme", "x", on_event=handler
+        )
+    assert [type(e) for e in seen] == [ReplyReady] and seen[0].usage == Usage(input=5)
