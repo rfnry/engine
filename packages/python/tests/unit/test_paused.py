@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from rfnry_engine import Later, Pause, Review, Waiting, chain
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError
-from rfnry_engine.models import Answer, ChoiceAnswer, Message, Reply, ToolCall
+from rfnry_engine.models import Answer, ChoiceAnswer, Message, Reply, ToolCall, ToolSpec
 from rfnry_engine.records import (
     Decision,
     Generation,
@@ -127,6 +127,34 @@ async def test_a_call_answered_later_pauses_the_run_after_its_batch(tmp_path: Pa
     assert (step.waiting, step.result, step.is_error, step.approved) == (True, "", False, None)
     assert [s.tool for s in run.steps] == ["refund", "lookup"]
     assert run.stopped is None and run.error is None
+
+
+async def test_paused_lists_the_waiting_calls_in_call_order_whatever_order_approve_answers(
+    tmp_path: Path,
+) -> None:
+    async def slow_first(agent: str, call: ToolCall) -> Later:
+        if call.name == "refund":
+            await asyncio.sleep(0.05)
+        return Later()
+
+    output = ToolCall(id="c-out", name="Output", args={"text": "done"})
+    model = Scripted(calling(REFUND, LOOKUP, output), text_reply("never"))
+    run = await desk(tmp_path, model).run(
+        "desk",
+        "acme",
+        "refund it",
+        tools=desk_tools(Refunds()),
+        approve=slow_first,
+        expect=Reported,
+    )
+    assert isinstance(run, Generation)
+    assert [waiting.call.id for waiting in run.paused] == ["c-refund", "c-lookup"]
+    mark = run.conversation[-1].pause
+    assert mark is not None and mark.waiting == run.paused
+    out = next(s for s in run.steps if s.tool == "Output")
+    assert out.result == (
+        "engine: waiting for an answer: refund, lookup; call Output again once they have one"
+    )
 
 
 async def test_a_paused_run_says_so_in_run_ended(tmp_path: Path) -> None:
@@ -344,6 +372,113 @@ async def test_a_helper_s_later_wins_over_the_lead_s_last_model_call(tmp_path: P
             on_event=watch,
         )
     assert len(model.calls["lead"]) == 2
+
+
+class Overlapping(Crew):
+    def __init__(self, began: asyncio.Event, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.began = began
+
+    async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        if self.marker in system and len(self.calls["lead"]) == 1:
+            self.began.set()
+        return await super().generate(system, messages, tools)
+
+
+def ended_below(ended: asyncio.Event) -> Callable[[Any], Awaitable[None]]:
+    async def watch(event: Any) -> None:
+        if isinstance(event, RunEnded) and event.call is not None:
+            ended.set()
+
+    return watch
+
+
+async def test_a_helper_s_later_during_the_lead_s_last_turn_fails_the_lead_that_pauses(
+    tmp_path: Path,
+) -> None:
+    failed, recording = asyncio.Event(), Recording()
+    second = calling(
+        ToolCall(id="c-job", name="Job", args={"id": "d1", "wait": 5}),
+        ToolCall(id="c-jobs", name="Jobs", args={}),
+    )
+    model = Crew(
+        [backgrounded("part one"), failed, second, text_reply("never")],
+        {"part one": [calling(LOOKUP), text_reply("never")]},
+    )
+    folder = crew(tmp_path, worker={"tools": {"allow": ["lookup"]}}, background=True)
+    with pytest.raises(ConfigurationError, match=cannot("lookup", "worker", BELOW)):
+        await team(folder, model, refinery=recording).run(
+            "lead",
+            "acme",
+            "go",
+            tools=Tools([Tool("lookup", "Look", body=found)]),
+            approve=later_for("lookup", "Jobs"),
+            on_event=ended_below(failed),
+        )
+    assert len(model.calls["lead"]) == 2
+    [lead] = recording.runs
+    assert isinstance(lead, Generation) and lead.paused == []
+    jobs = next(s for s in lead.steps if s.tool == "Jobs")
+    assert (jobs.result, jobs.waiting) == ("NotRun: Jobs was not run; the run failed", False)
+    assert all(m.pause is None for m in lead.conversation)
+
+
+async def test_a_helper_s_later_beside_a_stop_answers_the_lead_s_waiting_call_not_run(
+    tmp_path: Path,
+) -> None:
+    failed, stop, recording = asyncio.Event(), Stop(), Recording()
+
+    async def approve(agent: str, call: ToolCall) -> bool | Later:
+        if call.name == "Job":
+            stop.after_step()
+        return Later() if call.name in ("lookup", "Jobs") else True
+
+    second = calling(
+        ToolCall(id="c-job", name="Job", args={"id": "d1"}),
+        ToolCall(id="c-jobs", name="Jobs", args={}),
+    )
+    model = Crew(
+        [backgrounded("part one"), failed, second, text_reply("never")],
+        {"part one": [calling(LOOKUP), text_reply("never")]},
+    )
+    folder = crew(tmp_path, worker={"tools": {"allow": ["lookup"]}}, background=True)
+    with pytest.raises(ConfigurationError, match=cannot("lookup", "worker", BELOW)):
+        await team(folder, model, refinery=recording).run(
+            "lead",
+            "acme",
+            "go",
+            tools=Tools([Tool("lookup", "Look", body=found)]),
+            approve=approve,
+            stop=stop,
+            on_event=ended_below(failed),
+        )
+    [lead] = recording.runs
+    assert isinstance(lead, Generation) and lead.paused == []
+    jobs = next(s for s in lead.steps if s.tool == "Jobs")
+    assert (jobs.result, jobs.stopped) == ("NotRun: Jobs was not run; the run failed", False)
+
+
+async def test_a_helper_that_ends_during_the_lead_s_last_turn_is_heard_in_the_mark(
+    tmp_path: Path,
+) -> None:
+    began, ended = asyncio.Event(), asyncio.Event()
+    model = Overlapping(
+        began,
+        [backgrounded("part one"), ended, calling(ToolCall(id="c-jobs", name="Jobs"))],
+        {"part one": [began, text_reply("part done")]},
+    )
+    folder = crew(tmp_path, background=True)
+    run = await team(folder, model).run(
+        "lead", "acme", "go", approve=later_for("Jobs"), on_event=ended_below(ended)
+    )
+    assert isinstance(run, Generation) and [w.call.id for w in run.paused] == ["c-jobs"]
+    mark = run.conversation[-1].pause
+    assert mark is not None
+    assert [(m.notice.job, m.notice.kind) for m in mark.held if m.notice] == [("d1", "finished")]
+    assert mark.held[0].content == "[helper d1 · worker · finished]\npart done"
+    assert not [m for m in run.conversation[:-1] if m.notice is not None]
+    assert [child.agent for child in run.children] == ["worker"]
+    assert not any(m.notice for call in model.calls["lead"] for m in call)
 
 
 async def test_a_waiting_call_of_a_run_that_fails_reads_not_run(tmp_path: Path) -> None:

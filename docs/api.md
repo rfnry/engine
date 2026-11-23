@@ -170,7 +170,7 @@ class Pause(BaseModel):
     held: list[Message] = []
 ```
 
-What a paused run's mark holds: the `agent` and `run_id` of the run that paused and, in `waiting`, its own calls that wait for an answer, in call order. `below`, `delegated`, `asking` and `held` are empty, since only a top-level run pauses.
+What a paused run's mark holds: the `agent` and `run_id` of the run that paused and, in `waiting`, its own calls that wait for an answer, in call order. `held` holds, in the order they came, the notices of its background helpers that ended before it paused and that it had not read: they are kept for its model in the mark, never added to the conversation before it. `below`, `delegated` and `asking` are empty, since only a top-level run pauses.
 
 ### `HistoryLike`
 

@@ -2841,8 +2841,8 @@ async def approve(agent, call):
 Time spent waiting is not a tool's time: the deadline starts when the call runs. `stop.now()` ends a
 wait. Delegated and routed runs are asked through the same function, with their own agent's name;
 `engine.tool()` and `EngineTools` take `approve=` for the runs they start. An `approve` that returns
-anything but `True`, `False` or a `Refused` is a `ConfigurationError` (`engine: approve must return
-True, False, Refused(reason) or Later(); got None`). An `approve` that raises fails the run:
+anything but `True`, `False`, a `Refused` or `Later()` is a `ConfigurationError` (`engine: approve
+must return True, False, Refused(reason) or Later(); got None`). An `approve` that raises fails the run:
 `run` raises what it raised, and the record keeps the error (`PermissionError: approval service
 down`) with no step for that call. Refusing on an error is yours, a `try` in `approve` that returns
 `False`. The run waits for `approve` in memory, so an approval that takes hours answers `Later()`
@@ -2854,7 +2854,9 @@ run pauses instead of calling the model again. `engine.run` returns at once, wit
 it, its run, agent, conversation key and the call, and each such step says `waiting`, with no
 result yet. The conversation ends with a mark, an assistant message whose `pause` holds a `Pause`
 of those calls: it is stored with the rest when the run has a store, and it is never sent to a
-model. `RunEnded.paused` lists the same calls. A stop pressed while the batch runs wins, in either
+model. The notices of background helpers that ended before the run paused, and that its model has
+not read, wait in the mark's `held`, never in the conversation before it; a helper still running
+when the run pauses is cancelled. `RunEnded.paused` lists the same calls. A stop pressed while the batch runs wins, in either
 mode: the waiting call is answered `stopped by the user`, as a call a stop cuts is, and the run ends
 stopped; a run that fails instead answers it `NotRun: refund was not run; the run failed`. An
 `Output` after the waiting call in the same reply is refused (`engine: waiting for an answer:
@@ -4117,11 +4119,10 @@ engine gives, and a missing workspace; and a tool of the run named `Ask` when it
 generation helper, which that `Delegate` call reads as a tool error. And a `Local` root that is not
 a directory, a `shell` that is not a list of strings or whose first word is not on `PATH`, a backend
 without `spawn`, `read` and `write`, a `Workspace` without a scope, a `timeout` or `output_bytes`
-that is not positive, an `approve` that returns anything but `True`, `False`, `Refused(reason)` or `Later()`
-or answers `Later()` for a call that cannot wait — in a voice session, in a run `engine.tool` or
-`EngineTools` starts, in a replay, or in a run delegated below the top-level `engine.run` — a judge
-that is not
-a decision agent or a teacher that is not a generation agent. `NotFoundError` for an agent the
+that is not positive, an `approve` that returns anything but `True`, `False`, `Refused(reason)` or
+`Later()` or answers `Later()` for a call that cannot wait — in a voice session, in a run
+`engine.tool` or `EngineTools` starts, in a replay, or in a run delegated below the top-level
+`engine.run` — a judge that is not a decision agent or a teacher that is not a generation agent. `NotFoundError` for an agent the
 folder does not have — a judge, a teacher or a replay's agent in the candidate included — a mode it
 does not have, a skill the agent does not have (`engine: agent 'support' has no skill 'refund'; its
 skills are escalate`), found when the run starts, a run the refinery does not, or a run

@@ -723,7 +723,7 @@ class _ToolCalls:
     waits: str | None = TOOL_CANNOT_WAIT
     conversation: str | None = None
     ran: list[tuple[ToolCall, Step]] = field(default_factory=list)
-    waiting: list[Waiting] = field(default_factory=list)
+    waiting: dict[int, Waiting] = field(default_factory=dict)
     approving: set[int] = field(default_factory=set)
     foregrounds: dict[int, Foreground] = field(default_factory=dict)
     speaking: set[asyncio.Task[Result]] = field(default_factory=set)
@@ -899,14 +899,12 @@ class _ToolCalls:
         return await self.hand_over(call, step)
 
     async def later(self, call: ToolCall, began: float) -> Step:
-        self.waiting.append(
-            Waiting(
-                id=uuid4().hex,
-                run_id=self.run_id,
-                agent=self.spec.name,
-                conversation=self.conversation,
-                call=_call(call),
-            )
+        self.waiting[id(call)] = Waiting(
+            id=uuid4().hex,
+            run_id=self.run_id,
+            agent=self.spec.name,
+            conversation=self.conversation,
+            call=_call(call),
         )
         step = Step(
             tool=call.name,
@@ -1630,7 +1628,7 @@ class Engine:
                 usage=(decided.usage if decided is not None else None) or Usage(),
                 routed_to=reached,
                 error=None if error is None else error_text(error),
-                paused=[] if reached is None else list(reached.paused),
+                paused=[] if reached is None else [_waited(waiting) for waiting in reached.paused],
             )
 
         try:
@@ -2383,7 +2381,7 @@ class Engine:
                 stopped=stopped,
                 stop_reason=ended,
                 error=None if error is None else error_text(error),
-                paused=list(paused),
+                paused=[_waited(waiting) for waiting in paused],
             )
 
         started_call = CALL.get()
@@ -2414,8 +2412,13 @@ class Engine:
             await announce(record)
             return record
 
+        def waiting() -> list[Waiting]:
+            return [
+                tool_calls.waiting[id(call)] for call in asked if id(call) in tool_calls.waiting
+            ]
+
         async def let_go() -> None:
-            cut_short = unwait(
+            answered = unwait(
                 lambda call, step: step.model_copy(
                     update={
                         "result": STOPPED,
@@ -2426,15 +2429,20 @@ class Engine:
                     }
                 )
             )
-            for call, cut_step in cut_short:
+            for call, cut_step in answered:
                 await hand_over(call, cut_step)
 
         async def pause() -> Generation:
-            mark = Pause(agent=spec.name, run_id=run_id, waiting=list(tool_calls.waiting))
+            await helpers.settled()
+            if helpers.fatal is not None:
+                raise helpers.fatal
+            mark = Pause(agent=spec.name, run_id=run_id, waiting=waiting(), held=helpers.take())
             messages.append(Message(role="assistant", content="[paused]", pause=mark))
             return await finished(said, paused=[*mark.waiting, *mark.below])
 
         async def halt(turn: int, reply_text: str, mode: Stopped) -> Generation:
+            if helpers.fatal is not None:
+                raise helpers.fatal
             await let_go()
             await helpers.settle(mode, stop)
             mode = requested(stop) or mode
@@ -2545,7 +2553,7 @@ class Engine:
                         return await halt(turn + 1, said, "now")
                     output, rest = rest[0], rest[1:]
                     if tool_calls.waiting:
-                        names = ", ".join(waiting.call.name for waiting in tool_calls.waiting)
+                        names = ", ".join(held.call.name for held in waiting())
                         refuse(
                             output,
                             f"engine: waiting for an answer: {names}; call {OUTPUT_TOOL} again once they have one",
