@@ -42,6 +42,7 @@ async def test_an_own_agent_started_by_delegate_reads_no_context(tmp_path: Path)
     run = await engine.run("a", "acme", "start", context=CONTEXT)
     child = _child(run)
     assert child.context is None and CONTEXT not in child.system
+    assert isinstance(run, Generation)
     assert run.context == CONTEXT and CONTEXT in run.system
 
 
@@ -54,6 +55,7 @@ async def test_an_own_helper_in_the_background_reads_no_context(tmp_path: Path) 
     run = await team(root, model).run("lead", "acme", "go", context=CONTEXT)
     helper = _child(run)
     assert helper.context is None and CONTEXT not in helper.system
+    assert isinstance(run, Generation)
     assert run.context == CONTEXT
 
 
@@ -68,6 +70,7 @@ async def test_an_own_agent_reads_its_own_context_at_the_top(tmp_path: Path) -> 
     llm = Scripted(text_reply("b done"))
     engine = Engine(tmp_path, providers=provided({"strong": llm, "judge": None}))
     run = await engine.run("b", "acme", "start", context="X")
+    assert isinstance(run, Generation)
     assert run.context == "X" and "X" in run.system
 
 
@@ -86,6 +89,7 @@ async def test_a_routed_run_reads_the_router_s_context_whatever_its_entry_says(
     engine = Engine(tmp_path, providers=provided({"strong": llm, "judge": Answering()}))
     run = await engine.run("router", "acme", "start", context="On call: Ana.")
     assert isinstance(run, Decision)
+    assert isinstance(run.routed_to, Generation)
     assert run.routed_to is not None and run.routed_to.context == "On call: Ana."
 
 
@@ -138,8 +142,10 @@ async def test_an_own_decision_agent_routes_on_without_context(tmp_path: Path) -
     llm = Scripted(_delegate("d", "go"), text_reply("g done"), text_reply("a done"))
     engine = Engine(tmp_path, providers=provided({"strong": llm, "judge": Answering()}))
     run = await engine.run("a", "acme", "start", context=CONTEXT)
+    assert isinstance(run, Generation)
     d = run.children[0]
     assert isinstance(d, Decision) and d.routed_to is not None
+    assert isinstance(d.routed_to, Generation)
     assert d.routed_to.context is None
 
 
@@ -213,6 +219,7 @@ async def test_the_delegate_description_marks_an_own_agent(tmp_path: Path) -> No
     llm = Scripted(text_reply("done"))
     engine = Engine(tmp_path, providers=provided({"strong": llm, "judge": None}))
     run = await engine.run("lead", "acme", "go")
+    assert isinstance(run, Generation)
     [tool] = run.tools
     lines = tool.description.splitlines()
     assert "- b (sees only its input, not your context): Does b" in lines

@@ -1102,6 +1102,7 @@ async def test_a_run_says_it_started_before_anything_else(tmp_path: Path) -> Non
         make_tree(tmp_path),
         providers=provided({"strong": Scripted(text_reply("Hi.")), "judge": None}),
     ).run("chat", "acme", "Hi", on_event=collect)
+    assert isinstance(run, Generation)
     assert collect.events[0] == RunStarted(
         run_id=run.run_id, agent="chat", call=None, input="Hi", tools=run.tools
     )
