@@ -636,7 +636,7 @@ class OrchestrationInfo(BaseModel):
     max_background: int | None = None
 ```
 
-The `orchestration` of an entry as it wrote it, frozen: `max_depth`, `max_parallel`, `route`, `background` and `max_background` are the keys of that name, `None` for one it left out and `background` `False` unless it wrote `true`. A mode's holds the mode's own values over its agent's.
+The `orchestration` of an entry as it wrote it: `max_depth`, `max_parallel`, `route`, `background` and `max_background` are the keys of that name, `None` for one it left out and `background` `False` unless it wrote `true`. A mode's holds the mode's own values over its agent's.
 
 ### `RouteInfo`
 
@@ -647,7 +647,7 @@ class RouteInfo(BaseModel):
     min_confidence: float | None = None
 ```
 
-The `route` of a decision entry as it wrote it, frozen: `by` the question whose answer routes, `to` each answer's agent, and `min_confidence`, `None` when the entry wrote none.
+The `route` of a decision entry as it wrote it: `by` the question whose answer routes, `to` each answer's agent, and `min_confidence`, `None` when the entry wrote none.
 
 ### `Generation`
 

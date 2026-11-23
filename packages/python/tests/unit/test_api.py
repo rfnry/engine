@@ -118,7 +118,12 @@ def written(node: ast.expr | None) -> str:
 
 
 def value(node: ast.expr | None) -> Any:
-    return EMPTY if node is None else ast.literal_eval(node)
+    if node is None:
+        return EMPTY
+    if isinstance(node, ast.Call) and not (node.args or node.keywords):
+        assert isinstance(node.func, ast.Name), ast.unparse(node)
+        return getattr(rfnry_engine, node.func.id)()
+    return ast.literal_eval(node)
 
 
 Function = ast.FunctionDef | ast.AsyncFunctionDef

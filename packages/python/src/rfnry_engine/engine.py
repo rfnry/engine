@@ -16,7 +16,7 @@ from types import MappingProxyType
 from typing import Annotated, Any, Literal, NoReturn, Protocol, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
 from rfnry_engine.bundle import build_bundle
@@ -181,16 +181,12 @@ class _Running:
 
 
 class RouteInfo(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
     by: str
     to: dict[str, str]
     min_confidence: float | None = None
 
 
 class OrchestrationInfo(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
     max_depth: int | None = None
     max_parallel: int | None = None
     route: RouteInfo | None = None

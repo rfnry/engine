@@ -6,7 +6,7 @@ from rfnry_engine.engine import OrchestrationInfo, RouteInfo
 
 from .trees import add_agent, provided, solo
 
-ROUTING = {"by": "go", "to": {"next": "full"}}
+ROUTING = {"by": "go", "to": {"next": "full"}, "min_confidence": 0.75}
 QUESTION = (
     '{"type": "choice", "instructions": "Where?", '
     '"options": {"stay": "Keep it", "next": "Pass it on"}}'
@@ -52,6 +52,22 @@ def _folder(root: Path) -> Path:
         },
         files={"router.md": "", "router/go.json": QUESTION},
     )
+    add_agent(
+        root,
+        "moded",
+        {
+            "kind": "decision",
+            "model": "judge",
+            "instructions": "moded.md",
+            "questions": ["moded/*.json"],
+            "orchestration": {"route": ROUTING},
+            "modes": {
+                "plain": {"description": "Plain"},
+                "other": {"orchestration": {"route": {"by": "go", "to": {"stay": "bare"}}}},
+            },
+        },
+        files={"moded.md": "", "moded/go.json": QUESTION},
+    )
     return root
 
 
@@ -80,7 +96,17 @@ def test_agent_info_shows_every_setting_of_the_entry(tmp_path: Path) -> None:
 
 def test_agent_info_of_a_router_shows_its_route(tmp_path: Path) -> None:
     route = _engine(tmp_path).agents["router"].orchestration.route
-    assert route == RouteInfo(by="go", to={"next": "full"}, min_confidence=None)
+    assert route == RouteInfo(by="go", to={"next": "full"}, min_confidence=0.75)
+
+
+def test_agent_info_of_a_mode_carries_or_overrides_the_route(tmp_path: Path) -> None:
+    modes = _engine(tmp_path).agents["moded"].modes
+    assert modes["plain"].orchestration.route == RouteInfo(
+        by="go", to={"next": "full"}, min_confidence=0.75
+    )
+    assert modes["other"].orchestration.route == RouteInfo(
+        by="go", to={"stay": "bare"}, min_confidence=None
+    )
 
 
 def test_agent_info_of_an_entry_that_writes_none_of_them_reads_the_defaults(
