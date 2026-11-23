@@ -534,6 +534,25 @@ async def test_the_gate_is_told_what_each_tool_does(service):
     assert "\n" not in claim
 
 
+async def test_the_gate_sees_the_neighbours_of_the_region_a_run_holds(service):
+    gate = Recording()
+    await service(gate=gate)
+    name = fresh()
+    await harness.run(name, mode="fake", shape="crews", size=2, cap=2.0, crews=1)
+    assert (await ended(name))["status"] == "done"
+    assert all("neighbours" in state for state in gate.states)
+    read = [s for s in gate.states if s["agent"] == "surveyor" and s["tool"] == "notes"]
+    assert read and all(s["region"] is not None for s in read)
+    assert all(s["args"]["region"] in s["neighbours"] for s in read)
+    assert all(
+        s["neighbours"] == list(moon.region(s["region"]).neighbours)
+        for s in gate.states
+        if s["region"] is not None
+    )
+    assert all(s["neighbours"] is None for s in gate.states if s["region"] is None)
+    assert any(s["region"] is None for s in gate.states)
+
+
 async def test_each_tool_has_one_description_for_every_agent_that_offers_it(service, monkeypatch):
     seen = {}
 

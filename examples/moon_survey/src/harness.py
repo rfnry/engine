@@ -529,6 +529,7 @@ def gate(
                     "args": call.args,
                     "run_id": run_id,
                     "region": region,
+                    "neighbours": None if region is None else list(moon.region(region).neighbours),
                     "task": tasks.get(run_id),
                     "tool_does": tools_do.get((agent in delegating, call.name)),
                 }
