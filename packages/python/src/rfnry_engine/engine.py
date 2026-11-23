@@ -1905,7 +1905,7 @@ class Engine:
                 "generation" if target.kind == "generation" else "decision"
             )
             helper = helpers.start(
-                args.agent, target.kind, uuid4().hex, stop._below(), run, recorded
+                args.agent, target.kind, uuid4().hex, stop._below(), run, recorded, args.input
             )
             held = (scope, helper.run_id)
             self._running[held] = _Running(

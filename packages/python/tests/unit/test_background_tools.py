@@ -41,7 +41,7 @@ from .test_reach import child_of, use
 from .trees import provided, write_folder
 
 HELPER = (
-    "whether it is running, its agent, under asking the question it waits on you to answer "
+    "whether it is running, its agent, its input, under asking the question it waits on you to answer "
     "through Ask (null when none), and once it has ended its reply (a decision agent's answers), "
     "its error, or what it had said when it was stopped. wait is seconds, up to 30, to wait "
     "first; it returns as soon as the helper ends or any notice from a helper reaches you, and at "
@@ -56,7 +56,7 @@ JOB_ALONE = (
     f"Read a helper you started with Delegate in the background, by its id (d1, d2, …): {HELPER}"
 )
 JOBS_ALONE = (
-    "List the helpers you started in the background: id, agent, when it started, and whether it "
+    "List the helpers you started in the background: id, agent, input, when it started, and whether it "
     "is running or, once it has ended, how: finished, failed or stopped."
 )
 JOB_BESIDE = (
@@ -69,7 +69,7 @@ JOB_BESIDE = (
 JOBS_BESIDE = (
     "List the workspace's background jobs and the helpers you started in the background. A job: "
     "id, command, when it started, whether it is running and its exit_code; a job that ended is "
-    "listed until Job reads its last output. A helper: id, agent, when it started, and whether it "
+    "listed until Job reads its last output. A helper: id, agent, input, when it started, and whether it "
     "is running or, once it has ended, how: finished, failed or stopped."
 )
 
@@ -215,7 +215,7 @@ async def test_jobs_lists_helpers_beside_workspace_jobs(tmp_path: Path) -> None:
     assert (job.description, jobs.description) == (JOB_BESIDE, JOBS_BESIDE)
     assert stamped(read(run.steps[2])["jobs"]) == [
         {"job": "j1", "command": "sleep 60", "running": True, "exit_code": None},
-        {"job": "d1", "agent": "worker", "running": True},
+        {"job": "d1", "agent": "worker", "input": "one", "running": True},
     ]
 
 
@@ -242,19 +242,62 @@ async def test_job_reads_a_helper_running_then_ended(tmp_path: Path) -> None:
     run = await asyncio.wait_for(work, 5)
     assert isinstance(run, Generation) and run.reply == "done"
     helper_id = str(run.steps[0].child_run_id)
-    assert read(run.steps[1]) == {"running": True, "agent": "worker", "asking": None}
+    assert read(run.steps[1]) == {
+        "running": True,
+        "agent": "worker",
+        "input": "one",
+        "asking": None,
+    }
     assert read(run.steps[2]) == {
         "running": False,
         "agent": "worker",
+        "input": "one",
         "asking": None,
         "reply": "the answer",
     }
     assert stamped(read(run.steps[3])["jobs"]) == [
-        {"job": "d1", "agent": "worker", "running": False, "ended": "finished"}
+        {"job": "d1", "agent": "worker", "input": "one", "running": False, "ended": "finished"}
     ]
     told = notice("d1", "worker", helper_id, "the answer")
     assert model.calls["lead"][3][-1].content == told.content
     assert [m for m in run.conversation if m.notice is not None] == [told]
+
+
+async def test_job_returns_the_helper_s_input(tmp_path: Path) -> None:
+    gate, lead_gate = asyncio.Event(), asyncio.Event()
+    model = Crew(
+        [
+            background("one"),
+            use("Job", "r1", id="d1"),
+            lead_gate,
+            use("Job", "r2", id="d1"),
+            text_reply("done"),
+        ],
+        {"one": [gate, text_reply("the answer")]},
+    )
+    seen = Seen()
+    engine = team(crew(tmp_path, background=True), model)
+    work = asyncio.create_task(engine.run("lead", "acme", "go", on_event=seen))
+    await until(lambda: len(model.calls["lead"]) == 3, "the lead's third call")
+    gate.set()
+    await until(ends(seen, 1), "d1's end")
+    lead_gate.set()
+    run = await asyncio.wait_for(work, 5)
+    assert isinstance(run, Generation)
+    assert read(run.steps[1])["input"] == "one"
+    assert read(run.steps[2])["input"] == "one"
+
+
+async def test_jobs_lists_an_input_whole(tmp_path: Path) -> None:
+    whole = "".join(chr(97 + i % 26) for i in range(20_000))
+    model = Crew(
+        [background(whole), use("Jobs", "l1"), use("Job", "r1", id="d1"), text_reply("done")],
+        {whole: [text_reply("first")]},
+    )
+    run = await team(crew(tmp_path, background=True), model).run("lead", "acme", "go")
+    assert isinstance(run, Generation)
+    assert stamped(read(run.steps[1])["jobs"])[0]["input"] == whole
+    assert read(run.steps[2])["input"] == whole
 
 
 @pytest.mark.parametrize(
@@ -294,7 +337,13 @@ async def test_job_reads_how_a_helper_ended(
     engine = team(crew(tmp_path, worker=worker, background=True), model)
     run = await asyncio.wait_for(engine.run("lead", "acme", "go"), 5)
     assert isinstance(run, Generation) and run.reply == "done"
-    assert read(run.steps[1]) == {"running": False, "agent": agent, "asking": None, **outcome}
+    assert read(run.steps[1]) == {
+        "running": False,
+        "agent": agent,
+        "input": "part one",
+        "asking": None,
+        **outcome,
+    }
 
 
 async def test_job_wait_returns_when_any_notice_arrives(tmp_path: Path) -> None:
@@ -318,7 +367,12 @@ async def test_job_wait_returns_when_any_notice_arrives(tmp_path: Path) -> None:
     one.set()
     run = await asyncio.wait_for(work, 5)
     assert isinstance(run, Generation) and run.reply == "done"
-    assert read(run.steps[2]) == {"running": True, "agent": "worker", "asking": None}
+    assert read(run.steps[2]) == {
+        "running": True,
+        "agent": "worker",
+        "input": "one",
+        "asking": None,
+    }
     second = str(run.steps[1].child_run_id)
     assert model.calls["lead"][2][-1].content == notice("d2", "worker", second, "second").content
 
@@ -365,12 +419,13 @@ async def test_job_stop_stops_one_helper_and_its_crew(tmp_path: Path) -> None:
     assert read(run.steps[2]) == {
         "running": False,
         "agent": "captain",
+        "input": "crew",
         "asking": None,
         "stopped": captain.reply,
     }
     assert stamped(read(run.steps[3])["jobs"]) == [
-        {"job": "d1", "agent": "captain", "running": False, "ended": "stopped"},
-        {"job": "d2", "agent": "worker", "running": True},
+        {"job": "d1", "agent": "captain", "input": "crew", "running": False, "ended": "stopped"},
+        {"job": "d2", "agent": "worker", "input": "side", "running": True},
     ]
     notices = [m.notice for m in run.conversation if m.notice is not None]
     assert [(n.job, n.kind) for n in notices] == [("d1", "stopped"), ("d2", "finished")]
@@ -395,7 +450,12 @@ async def test_job_send_reaches_a_running_helper_s_inbox(tmp_path: Path) -> None
     gate.set()
     run = await asyncio.wait_for(work, 5)
     assert isinstance(run, Generation) and run.reply == "done"
-    assert read(run.steps[1]) == {"running": True, "agent": "worker", "asking": None}
+    assert read(run.steps[1]) == {
+        "running": True,
+        "agent": "worker",
+        "input": "part one",
+        "asking": None,
+    }
     [child] = run.children
     assert isinstance(child, Generation) and child.reply == "cached"
     sent = Message(role="user", content="use the cache")
@@ -633,7 +693,12 @@ async def test_a_wait_that_runs_out_reads_the_helper_still_running(
     engine = team(crew(tmp_path, background=True), model, tool_timeout=deadline)
     run = await released(asyncio.create_task(engine.run("lead", "acme", "go")), model, gate, 3)
     assert run.reply == "done"
-    assert read(run.steps[1]) == {"running": True, "agent": "worker", "asking": None}
+    assert read(run.steps[1]) == {
+        "running": True,
+        "agent": "worker",
+        "input": "one",
+        "asking": None,
+    }
 
 
 @pytest.mark.parametrize("deadline", [30.0, None], ids=["bounded", "no-deadline"])
@@ -667,6 +732,7 @@ async def test_job_stop_returns_once_its_helper_ended_while_another_notice_waits
     assert read(run.steps[2]) == {
         "running": False,
         "agent": "worker",
+        "input": "slow",
         "asking": None,
         "stopped": "",
     }
@@ -687,7 +753,13 @@ async def test_job_stop_on_a_helper_that_ended_reads_how_it_ended(tmp_path: Path
     engine = team(crew(tmp_path, background=True), model)
     run = await asyncio.wait_for(engine.run("lead", "acme", "go"), 5)
     assert isinstance(run, Generation) and run.reply == "done"
-    ended_read = {"running": False, "agent": "worker", "asking": None, "reply": "first"}
+    ended_read = {
+        "running": False,
+        "agent": "worker",
+        "input": "one",
+        "asking": None,
+        "reply": "first",
+    }
     assert read(run.steps[1]) == read(run.steps[2]) == ended_read
     [child] = run.children
     assert isinstance(child, Generation) and child.stopped is None
@@ -791,10 +863,16 @@ async def test_ask_waits_for_the_lead_s_answer(tmp_path: Path) -> None:
         told,
         notice("d1", "worker", child.run_id, "proved with lemma 4"),
     ]
-    assert read(run.steps[1]) == {"running": True, "agent": "worker", "asking": "which lemma?"}
+    assert read(run.steps[1]) == {
+        "running": True,
+        "agent": "worker",
+        "input": "part one",
+        "asking": "which lemma?",
+    }
     assert read(run.steps[2]) == {
         "running": False,
         "agent": "worker",
+        "input": "part one",
         "asking": None,
         "reply": "proved with lemma 4",
     }
@@ -1166,6 +1244,7 @@ async def test_each_send_answers_the_oldest_question_still_waiting(tmp_path: Pat
     assert last == {
         "running": False,
         "agent": "worker",
+        "input": "part one",
         "asking": None,
         "reply": "both answered",
     }
@@ -1215,6 +1294,11 @@ async def test_job_wait_on_a_helper_waiting_in_ask_returns_at_once(tmp_path: Pat
     run = await released(asyncio.create_task(engine.run("lead", "acme", "go")), model, gate)
     assert run.reply == "done"
     assert model.calls["lead"][2][-1].content == "[helper d1 · worker · asks]\nwhich lemma?"
-    assert read(run.steps[1]) == {"running": True, "agent": "worker", "asking": "which lemma?"}
+    assert read(run.steps[1]) == {
+        "running": True,
+        "agent": "worker",
+        "input": "part one",
+        "asking": "which lemma?",
+    }
     assert run.steps[1].duration_ms < 5000
     assert read(run.steps[2])["reply"] == "proved"

@@ -1509,13 +1509,15 @@ that does not route keeps no conversation, so its body stops after `unknown`; an
 longer holds is named as one that keeps it. The notice's `Notice` has `kind` `lost` and `run_id`
 `None`, since the helper's `run_id` was on its `Delegate` step, not in the conversation. A `lost`
 notice is an outcome, so a later resume tells it no more, and the helper is not one of the run's
-own: `Job` on its id is the tool error `tools/helpers: there is no helper d2`. The run sends its
-lost notices in one `MessagesTaken` at turn 0, right after its `RunStarted`, with `messages=[]`. The
-ended results and lost notices are the run's own messages, appended after what it read and before
-its input: its record holds them when its first window does, a first window that starts past them
-leaves them in the store but out of `run.messages` and `run.conversation`, a run that ends before
-its first model call records its lost notices but not the ended results, whose calls its record does
-not hold, and `run.added`, which starts at the input, never holds them.
+own: `Job` on its id is the tool error `tools/helpers: there is no helper d2`. The `Delegate` call
+that started it stays in the stored conversation, where `History` reads it once the window has
+passed it. The run sends its lost notices in one `MessagesTaken` at turn 0, right after its
+`RunStarted`, with `messages=[]`. The ended results and lost notices are the run's own messages,
+appended after what it read and before its input: its record holds them when its first window does,
+a first window that starts past them leaves them in the store but out of `run.messages` and
+`run.conversation`, a run that ends before its first model call records its lost notices but not the
+ended results, whose calls its record does not hold, and `run.added`, which starts at the input,
+never holds them.
 
 With a refinery attached, a crash keeps every row written before it: those of each helper and
 synchronous child whose record was written, and of the runs below it that the record carried. It
@@ -1900,9 +1902,9 @@ person. Every helper that ended since the last model call is taken at once, in t
 or with a store in the order their records were written, so many helpers ending together are one
 wake-up and one model call.
 
-The lead also gets two tools over its helpers, `Job` and `Jobs`, workspace or not.
-`Job(id, wait=0, stop=false, send=null)` reads one helper by its id: `{"running": true, "agent":
-"prover", "asking": null}` while it runs — `asking` is the question it waits on through
+The lead also gets two tools over its helpers, `Job` and `Jobs`, workspace or not. `Job(id, wait=0,
+stop=false, send=null)` reads one helper by its id: `{"running": true, "agent": "prover", "input":
+"Prove lemma 3", "asking": null}` while it runs — `asking` is the question it waits on through
 `Ask`, below, `null` when none — and once it has ended the same with its `reply`, a decision
 helper's `answers` (and `routed_to`, as `Delegate` returns them), its `error`, or under `stopped`
 what it had said. `wait` is seconds to wait first, up to the call's deadline (the entry's
@@ -1921,16 +1923,18 @@ a decision helper or to one that has ended is a tool error (`tools/helpers: help
 run and reads no messages`), and so is a `d` id no helper has, `d0` and `d01` included, workspace or
 not (`tools/helpers: there is no helper d9`), and a `wait` outside its bounds (`tools/helpers: wait
 must be between 0 and 30 seconds; got 40`). `Jobs()` lists the run's helpers in the order they
-started, `{"job": "d1", "agent": "prover", "started": "2026-11-21T10:00:00+00:00", "running":
-true}`, one that ended with `"running": false` and `ended`: `finished`, `failed` or `stopped`. A
-helper's notice reaches the lead whether or not `Job` read it first: the record is the truth, and
-reading a reply twice costs less than missing an end. `Job` and `Jobs` go through `approve` and are
-recorded as steps like any call, and a command's tool bridge carries neither, as it carries no
-`Delegate`. The two names come with `background: true` as they come with `workspace: true`:
-`tools.allow` may name them, `tools.deny` drops the two together — with `Shell` too when the agent
-has a workspace — and a run's `tools=` holding one is a `ConfigurationError` (`tools/engine_tools:
-duplicate tool name 'Job'`), as an `EngineTools` given one for such an agent is. With a workspace
-too, the same two tools hold both kinds of id, as [Workspace](#workspace) says.
+started, `{"job": "d1", "agent": "prover", "input": "Prove lemma 3", "started":
+"2026-11-21T10:00:00+00:00", "running": true}`, one that ended with `"running": false` and `ended`:
+`finished`, `failed` or `stopped`. A helper's notice reaches the lead whether or not `Job` read it
+first: the record is the truth, and reading a reply twice costs less than missing an end. The
+`input` is the helper's `Delegate` input, whole and as given, never cut, so a lead whose window has
+left its `Delegate` calls behind still tells which job was which task. `Job` and `Jobs` go through
+`approve` and are recorded as steps like any call, and a command's tool bridge carries neither, as
+it carries no `Delegate`. The two names come with `background: true` as they come with `workspace:
+true`: `tools.allow` may name them, `tools.deny` drops the two together — with `Shell` too when the
+agent has a workspace — and a run's `tools=` holding one is a `ConfigurationError`
+(`tools/engine_tools: duplicate tool name 'Job'`), as an `EngineTools` given one for such an agent
+is. With a workspace too, the same two tools hold both kinds of id, as [Workspace](#workspace) says.
 
 A helper gets one tool of its own, `Ask(question)`, whose description names its lead. The call puts
 a notice on the lead and waits until the lead answers it with `Job(id, send=)`; the lead's text is

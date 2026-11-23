@@ -399,7 +399,13 @@ async def test_a_helper_reads_as_ended_while_its_record_is_written(
     assert answered["j1"].is_error and answered["j1"].content == (
         "InputError: tools/helpers: helper d1 has ended; send reaches only a helper still running"
     )
-    ended = {"running": False, "agent": "worker", "asking": None, "reply": "one"}
+    ended = {
+        "running": False,
+        "agent": "worker",
+        "input": "part one",
+        "asking": None,
+        "reply": "one",
+    }
     assert json.loads(str(answered["j2"].content)) == ended
     assert json.loads(str(answered["j3"].content)) == ended
     assert not answered["c1"].is_error and answered["c1"].content == '{"job": "d2"}'

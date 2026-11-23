@@ -171,6 +171,7 @@ class Asking:
 class Helper:
     job: str
     agent: str
+    input: str
     kind: Kind
     run_id: str
     stop: Stop
@@ -215,10 +216,12 @@ class Helpers:
         stop: Stop,
         run: Callable[[Helper], Awaitable[Generation | Decision | None]],
         keep: Callable[[Generation | Decision], Awaitable[None]],
+        input: str,
     ) -> Helper:
         helper = Helper(
             job=self.upcoming(),
             agent=agent,
+            input=input,
             kind=kind,
             run_id=run_id,
             stop=stop,
@@ -292,6 +295,7 @@ class Helpers:
             {
                 "job": helper.job,
                 "agent": helper.agent,
+                "input": helper.input,
                 "started": helper.started.isoformat(timespec="seconds"),
                 "running": helper.ended is None,
                 **({} if helper.ended is None else {"ended": helper.ended}),
@@ -302,7 +306,12 @@ class Helpers:
     def read(self, job: str) -> dict[str, Any]:
         helper = self._helpers[job]
         question = next((asking.question for asking in helper.pending()), None)
-        held = {"running": helper.ended is None, "agent": helper.agent, "asking": question}
+        held = {
+            "running": helper.ended is None,
+            "agent": helper.agent,
+            "input": helper.input,
+            "asking": question,
+        }
         if helper.ended == "finished":
             result = run_result(helper.record)
             return {**held, **({"reply": result} if isinstance(result, str) else result)}

@@ -25,7 +25,7 @@ def _helper(deadline: float | None) -> str:
     upto = "" if deadline is None else f", up to {deadline:g},"
     left = "" if deadline is None else f", for what is left of the call's {deadline:g} seconds"
     return (
-        "whether it is running, its agent, under asking the question it waits on you to answer "
+        "whether it is running, its agent, its input, under asking the question it waits on you to answer "
         "through Ask (null when none), and once it has ended its reply (a decision agent's "
         f"answers), its error, or what it had said when it was stopped. wait is seconds{upto} to "
         "wait first; it returns as soon as the helper ends or any notice from a helper reaches you, "
@@ -43,7 +43,7 @@ def _described(workspace: Workspace | None, deadline: float | None) -> tuple[str
     if workspace is None:
         return (
             f"Read a helper you started with Delegate in the background, by its id (d1, d2, …): {helper}",
-            f"List the helpers you started in the background: id, agent, when it started, {ENDED}",
+            f"List the helpers you started in the background: id, agent, input, when it started, {ENDED}",
         )
     return (
         "Read a background job of the workspace (j1, j2, …) or a helper you started with Delegate "
@@ -54,7 +54,7 @@ def _described(workspace: Workspace | None, deadline: float | None) -> tuple[str
         f"{workspace.output_bytes // 2} bytes; send is for a helper only. A helper: {helper}",
         "List the workspace's background jobs and the helpers you started in the background. A "
         "job: id, command, when it started, whether it is running and its exit_code; a job that "
-        "ended is listed until Job reads its last output. A helper: id, agent, when it started, "
+        "ended is listed until Job reads its last output. A helper: id, agent, input, when it started, "
         f"{ENDED}",
     )
 
