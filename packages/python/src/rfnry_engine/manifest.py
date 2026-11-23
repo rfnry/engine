@@ -111,9 +111,6 @@ class ModeEntry(_Closed):
     orchestration: Orchestration | None = None
     workspace: bool | None = None
     questions: list[_FolderPath] | None = None
-    context: Literal["inherit", "own"] = Field(
-        default="inherit", exclude_if=lambda held: held == "inherit"
-    )
 
     @field_validator("model")
     @classmethod
@@ -128,12 +125,18 @@ class ModeEntry(_Closed):
 class AgentEntry(ModeEntry):
     model: str
     kind: Kind
+    context: Literal["inherit", "own"] = Field(
+        default="inherit", exclude_if=lambda held: held == "inherit"
+    )
     modes: dict[str, ModeEntry] = Field(default_factory=dict)
 
 
 class Resolved(ModeEntry):
     model: str
     kind: Kind
+    context: Literal["inherit", "own"] = Field(
+        default="inherit", exclude_if=lambda held: held == "inherit"
+    )
     files: FilesSection = Field(default_factory=FilesSection)
     tools: ToolsSection = Field(default_factory=ToolsSection)
     skills: SkillsSection = Field(default_factory=SkillsSection)
@@ -376,6 +379,11 @@ def _validated(data: dict[Any, Any], path: Path) -> Manifest:
         manifest = Manifest.model_validate(data, strict=True)
     except ValidationError as exc:
         unknown = [error["loc"] for error in exc.errors() if error["type"] == "extra_forbidden"]
+        for loc in unknown:
+            if len(loc) == 5 and loc[0] == "agents" and loc[2] == "modes" and loc[4] == "context":
+                raise ConfigurationError(
+                    f"manifest: {'.'.join(map(str, loc))} in {path}: context is set on the entry, not on a mode; remove it"
+                ) from exc
         if unknown:
             named = "; ".join(
                 f"{'.'.join(map(str, loc))} (it takes {', '.join(_keys_at(loc))})"
@@ -434,11 +442,6 @@ def _said_keys(entry: ModeEntry) -> set[str]:
 
 
 def _refuse_what_its_kind_leaves_out(name: str, agent: AgentEntry, path: Path) -> None:
-    for mode, entry in agent.modes.items():
-        if "context" in entry.model_fields_set:
-            raise ConfigurationError(
-                f"manifest: agents.{name}.modes.{mode}.context in {path}: context is set on the entry, not on a mode; remove it"
-            )
     left_out, takes = _LEFT_OUT[agent.kind]
     for at, entry in _layers(name, agent):
         taken = sorted(_said_keys(entry) & left_out)

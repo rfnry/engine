@@ -461,21 +461,21 @@ agents:
 | `questions` | a decision agent's questions | [Decision agents](#decision-agents) |
 | `modes` | named overlays of the entry | [Modes](#modes) |
 
-The file is plain data, checked when the engine loads it, so a mistake fails at start rather than
-in a run. A key a section does not take is a `ConfigurationError` naming its dotted path and the
-keys taken there (`manifest: unknown key in /srv/agents/rfnry.yaml: agents.support.file (it takes
+The file is plain data, checked when the engine loads it, so a mistake fails at start rather than in
+a run. A key a section does not take is a `ConfigurationError` naming its dotted path and the keys
+taken there (`manifest: unknown key in /srv/agents/rfnry.yaml: agents.support.file (it takes
 description, instructions, model, max_model_calls, worker, files, tools, skills, orchestration,
-workspace, questions, context, kind, modes)`), and so is a key with no value, an empty list or an empty
-mapping, which says nothing. An agent has exactly what its entry says: a missing section gives it
-nothing, and there is no `all` or `none` for its tools or skills. A generation agent takes every key
-but `questions` and `orchestration.route`; a decision agent takes `kind`, `model`, `description`,
-`instructions`, `worker`, `context`, `questions`, `orchestration.route` and `modes`; a voice agent takes `kind`,
-`model`, `description`, `instructions`, `worker`, `tools` and `modes`; any other key on its entry or
-on a mode is a `ConfigurationError` naming it. A name under `agents:`, `models:`, `tools:`,
-`workers:` or `modes:` is plain — not blank or padded, no leading `.`, no `/` — and so is a `model:`.
-The YAML is read strictly: a key written twice is refused, only `true` and `false` are booleans, and
-anchors, aliases and merge keys are refused, so nothing is copied between entries and a file from
-another repository cannot expand as it loads.
+workspace, questions, kind, context, modes)`), and so is a key with no value, an empty list or an
+empty mapping, which says nothing. An agent has exactly what its entry says: a missing section gives
+it nothing, and there is no `all` or `none` for its tools or skills. A generation agent takes every
+key but `questions` and `orchestration.route`; a decision agent takes `kind`, `model`,
+`description`, `instructions`, `worker`, `context`, `questions`, `orchestration.route` and `modes`;
+a voice agent takes `kind`, `model`, `description`, `instructions`, `worker`, `tools` and `modes`;
+any other key on its entry or on a mode is a `ConfigurationError` naming it. A name under `agents:`,
+`models:`, `tools:`, `workers:` or `modes:` is plain — not blank or padded, no leading `.`, no `/` —
+and so is a `model:`. The YAML is read strictly: a key written twice is refused, only `true` and
+`false` are booleans, and anchors, aliases and merge keys are refused, so nothing is copied between
+entries and a file from another repository cannot expand as it loads.
 
 Every path in the file is written from the folder root, with no leading `/`, no `..` and no
 backslash. The file tools and the prompt use the same paths, so an instructions file that says
@@ -1854,23 +1854,24 @@ With it, `Delegate` takes `background`, a boolean the model sets to `true` to st
 call returns at once with a job id, `{"job": "d1"}`, and the model goes on with its turn while the
 helper runs. Ids are `d1`, `d2`, … in the order a run starts its helpers, numbered after the highest
 one a `Delegate` result, a notice, a `Job` call's `id` or a `Jobs` result holds in the messages the
-run reads — its `history` from `start` — so the messages its model is sent never hold two `d1`.
-What came before `start` is not read: `History`, which a run that starts past the beginning offers,
-may show its model an older `dN` there, as a long stored conversation read through windows may
-repeat one, and each helper's step keeps that helper's own `run_id`. The `d` keeps them apart from a
+run reads — its `history` from `start` — so the messages its model is sent never hold two `d1`. What
+came before `start` is not read: `History`, which a run that starts past the beginning offers, may
+show its model an older `dN` there, as a long stored conversation read through windows may repeat
+one, and each helper's step keeps that helper's own `run_id`. The `d` keeps them apart from a
 workspace's `j1`. A run with a store keeps the conversation of each helper that has one under its
 own name and the helper's id, `survey-1/d1`, and passes over every id whose name is already in use,
 so its ids may skip some ([A conversation in your store](#a-conversation-in-your-store)). A helper
-runs as a synchronous child does — the run's tools, workspace, tags, the context of the run that started it unless its entry says `context: own`, `approve`, `on_event` and
-models, under the same scope, with a stop chained below the lead's and an inbox of its own — and the
-step that started it carries its `run_id` at once, so `engine.send` and `engine.stop` reach it from
-that step's `ToolResultReady` on; its record joins `children` when it ends, in the order helpers
-end, and is read back there. A run with a store records it then, the helper reading as ended
-meanwhile, and it joins `children` once its record is written, as its lead hears it, so in the order
-the records were written ([A conversation in your store](#a-conversation-in-your-store)). A decision
-agent runs in the background too, its one call its whole run. A helper is a level below its lead,
-and one whose entry opts in may start helpers of its own. `approve` is asked about a background
-`Delegate` as about any call, and a `Delegate` refused before its helper starts — by `approve`, past
+runs as a synchronous child does — the run's tools, workspace, tags, the context of the run that
+started it unless its entry says `context: own`, `approve`, `on_event` and models, under the same
+scope, with a stop chained below the lead's and an inbox of its own — and the step that started it
+carries its `run_id` at once, so `engine.send` and `engine.stop` reach it from that step's
+`ToolResultReady` on; its record joins `children` when it ends, in the order helpers end, and is
+read back there. A run with a store records it then, the helper reading as ended meanwhile, and it
+joins `children` once its record is written, as its lead hears it, so in the order the records were
+written ([A conversation in your store](#a-conversation-in-your-store)). A decision agent runs in
+the background too, its one call its whole run. A helper is a level below its lead, and one whose
+entry opts in may start helpers of its own. `approve` is asked about a background `Delegate` as
+about any call, and a `Delegate` refused before its helper starts — by `approve`, past
 `max_background`, or for `questions` that do not fit — starts no helper and spends no id.
 
 When a helper ends, the lead hears it before its next model call, as a `role="user"` message whose
@@ -2103,14 +2104,13 @@ voice:
 ```
 
 What it takes follows from what a live model is: `kind`, `model`, `description`, `instructions`,
-`worker`, `tools` and `modes`. It has no loop that opens a file or counts calls, so `files`, `skills`,
-`orchestration`, `workspace`, `questions`, `context` and `max_model_calls` are a `ConfigurationError` naming the
-key, as is a tool its sections would grant, such as `Read`, in `tools.allow`. With no section to
-grant one, its tools are declared tools and runtime tools, each listed under `runtime_tools:`.
-`engine.talk` runs it and refuses any other kind; `engine.run`, `engine.tool`, `delegate_to` and
-`route` refuse it. It
-reaches other agents through its tools, such as a consult `engine.tool` builds, in a mode of that
-agent written for answers that are spoken.
+`worker`, `tools` and `modes`. It has no loop that opens a file or counts calls, so `files`,
+`skills`, `orchestration`, `workspace`, `questions`, `context` and `max_model_calls` are a
+`ConfigurationError` naming the key, as is a tool its sections would grant, such as `Read`, in
+`tools.allow`. With no section to grant one, its tools are declared tools and runtime tools, each
+listed under `runtime_tools:`. `engine.talk` runs it and refuses any other kind; `engine.run`,
+`engine.tool`, `delegate_to` and `route` refuse it. It reaches other agents through its tools, such
+as a consult `engine.tool` builds, in a mode of that agent written for answers that are spoken.
 
 The engine declares the agent, resolves its mode, gates its tools and records the run; the session
 that moves the audio is yours — rfnry-senses' `Session`, or any other — and neither library imports

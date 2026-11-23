@@ -1217,3 +1217,13 @@ def test_a_voice_agent_refuses_context(tmp_path: Path) -> None:
 def test_a_decision_agent_takes_context(tmp_path: Path) -> None:
     entry = read_manifest(write_folder(tmp_path, {"a": {**DECISION, "context": "own"}})).agents["a"]
     assert entry.context == "own"
+
+
+def test_a_decision_agent_refuses_what_it_leaves_out_naming_context(tmp_path: Path) -> None:
+    agent = {**DECISION, "workspace": True}
+    said = _refused(write_folder(tmp_path, {"a": agent}), "workspace")
+    assert said == (
+        "manifest: agents.a.workspace in <root>/rfnry.yaml: a decision agent takes only kind, "
+        "model, description, instructions, worker, context, questions, orchestration.route and "
+        "modes; remove it"
+    )
