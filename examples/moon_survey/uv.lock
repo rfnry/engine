@@ -351,6 +351,7 @@ dependencies = [
     { name = "httpx" },
     { name = "numpy" },
     { name = "openai" },
+    { name = "pyyaml" },
     { name = "rfnry-engine", extra = ["postgres"] },
     { name = "uvicorn" },
 ]
@@ -370,6 +371,7 @@ requires-dist = [
     { name = "httpx" },
     { name = "numpy" },
     { name = "openai" },
+    { name = "pyyaml" },
     { name = "rfnry-engine", extras = ["postgres"], editable = "../../packages/python" },
     { name = "uvicorn" },
 ]

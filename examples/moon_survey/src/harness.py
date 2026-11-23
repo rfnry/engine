@@ -15,6 +15,7 @@ from typing import Any
 
 import asyncpg
 import httpx
+import yaml
 from asyncpg.pool import PoolConnectionProxy
 from rfnry_engine import (
     CheckAnswer,
@@ -31,7 +32,6 @@ from rfnry_engine import (
     Workspace,
     current_call,
 )
-from rfnry_engine.manifest import read_manifest
 
 import moon
 from board import Board, board_tools, create_survey, write_note
@@ -177,7 +177,8 @@ def checker() -> Callable[[Any], list[str]]:
 
 
 def background_of(agent: str) -> int:
-    return int(read_manifest(AGENTS).agents[agent].orchestration.max_background)
+    folder = yaml.safe_load((AGENTS / "rfnry.yaml").read_text(encoding="utf-8"))
+    return int(folder["agents"][agent]["orchestration"]["max_background"])
 
 
 def keyed(mode: str) -> None:

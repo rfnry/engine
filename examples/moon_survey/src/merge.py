@@ -19,6 +19,7 @@ import moon
 from board import Board, BoardError
 from sandbox import Sandboxes
 
+SCHEMA = "moon"
 SCOPE = "moon"
 MAP_MODE = 0o644
 USAGE_LINE = "usage: uv run src/merge.py <survey> <map.json>"
@@ -380,7 +381,7 @@ async def export_map(board: Board, path: Path) -> None:
         raise
 
 
-async def exported(url: str, survey: str, path: Path, schema: str = SCOPE) -> None:
+async def exported(url: str, survey: str, path: Path, schema: str = SCHEMA) -> None:
     pool = await asyncpg.create_pool(url, server_settings={"search_path": schema})
     try:
         await export_map(Board(pool, SCOPE, survey, live=lambda _: False), path)

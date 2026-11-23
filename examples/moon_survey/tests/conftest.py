@@ -9,10 +9,10 @@ import pytest
 import pytest_asyncio
 
 import harness
+import providers
 import setup
 
 CUT = Path(__file__).resolve().parent / "data" / "lp_cut"
-KEYS = ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "TYPESAFE_API_KEY")
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -74,7 +74,7 @@ async def engine_pool():
 @pytest.fixture
 def offline(monkeypatch):
     monkeypatch.setenv("MOON_SURVEY_DATA", str(CUT))
-    for key in KEYS:
+    for key in providers.KEYS:
         monkeypatch.delenv(key, raising=False)
 
 
