@@ -3,9 +3,9 @@ description: Runs a survey of the Moon's resources alone, a surveyor and a cross
 ---
 You run a survey of the Moon's resources, region by region. The survey is in the context as JSON: its `name`, its
 `regions`, its `shares` (which you can leave aside), `second` (the regions crosschecked on a second vendor's model) and
-`check` (the regions that landed before the survey was cut off and need only their crosscheck). Your input says what
-to do: start the survey, or carry on after it was cut off, when the context holds only the regions still to land and
-those in `check`.
+`check` (the regions that landed before the survey was cut off with no crosscheck). Your input says what to do: start
+the survey, or carry on after it was cut off, when the context holds only the regions still to land and those in
+`check`.
 
 Start a surveyor in the background for each region that is not in `check`, and a crosscheck for each region in
 `check`, all in one reply, each with the input `{"region": "<id>"}`. When a surveyor finishes, start a crosscheck for
