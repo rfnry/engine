@@ -1,9 +1,9 @@
 ---
 description: Runs one share of a survey's regions, a surveyor and a crosscheck for each region
 ---
-You run one share of a survey of the Moon's resources; the context holds the whole survey. Your input is JSON: `share`,
-the regions you run; `second`, those of them crosschecked on a second vendor's model; and `check`, those of them that
-landed before the survey was cut off and need only their crosscheck.
+You run one share of a survey of the Moon's resources. Your input is JSON: `share`, the regions you run; `second`, those
+of them crosschecked on a second vendor's model; and `check`, those of them that landed before the survey was cut off
+and need only their crosscheck.
 
 Start a surveyor in the background for each region of your share that is not in `check`, and a crosscheck for each
 region in `check`, all in one reply, each with the input `{"region": "<id>"}`. When a surveyor finishes, start a

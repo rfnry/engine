@@ -108,7 +108,6 @@ async def test_a_fake_survey_of_ten_lands_every_region(service, pool, engine_poo
     planned = json.loads(lead.body["context"])
     assert planned["name"] == name and set(planned["regions"]) == {row["region"] for row in rows}
     assert [len(share) for share in planned["shares"]] == [5, 5] and planned["check"] == []
-    assert all(r.body["context"] == lead.body["context"] for r in records)
     looked = [
         json.loads(step["result"])
         for r in records

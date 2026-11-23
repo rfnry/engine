@@ -18,7 +18,7 @@ Needs Python 3.14, uv, bubblewrap (`bwrap`) and the shared Postgres 18.
 ```bash
 export RFNRY_EXAMPLES_POSTGRES_URL=postgresql://harness:harness@127.0.0.1:55418/harness
 
-# only for mode "real"
+# only for modes "real" and "hostile"
 # export ANTHROPIC_API_KEY=...
 # export GEMINI_API_KEY=...
 # export TYPESAFE_API_KEY=...
@@ -28,14 +28,31 @@ export RFNRY_EXAMPLES_POSTGRES_URL=postgresql://harness:harness@127.0.0.1:55418/
 # export MOON_SURVEY_DATA=...        where the Lunar Prospector files are (default: data/lp/)
 # export MOON_SURVEY_FAKE_SCALE=1    stretches or shrinks the fake models' delays
 
-rfnry-engine create --url "$RFNRY_EXAMPLES_POSTGRES_URL" --schema moon_engine
+uv run rfnry-engine create --url "$RFNRY_EXAMPLES_POSTGRES_URL" --schema moon_engine
 uv run src/setup.py tables
 uv run src/setup.py data
 uv run src/main.py
 ```
 
 The app's tables go in the schema `moon` and engine's in `moon_engine`. `setup.py data` downloads the Lunar Prospector
-files and checks them against `data/lp/SOURCES.md`. The service listens on `127.0.0.1:8000`.
+files and checks them against `data/lp/SOURCES.md`. The service listens on `127.0.0.1:8000`. `.work/` (or
+`MOON_SURVEY_WORK`) can be removed once a survey has ended.
+
+`POST /surveys` takes a JSON body of `name` (1 to 64 letters, digits, `.`, `_` or `-`, the first a letter or a digit),
+`mode` (`fake`, `real` or `hostile`, which is `real` with a hostile note planted on the board first), `shape` (`crews`:
+a lead and its captains; `flat`: one agent for the whole survey; `app`: the app starts the surveyors a boss agent asks
+for), `size` (the first regions of the walk, 1 to 250, default 250) or `regions` (a list of region ids), `crews` (the
+number of captains, default one for every 25 regions and at least two) and `cap` (the spending cap in dollars). A `real`
+or `hostile` survey is refused with 503 while `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` or `TYPESAFE_API_KEY` is not set.
+`POST /surveys/{name}/resume` carries a stopped or interrupted survey on, with an optional new `cap`.
+
+```bash
+uv run src/merge.py <survey> map/moon.json
+uv run src/measure.py <survey> <results.md>
+```
+
+`merge.py` writes a survey's map, the one `GET /map` shows. `measure.py` appends a survey's numbers to a results file,
+as a section titled by the survey's name or by a third argument.
 
 ## Example
 
@@ -72,5 +89,4 @@ curl -s "localhost:8000/map?survey=readme-fake"
 
 A fake survey's regions land with `provider: "fake"` and are not shown: their dossiers are null, because a fake model
 writes a stand-in, not a finding. A real survey's regions carry their dossier, its checks, its data check and its
-disputes. `POST /surveys/{name}/resume` carries a stopped or interrupted survey on, with an optional new `cap`.
-`map/moon.json` holds the map of the real survey.
+disputes. `map/moon.json` holds the map of the real survey.
