@@ -1,4 +1,4 @@
-from rfnry_engine.engine import AgentInfo, Engine
+from rfnry_engine.engine import AgentInfo, Engine, OrchestrationInfo, RouteInfo
 from rfnry_engine.errors import (
     ConfigurationError,
     DelegationDepthError,
@@ -97,6 +97,8 @@ __version__ = "0.1.15"
 
 __all__ = [
     "AgentInfo",
+    "OrchestrationInfo",
+    "RouteInfo",
     "CallInfo",
     "Answer",
     "AnswerLike",

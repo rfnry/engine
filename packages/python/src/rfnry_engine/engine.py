@@ -16,7 +16,7 @@ from types import MappingProxyType
 from typing import Annotated, Any, Literal, NoReturn, Protocol, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
 from rfnry_engine.bundle import build_bundle
@@ -180,6 +180,24 @@ class _Running:
     inbox: asyncio.Queue[Any] | None
 
 
+class RouteInfo(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    by: str
+    to: dict[str, str]
+    min_confidence: float | None = None
+
+
+class OrchestrationInfo(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    max_depth: int | None = None
+    max_parallel: int | None = None
+    route: RouteInfo | None = None
+    background: bool = False
+    max_background: int | None = None
+
+
 class AgentInfo(BaseModel):
     name: str
     kind: Kind
@@ -192,6 +210,12 @@ class AgentInfo(BaseModel):
     skills: dict[str, str]
     public: dict[str, str]
     worker: str
+    context: Literal["inherit", "own"] = "inherit"
+    max_model_calls: int | None = None
+    workspace: bool = False
+    tool_timeout: float | None = None
+    tool_max_parallel: int | None = None
+    orchestration: OrchestrationInfo = Field(default_factory=OrchestrationInfo)
     modes: dict[str, AgentInfo]
 
 
@@ -643,6 +667,24 @@ def _info(name: str, spec: AgentSpec) -> AgentInfo:
         skills={called: skill.description for called, skill in spec.skills.items()},
         public={called: spec.skills[called].description for called in spec.public},
         worker=spec.worker,
+        context=spec.context,
+        max_model_calls=spec.max_model_calls,
+        workspace=spec.workspace,
+        tool_timeout=spec.tool_timeout,
+        tool_max_parallel=spec.tool_parallel,
+        orchestration=OrchestrationInfo(
+            max_depth=spec.max_depth,
+            max_parallel=spec.delegate_parallel,
+            route=None
+            if spec.route is None
+            else RouteInfo(
+                by=spec.route.by,
+                to=dict(spec.route.to),
+                min_confidence=spec.route.min_confidence,
+            ),
+            background=spec.background,
+            max_background=spec.background_parallel,
+        ),
         modes={mode: _info(name, one) for mode, one in spec.modes.items()},
     )
 

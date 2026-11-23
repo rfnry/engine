@@ -529,9 +529,13 @@ in between, and nothing is loaded until the model asks — unless the agent prel
 `tools` it picks from `tools:` by name (the built-ins and the tools a run gives are not listed), the
 `runtime_tools` its `tools.allow` picks, which a run gives, the `skills` it holds, each to its
 description, the `public` ones people may call, its `worker` and its `modes`, each an `AgentInfo`
-of its own. When the folder has loaded, the engine logs the names of
-its agents at INFO on the `rfnry_engine.engine` logger — `engine: agents loaded [lead, triage,
-writer]` — which `logging.basicConfig(level=logging.INFO)` shows.
+of its own. It also shows every setting the entry wrote, as written and not lowered by the
+engine's own limits: `context`, `max_model_calls`, `workspace`, `tool_timeout`, `tool_max_parallel`
+(`tools.max_parallel`) and `orchestration`, whose `max_depth`, `max_parallel`, `route`,
+`background` and `max_background` read as the entry wrote them, `None` for a limit it left out. A
+mode's info shows the mode's values over its agent's. When the folder has loaded, the engine
+logs the names of its agents at INFO on the `rfnry_engine.engine` logger — `engine: agents
+loaded [lead, triage, writer]` — which `logging.basicConfig(level=logging.INFO)` shows.
 
 #### `files`
 
@@ -4008,8 +4012,9 @@ them yourself; every row carries its run's tags.
 
 Everything the package exports, by role.
 
-- **Run things:** `Engine`, `AgentInfo`, `Provider`, `ModelChoice`, `ModelEntry`, `Stop`,
-  `HistoryLike`, `ConversationStore`, `VoiceStart`, `Spoken`, `SpokenLine`.
+- **Run things:** `Engine`, `AgentInfo`, `OrchestrationInfo`, `RouteInfo`, `Provider`,
+  `ModelChoice`, `ModelEntry`, `Stop`, `HistoryLike`, `ConversationStore`, `VoiceStart`, `Spoken`,
+  `SpokenLine`.
 - **What a run returns:** `Generation`, `Decision`, `Voice`, `Run`, `Step`, `Fingerprint`; events
   `RunStarted`, `RunEnded`, `TextDelta`, `ReplyReady`, `ReasoningDelta`, `MessagesTaken`,
   `ToolCallStarted`, `ToolResultReady`, `CommandOutput`, `Event`.

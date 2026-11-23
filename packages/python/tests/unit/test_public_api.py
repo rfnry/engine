@@ -3,6 +3,8 @@ import rfnry_engine
 EXPECTED = {
     "Engine",
     "AgentInfo",
+    "OrchestrationInfo",
+    "RouteInfo",
     "CallInfo",
     "Refinery",
     "PostgresStorage",

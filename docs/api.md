@@ -614,10 +614,40 @@ class AgentInfo(BaseModel):
     skills: dict[str, str]
     public: dict[str, str]
     worker: str
+    context: Literal["inherit", "own"] = "inherit"
+    max_model_calls: int | None = None
+    workspace: bool = False
+    tool_timeout: float | None = None
+    tool_max_parallel: int | None = None
+    orchestration: OrchestrationInfo = OrchestrationInfo()
     modes: dict[str, AgentInfo]
 ```
 
-An agent as the engine loaded it, in `Engine.agents`: its name, its kind, its `model` — the key its entry gives — its description, the agents it may `delegate_to`, the `files` its model may open, by their paths from the root, the `tools` it picks from `tools:`, by name — the built-ins and the tools a run gives are not listed — its `runtime_tools`, the runtime tools its `tools.allow` picks, which a run gives through `tools=`, in name order, its `skills`, every skill it holds, each to its `description:` — `""` for one without; a decision agent has none — its `public`, the ones people may call by typing `/name`, in name order, each to its `description:` — `{}` when there are none, its `worker`, and its `modes`, each mode's own `AgentInfo` by the mode's name, its `name` being its agent's, `{}` for a mode itself and for an agent without modes. Each read of `Engine.agents` builds them anew, so changing one changes nothing the engine holds. For an agent of an `rfnry.yaml`, `skills` holds every skill its entry or a mode names and `public` those its `skills.public` names. `Kind` is `Literal["generation", "decision", "voice"]`.
+An agent as the engine loaded it, in `Engine.agents`: its name, its kind, its `model` — the key its entry gives — its description, the agents it may `delegate_to`, the `files` its model may open, by their paths from the root, the `tools` it picks from `tools:`, by name — the built-ins and the tools a run gives are not listed — its `runtime_tools`, the runtime tools its `tools.allow` picks, which a run gives through `tools=`, in name order, its `skills`, every skill it holds, each to its `description:` — `""` for one without; a decision agent has none — its `public`, the ones people may call by typing `/name`, in name order, each to its `description:` — `{}` when there are none, its `worker`, its `context`, `max_model_calls`, `workspace`, `tool_timeout` and `tool_max_parallel` (the entry's `tools.max_parallel`) as the entry wrote them, `None` or `False` where it wrote nothing and never lowered by the `Engine`'s own `max_model_calls`, `max_depth` or `max_background`, its `orchestration`, and its `modes`, each mode's own `AgentInfo` by the mode's name, its `name` being its agent's, `{}` for a mode itself and for an agent without modes. Each read of `Engine.agents` builds them anew, so changing one changes nothing the engine holds. For an agent of an `rfnry.yaml`, `skills` holds every skill its entry or a mode names and `public` those its `skills.public` names. `Kind` is `Literal["generation", "decision", "voice"]`.
+
+### `OrchestrationInfo`
+
+```python
+class OrchestrationInfo(BaseModel):
+    max_depth: int | None = None
+    max_parallel: int | None = None
+    route: RouteInfo | None = None
+    background: bool = False
+    max_background: int | None = None
+```
+
+The `orchestration` of an entry as it wrote it, frozen: `max_depth`, `max_parallel`, `route`, `background` and `max_background` are the keys of that name, `None` for one it left out and `background` `False` unless it wrote `true`. A mode's holds the mode's own values over its agent's.
+
+### `RouteInfo`
+
+```python
+class RouteInfo(BaseModel):
+    by: str
+    to: dict[str, str]
+    min_confidence: float | None = None
+```
+
+The `route` of a decision entry as it wrote it, frozen: `by` the question whose answer routes, `to` each answer's agent, and `min_confidence`, `None` when the entry wrote none.
 
 ### `Generation`
 
