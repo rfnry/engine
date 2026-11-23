@@ -1393,9 +1393,10 @@ next message, after whatever it mends of a run that ended mid-way ([After a cras
 It is a new run, with its own `run_id`, whose helpers' job ids go on after the highest `dN` in the
 whole stored conversation, not only in its window. A store whose `read` returns a number of messages
 other than its `length`, or messages that do not fit `Message`, is refused before the run starts,
-and nothing is recorded. A decision agent that routes reads nothing itself, so it meets these
-refusals, and a `length` or `read` that raises, in its routed run, after its decision model's call,
-and is recorded with that error, its `routed_to` `None`.
+and nothing is recorded. A decision agent that routes reads the conversation itself, once, before
+its decision model's call, to find a paused one ([Approving tool calls](#approving-tool-calls)), so
+it meets these refusals, and a `length` or `read` that raises, then, unrecorded; its routed run goes
+on from what it read.
 
 A store run's record begins where its first window did, as a run's record begins at `start`:
 `run.start` is that window's start, `run.messages` that window as it was sent, the input last and a
@@ -1404,10 +1405,11 @@ window and then every message the run added, so `run.added` is what the run adde
 The store keeps every message as it was appended, its reasoning included. A run that ends before its
 first model call — stopped at once, failed by its `RunStarted` handler or refused its first window —
 begins just after the results it ended a cut-off run's calls with ([After a crash](#after-a-crash)),
-so its record holds only its own messages from its `lost` notices on — those notices, the input and
-what it added — while those ended results stay in the store only, as a first window that starts past
-them leaves them. A record never begins with a result whose call it does not hold, so it replays as
-any record does.
+or, resuming a paused run, those it answered the waiting calls with, so its record holds only its
+own messages from its notices on — the notices a pause held, its `lost` notices, the input and what
+it added — while those results stay in the store only, as a first window that starts past them
+leaves them. A record never begins with a result whose call it does not hold, so it replays as any
+record does.
 
 A store run replays as a run given its history does ([Long conversations](#long-conversations)),
 since a replay keeps no store: with `conversation=` it is offered `History` only when its recorded
@@ -1501,7 +1503,8 @@ model call, which sends it.
 A batch's results are stored once the batch is answered, so a run cut off while its tools work — a
 long `Shell` command, a lead in `Job(wait=…)`, a synchronous child working for hours — leaves the
 conversation ending in a reply whose calls have no result. The resumed run answers each call of the
-last reply with calls that has none, in call order, with a tool error:
+last reply with calls that has none, in call order, with a tool error, unless the conversation ends
+with a pause that says the call waits for an answer ([Approving tool calls](#approving-tool-calls)):
 
 ```
 Ended: Shell did not return; the run that made the call ended, and what it did is unknown
@@ -2869,6 +2872,37 @@ or `EngineTools` starts, in a replay, or in a run delegated below the top is a
 (`engine: approve answered Later() for lookup of agent 'worker', which cannot wait: a run below
 the top waits only in a store; pass store= and conversation= to engine.run`).
 
+To go on, run the same agent again on the paused conversation — `history=run.conversation` without
+a store, or the same `store=` and `conversation=` — with `answers`, which maps each waiting call's
+`id` to `True`, `False` or `Refused(reason)`:
+
+```python
+async def later(agent, call):
+    return Later()   # a person answers it, hours from now
+
+run = await engine.run("support", scope="acme", input="Refund order A-1001.", approve=later)
+again = await engine.run("support", scope="acme", input="A person approved it.",
+                         history=run.conversation, answers={w.id: True for w in run.paused})
+```
+
+Before its first model call the run answers the calls: an approved one runs then, asked of nobody
+again, its step `approved=True` in the resumed run; a refused one reads `NotApproved: refund was
+not approved: not today`, or without the reason for `False` or a blank one. Every call the top run
+waits on must be answered, since a model takes no message after a call without its result: a
+resume that leaves one out is an `InputError` (`engine: refund of agent 'support' waits for an
+answer under id '…'; give it one in answers= before the run goes on`), as are an id no call waits
+under (`engine: no call waits for an answer under id 'ghost'`), another agent than the one that
+paused, and a skill or a `/name` input, each refused before the run starts, unrecorded. Then come
+the notices the mark held, then `input`, the next message of the conversation; the record says
+`resumed`, and its `added` starts at the answered results. With a store, the run stores the refused
+results and a fresh mark of what still waits before it runs an approved call, so each call runs at
+most once: a resume cut off while the call runs leaves it `Ended: refund did not return; …`, as a
+crash leaves any call, and an answer sent again for it is refused as answering no waiting call.
+Without a store, at most once is yours: keep the resumed run's `conversation`, or append its `added`
+to what you kept, and never resume one paused conversation twice. A router given its paused
+conversation runs the agent its mark names, when its route reaches that agent, without asking its
+decision model again, and returns that agent's `Generation`.
+
 ### Refining
 
 The refinery records and exports what your agents did, with every label and its source. What you do
@@ -4146,16 +4180,18 @@ to ask, media the decision model does not declare, a media part with both or nei
 `export` or a `replay` given a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or
 a `limit`, `concurrency` or `repeat` below 1, a tool called with bad arguments, arguments JSON
 cannot hold or a path outside the folder, a `Delegate` given `background` by an agent that does not
-opt in or past `max_background`, an `Ask` its lead leaves unanswered — its lead ends its turn
-without answering (`tools/helpers: your lead ended its turn without answering`), stops with
-`after_step()` or fails — and any use of an engine after `close()` (`engine: this engine was closed;
-build a new Engine`). `ModelError` when an adapter breaks the contract — a result whose fields do
-not fit, a missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do
-not sum to 1, a score outside its levels — or a folder tool's result does not match its
-`output_schema`, or a question's script returns anything but an object, a key its JSON sets or one
-its type does not take, or a question that does not fit. `RunawayError` when a loop passes its limit
-of model calls, the smaller of `Engine(max_model_calls=)`, 200 unless you set another, and its
-entry's. `DelegationLoopError` for a route into an agent already in the same chain of routes;
+opt in or past `max_background`, `answers` that are not a mapping of ids to `True`, `False` or a
+`Refused`, an answer for an id no call waits under, a run on a paused conversation by another
+agent, with a skill or without an answer for each call it waits on, an `Ask` its lead leaves
+unanswered — its lead ends its turn without answering (`tools/helpers: your lead ended its turn
+without answering`), stops with `after_step()` or fails — and any use of an engine after `close()`
+(`engine: this engine was closed; build a new Engine`). `ModelError` when an adapter breaks the
+contract — a result whose fields do not fit, a missing answer, probabilities that do not cover the
+options, lie outside 0 and 1 or do not sum to 1, a score outside its levels — or a folder tool's
+result does not match its `output_schema`, or a question's script returns anything but an object, a
+key its JSON sets or one its type does not take, or a question that does not fit. `RunawayError`
+when a loop passes its limit of model calls, the smaller of `Engine(max_model_calls=)`, 200 unless
+you set another, and its entry's. `DelegationLoopError` for a route into an agent already in the same chain of routes;
 `DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
 `Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool or
 a question's script that fails in its worker process: what its script raised, `sys.exit()` included,

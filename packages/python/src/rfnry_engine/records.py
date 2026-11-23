@@ -229,6 +229,7 @@ class Generation(BaseModel):
     stop_reason: StopReason | None = None
     error: str | None = None
     paused: list[Waiting] = Field(default_factory=list)
+    resumed: bool = False
 
     @model_validator(mode="after")
     def _input_reads_back(self, info: ValidationInfo) -> Self:
@@ -243,6 +244,10 @@ class Generation(BaseModel):
 
     @property
     def added(self) -> list[Message]:
+        if self.resumed:
+            marks = [n for n, message in enumerate(self.messages) if message.pause is not None]
+            if marks:
+                return self.conversation[marks[-1] + 1 :]
         return self.conversation[max(len(self.messages) - 1, 0) :]
 
 

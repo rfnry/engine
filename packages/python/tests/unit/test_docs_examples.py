@@ -272,6 +272,23 @@ SETUPS = {
             )
         },
     ),
+    "async def later(agent, call):": Setup(
+        replies=(
+            Reply(
+                tool_calls=[ToolCall(id="l1", name="lookup_order", args={"order_id": "A-1001"})],
+                stop_reason="tool_use",
+            ),
+        ),
+        replace={
+            "answers={w.id: True for w in run.paused})": (
+                "answers={w.id: True for w in run.paused})\n"
+                "assert [w.call.name for w in run.paused] == ['lookup_order']\n"
+                "assert again.resumed and again.steps[0].approved and again.reply == 'ok'\n"
+                "assert again.added[0].tool_call_id == 'l1' and run.conversation[-1].pause\n"
+                "await engine.close()"
+            )
+        },
+    ),
     "async def approve(agent, call):": Setup(
         replies=(
             Reply(

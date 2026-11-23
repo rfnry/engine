@@ -183,6 +183,31 @@ class Counted(Talking):
         return await super().decide(state, questions)
 
 
+async def test_a_routing_run_reads_its_conversation_once_before_its_decision_call(
+    tmp_path: Path,
+) -> None:
+    store, judge, kept = MemoryStore(), Counted(), Kept()
+    llm = Scripted(text_reply("First."), text_reply("Then this."))
+    engine = Engine(
+        routing(tmp_path), providers=provided({"strong": llm, "judge": judge}), refinery=kept
+    )
+    await engine.run("front", "acme", "hello", store=store, conversation="c1")
+    store.log.clear()
+    second = await engine.run("front", "acme", "and then?", store=store, conversation="c1")
+    assert isinstance(second, Decision) and isinstance(second.routed_to, Generation)
+    assert [method for method, _, _ in store.log] == [
+        "length",
+        "read",
+        "append",
+        "window",
+        "append",
+    ]
+    store.fail["read"] = OSError("the store is down")
+    with pytest.raises(OSError, match="the store is down"):
+        await engine.run("front", "acme", "once more", store=store, conversation="c1")
+    assert judge.calls == 2 and len(kept.runs) == 2 and len(llm.calls) == 2
+
+
 async def test_a_routing_top_run_is_refused_as_in_use_before_its_decision_call(
     tmp_path: Path,
 ) -> None:

@@ -1,14 +1,25 @@
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 
 from pydantic import TypeAdapter, ValidationError
 
 from rfnry_engine.errors import InputError
-from rfnry_engine.models import ConversationStore, Message, _handed
+from rfnry_engine.models import ConversationStore, Message, Pause, _handed
 
 HISTORY = TypeAdapter(list[Message])
 
 
-def ended_calls(history: Sequence[Message]) -> list[Message]:
+def live(history: Sequence[Message]) -> Pause | None:
+    return history[-1].pause if history else None
+
+
+def open_calls(pause: Pause | None) -> frozenset[str]:
+    if pause is None:
+        return frozenset()
+    asking = () if pause.asking is None else (pause.asking,)
+    return frozenset([*(waiting.call.id for waiting in pause.waiting), *pause.delegated, *asking])
+
+
+def ended_calls(history: Sequence[Message], named: Collection[str] = ()) -> list[Message]:
     last = next(
         (
             n
@@ -28,7 +39,7 @@ def ended_calls(history: Sequence[Message]) -> list[Message]:
             is_error=True,
         )
         for call in history[last].tool_calls
-        if call.id not in answered
+        if call.id not in answered and call.id not in named
     ]
 
 
