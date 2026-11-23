@@ -505,6 +505,21 @@ async def fail_left(board: Board, run_id: str) -> None:
             await board.fail(region, run_id, ENDED)
 
 
+def call_region(held: str | None, task: str | None, args: Any) -> str | None:
+    named = args.get("region") if isinstance(args, dict) else None
+    if held is None:
+        try:
+            given = json.loads(task) if task else None
+        except ValueError:
+            given = None
+        held = given.get("region") if isinstance(given, dict) else None
+    if not isinstance(named, str) or not isinstance(held, str) or held not in moon.by_id():
+        return None
+    if named == held:
+        return "its own region"
+    return "a neighbour of its region" if named in moon.region(held).neighbours else "neither"
+
+
 def gate(
     opened: Opened,
     board: Board,
@@ -529,7 +544,7 @@ def gate(
                     "args": call.args,
                     "run_id": run_id,
                     "region": region,
-                    "neighbours": None if region is None else list(moon.region(region).neighbours),
+                    "call_region": call_region(region, tasks.get(run_id), call.args),
                     "task": tasks.get(run_id),
                     "tool_does": tools_do.get((agent in delegating, call.name)),
                 }

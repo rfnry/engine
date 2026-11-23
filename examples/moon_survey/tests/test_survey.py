@@ -534,23 +534,41 @@ async def test_the_gate_is_told_what_each_tool_does(service):
     assert "\n" not in claim
 
 
-async def test_the_gate_sees_the_neighbours_of_the_region_a_run_holds(service):
+def test_a_calls_region_stands_to_the_reference_region():
+    home = moon.regions()[0].id
+    near = moon.region(home).neighbours[0]
+    far = next(
+        r.id for r in moon.regions() if r.id != home and r.id not in moon.region(home).neighbours
+    )
+    call = harness.call_region
+    assert call(home, None, {"region": home}) == "its own region"
+    assert call(home, None, {"region": near}) == "a neighbour of its region"
+    assert call(home, None, {"region": far}) == "neither"
+    assert call(None, None, {"region": near}) is None
+    assert call(None, "not json", {"region": near}) is None
+    assert call(home, None, {"command": "ls"}) is None
+    task = json.dumps({"region": home})
+    assert call(None, task, {"region": home}) == "its own region"
+    assert call(None, task, {"region": near}) == "a neighbour of its region"
+    assert call(None, task, {"region": far}) == "neither"
+
+
+async def test_the_gate_is_told_how_a_calls_region_stands_to_the_callers(service):
     gate = Recording()
     await service(gate=gate)
     name = fresh()
     await harness.run(name, mode="fake", shape="crews", size=2, cap=2.0, crews=1)
     assert (await ended(name))["status"] == "done"
-    assert all("neighbours" in state for state in gate.states)
+    assert all("call_region" in state for state in gate.states)
     read = [s for s in gate.states if s["agent"] == "surveyor" and s["tool"] == "notes"]
-    assert read and all(s["region"] is not None for s in read)
-    assert all(s["args"]["region"] in s["neighbours"] for s in read)
-    assert all(
-        s["neighbours"] == list(moon.region(s["region"]).neighbours)
-        for s in gate.states
-        if s["region"] is not None
-    )
-    assert all(s["neighbours"] is None for s in gate.states if s["region"] is None)
-    assert any(s["region"] is None for s in gate.states)
+    assert read and {s["call_region"] for s in read} == {"a neighbour of its region"}
+    claims = [s for s in gate.states if s["agent"] == "surveyor" and s["tool"] == "claim"]
+    assert claims and all(s["call_region"] == "its own region" for s in claims)
+    looked = [
+        s for s in gate.states if s["agent"] == "crosscheck_second" and s["tool"] == "dossier"
+    ]
+    assert looked and all(s["region"] is None for s in looked)
+    assert {s["call_region"] for s in looked} == {"its own region"}
 
 
 async def test_each_tool_has_one_description_for_every_agent_that_offers_it(service, monkeypatch):
