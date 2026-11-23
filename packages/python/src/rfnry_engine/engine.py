@@ -5,7 +5,7 @@ import logging
 import math
 import time
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, nullcontext
+from contextlib import AbstractAsyncContextManager, nullcontext, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from fnmatch import fnmatch
@@ -1583,7 +1583,7 @@ class Engine:
                         agent=spec.name,
                         turn=0,
                         model=decided.model or _declared(model_),
-                        usage=decided.usage or Usage(),
+                        usage=decided.usage,
                         settings=decided.settings
                         if decided.settings is not None
                         else _settings(model_),
@@ -2328,7 +2328,7 @@ class Engine:
                     run_id=run_id,
                     agent=spec.name,
                     call=started_call,
-                    input=_copied(input),
+                    input=_given(input),
                     tools=[_fresh(tool) for tool in specs],
                 )
             )
@@ -2364,18 +2364,22 @@ class Engine:
                 messages.append(assistant)
                 asked = list(assistant.tool_calls)
                 ran.clear()
-                await save()
-                await emit(
-                    ReplyReady(
-                        run_id=run_id,
-                        agent=spec.name,
-                        turn=turn,
-                        model=assistant.model,
-                        usage=reply.usage or Usage(),
-                        settings=assistant.settings,
-                        stop_reason=reply.stop_reason,
-                    )
+                reported = ReplyReady(
+                    run_id=run_id,
+                    agent=spec.name,
+                    turn=turn,
+                    model=assistant.model,
+                    usage=reply.usage,
+                    settings=assistant.settings,
+                    stop_reason=reply.stop_reason,
                 )
+                try:
+                    await save()
+                except Exception as exc:
+                    with suppress(Exception):
+                        await emit(reported)
+                    raise exc
+                await emit(reported)
                 if not streaming and reply.text:
                     await delta(reply.text)
                 if reply.stop_reason != "tool_use" or not asked:

@@ -126,7 +126,7 @@ class ReplyReady(BaseModel):
     agent: str
     turn: int
     model: str | None
-    usage: Usage
+    usage: Usage | None
     settings: dict[str, JsonValue] | None
     stop_reason: StopReason | None = None
 

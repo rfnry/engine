@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 import gc
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +21,7 @@ from rfnry_engine import (
 )
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import RunawayError
-from rfnry_engine.models import Message, Reply, ToolCall, Usage
+from rfnry_engine.models import Message, Reply, Text, ToolCall, Usage
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.tools import Tool, Tools
 
@@ -1152,6 +1152,8 @@ async def test_a_handler_changing_run_started_changes_nothing_sent(tmp_path: Pat
             event.tools[0].description = "changed"
             if isinstance(event.input, dict):
                 event.input["order"]["id"] = "B-2"
+            if isinstance(event.input, list) and isinstance(event.input[0], Text):
+                event.input[0].text = "CHANGED"
 
     llm = Scripted(text_reply("Done."))
     run = await Engine(
@@ -1165,6 +1167,25 @@ async def test_a_handler_changing_run_started_changes_nothing_sent(tmp_path: Pat
     assert [spec.name for spec in sent] == names
     assert all(spec.description != "changed" for spec in sent + run.tools)
     assert "B-2" not in str(messages) and "A-1" in str(messages)
+
+
+async def test_a_handler_editing_the_parts_of_run_started_changes_nothing_sent(
+    tmp_path: Path,
+) -> None:
+    async def meddle(event: Event) -> None:
+        if isinstance(event, RunStarted) and isinstance(event.input, list):
+            for part in event.input:
+                if isinstance(part, Text):
+                    part.text = "CHANGED"
+
+    llm = Scripted(text_reply("Done."))
+    run = await Engine(make_tree(tmp_path), providers=provided({"strong": llm, "judge": None})).run(
+        "chat", "acme", [Text(text="original")], on_event=meddle
+    )
+    assert isinstance(run, Generation)
+    assert run.input == [Text(text="original")]
+    [(_, messages, _)] = llm.calls
+    assert "CHANGED" not in str(messages) and "original" in str(messages)
 
 
 async def test_each_sub_agent_names_the_call_it_works_for_before_its_first_tool(
@@ -1649,7 +1670,7 @@ async def test_reply_ready_sums_to_the_run_s_usage(tmp_path: Path) -> None:
     total = Usage()
     for e in collect.events:
         if isinstance(e, ReplyReady):
-            total = total + e.usage
+            total = total + (e.usage or Usage())
     assert total == run.usage == Usage(input=30, output=6)
 
 
@@ -1711,3 +1732,50 @@ async def test_a_raising_reply_ready_handler_fails_the_run_after_the_store_has_t
         ).run("chat", "acme", "Hi", store=store, conversation="c1", on_event=handler)
     held = store.held[("acme", "c1")]
     assert [m.content for m in held if m.role == "assistant"] == ["Hello."]
+
+
+class FailingOnReply(MemoryStore):
+    async def append(
+        self, scope: str, conversation: str, start: int, messages: Sequence[Message]
+    ) -> None:
+        if any(m.role == "assistant" for m in messages):
+            raise OSError("store down")
+        await super().append(scope, conversation, start, messages)
+
+
+async def test_a_reply_the_store_fails_to_take_still_sends_reply_ready(tmp_path: Path) -> None:
+    collect = Collect()
+    with pytest.raises(OSError, match="store down"):
+        await Engine(
+            make_tree(tmp_path),
+            providers=provided(
+                {
+                    "strong": Scripted(text_reply("Hello.", usage=Usage(input=7, output=2))),
+                    "judge": None,
+                }
+            ),
+        ).run("chat", "acme", "Hi", store=FailingOnReply(), conversation="c1", on_event=collect)
+    ready = [e for e in collect.events if isinstance(e, ReplyReady)]
+    assert [e.usage for e in ready] == [Usage(input=7, output=2)]
+
+
+async def test_a_raising_handler_does_not_hide_the_stores_error(tmp_path: Path) -> None:
+    async def handler(event: Event) -> None:
+        if isinstance(event, ReplyReady):
+            raise ValueError("handler broke")
+
+    with pytest.raises(OSError, match="store down"):
+        await Engine(
+            make_tree(tmp_path),
+            providers=provided({"strong": Scripted(text_reply("Hello.")), "judge": None}),
+        ).run("chat", "acme", "Hi", store=FailingOnReply(), conversation="c1", on_event=handler)
+
+
+async def test_a_reply_without_usage_sends_reply_ready_with_none(tmp_path: Path) -> None:
+    collect = Collect()
+    await Engine(
+        make_tree(tmp_path),
+        providers=provided({"strong": Scripted(text_reply("Hello.")), "judge": None}),
+    ).run("chat", "acme", "Hi", on_event=collect)
+    ready = [e for e in collect.events if isinstance(e, ReplyReady)]
+    assert [e.usage for e in ready] == [None]

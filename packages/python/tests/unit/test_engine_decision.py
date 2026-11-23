@@ -1,4 +1,5 @@
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -498,3 +499,29 @@ async def test_answers_that_do_not_fit_still_send_reply_ready(fixtures: Path) ->
             "triage", "acme", "x", on_event=handler
         )
     assert [type(e) for e in seen] == [ReplyReady] and seen[0].usage == Usage(input=5)
+
+
+class Named:
+    model = "declared-d"
+
+    async def decide(self, state: State, questions: Mapping[str, Any]) -> dict[str, Answer]:
+        return {
+            "urgent": CheckAnswer(probability=0.9),
+            "severity": ScoreAnswer(score=2.4, probabilities=[0.0, 0.1, 0.4, 0.5]),
+        }
+
+
+async def test_a_decision_without_usage_or_model_reports_none_and_the_declared_model(
+    fixtures: Path,
+) -> None:
+    seen: list[Any] = []
+
+    async def handler(event: Any) -> None:
+        seen.append(event)
+
+    await Engine(fixtures, providers=provided({"judge": Named(), "strong": None})).run(
+        "triage", "acme", "x", on_event=handler
+    )
+    [ready] = seen
+    assert isinstance(ready, ReplyReady)
+    assert ready.usage is None and ready.model == "declared-d"
