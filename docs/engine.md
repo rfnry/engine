@@ -1378,7 +1378,10 @@ reply's `prefix` is the hash of the window it was sent with — the model, the s
 tools, the preloaded files and the messages from the window's start. A message's reasoning goes back
 only while the window still holds the prefix it was given after, so it goes on going back while the
 start holds still, a resume whose window starts where it did included, and stops once the start
-moves; the store keeps it as it was appended.
+moves; the store keeps it as it was appended. A start that moves inside a tool loop, at a message
+the person did not send, sends the open turn's tool call without its reasoning, which a vendor may
+refuse; a store that moves its start only at a message the person sent keeps it. Where the start
+moves is the store's policy; the engine refuses only a start that cuts a tool call from its result.
 
 Calling again with the same name continues the conversation. The run reads it once, as it starts —
 `length`, then `read(scope, conversation, 0)` when it is not empty — and appends `input=` as the
@@ -2826,11 +2829,14 @@ async def approve(agent, call):
     return await ask_a_person(agent, call, what)
 ```
 
-Time spent waiting is not a tool's time: the deadline starts when the call runs. `stop.now()` ends
-a wait. Delegated and routed runs are asked through the same function, with their own agent's name;
+Time spent waiting is not a tool's time: the deadline starts when the call runs. `stop.now()` ends a
+wait. Delegated and routed runs are asked through the same function, with their own agent's name;
 `engine.tool()` and `EngineTools` take `approve=` for the runs they start. An `approve` that returns
-anything but `True` or `False` is a `ConfigurationError`. The run waits in memory, so an approval
-that takes hours is better refused now and continued later from `run.conversation`.
+anything but `True` or `False` is a `ConfigurationError`. An `approve` that raises fails the run:
+`run` raises what it raised, and the record keeps the error (`PermissionError: approval service
+down`) with no step for that call. Refusing on an error is yours, a `try` in `approve` that returns
+`False`. The run waits in memory, so an approval that takes hours is better refused now and
+continued later from `run.conversation`.
 
 ### Refining
 
