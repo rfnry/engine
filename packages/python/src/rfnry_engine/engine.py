@@ -1796,6 +1796,7 @@ class Engine:
             await emit(TextDelta(run_id=run_id, agent=spec.name, turn=turn, text=text))
 
         def forward(
+            target: AgentSpec,
             questions: Mapping[str, Question],
             below: Stop,
             queue: asyncio.Queue[Any],
@@ -1807,6 +1808,7 @@ class Engine:
             return replace(
                 options,
                 questions=questions,
+                context=options.context if target.context == "inherit" else None,
                 history=[],
                 expect=None,
                 stop=below,
@@ -1878,6 +1880,7 @@ class Engine:
                     if kind == "decision" and requested(helper.stop) == "now":
                         return None
                     forwarded = forward(
+                        target,
                         questions,
                         helper.stop,
                         helper.inbox,
@@ -1933,6 +1936,7 @@ class Engine:
                     target = self._agents[args.agent]
                     child_id = uuid4().hex
                     forwarded = forward(
+                        target,
                         _asked(target, args.questions),
                         stop._below(),
                         asyncio.Queue(),

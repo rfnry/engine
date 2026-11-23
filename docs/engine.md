@@ -457,6 +457,7 @@ agents:
 | `skills` | the skills it has | [Skills](#skills) |
 | `orchestration` | the agents it may delegate or route to, how deep and how many at once | [Nesting](#nesting), [Both kinds together](#both-kinds-together) |
 | `workspace` | `true` for a shell and files to write | [Workspace](#workspace) |
+| `context` | `inherit`, the default, or `own`: whether a run `Delegate` starts reads the context of the run that started it | [Nesting](#nesting) |
 | `questions` | a decision agent's questions | [Decision agents](#decision-agents) |
 | `modes` | named overlays of the entry | [Modes](#modes) |
 
@@ -464,11 +465,11 @@ The file is plain data, checked when the engine loads it, so a mistake fails at 
 in a run. A key a section does not take is a `ConfigurationError` naming its dotted path and the
 keys taken there (`manifest: unknown key in /srv/agents/rfnry.yaml: agents.support.file (it takes
 description, instructions, model, max_model_calls, worker, files, tools, skills, orchestration,
-workspace, questions, kind, modes)`), and so is a key with no value, an empty list or an empty
+workspace, questions, context, kind, modes)`), and so is a key with no value, an empty list or an empty
 mapping, which says nothing. An agent has exactly what its entry says: a missing section gives it
 nothing, and there is no `all` or `none` for its tools or skills. A generation agent takes every key
 but `questions` and `orchestration.route`; a decision agent takes `kind`, `model`, `description`,
-`instructions`, `worker`, `questions`, `orchestration.route` and `modes`; a voice agent takes `kind`,
+`instructions`, `worker`, `context`, `questions`, `orchestration.route` and `modes`; a voice agent takes `kind`,
 `model`, `description`, `instructions`, `worker`, `tools` and `modes`; any other key on its entry or
 on a mode is a `ConfigurationError` naming it. A name under `agents:`, `models:`, `tools:`,
 `workers:` or `modes:` is plain — not blank or padded, no leading `.`, no `/` — and so is a `model:`.
@@ -1771,6 +1772,21 @@ never read for `/name`, and the child takes no skill. The child's record is atta
 is how a generation agent asks a fast, calibrated question mid-run: is this destructive, which skill
 applies, is the user done.
 
+`context: own` on an entry says a run `Delegate` starts for it reads none of the context of the run
+that started it: it sees only its input. `inherit`, the default, passes it on, as a delegated run
+always did. The setting is read for the agent that is started, from the run that starts it: in
+`a` → `b` → `c`, with `b` `own` and `c` `inherit`, `c` reads what `b` read, which is none. A run that
+starts at the top reads the `context=` it was given whatever its entry says, and a routed run reads
+its router's, as a route is the same conversation going on. `run.context` shows what a run read, and
+its fingerprint the entry that said so; a folder that never writes `context:` keeps every
+fingerprint it had. The `Delegate` description marks such an agent in its line —
+`- surveyor (sees only its input, not your context): Surveys one region`, and beside the decision
+marker `- triage (decision agent) (sees only its input, not your context): …` — so a model that
+holds private data knows what the helper will not see. A `Delegate` dispatched through an
+`EngineTools` starts runs with no context, under either setting, as `EngineTools` takes no
+`context=`. A mode takes no `context`, nor does a voice agent: it is the entry's, and a mode that
+writes it is a `ConfigurationError`.
+
 The model can also give a decision agent `questions` it composes itself — ids to questions of the
 three types, written as JSON, structure included — asked beside the agent's own in the same call. A
 question that occurs to the model mid-run is answered with probabilities instead of guessed at, and
@@ -1845,7 +1861,7 @@ repeat one, and each helper's step keeps that helper's own `run_id`. The `d` kee
 workspace's `j1`. A run with a store keeps the conversation of each helper that has one under its
 own name and the helper's id, `survey-1/d1`, and passes over every id whose name is already in use,
 so its ids may skip some ([A conversation in your store](#a-conversation-in-your-store)). A helper
-runs as a synchronous child does — the run's tools, workspace, tags, `approve`, `on_event` and
+runs as a synchronous child does — the run's tools, workspace, tags, the context of the run that started it unless its entry says `context: own`, `approve`, `on_event` and
 models, under the same scope, with a stop chained below the lead's and an inbox of its own — and the
 step that started it carries its `run_id` at once, so `engine.send` and `engine.stop` reach it from
 that step's `ToolResultReady` on; its record joins `children` when it ends, in the order helpers
@@ -2088,7 +2104,7 @@ voice:
 
 What it takes follows from what a live model is: `kind`, `model`, `description`, `instructions`,
 `worker`, `tools` and `modes`. It has no loop that opens a file or counts calls, so `files`, `skills`,
-`orchestration`, `workspace`, `questions` and `max_model_calls` are a `ConfigurationError` naming the
+`orchestration`, `workspace`, `questions`, `context` and `max_model_calls` are a `ConfigurationError` naming the
 key, as is a tool its sections would grant, such as `Read`, in `tools.allow`. With no section to
 grant one, its tools are declared tools and runtime tools, each listed under `runtime_tools:`.
 `engine.talk` runs it and refuses any other kind; `engine.run`, `engine.tool`, `delegate_to` and

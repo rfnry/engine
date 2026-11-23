@@ -1187,3 +1187,33 @@ def test_overlaying_leaves_the_entry_as_it_was(tmp_path: Path) -> None:
     overlaid(entry, "m")
     assert entry.tools is not None and entry.tools.deny == ["a"]
     assert entry.modes["m"].tools is not None and entry.modes["m"].tools.deny == ["b"]
+
+
+def test_context_takes_inherit_or_own(tmp_path: Path) -> None:
+    for held in ("inherit", "own"):
+        manifest = read_manifest(write_folder(tmp_path, {"a": {**GENERATION, "context": held}}))
+        assert manifest.agents["a"].context == held
+    _refused(write_folder(tmp_path, {"a": {**GENERATION, "context": "maybe"}}), "context")
+
+
+def test_a_mode_refuses_context(tmp_path: Path) -> None:
+    agent = {**GENERATION, "modes": {"chat": {"context": "own"}}}
+    said = _refused(write_folder(tmp_path, {"writer": agent}), "context")
+    assert said == (
+        "manifest: agents.writer.modes.chat.context in <root>/rfnry.yaml: "
+        "context is set on the entry, not on a mode; remove it"
+    )
+
+
+def test_a_voice_agent_refuses_context(tmp_path: Path) -> None:
+    agent = {"kind": "voice", "model": "m", "instructions": "a.md", "context": "own"}
+    said = _refused(write_folder(tmp_path, {"a": agent}), "context")
+    assert said == (
+        "manifest: agents.a.context in <root>/rfnry.yaml: a voice agent takes only kind, model, "
+        "description, instructions, worker, tools and modes; remove it"
+    )
+
+
+def test_a_decision_agent_takes_context(tmp_path: Path) -> None:
+    entry = read_manifest(write_folder(tmp_path, {"a": {**DECISION, "context": "own"}})).agents["a"]
+    assert entry.context == "own"

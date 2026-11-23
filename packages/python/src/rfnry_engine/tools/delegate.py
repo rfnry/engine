@@ -172,8 +172,12 @@ def delegate_schema(engine: Engine, spec: AgentSpec, background: bool = False) -
     }
 
 
+OWN_MARKER = " (sees only its input, not your context)"
+
+
 def _listed(agent: AgentSpec) -> str:
     shown = " (decision agent)" if agent.kind == "decision" else ""
+    shown += OWN_MARKER if agent.context == "own" else ""
     return f"- {agent.name}{shown}: {agent.description}"
 
 

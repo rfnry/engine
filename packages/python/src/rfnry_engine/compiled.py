@@ -825,6 +825,7 @@ def _spec(
         max_depth=resolved.orchestration.max_depth,
         tool_parallel=resolved.tools.max_parallel,
         delegate_parallel=resolved.orchestration.max_parallel,
+        context=resolved.context,
         background=resolved.orchestration.background,
         background_parallel=resolved.orchestration.max_background,
         mode=mode,

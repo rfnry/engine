@@ -111,6 +111,9 @@ class ModeEntry(_Closed):
     orchestration: Orchestration | None = None
     workspace: bool | None = None
     questions: list[_FolderPath] | None = None
+    context: Literal["inherit", "own"] = Field(
+        default="inherit", exclude_if=lambda held: held == "inherit"
+    )
 
     @field_validator("model")
     @classmethod
@@ -246,7 +249,7 @@ _LEFT_OUT: dict[Kind, tuple[frozenset[str], str]] = {
                 "orchestration.max_background",
             }
         ),
-        "a decision agent takes only kind, model, description, instructions, worker, questions, orchestration.route and modes",
+        "a decision agent takes only kind, model, description, instructions, worker, context, questions, orchestration.route and modes",
     ),
     "voice": (
         frozenset(
@@ -257,6 +260,7 @@ _LEFT_OUT: dict[Kind, tuple[frozenset[str], str]] = {
                 "orchestration",
                 "workspace",
                 "questions",
+                "context",
             }
         ),
         "a voice agent takes only kind, model, description, instructions, worker, tools and modes",
@@ -430,6 +434,11 @@ def _said_keys(entry: ModeEntry) -> set[str]:
 
 
 def _refuse_what_its_kind_leaves_out(name: str, agent: AgentEntry, path: Path) -> None:
+    for mode, entry in agent.modes.items():
+        if "context" in entry.model_fields_set:
+            raise ConfigurationError(
+                f"manifest: agents.{name}.modes.{mode}.context in {path}: context is set on the entry, not on a mode; remove it"
+            )
     left_out, takes = _LEFT_OUT[agent.kind]
     for at, entry in _layers(name, agent):
         taken = sorted(_said_keys(entry) & left_out)
