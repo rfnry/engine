@@ -801,7 +801,7 @@ async def test_a_body_already_in_this_version_s_shape_is_left_as_it_is(schemas: 
         )
     unchanged = {run_id for run_id in before if before[run_id] == after[run_id]}
     assert unchanged == {current.run_id}
-    assert json.loads(rewritten) == {**triage["body"], "mode": None}
+    assert json.loads(rewritten) == {**triage["body"], "mode": None, "paused": []}
 
 
 @pytest.mark.parametrize("table", ["engine_runs", "engine_labels"])

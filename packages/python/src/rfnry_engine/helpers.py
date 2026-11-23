@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from rfnry_engine.errors import error_text
+from rfnry_engine.errors import _Unpausable, error_text
 from rfnry_engine.foreground import FOREGROUND, Foreground, halted
 from rfnry_engine.manifest import Kind
 from rfnry_engine.models import Message, Notice, ToolCall
@@ -196,6 +196,7 @@ class Helpers:
         self.cap = cap
         self.children = children
         self.ready = asyncio.Event()
+        self.fatal: _Unpausable | None = None
         self._next = first
         self._helpers: dict[str, Helper] = {}
         self._notices: list[Message] = []
@@ -244,6 +245,11 @@ class Helpers:
         FOREGROUND.set(here)
         try:
             record = await run(helper)
+        except _Unpausable as exc:
+            self._ended(helper, None, "failed", error_text(exc))
+            self.fatal = self.fatal or exc
+            self.ready.set()
+            return
         except Exception as exc:
             said = error_text(exc)
             self._ended(helper, None, "failed", said)
@@ -343,7 +349,7 @@ class Helpers:
         await helper.inbox.put(text)
 
     def waiting(self) -> bool:
-        return bool(self._notices or self._keeping)
+        return bool(self._notices or self._keeping or self.fatal)
 
     def _unfinished(self) -> list[asyncio.Task[None]]:
         return [helper.task for helper in self._helpers.values() if not helper.task.done()]

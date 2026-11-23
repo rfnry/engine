@@ -2799,8 +2799,8 @@ another scope refuses it before anything runs — `engine: workspace belongs to 
 
 By default an agent calls any tool it has. Pass `approve` and every tool call waits for your answer
 first — the shell, a `Write`, a refund, a `Delegate`. It receives the agent's name and the call, and
-returns `True` to run it, `False` to refuse, or `Refused(reason)` to refuse with a reason the model reads
-(`NotApproved: Shell was not approved: it writes outside the repo`):
+returns `True` to run it, `False` to refuse, `Refused(reason)` to refuse with a reason the model reads
+(`NotApproved: Shell was not approved: it writes outside the repo`), or `Later()` to answer later:
 
 ```python
 async def approve(agent, call):
@@ -2845,8 +2845,26 @@ anything but `True`, `False` or a `Refused` is a `ConfigurationError` (`engine: 
 True, False, Refused(reason) or Later(); got None`). An `approve` that raises fails the run:
 `run` raises what it raised, and the record keeps the error (`PermissionError: approval service
 down`) with no step for that call. Refusing on an error is yours, a `try` in `approve` that returns
-`False`. The run waits in memory, so an approval that takes hours is better refused now and
-continued later from `run.conversation`.
+`False`. The run waits for `approve` in memory, so an approval that takes hours answers `Later()`
+and lets the run pause.
+
+A call answered `Later()` does not run and takes no slot; the rest of its batch runs, and then the
+run pauses instead of calling the model again. `engine.run` returns at once, with `stopped` and
+`error` `None`: `run.paused` lists the calls that wait, each a `Waiting` with the engine's `id` for
+it, its run, agent, conversation key and the call, and each such step says `waiting`, with no
+result yet. The conversation ends with a mark, an assistant message whose `pause` holds a `Pause`
+of those calls: it is stored with the rest when the run has a store, and it is never sent to a
+model. `RunEnded.paused` lists the same calls. A stop pressed while the batch runs wins, in either
+mode: the waiting call is answered `stopped by the user`, as a call a stop cuts is, and the run ends
+stopped. An `Output` after the waiting call in the same reply is refused (`engine: waiting for an
+answer: refund; call Output again once they have one`), and the run pauses. A call a command makes
+through the tool bridge cannot wait: `Later()` for it is answered `NotApproved: lookup waits for an
+answer a command cannot wait for` and the command goes on. Only the top-level `engine.run` pauses,
+and a run its route starts pauses with it: a `Later()` in a voice session, in a run `engine.tool`
+or `EngineTools` starts, or in a run delegated below the top is a `ConfigurationError` that fails
+every run up to the top, never a tool error a model reads (`engine: approve answered Later() for
+lookup of agent 'worker', which cannot wait: a run below the top waits only in a store; pass store=
+and conversation= to engine.run`).
 
 ### Refining
 
@@ -2857,7 +2875,7 @@ label and what really happened, and the three levels of improvement they feed.
 
 Attach a refinery and every run is recorded when it ends — one that raises after its first model
 call too, as far as it got, with its error. A recording that fails is logged as a warning and
-never fails the run, as one does when a model's tool call nests its `args` past 254 levels of lists
+never fails the run, as one does when a model's tool call nests its `args` past 253 levels of lists
 and objects, `args` itself the first, or fewer in a delegated or routed run, deeper than the
 record's serializer goes (`ValueError: Circular reference detected (depth exceeded)`).
 `refinery.run(scope, run_id)` reads a recorded run back, its delegated and routed runs in place, to
@@ -4032,16 +4050,17 @@ Everything the package exports, by role.
 - **Run things:** `Engine`, `AgentInfo`, `OrchestrationInfo`, `RouteInfo`, `Provider`,
   `ModelChoice`, `ModelEntry`, `Stop`, `HistoryLike`, `ConversationStore`, `VoiceStart`, `Spoken`,
   `SpokenLine`.
-- **What a run returns:** `Generation`, `Decision`, `Voice`, `Run`, `Step`, `Fingerprint`; events
-  `RunStarted`, `RunEnded`, `TextDelta`, `ReplyReady`, `ReasoningDelta`, `MessagesTaken`,
-  `ToolCallStarted`, `ToolResultReady`, `CommandOutput`, `Event`.
+- **What a run returns:** `Generation`, `Decision`, `Voice`, `Run`, `Step`, `Fingerprint`,
+  `Waiting`, `Pause`; events `RunStarted`, `RunEnded`, `TextDelta`, `ReplyReady`,
+  `ReasoningDelta`, `MessagesTaken`, `ToolCallStarted`, `ToolResultReady`, `CommandOutput`,
+  `Event`.
 - **Speak to models:** `GenerationModel`, `StreamingGenerationModel`, `OnDelta`, `DecisionModel`,
   `VoiceModel`; `Message`, `Notice`, `ToolSpec`, `ToolCall`, `Reply`, `Usage`, `State`; parts
   `Text`, `Image`, `Audio`, `Document`, `Part`, `Content`; `Choice`, `Score`, `Check`, `Question`;
   `ChoiceAnswer`, `ScoreAnswer`, `CheckAnswer`, `Answer`, `Decided`; the shapes a question and a
   result are read by, `QuestionLike`, `ReplyLike`, `DecidedLike`, `AnswerLike`; `confidence`.
-- **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Refused`, `current_call`, `CallInfo`, `Jail`,
-  `Workspace`, `JobInfo`, `Backend`, `Process`, `Local`.
+- **Give models tools:** `Tool`, `Tools`, `EngineTools`, `Refused`, `Later`, `current_call`,
+  `CallInfo`, `Jail`, `Workspace`, `JobInfo`, `Backend`, `Process`, `Local`.
 - **Refine:** `Refinery`, `Review`, `Outcome`, `Label`, `Labeled`, `Exported`, `Conflict`, `Replay`,
   `Bucket`, `is_holdout`.
 - **Store:** `Storage`, `PostgresStorage`, `RunRow`, `LabelRow`.
@@ -4097,7 +4116,9 @@ engine gives, and a missing workspace; and a tool of the run named `Ask` when it
 generation helper, which that `Delegate` call reads as a tool error. And a `Local` root that is not
 a directory, a `shell` that is not a list of strings or whose first word is not on `PATH`, a backend
 without `spawn`, `read` and `write`, a `Workspace` without a scope, a `timeout` or `output_bytes`
-that is not positive, an `approve` that returns anything but `True`, `False`, `Refused(reason)` or `Later()`, a judge that is not
+that is not positive, an `approve` that returns anything but `True`, `False`, `Refused(reason)` or `Later()`
+or answers `Later()` for a call that cannot wait — in a voice session, in a run `engine.tool` or
+`EngineTools` starts, or in a run delegated below the top-level `engine.run` — a judge that is not
 a decision agent or a teacher that is not a generation agent. `NotFoundError` for an agent the
 folder does not have — a judge, a teacher or a replay's agent in the candidate included — a mode it
 does not have, a skill the agent does not have (`engine: agent 'support' has no skill 'refund'; its

@@ -706,9 +706,9 @@ async def test_a_failed_recording_is_logged_and_the_run_returned(
 
 
 @pytest.mark.parametrize(
-    "levels", [254, 255, 2000], ids=["254-records", "255-unrecorded", "2000-unrecorded"]
+    "levels", [253, 254, 2000], ids=["253-records", "254-unrecorded", "2000-unrecorded"]
 )
-async def test_a_run_whose_args_nest_past_254_levels_is_returned_and_logged_unrecorded(
+async def test_a_run_whose_args_nest_past_253_levels_is_returned_and_logged_unrecorded(
     fixtures: Path,
     storage: Storage,
     caplog: pytest.LogCaptureFixture,
@@ -742,12 +742,12 @@ async def test_a_run_whose_args_nest_past_254_levels_is_returned_and_logged_unre
         f"engine: refinery.record failed for run {run.run_id}",
         (ValueError, "Circular reference detected (depth exceeded)"),
     )
-    assert logged == ([] if levels == 254 else [failure])
+    assert logged == ([] if levels == 253 else [failure])
     try:
         read: Run | None = await refinery.run("acme", run.run_id)
     except NotFoundError:
         read = None
-    assert (isinstance(read, Generation) and read.steps == run.steps) is (levels == 254)
+    assert (isinstance(read, Generation) and read.steps == run.steps) is (levels == 253)
 
 
 async def test_a_tool_that_changes_its_args_leaves_the_record_as_the_model_sent_it(

@@ -41,6 +41,8 @@ def opening(model: str | None, system: str, tools: list[ToolSpec], preload: str)
 
 
 def extend(digest: bytes, message: Message) -> bytes:
+    if message.pause is not None:
+        return digest
     said = message.model_dump(
         mode="json",
         exclude={"prefix", "usage", "model", "settings", "notice", "content"},

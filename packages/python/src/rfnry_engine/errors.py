@@ -6,6 +6,13 @@ class ConfigurationError(EngineException):
     pass
 
 
+class _Unpausable(ConfigurationError):
+    pass
+
+
+_Unpausable.__name__ = _Unpausable.__qualname__ = ConfigurationError.__name__
+
+
 class NotFoundError(EngineException):
     pass
 

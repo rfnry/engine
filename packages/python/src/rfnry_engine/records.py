@@ -30,6 +30,7 @@ from rfnry_engine.models import (
     ToolSpec,
     Usage,
     VoiceModel,
+    Waiting,
 )
 from rfnry_engine.stop import Stopped
 from rfnry_engine.tools.tools import Tools
@@ -63,6 +64,7 @@ class Step(BaseModel):
     stopped: bool = False
     approved: bool | None = None
     by: str | None = None
+    waiting: bool = False
 
 
 class CallInfo(BaseModel):
@@ -112,6 +114,7 @@ class RunEnded(BaseModel):
     call: CallInfo | None
     stopped: Stopped | None
     error: str | None
+    paused: list[Waiting] = Field(default_factory=list)
 
 
 class TextDelta(BaseModel):
@@ -225,6 +228,7 @@ class Generation(BaseModel):
     stopped: Stopped | None = None
     stop_reason: StopReason | None = None
     error: str | None = None
+    paused: list[Waiting] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _input_reads_back(self, info: ValidationInfo) -> Self:
@@ -263,6 +267,7 @@ class Decision(BaseModel):
     usage: Usage
     routed_to: Generation | Decision | None = None
     error: str | None = None
+    paused: list[Waiting] = Field(default_factory=list)
 
     @property
     def added(self) -> list[Message]:

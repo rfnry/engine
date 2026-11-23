@@ -35,6 +35,10 @@ ALLOWED: dict[tuple[str, str], str] = {
         "failed.exceptions[0]",
     ): "a question script's error ends its decision as the decision model's would",
     (
+        "engine.py",
+        "helpers.fatal",
+    ): "a helper's Later() that cannot wait fails its lead with the helper's own error",
+    (
         "frontmatter.py",
         "yaml.constructor.ConstructorError(None, None, f'duplicate key {key!r}', key_node.start_mark)",
     ): "a YAML error, which parse_frontmatter_doc reports as frontmatter: invalid YAML in its file",

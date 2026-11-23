@@ -14,9 +14,12 @@ def export_key(scope: str, agent: str, dataset: str, stamp: str, mode: str | Non
     return f"{scope}/{folder}/{dataset}/{stamp}.jsonl"
 
 
+def _unmarked(messages: list[Any]) -> list[Any]:
+    return [message for message in messages if message.get("pause") is None]
+
+
 def _messages(body: dict[str, Any]) -> list[Any]:
-    messages: list[Any] = body["conversation"][: body["sent"]]
-    return messages
+    return _unmarked(body["conversation"][: body["sent"]])
 
 
 def _fingerprint(body: dict[str, Any]) -> dict[str, Any]:
@@ -60,7 +63,7 @@ def generation_row(row: RunRow, labels: list[Label], *, holdout: bool) -> dict[s
         "start": body["start"],
         "messages": _messages(body),
         "tools": body["tools"],
-        "conversation": body["conversation"],
+        "conversation": _unmarked(body["conversation"]),
         "steps": body["steps"],
         "reply": body["reply"],
         "stopped": body["stopped"],

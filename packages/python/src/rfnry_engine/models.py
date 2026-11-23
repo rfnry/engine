@@ -87,8 +87,9 @@ class Message(BaseModel):
     model: str | None = None
     settings: dict[str, JsonValue] | None = None
     notice: Notice | None = Field(default=None, exclude_if=lambda held: held is None)
+    pause: Pause | None = Field(default=None, exclude_if=lambda held: held is None)
 
-    @field_validator("prefix", "usage", "model", "settings", "notice", mode="wrap")
+    @field_validator("prefix", "usage", "model", "settings", "notice", "pause", mode="wrap")
     @classmethod
     def _engines_own(
         cls, value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo
@@ -120,6 +121,24 @@ class Notice(BaseModel):
                 f"models: a notice of kind 'lost' names no run_id; got {self.run_id!r}"
             )
         return self
+
+
+class Waiting(BaseModel):
+    id: str
+    run_id: str
+    agent: str
+    conversation: str | None = None
+    call: ToolCall
+
+
+class Pause(BaseModel):
+    agent: str
+    run_id: str
+    waiting: list[Waiting] = Field(default_factory=list)
+    below: list[Waiting] = Field(default_factory=list)
+    delegated: dict[str, str] = Field(default_factory=dict)
+    asking: str | None = None
+    held: list[Message] = Field(default_factory=list)
 
 
 class Usage(BaseModel):
@@ -417,7 +436,14 @@ class DecisionModel(Protocol):
 Message.model_rebuild()
 
 CONTAINERS = (dict, list)
-SENT = {"prefix": None, "usage": None, "model": None, "settings": None, "notice": None}
+SENT = {
+    "prefix": None,
+    "usage": None,
+    "model": None,
+    "settings": None,
+    "notice": None,
+    "pause": None,
+}
 
 
 def _copied(value: Any) -> Any:
@@ -446,6 +472,21 @@ def _call(call: ToolCall) -> ToolCall:
     return call.model_copy(update={"args": _copied(call.args)})
 
 
+def _waited(waiting: Waiting) -> Waiting:
+    return waiting.model_copy(update={"call": _call(waiting.call)})
+
+
+def _paused(pause: Pause) -> Pause:
+    return pause.model_copy(
+        update={
+            "waiting": [_waited(waiting) for waiting in pause.waiting],
+            "below": [_waited(waiting) for waiting in pause.below],
+            "delegated": dict(pause.delegated),
+            "held": [_handed(message) for message in pause.held],
+        }
+    )
+
+
 def _handed(message: Message, sent: bool = False) -> Message:
     update: dict[str, Any] = {
         "content": _own(message.content),
@@ -455,6 +496,8 @@ def _handed(message: Message, sent: bool = False) -> Message:
         update["reasoning"] = _copied(message.reasoning)
     if message.notice is not None:
         update["notice"] = message.notice.model_copy()
+    if message.pause is not None:
+        update["pause"] = _paused(message.pause)
     if sent:
         update.update(SENT)
     elif message.settings is not None:
@@ -487,6 +530,10 @@ class VoiceModel(Protocol):
 @dataclass(frozen=True)
 class Refused:
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class Later: ...
 
 
 @dataclass(frozen=True)
