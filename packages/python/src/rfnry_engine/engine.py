@@ -2375,10 +2375,10 @@ class Engine:
                 )
                 try:
                     await save()
-                except Exception as exc:
+                except Exception:
                     with suppress(Exception):
                         await emit(reported)
-                    raise exc
+                    raise
                 await emit(reported)
                 if not streaming and reply.text:
                     await delta(reply.text)
