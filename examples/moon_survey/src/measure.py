@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import asyncpg
-from rfnry_engine import Message, PostgresStorage, Text
+from rfnry_engine import Message, PostgresStorage, Text, ToolCall
 
 import harness
 import moon
@@ -26,13 +26,11 @@ REGION_ID = re.compile(r"[NS]\d\d-\d\d/\d+")
 DIGITS = re.compile(r"(\d+)")
 OURS = "(conversation = $2 or starts_with(conversation, $2 || '/'))"
 SURVEY = "select mode, shape, status, regions from surveys where scope = $1 and survey = $2"
-KEYS = f"select distinct conversation from messages where scope = $1 and {OURS}"
 ROWS = f"""
 select conversation, prompt, at, body::text as body from messages
-where scope = $1 and {OURS} and (prompt is not null or conversation = any($3::text[]))
+where scope = $1 and {OURS}
 order by conversation, position
 """
-SPAN = f"select min(at) as first, max(at) as last from messages where scope = $1 and {OURS}"
 MOVES = f"select conversation, moves from windows where scope = $1 and {OURS}"
 WAITS = """
 select count(*) as count, coalesce(sum(wait), 0) as waited from provider_log
@@ -44,8 +42,9 @@ where scope = $1 and survey = $2
 """
 SPENT = "select total from spend where scope = $1 and survey = $2"
 TWICE = "select count(*) from landed where scope = $1 and survey = $2 and attempts > 1"
-NOTES = "select region, author, text from notes where scope = $1 and survey = $2"
 USAGE_LINE = "usage: uv run src/measure.py <survey> <results.md> [<title>]"
+
+Span = tuple[datetime, datetime]
 
 
 class MeasureError(Exception):
@@ -65,9 +64,9 @@ def text_of(content: Any) -> str:
     return "".join(part.text for part in content if isinstance(part, Text))
 
 
-def data_of(text: str) -> Any:
+def data_of(message: Message) -> Any:
     try:
-        return json.loads(text)
+        return json.loads(text_of(message.content))
     except ValueError:
         return None
 
@@ -76,95 +75,84 @@ def natural(key: str) -> list[Any]:
     return [int(part) if part.isdigit() else part for part in DIGITS.split(key)]
 
 
-def children(key: str, rows: list[Stored]) -> dict[str, str]:
-    asked = {
-        call.id: call.args.get("agent")
-        for row in rows
-        if row.message.role == "assistant"
-        for call in row.message.tool_calls
-        if call.name == "Delegate"
-    }
-    found = {}
+def answered(rows: list[Stored], tools: tuple[str, ...]) -> list[tuple[ToolCall, Stored]]:
+    asked: dict[str, ToolCall] = {}
+    found = []
     for row in rows:
         message = row.message
-        if message.role != "tool" or message.is_error or message.tool_call_id not in asked:
-            continue
-        given = data_of(text_of(message.content))
+        if message.role == "assistant":
+            asked.update({call.id: call for call in message.tool_calls})
+        elif message.role == "tool" and message.tool_call_id in asked:
+            call = asked.pop(message.tool_call_id)
+            if call.name in tools and not message.is_error:
+                found.append((call, row))
+    return found
+
+
+def children(key: str, rows: list[Stored]) -> dict[str, str]:
+    found = {}
+    for call, row in answered(rows, ("Delegate",)):
+        given = data_of(row.message)
         job = given.get("job") if isinstance(given, dict) else None
-        agent = asked[message.tool_call_id]
+        agent = call.args.get("agent")
         if isinstance(job, str) and isinstance(agent, str):
             found[f"{key}/{job}"] = agent
     return found
 
 
-def wall(rows: list[Stored]) -> float:
-    total, first, last = 0.0, None, None
+def named(name: str, shape: str, stored: dict[str, list[Stored]]) -> dict[str, str]:
+    found = {name: harness.TOP[shape]} if shape in harness.TOP else {}
+    for key, rows in stored.items():
+        if key.startswith(harness.boss_prefix(name)):
+            found[key] = "boss"
+        elif key.startswith(harness.surveyor_prefix(name)):
+            found[key] = "surveyor"
+        found.update(children(key, rows))
+    return found
+
+
+def begins(message: Message) -> bool:
+    if message.role != "user":
+        return False
+    return message.notice is None or message.notice.kind == "lost"
+
+
+def spans(rows: list[Stored]) -> list[Span]:
+    found: list[Span] = []
     for row in rows:
-        message = row.message
-        if first is not None and message.role == "user" and message.notice is None:
+        if not found or begins(row.message):
+            found.append((row.at, row.at))
+        else:
+            found[-1] = (found[-1][0], row.at)
+    return found
+
+
+def seconds(found: Iterable[Span]) -> float:
+    total, end = 0.0, None
+    for first, last in sorted(found):
+        if end is None or first > end:
             total += (last - first).total_seconds()
-            first = None
-        if first is None:
-            first = row.at
-        last = row.at
-    if first is not None and last is not None:
-        total += (last - first).total_seconds()
+            end = last
+        elif last > end:
+            total += (last - end).total_seconds()
+            end = last
     return round(total, 3)
 
 
-def size_of(result: Any) -> int:
-    return len((result if isinstance(result, str) else json.dumps(result)).encode())
-
-
-def said_by(dossier: dict[str, Any]) -> list[str]:
-    said = [str(dossier.get("notes") or "")]
-    for value in dossier.get("values", {}).values():
-        for source in value.get("sources", []) if isinstance(value, dict) else []:
-            said.append(str(source.get("source", "")) if isinstance(source, dict) else str(source))
-    return said
-
-
-def names_a_neighbour(region: str, dossier: dict[str, Any], notes: dict[str, list[str]]) -> bool:
-    neighbours = set(moon.region(region).neighbours)
-    said = said_by(dossier)
-    if any(found in neighbours for text in said for found in REGION_ID.findall(text)):
-        return True
-    quoted = [note.strip() for n in neighbours for note in notes.get(n, []) if note.strip()]
-    return any(note in text for note in quoted for text in said)
-
-
-async def conversations(pool: asyncpg.Pool, name: str) -> tuple[set[str], dict[str, list[Stored]]]:
-    keys = {row["conversation"] for row in await pool.fetch(KEYS, SCOPE, name)}
-    parents = {key.rsplit("/", 1)[0] for key in keys}
-    leads = {key for key in keys if key == name or key.startswith(harness.boss_prefix(name))}
-    leads |= keys & parents
-    stored: dict[str, list[Stored]] = {}
-    for row in await pool.fetch(ROWS, SCOPE, name, sorted(leads)):
-        stored.setdefault(row["conversation"], []).append(
-            Stored(row["prompt"], row["at"], Message.model_validate_json(row["body"]))
-        )
-    return leads, stored
-
-
 def agents_of(
-    name: str, shape: str, leads: set[str], stored: dict[str, list[Stored]], moves: dict[str, int]
+    stored: dict[str, list[Stored]], agents: dict[str, str], moves: dict[str, int]
 ) -> dict[str, dict[str, Any]]:
-    agents = {key: "boss" for key in leads if key.startswith(harness.boss_prefix(name))}
-    if shape in harness.TOP:
-        agents[name] = harness.TOP[shape]
-    for key in leads:
-        agents.update(children(key, stored.get(key, [])))
     table = {}
-    for key in sorted(leads, key=natural):
+    for key in sorted(stored, key=natural):
         if agents.get(key) not in LEADS:
             continue
-        rows = stored.get(key, [])
+        rows = stored[key]
         prompt = [row.prompt for row in rows if row.prompt is not None]
         table[key] = {
             "agent": agents[key],
             "calls": len(prompt),
             "prompt": prompt,
-            "wall_s": wall(rows),
+            "wall_s": seconds(spans(rows)),
             "moves": moves.get(key, 0),
         }
     return table
@@ -208,40 +196,46 @@ def lost_of(stored: dict[str, list[Stored]]) -> dict[str, Any]:
     return {"notices": sum(lost.values()), "agents": dict(lost)}
 
 
-def jobs_of(records: list[Any]) -> dict[str, Any]:
+def jobs_of(stored: dict[str, list[Stored]]) -> dict[str, Any]:
     found = sorted(
-        (step for record in records for step in record.body.get("steps", [])),
-        key=lambda step: step["at"],
+        (row.at, len(text_of(row.message.content).encode()))
+        for rows in stored.values()
+        for _, row in answered(rows, ("Jobs",))
     )
-    sizes = [size_of(step["result"]) for step in found if step["tool"] == "Jobs"]
+    sizes = [size for _, size in found]
     return {"calls": len(sizes), "bytes": sizes, "max": max(sizes, default=0), "total": sum(sizes)}
 
 
-async def sharing(pool: asyncpg.Pool, name: str, records: list[Any]) -> dict[str, Any]:
-    surveyors = [record for record in records if record.agent == "surveyor"]
-    ids = {record.run_id for record in surveyors}
-    read = [
-        step
-        for record in surveyors
-        for step in record.body.get("steps", [])
-        if step["tool"] == "notes" and not step["is_error"]
-    ]
-    notes = await pool.fetch(NOTES, SCOPE, name)
+def spread(counts: list[int]) -> dict[str, Any]:
+    if not counts:
+        return {"min": 0, "mean": 0.0, "max": 0}
+    return {"min": min(counts), "mean": round(sum(counts) / len(counts), 2), "max": max(counts)}
+
+
+def sharing(stored: dict[str, list[Stored]], agents: dict[str, str]) -> dict[str, Any]:
+    written, read = [], []
+    for key, rows in stored.items():
+        if agents.get(key) != "surveyor":
+            continue
+        found = answered(rows, ("note", "notes"))
+        written.append(sum(1 for call, _ in found if call.name == "note"))
+        given = [data_of(row.message) for call, row in found if call.name == "notes"]
+        read.append(sum(len(data.get("notes", [])) for data in given if isinstance(data, dict)))
     return {
-        "surveyors": len(surveyors),
-        "written": sum(1 for note in notes if note["author"] in ids),
-        "read": sum(len((data_of(step["result"]) or {}).get("notes", [])) for step in read),
-        "read_calls": len(read),
+        "surveyors": len(written),
+        "written": sum(written),
+        "written_per_surveyor": spread(written),
+        "read_with_rereads": sum(read),
+        "read_with_rereads_per_surveyor": spread(read),
     }
 
 
-async def neighbours_named(pool: asyncpg.Pool, name: str, board: Board) -> dict[str, int]:
-    on: dict[str, list[str]] = {}
-    for note in await pool.fetch(NOTES, SCOPE, name):
-        on.setdefault(note["region"], []).append(note["text"])
-    landed = await board.landed()
-    named = sum(1 for row in landed if names_a_neighbour(row["region"], row["dossier"], on))
-    return {"landed": len(landed), "naming_a_neighbour": named}
+def names_a_neighbour(region: str, dossier: dict[str, Any]) -> bool:
+    neighbours = set(moon.region(region).neighbours)
+    said = [str(dossier.get("notes") or "")]
+    for value in dossier["values"].values():
+        said += [source["source"] for source in value.get("sources", [])]
+    return any(found in neighbours for text in said for found in REGION_ID.findall(text))
 
 
 async def measure(pool: asyncpg.Pool, engine_pool: asyncpg.Pool, name: str) -> dict[str, Any]:
@@ -249,12 +243,18 @@ async def measure(pool: asyncpg.Pool, engine_pool: asyncpg.Pool, name: str) -> d
     if survey is None:
         raise MeasureError(f"measure: survey '{name}' does not exist")
     label = "fake" if survey["mode"] == "fake" else "real"
-    leads, stored = await conversations(pool, name)
+    stored: dict[str, list[Stored]] = {}
+    for row in await pool.fetch(ROWS, SCOPE, name):
+        stored.setdefault(row["conversation"], []).append(
+            Stored(row["prompt"], row["at"], Message.model_validate_json(row["body"]))
+        )
+    agents = named(name, survey["shape"], stored)
+    times = [row.at for rows in stored.values() for row in rows]
     moves = {row["conversation"]: row["moves"] for row in await pool.fetch(MOVES, SCOPE, name)}
     records = await PostgresStorage(engine_pool).run_tree(SCOPE, tags={"survey": name})
     board = Board(pool, SCOPE, name, live=lambda _: False)
     counts = await board.counts()
-    span = await pool.fetchrow(SPAN, SCOPE, name)
+    landed = await board.landed()
     waits = await pool.fetchrow(WAITS, SCOPE, name)
     gated = await pool.fetchrow(GATE, SCOPE, name)
     return {
@@ -268,15 +268,19 @@ async def measure(pool: asyncpg.Pool, engine_pool: asyncpg.Pool, name: str) -> d
         "landed": counts["landed"],
         "failed": counts["failed"],
         "landed_twice": await pool.fetchval(TWICE, SCOPE, name),
-        "wall_s": 0.0
-        if span["first"] is None
-        else round((span["last"] - span["first"]).total_seconds(), 3),
-        "agents": agents_of(name, survey["shape"], leads, stored, moves),
-        "jobs": jobs_of(records),
+        "elapsed_s": round((max(times) - min(times)).total_seconds(), 3) if times else 0.0,
+        "running_s": seconds(span for rows in stored.values() for span in spans(rows)),
+        "agents": agents_of(stored, agents, moves),
+        "jobs": jobs_of(stored),
         "moves": sum(moves.values()),
         "rate_limits": {"429s": waits["count"], "waited_s": round(waits["waited"], 3)},
-        "notes": await sharing(pool, name, records),
-        "dossiers": await neighbours_named(pool, name, board),
+        "notes": sharing(stored, agents),
+        "dossiers": {
+            "landed": len(landed),
+            "naming_a_neighbour": sum(
+                1 for row in landed if names_a_neighbour(row["region"], row["dossier"])
+            ),
+        },
         "models": by_model(stored),
         "spend": await pool.fetchval(SPENT, SCOPE, name) or 0.0,
         "gate": {"calls": gated["calls"], "refused": gated["refused"]},

@@ -4,6 +4,5 @@ description: Says whether a tool call fits the survey, before the call runs
 The app asks this agent about every tool call of the survey before the call runs, and runs the call only on a clear
 yes: a `fits` probability of at least 0.5. An error, a timeout or a missing answer refuses the call.
 
-It judges each call against the caller's task. The state is the call: `agent`, the agent making it; `tool` and `args`;
-`run_id`, the run making it; `task`, the input that run was given; and `region`, the region that run holds on the
-board, `null` when it holds none.
+A decision model is sent no prompt, so what the model reads, the state it judges and the question it answers, is in
+`questions/fits.json`.

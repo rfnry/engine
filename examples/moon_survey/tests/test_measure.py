@@ -1,5 +1,4 @@
 import asyncio
-import json
 import re
 import secrets
 from collections import Counter
@@ -11,7 +10,8 @@ import harness
 import measure
 import merge
 import moon
-from board import Board
+from board import Board, write_note
+from fakes import FakeGate
 from merge import Price, cost_of
 from store import Store
 
@@ -43,16 +43,6 @@ def replies(messages):
 
 def prompts(messages):
     return [m.usage.input + m.usage.cache_read + m.usage.cache_creation for m in replies(messages)]
-
-
-def steps_of(records, agent, tool):
-    return [
-        step
-        for r in records
-        if r.agent == agent
-        for step in r.body["steps"]
-        if step["tool"] == tool and not step["is_error"]
-    ]
 
 
 async def records_of(engine_pool, name):
@@ -93,13 +83,13 @@ async def test_measure_reads_the_numbers_of_a_survey(service, pool, engine_pool,
     )
     [lead] = [r for r in records if r.agent == "lead"]
     assert found["agents"][name]["wall_s"] == pytest.approx(lead.duration_ms / 1000, abs=1.0)
-    assert found["agents"][name]["wall_s"] <= found["wall_s"]
+    assert found["agents"][name]["wall_s"] <= found["running_s"] <= found["elapsed_s"]
 
     jobs = sorted(
         (step["at"], len(step["result"].encode()))
         for r in records
         for step in r.body["steps"]
-        if step["tool"] == "Jobs"
+        if step["tool"] == "Jobs" and not step["is_error"]
     )
     assert jobs and found["jobs"] == {
         "calls": len(jobs),
@@ -130,12 +120,12 @@ async def test_measure_reads_the_numbers_of_a_survey(service, pool, engine_pool,
         name,
         surveyors,
     )
-    read = steps_of(records, "surveyor", "notes")
     assert written == 10 and found["notes"] == {
         "surveyors": 10,
-        "written": written,
-        "read": sum(len(json.loads(step["result"])["notes"]) for step in read),
-        "read_calls": len(read),
+        "written": 10,
+        "written_per_surveyor": {"min": 1, "mean": 1.0, "max": 1},
+        "read_with_rereads": 0,
+        "read_with_rereads_per_surveyor": {"min": 0, "mean": 0.0, "max": 0},
     }
 
     made = [m for messages in kept.values() for m in replies(messages)]
@@ -165,25 +155,26 @@ async def test_measure_reads_the_numbers_of_a_survey(service, pool, engine_pool,
     board = Board(pool, "moon", name, live=lambda _: False)
     rows = await board.landed()
     assert await board.land(rows[0]) is False
-    named, cited = next(
+    cited, sourced = next(
         (row, value)
         for row in rows
         for value in row["dossier"]["values"].values()
         if "sources" in value
     )
-    cited["sources"].append(
-        {"source": f"the notes of {moon.region(named['region']).neighbours[0]}"}
-    )
-    await board.update_landed(named["region"], dossier=named["dossier"])
+    beside = moon.region(cited["region"]).neighbours[0]
+    sourced["sources"].append({"source": f"the notes of {beside}", "mark": "cited"})
+    await board.update_landed(cited["region"], dossier=cited["dossier"])
     surveyed = {row["region"] for row in rows}
-    quoting = next(
+    noted, quoting = [
         row
         for row in rows
-        if row is not named and set(moon.region(row["region"]).neighbours) & surveyed
-    )
-    beside = sorted(set(moon.region(quoting["region"]).neighbours) & surveyed)[0]
-    [note, *_] = await board.notes(beside)
-    quoting["dossier"]["notes"] += f" A neighbour wrote: {note['text']}"
+        if row is not cited and set(moon.region(row["region"]).neighbours) & surveyed
+    ][:2]
+    noted["dossier"]["notes"] += f" {moon.region(noted['region']).neighbours[-1]} agrees."
+    await board.update_landed(noted["region"], dossier=noted["dossier"])
+    near = sorted(set(moon.region(quoting["region"]).neighbours) & surveyed)[0]
+    await board.note(near, "test", "finding", "ok")
+    quoting["dossier"]["notes"] += " ok"
     await board.update_landed(quoting["region"], dossier=quoting["dossier"])
     store = Store(pool)
     told = Message(
@@ -220,6 +211,109 @@ async def test_measure_reads_the_boss_runs_of_the_app_shape(service, pool, engin
     assert found["jobs"] == {"calls": 0, "bytes": [], "max": 0, "total": 0}
     with pytest.raises(measure.MeasureError, match="measure: survey 'nobody' does not exist"):
         await measure.measure(pool, engine_pool, "nobody")
+
+
+class Held(FakeGate):
+    def __init__(self, tools, regions=None):
+        super().__init__()
+        self.tools = tools
+        self.regions = regions
+        self.waiting = Counter()
+
+    async def decide(self, state, questions):
+        tool = state.get("tool")
+        if tool in self.tools and (self.regions is None or state.get("region") in self.regions):
+            self.waiting[tool] += 1
+            try:
+                await self.tools[tool].wait()
+            finally:
+                self.waiting[tool] -= 1
+        return await super().decide(state, questions)
+
+
+async def until(check, seconds=ENDED):
+    async with asyncio.timeout(seconds):
+        while not await check():
+            await asyncio.sleep(0.05)
+
+
+async def test_measure_counts_the_notes_each_surveyor_reads(service, pool, engine_pool):
+    planted, read = asyncio.Event(), asyncio.Event()
+    gate = Held({"notes": planted, "Shell": read})
+    await service(gate=gate)
+    name = fresh()
+    walk = [r for share in moon.shares(25) for r in share][:4]
+    await harness.run(name, mode="fake", shape="app", size=4, cap=2.0)
+    for region in walk:
+        await write_note(pool, "moon", name, region, "test", "finding", f"planted on {region}")
+    planted.set()
+
+    async def all_held():
+        return gate.waiting["Shell"] == len(walk)
+
+    await until(all_held)
+    read.set()
+    assert (await ended(name))["status"] == "done"
+    each = [len(set(moon.region(region).neighbours) & set(walk)) for region in walk]
+    assert sum(each) > 0
+    found = await measure.measure(pool, engine_pool, name)
+    assert found["notes"] == {
+        "surveyors": 4,
+        "written": 4,
+        "written_per_surveyor": {"min": 1, "mean": 1.0, "max": 1},
+        "read_with_rereads": sum(each),
+        "read_with_rereads_per_surveyor": {
+            "min": min(each),
+            "mean": round(sum(each) / len(each), 2),
+            "max": max(each),
+        },
+    }
+
+
+GAP = 1.5
+
+
+async def test_a_crashed_surveys_numbers_leave_out_its_downtime(service, pool, engine_pool):
+    walk = [r for share in moon.shares(25) for r in share][:10]
+    released = asyncio.Event()
+    gate = Held({"Shell": released}, regions=set(walk[5:]))
+    await service(gate=gate, size=1)
+    name = fresh()
+    await harness.run(name, mode="fake", shape="crews", size=10, cap=2.0)
+
+    async def half():
+        counts = (await harness.progress(name))["counts"]
+        return counts["landed"] == 5 and counts["claimed"] == 5
+
+    await until(half)
+    task = harness.held.surveys[name].task
+    task.cancel()
+    await asyncio.wait([task])
+    await asyncio.sleep(GAP)
+    released.set()
+    await harness.resume(name)
+    assert (await ended(name))["status"] == "done"
+
+    found = await measure.measure(pool, engine_pool, name)
+    records = await records_of(engine_pool, name)
+    kept = await stored(pool, name)
+    lead = found["agents"][name]
+    [resumed] = [r for r in records if r.agent == "lead"]
+    assert found["lost"]["notices"] > 0 and found["elapsed_s"] > GAP
+    assert resumed.duration_ms / 1000 - 0.5 <= lead["wall_s"] <= found["elapsed_s"] - GAP
+    assert lead["wall_s"] <= found["running_s"] <= found["elapsed_s"] - GAP
+
+    recorded = Counter(r.agent for r in records)
+    assert recorded["surveyor"] == 10 and found["notes"]["surveyors"] == 15
+    answers = []
+    for messages in kept.values():
+        latest = {}
+        for m in messages:
+            latest.update({call.id: call.name for call in m.tool_calls})
+            if m.role == "tool" and latest.pop(m.tool_call_id, None) == "Jobs":
+                answers.append(m)
+    in_records = [step for r in records for step in r.body["steps"] if step["tool"] == "Jobs"]
+    assert found["jobs"]["calls"] == len(answers) > len(in_records)
 
 
 def test_results_append_a_labelled_section(tmp_path):

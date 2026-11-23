@@ -669,15 +669,18 @@ class Surveyors:
     def running(self) -> list[Job]:
         return [job for job in self.jobs.values() if job.ended is None]
 
+    def busy(self) -> set[str]:
+        return {job.region for job in self.running()}
+
     async def landed(self) -> set[str]:
         rows = await self.shared.opened.pool.fetch(LANDED, SCOPE, self.shared.survey.name)
         return {row["region"] for row in rows}
 
     async def progress(self) -> dict[str, Any]:
+        busy = self.busy()
         regions = await self.shared.board.regions()
         landed = await self.landed()
         counts = await self.shared.board.counts()
-        busy = {job.region for job in self.running()}
         free = [
             region
             for region in regions
@@ -687,8 +690,11 @@ class Surveyors:
 
     async def start(self, region: Any) -> dict[str, str]:
         name = self.shared.survey.name
+        busy = self.busy()
         regions = await self.shared.board.regions()
         landed = await self.landed()
+        if region in busy and region not in self.busy():
+            landed = await self.landed()
         if self.shared.spend.pressed:
             raise SurveyError(
                 "survey: the survey is stopping at its spending cap; nothing more starts"
