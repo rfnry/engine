@@ -1,0 +1,76 @@
+# moon_survey
+
+## Description
+
+A team of agents surveys the Moon's 250 regions. A lead splits the regions among captains, each captain starts
+surveyors, and a surveyor writes one region's dossier, and a second agent cross-checks some of them. The agents share a
+Postgres board where a region is claimed, noted and landed, and the board never lets a landed region be claimed again.
+Every surveyor command runs in a bubblewrap sandbox with no network, every tool call passes a fail-closed gate, and a
+store keeps each conversation in Postgres so a crashed survey resumes where it stopped. The map is the result: a
+region's bounds, its measured values, and its dossier checked against the Lunar Prospector data.
+
+`mode: "fake"` runs every agent on fake models at no cost. `mode: "real"` uses Claude Haiku 5.5, Gemini and TypeSafe.
+
+## Running
+
+Needs Python 3.14, uv, bubblewrap (`bwrap`) and the shared Postgres 18.
+
+```bash
+export RFNRY_EXAMPLES_POSTGRES_URL=postgresql://harness:harness@127.0.0.1:55418/harness
+
+# only for mode "real"
+# export ANTHROPIC_API_KEY=...
+# export GEMINI_API_KEY=...
+# export TYPESAFE_API_KEY=...
+
+# optional
+# export MOON_SURVEY_WORK=...        where the sandboxes and runs are kept (default: .work/)
+# export MOON_SURVEY_DATA=...        where the Lunar Prospector files are (default: data/lp/)
+# export MOON_SURVEY_FAKE_SCALE=1    stretches or shrinks the fake models' delays
+
+rfnry-engine create --url "$RFNRY_EXAMPLES_POSTGRES_URL" --schema moon_engine
+uv run src/setup.py tables
+uv run src/setup.py data
+uv run src/main.py
+```
+
+The app's tables go in the schema `moon` and engine's in `moon_engine`. `setup.py data` downloads the Lunar Prospector
+files and checks them against `data/lp/SOURCES.md`. The service listens on `127.0.0.1:8000`.
+
+## Example
+
+Start a small fake survey: four regions, two crews, a spending cap of 1 dollar.
+
+```bash
+curl -s -X POST localhost:8000/surveys \
+  -d '{"name": "readme-fake", "mode": "fake", "shape": "crews", "size": 4, "cap": 1}'
+```
+
+```json
+{"survey":"readme-fake","mode":"fake","shape":"crews","crews":2,"status":"running","counts":{"landed":0,"failed":0,"claimed":0,"free":4},"spend":0.0,"cap":1.0,"error":null,"reply":null}
+```
+
+Read it until its status is `done`:
+
+```bash
+curl -s localhost:8000/surveys/readme-fake
+```
+
+```json
+{"survey":"readme-fake","mode":"fake","shape":"crews","crews":2,"status":"done","counts":{"landed":4,"failed":0,"claimed":0,"free":0},"spend":0.0,"cap":1.0,"error":null,"reply":"survey done: 2 captains: 2 finished, 0 failed, 0 lost, 0 stopped"}
+```
+
+Read its map:
+
+```bash
+curl -s "localhost:8000/map?survey=readme-fake"
+```
+
+```json
+{"survey":"readme-fake","made":"2026-11-23T07:01:09.969596+00:00","regions":[{"region":"S75-90/0","bounds":{"lat_min":-90.0,"lat_max":-75.0,"lon_min":-180.0,"lon_max":180.0},"measured":{"FeO":{"mean":5.282289230769231,"error":0.033179831567982446,"pixels":195},"TiO2":{...},"Al2O3":{...},"Th":{...},"H":{...}},"dossier":null,"checks":null,"data_check":null,"truth":null,"disputes":null,"provider":"fake"}, ...]}
+```
+
+A fake survey's regions land with `provider: "fake"` and are not shown: their dossiers are null, because a fake model
+writes a stand-in, not a finding. A real survey's regions carry their dossier, its checks, its data check and its
+disputes. `POST /surveys/{name}/resume` carries a stopped or interrupted survey on, with an optional new `cap`.
+`map/moon.json` holds the map of the real survey.
