@@ -515,6 +515,25 @@ class Recording(FakeGate):
         return await super().decide(state, questions)
 
 
+async def test_the_gate_is_told_what_each_tool_does(service):
+    gate = Recording()
+    await service(gate=gate, size=1)
+    name = fresh()
+    await harness.run(name, mode="fake", shape="crews", size=10, cap=2.0)
+    assert (await ended(name))["status"] == "done"
+    does = {}
+    for state in gate.states:
+        does.setdefault((state["agent"], state["tool"]), set()).add(state["tool_does"])
+    assert all(isinstance(told, str) and told for found in does.values() for told in found), does
+    [jobs] = does[("lead", "Jobs")]
+    assert jobs.startswith("List the helpers you started in the background")
+    assert does[("captain", "Jobs")] == {jobs}
+    assert does[("surveyor", "Shell")] == {"Run a shell command"}
+    [claim] = does[("surveyor", "claim")]
+    assert claim.startswith("Take a region for yourself")
+    assert "\n" not in claim
+
+
 async def test_the_gate_sees_each_callers_task(service):
     gate = Recording()
     await service(gate=gate)

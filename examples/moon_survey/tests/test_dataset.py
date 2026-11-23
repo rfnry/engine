@@ -1,5 +1,9 @@
 import hashlib
+import json
 import math
+import statistics
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -233,3 +237,44 @@ def test_a_malformed_hydrogen_row_says_where(tmp_path, monkeypatch):
     (tmp_path / HYDROGEN).write_text("\n".join(lines))
     with pytest.raises(moon.DataError, match=f"moon: {HYDROGEN} line 14 does not parse: "):
         moon.measured("N75-90/0")
+
+
+def spread_of(inside):
+    values = sorted(v for v, _ in inside)
+    deciles = statistics.quantiles(values, n=10, method="inclusive")
+    return {"min": values[0], "p10": deciles[0], "p90": deciles[8], "max": values[-1]}
+
+
+def region_rows(key, region_id):
+    rows = hydrogen_rows() if key == "H" else grs_rows()
+    return [r[key] for r in rows if moon.region_of(r["lat"], r["lon"]) == region_id]
+
+
+@pytest.mark.parametrize("region_id", CUT_REGIONS)
+def test_a_region_carries_the_spread_of_its_pixels(cut, region_id):
+    found = moon.measured(region_id)
+    for key in ("FeO", "TiO2", "Al2O3", "Th", "H"):
+        expected = spread_of(region_rows(key, region_id))
+        got = found[key]
+        assert (got.min, got.p10, got.p90, got.max) == pytest.approx(
+            (expected["min"], expected["p10"], expected["p90"], expected["max"])
+        )
+        assert got.min <= got.p10 <= got.p90 <= got.max
+        assert got.min < got.max
+
+
+@pytest.mark.parametrize("region_id", CUT_REGIONS)
+def test_the_measure_script_prints_the_spread_beside_the_mean(cut, monkeypatch, region_id):
+    src = Path(moon.__file__).resolve().parent
+    script = src.parent / "agents/surveyor/skills/dossier/measure.py"
+    monkeypatch.setenv("MOON_SURVEY_SRC", str(src))
+    done = subprocess.run(
+        [sys.executable, str(script), region_id], capture_output=True, text=True, check=True
+    )
+    printed = json.loads(done.stdout)["values"]
+    for key in ("FeO", "TiO2", "Al2O3", "Th", "H"):
+        inside = region_rows(key, region_id)
+        expected = spread_of(inside)
+        assert set(printed[key]) == {"mean", "error", "pixels", "min", "p10", "p90", "max"}
+        for name, value in expected.items():
+            assert printed[key][name] == pytest.approx(value)

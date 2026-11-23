@@ -241,6 +241,17 @@ class Limiter:
             await self.sleep(start - now)
 
 
+tools_do: dict[tuple[bool, str], str] = {}
+
+
+def learn(tools: list[ToolSpec]) -> None:
+    delegating = any(tool.name == "Delegate" for tool in tools)
+    for tool in tools:
+        lines = tool.description.strip().splitlines()
+        if lines:
+            tools_do[(delegating, tool.name)] = lines[0].split(". ")[0].rstrip(".")
+
+
 def text_of(content: Content) -> str:
     if isinstance(content, str):
         return content
@@ -270,6 +281,7 @@ class Haiku:
         self.max_tokens = max_tokens
 
     async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        learn(tools)
         request: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -369,6 +381,7 @@ class Gemini:
         self.limiter = limiter or Limiter()
 
     async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        learn(tools)
         request: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}, *self.turns(messages)],

@@ -6,6 +6,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from rfnry_engine import Event, RunEnded, Stop, Usage
 from rfnry_engine import Message as EngineMessage
 
 import moon
+import setup
 from board import Board
 from sandbox import Sandboxes
 
@@ -107,9 +109,16 @@ class Spend:
         await self._add(model, usage)
 
 
+@cache
+def dataset_urls() -> frozenset[str]:
+    return frozenset(source.url for source in setup.parse_sources(setup.SOURCES))
+
+
 def mark(source: str, fetched: set[str]) -> dict[str, str]:
     if source in fetched:
         return {"source": source, "mark": "fetched"}
+    if source in dataset_urls():
+        return {"source": source, "mark": "dataset"}
     if source.startswith("https://"):
         return {"source": source, "mark": "cited"}
     if LUNAR_PROSPECTOR.search(source) or "data/lp" in source:

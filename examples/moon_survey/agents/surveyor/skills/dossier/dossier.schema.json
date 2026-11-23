@@ -27,7 +27,7 @@
       ]
     },
     "values": {
-      "description": "Every value of the region: a range with its confidence and sources, or unknown with the reason.",
+      "description": "Every value of the region: the range of the value across the region, what a mission would find in it, with the surveyor's confidence in that range and its sources, or unknown with the reason.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -40,7 +40,7 @@
       ],
       "properties": {
         "water_ice": {
-          "description": "Water ice, the region's average in the top metre of regolith, in wt%. Concentrations in cold traps go in notes, not here.",
+          "description": "Water ice, the average in the top metre of regolith, its range across the region, in wt%. Concentrations in cold traps go in notes, not here.",
           "unit": "wt%",
           "$ref": "#/$defs/quantity",
           "properties": {
@@ -55,7 +55,7 @@
           }
         },
         "TiO2": {
-          "description": "Titanium dioxide, the region's average at the surface, in wt%.",
+          "description": "Titanium dioxide, the range across the region at the surface, in wt%.",
           "unit": "wt%",
           "$ref": "#/$defs/quantity",
           "properties": {
@@ -70,7 +70,7 @@
           }
         },
         "FeO": {
-          "description": "Iron oxide, the region's average at the surface, in wt%.",
+          "description": "Iron oxide, the range across the region at the surface, in wt%.",
           "unit": "wt%",
           "$ref": "#/$defs/quantity",
           "properties": {
@@ -85,7 +85,7 @@
           }
         },
         "Al2O3": {
-          "description": "Aluminium oxide, the region's average at the surface, in wt%.",
+          "description": "Aluminium oxide, the range across the region at the surface, in wt%.",
           "unit": "wt%",
           "$ref": "#/$defs/quantity",
           "properties": {
@@ -100,7 +100,7 @@
           }
         },
         "Th": {
-          "description": "Thorium, the region's average at the surface, in ppm.",
+          "description": "Thorium, the range across the region at the surface, in ppm.",
           "unit": "ppm",
           "$ref": "#/$defs/quantity",
           "properties": {
@@ -115,7 +115,7 @@
           }
         },
         "He3": {
-          "description": "Helium-3 implanted by the solar wind, the region's average in the regolith, in ppb.",
+          "description": "Helium-3 implanted by the solar wind, the range across the region in the regolith, in ppb.",
           "unit": "ppb",
           "$ref": "#/$defs/quantity",
           "properties": {
@@ -193,7 +193,7 @@
           }
         }
       },
-      "description": "A range from low to high, low at most high, with its confidence and sources."
+      "description": "The range of the value across the region, from low to high, low at most high, taken from the spread of the region's pixels and widened by what the sources show; confidence is how sure the surveyor is of that range."
     },
     "unknown": {
       "type": "object",

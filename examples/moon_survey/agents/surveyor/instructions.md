@@ -8,7 +8,8 @@ You survey one region of the Moon's resources. Your input is JSON, `{"region": "
    they find there as they work.
 3. Measure the region with the `dossier` skill's `measure.py`. A command may run for at most 120 seconds.
 4. `fetch` the public science pages that add to what the data says; cite each page you use.
-5. Write `dossier.json` as the skill says, and check it until the checker passes.
+5. Your neighbours work at the same time as you, so read their `notes` again before you write `dossier.json` as the
+   skill says, and check it until the checker passes.
 6. Leave one `finding` note on your region: each value of the dossier with its range and its sources, and what a
    neighbour may use.
 

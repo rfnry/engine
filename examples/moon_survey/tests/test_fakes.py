@@ -8,7 +8,7 @@ import pytest
 from rfnry_engine import CheckAnswer, Message, Notice, Reply, ToolCall, ToolSpec
 
 import moon
-from fakes import FakeGate, Limits, Profile, fakes
+from fakes import ROLES, FakeGate, Limits, Profile, fakes
 from providers import ProviderError
 from tools import FakeWeb
 
@@ -702,15 +702,16 @@ async def test_a_reply_waits_a_latency_drawn_from_the_profile_and_repeats():
     assert slept[-1] == draws[0] / 2
 
 
-async def test_the_profile_loads_with_a_scale_and_labels_its_placeholders():
+async def test_the_profile_loads_with_a_scale_and_names_its_calibration():
     path = HERE / "data" / "fake_profile.json"
     loaded = Profile.load(path)
-    assert loaded.source == "placeholder until the calibration"
+    assert loaded.source == "the calibration cal-1, 2026-11-23"
     assert loaded.scale == 1.0
     assert Profile.load(path, scale=0).scale == 0
     for name in ("lead", "flat", "captain", "surveyor", "crosscheck", "crosscheck_second", "boss"):
         assert loaded.latency[name] and loaded.size[name]
-    assert json.loads(path.read_text())["source"] == "placeholder until the calibration"
+    assert json.loads(path.read_text())["source"] == "the calibration cal-1, 2026-11-23"
+    assert set(loaded.latency) >= set(ROLES) and set(loaded.size) >= set(ROLES)
 
 
 async def test_a_scale_of_zero_runs_instantly():

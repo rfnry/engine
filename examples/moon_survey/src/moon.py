@@ -43,6 +43,10 @@ class Value:
     mean: float
     error: float
     pixels: int
+    min: float
+    p10: float
+    p90: float
+    max: float
 
 
 @dataclass(frozen=True)
@@ -210,6 +214,13 @@ def pixels_by_region(directory: Path) -> MappingProxyType[str, tuple[Pixel, ...]
     return MappingProxyType({k: tuple(v) for k, v in grouped.items()})
 
 
+def percentile(ordered: list[float], share: float) -> float:
+    at = (len(ordered) - 1) * share
+    below = math.floor(at)
+    above = min(below + 1, len(ordered) - 1)
+    return ordered[below] + (ordered[above] - ordered[below]) * (at - below)
+
+
 def measured(region_id: str) -> dict[str, Value | None]:
     region(region_id)
     inside = pixels_by_region(data_dir()).get(region_id, ())
@@ -222,7 +233,16 @@ def measured(region_id: str) -> dict[str, Value | None]:
         n = len(taken)
         mean = sum(v for v, _ in taken) / n
         error = math.sqrt(sum(e * e for _, e in taken)) / n
-        found[key] = Value(mean, error, n)
+        ordered = sorted(v for v, _ in taken)
+        found[key] = Value(
+            mean,
+            error,
+            n,
+            ordered[0],
+            percentile(ordered, 0.1),
+            percentile(ordered, 0.9),
+            ordered[-1],
+        )
     return found
 
 

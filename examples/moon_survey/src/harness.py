@@ -37,7 +37,7 @@ import moon
 from board import Board, board_tools, create_survey, write_note
 from fakes import FakeGate, Limits, Profile, fakes
 from merge import Merge, Spend, crosschecked, map_of
-from providers import GEMINI_PER_MINUTE, anthropic, gemini, provider_log, typesafe
+from providers import GEMINI_PER_MINUTE, anthropic, gemini, provider_log, tools_do, typesafe
 from sandbox import Sandboxes
 from store import SIZE, Store
 from tools import FakeWeb, FetchLog, Web, boss_tools, fetch_tool
@@ -513,6 +513,8 @@ def gate(
     models: dict[str, Any] | None,
     tasks: dict[str, str | None],
 ) -> Callable[[str, ToolCall], Any]:
+    delegating = {name for name, info in opened.engine.agents.items() if info.delegate_to}
+
     async def approve(agent: str, call: ToolCall) -> bool:
         deadline = asyncio.get_running_loop().time() + GATE_TIMEOUT
         found = current_call()
@@ -528,6 +530,7 @@ def gate(
                     "run_id": run_id,
                     "region": region,
                     "task": tasks.get(run_id),
+                    "tool_does": tools_do.get((agent in delegating, call.name)),
                 }
                 decision = await opened.engine.run(
                     "gate", SCOPE, state, record=False, models=models

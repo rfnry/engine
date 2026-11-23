@@ -21,7 +21,7 @@ from rfnry_engine import (
     Usage,
 )
 
-from providers import ProviderError, provider_log, text_of
+from providers import ProviderError, learn, provider_log, text_of
 
 Sleep = Callable[[float], Awaitable[object]]
 Log = Callable[[str, str, int | None, float, dict[str, str]], Awaitable[object]]
@@ -230,6 +230,7 @@ class Fake:
         self.profile, self.sleep, self.limits = profile, sleep, limits
 
     async def generate(self, system: str, messages: list[Message], tools: list[ToolSpec]) -> Reply:
+        learn(tools)
         if self.limits is not None:
             await self.limits.wait()
         key = f"{text_of(messages[0].content) if messages else ''}|{len(messages)}"

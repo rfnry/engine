@@ -71,13 +71,17 @@ class Flight:
         return run_id not in self.gone
 
 
+def value(mean, error, pixels):
+    return Value(mean, error, pixels, mean, mean, mean, mean)
+
+
 def stub_measured(region):
     return {
-        "FeO": Value(8.0, 1.0, 10),
-        "TiO2": Value(0.6, 0.2, 10),
-        "Al2O3": Value(20.0, 1.0, 10),
-        "Th": Value(1.0, 0.5, 10),
-        "H": Value(100.0, 0.0, 10),
+        "FeO": value(8.0, 1.0, 10),
+        "TiO2": value(0.6, 0.2, 10),
+        "Al2O3": value(20.0, 1.0, 10),
+        "Th": value(1.0, 0.5, 10),
+        "H": value(100.0, 0.0, 10),
     }
 
 
@@ -154,7 +158,7 @@ async def test_a_clean_dossier_lands(pool, scope, dossier):
         if "sources" in value
     }
     assert marks == {
-        "water_ice": ["cited"],
+        "water_ice": ["dataset"],
         "TiO2": ["fetched"],
         "FeO": ["fetched"],
         "Al2O3": ["dataset"],
@@ -185,6 +189,7 @@ async def test_sources_are_marked_by_what_they_are(pool, scope, dossier):
         "https://arxiv.org/abs/1",
         "data/lp/hydrogenlow.txt",
         "a textbook",
+        "https://pds-geosciences.wustl.edu/missions/lunarp/reduced/hydrogenlow.txt",
     ]
     places.put("a", mixed)
     await merge.on_event(ended("a"))
@@ -194,6 +199,10 @@ async def test_sources_are_marked_by_what_they_are(pool, scope, dossier):
         {"source": "https://arxiv.org/abs/1", "mark": "cited"},
         {"source": "data/lp/hydrogenlow.txt", "mark": "dataset"},
         {"source": "a textbook", "mark": "cited"},
+        {
+            "source": "https://pds-geosciences.wustl.edu/missions/lunarp/reduced/hydrogenlow.txt",
+            "mark": "dataset",
+        },
     ]
 
 
@@ -279,7 +288,7 @@ async def test_a_truth_region_is_compared(pool, scope, dossier):
 )
 async def test_the_data_check_allows_the_datasets_error(pool, scope, dossier, mean, error, verdict):
     def measured(region):
-        return {**stub_measured(region), "FeO": Value(mean, error, 4)}
+        return {**stub_measured(region), "FeO": value(mean, error, 4)}
 
     board, places, merge = await made(pool, scope, [REGION], measured=measured)
     await board.claim(REGION, "a")
@@ -291,7 +300,7 @@ async def test_the_data_check_allows_the_datasets_error(pool, scope, dossier, me
 
 async def test_water_is_checked_one_sided_against_hydrogen(pool, scope, dossier):
     def measured(region):
-        return {**stub_measured(region), "H": Value(200.0, 0.0, 4)}
+        return {**stub_measured(region), "H": value(200.0, 0.0, 4)}
 
     board, places, merge = await made(pool, scope, [REGION, "S75-90/0"], measured=measured)
     await board.claim(REGION, "a")
