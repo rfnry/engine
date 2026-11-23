@@ -403,6 +403,7 @@ class Gemini:
             if usage and usage.prompt_tokens_details
             else 0
         )
+        signed = any(getattr(c, "extra_content", None) for c in calls)
         return Reply(
             text=choice.message.content or "",
             tool_calls=[
@@ -413,6 +414,7 @@ class Gemini:
                 )
                 for n, c in enumerate(calls)
             ],
+            reasoning=[self.kept(c, n) for n, c in enumerate(calls)] if signed else None,
             usage=Usage(
                 input=(usage.prompt_tokens - cached) if usage else 0,
                 output=usage.completion_tokens if usage else 0,
@@ -422,6 +424,17 @@ class Gemini:
             model=self.model,
             settings=settings,
         )
+
+    def kept(self, call: Any, n: int) -> dict[str, Any]:
+        kept: dict[str, Any] = {
+            "id": call.id or f"call_{n}",
+            "type": "function",
+            "function": {"name": call.function.name, "arguments": call.function.arguments or "{}"},
+        }
+        extra = getattr(call, "extra_content", None)
+        if extra:
+            kept["extra_content"] = extra
+        return kept
 
     def turns(self, messages: list[Message]) -> list[dict[str, Any]]:
         turns: list[dict[str, Any]] = []
@@ -439,7 +452,9 @@ class Gemini:
                 )
             elif message.role == "assistant":
                 turn: dict[str, Any] = {"role": "assistant", "content": text or None}
-                if message.tool_calls:
+                if message.tool_calls and message.reasoning:
+                    turn["tool_calls"] = message.reasoning
+                elif message.tool_calls:
                     turn["tool_calls"] = [
                         {
                             "id": c.id,

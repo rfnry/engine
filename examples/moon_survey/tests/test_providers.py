@@ -525,6 +525,76 @@ async def test_gemini_maps_a_completion():
     ]
 
 
+SIGNATURE = {"google": {"thought_signature": "Eo4BCosBAWkUfROEHBhSjkAMW22p79"}}
+
+
+def gemini_over(chat):
+    time = Time()
+    return Gemini(
+        SimpleNamespace(chat=SimpleNamespace(completions=chat)),
+        "gemini-3.5-flash-lite",
+        None,
+        retry(time, Logged()),
+        Limiter(15, time.clock, time.sleep),
+    )
+
+
+async def test_gemini_keeps_the_signed_tool_calls_and_sends_them_back_unchanged():
+    call = SimpleNamespace(
+        type="function",
+        id="call_1",
+        function=SimpleNamespace(name="echo", arguments='{"text":"ready"}'),
+        extra_content=SIGNATURE,
+    )
+    chat = Completions([completion(None, [call], "tool_calls"), completion("done")])
+    model = gemini_over(chat)
+    first = await model.generate("sys", [Message(role="user", content="go")], [SPEC])
+    assert first.reasoning == [
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "echo", "arguments": '{"text":"ready"}'},
+            "extra_content": SIGNATURE,
+        }
+    ]
+    assert json.loads(json.dumps(first.reasoning)) == first.reasoning
+    history = [
+        Message(role="user", content="go"),
+        Message(
+            role="assistant",
+            tool_calls=first.tool_calls,
+            reasoning=first.reasoning,
+        ),
+        Message(role="tool", content="ready", tool_call_id="call_1"),
+    ]
+    await model.generate("sys", history, [SPEC])
+    sent = chat.calls[1]["messages"][2]
+    assert sent == {"role": "assistant", "content": None, "tool_calls": first.reasoning}
+
+
+async def test_gemini_replays_without_the_signature_when_the_engine_stripped_the_reasoning():
+    chat = Completions([completion("done")])
+    model = gemini_over(chat)
+    history = [
+        Message(role="user", content="go"),
+        Message(role="assistant", tool_calls=[ToolCall(id="c0", name="echo", args={"a": 1})]),
+        Message(role="tool", content="ready", tool_call_id="c0"),
+    ]
+    await model.generate("sys", history, [SPEC])
+    assert chat.calls[0]["messages"][2]["tool_calls"] == [
+        {"id": "c0", "type": "function", "function": {"name": "echo", "arguments": '{"a": 1}'}}
+    ]
+
+
+async def test_a_gemini_reply_without_signatures_has_no_reasoning():
+    call = SimpleNamespace(
+        type="function", id="c0", function=SimpleNamespace(name="echo", arguments="{}")
+    )
+    chat = Completions([completion(None, [call], "tool_calls")])
+    reply = await gemini_over(chat).generate("sys", [Message(role="user", content="go")], [SPEC])
+    assert reply.reasoning is None
+
+
 async def test_gemini_ignores_an_effort_the_api_does_not_name():
     chat = Completions([completion("hi")])
     time = Time()
