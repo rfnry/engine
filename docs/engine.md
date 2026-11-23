@@ -814,21 +814,21 @@ run.fingerprint.tools                                # "a02c77e1f4b9d305": the t
 `fingerprint.agent` is a short sha256 over the agent's entry, resolved for the run's mode with the
 entries of the tools it picks, and over every file it reaches, by its path from the root and its
 content: its instructions, the files its `files` reaches and preloads, the folders of the skills it
-holds, offered to the model or not, its tools' modules, schemas and the modules beside them that they
-import, and its questions with their scripts — what `files` leaves out, a `.gitignore` under
+holds, offered to the model or not, its tools' modules, schemas and the modules beside them that
+they import, and its questions with their scripts — what `files` leaves out, a `.gitignore` under
 `files.gitignore: true` included, it leaves out too. Editing another agent's entry changes nothing
 here, and neither does `models:`, which is outside it. The engine takes it once, when it loads the
-folder, so an edit shows in the next `Engine` built from the folder.
-`fingerprint.tools` is one over `run.tools` — each tool's name, description and schema — so it
-covers the tools of the folder it picks, the `tools=` a run passes, `Output` when `expect=`
-asks for one, in `Delegate` the agents it may call — their names, descriptions and kinds — and a
-workspace's tools, whose `Shell` description says whether the workspace has `tree=` and whether its
-commands can call tools.
-Neither sees what varies per run and is not the agent — the input, the history, `context=`, `tags=`
-— so two runs of an unchanged folder share it and any edit changes it, a tool's script included. The
-model is `run.model`; the code behind a tool a run passes is yours to version. A decision run
-carries one too, its `tools` the fingerprint of no tools and its `questions` the questions it asked
-([Decision agents](#decision-agents)), and each delegated or routed run carries its own.
+folder, so an edit shows in the next `Engine` built from the folder. `fingerprint.tools` is one over
+`run.tools` — each tool's name, description and schema — so it covers the tools of the folder it
+picks, the `tools=` a run passes, `Output` when `expect=` asks for one, in `Delegate` the agents it
+may call — their names, descriptions, kinds and whether each sees only its input — and a workspace's
+tools, whose `Shell` description says whether the workspace has `tree=` and whether its commands can
+call tools. Neither sees what varies per run and is not the agent — the input, the history,
+`context=`, `tags=` — so two runs of an unchanged folder share it and any edit changes it, a tool's
+script included. The model is `run.model`; the code behind a tool a run passes is yours to version.
+A decision run carries one too, its `tools` the fingerprint of no tools and its `questions` the
+questions it asked ([Decision agents](#decision-agents)), and each delegated or routed run carries
+its own.
 
 Keep the conversation yourself and pass it back. `run.conversation` is the history the run was
 sent, the input, every assistant turn — its text in `content`, its calls in `tool_calls`, its
@@ -971,30 +971,31 @@ the run works for — the `Delegate` call that started a delegated run, the call
 consult was made in, the call that started the decision run a run was routed by — or `None` for a
 run started outside any tool call. A frontend places every later event of that `run_id` under that
 call, so a sub-agent's text, reasoning and tool calls show nested under the call that asked for
-them, at any depth. The event names the call even when it was made in another scope, so a consult
-in a shared scope still nests where it was asked; the run's record keeps a `call` only from its own
+them, at any depth. The event names the call even when it was made in another scope, so a consult in
+a shared scope still nests where it was asked; the run's record keeps a `call` only from its own
 scope, so no stored row holds another tenant's ids. It also carries the run's `input` and the
 `tools` it offers, the same values as the run's record, as copies: a handler that changes them
 changes nothing the model is sent or the record keeps, so a helper's observer reads what it was
-asked without matching events by call id. A
-decision run sends no `RunStarted`: the `ToolCallStarted` and `ToolResultReady` of the call that
-asked it show it, and its one event is a `ReplyReady`. A `ReasoningDelta` is the model's reasoning
-as the adapter streams it, with its turn, to show apart from the reply: it never becomes part of
-the reply or the conversation, which keeps the
-reasoning as the adapter returned it, and reasoning streamed before `stop.now()` is not kept. A model
-that does not stream its reasoning sends none.
+asked without matching events by call id. A decision run sends no `RunStarted`: the
+`ToolCallStarted` and `ToolResultReady` of the call that asked it show it, and its one event is a
+`ReplyReady`. A `ReasoningDelta` is the model's reasoning as the adapter streams it, with its turn,
+to show apart from the reply: it never becomes part of the reply or the conversation, which keeps
+the reasoning as the adapter returned it, and reasoning streamed before `stop.now()` is not kept. A
+model that does not stream its reasoning sends none.
 
 Every model reply sends one `ReplyReady`: `run_id`, `agent`, `turn`, the `model` and `settings`
-the reply's message records, its `usage` (`Usage()` when the adapter reported none) and its
+its record holds, its `usage` (`None` when the model reported none, which is not zero cost) and its
 `stop_reason`. A generation run sends it once its reply is saved to the conversation, before the
 reply's tool calls run, so a reply that is not streamed sends its single `TextDelta` after it,
-while a streamed reply's deltas came during the model call, before it. A decision run sends one,
-`turn=0` with no `stop_reason`, right after the model decided and before its answers are checked
-against the questions, so answers that do not fit still send it; a decision run without `on_event`
-sends nothing. A model call a stop cut off, or that raised, sends none, and a value the adapter
-returned that is no reply or decision never parsed, so it sends none either. A handler that raises
-on it fails the run as for any event, with the reply already in the store. The `usage` of a run's
-events sum to its `usage`, so a consumer counts spend as it happens, with no store.
+while a streamed reply's deltas came during the model call, before it. When the store fails to take
+the reply, the event is still sent, and the run then raises the store's error, even if the handler
+raises too. A decision run sends one, `turn=0` with no `stop_reason`, right after the model decided
+and before its answers are checked against the questions, so answers that do not fit still send it;
+a decision run without `on_event` sends nothing. A model call a stop cut off, or that raised, sends
+none, and a value the adapter returned that is no reply or decision never parsed, so it sends none
+either. A handler that raises on it fails the run as for any event, with the reply already in the
+store. The `usage` of a run's events, for the replies that report usage, sums to its `usage`, so a
+consumer counts spend as it happens, with no store.
 
 Every generation run also ends with a `RunEnded`, after its last other event: `run_id`, `agent`, the
 same `call` its `RunStarted` carried, `stopped` (`"now"` or `"after_step"`, whether set by the
@@ -1062,29 +1063,30 @@ call cut off by `now()` is answered with the error `stopped by the user` and its
 `stopped=True`, so every tool call in `run.conversation` has its result and the next run continues
 from it. A call the stop finds not yet running never runs: a stop from a handler of a call's
 `ToolCallStarted` comes before its tool runs, and one from a handler of a reply's `TextDelta` before
-any of the reply's calls. A handler still running when a stop cancels its call, or a streamed
-`TextDelta` or `ReasoningDelta` handler, is cancelled with that work, so a kill switch does its own
-work, such as an audit, before it calls `stop.now()`. A call that already has its result keeps it,
-and the stop waits for an `on_event` still handling its `ToolResultReady` to return: a handler can
-stop the run on what a tool returned; a slow one delays the stop, and cancelling the run cancels it.
-The stop waits the same way for a handler of a `RunStarted` or a `MessagesTaken`, which the run sends
-between its steps, and one such handler sets ends the run before its next model call. Cancelling the run's
-task cancels its model call and every tool call still running, delegations and their runs included,
-and re-raises once all of them have ended, as an `asyncio.TaskGroup` does — a call whose tool
-returns after the cancel ends with it, before its `ToolResultReady` — and a stop waits the same way
-for the work it cancels, so a tool that ignores cancellation holds either one. The first stop is
-graceful: a workspace command is sent SIGTERM and given a second to end, and one the workspace is
-already stopping on its own — a `Shell` past its timeout, the kill after a `Shell` ended,
-`Job(stop=true)` or `close()` — counts as stopped once, so the first stop lets its second run out. A
-second stop — `stop.now()` again, or cancelling a run that is already stopping — ends what is still
-running at once, with no grace period: each further `now()` cancels once more every tool call still
-running but a call whose generation run — a delegated one, or a consult through `engine.tool` —
-takes the same `now()`, and a call whose `ToolResultReady` handler the stop waits for; each further
-cancel cancels everything still running once more; and a workspace kills its command outright. A
-stop set before the run starts ends it before the first model call; one set after it ended does
-nothing. A stop reaches delegated and routed runs, a lead's [helpers](#in-the-background), and the
-runs an `engine.tool` starts while the run calls it, which end the same way at their own next
-boundary. With `after_step()` pending the
+any of the reply's calls; a stop from a handler of a reply's `ReplyReady` acts the same way, `now`
+before any of the reply's calls run and `after_step` after them. A handler still running when a stop
+cancels its call, or a streamed `TextDelta` or `ReasoningDelta` handler, is cancelled with that
+work, so a kill switch does its own work, such as an audit, before it calls `stop.now()`. A call
+that already has its result keeps it, and the stop waits for an `on_event` still handling its
+`ToolResultReady` to return: a handler can stop the run on what a tool returned; a slow one delays
+the stop, and cancelling the run cancels it. The stop waits the same way for a handler of a
+`RunStarted` or a `MessagesTaken`, which the run sends between its steps, and one such handler sets
+ends the run before its next model call. Cancelling the run's task cancels its model call and every
+tool call still running, delegations and their runs included, and re-raises once all of them have
+ended, as an `asyncio.TaskGroup` does — a call whose tool returns after the cancel ends with it,
+before its `ToolResultReady` — and a stop waits the same way for the work it cancels, so a tool that
+ignores cancellation holds either one. The first stop is graceful: a workspace command is sent
+SIGTERM and given a second to end, and one the workspace is already stopping on its own — a `Shell`
+past its timeout, the kill after a `Shell` ended, `Job(stop=true)` or `close()` — counts as stopped
+once, so the first stop lets its second run out. A second stop — `stop.now()` again, or cancelling a
+run that is already stopping — ends what is still running at once, with no grace period: each
+further `now()` cancels once more every tool call still running but a call whose generation run — a
+delegated one, or a consult through `engine.tool` — takes the same `now()`, and a call whose
+`ToolResultReady` handler the stop waits for; each further cancel cancels everything still running
+once more; and a workspace kills its command outright. A stop set before the run starts ends it
+before the first model call; one set after it ended does nothing. A stop reaches delegated and
+routed runs, a lead's [helpers](#in-the-background), and the runs an `engine.tool` starts while the
+run calls it, which end the same way at their own next boundary. With `after_step()` pending the
 inbox is not read. Whatever is still in the inbox when the run ends stays there — the engine never
 starts a run; you do, with those messages as its input. A decision run never reads the inbox: its
 questions are one call, and a stop or an inbox rides to the run it routes to; a stop that finds a
@@ -1378,10 +1380,12 @@ reply's `prefix` is the hash of the window it was sent with — the model, the s
 tools, the preloaded files and the messages from the window's start. A message's reasoning goes back
 only while the window still holds the prefix it was given after, so it goes on going back while the
 start holds still, a resume whose window starts where it did included, and stops once the start
-moves; the store keeps it as it was appended. A start that moves inside a tool loop, at a message
-the person did not send, sends the open turn's tool call without its reasoning, which a vendor may
-refuse; a store that moves its start only at a message the person sent keeps it. Where the start
-moves is the store's policy; the engine refuses only a start that cuts a tool call from its result.
+moves; the store keeps it as it was appended. A start that moves while a tool loop is open, meaning
+the newest message is a tool result, sends the open turn's tool call without its reasoning wherever
+the new start is, which a vendor may refuse; a store that moves its start only when the newest
+message is one the person sent keeps it. Where the start moves is the store's policy; the engine
+refuses only a start it cannot send: one outside the conversation, or one that cuts a tool call from
+its result.
 
 Calling again with the same name continues the conversation. The run reads it once, as it starts —
 `length`, then `read(scope, conversation, 0)` when it is not empty — and appends `input=` as the
@@ -1799,18 +1803,18 @@ applies, is the user done.
 
 `context: own` on an entry says a run `Delegate` starts for it reads none of the context of the run
 that started it: it sees only its input. `inherit`, the default, passes it on, as a delegated run
-always did. The setting is read for the agent that is started, from the run that starts it: in
-`a` → `b` → `c`, with `b` `own` and `c` `inherit`, `c` reads what `b` read, which is none. A run that
+always did. The setting is read for the agent that is started, from the run that starts it: in `a` →
+`b` → `c`, with `b` `own` and `c` `inherit`, `c` reads what `b` read, which is none. A run that
 starts at the top reads the `context=` it was given whatever its entry says, and a routed run reads
 its router's, as a route is the same conversation going on. `run.context` shows what a run read, and
 its fingerprint the entry that said so; a folder that never writes `context:` keeps every
-fingerprint it had. The `Delegate` description marks such an agent in its line —
-`- surveyor (sees only its input, not your context): Surveys one region`, and beside the decision
-marker `- triage (decision agent) (sees only its input, not your context): …` — so a model that
-holds private data knows what the helper will not see. A `Delegate` dispatched through an
-`EngineTools` starts runs with no context, under either setting, as `EngineTools` takes no
-`context=`. A mode takes no `context`, nor does a voice agent: it is the entry's, and a mode that
-writes it is a `ConfigurationError`.
+fingerprint it had, and a lead's tools fingerprint changes once one of its agents says `own`. The
+`Delegate` description marks such an agent in its line — `- surveyor (sees only its input, not your
+context): Surveys one region`, and beside the decision marker `- triage (decision agent) (sees only
+its input, not your context): …` — so a model that holds private data knows what the helper will not
+see. A `Delegate` dispatched through an `EngineTools` starts runs with no context, under either
+setting, as `EngineTools` takes no `context=`. A mode takes no `context`, nor does a voice agent: it
+is the entry's, and a mode that writes it is a `ConfigurationError`.
 
 The model can also give a decision agent `questions` it composes itself — ids to questions of the
 three types, written as JSON, structure included — asked beside the agent's own in the same call. A
@@ -2203,23 +2207,27 @@ One run after another, runs side by side, and a route: the three patterns a work
 
 A budget across a tree is an `on_event` that counts `RunStarted`, which every generation run in the
 tree sends, and adds up the `usage` of every `ReplyReady`, which every model reply sends, a decision
-run's too. It presses a `Stop` when the count runs out. Decision runs send no `RunStarted`, so they
-are not counted as runs, and their spend is in `spent`:
+run's too, and a reply whose model reported none adds nothing. It presses a `Stop` when the run
+count or the token limit runs out. Decision runs send no `RunStarted`, so they are not counted as
+runs, and their spend is in `spent`:
 
 ```python
 class Budget:
-    def __init__(self, runs):
-        self.left, self.spent, self.stop = runs, 0, Stop()
+    def __init__(self, runs, tokens):
+        self.left, self.tokens, self.spent, self.stop = runs, tokens, 0, Stop()
 
     async def __call__(self, event):
-        if isinstance(event, ReplyReady):
-            self.spent += event.usage.input + event.usage.output
+        if isinstance(event, ReplyReady) and event.usage is not None:
+            u = event.usage
+            self.spent += u.input + u.output + u.cache_creation + u.cache_read
+            if self.spent > self.tokens:
+                self.stop.after_step()
         if isinstance(event, RunStarted):
             self.left -= 1
             if self.left < 0:
                 self.stop.after_step()
 
-budget = Budget(50)
+budget = Budget(50, 2_000_000)
 run = await engine.run("support", scope="acme", input=message, on_event=budget, stop=budget.stop)
 ```
 
@@ -3707,8 +3715,9 @@ combined = MemoryTools(memory, corpus_id="acme") + surface.only("Read", "Grep")
 ```
 
 A `Delegate` dispatched this way runs the child as its own top-level run, with the scope, `tools=`,
-`workspace=` and `tags=` given to `EngineTools` and the `questions` it is called with —
-what a `Delegate` inside a run would give it, its input likewise never read for `/name`. A refusal
+`workspace=` and `tags=` given to `EngineTools` and the `questions` it is called with, and no
+context — what a `Delegate` inside a run would give it, which passes one by default, its input
+likewise never read for `/name`. A refusal
 raises here, where inside a run the model reads it.
 
 An agent is itself a tool. `engine.tool(agent, scope=...)` gives any runtime — a live voice model, a

@@ -178,7 +178,7 @@ SETUPS = {
         replies=(delegating("triage"),),
         intent="technical",
         replace={
-            "Budget(50)": "Budget(0)",
+            "Budget(50, 2_000_000)": "Budget(0, 2_000_000)",
             "stop=budget.stop)": (
                 "stop=budget.stop)\nassert run.stopped == 'after_step' and run.calls == 0"
             ),
