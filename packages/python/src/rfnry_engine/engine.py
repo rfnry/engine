@@ -83,6 +83,7 @@ from rfnry_engine.models import (
     _call,
     _copied,
     _handed,
+    _open,
     _own,
     _paused,
     _waited,
@@ -158,6 +159,7 @@ BELOW_CANNOT_WAIT = (
 REPLAY_CANNOT_WAIT = "a replay cannot wait for an answer"
 
 Approve = Callable[[str, ToolCall], Awaitable[bool | Refused | Later]]
+Delegation = tuple[Content, bool, str | None, bool, tuple[str, list[Waiting]] | None]
 NO_ANSWERS: Mapping[str, bool | Refused] = MappingProxyType({})
 
 logger = logging.getLogger(__name__)
@@ -190,6 +192,7 @@ class _Options:
     answers: Mapping[str, bool | Refused] = NO_ANSWERS
     slashed: bool = False
     opened: tuple[Conversation, list[Message]] | None = None
+    reattached: bool = False
 
 
 @dataclass
@@ -417,6 +420,10 @@ def _in_place(
     return agents[paused.agent]
 
 
+def _under(conversation: str | None, key: str) -> bool:
+    return conversation is not None and (conversation == key or conversation.startswith(f"{key}/"))
+
+
 def _resumable(spec: AgentSpec, paused: Pause | None, options: _Options) -> None:
     _answerable(paused, options.answers)
     if paused is None:
@@ -428,7 +435,14 @@ def _resumable(spec: AgentSpec, paused: Pause | None, options: _Options) -> None
         raise InputError(
             f"engine: a run that resumes a paused conversation invokes no skill; got {got}"
         )
-    unanswered = next((held for held in paused.waiting if held.id not in options.answers), None)
+    below = [
+        held
+        for held in paused.below
+        if any(_under(held.conversation, key) for key in paused.delegated.values())
+    ]
+    unanswered = next(
+        (held for held in [*paused.waiting, *below] if held.id not in options.answers), None
+    )
     if unanswered is not None:
         raise InputError(
             f"engine: {unanswered.call.name} of agent {unanswered.agent!r} waits for an answer under id {unanswered.id!r}; give it one in answers= before the run goes on"
@@ -797,11 +811,12 @@ class _ToolCalls:
     shell_slots: AbstractAsyncContextManager[Any] = field(default_factory=nullcontext)
     unslotted: frozenset[str] = frozenset()
     lend: Callable[[ToolCall, Foreground], None] | None = None
-    delegate: Callable[[ToolCall], Awaitable[tuple[Content, bool, str | None, bool]]] | None = None
+    delegate: Callable[[ToolCall], Awaitable[Delegation]] | None = None
     waits: str | None = TOOL_CANNOT_WAIT
     conversation: str | None = None
     ran: list[tuple[ToolCall, Step]] = field(default_factory=list)
     waiting: dict[int, Waiting] = field(default_factory=dict)
+    delegated: dict[int, tuple[str, list[Waiting]]] = field(default_factory=dict)
     granted: set[int] = field(default_factory=set)
     approving: set[int] = field(default_factory=set)
     foregrounds: dict[int, Foreground] = field(default_factory=dict)
@@ -904,6 +919,7 @@ class _ToolCalls:
             return await self.cut(call, began, by)
         child_run_id: str | None = None
         cut_short = False
+        below: tuple[str, list[Waiting]] | None = None
         content: Content
         approved: bool | None = True if id(call) in self.granted else None
         refusal = _refusal(call.name, False)
@@ -947,7 +963,7 @@ class _ToolCalls:
             if approved is False:
                 content, is_error = refusal, True
             elif call.name == DELEGATE_TOOL and self.delegate is not None:
-                content, is_error, child_run_id, cut_short = await self.delegate(call)
+                content, is_error, child_run_id, cut_short, below = await self.delegate(call)
             else:
                 limit = None if call.name in self.own_deadline else self.deadline
                 slots = self.shell_slots if call.name == "Shell" else self.tool_slots
@@ -968,7 +984,7 @@ class _ToolCalls:
                             content = error_text(exc)
                         is_error = True
                 if here.stopped or here.pressed:
-                    content, is_error, cut_short = STOPPED, True, True
+                    content, is_error, cut_short, below = STOPPED, True, True, None
         finally:
             here.over = True
         step = Step(
@@ -982,10 +998,13 @@ class _ToolCalls:
             stopped=cut_short,
             approved=approved,
             by=by,
+            waiting=below is not None,
         )
         if here.failed is not None:
             self.ran.append((call, step))
             raise here.failed
+        if below is not None:
+            self.delegated[id(call)] = below
         return await self.hand_over(call, step)
 
     async def later(self, call: ToolCall, began: float) -> Step:
@@ -1991,9 +2010,10 @@ class Engine:
         opening = _content(input)
         if options.skill is not None:
             opening = _invoked(spec.skills[options.skill], opening)
+        follows = [] if options.reattached else [Message(role="user", content=opening)]
         messages.extend([*history, *repairs])
         if resuming is None:
-            messages.extend([*losses, Message(role="user", content=opening)])
+            messages.extend([*losses, *follows])
         begun = 0 if conversation is None else len(history) + len(repairs)
         if resuming is not None and conversation is not None:
             begun = next(
@@ -2005,6 +2025,7 @@ class Engine:
         settled = False
         steps: list[Step] = []
         delegated: dict[str, Generation | Decision] = {}
+        rerun: dict[str, str] = {}
         woken: list[Any] = []
         tool_slots = _slots(spec.tool_parallel)
         shell_slots = _slots(None) if bridging else tool_slots
@@ -2069,6 +2090,7 @@ class Engine:
                 claimed=claimed,
                 waits=waits,
                 opened=None,
+                reattached=False,
             )
 
         below_waits = BELOW_CANNOT_WAIT if options.waits is None else options.waits
@@ -2176,21 +2198,24 @@ class Engine:
             helper.task.add_done_callback(gone)
             return json.dumps({"job": helper.job}), False, helper.run_id, False
 
-        async def delegate(call: ToolCall) -> tuple[Content, bool, str | None, bool]:
+        async def delegate(call: ToolCall) -> Delegation:
             try:
                 held = permit(spec, call.args, BackgroundArgs) if spec.background else None
             except Exception as exc:
-                return error_text(exc), True, None, False
+                return error_text(exc), True, None, False, None
             if held is not None and held.background:
-                return await begin(self._agents[held.agent], held)
+                return (*await begin(self._agents[held.agent], held), None)
             failed: list[Generation | Decision] = []
+            again = rerun.pop(call.id, None)
+            claimed: tuple[str, str] | None = None
             try:
                 async with delegate_slots:
                     if requested(stop) == "now":
-                        return STOPPED, True, None, True
+                        return STOPPED, True, None, True, None
                     args = held or permit(spec, call.args, DelegateArgs)
                     target = self._agents[args.agent]
                     child_id = uuid4().hex
+                    key = keyed(target, child_id) if again is None else again
                     forwarded = forward(
                         target,
                         _asked(target, args.questions),
@@ -2198,13 +2223,28 @@ class Engine:
                         asyncio.Queue(),
                         failed,
                         None,
-                        keyed(target, child_id),
-                        below_waits,
+                        key,
+                        None if options.waits is None and key is not None else below_waits,
                     )
+                    if again is not None:
+                        forwarded = replace(forwarded, reattached=True)
+                    if again is not None and target.route is not None:
+                        claimed = self._claimed(scope, again)
+                        stored = Conversation(cast(ConversationStore, options.store), scope, again)
+                        opened = stored, await stored.opened()
+                        target = _in_place(target, live(opened[1]), NO_ANSWERS, self._agents)
+                        forwarded = replace(forwarded, questions={}, opened=opened, claimed=True)
                     child = await self._owned(
                         target,
                         forwarded.stop,
-                        self._run(target, scope, args.input, forwarded, run_id, run_id=child_id),
+                        self._run(
+                            target,
+                            scope,
+                            args.input if again is None else "",
+                            forwarded,
+                            run_id,
+                            run_id=child_id,
+                        ),
                     )
             except Exception as exc:
                 kept = failed[-1] if failed else None
@@ -2214,15 +2254,20 @@ class Engine:
                     delegated[kept.run_id] = kept
                 if isinstance(exc, _Unpausable):
                     raise
-                return error_text(exc), True, None if kept is None else kept.run_id, False
+                return error_text(exc), True, None if kept is None else kept.run_id, False, None
+            finally:
+                if claimed is not None:
+                    self._conversations.discard(claimed)
             if child is None:
-                return STOPPED, True, None, True
+                return STOPPED, True, None, True, None
             with taking(stop):
                 await recorded(child)
             delegated[child.run_id] = child
             if halted(child) or answers_stopped():
-                return STOPPED, True, child.run_id, True
-            return child_result(child), False, child.run_id, False
+                return STOPPED, True, child.run_id, True, None
+            if child.paused and key is not None:
+                return "", False, child.run_id, False, (key, child.paused)
+            return child_result(child), False, child.run_id, False, None
 
         async def bridged(
             shell: ToolCall,
@@ -2348,6 +2393,7 @@ class Engine:
         def unwait(answered: Callable[[ToolCall, Step], Step]) -> list[tuple[ToolCall, Step]]:
             held = [(call, step) for call, step in ran if step.waiting]
             tool_calls.waiting.clear()
+            tool_calls.delegated.clear()
             ran[:] = [(call, step) for call, step in ran if not step.waiting]
             given = []
             for call, step in held:
@@ -2461,9 +2507,20 @@ class Engine:
             if not settled:
                 begun, sent, settled = at, list(seen), True
 
-        async def resume(mark: Pause, answers: Mapping[str, bool | Refused], stop: Stop) -> bool:
+        async def resume(mark: Pause, answers: Mapping[str, bool | Refused], stop: Stop) -> Pause:
             nonlocal asked
             answered = [waiting for waiting in mark.waiting if waiting.id in answers]
+            reached = [waiting.conversation for waiting in mark.below if waiting.id in answers]
+            made = next(
+                (message.tool_calls for message in reversed(given) if message.tool_calls), []
+            )
+            again = {
+                call.id: mark.delegated[call.id]
+                for call in made
+                if call.id in mark.delegated
+                and any(_under(at, mark.delegated[call.id]) for at in reached)
+            }
+            rerun.update(again)
             refused: list[tuple[ToolCall, Step]] = []
             for waiting in answered:
                 if answers[waiting.id] is True:
@@ -2481,8 +2538,8 @@ class Engine:
                 answer(call, step)
                 refused.append((call, step))
             still = [_waited(waiting) for waiting in mark.waiting if waiting.id not in answers]
-            if conversation is not None and answered:
-                fresh = _paused(mark).model_copy(update={"waiting": still})
+            if conversation is not None and (answered or repairs):
+                fresh = _paused(mark).model_copy(update={"waiting": still, "run_id": run_id})
                 messages.append(Message(role="assistant", content="[paused]", pause=fresh))
                 await save()
             failures: list[Exception] = []
@@ -2491,7 +2548,10 @@ class Engine:
                     await tool_calls.answered(call, step)
                 except Exception as exc:
                     failures.append(exc)
-            asked = [_call(waiting.call) for waiting in answered if answers[waiting.id] is True]
+            asked = [
+                *(_call(waiting.call) for waiting in answered if answers[waiting.id] is True),
+                *(_call(call) for call in made if call.id in again),
+            ]
             tool_calls.granted.update(id(call) for call in asked)
             try:
                 if asked:
@@ -2506,7 +2566,22 @@ class Engine:
                 )
             if failures:
                 raise failures[0]
-            return bool(still)
+            return mark.model_copy(
+                update={
+                    "waiting": still,
+                    "below": [
+                        _waited(waiting)
+                        for waiting in mark.below
+                        if not any(_under(waiting.conversation, key) for key in again.values())
+                    ],
+                    "delegated": {
+                        call_id: key
+                        for call_id, key in mark.delegated.items()
+                        if call_id not in again
+                    },
+                    "held": [],
+                }
+            )
 
         async def ask() -> Reply:
             sending = [
@@ -2596,6 +2671,9 @@ class Engine:
                 tool_calls.waiting[id(call)] for call in asked if id(call) in tool_calls.waiting
             ]
 
+        def waits() -> bool:
+            return bool(tool_calls.waiting or tool_calls.delegated)
+
         async def let_go() -> None:
             answered = unwait(
                 lambda call, step: step.model_copy(
@@ -2611,11 +2689,24 @@ class Engine:
             for call, cut_step in answered:
                 await hand_over(call, cut_step)
 
-        async def pause() -> Generation:
+        async def pause(left: Pause | None = None, heard: Sequence[Message] = ()) -> Generation:
             await helpers.settled()
             if helpers.fatal is not None:
                 raise helpers.fatal
-            mark = Pause(agent=spec.name, run_id=run_id, waiting=waiting(), held=helpers.take())
+            left = left or Pause(agent=spec.name, run_id=run_id)
+            pending = [
+                (call.id, *tool_calls.delegated[id(call)])
+                for call in asked
+                if id(call) in tool_calls.delegated
+            ]
+            mark = Pause(
+                agent=spec.name,
+                run_id=run_id,
+                waiting=[*left.waiting, *waiting()],
+                below=[*left.below, *(_waited(w) for _, _, below in pending for w in below)],
+                delegated={**left.delegated, **{call_id: key for call_id, key, _ in pending}},
+                held=[*heard, *helpers.take()],
+            )
             messages.append(Message(role="assistant", content="[paused]", pause=mark))
             return await finished(said, paused=[*mark.waiting, *mark.below])
 
@@ -2656,17 +2747,13 @@ class Engine:
             if resuming is None:
                 await took(0, losses, [])
             else:
-                await resume(
-                    resuming,
-                    {
-                        waiting.id: options.answers[waiting.id]
-                        for waiting in resuming.waiting
-                        if waiting.id in options.answers
-                    },
-                    stop,
-                )
+                left = await resume(resuming, options.answers, stop)
                 heard = [*(_handed(message) for message in resuming.held), *losses]
-                messages.extend([*heard, Message(role="user", content=opening)])
+                if _open(left) or waits():
+                    if requested(stop) is None:
+                        return await pause(left, [*heard, *follows])
+                    await let_go()
+                messages.extend([*heard, *follows])
                 await took(0, heard, [])
             for turn in range(most_calls):
                 mode = requested(stop)
@@ -2745,8 +2832,12 @@ class Engine:
                         await answer_all(rest, [None] * len(rest), time.monotonic())
                         return await halt(turn + 1, said, "now")
                     output, rest = rest[0], rest[1:]
-                    if tool_calls.waiting:
-                        names = ", ".join(held.call.name for held in waiting())
+                    if waits():
+                        names = ", ".join(
+                            call.name
+                            for call in asked
+                            if id(call) in tool_calls.waiting or id(call) in tool_calls.delegated
+                        )
                         refuse(
                             output,
                             f"engine: waiting for an answer: {names}; call {OUTPUT_TOOL} again once they have one",
@@ -2785,7 +2876,7 @@ class Engine:
                     await helpers.settled()
                     await took(turn + 1, *drain(whole=False))
                     return await finished(parsed.model_dump_json())
-                if tool_calls.waiting:
+                if waits():
                     mode = requested(stop)
                     if mode is not None:
                         return await halt(turn + 1, said, mode)

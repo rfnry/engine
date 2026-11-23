@@ -784,7 +784,7 @@ async def test_a_resume_with_a_store_continues_the_stored_conversation(tmp_path:
     held = store.held[KEY]
     marks = [m for m in held if m.pause is not None]
     assert len(marks) == 2 and marks[1].pause is not None
-    assert marks[1].pause.waiting == [] and marks[1].pause.run_id == run.run_id
+    assert marks[1].pause.waiting == [] and marks[1].pause.run_id == again.run_id
     assert not any(str(m.content).startswith("Ended:") for m in held)
     assert [(m.role, m.tool_call_id) for m in held[before - 1 :]] == [
         ("assistant", None),

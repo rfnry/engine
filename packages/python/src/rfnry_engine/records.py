@@ -31,7 +31,6 @@ from rfnry_engine.models import (
     Usage,
     VoiceModel,
     Waiting,
-    _open,
 )
 from rfnry_engine.stop import Stopped
 from rfnry_engine.tools.tools import Tools
@@ -247,7 +246,7 @@ class Generation(BaseModel):
     def added(self) -> list[Message]:
         for n in reversed(range(len(self.messages) if self.resumed else 0)):
             pause = self.messages[n].pause
-            if pause is not None and _open(pause):
+            if pause is not None and pause.run_id != self.run_id:
                 return self.conversation[n + 1 :]
             if pause is None and self.messages[n].role == "assistant":
                 break

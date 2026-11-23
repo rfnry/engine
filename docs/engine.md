@@ -2866,9 +2866,10 @@ stopped; a run that fails instead answers it `NotRun: refund was not run; the ru
 `Output` after the waiting call in the same reply is refused (`engine: waiting for an answer:
 refund; call Output again once they have one`), and the run pauses. A call a command makes
 through the tool bridge cannot wait: `Later()` for it is answered `NotApproved: lookup waits for an
-answer a command cannot wait for` and the command goes on. Only the top-level `engine.run` pauses,
-and a run its route starts pauses with it: a `Later()` in a voice session, in a run `engine.tool`
-or `EngineTools` starts, in a replay, or in a run delegated below the top is a
+answer a command cannot wait for` and the command goes on. The top-level `engine.run` pauses, a
+run its route starts pauses with it, and with a store so does a synchronous `Delegate`'s child,
+below; a `Later()` in a voice session, in a run `engine.tool` or `EngineTools` starts, in a replay,
+in a background helper, or in a run delegated below a top-level run without a store is a
 `ConfigurationError` that fails every run up to the top, never a tool error a model reads
 (`engine: approve answered Later() for lookup of agent 'worker', which cannot wait: a run below
 the top waits only in a store; pass store= and conversation= to engine.run`).
@@ -2905,6 +2906,23 @@ keep the resumed run's `conversation`, or append its `added` to what you kept, a
 paused conversation twice. A router given its paused conversation runs the agent its mark names,
 when its route reaches that agent, without asking its decision model again, and returns that agent's
 `Generation`.
+
+With a store, the pause travels up the tree. A synchronous `Delegate`'s child pauses as a top-level
+run does, in its own conversation (`c1/<run_id>`); its lead's `Delegate` then waits on it, with no
+result yet, its step `waiting` and its `child_run_id` the child's, and once its batch is done the
+lead pauses too: its mark's `delegated` maps that call to the child's conversation name and its
+`below` lists the child's waiting calls, the child's own and those below it, so the top-level
+`run.paused` lists every call that waits anywhere in the tree, each with the conversation it waits
+in. The resume is an ordinary `engine.run` of the top-level agent with the same `store=` and
+`conversation=`, and its `answers` cover every call that waits below its own `Delegate` calls too,
+since the lead cannot go on before its child replies. It walks back down: each `Delegate` whose
+child an answer reaches runs again, asked of nobody, and the child goes on from its stored
+conversation under the same name, as a new run of its agent with `input` `""` and `resumed`,
+answering its own calls and walking down to its own children the same way; its reply answers the
+`Delegate`, and the lead goes on with its `input` to its next model call. A child that pauses
+again leaves its `Delegate` waiting, and the lead pauses again at once, with no model call, its
+fresh mark holding its `input` for the next resume, which appends it after the notices the old
+mark held. The pause names no new conversation: every run keeps the name it had.
 
 ### Refining
 
@@ -4158,8 +4176,8 @@ a directory, a `shell` that is not a list of strings or whose first word is not 
 without `spawn`, `read` and `write`, a `Workspace` without a scope, a `timeout` or `output_bytes`
 that is not positive, an `approve` that returns anything but `True`, `False`, `Refused(reason)` or
 `Later()` or answers `Later()` for a call that cannot wait — in a voice session, in a run
-`engine.tool` or `EngineTools` starts, in a replay, or in a run delegated below the top-level
-`engine.run` — a judge that is not a decision agent or a teacher that is not a generation agent. `NotFoundError` for an agent the
+`engine.tool` or `EngineTools` starts, in a replay, in a background helper, or in a run delegated
+below a top-level `engine.run` without a store — a judge that is not a decision agent or a teacher that is not a generation agent. `NotFoundError` for an agent the
 folder does not have — a judge, a teacher or a replay's agent in the candidate included — a mode it
 does not have, a skill the agent does not have (`engine: agent 'support' has no skill 'refund'; its
 skills are escalate`), found when the run starts, a run the refinery does not, or a run
