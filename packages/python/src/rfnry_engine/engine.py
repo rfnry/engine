@@ -1382,56 +1382,64 @@ class Engine:
         given = await _window(held, start)
         paused = live(given)
         _paired(given, start, open=open_calls(paused))
-        opened: tuple[Conversation, list[Message]] | None = None
-        if spec.kind == "decision":
-            if spec.route is not None and store is not None:
-                key = cast(str, conversation)
-                self._free(scope, key)
-                kept = Conversation(store, scope, key)
+        claimed = (
+            self._claimed(scope, cast(str, conversation))
+            if spec.route is not None and store is not None
+            else None
+        )
+        try:
+            opened: tuple[Conversation, list[Message]] | None = None
+            if claimed is not None:
+                kept = Conversation(cast(ConversationStore, store), scope, claimed[1])
                 opened = kept, await kept.opened()
                 paused = live(opened[1])
-            spec = _in_place(spec, paused, answered, self._agents)
-        options = _Options(
-            history=given,
-            context=context,
-            expect=expect,
-            on_event=on_event,
-            tools=tools,
-            workspace=workspace,
-            models=merged,
-            stop=beneath(stop),
-            inbox=asyncio.Queue() if inbox is None else inbox,
-            skill=invoked,
-            tags=tagged,
-            approve=approve,
-            questions=asked,
-            start=start,
-            source=held,
-            store=store,
-            key=conversation,
-            waits=waits,
-            answers=MappingProxyType(answered),
-            slashed=slashed is not None,
-            opened=opened,
-        )
-        written = None if store is None else options.written
-        recording = RECORDING.set(record)
-        try:
-            running = self._run(spec, scope, input, options, None)
-            run = await (self._owned(spec, options.stop, running) if owned else running)
-        except Exception:
-            if record and options.failed:
+            if spec.kind == "decision":
+                spec = _in_place(spec, paused, answered, self._agents)
+            options = _Options(
+                history=given,
+                context=context,
+                expect=expect,
+                on_event=on_event,
+                tools=tools,
+                workspace=workspace,
+                models=merged,
+                stop=beneath(stop),
+                inbox=asyncio.Queue() if inbox is None else inbox,
+                skill=invoked,
+                tags=tagged,
+                approve=approve,
+                questions=asked,
+                start=start,
+                source=held,
+                store=store,
+                key=conversation,
+                waits=waits,
+                answers=MappingProxyType(answered),
+                slashed=slashed is not None,
+                opened=opened,
+                claimed=claimed is not None,
+            )
+            written = None if store is None else options.written
+            recording = RECORDING.set(record)
+            try:
+                running = self._run(spec, scope, input, options, None)
+                run = await (self._owned(spec, options.stop, running) if owned else running)
+            except Exception:
+                if record and options.failed:
+                    with taking(options.stop):
+                        await self._record(options.failed[-1], written)
+                raise
+            finally:
+                RECORDING.reset(recording)
+            if run is None:
+                return None
+            if record:
                 with taking(options.stop):
-                    await self._record(options.failed[-1], written)
-            raise
+                    await self._record(run, written)
+            return run
         finally:
-            RECORDING.reset(recording)
-        if run is None:
-            return None
-        if record:
-            with taking(options.stop):
-                await self._record(run, written)
-        return run
+            if claimed is not None:
+                self._conversations.discard(claimed)
 
     async def _record(self, run: Run, written: set[str] | None = None) -> None:
         if self.refinery is None:
@@ -1666,16 +1674,12 @@ class Engine:
                 self._conversations.discard(claimed)
             options.stop._drop()
 
-    def _free(self, scope: str, key: str) -> tuple[str, str]:
-        held = (scope, key)
-        if held in self._conversations:
+    def _claimed(self, scope: str, key: str) -> tuple[str, str]:
+        claimed = (scope, key)
+        if claimed in self._conversations:
             raise InputError(
                 f"engine: conversation {key!r} of scope {scope!r} is in use by a run in flight"
             )
-        return held
-
-    def _claimed(self, scope: str, key: str) -> tuple[str, str]:
-        claimed = self._free(scope, key)
         self._conversations.add(claimed)
         return claimed
 
@@ -1991,7 +1995,12 @@ class Engine:
         if resuming is None:
             messages.extend([*losses, Message(role="user", content=opening)])
         begun = 0 if conversation is None else len(history) + len(repairs)
-        sent = messages[begun:]
+        if resuming is not None and conversation is not None:
+            begun = next(
+                (n for n in reversed(range(len(history))) if history[n].tool_calls),
+                len(history) - 1,
+            )
+        sent = messages[begun : len(history) if resuming is not None else None]
         seen = messages
         settled = False
         steps: list[Step] = []
@@ -2438,6 +2447,8 @@ class Engine:
         async def windowed() -> None:
             nonlocal chained, window, begun, seen, sent, settled
             if conversation is None:
+                if not settled:
+                    sent, settled = list(messages), True
                 return
             at = await conversation.window(len(messages))
             _paired(messages[at:], at, f"the window of conversation {conversation.key!r}")
@@ -2654,10 +2665,8 @@ class Engine:
                     },
                     stop,
                 )
-                begun = 0 if conversation is None else len(messages)
                 heard = [*(_handed(message) for message in resuming.held), *losses]
                 messages.extend([*heard, Message(role="user", content=opening)])
-                sent = messages[begun:]
                 await took(0, heard, [])
             for turn in range(most_calls):
                 mode = requested(stop)

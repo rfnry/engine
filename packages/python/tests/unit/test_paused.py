@@ -1,7 +1,7 @@
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +56,7 @@ BELOW = "a run below the top waits only in a store; pass store= and conversation
 REPLAY = "a replay cannot wait for an answer"
 REFUND = ToolCall(id="c-refund", name="refund", args={"amount": 10})
 LOOKUP = ToolCall(id="c-lookup", name="lookup", args={})
+ESCALATE = "---\ndescription: Hand it to a person\n---\nSay so, then stop.\n"
 
 
 class Reported(BaseModel):
@@ -88,14 +89,20 @@ def desk_tools(
 
 
 def desk(
-    tmp_path: Path, model: Scripted, judge: Any = None, consult: bool = False, **engine: Any
+    tmp_path: Path,
+    model: Scripted,
+    judge: Any = None,
+    consult: bool = False,
+    skilled: bool = False,
+    **engine: Any,
 ) -> Engine:
     run_tools = {"desk": ["refund", "lookup"], **({"lead": ["consult"]} if consult else {})}
-    return Engine(
-        make_tree(tmp_path, run_tools=run_tools),
-        providers=provided({"strong": model, "judge": judge}),
-        **engine,
-    )
+    root = make_tree(tmp_path, run_tools=run_tools)
+    if skilled:
+        amend(root, "desk", skills={"allow": ["skills/*"], "public": ["escalate"]})
+        (root / "skills/escalate").mkdir(parents=True)
+        (root / "skills/escalate/SKILL.md").write_text(ESCALATE, encoding="utf-8")
+    return Engine(root, providers=provided({"strong": model, "judge": judge}), **engine)
 
 
 async def paused_desk(
@@ -633,11 +640,12 @@ async def pausing(
     agent: str = "desk",
     refunds: Refunds | None = None,
     approve: Any = None,
+    skilled: bool = False,
     **options: Any,
 ) -> tuple[Engine, Generation | Decision, Refunds, Scripted]:
     refunds = refunds or Refunds()
     model = Scripted(*replies)
-    engine = desk(tmp_path, model, judge)
+    engine = desk(tmp_path, model, judge, skilled=skilled)
     run = await engine.run(
         agent,
         "acme",
@@ -823,25 +831,38 @@ async def test_an_approved_call_runs_at_most_once(tmp_path: Path) -> None:
     store, refunds = MemoryStore(), Blocking()
     engine, run, _, model = await pausing(
         tmp_path,
-        calling(REFUND),
+        calling(REFUND, LOOKUP),
         text_reply("it may have gone through"),
         refunds=refunds,
+        approve=later_for("refund", "lookup"),
+        skilled=True,
         **stored(store),
     )
-    [waiting] = run.paused
-    wid = waiting.id
-    resuming = asyncio.create_task(going_on(engine, run, refunds, {wid: True}, store))
+    refund, lookup = run.paused
+    answers = {refund.id: True, lookup.id: Refused("no need")}
+    resuming = asyncio.create_task(going_on(engine, run, refunds, answers, store))
     await asyncio.wait_for(refunds.entered.wait(), 5)
     resuming.cancel()
     with pytest.raises(asyncio.CancelledError):
         await resuming
     fresh = store.held[KEY][-1].pause
-    assert fresh is not None and fresh.waiting == []
-    with pytest.raises(InputError, match=re.escape(NO_WAITING.format(id=wid))):
-        await going_on(engine, run, refunds, {wid: True}, store)
-    third = await going_on(engine, run, refunds, None, store, input="did it go through?")
-    assert isinstance(third, Generation) and third.error is None and third.resumed
-    assert any(str(m.content).startswith("Ended: refund did not return") for m in store.held[KEY])
+    assert fresh is not None and fresh.waiting == [] and live(store.held[KEY]) is None
+    for again in ({refund.id: True}, {lookup.id: True}):
+        [wid] = again
+        with pytest.raises(InputError, match=re.escape(NO_WAITING.format(id=wid))):
+            await going_on(engine, run, refunds, again, store)
+    before = len(store.held[KEY])
+    third = await going_on(
+        engine, run, refunds, None, store, input="did it go through?", skill="escalate"
+    )
+    assert isinstance(third, Generation) and third.error is None
+    assert third.resumed is False and third.skill == "escalate"
+    held = store.held[KEY]
+    ended = held[before]
+    assert ended.tool_call_id == "c-refund"
+    assert str(ended.content).startswith("Ended: refund did not return")
+    assert third.added == held[before + 1 :] and third.added[0].role == "user"
+    assert third.input == "did it go through?"
     assert refunds.started == 1 and len(model.calls) == 2
 
 
@@ -916,19 +937,9 @@ async def test_an_answer_that_is_not_true_false_or_refused_is_refused(
     assert len(model.calls) == 1 and refunds.done == []
 
 
-ESCALATE = "---\ndescription: Hand it to a person\n---\nSay so, then stop.\n"
-
-
 async def test_a_resume_invokes_no_skill(tmp_path: Path) -> None:
-    model = Scripted(calling(REFUND), text_reply("never"))
-    root = make_tree(tmp_path, run_tools={"desk": ["refund", "lookup"]})
-    amend(root, "desk", skills={"allow": ["skills/*"], "public": ["escalate"]})
-    (root / "skills/escalate").mkdir(parents=True)
-    (root / "skills/escalate/SKILL.md").write_text(ESCALATE, encoding="utf-8")
-    engine = Engine(root, providers=provided({"strong": model, "judge": None}))
-    refunds = Refunds()
-    run = await engine.run(
-        "desk", "acme", "refund it", tools=desk_tools(refunds), approve=later_for("refund")
+    engine, run, refunds, model = await pausing(
+        tmp_path, calling(REFUND), text_reply("never"), skilled=True
     )
     assert isinstance(run, Generation)
     answers = {run.paused[0].id: True}
@@ -1206,3 +1217,105 @@ async def test_a_stop_pressed_before_a_resume_cuts_its_approved_calls(
     kept = again.conversation if store is None else store.held[KEY]
     assert kept[-1].content == "go on" and live(kept) is None
     assert [m.tool_call_id for m in kept if m.role == "tool"] == ["c-lookup", "c-refund"]
+
+
+@pytest.mark.parametrize(
+    ("with_store", "breaks"),
+    [(False, "handler"), (True, "handler"), (True, "append")],
+    ids=["history-handler", "store-handler", "store-append"],
+)
+async def test_a_resume_that_fails_in_its_answers_records_from_the_reply_with_the_calls(
+    tmp_path: Path, with_store: bool, breaks: str
+) -> None:
+    store, recording, refunds = MemoryStore() if with_store else None, Recording(), Refunds()
+    engine = desk(
+        tmp_path, Scripted(calling(REFUND, LOOKUP), text_reply("never")), refinery=recording
+    )
+    run = await engine.run(
+        "desk",
+        "acme",
+        "refund it",
+        tools=desk_tools(refunds),
+        approve=later_for("refund", "lookup"),
+        **stored(store),
+    )
+    assert isinstance(run, Generation)
+    refund, lookup = run.paused
+
+    async def breaking(event: Any) -> None:
+        if isinstance(event, ToolResultReady) and event.call_id == "c-refund":
+            raise RuntimeError("the handler broke")
+
+    if store is not None and breaks == "append":
+        store.fail["append"] = OSError("the store is down")
+    raised = "the handler broke" if breaks == "handler" else "the store is down"
+    with pytest.raises((RuntimeError, OSError), match=raised):
+        await going_on(
+            engine,
+            run,
+            refunds,
+            {refund.id: True, lookup.id: Refused("no")},
+            store,
+            on_event=breaking,
+        )
+    failed = recording.runs[-1]
+    assert isinstance(failed, Generation) and failed.resumed and failed.error is not None
+    assert failed.messages[-1].pause is not None and failed.messages[-1].pause.waiting
+    if with_store:
+        reply = failed.conversation[0]
+        assert reply.role == "assistant" and [c.id for c in reply.tool_calls] == [
+            "c-refund",
+            "c-lookup",
+        ]
+        assert failed.start == 1 and failed.messages[0] == reply and len(failed.messages) == 2
+    else:
+        assert failed.start == 0 and failed.messages == run.conversation
+    made: set[str] = set()
+    for message in failed.conversation:
+        made |= {call.id for call in message.tool_calls}
+        assert message.role != "tool" or message.tool_call_id in made
+    assert failed.added == failed.conversation[len(failed.messages) :]
+    assert failed.added[0].tool_call_id == "c-lookup"
+    assert refunds.done == ([] if breaks == "append" else [{"amount": 10}])
+
+
+class Gated(MemoryStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate: asyncio.Event | None = None
+        self.entered = asyncio.Event()
+
+    async def read(
+        self, scope: str, conversation: str, start: int, stop: int | None = None
+    ) -> Sequence[object]:
+        if self.gate is not None:
+            self.entered.set()
+            await self.gate.wait()
+        return await super().read(scope, conversation, start, stop)
+
+
+async def test_two_router_resumes_of_one_conversation_run_its_approved_call_once(
+    tmp_path: Path,
+) -> None:
+    store, judge = Gated(), Fixed(HELPS)
+    engine, decision, refunds, _ = await pausing(
+        tmp_path,
+        calling(REFUND),
+        text_reply("refunded"),
+        judge=judge,
+        agent="router",
+        **stored(store),
+    )
+    answers = {decision.paused[0].id: True}
+    store.gate = asyncio.Event()
+    first = asyncio.create_task(going_on(engine, decision, refunds, answers, store, agent="router"))
+    await asyncio.wait_for(store.entered.wait(), 5)
+    in_use = "engine: conversation 'c1' of scope 'acme' is in use by a run in flight"
+    with pytest.raises(InputError, match=re.escape(in_use)):
+        await asyncio.wait_for(
+            going_on(engine, decision, refunds, answers, store, agent="router"), 5
+        )
+    store.gate.set()
+    again = await asyncio.wait_for(first, 5)
+    assert isinstance(again, Generation) and again.agent == "desk" and again.resumed
+    assert refunds.done == [{"amount": 10}] and len(judge.calls) == 1

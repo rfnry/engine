@@ -1405,11 +1405,12 @@ window and then every message the run added, so `run.added` is what the run adde
 The store keeps every message as it was appended, its reasoning included. A run that ends before its
 first model call — stopped at once, failed by its `RunStarted` handler or refused its first window —
 begins just after the results it ended a cut-off run's calls with ([After a crash](#after-a-crash)),
-or, resuming a paused run, those it answered the waiting calls with, so its record holds only its
-own messages from its notices on — the notices a pause held, its `lost` notices, the input and what
-it added — while those results stay in the store only, as a first window that starts past them
-leaves them. A record never begins with a result whose call it does not hold, so it replays as any
-record does.
+so its record holds only its own messages from its `lost` notices on — those notices, the input and
+what it added — while those ended results stay in the store only, as a first window that starts past
+them leaves them. A resume that ends before its first model call begins at the reply whose calls its
+pause held: `run.messages` is that reply through the mark, and `run.conversation` that and every
+message it appended. A record never begins with a result whose call it does not hold, so it replays
+as any record does.
 
 A store run replays as a run given its history does ([Long conversations](#long-conversations)),
 since a replay keeps no store: with `conversation=` it is offered `History` only when its recorded
@@ -2897,11 +2898,13 @@ the notices the mark held, then `input`, the next message of the conversation; t
 `resumed`, and its `added` starts at the answered results. With a store, the run stores the refused
 results and a fresh mark of what still waits before it runs an approved call, so each call runs at
 most once: a resume cut off while the call runs leaves it `Ended: refund did not return; …`, as a
-crash leaves any call, and an answer sent again for it is refused as answering no waiting call.
-Without a store, at most once is yours: keep the resumed run's `conversation`, or append its `added`
-to what you kept, and never resume one paused conversation twice. A router given its paused
-conversation runs the agent its mark names, when its route reaches that agent, without asking its
-decision model again, and returns that agent's `Generation`.
+crash leaves any call, and an answer sent again for it is refused as answering no waiting call. A
+mark is a pause only while it names a call still open, so the fresh mark such a resume leaves, with
+nothing open, is inert and the run after it is a plain run. Without a store, at most once is yours:
+keep the resumed run's `conversation`, or append its `added` to what you kept, and never resume one
+paused conversation twice. A router given its paused conversation runs the agent its mark names,
+when its route reaches that agent, without asking its decision model again, and returns that agent's
+`Generation`.
 
 ### Refining
 

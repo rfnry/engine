@@ -3,13 +3,14 @@ from collections.abc import Awaitable, Callable, Collection, Sequence
 from pydantic import TypeAdapter, ValidationError
 
 from rfnry_engine.errors import InputError
-from rfnry_engine.models import ConversationStore, Message, Pause, _handed
+from rfnry_engine.models import ConversationStore, Message, Pause, _handed, _open
 
 HISTORY = TypeAdapter(list[Message])
 
 
 def live(history: Sequence[Message]) -> Pause | None:
-    return history[-1].pause if history else None
+    pause = history[-1].pause if history else None
+    return pause if pause is not None and _open(pause) else None
 
 
 def open_calls(pause: Pause | None) -> frozenset[str]:

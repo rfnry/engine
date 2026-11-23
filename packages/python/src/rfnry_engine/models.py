@@ -476,6 +476,10 @@ def _waited(waiting: Waiting) -> Waiting:
     return waiting.model_copy(update={"call": _call(waiting.call)})
 
 
+def _open(pause: Pause) -> bool:
+    return bool(pause.waiting or pause.below or pause.delegated) or pause.asking is not None
+
+
 def _paused(pause: Pause) -> Pause:
     return pause.model_copy(
         update={
