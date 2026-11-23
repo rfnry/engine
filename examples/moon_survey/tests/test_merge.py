@@ -452,6 +452,14 @@ async def test_an_unknown_model_is_refused(pool, scope):
     assert spend.total == 0
 
 
+async def test_a_reply_that_reported_no_usage_adds_nothing(pool, scope):
+    spend = await spend_of(pool, scope)
+    await spend.replied(
+        ReplyReady(run_id="r", agent="surveyor", turn=1, model="gpt-x", usage=None, settings=None)
+    )
+    assert spend.total == 0
+
+
 async def test_the_cap_presses_after_step_once(pool, scope):
     stop = Presses()
     spend = await spend_of(pool, scope, cap=0.001, stop=stop)

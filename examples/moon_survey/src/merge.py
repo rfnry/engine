@@ -92,7 +92,7 @@ class Spend:
         self.total = found or 0.0
 
     async def replied(self, event: ReplyReady) -> None:
-        added = cost_of(event.model, event.usage)
+        added = cost_of(event.model, event.usage) if event.usage is not None else 0.0
         if added:
             self.total = max(
                 self.total, await self.pool.fetchval(SPEND, self.scope, self.survey, added)
