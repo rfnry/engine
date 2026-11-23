@@ -75,9 +75,9 @@ def _engine(root: Path) -> Engine:
     return Engine(
         _folder(root),
         providers=provided({"strong": None, "judge": None}),
-        max_model_calls=99,
-        max_depth=9,
-        max_background=8,
+        max_model_calls=3,
+        max_depth=2,
+        max_background=2,
     )
 
 

@@ -229,7 +229,7 @@ async def test_the_delegate_description_marks_an_own_agent(tmp_path: Path) -> No
 
 
 async def test_writing_context_inherit_keeps_every_fingerprint(tmp_path: Path) -> None:
-    async def fingerprints(root: Path, held: str | None) -> tuple[str, str, str]:
+    async def fingerprints(root: Path, held: str | None) -> tuple[str, str, str, str]:
         _agents(root, lead=["b"], b=[])
         if held is not None:
             add_agent(
@@ -245,6 +245,7 @@ async def test_writing_context_inherit_keeps_every_fingerprint(tmp_path: Path) -
             run.fingerprint.agent,
             run.fingerprint.tools,
             _child(run).fingerprint.agent,
+            _child(run).fingerprint.tools,
         )
 
     absent = await fingerprints(tmp_path / "absent", None)
@@ -252,3 +253,4 @@ async def test_writing_context_inherit_keeps_every_fingerprint(tmp_path: Path) -
     own = await fingerprints(tmp_path / "own", "own")
     assert absent == inherit
     assert own[0] == absent[0] and own[1] != absent[1] and own[2] != absent[2]
+    assert own[3] == absent[3]

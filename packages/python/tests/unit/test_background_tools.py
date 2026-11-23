@@ -41,8 +41,8 @@ from .test_reach import child_of, use
 from .trees import provided, write_folder
 
 HELPER = (
-    "whether it is running, its agent, its input, under asking the question it waits on you to answer "
-    "through Ask (null when none), and once it has ended its reply (a decision agent's answers), "
+    "whether it is running, its agent, its input, under asking the question it waits on you to "
+    "answer through Ask (null when none), and once it has ended its reply (a decision agent's answers), "
     "its error, or what it had said when it was stopped. wait is seconds, up to 30, to wait "
     "first; it returns as soon as the helper ends or any notice from a helper reaches you, and at "
     "once while the helper waits on your answer. "
@@ -56,8 +56,8 @@ JOB_ALONE = (
     f"Read a helper you started with Delegate in the background, by its id (d1, d2, …): {HELPER}"
 )
 JOBS_ALONE = (
-    "List the helpers you started in the background: id, agent, input, when it started, and whether it "
-    "is running or, once it has ended, how: finished, failed or stopped."
+    "List the helpers you started in the background: id, agent, input, when it started, and "
+    "whether it is running or, once it has ended, how: finished, failed or stopped."
 )
 JOB_BESIDE = (
     "Read a background job of the workspace (j1, j2, …) or a helper you started with Delegate in "
@@ -69,8 +69,8 @@ JOB_BESIDE = (
 JOBS_BESIDE = (
     "List the workspace's background jobs and the helpers you started in the background. A job: "
     "id, command, when it started, whether it is running and its exit_code; a job that ended is "
-    "listed until Job reads its last output. A helper: id, agent, input, when it started, and whether it "
-    "is running or, once it has ended, how: finished, failed or stopped."
+    "listed until Job reads its last output. A helper: id, agent, input, when it started, "
+    "and whether it is running or, once it has ended, how: finished, failed or stopped."
 )
 
 
