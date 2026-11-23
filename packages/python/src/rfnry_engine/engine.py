@@ -2510,15 +2510,19 @@ class Engine:
         async def resume(mark: Pause, answers: Mapping[str, bool | Refused], stop: Stop) -> Pause:
             nonlocal asked
             answered = [waiting for waiting in mark.waiting if waiting.id in answers]
-            reached = [waiting.conversation for waiting in mark.below if waiting.id in answers]
+            taken = [waiting for waiting in mark.below if waiting.id in answers]
             made = next(
                 (message.tool_calls for message in reversed(given) if message.tool_calls), []
             )
+
+            def reached(key: str) -> bool:
+                under = [waiting for waiting in mark.below if _under(waiting.conversation, key)]
+                return not under or any(waiting.id in answers for waiting in under)
+
             again = {
                 call.id: mark.delegated[call.id]
                 for call in made
-                if call.id in mark.delegated
-                and any(_under(at, mark.delegated[call.id]) for at in reached)
+                if call.id in mark.delegated and reached(mark.delegated[call.id])
             }
             rerun.update(again)
             refused: list[tuple[ToolCall, Step]] = []
@@ -2538,8 +2542,16 @@ class Engine:
                 answer(call, step)
                 refused.append((call, step))
             still = [_waited(waiting) for waiting in mark.waiting if waiting.id not in answers]
-            if conversation is not None and (answered or repairs):
-                fresh = _paused(mark).model_copy(update={"waiting": still, "run_id": run_id})
+            if conversation is not None and (answered or taken or repairs):
+                fresh = _paused(mark).model_copy(
+                    update={
+                        "waiting": still,
+                        "below": [
+                            _waited(waiting) for waiting in mark.below if waiting.id not in answers
+                        ],
+                        "run_id": run_id,
+                    }
+                )
                 messages.append(Message(role="assistant", content="[paused]", pause=fresh))
                 await save()
             failures: list[Exception] = []

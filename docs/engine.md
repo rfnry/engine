@@ -2897,15 +2897,15 @@ under (`engine: no call waits for an answer under id 'ghost'`), another agent th
 paused, and a skill or a `/name` input, each refused before the run starts, unrecorded. Then come
 the notices the mark held, then `input`, the next message of the conversation; the record says
 `resumed`, and its `added` starts at the answered results. With a store, the run stores the refused
-results and a fresh mark of what still waits before it runs an approved call, so each call runs at
-most once: a resume cut off while the call runs leaves it `Ended: refund did not return; …`, as a
-crash leaves any call, and an answer sent again for it is refused as answering no waiting call. A
-mark is a pause only while it names a call still open, so the fresh mark such a resume leaves, with
-nothing open, is inert and the run after it is a plain run. Without a store, at most once is yours:
-keep the resumed run's `conversation`, or append its `added` to what you kept, and never resume one
-paused conversation twice. A router given its paused conversation runs the agent its mark names,
-when its route reaches that agent, without asking its decision model again, and returns that agent's
-`Generation`.
+results and a fresh mark of what still waits before it runs an approved call or a child, so each
+call runs at most once: a resume cut off while the call runs leaves it `Ended: refund did not
+return; …`, as a crash leaves any call, and an answer sent again for it is refused as answering no
+waiting call. A mark is a pause only while it names a call still open, so the fresh mark such a
+resume leaves, with nothing open, is inert and the run after it is a plain run. Without a store, at
+most once is yours: keep the resumed run's `conversation`, or append its `added` to what you kept,
+and never resume one paused conversation twice. A router given its paused conversation runs the
+agent its mark names, when its route reaches that agent, without asking its decision model again,
+and returns that agent's `Generation`.
 
 With a store, the pause travels up the tree. A synchronous `Delegate`'s child pauses as a top-level
 run does, in its own conversation (`c1/<run_id>`); its lead's `Delegate` then waits on it, with no
@@ -2919,10 +2919,13 @@ since the lead cannot go on before its child replies. It walks back down: each `
 child an answer reaches runs again, asked of nobody, and the child goes on from its stored
 conversation under the same name, as a new run of its agent with `input` `""` and `resumed`,
 answering its own calls and walking down to its own children the same way; its reply answers the
-`Delegate`, and the lead goes on with its `input` to its next model call. A child that pauses
-again leaves its `Delegate` waiting, and the lead pauses again at once, with no model call, its
-fresh mark holding its `input` for the next resume, which appends it after the notices the old
-mark held. The pause names no new conversation: every run keeps the name it had.
+`Delegate`, and the lead goes on with its `input` to its next model call. The lead stores its fresh
+mark, less the calls this resume answers, before any child runs, so an answer sent again after a
+crash is refused as at the top; a child left with nothing to answer, its own call cut off, is
+continued on the next resume all the same, and reads its cut call `Ended: refund did not return; …`.
+A child that pauses again leaves its `Delegate` waiting, and the lead pauses again at once, with no
+model call, its fresh mark holding its `input` for the next resume, which appends it after the
+notices the old mark held. The pause names no new conversation: every run keeps the name it had.
 
 ### Refining
 

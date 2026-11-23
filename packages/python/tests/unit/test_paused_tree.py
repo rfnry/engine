@@ -14,7 +14,16 @@ from rfnry_engine.records import Decision, Generation, RunEnded, ToolCallStarted
 
 from .fakes import Crew, Fixed, MemoryStore, Seen, delegating, text_reply, until
 from .test_approve import INTENT, Refunds
-from .test_paused import HELPS, REFUND, UNANSWERED, Blocking, calling, later_for, no_mark_in
+from .test_paused import (
+    HELPS,
+    NO_WAITING,
+    REFUND,
+    Blocking,
+    calling,
+    later_for,
+    no_mark_in,
+)
+from .test_voice import Recording
 from .trees import provided, write_folder
 
 KEY = ("acme", "c1")
@@ -80,8 +89,8 @@ def mark_of(messages: list[Message]) -> Pause:
     return pause
 
 
-def engine_of(tmp_path: Path, model: Crew, judge: Any = None) -> Engine:
-    return Engine(tree(tmp_path), providers=provided({"crew": model, "judge": judge}))
+def engine_of(tmp_path: Path, model: Crew, judge: Any = None, **engine: Any) -> Engine:
+    return Engine(tree(tmp_path), providers=provided({"crew": model, "judge": judge}), **engine)
 
 
 async def lead_run(
@@ -274,7 +283,7 @@ async def test_a_resumed_runs_added_starts_after_the_mark_another_run_wrote(
     assert (fresh.pause.waiting, fresh.pause.delegated, fresh.pause.below) == (
         [],
         mark_of(first.conversation).delegated,
-        [below],
+        [],
     )
     assert (answered.tool_call_id, answered.content) == ("d1", "refunded")
     assert refunds.done == [{"amount": 10}]
@@ -298,24 +307,67 @@ async def test_a_resume_that_ends_a_cut_call_keeps_the_pause_after_the_ended_res
     with pytest.raises(asyncio.CancelledError):
         await cut
     cut_mark = mark_of(store.held[KEY])
-    assert live(store.held[KEY]) == cut_mark and cut_mark.waiting == []
+    assert live(store.held[KEY]) == cut_mark
+    assert (cut_mark.waiting, cut_mark.below, cut_mark.delegated) == (
+        [],
+        [],
+        mark_of(first.conversation).delegated,
+    )
     before, appends = len(store.held[KEY]), len(store.appended)
-    unanswered = UNANSWERED.format(name="refund", agent="desk", id=below.id)
-    with pytest.raises(InputError, match=re.escape(unanswered)):
-        await lead_run(engine, store, refunds, "go on", answers={})
-    third = await lead_run(engine, store, refunds, "go on", answers={below.id: True})
+    with pytest.raises(InputError, match=re.escape(NO_WAITING.format(id=below.id))):
+        await lead_run(engine, store, refunds, "go on", answers={below.id: True})
+    third = await lead_run(engine, store, refunds, "go on", answers={})
     assert third.error is None and third.resumed and third.reply == "it may have gone through"
     held = store.held[KEY]
     ended, mark = held[before], held[before + 1]
     assert ended.tool_call_id == "c-own" and str(ended.content).startswith("Ended: refund")
     assert mark.pause is not None and mark.pause.run_id == third.run_id
-    assert (mark.pause.delegated, mark.pause.below) == (cut_mark.delegated, [below])
+    assert (mark.pause.delegated, mark.pause.below) == (cut_mark.delegated, [])
     assert live(held[: before + 2]) == mark.pause
     assert store.appended[appends] == ("c1", before, 2)
     assert held[before + 2].tool_call_id == "d1" and refunds.started == 2
     desk_sent = model.calls["refund it"][-1]
     assert [m.role for m in desk_sent] == ["user", "assistant", "tool"]
     assert str(desk_sent[-1].content).startswith("Ended: refund did not return")
+
+
+async def test_an_answer_sent_again_after_a_cut_resume_is_refused_and_the_child_goes_on(
+    tmp_path: Path,
+) -> None:
+    store, refunds, recording = MemoryStore(), Blocking(), Recording()
+    model = Crew(
+        [delegating("desk", "refund it"), text_reply("it may have gone through")],
+        {"refund it": [calling(REFUND), text_reply("it was cut off")]},
+    )
+    engine = engine_of(tmp_path, model, refinery=recording)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"))
+    [w] = first.paused
+    [desk] = first.children
+    desk_key = ("acme", f"c1/{desk.run_id}")
+    cut = asyncio.create_task(lead_run(engine, store, refunds, "go on", answers={w.id: True}))
+    await until(lambda: refunds.started == 1, "the approved refund started")
+    cut.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cut
+    cut_mark = mark_of(store.held[KEY])
+    assert live(store.held[KEY]) == cut_mark and cut_mark.below == []
+    assert cut_mark.delegated == {"d1": desk_key[1]}
+    assert live(store.held[desk_key]) is None
+    held = {key: list(messages) for key, messages in store.held.items()}
+    runs = len(recording.runs)
+    with pytest.raises(InputError, match=re.escape(NO_WAITING.format(id=w.id))):
+        await lead_run(engine, store, refunds, "go on", answers={w.id: True})
+    assert store.held == held and len(recording.runs) == runs and refunds.started == 1
+    third = await lead_run(engine, store, refunds, "go on", answers={})
+    assert third.error is None and third.resumed and third.reply == "it may have gone through"
+    [again] = third.children
+    assert isinstance(again, Generation) and not again.resumed and again.input == ""
+    ended = [m for m in store.held[desk_key] if str(m.content).startswith("Ended:")]
+    assert [m.content for m in ended] == [
+        "Ended: refund did not return; the run that made the call ended, and what it did is unknown"
+    ]
+    assert third.steps[0].result == "it was cut off" and store.held[KEY][-1].role == "assistant"
+    assert refunds.started == 1 and len(model.calls["lead"]) == 2
 
 
 async def test_a_paused_router_below_resumes_the_agent_its_mark_names(tmp_path: Path) -> None:
