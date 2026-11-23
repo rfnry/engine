@@ -50,3 +50,4 @@ asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 pythonpath = ["src"]
 markers = ["live: runs a real model"]
+addopts = "-m 'not live'"
