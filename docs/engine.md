@@ -2856,15 +2856,16 @@ result yet. The conversation ends with a mark, an assistant message whose `pause
 of those calls: it is stored with the rest when the run has a store, and it is never sent to a
 model. `RunEnded.paused` lists the same calls. A stop pressed while the batch runs wins, in either
 mode: the waiting call is answered `stopped by the user`, as a call a stop cuts is, and the run ends
-stopped. An `Output` after the waiting call in the same reply is refused (`engine: waiting for an
-answer: refund; call Output again once they have one`), and the run pauses. A call a command makes
+stopped; a run that fails instead answers it `NotRun: refund was not run; the run failed`. An
+`Output` after the waiting call in the same reply is refused (`engine: waiting for an answer:
+refund; call Output again once they have one`), and the run pauses. A call a command makes
 through the tool bridge cannot wait: `Later()` for it is answered `NotApproved: lookup waits for an
 answer a command cannot wait for` and the command goes on. Only the top-level `engine.run` pauses,
 and a run its route starts pauses with it: a `Later()` in a voice session, in a run `engine.tool`
-or `EngineTools` starts, or in a run delegated below the top is a `ConfigurationError` that fails
-every run up to the top, never a tool error a model reads (`engine: approve answered Later() for
-lookup of agent 'worker', which cannot wait: a run below the top waits only in a store; pass store=
-and conversation= to engine.run`).
+or `EngineTools` starts, in a replay, or in a run delegated below the top is a
+`ConfigurationError` that fails every run up to the top, never a tool error a model reads
+(`engine: approve answered Later() for lookup of agent 'worker', which cannot wait: a run below
+the top waits only in a store; pass store= and conversation= to engine.run`).
 
 ### Refining
 
@@ -4118,7 +4119,8 @@ a directory, a `shell` that is not a list of strings or whose first word is not 
 without `spawn`, `read` and `write`, a `Workspace` without a scope, a `timeout` or `output_bytes`
 that is not positive, an `approve` that returns anything but `True`, `False`, `Refused(reason)` or `Later()`
 or answers `Later()` for a call that cannot wait — in a voice session, in a run `engine.tool` or
-`EngineTools` starts, or in a run delegated below the top-level `engine.run` — a judge that is not
+`EngineTools` starts, in a replay, or in a run delegated below the top-level `engine.run` — a judge
+that is not
 a decision agent or a teacher that is not a generation agent. `NotFoundError` for an agent the
 folder does not have — a judge, a teacher or a replay's agent in the candidate included — a mode it
 does not have, a skill the agent does not have (`engine: agent 'support' has no skill 'refund'; its

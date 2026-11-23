@@ -49,6 +49,7 @@ CANNOT = "engine: approve answered Later() for {name} of agent {agent!r}, which 
 VOICE = "a voice session cannot wait for an answer"
 TOOL = "a run engine.tool or EngineTools starts keeps no conversation to wait in"
 BELOW = "a run below the top waits only in a store; pass store= and conversation= to engine.run"
+REPLAY = "a replay cannot wait for an answer"
 REFUND = ToolCall(id="c-refund", name="refund", args={"amount": 10})
 LOOKUP = ToolCall(id="c-lookup", name="lookup", args={})
 
@@ -319,6 +320,87 @@ async def test_later_below_the_top_without_a_store_fails_the_top_level_run(
     assert isinstance(lead, Generation) and lead.error == error
     [worker] = lead.children
     assert worker.agent == "worker" and worker.error == error
+
+
+async def test_a_helper_s_later_wins_over_the_lead_s_last_model_call(tmp_path: Path) -> None:
+    failed = asyncio.Event()
+    model = Crew(
+        [backgrounded("part one"), failed, text_reply("waiting")],
+        {"part one": [calling(LOOKUP), text_reply("never")]},
+    )
+    folder = crew(tmp_path, worker={"tools": {"allow": ["lookup"]}}, background=True)
+
+    async def watch(event: Any) -> None:
+        if isinstance(event, RunEnded) and event.call is not None:
+            failed.set()
+
+    with pytest.raises(ConfigurationError, match=cannot("lookup", "worker", BELOW)):
+        await team(folder, model, max_model_calls=2).run(
+            "lead",
+            "acme",
+            "go",
+            tools=Tools([Tool("lookup", "Look", body=found)]),
+            approve=later_for("lookup"),
+            on_event=watch,
+        )
+    assert len(model.calls["lead"]) == 2
+
+
+async def test_a_waiting_call_of_a_run_that_fails_reads_not_run(tmp_path: Path) -> None:
+    store, recording = MemoryStore(), Recording()
+
+    async def breaks(event: Any) -> None:
+        if isinstance(event, ToolResultReady) and event.call_id == "c-lookup":
+            raise RuntimeError("the handler broke")
+
+    model = Scripted(calling(REFUND, LOOKUP), text_reply("never"))
+    with pytest.raises(RuntimeError, match="the handler broke"):
+        await desk(tmp_path, model, refinery=recording).run(
+            "desk",
+            "acme",
+            "refund it",
+            tools=desk_tools(Refunds()),
+            approve=later_for("refund"),
+            on_event=breaks,
+            store=store,
+            conversation="c1",
+        )
+    [run] = recording.runs
+    assert isinstance(run, Generation)
+    assert run.paused == [] and run.error == "RuntimeError: the handler broke"
+    not_run = "NotRun: refund was not run; the run failed"
+    step = next(s for s in run.steps if s.tool == "refund")
+    assert (step.result, step.is_error, step.waiting) == (not_run, True, False)
+    held = store.held[("acme", "c1")]
+    for kept in (held, run.conversation):
+        assert [m.content for m in kept if m.tool_call_id == "c-refund"] == [not_run]
+        assert all(m.pause is None for m in kept)
+
+
+async def test_a_replay_whose_approve_answers_later_fails_with_its_own_reason(
+    tmp_path: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    await desk(tmp_path / "recorded", Scripted(text_reply("done")), refinery=refinery).run(
+        "desk", "acme", "refund it", tools=desk_tools(Refunds())
+    )
+    refunds = Refunds()
+    candidate = desk(tmp_path / "candidate", Scripted(calling(REFUND), text_reply("never")))
+    pairs = [
+        pair
+        async for pair in refinery.replay(
+            "acme",
+            candidate,
+            agent="desk",
+            tools=desk_tools(refunds),
+            approve=later_for("refund"),
+        )
+    ]
+    [pair] = pairs
+    assert pair.candidate is None and refunds.done == []
+    assert pair.error == "ConfigurationError: " + CANNOT.format(
+        name="refund", agent="desk", why=REPLAY
+    )
 
 
 async def test_a_paused_record_reads_back(tmp_path: Path, storage: Storage) -> None:

@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from rfnry_engine.engine import Approve, Engine
+from rfnry_engine.engine import REPLAY_CANNOT_WAIT, Approve, Engine
 from rfnry_engine.errors import ConfigurationError, InputError, NotFoundError
 from rfnry_engine.models import DecisionModel, GenerationModel, HistoryLike, ModelChoice, _copied
 from rfnry_engine.records import READ_BACK, Decision, Fingerprint, Generation, Run, Voice, runs_of
@@ -508,6 +508,7 @@ class Refinery:
                     workspace=workspace,
                     record=False,
                     models=merged,
+                    waits=REPLAY_CANNOT_WAIT,
                 )
                 return cast(Run, again)
             sent = run.messages[-1].content if run.messages else None
@@ -545,6 +546,7 @@ class Refinery:
                 workspace=workspace,
                 record=False,
                 models=merged,
+                waits=REPLAY_CANNOT_WAIT,
             )
             return cast(Run, again)
 

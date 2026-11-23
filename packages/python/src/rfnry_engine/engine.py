@@ -154,6 +154,7 @@ TOOL_CANNOT_WAIT = "a run engine.tool or EngineTools starts keeps no conversatio
 BELOW_CANNOT_WAIT = (
     "a run below the top waits only in a store; pass store= and conversation= to engine.run"
 )
+REPLAY_CANNOT_WAIT = "a replay cannot wait for an answer"
 
 Approve = Callable[[str, ToolCall], Awaitable[bool | Refused | Later]]
 
@@ -2204,18 +2205,32 @@ class Engine:
             if step.child_run_id in delegated:
                 children.append(delegated.pop(step.child_run_id))
 
-        def not_run(call: ToolCall, why: str) -> None:
-            answer(
-                call,
-                Step(
-                    tool=call.name,
-                    args=call.args,
-                    result=f"NotRun: {call.name} was not run; {why}",
-                    is_error=True,
-                    at=_now(),
-                    duration_ms=0,
-                ),
+        def unrun(call: ToolCall, why: str) -> Step:
+            return Step(
+                tool=call.name,
+                args=call.args,
+                result=f"NotRun: {call.name} was not run; {why}",
+                is_error=True,
+                at=_now(),
+                duration_ms=0,
             )
+
+        def not_run(call: ToolCall, why: str) -> None:
+            answer(call, unrun(call, why))
+
+        def unwait(answered: Callable[[ToolCall, Step], Step]) -> list[tuple[ToolCall, Step]]:
+            held = [(call, step) for call, step in ran if step.waiting]
+            tool_calls.waiting.clear()
+            ran[:] = [(call, step) for call, step in ran if not step.waiting]
+            given = []
+            for call, step in held:
+                made = answered(call, step)
+                steps[next(n for n, kept in enumerate(steps) if kept is step)] = made
+                messages.append(
+                    Message(role="tool", tool_call_id=call.id, content=made.result, is_error=True)
+                )
+                given.append((call, made))
+            return given
 
         async def answer_all(
             batch: list[ToolCall], tasks: Sequence[asyncio.Task[Step] | None], began: float
@@ -2400,10 +2415,8 @@ class Engine:
             return record
 
         async def let_go() -> None:
-            held = [(call, step) for call, step in ran if step.waiting]
-            tool_calls.waiting.clear()
-            for call, step in held:
-                cut_step = step.model_copy(
+            cut_short = unwait(
+                lambda call, step: step.model_copy(
                     update={
                         "result": STOPPED,
                         "is_error": True,
@@ -2412,11 +2425,8 @@ class Engine:
                         "at": _now(),
                     }
                 )
-                ran[:] = [(done, built) for done, built in ran if built is not step]
-                steps[next(n for n, kept in enumerate(steps) if kept is step)] = cut_step
-                messages.append(
-                    Message(role="tool", tool_call_id=call.id, content=STOPPED, is_error=True)
-                )
+            )
+            for call, cut_step in cut_short:
                 await hand_over(call, cut_step)
 
         async def pause() -> Generation:
@@ -2582,12 +2592,15 @@ class Engine:
             mode = requested(stop)
             if mode is not None:
                 return await halt(most_calls, said, mode)
+            if helpers.fatal is not None:
+                raise helpers.fatal
             raise RunawayError(f"engine: run exceeded {most_calls} model calls")
         except Exception as exc:
             for call in asked:
                 built = next((step for done, step in ran if done is call), None)
                 if built is not None and not any(built is kept for kept in steps):
                     answer(call, built)
+            unwait(lambda call, step: unrun(call, "the run failed"))
             if conversation is not None and conversation.failed is None:
                 messages.extend(ended_calls(messages))
             await helpers.settle("now", stop)
