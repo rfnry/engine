@@ -8,7 +8,7 @@ from unit.test_approve import Refunds
 from unit.test_paused import REFUND, calling, found, later_for
 from unit.trees import write_folder
 
-from integration.stores import PostgresStore
+from integration.stores import PostgresStore, held
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError
 from rfnry_engine.models import Reply, ToolCall
@@ -57,7 +57,7 @@ def tools(refunds: Refunds) -> Tools:
     return Tools([Tool("lookup", "Look an order up", body=found), refunds.tools()])
 
 
-def paused_team(root: Path, storage: Storage) -> tuple[Engine, Crew, Refinery]:
+def paused_team(root: Path, storage: Storage) -> Engine:
     both = Reply(
         tool_calls=[
             *background("part one").tool_calls,
@@ -66,14 +66,18 @@ def paused_team(root: Path, storage: Storage) -> tuple[Engine, Crew, Refinery]:
         stop_reason="tool_use",
     )
     model = Crew(
-        [both, text_reply("waiting"), text_reply("all done")],
-        {
-            "part one": [calling(LOOKUP), text_reply("part one done")],
-            "refund it": [calling(REFUND), text_reply("refunded")],
-        },
+        [both],
+        {"part one": [calling(LOOKUP)], "refund it": [calling(REFUND)]},
     )
-    refinery = Refinery(storage)
-    return team(root, model, refinery=refinery), model, refinery
+    return team(root, model, refinery=Refinery(storage))
+
+
+def resumed_team(root: Path, storage: Storage) -> Engine:
+    model = Crew(
+        [text_reply("waiting"), text_reply("all done")],
+        {"part one": [text_reply("part one done")], "refund it": [text_reply("refunded")]},
+    )
+    return team(root, model, refinery=Refinery(storage))
 
 
 async def start(
@@ -98,27 +102,42 @@ async def test_a_paused_team_resumes_in_a_new_engine(
     tmp_path: Path, store: PostgresStore, storage: Storage
 ) -> None:
     root = folder(tmp_path)
-    first_engine, model, refinery = paused_team(root, storage)
+    first_engine = paused_team(root, storage)
     refunds = Refunds()
     first = await start(first_engine, store, refunds)
     assert {w.agent for w in first.paused} == {"worker", "desk"} and refunds.done == []
     await first_engine.close()
-    second = team(root, model, refinery=refinery)
+    after = Refunds()
+    second = resumed_team(root, storage)
     try:
-        resumed = await start(second, store, refunds, answers={w.id: True for w in first.paused})
+        resumed = await start(second, store, after, answers={w.id: True for w in first.paused})
     finally:
         await second.close()
     assert resumed.error is None and resumed.paused == [] and resumed.resumed
-    assert refunds.done == [{"amount": 10}]
-    rows = await storage.run_tree("acme", tags={"workflow": "w1"})
-    assert {r.agent for r in rows} >= {"lead", "worker", "desk"}
+    assert resumed.reply == "all done"
+    assert refunds.done == [] and after.done == [{"amount": 10}]
+    rows = {r.run_id: r for r in await storage.run_tree("acme", tags={"workflow": "w1"})}
+    assert resumed.run_id in rows
+    again = [c for c in resumed.children if isinstance(c, Generation)]
+    assert {(c.agent, c.reply) for c in again} == {
+        ("worker", "part one done"),
+        ("desk", "refunded"),
+    }
+    for child in again:
+        assert child.error is None and child.paused == [] and child.resumed
+        row = rows[child.run_id]
+        assert (row.agent, row.body["reply"], row.body["error"]) == (child.agent, child.reply, None)
+    conversations = {"c1", *(str(w.conversation) for w in first.paused)}
+    for name in conversations:
+        last = (await held(store, "acme", name))[-1]
+        assert last.role == "assistant" and last.pause is None and last.content != "[paused]"
 
 
 async def test_a_paused_conversation_stays_in_its_scope(
     tmp_path: Path, store: PostgresStore, storage: Storage
 ) -> None:
     root = folder(tmp_path)
-    engine, model, _ = paused_team(root, storage)
+    engine = paused_team(root, storage)
     refunds = Refunds()
     try:
         first = await start(engine, store, refunds)
