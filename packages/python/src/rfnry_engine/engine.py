@@ -21,7 +21,7 @@ from functools import partial
 from itertools import count
 from pathlib import Path
 from types import MappingProxyType
-from typing import Annotated, Any, Literal, NoReturn, Protocol, cast
+from typing import Annotated, Any, Literal, NoReturn, Protocol, TypeGuard, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
@@ -394,6 +394,10 @@ def _paired(
         )
 
 
+def _refused(answer: object) -> TypeGuard[Refused]:
+    return isinstance(answer, Refused) and isinstance(answer.reason, str)
+
+
 def _answers(value: Mapping[str, bool | Refused] | None) -> dict[str, bool | Refused]:
     if value is None:
         return {}
@@ -402,7 +406,7 @@ def _answers(value: Mapping[str, bool | Refused] | None) -> dict[str, bool | Ref
             f"engine: answers maps each id to True, False or Refused(reason); got {type(value).__name__}"
         )
     for key, answer in value.items():
-        if not isinstance(answer, bool | Refused):
+        if not (isinstance(answer, bool) or _refused(answer)):
             raise InputError(
                 f"engine: answers maps each id to True, False or Refused(reason); got {answer!r} for {key!r}"
             )
@@ -964,7 +968,7 @@ class _ToolCalls:
             if pressed:
                 return await self.cut(call, began, by)
             answer = asking.result()
-            if isinstance(answer, Refused):
+            if _refused(answer):
                 approved = False
                 refusal = _refusal(call.name, answer)
             elif isinstance(answer, bool):
@@ -1455,6 +1459,9 @@ class Engine:
                 paused = live(opened[1])
             if spec.kind == "decision":
                 spec = _in_place(spec, paused, answered, self._agents)
+                if slash and spec.kind == "generation":
+                    slashed = _slashed(spec, input)
+                    invoked = None if slashed is None else slashed[0]
             options = _Options(
                 history=given,
                 context=context,

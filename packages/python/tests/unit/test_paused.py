@@ -3,7 +3,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel
@@ -923,7 +923,7 @@ async def test_an_answer_for_no_waiting_call_is_refused(
         assert store.held[KEY] == stored_before
 
 
-@pytest.mark.parametrize("value", [Later(), "yes", None, 1], ids=repr)
+@pytest.mark.parametrize("value", [Later(), "yes", None, 1, Refused(cast(str, 3))], ids=repr)
 async def test_an_answer_that_is_not_true_false_or_refused_is_refused(
     tmp_path: Path, value: object
 ) -> None:
@@ -1095,6 +1095,31 @@ async def test_a_router_resumes_the_agent_its_mark_names(tmp_path: Path, with_st
     assert isinstance(again, Generation) and again.agent == "desk" and len(judge.calls) == 1
     assert again.resumed and again.parent_run_id is None and again.reply == "refunded"
     assert refunds.done == [{"amount": 10}] and no_mark_in(sent_last(model))
+
+
+@pytest.mark.parametrize("with_store", [False, True], ids=["history", "store"])
+async def test_a_router_resume_invokes_no_skill_of_the_agent_it_resumes(
+    tmp_path: Path, with_store: bool
+) -> None:
+    store, judge = MemoryStore() if with_store else None, Fixed(HELPS)
+    engine, decision, refunds, model = await pausing(
+        tmp_path,
+        calling(REFUND),
+        text_reply("never"),
+        judge=judge,
+        agent="router",
+        skilled=True,
+        **stored(store),
+    )
+    assert isinstance(decision, Decision)
+    before = None if store is None else list(store.held[KEY])
+    answers = {decision.paused[0].id: True}
+    with pytest.raises(InputError, match=re.escape(NO_SKILL.format(got="/escalate"))):
+        await going_on(
+            engine, decision, refunds, answers, store, agent="router", input="/escalate now"
+        )
+    assert len(judge.calls) == 1 and len(model.calls) == 1 and refunds.done == []
+    assert store is None or store.held[KEY] == before
 
 
 @pytest.mark.parametrize("with_store", [False, True], ids=["history", "store"])

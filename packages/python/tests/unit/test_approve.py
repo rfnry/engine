@@ -2,7 +2,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -442,6 +442,30 @@ async def test_an_approve_that_answers_none_is_a_configuration_error(tmp_path: P
         ),
     ):
         await engine.run("desk", "acme", "refund it", tools=refunds.tools(), approve=none)
+    assert refunds.done == []
+
+
+async def test_an_approve_whose_refusal_reason_is_not_text_is_a_configuration_error(
+    tmp_path: Path,
+) -> None:
+    async def numbered(agent: str, call: ToolCall) -> Refused:
+        return Refused(cast(str, 3))
+
+    refunds = Refunds()
+    engine = Engine(
+        make_tree(tmp_path, run_tools={"desk": ["refund"]}),
+        providers=provided(
+            {"strong": Scripted(use("refund", order="A-1"), text_reply("x")), "judge": None}
+        ),
+    )
+    with pytest.raises(
+        ConfigurationError,
+        match=re.escape(
+            "engine: approve must return True, False, Refused(reason) or Later(); "
+            "got Refused(reason=3)"
+        ),
+    ):
+        await engine.run("desk", "acme", "refund it", tools=refunds.tools(), approve=numbered)
     assert refunds.done == []
 
 

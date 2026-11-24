@@ -2933,12 +2933,12 @@ async def approve(agent, call):
 Time spent waiting is not a tool's time: the deadline starts when the call runs. `stop.now()` ends a
 wait. Delegated and routed runs are asked through the same function, with their own agent's name;
 `engine.tool()` and `EngineTools` take `approve=` for the runs they start. An `approve` that returns
-anything but `True`, `False`, a `Refused` or `Later()` is a `ConfigurationError` (`engine: approve
-must return True, False, Refused(reason) or Later(); got None`). An `approve` that raises fails the run:
-`run` raises what it raised, and the record keeps the error (`PermissionError: approval service
-down`) with no step for that call. Refusing on an error is yours, a `try` in `approve` that returns
-`False`. The run waits for `approve` in memory, so an approval that takes hours answers `Later()`
-and lets the run pause.
+anything but `True`, `False`, a `Refused` whose reason is a string or `Later()` is a
+`ConfigurationError` (`engine: approve must return True, False, Refused(reason) or Later(); got
+None`). An `approve` that raises fails the run: `run` raises what it raised, and the record keeps
+the error (`PermissionError: approval service down`) with no step for that call. Refusing on an
+error is yours, a `try` in `approve` that returns `False`. The run waits for `approve` in memory, so
+an approval that takes hours answers `Later()` and lets the run pause.
 
 A call answered `Later()` does not run and takes no slot; the rest of its batch runs, and then the
 run pauses instead of calling the model again. `engine.run` returns at once, with `stopped` and
@@ -2982,23 +2982,23 @@ waits on must be answered, since a model takes no message after a call without i
 resume that leaves one out is an `InputError` (`engine: refund of agent 'support' waits for an
 answer under id '…'; give it one in answers= before the run goes on`), as are an id no call waits
 under (`engine: no call waits for an answer under id 'ghost'`), another agent than the one that
-paused, and a skill or a `/name` input, each refused before the run starts, unrecorded. Then come
-the notices the mark held, then `input`, the next message of the conversation; the record says
-`resumed`, its `RunStarted.resumes` names the run that wrote the mark, which links the two for an
-app that keys its work by `run_id`, and its `added` starts at the answered results. With a store,
-the run stores the refused results and a fresh mark of what still waits before it runs an approved
-call or a child, so each call runs at most once: a resume cut off while the call runs leaves it
-`Ended: refund did not return; …`, as a crash leaves any call, and an answer sent again for it is
-refused as answering no waiting call. The results of the calls it runs then are stored as soon as
-they are all in, with a mark of what is still open, or that still holds the notices, so a resume
-cut off once they are in keeps each result and its pause. A mark is a pause only while it names a
-call still open, so the fresh mark such a resume leaves, with nothing open, is inert and the run
-after it is a plain run, which appends the notices that mark held after its `Ended:` results and
-before its `input`, so a helper whose notice it held is neither lost nor told twice. Without a
-store, at most once is yours: keep the resumed run's `conversation`, or append its `added` to what
-you kept, and never resume one paused conversation twice. A router given its paused conversation
-runs the agent its mark names, when its route reaches that agent, without asking its decision
-model again, and returns that agent's `Generation`.
+paused, and a skill or a `/name` input, a router's of the agent it resumes included, each refused
+before the run starts, unrecorded. Then come the notices the mark held, then `input`, the next
+message of the conversation; the record says `resumed`, its `RunStarted.resumes` names the run that
+wrote the mark, which links the two for an app that keys its work by `run_id`, and its `added`
+starts at the answered results. With a store, the run stores the refused results and a fresh mark of
+what still waits before it runs an approved call or a child, so each call runs at most once: a
+resume cut off while the call runs leaves it `Ended: refund did not return; …`, as a crash leaves
+any call, and an answer sent again for it is refused as answering no waiting call. The results of
+the calls it runs then are stored as soon as they are all in, with a mark of what is still open, or
+that still holds the notices, so a resume cut off once they are in keeps each result and its pause.
+A mark is a pause only while it names a call still open, so the fresh mark such a resume leaves,
+with nothing open, is inert and the run after it is a plain run, which appends the notices that mark
+held after its `Ended:` results and before its `input`, so a helper whose notice it held is neither
+lost nor told twice. Without a store, at most once is yours: keep the resumed run's `conversation`,
+or append its `added` to what you kept, and never resume one paused conversation twice. A router
+given its paused conversation runs the agent its mark names, when its route reaches that agent,
+without asking its decision model again, and returns that agent's `Generation`.
 
 With a store, the pause travels up the tree. A synchronous `Delegate`'s child pauses as a top-level
 run does, in its own conversation (`c1/<run_id>`); its lead's `Delegate` then waits on it, with no
@@ -4359,26 +4359,27 @@ to ask, media the decision model does not declare, a media part with both or nei
 a `limit`, `concurrency` or `repeat` below 1, a tool called with bad arguments, arguments JSON
 cannot hold or a path outside the folder, a `Delegate` given `background` by an agent that does not
 opt in or past `max_background`, `answers` that are not a mapping of ids to `True`, `False` or a
-`Refused`, an answer for an id no call waits under, a run on a paused conversation by another
-agent, with a skill or without an answer for each call it waits on, an `Ask` its lead leaves
-unanswered — its lead ends its turn without answering (`tools/helpers: your lead ended its turn
-without answering`), stops with `after_step()` or fails — and any use of an engine after `close()`
-(`engine: this engine was closed; build a new Engine`). `ModelError` when an adapter breaks the
-contract — a result whose fields do not fit, a missing answer, probabilities that do not cover the
-options, lie outside 0 and 1 or do not sum to 1, a score outside its levels — or a folder tool's
-result does not match its `output_schema`, or a question's script returns anything but an object, a
-key its JSON sets or one its type does not take, or a question that does not fit. `RunawayError`
-when a loop passes its limit of model calls, the smaller of `Engine(max_model_calls=)`, 200 unless
-you set another, and its entry's. `DelegationLoopError` for a route into an agent already in the same chain of routes;
-`DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
-`Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool or
-a question's script that fails in its worker process: what its script raised, `sys.exit()` included,
-a result JSON cannot hold, a result or error over `worker_result_bytes`, a worker that stopped while
-the call was in flight (`workers/pool: the worker for lookup_order stopped: exited with code 3`) or
-a call in flight when `close()` stopped its worker. Inside a run, a tool's error is the model's to
-read, never raised. A run that raises stops its [helpers](#in-the-background) first, and their
-records join the failure's `children`. All under `EngineException` — the root takes the `Exception`
-suffix, every child ends in `Error`, the same shape as rfnry-memory's. Every message names the
-module that raised it, then says what went wrong in lowercase: `engine: agent 'ghost' was not
-found`, `tools/workspace: path outside the workspace: ../x`. A tool's error reaches the model with
-its type in front: `InputError: tools: unknown tool 'Ghost'`.
+`Refused` whose reason is a string, an answer for an id no call waits under, a run on a paused
+conversation by another agent, with a skill or without an answer for each call it waits on, an `Ask`
+its lead leaves unanswered — its lead ends its turn without answering (`tools/helpers: your lead
+ended its turn without answering`), stops with `after_step()` or fails — and any use of an engine
+after `close()` (`engine: this engine was closed; build a new Engine`). `ModelError` when an adapter
+breaks the contract — a result whose fields do not fit, a missing answer, probabilities that do not
+cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels — or a folder
+tool's result does not match its `output_schema`, or a question's script returns anything but an
+object, a key its JSON sets or one its type does not take, or a question that does not fit.
+`RunawayError` when a loop passes its limit of model calls, the smaller of
+`Engine(max_model_calls=)`, 200 unless you set another, and its entry's. `DelegationLoopError` for a
+route into an agent already in the same chain of routes; `DelegationDepthError` for nesting past
+`max_depth`, which reaches the model as a tool error through `Delegate` and raises through a route.
+`StorageError` for the database. `WorkerError` for a tool or a question's script that fails in its
+worker process: what its script raised, `sys.exit()` included, a result JSON cannot hold, a result
+or error over `worker_result_bytes`, a worker that stopped while the call was in flight
+(`workers/pool: the worker for lookup_order stopped: exited with code 3`) or a call in flight when
+`close()` stopped its worker. Inside a run, a tool's error is the model's to read, never raised. A
+run that raises stops its [helpers](#in-the-background) first, and their records join the failure's
+`children`. All under `EngineException` — the root takes the `Exception` suffix, every child ends in
+`Error`, the same shape as rfnry-memory's. Every message names the module that raised it, then says
+what went wrong in lowercase: `engine: agent 'ghost' was not found`, `tools/workspace: path outside
+the workspace: ../x`. A tool's error reaches the model with its type in front: `InputError: tools:
+unknown tool 'Ghost'`.
