@@ -2953,14 +2953,16 @@ can answer it, its notice reads `waits for your answer to its question`, and a s
 asks at once reads `tools/helpers: your lead ended its turn without answering`. A stop pressed
 meanwhile wins, as everywhere: the lead stops, and its helpers with it.
 
-`Job(id, stop=true)` on a paused helper continues it from its stored conversation as a new run of
-its agent, `input` `""` and `resumed`, whose stop is pressed before it starts: every call it waits
-on — its own, its `Ask`, and each `Delegate` whose child paused, that child ended the same way — is
-answered `stopped by the user` in its own conversation, the helper ends `stopped`, and its lead
-hears a `stopped` notice. A lead that ends without pausing — stopped, failed or past
-`max_model_calls` — ends each of its paused helpers so, and each paused child of a `Delegate` its
-conversation no longer waits on, so no call is left waiting in the store with nothing that will
-answer it; a resume that a stop reaches while a call is still open answers it the same way.
+`Job(id, stop=true)` on a paused helper, once its paused run is recorded and its `paused` notice
+posted, continues it from its stored conversation as a new run of its agent, `input` `""` and
+`resumed`, whose stop is pressed before it starts: every call it waits on — its own, its `Ask`, and
+each `Delegate` whose child paused, that child ended the same way — is answered `stopped by the
+user` in its own conversation, the helper ends `stopped`, and its lead hears a `stopped` notice. A
+lead that ends without pausing — stopped, failed or past `max_model_calls` — ends each of its paused
+helpers so, and each paused child of a `Delegate` its conversation no longer waits on, so no call is
+left waiting in the store with nothing that will answer it; a resume that a stop reaches while a
+call is still open answers it the same way, and a child it would go on with, the stop pressed before
+the child starts again, is ended the same way rather than left paused.
 
 ### Refining
 

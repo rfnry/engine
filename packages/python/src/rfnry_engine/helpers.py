@@ -393,12 +393,18 @@ class Helpers:
 
     async def stop_one(self, job: str, seconds: float | None) -> None:
         helper = self._helpers[job]
+        loop = asyncio.get_running_loop()
+        until = None if seconds is None else loop.time() + seconds
+        if helper.ended == "paused":
+            await asyncio.wait([helper.task])
         if helper.ended == "paused":
             helper.again(helper)
         else:
             press(helper.stop)
         await asyncio.wait(
-            [helper.over, helper.task], timeout=seconds, return_when=asyncio.FIRST_COMPLETED
+            [helper.over, helper.task],
+            timeout=None if until is None else max(0.0, until - loop.time()),
+            return_when=asyncio.FIRST_COMPLETED,
         )
 
     async def send(self, job: str, text: str) -> None:
@@ -474,10 +480,11 @@ class Helpers:
             cut_through(helper.stop)
         while True:
             for helper in self.paused():
-                helper.again(helper)
+                if helper.task.done():
+                    helper.again(helper)
             if not (running := self._unfinished()):
                 return
-            await asyncio.wait(running)
+            await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
 
     async def cancel(self) -> None:
         tasks = self._unfinished()

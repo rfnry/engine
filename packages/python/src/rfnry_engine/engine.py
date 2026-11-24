@@ -2249,14 +2249,14 @@ class Engine:
                 "generation" if target.kind == "generation" else "decision"
             )
             helpers.run(helper, run, recorded)
-            held = (scope, helper.run_id)
+            held, its_stop = (scope, helper.run_id), helper.stop
             self._running[held] = _Running(
-                kind, helper.stop, helper.inbox if kind == "generation" else None
+                kind, its_stop, helper.inbox if kind == "generation" else None
             )
 
             def gone(_: object) -> None:
                 self._running.pop(held, None)
-                helper.stop._drop()
+                its_stop._drop()
                 release()
 
             helper.task.add_done_callback(gone)
@@ -2317,6 +2317,7 @@ class Engine:
                         target,
                         forwarded,
                     ):
+                        parked.pop(call.id, None)
                         child = await self._owned(
                             target,
                             forwarded.stop,
@@ -2621,7 +2622,7 @@ class Engine:
             parked.update(
                 (call.id, (call, mark.delegated[call.id]))
                 for call in made
-                if call.id in mark.delegated and call.id not in again
+                if call.id in mark.delegated
             )
             refused: list[tuple[ToolCall, Step]] = []
             for waiting in answered:

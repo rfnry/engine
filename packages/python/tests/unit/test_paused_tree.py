@@ -21,6 +21,8 @@ from rfnry_engine.records import (
     ToolCallStarted,
     ToolResultReady,
 )
+from rfnry_engine.refinery.refinery import Refinery
+from rfnry_engine.refinery.storage import Storage
 from rfnry_engine.tools.tools import Tool, Tools
 
 from .fakes import (
@@ -959,3 +961,164 @@ async def test_a_lead_that_fails_while_its_child_waits_ends_it_two_levels_down(
             "stopped by the user"
         ]
     assert refunds.done == [{"amount": 3}]
+
+
+class Writing(Recording):
+    def __init__(self) -> None:
+        super().__init__()
+        self.writing = asyncio.Event()
+        self.gate = asyncio.Event()
+
+    async def record(self, run: Run, *, skip: Collection[str] = ()) -> None:
+        if isinstance(run, Generation) and run.agent == "worker" and run.paused:
+            self.writing.set()
+            await self.gate.wait()
+        await super().record(run, skip=skip)
+
+
+def told(messages: list[Message]) -> list[tuple[str, str | None]]:
+    return [(m.notice.kind, m.notice.run_id) for m in messages if m.notice is not None]
+
+
+def paused_then_stopped(lead: Generation) -> tuple[Generation, Generation]:
+    paused, stopped = lead.children
+    assert isinstance(paused, Generation) and isinstance(stopped, Generation)
+    assert paused.paused and paused.stopped is None
+    assert stopped.stopped == "now" and stopped.resumed and stopped.paused == []
+    return paused, stopped
+
+
+async def test_a_paused_helper_is_stopped_once_its_record_is_written(tmp_path: Path) -> None:
+    store, recording, seen = MemoryStore(), Writing(), Seen()
+    stopping = ToolCall(id="c-job", name="Job", args={"id": "d1", "stop": True})
+    model = Crew(
+        [background("part one"), recording.writing, calling(stopping), text_reply("stopped it")],
+        {"part one": [calling(LOOKUP), text_reply("never")]},
+    )
+    running = asyncio.create_task(
+        crew_run(helped(tmp_path, model, refinery=recording), store, on_event=seen)
+    )
+    await until(
+        lambda: any(isinstance(e, ToolCallStarted) and e.call_id == "c-job" for e in seen.events),
+        "the lead's Job call started",
+    )
+    await asyncio.sleep(0.05)
+    assert not running.done()
+    recording.gate.set()
+    lead = await asyncio.wait_for(running, 5)
+    paused, stopped = paused_then_stopped(lead)
+    assert told(store.held[KEY]) == [("paused", paused.run_id), ("stopped", stopped.run_id)]
+    job_result = result_of(lead, "c-job")
+    assert (job_result["running"], job_result["stopped"]) == (False, "")
+    workers = [r.run_id for r in recording.runs if r.agent == "worker"]
+    assert workers == [paused.run_id, stopped.run_id]
+    assert lead.reply == "stopped it" and live(store.held[KEY]) is None
+
+
+async def test_a_stopped_lead_stops_its_paused_helper_once_its_record_is_written(
+    tmp_path: Path,
+) -> None:
+    store, recording, stop = MemoryStore(), Writing(), Stop()
+    model = Crew(
+        [background("part one"), asyncio.Event(), text_reply("never")],
+        {"part one": [calling(LOOKUP), text_reply("never")]},
+    )
+    running = asyncio.create_task(
+        crew_run(helped(tmp_path, model, refinery=recording), store, stop=stop)
+    )
+    await asyncio.wait_for(recording.writing.wait(), 5)
+    stop.now()
+    await asyncio.sleep(0.05)
+    assert not running.done()
+    recording.gate.set()
+    lead = await asyncio.wait_for(running, 5)
+    assert lead.stopped == "now" and lead.paused == []
+    paused, stopped = paused_then_stopped(lead)
+    assert told(store.held[KEY]) == [("paused", paused.run_id), ("stopped", stopped.run_id)]
+    held = store.held[HELPER_KEY]
+    assert (held[-1].tool_call_id, held[-1].content) == ("c-lookup", "stopped by the user")
+    assert live(held) is None
+
+
+async def test_a_stopped_paused_helper_reads_back_beside_its_pause(
+    tmp_path: Path, storage: Storage
+) -> None:
+    store, ended, refinery = MemoryStore(), asyncio.Event(), Refinery(storage)
+    stopping = ToolCall(id="c-job", name="Job", args={"id": "d1", "stop": True})
+    model = Crew(
+        [
+            background("part one"),
+            ended,
+            calling(stopping),
+            text_reply("stopped it"),
+            text_reply("heard it"),
+        ],
+        {"part one": [calling(LOOKUP), text_reply("never")]},
+    )
+    lead = await asyncio.wait_for(
+        crew_run(helped(tmp_path, model, refinery=refinery), store, on_event=ended_below(ended)),
+        10,
+    )
+    paused, stopped = paused_then_stopped(lead)
+    assert told(store.held[KEY]) == [("paused", paused.run_id), ("stopped", stopped.run_id)]
+    read = await refinery.run("acme", lead.run_id)
+    assert isinstance(read, Generation)
+    assert sorted(c.run_id for c in read.children) == sorted([paused.run_id, stopped.run_id])
+
+
+async def test_a_resume_whose_stop_is_pressed_ends_the_child_it_would_go_on_with(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    model = Crew(
+        [delegating("desk", "refund it"), text_reply("never")],
+        {"refund it": [calling(REFUND), text_reply("never")]},
+    )
+    engine = engine_of(tmp_path, model)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"))
+    [w] = first.paused
+    [desk] = first.children
+    desk_key = ("acme", f"c1/{desk.run_id}")
+    stop = Stop()
+    stop.now()
+    again = await lead_run(engine, store, refunds, "go on", answers={w.id: True}, stop=stop)
+    assert again.stopped == "now" and again.paused == []
+    assert [(s.tool, s.result) for s in again.steps] == [("Delegate", "stopped by the user")]
+    assert live(store.held[KEY]) is None and live(store.held[desk_key]) is None
+    assert [m.content for m in store.held[desk_key] if m.tool_call_id == "c-refund"] == [
+        "stopped by the user"
+    ]
+    [ended] = again.children
+    assert isinstance(ended, Generation) and ended.agent == "desk"
+    assert ended.stopped == "now" and ended.resumed and ended.input == ""
+    assert ended.call is not None and (ended.call.run_id, ended.call.call_id) == (
+        again.run_id,
+        "d1",
+    )
+    assert refunds.done == [] and len(model.calls["refund it"]) == 1
+
+
+async def test_a_resume_whose_stop_is_pressed_ends_its_children_two_levels_down(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    model = two_levels(text_reply("never"))
+    engine = engine_of(tmp_path, model)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"))
+    [w] = first.paused
+    stop = Stop()
+    stop.now()
+    again = await lead_run(engine, store, refunds, "go on", answers={w.id: True}, stop=stop)
+    assert again.stopped == "now" and again.paused == []
+    [mid_key] = [k for k in store.held if k[1].count("/") == 1]
+    [desk_key] = [k for k in store.held if k[1].count("/") == 2]
+    for key, call_id in ((KEY, "d1"), (mid_key, "d1"), (desk_key, "c-refund")):
+        assert live(store.held[key]) is None
+        assert [m.content for m in store.held[key] if m.tool_call_id == call_id] == [
+            "stopped by the user"
+        ]
+    [mid] = again.children
+    assert isinstance(mid, Generation) and mid.stopped == "now"
+    [desk] = mid.children
+    assert isinstance(desk, Generation) and desk.stopped == "now"
+    assert refunds.done == [] and len(model.calls["refund it"]) == 1
