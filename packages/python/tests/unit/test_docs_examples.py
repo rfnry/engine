@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import types
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -43,6 +43,7 @@ from rfnry_engine.manifest import MANIFEST
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.tools.engine_tools import EngineTools
 
+from .fakes import MemoryStore
 from .trees import amend, picked_by, provided, runtime, write_folder
 
 DOCS = Path(__file__).parents[4] / "docs" / "engine.md"
@@ -139,6 +140,27 @@ MODELS = {
 }
 
 SETUPS = {
+    "async def reply_to(ticket):": Setup(
+        replace={
+            "run = await durable(reply_to, 17)": (
+                "run = await durable(reply_to, 17)\n"
+                "held = store.held[('acme', 'ticket-17')]\n"
+                "assert [m.role for m in held] == ['user', 'user', 'assistant']\n"
+                "assert held[0] == held[1] and run.conversation == held and run.reply == 'ok'"
+            )
+        }
+    ),
+    "async def checkpointed(workflow_id, steps, input):": Setup(
+        replace={
+            'reply = await checkpointed("refund-18", [("bill", "billing"), ("answer", "support")], message)': (
+                'steps = [("bill", "billing"), ("answer", "support")]\n'
+                'reply = await checkpointed("refund-18", steps, message)\n'
+                "calls = len(llm.systems)\n"
+                'assert calls == 2 and await checkpointed("refund-18", steps, message) == reply\n'
+                "assert len(llm.systems) == calls"
+            )
+        }
+    ),
     "import os": Setup(
         replace={
             '"live": live})': (
@@ -512,6 +534,31 @@ def providing(strong: Any, fast: Any, judge: Any, live: Any) -> dict[str, Any]:
     return {"anthropic": anthropic, **provided({"classifier": judge, "live": live})}
 
 
+class Crashing(MemoryStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.crashed = False
+        self.reached = asyncio.Event()
+
+    async def append(
+        self, scope: str, conversation: str, start: int, messages: Sequence[Message]
+    ) -> None:
+        await super().append(scope, conversation, start, messages)
+        if not self.crashed:
+            self.crashed = True
+            self.reached.set()
+            await asyncio.sleep(3600)
+
+
+async def durable(store: Crashing, step: Any, *args: Any) -> Any:
+    first = asyncio.create_task(step(*args))
+    await store.reached.wait()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    return await step(*args)
+
+
 async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, Any]:
     root = tmp_path / "agents"
     tree(root)
@@ -530,8 +577,11 @@ async def context(tmp_path: Path, setup: Setup, storage: Storage) -> dict[str, A
     llm, dm, live_model = Model(*setup.replies), Answering(setup.intent), Live()
     fast_llm = Model(Reply(text="drafted", stop_reason="end_turn", model="fast-1"))
     providers = providing(llm, fast_llm, dm, live_model)
+    store = Crashing()
     return {
         **{name: getattr(rfnry_engine, name) for name in rfnry_engine.__all__},
+        "store": store,
+        "durable": lambda step, *args: durable(store, step, *args),
         "Path": Path,
         "BaseModel": BaseModel,
         "Field": Field,

@@ -2216,15 +2216,72 @@ workflow = {"workflow": "refund-17"}
 billed = await engine.run("billing", scope="acme", input=message, tags=workflow)
 answered = await engine.run("support", scope="acme", input=billed.reply, tags=workflow)
 
-parts = await asyncio.gather(
-    *(engine.run("support", scope="acme", input=part, tags=workflow) for part in (message, text))
-)
+async with asyncio.TaskGroup() as group:
+    drafted = [
+        group.create_task(engine.run("support", scope="acme", input=part, tags=workflow))
+        for part in (message, text)
+    ]
+parts = [task.result() for task in drafted]
 
 routed = await engine.run("frontdesk", scope="acme", input=message, tags=workflow)
 routed.routed_to.agent                  # the department the router chose
 ```
 
 One run after another, runs side by side, and a route: the three patterns a workflow is made of.
+
+Side by side, use a `TaskGroup`: nothing outlives the workflow, and one run that raises cancels the
+rest. When every outcome is wanted, `asyncio.gather(..., return_exceptions=True)` keeps each.
+
+#### Inside a durable workflow
+
+A durable-workflow engine, such as Temporal, DBOS or Restate, re-runs a step after a crash, so
+`engine.run` is one of its steps when the run is idempotent by its conversation name and the store
+gives the resume:
+
+```python
+async def reply_to(ticket):
+    return await engine.run("support", scope="acme", input="Refund the double charge.",
+                            store=store, conversation=f"ticket-{ticket}")
+
+run = await durable(reply_to, 17)
+```
+
+`durable` stands for the engine's step runner. The conversation name is the step's idempotency key,
+so a step that runs again continues the stored conversation, not a new one
+([A conversation in your store](#a-conversation-in-your-store)). A call the crash cut off reads
+`Ended: … unknown` there, and the model decides again whether to make it. The app holds its lock
+around the name, since two steps of one ticket must not run at once. A run that pauses returns, as
+any run does, and a later step resumes it with `answers=`
+([Approving tool calls](#approving-tool-calls)).
+
+#### The record as a checkpoint
+
+A workflow without a durable engine can be its own checkpoint: tag each step with the workflow's id
+and its name, and after a crash read the record back. A step whose top-level run ended with no
+`error`, no `stopped` and no `paused` is done, and its `reply` is reused:
+
+```python
+async def checkpointed(workflow_id, steps, input):
+    rows = await refinery.storage.run_tree("acme", tags={"workflow": workflow_id})
+    done = {
+        row.body["tags"]["step"]: row.body["reply"]
+        for row in rows
+        if row.parent_run_id is None
+        and not (row.body["error"] or row.body["stopped"] or row.body["paused"])
+    }
+    for name, agent in steps:
+        if name not in done:
+            tags = {"workflow": workflow_id, "step": name}
+            run = await engine.run(agent, scope="acme", input=input, tags=tags)
+            done[name] = run.reply
+        input = done[name]
+    return input
+
+reply = await checkpointed("refund-18", [("bill", "billing"), ("answer", "support")], message)
+```
+
+Run it again after a crash and the steps already in the record are not run again. The record holds a
+run once it returns, so a step the crash cut off runs again whole.
 
 A budget across a tree is an `on_event` that counts `RunStarted`, which every generation run in the
 tree sends, and adds up the `usage` of every `ReplyReady`, which every model reply sends, a decision
