@@ -800,6 +800,29 @@ async def test_history_reads_what_the_window_left_behind(tmp_path: Path) -> None
     assert run.start == 4
 
 
+async def test_the_history_tool_reads_the_messages_the_run_appends_after_a_window_moves(
+    tmp_path: Path,
+) -> None:
+    store, asked = counting(4, 4, 8)
+    store.held[KEY] = earlier()
+    both = Reply(
+        tool_calls=[ToolCall(id=call_id, name="slow", args={}) for call_id in ("c1", "c2")],
+        stop_reason="tool_use",
+    )
+    llm = Scripted(both, use("c3"), reading(("h1", {})), text_reply("Done."))
+    await chat(engine_for(tmp_path, llm), store)
+    assert asked == [5, 8, 10, 12]
+    [result] = [message.content for message in store.held[KEY] if message.tool_call_id == "h1"]
+    assert positions(result) == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert isinstance(result, list)
+    headers = [
+        json.loads(part.text)
+        for part in result
+        if isinstance(part, Text) and part.text.startswith('{"position"')
+    ]
+    assert [header.get("tool_call_id") for header in headers[5:]] == [None, "c1", "c2"]
+
+
 THOUGHT = {"thought": "look it up"}
 
 

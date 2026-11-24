@@ -100,7 +100,6 @@ from rfnry_engine.models import (
     _call,
     _copied,
     _handed,
-    _open,
     _own,
     _waited,
     as_decided,
@@ -152,6 +151,7 @@ from rfnry_engine.tools.engine_tools import EngineTools, RunTools, refuse_builti
 from rfnry_engine.tools.helpers import ASK_TOOL, HELPER_TOOLS, ask_tool, helper_tools
 from rfnry_engine.tools.tools import Result, Tool, Tools, ToolsLike
 from rfnry_engine.tools.workspace import JOB_TOOL, WORKSPACE_NAMES, WORKSPACE_TOOLS, Workspace
+from rfnry_engine.transcript import Transcript
 from rfnry_engine.tree import (
     OUTPUT_TOOL,
     TAKEN,
@@ -2001,11 +2001,13 @@ class Engine:
             )
         )
         listed = next((message.pause for message in reversed(given) if message.pause), None)
-        messages: list[Message] = []
-        window = 0
+        transcript = Transcript(conversation)
+        messages = transcript.messages
         surface = RunTools(
             self,
-            source=None if conversation is None else (messages, lambda: window),
+            source=None
+            if conversation is None
+            else (transcript.messages, lambda: transcript.window),
             agent=spec.name,
             mode=spec.mode,
             scope=scope,
@@ -2093,23 +2095,11 @@ class Engine:
             opening = _invoked(spec.skills[options.skill], opening)
         follows = [] if options.reattached else [Message(role="user", content=opening)]
         carried = [] if resuming is not None else [_handed(message) for message in held_over(given)]
-        messages.extend([*history, *repairs])
-        if resuming is None:
-            messages.extend([*carried, *losses, *follows])
-        begun = 0 if conversation is None else len(history) + len(repairs)
-        if resuming is not None and conversation is not None:
-            begun = next(
-                (n for n in reversed(range(len(history))) if history[n].tool_calls),
-                len(history) - 1,
-            )
-        sent = messages[begun : len(history) if resuming is not None else None]
-        seen = messages
-        settled = False
+        transcript.start(history, repairs, [*carried, *losses, *follows], resuming, head, chained)
         steps: list[Step] = []
         delegated: dict[str, Generation | Decision] = {}
         rerun: dict[str, str] = {}
         parked: dict[str, tuple[ToolCall, str]] = {}
-        open_mark, open_at = resuming, len(history) - 1
         woken: list[Any] = []
         tool_slots = _slots(spec.tool_parallel)
         shell_slots = _slots(None) if bridging else tool_slots
@@ -2559,14 +2549,12 @@ class Engine:
                 if here is not None and here.failed is not None and here.failed not in raised:
                     held.append(here.failed)
             failures = [*raised, *held]
-            lost = None if conversation is None else conversation.failed
+            lost = transcript.lost
             if lost is not None and any(error is lost for error in failures):
                 failures = [lost, *(error for error in failures if error is not lost)]
             _raise_first(failures)
 
-        async def save() -> None:
-            if conversation is not None:
-                await conversation.save(messages)
+        save = transcript.save
 
         async def run_batch(batch: list[ToolCall], stop: Stop, stored: bool = True) -> bool:
             began = time.monotonic()
@@ -2622,27 +2610,24 @@ class Engine:
             return True
 
         async def windowed() -> None:
-            nonlocal chained, window, begun, seen, sent, settled
-            if conversation is None:
-                if not settled:
-                    sent, settled = list(messages), True
-                return
-            at = await conversation.window(len(messages))
-            _paired(messages[at:], at, f"the window of conversation {conversation.key!r}")
-            if settled and at == window:
-                seen.extend(messages[at + len(seen) :])
-                return
-            chained = chain.Chain(head)
-            seen = await chained.settle(messages[at:])
-            window = at
-            if not settled:
-                begun, sent, settled = at, list(seen), True
+            at = await transcript.position()
+            if at is not None:
+                _paired(
+                    transcript.messages[at:],
+                    at,
+                    f"the window of conversation {transcript.key!r}",
+                )
+            await transcript.windowed(at)
 
         def still_open(
             held: Sequence[Message] = (), answers: Collection[str] = (), told: bool = False
         ) -> Pause:
-            base = Pause(agent=spec.name, run_id=run_id) if open_mark is None else open_mark
-            after = [] if open_mark is None else messages[open_at + 1 :]
+            base = (
+                Pause(agent=spec.name, run_id=run_id)
+                if transcript.open_mark is None
+                else transcript.open_mark
+            )
+            after = transcript.after_mark()
             answered = {message.tool_call_id for message in after if message.role == "tool"}
             pending = {
                 call.id: tool_calls.delegated[id(call)]
@@ -2695,11 +2680,6 @@ class Engine:
                 held=list(held),
             )
 
-        def append_mark(mark: Pause) -> None:
-            nonlocal open_mark, open_at
-            messages.append(Message(role="assistant", content="[paused]", pause=mark))
-            open_mark, open_at = mark, len(messages) - 1
-
         async def resume(mark: Pause, answers: Mapping[str, bool | Refused], stop: Stop) -> bool:
             nonlocal asked
             answered = [waiting for waiting in mark.waiting if waiting.id in answers]
@@ -2735,7 +2715,7 @@ class Engine:
                 refused.append((call, step))
             if conversation is not None and (answered or taken or repairs or asking is not None):
                 held = [_handed(message) for message in mark.held]
-                append_mark(still_open(held, answers, told=asking is not None))
+                transcript.mark(still_open(held, answers, told=asking is not None))
                 await save()
             reattached = await go_on(answers)
             failures: list[Exception] = []
@@ -2757,19 +2737,14 @@ class Engine:
             finally:
                 tool_calls.granted.clear()
             _raise_first(failures)
-            if conversation is not None and len(messages) > open_at + 1:
+            if conversation is not None and transcript.past_mark():
                 after = still_open([_handed(message) for message in mark.held])
-                if _open(after) or after.held:
-                    append_mark(after)
+                transcript.remark(after)
                 await save()
             return bool(answered or taken or children_again or asking or reattached)
 
         async def ask() -> Reply:
-            sending = [
-                _handed(message, sent=True)
-                for message in (*preload, *seen)
-                if message.pause is None
-            ]
+            sending = transcript.sending(preload)
             offered = [_fresh(tool) for tool in specs]
             if streaming:
                 return as_reply(
@@ -2785,6 +2760,7 @@ class Engine:
             error: Exception | None = None,
             paused: Sequence[Waiting] = (),
         ) -> Generation:
+            begun, sent, whole = transcript.for_record()
             return Generation(
                 run_id=run_id,
                 parent_run_id=parent_run_id,
@@ -2805,7 +2781,7 @@ class Engine:
                 preload=[part.model_copy() for part in spec.preload],
                 start=options.start + begun,
                 messages=sent,
-                conversation=[*sent, *messages[begun + len(sent) :]],
+                conversation=whole,
                 tools=specs,
                 steps=steps,
                 calls=calls,
@@ -2905,7 +2881,7 @@ class Engine:
             if helpers.fatal is not None:
                 raise helpers.fatal
             mark = still_open([*heard, *helpers.take()])
-            append_mark(mark)
+            transcript.mark(mark)
             return await finished(said, paused=[*mark.waiting, *mark.below])
 
         async def quietly(turn: int) -> Generation:
@@ -2985,7 +2961,8 @@ class Engine:
                         return await pause([*heard, *follows])
                     await let_go()
                 messages.extend([*heard, *follows])
-                unheard, open_mark = [], None
+                unheard = []
+                transcript.forget_mark()
                 await took(0, heard, [])
             if options.lead is not None:
                 options.lead[0].told = None
@@ -3025,7 +3002,7 @@ class Engine:
                 if reply.model:
                     model = reply.model
                 settings = reply.settings if reply.settings is not None else _settings(model_)
-                prefix = await chained.stamp(seen) if reply.reasoning is not None else None
+                prefix = await transcript.stamp() if reply.reasoning is not None else None
                 assistant = _assistant(reply, prefix, _declared(model_), _settings(model_))
                 messages.append(assistant)
                 asked = list(assistant.tool_calls)
@@ -3144,7 +3121,7 @@ class Engine:
                 if built is not None and not any(built is kept for kept in steps):
                     answer(call, built)
             kept = (
-                open_mark
+                transcript.open_mark
                 if conversation is not None and parent_run_id is None and not called_model
                 else None
             )
@@ -3177,12 +3154,9 @@ class Engine:
                 if unheard and (taken or messages[-1].pause is None):
                     messages.extend(unheard)
                 messages.extend(taken)
-            elif taken or len(messages) > open_at + 1:
+            elif taken or transcript.past_mark():
                 again = still_open([*(_handed(message) for message in kept.held), *taken])
-                if _open(again):
-                    append_mark(again)
-                else:
-                    messages.extend(again.held)
+                transcript.close(again)
             children.extend(sorted(delegated.values(), key=lambda run: (run.at, run.run_id)))
             try:
                 await save()
