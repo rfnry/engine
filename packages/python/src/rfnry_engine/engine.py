@@ -1164,7 +1164,6 @@ class _Children:
         scope: str,
         run_id: str,
         options: _Options,
-        stop: Stop,
         transcript: Transcript,
         given: list[Message],
     ) -> None:
@@ -1173,7 +1172,7 @@ class _Children:
         self.scope = scope
         self.run_id = run_id
         self.options = options
-        self.stop = stop
+        self.stop = options.stop
         self.transcript = transcript
         self.records: list[Generation | Decision] = []
         self.helpers = Helpers(
@@ -1491,9 +1490,12 @@ class _Children:
 
 @dataclass(eq=False)
 class _Turns:
+    spec: AgentSpec
+    scope: str
     input: State
     options: _Options
     parent_run_id: str | None
+    run_id: str
     caller: CallInfo | None
     started: float
     at: datetime
@@ -1531,8 +1533,8 @@ class _Turns:
         if reasoning:
             await self.tool_calls.emit(
                 ReasoningDelta(
-                    run_id=self.children.run_id,
-                    agent=self.children.spec.name,
+                    run_id=self.run_id,
+                    agent=self.spec.name,
                     turn=self.turn,
                     text=text,
                 )
@@ -1541,8 +1543,8 @@ class _Turns:
         self.streamed.append(text)
         await self.tool_calls.emit(
             TextDelta(
-                run_id=self.children.run_id,
-                agent=self.children.spec.name,
+                run_id=self.run_id,
+                agent=self.spec.name,
                 turn=self.turn,
                 text=text,
             )
@@ -1567,8 +1569,8 @@ class _Turns:
             return False
         await self.tool_calls.emit(
             MessagesTaken(
-                run_id=self.children.run_id,
-                agent=self.children.spec.name,
+                run_id=self.run_id,
+                agent=self.spec.name,
                 turn=turn,
                 messages=[_handed(message) for message in taken],
                 notices=[_handed(message) for message in notices],
@@ -1612,8 +1614,8 @@ class _Turns:
         self.batch.asked = list(assistant.tool_calls)
         self.tool_calls.ran.clear()
         reported = ReplyReady(
-            run_id=self.children.run_id,
-            agent=self.children.spec.name,
+            run_id=self.run_id,
+            agent=self.spec.name,
             turn=turn,
             model=assistant.model,
             usage=reply.usage,
@@ -1639,13 +1641,13 @@ class _Turns:
     ) -> Generation:
         begun, sent, whole = self.transcript.for_record()
         return Generation(
-            run_id=self.children.run_id,
+            run_id=self.run_id,
             parent_run_id=self.parent_run_id,
             call=self.caller,
-            agent=self.children.spec.name,
-            scope=self.children.scope,
+            agent=self.spec.name,
+            scope=self.scope,
             tags=dict(self.options.tags),
-            mode=self.children.spec.mode,
+            mode=self.spec.mode,
             skill=self.options.skill,
             context=self.options.context,
             at=self.at,
@@ -1655,7 +1657,7 @@ class _Turns:
             fingerprint=self.fingerprint,
             input=self.input,
             system=self.system,
-            preload=[part.model_copy() for part in self.children.spec.preload],
+            preload=[part.model_copy() for part in self.spec.preload],
             start=self.options.start + begun,
             messages=sent,
             conversation=whole,
@@ -1678,8 +1680,8 @@ class _Turns:
         self.said_end = True
         await self.tool_calls.emit(
             RunEnded(
-                run_id=self.children.run_id,
-                agent=self.children.spec.name,
+                run_id=self.run_id,
+                agent=self.spec.name,
                 call=self.started_call,
                 stopped=record.stopped,
                 error=record.error,
@@ -1733,7 +1735,7 @@ class _Turns:
         await self.took(0, heard, [])
         return None
 
-    async def call_tools(self, turn: int) -> Generation | None:
+    async def run_asked(self, turn: int) -> Generation | None:
         helpers = self.children.helpers
         rest = list(self.batch.asked)
         held_up = False
@@ -1794,8 +1796,8 @@ class _Turns:
         try:
             await self.tool_calls.emit(
                 RunStarted(
-                    run_id=self.children.run_id,
-                    agent=self.children.spec.name,
+                    run_id=self.run_id,
+                    agent=self.spec.name,
                     call=self.started_call,
                     input=_given(self.input),
                     tools=[_fresh(tool) for tool in self.specs],
@@ -1857,7 +1859,7 @@ class _Turns:
                     return await self.finished(
                         reply.text, "now" if requested(self.options.stop) == "now" else None
                     )
-                record = await self.call_tools(turn)
+                record = await self.run_asked(turn)
                 if record is not None:
                     return record
             mode = requested(self.options.stop)
@@ -1893,7 +1895,7 @@ class _Turns:
         kept_open = open_calls(
             live(self.transcript.messages) if kept is None else self.pausing.still_open()
         )
-        if self.transcript.conversation is not None and self.transcript.conversation.failed is None:
+        if self.transcript.conversation is not None and self.transcript.lost is None:
             self.transcript.messages.extend(ended_calls(self.transcript.messages, kept_open))
         if self.parent_run_id is not None:
             kept_open = frozenset()
@@ -1913,14 +1915,9 @@ class _Turns:
         try:
             await self.transcript.save()
         except Exception as error:
-            if (
-                self.transcript.conversation is None
-                or self.transcript.conversation.failed is not error
-            ):
+            if self.transcript.lost is not error:
                 raise
-            logger.error(
-                "engine: the store failed while run %s ended", self.children.run_id, exc_info=True
-            )
+            logger.error("engine: the store failed while run %s ended", self.run_id, exc_info=True)
         failure = self.finish("", error=exc)
         self.options.failed.append(failure)
         await self.announce(failure)
@@ -2818,7 +2815,15 @@ class Engine:
             models={**options.models, spec.model: model_},
         )
         room = options.workspace if spec.workspace else None
-        children = _Children(self, spec, scope, run_id, options, options.stop, transcript, given)
+        children = _Children(
+            engine=self,
+            spec=spec,
+            scope=scope,
+            run_id=run_id,
+            options=options,
+            transcript=transcript,
+            given=given,
+        )
         deadline = smallest(spec.tool_timeout, self.tool_timeout)
         helping = spec.background and JOB_TOOL in spec.granted
         asks = frozenset() if options.lead is None else frozenset({ASK_TOOL})
@@ -2859,7 +2864,14 @@ class Engine:
             opening = _invoked(spec.skills[options.skill], opening)
         follows = [] if options.reattached else [Message(role="user", content=opening)]
         carried = [] if resuming is not None else [_handed(message) for message in held_over(given)]
-        transcript.start(history, repairs, [*carried, *losses, *follows], resuming, head, chained)
+        transcript.start(
+            history=history,
+            repairs=repairs,
+            fresh=[*carried, *losses, *follows],
+            resuming=resuming,
+            head=head,
+            chained=chained,
+        )
         steps: list[Step] = []
         tool_slots = _slots(spec.tool_parallel)
         shell_slots = _slots(None) if bridging else tool_slots
@@ -2904,6 +2916,7 @@ class Engine:
             run_id=run_id,
             transcript=transcript,
             batch=batch,
+            tool_calls=tool_calls,
             children=children,
             made=made,
             repaired=bool(repairs),
@@ -2913,9 +2926,12 @@ class Engine:
         children.park(made, resuming)
         children.restore(restorable, listed)
         return await _Turns(
+            spec=spec,
+            scope=scope,
             input=input,
             options=options,
             parent_run_id=parent_run_id,
+            run_id=run_id,
             caller=caller,
             started=started,
             at=at,

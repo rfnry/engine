@@ -10,7 +10,7 @@ from rfnry_engine.stop import Stop
 from rfnry_engine.transcript import Transcript
 
 if TYPE_CHECKING:
-    from rfnry_engine.engine import _Children
+    from rfnry_engine.engine import _Children, _ToolCalls
 
 
 class Pausing:
@@ -20,6 +20,7 @@ class Pausing:
         run_id: str,
         transcript: Transcript,
         batch: Batch,
+        tool_calls: _ToolCalls,
         children: _Children,
         made: list[ToolCall],
         repaired: bool,
@@ -29,6 +30,7 @@ class Pausing:
         self.run_id = run_id
         self.transcript = transcript
         self.batch = batch
+        self.tool_calls = tool_calls
         self.children = children
         self.made = made
         self.repaired = repaired
@@ -133,21 +135,21 @@ class Pausing:
         failures: list[Exception] = []
         for call, step in refused:
             try:
-                await self.batch.calls.answered(call, step)
+                await self.tool_calls.answered(call, step)
             except Exception as exc:
                 failures.append(exc)
         self.batch.asked = [
             *(_call(waiting.call) for waiting in answered if answers[waiting.id] is True),
             *(_call(call) for call in self.made if call.id in children_again or call is asking),
         ]
-        self.batch.calls.granted.update(id(call) for call in self.batch.asked)
+        self.tool_calls.granted.update(id(call) for call in self.batch.asked)
         try:
             if self.batch.asked:
                 await self.batch.run(self.batch.asked, stop, stored=False)
         except Exception as exc:
             failures.append(exc)
         finally:
-            self.batch.calls.granted.clear()
+            self.tool_calls.granted.clear()
         _raise_first(failures)
         if self.transcript.conversation is not None and self.transcript.past_mark():
             after = self.still_open([_handed(message) for message in mark.held])
@@ -168,7 +170,7 @@ class Pausing:
             )
         )
         for call, cut_step in answered:
-            await self.batch.calls.hand_over(call, cut_step)
+            await self.tool_calls.hand_over(call, cut_step)
         given_up: list[tuple[ToolCall, Step]] = []
         still = open_calls(self.still_open())
         for call in [_call(call) for call in self.made if call.id in still]:
@@ -188,13 +190,13 @@ class Pausing:
             given_up.append((call, cut_step))
         for call_id, held in list(self.children.parked.items()):
             child_run_id = await self.children.stop_child(*held)
-            linked = next((step for done, step in self.batch.calls.ran if done.id == call_id), None)
+            linked = next((step for done, step in self.tool_calls.ran if done.id == call_id), None)
             if linked is not None and child_run_id is not None:
                 linked.child_run_id = child_run_id
         failures: list[Exception] = []
         for call, cut_step in given_up:
             try:
-                await self.batch.calls.answered(call, cut_step)
+                await self.tool_calls.answered(call, cut_step)
             except Exception as exc:
                 failures.append(exc)
         _raise_first(failures)
