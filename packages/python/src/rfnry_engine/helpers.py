@@ -215,13 +215,21 @@ def _mark(record: Generation | Decision) -> Pause | None:
     return None if run is None else live(run.conversation)
 
 
+def _said(record: Generation | Decision) -> str:
+    said = child_result(record)
+    if said or not isinstance(record, Generation) or not record.resumed or record.calls:
+        return said
+    made = next((m for m in record.messages if m.role == "assistant" and m.tool_calls), None)
+    return made.content if made is not None and isinstance(made.content, str) else ""
+
+
 def _ending(record: Generation | Decision | None, cut: bool) -> tuple[Ending, str]:
     if record is None:
         return "stopped", ""
     if record.error is not None:
         return "failed", record.error
     if cut or halted(record):
-        return "stopped", child_result(record)
+        return "stopped", _said(record)
     if record.paused:
         return "paused", f"waits for an answer to: {', '.join(w.call.name for w in record.paused)}"
     if _mark(record) is not None:
@@ -451,10 +459,14 @@ class Helpers:
             for asking in helper.pending():
                 asking.answer.set_result(self._held_back(helper, asking.question))
         told = asked(stop)
-        while requested(stop) is None and (
-            left := [helper.over for helper in self.running() if not helper.task.done()]
+        while (
+            requested(stop) is None
+            and self.fatal is None
+            and (left := [helper.over for helper in self.running() if not helper.task.done()])
         ):
             await asyncio.wait([*left, told], return_when=asyncio.FIRST_COMPLETED)
+        if requested(stop) is not None:
+            self.pausing = False
 
     def get(self, job: str) -> Helper | None:
         return self._helpers.get(job)

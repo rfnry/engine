@@ -549,6 +549,35 @@ async def test_a_replay_whose_approve_answers_later_fails_with_its_own_reason(
     )
 
 
+async def test_a_helper_s_later_fails_a_lead_waiting_to_pause_without_its_other_helpers(
+    tmp_path: Path,
+) -> None:
+    recording = Recording()
+    calls = [*backgrounded("part one", "part two").tool_calls, REFUND.model_copy()]
+    model = Crew(
+        [Reply(tool_calls=calls, stop_reason="tool_use"), text_reply("never")],
+        {
+            "part one": [calling(LOOKUP), text_reply("never")],
+            "part two": [asyncio.Event(), text_reply("never")],
+        },
+    )
+    folder = crew(tmp_path, worker={"tools": {"allow": ["lookup"]}}, background=True)
+    amend(folder, "lead", tools={"allow": ["refund"]})
+    running = team(folder, model, refinery=recording).run(
+        "lead",
+        "acme",
+        "go",
+        tools=Tools([Tool("lookup", "Look", body=found), Refunds().tools()]),
+        approve=later_for("lookup", "refund"),
+    )
+    with pytest.raises(ConfigurationError, match=cannot("lookup", "worker", BELOW)):
+        await asyncio.wait_for(running, 5)
+    [lead] = recording.runs
+    assert isinstance(lead, Generation) and lead.paused == [] and len(model.calls["lead"]) == 1
+    waited = next(c for c in lead.children if isinstance(c, Generation) and c.input == "part two")
+    assert waited.stopped == "now"
+
+
 async def test_a_paused_record_reads_back(tmp_path: Path, storage: Storage) -> None:
     refinery = Refinery(storage)
     model = Scripted(calling(REFUND), text_reply("never"))
@@ -1034,6 +1063,26 @@ async def test_a_resume_with_another_agent_is_refused(
     with pytest.raises(InputError, match=re.escape(NO_WAITING.format(id="ghost"))):
         await going_on(engine, run, refunds, {"ghost": True}, store, agent=other)
     assert len(model.calls) == 1 and judge.calls == [] and refunds.done == []
+
+
+async def test_a_resume_by_another_agent_with_a_skill_is_refused_for_the_agent_first(
+    tmp_path: Path,
+) -> None:
+    engine, run, refunds, model = await pausing(
+        tmp_path,
+        use("Delegate", agent="desk", input="x"),
+        text_reply("never"),
+        agent="lead",
+        approve=later_for("Delegate"),
+        skilled=True,
+    )
+    assert isinstance(run, Generation)
+    answers = {run.paused[0].id: True}
+    cases: list[dict[str, Any]] = [{"skill": "escalate"}, {"input": "/escalate now"}]
+    for options in cases:
+        with pytest.raises(InputError, match=re.escape(OTHER_AGENT.format(agent="lead"))):
+            await going_on(engine, run, refunds, answers, agent="desk", **options)
+    assert len(model.calls) == 1 and refunds.done == []
 
 
 async def test_a_resumed_runs_added_starts_at_its_answers(tmp_path: Path) -> None:

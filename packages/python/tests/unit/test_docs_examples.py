@@ -146,7 +146,9 @@ SETUPS = {
                 "run = await durable(reply_to, 17)\n"
                 "held = store.held[('acme', 'ticket-17')]\n"
                 "assert [m.role for m in held] == ['user', 'user', 'assistant']\n"
-                "assert held[0] == held[1] and run.conversation == held and run.reply == 'ok'"
+                "stored_by_the_cut_step, appended_again_by_the_rerun, reply = held\n"
+                "assert stored_by_the_cut_step == appended_again_by_the_rerun\n"
+                "assert run.conversation == held and reply.content == run.reply == 'ok'"
             )
         }
     ),

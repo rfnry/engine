@@ -21,7 +21,7 @@ from functools import partial
 from itertools import count
 from pathlib import Path
 from types import MappingProxyType
-from typing import Annotated, Any, Literal, NoReturn, Protocol, TypeGuard, cast
+from typing import Annotated, Any, Literal, NamedTuple, NoReturn, Protocol, TypeGuard, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
@@ -175,10 +175,17 @@ BELOW_CANNOT_WAIT = (
 REPLAY_CANNOT_WAIT = "a replay cannot wait for an answer"
 
 Approve = Callable[[str, ToolCall], Awaitable[bool | Refused | Later]]
-Delegation = tuple[Content, bool, str | None, bool, tuple[str, list[Waiting]] | None]
 NO_ANSWERS: Mapping[str, bool | Refused] = MappingProxyType({})
 
 logger = logging.getLogger(__name__)
+
+
+class Delegation(NamedTuple):
+    content: Content
+    is_error: bool
+    child_run_id: str | None
+    cut_short: bool
+    below: tuple[str, list[Waiting]] | None
 
 
 @dataclass(frozen=True)
@@ -480,6 +487,13 @@ def _resumable(spec: AgentSpec, paused: Pause | None, options: _Options) -> None
         raise InputError(
             f"engine: {unanswered.call.name} of agent {unanswered.agent!r} waits for an answer under id {unanswered.id!r}; give it one in answers= before the run goes on"
         )
+
+
+def _raise_first(failures: Sequence[BaseException]) -> None:
+    for error in failures[1:]:
+        logger.error("engine: a further call of the same batch failed: %s", error, exc_info=error)
+    if failures:
+        raise failures[0]
 
 
 def _refusal(name: str, answer: bool | Refused) -> str:
@@ -1021,13 +1035,7 @@ class _ToolCalls:
                             content = error_text(exc)
                         is_error = True
                 if here.stopped or here.pressed:
-                    content, is_error, cut_short, below, held_back = (
-                        STOPPED,
-                        True,
-                        True,
-                        None,
-                        False,
-                    )
+                    content, is_error, cut_short, held_back = STOPPED, True, True, False
         finally:
             here.over = True
         step = Step(
@@ -1966,6 +1974,7 @@ class Engine:
             for job in held_jobs
             if (agent := self._agents.get(job.agent)) is not None and _named(agent)
         ]
+        restored = {job.job for job in restorable}
         losses = (
             []
             if conversation is None
@@ -1973,7 +1982,7 @@ class Engine:
                 given,
                 conversation.key,
                 {name for name, agent in self._agents.items() if not _named(agent)},
-                {job.job for job in held_jobs if job not in restorable},
+                {job.job for job in held_jobs if job.job not in restored},
             )
         )
         listed = next((message.pause for message in reversed(given) if message.pause), None)
@@ -2180,9 +2189,7 @@ class Engine:
                     self._conversations.discard(held)
             return free
 
-        async def begin(
-            target: AgentSpec, args: DelegateArgs
-        ) -> tuple[Content, bool, str | None, bool]:
+        async def begin(target: AgentSpec, args: DelegateArgs) -> Delegation:
             async with starting:
                 try:
                     permit_background(
@@ -2194,7 +2201,7 @@ class Engine:
                         refuse_builtin(options.tools, ASK_TOOL)
                     questions = _asked(target, args.questions)
                 except Exception as exc:
-                    return error_text(exc), True, None, False
+                    return Delegation(error_text(exc), True, None, False, None)
                 while not await claim(key := keyed(target, helpers.upcoming())):
                     helpers.skip()
                     await asyncio.sleep(0)
@@ -2315,7 +2322,7 @@ class Engine:
 
         def launch(
             target: AgentSpec, args: DelegateArgs, questions: dict[str, Question], key: str | None
-        ) -> tuple[Content, bool, str | None, bool]:
+        ) -> Delegation:
             helper = helpers.start(
                 args.agent,
                 target.kind,
@@ -2325,25 +2332,25 @@ class Engine:
                 again_under(CALL.get()),
             )
             follow(helper, target, args.input, questions, key, False)
-            return json.dumps({"job": helper.job}), False, helper.run_id, False
+            return Delegation(json.dumps({"job": helper.job}), False, helper.run_id, False, None)
 
         async def delegate(call: ToolCall, ending: Stop | None = None) -> Delegation:
             try:
                 held = permit(spec, call.args, BackgroundArgs) if spec.background else None
             except Exception as exc:
-                return error_text(exc), True, None, False, None
+                return Delegation(error_text(exc), True, None, False, None)
             if held is not None and held.background:
-                return (*await begin(self._agents[held.agent], held), None)
+                return await begin(self._agents[held.agent], held)
             failed: list[Generation | Decision] = []
-            again = rerun.pop(call.id, None)
+            continuing = rerun.pop(call.id, None)
             try:
                 async with delegate_slots:
                     if ending is None and requested(stop) == "now":
-                        return STOPPED, True, None, True, None
+                        return Delegation(STOPPED, True, None, True, None)
                     args = held or permit(spec, call.args, DelegateArgs)
                     target = self._agents[args.agent]
                     child_id = uuid4().hex
-                    key = keyed(target, child_id) if again is None else again
+                    key = keyed(target, child_id) if continuing is None else continuing
                     forwarded = forward(
                         target,
                         _asked(target, args.questions),
@@ -2354,7 +2361,7 @@ class Engine:
                         key,
                         None if options.waits is None and key is not None else below_waits,
                     )
-                    async with continued(target, key, forwarded, again is not None) as (
+                    async with continued(target, key, forwarded, continuing is not None) as (
                         target,
                         forwarded,
                     ):
@@ -2365,7 +2372,7 @@ class Engine:
                             self._run(
                                 target,
                                 scope,
-                                args.input if again is None else "",
+                                args.input if continuing is None else "",
                                 forwarded,
                                 run_id,
                                 run_id=child_id,
@@ -2379,18 +2386,20 @@ class Engine:
                     delegated[kept.run_id] = kept
                 if isinstance(exc, _Unpausable):
                     raise
-                return error_text(exc), True, None if kept is None else kept.run_id, False, None
+                return Delegation(
+                    error_text(exc), True, None if kept is None else kept.run_id, False, None
+                )
             if child is None:
-                return STOPPED, True, None, True, None
+                return Delegation(STOPPED, True, None, True, None)
             with taking(stop):
                 await recorded(child)
             delegated[child.run_id] = child
             if halted(child) or answers_stopped():
-                return STOPPED, True, child.run_id, True, None
+                return Delegation(STOPPED, True, child.run_id, True, None)
             if child.paused and key is not None:
                 parked[call.id] = (call, key)
-                return "", False, child.run_id, False, (key, child.paused)
-            return child_result(child), False, child.run_id, False, None
+                return Delegation("", False, child.run_id, False, (key, child.paused))
+            return Delegation(child_result(child), False, child.run_id, False, None)
 
         async def stop_child(call: ToolCall, key: str) -> str | None:
             parked.pop(call.id, None)
@@ -2399,7 +2408,7 @@ class Engine:
             ending.now()
             token = CALL.set(tool_calls.called(call))
             try:
-                child_run_id = (await delegate(call, ending))[2]
+                child_run_id = (await delegate(call, ending)).child_run_id
             finally:
                 CALL.reset(token)
             if child_run_id is not None and child_run_id in delegated:
@@ -2566,12 +2575,7 @@ class Engine:
             lost = None if conversation is None else conversation.failed
             if lost is not None and any(error is lost for error in failures):
                 failures = [lost, *(error for error in failures if error is not lost)]
-            for error in failures[1:]:
-                logger.error(
-                    "engine: a further call of the same batch failed: %s", error, exc_info=error
-                )
-            if failures:
-                raise failures[0]
+            _raise_first(failures)
 
         async def save() -> None:
             if conversation is not None:
@@ -2720,12 +2724,12 @@ class Engine:
                 under = [waiting for waiting in mark.below if _under(waiting.conversation, key)]
                 return not under or any(waiting.id in answers for waiting in under)
 
-            again = {
+            children_again = {
                 call.id: mark.delegated[call.id]
                 for call in made
                 if call.id in mark.delegated and reached(mark.delegated[call.id])
             }
-            rerun.update(again)
+            rerun.update(children_again)
             refused: list[tuple[ToolCall, Step]] = []
             for waiting in answered:
                 if answers[waiting.id] is True:
@@ -2755,7 +2759,7 @@ class Engine:
                     failures.append(exc)
             asked = [
                 *(_call(waiting.call) for waiting in answered if answers[waiting.id] is True),
-                *(_call(call) for call in made if call.id in again or call is asking),
+                *(_call(call) for call in made if call.id in children_again or call is asking),
             ]
             tool_calls.granted.update(id(call) for call in asked)
             try:
@@ -2765,18 +2769,13 @@ class Engine:
                 failures.append(exc)
             finally:
                 tool_calls.granted.clear()
-            for error in failures[1:]:
-                logger.error(
-                    "engine: a further call of the same batch failed: %s", error, exc_info=error
-                )
-            if failures:
-                raise failures[0]
+            _raise_first(failures)
             if conversation is not None and len(messages) > open_at + 1:
                 after = still_open([_handed(message) for message in mark.held])
                 if _open(after) or after.held:
                     append_mark(after)
                 await save()
-            return bool(answered or taken or again or asking or reattached)
+            return bool(answered or taken or children_again or asking or reattached)
 
         async def ask() -> Reply:
             sending = [
@@ -2901,20 +2900,18 @@ class Engine:
                 )
                 answer(call, cut_step)
                 given_up.append((call, cut_step))
-            for held in list(parked.values()):
-                await stop_child(*held)
+            for call_id, held in list(parked.items()):
+                child_run_id = await stop_child(*held)
+                linked = next((step for done, step in ran if done.id == call_id), None)
+                if linked is not None and child_run_id is not None:
+                    linked.child_run_id = child_run_id
             failures: list[Exception] = []
             for call, cut_step in given_up:
                 try:
                     await tool_calls.answered(call, cut_step)
                 except Exception as exc:
                     failures.append(exc)
-            for error in failures[1:]:
-                logger.error(
-                    "engine: a further call of the same batch failed: %s", error, exc_info=error
-                )
-            if failures:
-                raise failures[0]
+            _raise_first(failures)
 
         async def pause(heard: Sequence[Message] = ()) -> Generation:
             await helpers.settled()

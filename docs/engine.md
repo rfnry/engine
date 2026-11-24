@@ -3060,8 +3060,9 @@ starts, and pauses again on the same calls, under the same ids, for the app to a
 posted, continues it from its stored conversation as a new run of its agent, `input` `""` and
 `resumed`, whose stop is pressed before it starts: every call it waits on — its own, its `Ask`, and
 each `Delegate` whose child paused, that child ended the same way — is answered `stopped by the
-user` in its own conversation, the helper ends `stopped`, and its lead hears a `stopped` notice. A
-lead that ends without pausing — stopped, failed or past `max_model_calls` — ends each of its paused
+user` in its own conversation, the helper ends `stopped`, and its lead hears a `stopped` notice,
+which, as `Job` under `stopped`, reads what the helper had said as it paused. A lead that ends
+without pausing — stopped, failed or past `max_model_calls` — ends each of its paused
 helpers so, and each paused child of a `Delegate` its conversation no longer waits on, so no call is
 left waiting in the store with nothing that will answer it; a resume that a stop reaches while a
 call is still open answers it the same way, and a child it would go on with, the stop pressed before

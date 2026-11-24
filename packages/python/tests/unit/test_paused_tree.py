@@ -260,6 +260,47 @@ async def test_a_resume_walks_down_two_levels(tmp_path: Path) -> None:
     assert told == [("ToolCallStarted", "d1"), ("ToolResultReady", "d1")]
 
 
+def two_desks() -> Reply:
+    calls = [
+        ToolCall(id="d1", name="Delegate", args={"agent": "desk", "input": "refund A"}),
+        ToolCall(id="d2", name="Delegate", args={"agent": "desk", "input": "refund B"}),
+    ]
+    return Reply(tool_calls=calls, stop_reason="tool_use")
+
+
+@pytest.mark.parametrize("slots", [None, 1], ids=["no cap", "max_parallel 1"])
+async def test_two_paused_delegates_of_one_reply_resume_one_approved_and_one_refused(
+    tmp_path: Path, slots: int | None
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    second = REFUND.model_copy(update={"args": {"amount": 20}})
+    model = Crew(
+        [two_desks(), text_reply("both answered")],
+        {
+            "refund A": [calling(REFUND), text_reply("A refunded")],
+            "refund B": [calling(second), text_reply("B not refunded")],
+        },
+    )
+    folder = tree(tmp_path)
+    if slots is not None:
+        amend(folder, "lead", orchestration={"max_parallel": slots})
+    engine = Engine(folder, providers=provided({"crew": model, "judge": None}))
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"))
+    [a] = [w for w in first.paused if w.call.args == {"amount": 10}]
+    [b] = [w for w in first.paused if w.call.args == {"amount": 20}]
+    mark = mark_of(store.held[KEY])
+    assert set(mark.delegated) == {"d1", "d2"} and mark.below == first.paused
+    again = await lead_run(
+        engine, store, refunds, "go on", answers={a.id: True, b.id: Refused("too much")}
+    )
+    assert again.error is None and again.paused == [] and again.reply == "both answered"
+    assert refunds.done == [{"amount": 10}]
+    assert sorted(str(s.result) for s in again.steps) == ["A refunded", "B not refunded"]
+    for key in mark.delegated.values():
+        assert live(store.held[("acme", key)]) is None
+    assert live(store.held[KEY]) is None
+
+
 async def test_a_child_that_waits_again_pauses_its_parent_again_and_holds_the_input(
     tmp_path: Path,
 ) -> None:
@@ -822,6 +863,24 @@ async def test_a_lead_may_stop_a_paused_helper(tmp_path: Path) -> None:
     assert kinds(lead.conversation) == ["paused", "stopped"]
 
 
+async def test_a_stopped_paused_helper_reads_what_it_said_before_it_paused(
+    tmp_path: Path,
+) -> None:
+    store, ended = MemoryStore(), asyncio.Event()
+    stopping = ToolCall(id="c-job", name="Job", args={"id": "d1", "stop": True})
+    looking = Reply(text="Looking it up.", tool_calls=[LOOKUP], stop_reason="tool_use")
+    model = Crew(
+        [background("part one"), ended, calling(stopping), text_reply("stopped it")],
+        {"part one": [looking, text_reply("never")]},
+    )
+    lead = await crew_run(helped(tmp_path, model), store, on_event=ended_below(ended))
+    assert result_of(lead, "c-job")["stopped"] == "Looking it up."
+    [notice] = [m for m in lead.conversation if m.notice and m.notice.kind == "stopped"]
+    assert notice.content == "[helper d1 · worker · stopped]\nLooking it up."
+    paused, stopped = lead.children
+    assert isinstance(stopped, Generation) and stopped.reply == "" and stopped.calls == 0
+
+
 async def test_send_to_a_helper_paused_on_its_calls_is_refused(tmp_path: Path) -> None:
     store, ended = MemoryStore(), asyncio.Event()
     sending = ToolCall(id="c-job", name="Job", args={"id": "d1", "send": "hurry"})
@@ -988,6 +1047,47 @@ async def test_a_lead_that_fails_stops_its_paused_helpers(tmp_path: Path) -> Non
     assert stopped.call is not None and stopped.call == paused.call
     assert (stopped.call.tool, stopped.call.call_id) == ("Delegate", "b1")
     assert kinds(store.held[KEY]) == ["paused", "stopped"]
+
+
+LEAD_STOPPED = (
+    "InputError: tools/helpers: your lead was stopped or failed before it answered; "
+    "you stop with it"
+)
+
+
+async def test_an_ask_made_once_a_lead_waiting_to_pause_is_stopped_reads_its_lead_stopped(
+    tmp_path: Path,
+) -> None:
+    store, stop, gate, asking = MemoryStore(), Stop(), asyncio.Event(), asyncio.Event()
+    model = Crew(
+        [beside_its_own("part one"), text_reply("never")],
+        {"part one": [gate, calling(ASK), text_reply("never")]},
+    )
+
+    async def approve(agent: str, call: ToolCall) -> bool | Later:
+        if call.name == "Ask":
+            asking.set()
+        return Later() if call.name == "refund" else True
+
+    async def watch(event: Any) -> None:
+        if isinstance(event, ToolResultReady) and event.call_id == OWN.id and event.step.stopped:
+            gate.set()
+            await asking.wait()
+            for _ in range(20):
+                await asyncio.sleep(0)
+
+    running = asyncio.create_task(
+        crew_run(helped(tmp_path, model), store, approve=approve, stop=stop, on_event=watch)
+    )
+    await until(lambda: batch_stored(store), "the lead's batch was stored")
+    stop.after_step()
+    lead = await asyncio.wait_for(running, 5)
+    assert lead.stopped == "after_step" and lead.paused == []
+    answered = answer_in(store, HELPER_KEY, "a1")
+    assert answered.is_error and answered.content == LEAD_STOPPED
+    [worker] = lead.children
+    assert isinstance(worker, Generation) and worker.stopped == "after_step"
+    assert live(store.held[HELPER_KEY]) is None and "paused" not in kinds(store.held[KEY])
 
 
 async def test_a_stop_pressed_while_the_lead_waits_to_pause_wins(tmp_path: Path) -> None:
@@ -1220,6 +1320,7 @@ async def test_a_resume_whose_stop_is_pressed_ends_the_child_it_would_go_on_with
     ]
     [ended] = again.children
     assert isinstance(ended, Generation) and ended.agent == "desk"
+    assert again.steps[0].child_run_id == ended.run_id
     assert ended.stopped == "now" and ended.resumed and ended.input == ""
     assert ended.call is not None and (ended.call.run_id, ended.call.call_id) == (
         again.run_id,
@@ -1284,16 +1385,22 @@ async def team_run(
     return run
 
 
-def ended_of(*agents: str, count: int = 1) -> tuple[asyncio.Event, Any]:
-    ended, seen = asyncio.Event(), []
+class Ends:
+    def __init__(self) -> None:
+        self.seen: list[RunEnded] = []
+        self.waiting: list[tuple[str, int, asyncio.Event]] = []
 
-    async def watch(event: Any) -> None:
-        if isinstance(event, RunEnded) and event.call is not None and event.agent in agents:
-            seen.append(event)
-            if len(seen) == count:
-                ended.set()
+    def of(self, agent: str, count: int = 1) -> asyncio.Event:
+        ended = asyncio.Event()
+        self.waiting.append((agent, count, ended))
+        return ended
 
-    return ended, watch
+    async def __call__(self, event: Any) -> None:
+        if isinstance(event, RunEnded) and event.call is not None:
+            self.seen.append(event)
+            for agent, count, ended in self.waiting:
+                if sum(seen.agent == agent for seen in self.seen) >= count:
+                    ended.set()
 
 
 def notices_of(store: MemoryStore, job: str, key: tuple[str, str] = KEY) -> list[str]:
@@ -1397,7 +1504,8 @@ async def test_a_helper_run_again_after_a_cut_resume_names_the_run_that_wrote_it
 
 async def test_a_paused_helper_with_no_answer_stays_paused(tmp_path: Path) -> None:
     store, looked = MemoryStore(), Looked()
-    both_ended, watch = ended_of("worker", count=2)
+    ends = Ends()
+    both_ended = ends.of("worker", count=2)
     second = ToolCall(id="c-lookup-2", name="lookup", args={})
     sending = ToolCall(id="c-job", name="Job", args={"id": "d2", "send": "hurry"})
     model = Crew(
@@ -1416,7 +1524,7 @@ async def test_a_paused_helper_with_no_answer_stays_paused(tmp_path: Path) -> No
         },
     )
     engine = helped(tmp_path, model)
-    first = await team_run(engine, store, looked, on_event=watch)
+    first = await team_run(engine, store, looked, on_event=ends)
     w1, w2 = first.paused
     assert (w1.conversation, w2.conversation) == ("c1/d1", "c1/d2")
     calls_before = len(model.calls["Work on d2"])
@@ -1434,7 +1542,8 @@ async def test_a_paused_helper_with_no_answer_stays_paused(tmp_path: Path) -> No
 
 async def test_calls_with_the_same_model_id_in_two_helpers_wait_apart(tmp_path: Path) -> None:
     store, looked = MemoryStore(), Looked()
-    both_ended, watch = ended_of("worker", count=2)
+    ends = Ends()
+    both_ended = ends.of("worker", count=2)
     model = Crew(
         [
             background("Work on d1", "Work on d2"),
@@ -1450,7 +1559,7 @@ async def test_calls_with_the_same_model_id_in_two_helpers_wait_apart(tmp_path: 
         },
     )
     engine = helped(tmp_path, model)
-    lead = await team_run(engine, store, looked, on_event=watch)
+    lead = await team_run(engine, store, looked, on_event=ends)
     assert [w.call.id for w in lead.paused] == ["c-lookup", "c-lookup"]
     assert len({w.id for w in lead.paused}) == 2
     w1, w2 = lead.paused
@@ -1661,6 +1770,38 @@ async def test_a_send_answers_only_the_ask_its_helper_paused_on(tmp_path: Path) 
     assert notices_of(store, "d1")[-2:] == ["asks", "finished"]
 
 
+async def test_a_stop_pressed_after_the_resume_step_ends_its_restored_paused_helper(
+    tmp_path: Path,
+) -> None:
+    store, looked, stop = MemoryStore(), Looked(), Stop()
+    both = later_for("lookup", "refund")
+    model = Crew(
+        [beside_its_own("part one"), text_reply("never")],
+        {"part one": [calling(LOOKUP), text_reply("never")]},
+    )
+    engine = helped(tmp_path, model)
+    first = await team_run(engine, store, looked, approve=both)
+    own, lookup = first.paused
+
+    async def press(event: Any) -> None:
+        if isinstance(event, ToolResultReady) and event.call_id == OWN.id:
+            stop.now()
+
+    again = await team_run(
+        engine, store, looked, "go on", answers={own.id: True}, stop=stop, on_event=press
+    )
+    assert again.stopped == "now" and again.paused == [] and again.calls == 0
+    assert looked.refunds.done == [{"amount": 3}] and answer_in(store, KEY, OWN.id).content == (
+        "refunded"
+    )
+    assert answer_in(store, HELPER_KEY, LOOKUP.id).content == "stopped by the user"
+    assert live(store.held[HELPER_KEY]) is None and live(store.held[KEY]) is None
+    assert notices_of(store, "d1") == ["paused", "stopped"]
+    [stopped] = again.children
+    assert isinstance(stopped, Generation) and stopped.stopped == "now"
+    assert len(model.calls["part one"]) == 1 and looked.times == 0
+
+
 async def test_a_resume_whose_stop_is_pressed_ends_its_restored_paused_helper(
     tmp_path: Path,
 ) -> None:
@@ -1683,13 +1824,8 @@ async def test_a_stopped_helper_stops_its_own_paused_helpers(tmp_path: Path) -> 
     store, refunds = MemoryStore(), Refunds()
     folder = tree(tmp_path, background=True)
     amend(folder, "mid", orchestration={"delegate_to": ["desk"], "background": True})
-    mid_ended, watch = ended_of("mid")
-    desk_ended, _ = ended_of("desk")
-
-    async def both(event: Any) -> None:
-        await watch(event)
-        if isinstance(event, RunEnded) and event.agent == "desk":
-            desk_ended.set()
+    ends = Ends()
+    mid_ended, desk_ended = ends.of("mid"), ends.of("desk")
 
     model = Crew(
         [background("pass it on", agent="mid"), mid_ended, calling(JOBS), text_reply("waits")],
@@ -1704,7 +1840,7 @@ async def test_a_stopped_helper_stops_its_own_paused_helpers(tmp_path: Path) -> 
         },
     )
     engine = Engine(folder, providers=provided({"crew": model, "judge": None}))
-    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=both)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=ends)
     [w] = first.paused
     assert w.conversation == "c1/d1/d1"
     stop = Stop()
@@ -2084,12 +2220,8 @@ async def test_a_reattached_helper_that_fails_before_its_model_call_stops_its_he
     tmp_path: Path,
 ) -> None:
     store, refunds = MemoryStore(), Refunds()
-    mid_ended, watch = ended_of("mid")
-    desk_ended, watch_desk = ended_of("desk")
-
-    async def both(event: Any) -> None:
-        await watch(event)
-        await watch_desk(event)
+    ends = Ends()
+    mid_ended, desk_ended = ends.of("mid"), ends.of("desk")
 
     engine, model = nested(
         tmp_path,
@@ -2107,7 +2239,7 @@ async def test_a_reattached_helper_that_fails_before_its_model_call_stops_its_he
         calling(JOBS),
         text_reply("mid waits"),
     ]
-    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=both)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=ends)
     [w] = first.paused
     again = await lead_run(
         engine, store, refunds, "go on", answers={w.id: True}, on_event=fails_on_start("mid")
@@ -2124,7 +2256,8 @@ async def test_a_resumed_child_that_fails_before_its_model_call_stops_its_helper
     tmp_path: Path,
 ) -> None:
     store, refunds = MemoryStore(), Refunds()
-    desk_ended, watch = ended_of("desk")
+    ends = Ends()
+    desk_ended = ends.of("desk")
     engine, model = nested(
         tmp_path,
         {"delegate_to": ["desk"], "background": True},
@@ -2137,7 +2270,7 @@ async def test_a_resumed_child_that_fails_before_its_model_call_stops_its_helper
         calling(JOBS),
         text_reply("mid waits"),
     ]
-    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=watch)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=ends)
     [w] = first.paused
     mid_key = ("acme", str(mark_of(store.held[KEY]).delegated["d1"]))
     desk_key = (mid_key[0], f"{mid_key[1]}/d1")
@@ -2156,7 +2289,8 @@ async def test_a_reattached_helper_that_fails_before_its_model_call_stops_its_ch
     tmp_path: Path,
 ) -> None:
     store, refunds = MemoryStore(), Refunds()
-    mid_ended, watch = ended_of("mid")
+    ends = Ends()
+    mid_ended = ends.of("mid")
     engine, model = nested(
         tmp_path,
         {"delegate_to": ["desk"]},
@@ -2168,7 +2302,7 @@ async def test_a_reattached_helper_that_fails_before_its_model_call_stops_its_ch
         text_reply("done"),
     )
     model.replies["pass it on"] = [delegating("desk", "refund it"), text_reply("never")]
-    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=watch)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=ends)
     [w] = first.paused
     [desk_key] = [k for k in store.held if k[1].count("/") == 2]
     again = await lead_run(
