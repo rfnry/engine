@@ -48,6 +48,13 @@ number of captains, default one for every 25 regions and at least two) and `cap`
 or `hostile` survey is refused with 503 while `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` or `TYPESAFE_API_KEY` is not set.
 `POST /surveys/{name}/resume` carries a stopped or interrupted survey on, with an optional new `cap`.
 
+On fakes, in the `crews` and `flat` shapes, the gate may answer later: a `fits` probability from `UNSURE` (0.2) up to
+`FITS` (0.5), where the gate is unsure, answers `Later()` instead of refusing the call. The call waits for a person, the
+run that made it pauses once nothing below it runs, the pause travels up to the lead, and the survey ends `paused`, its
+waiting calls in the lead's stored conversation. Its resume has a stand-in person approve each of them, and every
+paused captain and surveyor goes on under its own job, so no region starts twice. A real survey has no person to hand a
+call to, and the `app` shape starts each run itself, so there a call below `FITS` is refused.
+
 ```bash
 uv run src/merge.py <survey> map/moon.json
 uv run src/measure.py <survey> <results.md>

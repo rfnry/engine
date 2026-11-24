@@ -43,7 +43,7 @@ TREE = "$RFNRY_TREE/surveyor/skills/dossier"
 ENDED = ("finished", "failed", "lost", "stopped")
 POLAR = 75
 ROLES = ("lead", "flat", "captain", "surveyor", "crosscheck", "crosscheck_second", "boss")
-NOTICE = re.compile(r"\[helper (d\d+) · (\S+) · (finished|failed|stopped|asks|lost)\]")
+NOTICE = re.compile(r"\[helper (d\d+) · (\S+) · (finished|failed|stopped|paused|asks|lost)\]")
 CONTEXT = "<<<CONTEXT>>>\n"
 FIRST = json.dumps({"position": 0, "role": "user"})
 
@@ -445,6 +445,9 @@ class Table:
                     self.took(Exchange(call, results.get(call.id)))
         return self
 
+    def running(self) -> list[str]:
+        return [job for job in self.jobs if job not in self.ended]
+
     def took(self, item: Exchange) -> None:
         data = item.data()
         if item.call.name == "Jobs" and isinstance(data, dict):
@@ -537,6 +540,8 @@ class Team(Fake):
             return "", [*recall, ("Jobs", {})]
         given = survey if self.role != "captain" else self.input(messages, at, found)
         if at is not None and not {"Delegate", "Jobs"} & named:
+            if Table().read(messages[:at]).running():
+                return "", [("Jobs", {})]
             return "", [
                 ("Delegate", {"agent": agent, "input": json.dumps(args), "background": True})
                 for agent, args in self.plan(given)
@@ -557,7 +562,7 @@ class Team(Fake):
                     )
                     for r in todo
                 ]
-        running = [job for job in table.jobs if job not in table.ended]
+        running = table.running()
         if running:
             return f"waiting for {len(running)} helpers", []
         counts = table.counts()

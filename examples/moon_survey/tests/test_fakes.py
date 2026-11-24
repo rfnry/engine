@@ -496,6 +496,25 @@ async def test_a_lead_whose_window_moved_past_its_input_reads_its_jobs():
     assert "2 captains: 2 finished" in note.tool_calls[0].args["text"]
 
 
+async def test_a_lead_given_a_later_input_while_a_captain_is_paused_reads_its_jobs():
+    plan = survey(["R1", "R2", "R3", "R4"], [["R1", "R2"], ["R3", "R4"]])
+    convo = Convo(build()["lead"], START, system=plan)
+    reply = await convo.next()
+    convo.answer(reply, {"job": "d1"}, {"job": "d2"})
+    convo.tell("d1", "captain")
+    convo.tell("d2", "captain", "paused")
+    assert (await convo.next()).tool_calls == []
+    convo.messages.append(person("a person answered the calls that waited; carry on"))
+    reply = await convo.next()
+    assert names(reply) == ["Jobs"]
+    convo.answer(reply, {"jobs": [job("d2", "captain", {"share": ["R3", "R4"]})]})
+    waiting = await convo.next()
+    assert waiting.tool_calls == [] and "1 helpers" in waiting.text
+    convo.tell("d2", "captain")
+    note = await convo.next()
+    assert names(note) == ["note"] and "1 captains: 1 finished" in note.tool_calls[0].args["text"]
+
+
 async def test_a_captain_whose_window_moved_reads_its_input_back_and_its_jobs_by_input():
     given = {"share": ["N00-15/3", "N00-15/4", "N00-15/5"], "second": ["N00-15/4"], "check": []}
     convo = Convo(build()["captain"], json.dumps(given))

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
-from rfnry_engine import PostgresStorage, RunEnded, RunStarted
+from rfnry_engine import CheckAnswer, PostgresStorage, RunEnded, RunStarted
 
 import board as board_module
 import harness
@@ -283,6 +283,90 @@ async def test_a_crashed_survey_resumes(service, pool, engine_pool):
     assert len(inputs) == 2
     assert all(messages.index(m) < inputs[1] for m in lost)
     assert [messages[n].content for n in inputs] == [harness.START, harness.RESTARTED]
+
+
+class Unsure(FakeGate):
+    def __init__(self, regions):
+        super().__init__()
+        self.regions = set(regions)
+
+    async def decide(self, state, questions):
+        decided = await super().decide(state, questions)
+        if state["tool"] == "claim" and state["args"]["region"] in self.regions:
+            unsure = CheckAnswer(probability=harness.UNSURE)
+            return decided.model_copy(update={"answers": dict.fromkeys(questions, unsure)})
+        return decided
+
+
+async def test_a_survey_whose_gate_is_unsure_pauses_and_a_resume_lands_every_region(
+    service, pool, engine_pool
+):
+    walk = [r for share in moon.shares(25) for r in share][:10]
+    unsure = walk[3:7]
+    await service(gate=Unsure(unsure))
+    name = fresh()
+    await harness.run(name, mode="fake", shape="crews", size=10, cap=2.0)
+    paused = await ended(name)
+    assert paused["status"] == "paused" and paused["error"] is None
+    assert paused["counts"] == {"landed": 6, "failed": 0, "claimed": 0, "free": 4}
+    [lead] = [r for r in await records_of(engine_pool, name) if r.agent == "lead"]
+    waits = lead.body["paused"]
+    assert len(waits) == 4 and {w["agent"] for w in waits} == {"surveyor"}
+    assert sorted(w["call"]["args"]["region"] for w in waits) == sorted(unsure)
+    assert all(w["call"]["name"] == "claim" for w in waits)
+    held = await pool.fetch(
+        "select allowed, probability from gate_log"
+        " where scope = 'moon' and survey = $1 and probability < $2",
+        name,
+        harness.FITS,
+    )
+    assert [(g["allowed"], g["probability"]) for g in held] == [(None, harness.UNSURE)] * 4
+
+    await harness.close()
+    await service()
+    assert (await harness.progress(name))["status"] == "paused"
+    await harness.resume(name)
+    done = await ended(name)
+    assert done["status"] == "done" and done["error"] is None
+    assert done["counts"] == {"landed": 10, "failed": 0, "claimed": 0, "free": 0}
+    rows = await board_of(pool, name).landed()
+    assert {row["region"] for row in rows} == set(walk)
+    assert all(row["attempts"] == 1 for row in rows)
+    assert all(any(d["kind"] == "agree" for d in row["disputes"]) for row in rows)
+
+    records = await records_of(engine_pool, name)
+    assert Counter(r.agent for r in records) == {
+        "lead": 2,
+        "captain": 4,
+        "surveyor": 14,
+        "crosscheck_second": 10,
+    }
+    resumed = [r for r in records if r.body["resumed"]]
+    assert Counter(r.agent for r in resumed) == {"lead": 1, "captain": 2, "surveyor": 4}
+    assert all(r.body["paused"] == [] and r.body["error"] is None for r in resumed)
+    claims = [
+        step
+        for r in resumed
+        if r.agent == "surveyor"
+        for step in r.body["steps"]
+        if step["tool"] == "claim"
+    ]
+    assert sorted(s["args"]["region"] for s in claims) == sorted(unsure)
+    assert all(s["approved"] is True and not s["waiting"] for s in claims)
+    started = [
+        json.loads(step["args"]["input"])["region"]
+        for r in records
+        if r.agent == "captain"
+        for step in r.body["steps"]
+        if step["tool"] == "Delegate" and step["args"]["agent"] == "surveyor"
+    ]
+    assert sorted(started) == sorted(walk)
+    kept = await conversations_of(pool, name)
+    assert Counter(c.count("/") for c in kept if c != name) == {1: 2, 2: 20}
+    messages = await Store(pool).read("moon", name, 0)
+    inputs = [m.content for m in messages if m.role == "user" and m.notice is None]
+    assert inputs == [harness.START, harness.WHY["paused"]]
+    assert not any(m.notice is not None and m.notice.kind == "lost" for m in messages)
 
 
 async def test_a_survey_landed_and_crosschecked_throughout_has_nothing_to_resume(service, pool):

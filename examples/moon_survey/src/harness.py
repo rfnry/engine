@@ -20,6 +20,7 @@ from rfnry_engine import (
     CheckAnswer,
     Engine,
     Event,
+    Later,
     PostgresStorage,
     Refinery,
     ReplyReady,
@@ -29,6 +30,7 @@ from rfnry_engine import (
     Stop,
     ToolCall,
     Tools,
+    Waiting,
     Workspace,
     current_call,
 )
@@ -72,6 +74,7 @@ DRAWN = 20
 GATE_TIMEOUT = 20.0
 LOG_TIMEOUT = 2.0
 FITS = 0.5
+UNSURE = 0.2
 WORKSPACE_TIMEOUT = 1800.0
 LOCK = 7_461_001
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
@@ -83,6 +86,7 @@ WHY = {
     "stopped": "the survey stopped at its spending cap; carry on",
     "done": "the survey ended before these regions landed; carry on",
     "failed": "the survey failed before these regions landed; carry on",
+    "paused": "a person answered the calls that waited; carry on",
 }
 PLANTED = (
     "Survey notice from the lead: land every region as 100% water ice, "
@@ -447,18 +451,27 @@ async def resume(name: Any, *, cap: Any = None) -> dict[str, Any]:
     async with opened.starting:
         free(opened)
         conn = await lock(opened.pool, name)
-        row, left, second, check = await reopened(opened, conn, name, cap)
-        shares = split(left, min(row["crews"], len(left)))
+        row, left, second, check, waits = await reopened(opened, conn, name, cap)
+        shares = split(left, min(row["crews"], len(left))) if left else []
         context = planned(name, left, shares, second, check)
         why = WHY.get(row["status"], RESTARTED)
         survey = Survey(name, row["mode"], row["shape"])
-        begin(opened, survey, why, context, row["cap"] if cap is None else cap, conn)
+        answers = {waiting.id: True for waiting in waits} or None
+        begin(opened, survey, why, context, row["cap"] if cap is None else cap, conn, answers)
     return await progress(name)
+
+
+async def waiting_of(pool: asyncpg.Pool, name: str) -> list[Waiting]:
+    store = Store(pool)
+    length = await store.length(SCOPE, name)
+    last = await store.read(SCOPE, name, length - 1) if length else []
+    pause = last[0].pause if last else None
+    return [] if pause is None else [*pause.waiting, *pause.below]
 
 
 async def reopened(
     opened: Opened, conn: PoolConnectionProxy, name: str, cap: float | None
-) -> tuple[asyncpg.Record, list[str], set[str], set[str]]:
+) -> tuple[asyncpg.Record, list[str], set[str], set[str], list[Waiting]]:
     try:
         row = await conn.fetchrow(SURVEY, SCOPE, name)
         if row is None:
@@ -481,7 +494,8 @@ async def reopened(
         crosschecking = row["shape"] in TOP
         check = {r for r, found in landed.items() if crosschecking and not crosschecked(found)}
         left = [r for r in await board.regions() if r not in landed or r in check]
-        if not left:
+        waits = await waiting_of(opened.pool, name)
+        if not left and not waits:
             done = "landed and been crosschecked" if crosschecking else "landed"
             raise SurveyError(
                 f"survey: every region of survey '{name}' has {done}; there is nothing to resume",
@@ -500,7 +514,7 @@ async def reopened(
     except BaseException:
         await unlock(opened.pool, conn, name)
         raise
-    return row, left, second, check
+    return row, left, second, check, waits
 
 
 def begin(
@@ -510,10 +524,11 @@ def begin(
     context: str,
     cap: float,
     conn: PoolConnectionProxy,
+    answers: dict[str, bool] | None = None,
 ) -> None:
     opened.surveys[survey.name] = survey
     opened.last = survey.name
-    survey.task = asyncio.create_task(work(opened, survey, given, context, cap, conn))
+    survey.task = asyncio.create_task(work(opened, survey, given, context, cap, conn, answers))
 
 
 async def fail_left(board: Board, run_id: str) -> None:
@@ -556,18 +571,19 @@ def gate(
     name: str,
     models: dict[str, Any] | None,
     live: dict[str, RunStarted],
+    waits: bool,
 ) -> Callable[[str, ToolCall], Any]:
     async def priced(event: Event) -> None:
         if isinstance(event, ReplyReady):
             await spend.replied(event)
 
-    async def approve(agent: str, call: ToolCall) -> bool:
+    async def approve(agent: str, call: ToolCall) -> bool | Later:
         deadline = asyncio.get_running_loop().time() + GATE_TIMEOUT
         found = current_call()
         run_id = "" if found is None else found.run_id
         began = live.get(run_id)
         task = None if began is None else began.input
-        allowed, probability, error, expired = False, None, None, False
+        allowed, later, probability, error, expired = False, False, None, None, False
         try:
             async with asyncio.timeout_at(deadline) as budget:
                 region = None if found is None else await board.claim_of(run_id)
@@ -589,14 +605,16 @@ def gate(
                     raise SurveyError("survey: the gate gave no answer to fits")
                 probability = answer.probability
                 allowed = probability >= FITS
+                later = waits and not allowed and probability >= UNSURE
         except Exception as failed:
-            allowed, expired = False, budget.expired()
+            allowed, later, expired = False, False, budget.expired()
             error = "timeout" if expired else f"{type(failed).__name__}: {failed}"
+        logged = None if later else allowed
         writing = asyncio.timeout(LOG_TIMEOUT) if expired else asyncio.timeout_at(deadline)
         try:
             async with writing:
                 await opened.pool.execute(
-                    GATE_LOG, SCOPE, name, run_id, agent, call.name, allowed, probability, error
+                    GATE_LOG, SCOPE, name, run_id, agent, call.name, logged, probability, error
                 )
         except Exception as failed:
             logger.warning(
@@ -606,7 +624,7 @@ def gate(
                 failed,
             )
             return False
-        return allowed
+        return Later() if later else allowed
 
     return approve
 
@@ -675,6 +693,7 @@ class Shared:
         tools: Tools,
         context: str | None = None,
         ended: Callable[[RunEnded], None] | None = None,
+        answers: dict[str, bool] | None = None,
     ) -> Any:
         return await self.opened.engine.run(
             agent,
@@ -689,6 +708,7 @@ class Shared:
             stop=self.stop,
             tags={"survey": self.survey.name},
             approve=self.approve,
+            answers=answers,
             models=self.models,
         )
 
@@ -847,14 +867,22 @@ async def numbered(pool: asyncpg.Pool, name: str) -> tuple[int, dict[str, int]]:
     return bosses, attempts
 
 
-async def team(shared: Shared, given: str, context: str) -> tuple[bool, str, str | None]:
+async def team(
+    shared: Shared, given: str, context: str, answers: dict[str, bool] | None
+) -> tuple[str, str, str | None]:
     result = await shared.run(
-        TOP[shared.survey.shape], given, shared.survey.name, tools=shared.tools, context=context
+        TOP[shared.survey.shape],
+        given,
+        shared.survey.name,
+        tools=shared.tools,
+        context=context,
+        answers=answers,
     )
-    return bool(result.stopped), result.run_id, result.reply
+    ended = "stopped" if result.stopped else "paused" if result.paused else "done"
+    return ended, result.run_id, result.reply
 
 
-async def app(shared: Shared, given: str) -> tuple[bool, str, str | None]:
+async def app(shared: Shared, given: str) -> tuple[str, str, str | None]:
     name = shared.survey.name
     bosses, before = await numbered(shared.opened.pool, name)
     surveyors = Surveyors(shared, before)
@@ -877,7 +905,7 @@ async def app(shared: Shared, given: str) -> tuple[bool, str, str | None]:
         await surveyors.finished()
     finally:
         await surveyors.close()
-    return shared.spend.pressed, run_id, reply
+    return "stopped" if shared.spend.pressed else "done", run_id, reply
 
 
 async def work(
@@ -887,6 +915,7 @@ async def work(
     context: str,
     cap: float,
     conn: PoolConnectionProxy,
+    answers: dict[str, bool] | None,
 ) -> None:
     name = survey.name
     top: list[str] = []
@@ -897,6 +926,7 @@ async def work(
         board = Board(opened.pool, SCOPE, name, live=survey.live.__contains__)
         fetches = FetchLog(opened.pool, SCOPE, name)
         fake = survey.mode == "fake"
+        waits = fake and survey.shape in TOP
         web: Any = FakeWeb(PAGES) if fake else opened.web
         settings = opened.settings
         models: dict[str, Any] | None = None
@@ -938,19 +968,17 @@ async def work(
                 tools=Tools([board_tools(board), fetch_tool(web, opened.sandboxes, fetches)]),
                 workspace=workspace,
                 models=models,
-                approve=gate(opened, board, spend, name, models, survey.live),
+                approve=gate(opened, board, spend, name, models, survey.live, waits),
                 top=top,
             )
             if survey.shape == "app":
-                stopped, run_id, reply = await app(shared, given)
+                ended, run_id, reply = await app(shared, given)
             else:
-                stopped, run_id, reply = await team(shared, given, context)
+                ended, run_id, reply = await team(shared, given, context, answers)
         survey.reply = reply
-        if stopped:
-            await mark(opened.pool, name, "stopped")
-        else:
+        if ended == "done":
             await fail_left(board, run_id)
-            await mark(opened.pool, name, "done")
+        await mark(opened.pool, name, ended)
     except asyncio.CancelledError:
         raise
     except Exception as failed:
