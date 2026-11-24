@@ -98,11 +98,11 @@ class Batch:
         return given
 
     async def answer_all(
-        self, batch: list[ToolCall], tasks: Sequence[asyncio.Task[Step] | None], began: float
+        self, group: list[ToolCall], tasks: Sequence[asyncio.Task[Step] | None], began: float
     ) -> None:
         raised: list[BaseException] = []
         held: list[Exception] = []
-        for call, task in zip(batch, tasks, strict=True):
+        for call, task in zip(group, tasks, strict=True):
             try:
                 if task is None or task.cancelled():
                     await self.calls.cut(call, began)
@@ -122,18 +122,18 @@ class Batch:
             failures = [lost, *(error for error in failures if error is not lost)]
         _raise_first(failures)
 
-    async def run(self, batch: list[ToolCall], stop: Stop, stored: bool = True) -> bool:
+    async def run(self, group: list[ToolCall], stop: Stop, stored: bool = True) -> bool:
         began = time.monotonic()
         if requested(stop) == "now":
-            await self.answer_all(batch, [None] * len(batch), began)
+            await self.answer_all(group, [None] * len(group), began)
             if stored:
                 await self.transcript.save()
             return True
-        tasks = [asyncio.ensure_future(self.calls.run(c)) for c in batch]
+        tasks = [asyncio.ensure_future(self.calls.run(c)) for c in group]
 
         def finishing() -> list[asyncio.Task[Step]]:
             kept = []
-            for call, task in zip(batch, tasks, strict=True):
+            for call, task in zip(group, tasks, strict=True):
                 here = self.calls.foregrounds.get(id(call))
                 if here is not None and here.live > 0:
                     here.pressed = True
@@ -145,7 +145,7 @@ class Batch:
             return kept
 
         cut_short = await wait(tasks, stop, finishing)
-        await self.answer_all(batch, tasks, began)
+        await self.answer_all(group, tasks, began)
         if stored:
             await self.transcript.save()
         return cut_short
@@ -215,7 +215,7 @@ class Batch:
                 self.answer(call, built)
 
 
-class Bridge:
+class BridgedCalls:
     calls: _ToolCalls
 
     def __init__(

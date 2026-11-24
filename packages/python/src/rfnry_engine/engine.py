@@ -25,7 +25,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
-from rfnry_engine.batch import STOPPED, Batch, Bridge, _now, _refusal, unrun
+from rfnry_engine.batch import STOPPED, Batch, BridgedCalls, _now, _refusal, unrun
 from rfnry_engine.bundle import build_bundle
 from rfnry_engine.compiled import compile_folder
 from rfnry_engine.conversation import HISTORY, Conversation, _under, ended_calls, live, open_calls
@@ -1175,12 +1175,12 @@ class _Children:
         self.options = options
         self.stop = stop
         self.transcript = transcript
-        self.children: list[Generation | Decision] = []
+        self.records: list[Generation | Decision] = []
         self.helpers = Helpers(
             spec.name,
             _capped(spec.background_parallel, engine.max_background),
             first_job(given) if spec.background else 1,
-            self.children,
+            self.records,
         )
         self.delegated: dict[str, Generation | Decision] = {}
         self.rerun: dict[str, str] = {}
@@ -1300,7 +1300,7 @@ class _Children:
                     except _Unpausable:
                         if failed:
                             await self.recorded(failed[-1])
-                            self.children.append(failed[-1])
+                            self.records.append(failed[-1])
                         raise
                     except Exception:
                         if not failed:
@@ -1444,9 +1444,9 @@ class _Children:
         self.adopt(child_run_id)
         return child_run_id
 
-    def adopt(self, run_id: str | None) -> None:
-        if run_id in self.delegated:
-            self.children.append(self.delegated.pop(run_id))
+    def adopt(self, child_run_id: str | None) -> None:
+        if child_run_id in self.delegated:
+            self.records.append(self.delegated.pop(child_run_id))
 
     def park(self, made: list[ToolCall], resuming: Pause | None) -> None:
         if resuming is not None:
@@ -1486,112 +1486,79 @@ class _Children:
                 )
 
     def adopt_all(self) -> None:
-        self.children.extend(sorted(self.delegated.values(), key=lambda run: (run.at, run.run_id)))
+        self.records.extend(sorted(self.delegated.values(), key=lambda run: (run.at, run.run_id)))
 
 
+@dataclass(eq=False)
 class _Turns:
-    def __init__(
-        self,
-        spec: AgentSpec,
-        scope: str,
-        input: State,
-        options: _Options,
-        parent_run_id: str | None,
-        run_id: str,
-        caller: CallInfo | None,
-        started: float,
-        at: datetime,
-        adapter: GenerationModel,
-        system: str,
-        specs: list[ToolSpec],
-        preload: list[Message],
-        fingerprint: Fingerprint,
-        streaming: bool,
-        most_calls: int,
-        expect: type[BaseModel] | None,
-        stop: Stop,
-        inbox: asyncio.Queue[Any],
-        resuming: Pause | None,
-        made: list[ToolCall],
-        carried: list[Message],
-        losses: list[Message],
-        follows: list[Message],
-        steps: list[Step],
-        transcript: Transcript,
-        offspring: _Children,
-        tool_calls: _ToolCalls,
-        batch: Batch,
-        pausing: Pausing,
-        started_call: CallInfo | None,
-        model: str | None,
-        settings: dict[str, JsonValue] | None,
-    ) -> None:
-        self.spec = spec
-        self.scope = scope
-        self.input = input
-        self.options = options
-        self.parent_run_id = parent_run_id
-        self.run_id = run_id
-        self.caller = caller
-        self.started = started
-        self.at = at
-        self.adapter = adapter
-        self.system = system
-        self.specs = specs
-        self.preload = preload
-        self.fingerprint = fingerprint
-        self.streaming = streaming
-        self.most_calls = most_calls
-        self.expect = expect
-        self.stop = stop
-        self.inbox = inbox
-        self.resuming = resuming
-        self.made = made
-        self.carried = carried
-        self.losses = losses
-        self.follows = follows
-        self.steps = steps
-        self.transcript = transcript
-        self.offspring = offspring
-        self.tool_calls = tool_calls
-        self.batch = batch
-        self.pausing = pausing
-        self.started_call = started_call
-        self.model = model
-        self.settings = settings
-        self.turn = 0
-        self.said = ""
-        self.usage = Usage()
-        self.calls = 0
-        self.ended: StopReason | None = None
-        self.streamed: list[str] = []
-        self.woken: list[Any] = []
-        self.unheard: list[Message] = []
-        self.said_end = False
-        self.called_model = False
+    input: State
+    options: _Options
+    parent_run_id: str | None
+    caller: CallInfo | None
+    started: float
+    at: datetime
+    adapter: GenerationModel
+    system: str
+    specs: list[ToolSpec]
+    preload: list[Message]
+    fingerprint: Fingerprint
+    streaming: bool
+    most_calls: int
+    resuming: Pause | None
+    carried: list[Message]
+    losses: list[Message]
+    follows: list[Message]
+    transcript: Transcript
+    children: _Children
+    tool_calls: _ToolCalls
+    batch: Batch
+    pausing: Pausing
+    started_call: CallInfo | None
+    model: str | None
+    settings: dict[str, JsonValue] | None
+    turn: int = field(default=0, init=False)
+    said: str = field(default="", init=False)
+    usage: Usage = field(default_factory=Usage, init=False)
+    calls: int = field(default=0, init=False)
+    ended: StopReason | None = field(default=None, init=False)
+    streamed: list[str] = field(default_factory=list, init=False)
+    woken: list[Any] = field(default_factory=list, init=False)
+    unheard: list[Message] = field(default_factory=list, init=False)
+    said_end: bool = field(default=False, init=False)
+    called_model: bool = field(default=False, init=False)
 
     async def delta(self, text: str, *, reasoning: bool = False) -> None:
         if reasoning:
             await self.tool_calls.emit(
-                ReasoningDelta(run_id=self.run_id, agent=self.spec.name, turn=self.turn, text=text)
+                ReasoningDelta(
+                    run_id=self.children.run_id,
+                    agent=self.children.spec.name,
+                    turn=self.turn,
+                    text=text,
+                )
             )
             return
         self.streamed.append(text)
         await self.tool_calls.emit(
-            TextDelta(run_id=self.run_id, agent=self.spec.name, turn=self.turn, text=text)
+            TextDelta(
+                run_id=self.children.run_id,
+                agent=self.children.spec.name,
+                turn=self.turn,
+                text=text,
+            )
         )
 
     def drain(self, whole: bool = True) -> tuple[list[Message], list[Message]]:
-        helpers = self.offspring.helpers
+        helpers = self.children.helpers
         if helpers.fatal is not None:
             raise helpers.fatal
         notices = helpers.take()
         self.transcript.messages.extend(notices)
         taken: list[Message] = []
-        while self.woken or (whole and not self.inbox.empty()):
-            item = self.woken.pop(0) if self.woken else self.inbox.get_nowait()
+        while self.woken or (whole and not self.options.inbox.empty()):
+            item = self.woken.pop(0) if self.woken else self.options.inbox.get_nowait()
             taken.append(Message(role="user", content=_own(_content(item))))
-            self.inbox.task_done()
+            self.options.inbox.task_done()
         self.transcript.messages.extend(taken)
         return notices, taken
 
@@ -1600,8 +1567,8 @@ class _Turns:
             return False
         await self.tool_calls.emit(
             MessagesTaken(
-                run_id=self.run_id,
-                agent=self.spec.name,
+                run_id=self.children.run_id,
+                agent=self.children.spec.name,
                 turn=turn,
                 messages=[_handed(message) for message in taken],
                 notices=[_handed(message) for message in notices],
@@ -1609,7 +1576,7 @@ class _Turns:
         )
         return True
 
-    async def windowed(self) -> None:
+    async def apply_window(self) -> None:
         at = await self.transcript.position()
         if at is not None:
             _paired(
@@ -1630,6 +1597,39 @@ class _Turns:
             )
         return as_reply(await self.adapter.generate(self.system, sending, offered))
 
+    async def add_reply(self, turn: int, reply: Reply) -> None:
+        self.ended = reply.stop_reason
+        self.said = reply.text
+        self.calls += 1
+        if reply.usage is not None:
+            self.usage = self.usage + reply.usage
+        if reply.model:
+            self.model = reply.model
+        self.settings = reply.settings if reply.settings is not None else _settings(self.adapter)
+        prefix = await self.transcript.stamp() if reply.reasoning is not None else None
+        assistant = _assistant(reply, prefix, _declared(self.adapter), _settings(self.adapter))
+        self.transcript.messages.append(assistant)
+        self.batch.asked = list(assistant.tool_calls)
+        self.tool_calls.ran.clear()
+        reported = ReplyReady(
+            run_id=self.children.run_id,
+            agent=self.children.spec.name,
+            turn=turn,
+            model=assistant.model,
+            usage=reply.usage,
+            settings=assistant.settings,
+            stop_reason=reply.stop_reason,
+        )
+        try:
+            await self.transcript.save()
+        except Exception:
+            with suppress(Exception):
+                await self.tool_calls.emit(reported)
+            raise
+        await self.tool_calls.emit(reported)
+        if not self.streaming and reply.text:
+            await self.delta(reply.text)
+
     def finish(
         self,
         reply_text: str,
@@ -1639,13 +1639,13 @@ class _Turns:
     ) -> Generation:
         begun, sent, whole = self.transcript.for_record()
         return Generation(
-            run_id=self.run_id,
+            run_id=self.children.run_id,
             parent_run_id=self.parent_run_id,
             call=self.caller,
-            agent=self.spec.name,
-            scope=self.scope,
+            agent=self.children.spec.name,
+            scope=self.children.scope,
             tags=dict(self.options.tags),
-            mode=self.spec.mode,
+            mode=self.children.spec.mode,
             skill=self.options.skill,
             context=self.options.context,
             at=self.at,
@@ -1655,16 +1655,16 @@ class _Turns:
             fingerprint=self.fingerprint,
             input=self.input,
             system=self.system,
-            preload=[part.model_copy() for part in self.spec.preload],
+            preload=[part.model_copy() for part in self.children.spec.preload],
             start=self.options.start + begun,
             messages=sent,
             conversation=whole,
             tools=self.specs,
-            steps=self.steps,
+            steps=self.batch.steps,
             calls=self.calls,
             reply=reply_text,
             usage=self.usage,
-            children=self.offspring.children,
+            children=self.children.records,
             stopped=stopped,
             stop_reason=self.ended,
             error=None if error is None else error_text(error),
@@ -1678,8 +1678,8 @@ class _Turns:
         self.said_end = True
         await self.tool_calls.emit(
             RunEnded(
-                run_id=self.run_id,
-                agent=self.spec.name,
+                run_id=self.children.run_id,
+                agent=self.children.spec.name,
                 call=self.started_call,
                 stopped=record.stopped,
                 error=record.error,
@@ -1695,34 +1695,107 @@ class _Turns:
         await self.announce(record)
         return record
 
-    async def pause(self, heard: Sequence[Message] = ()) -> Generation:
+    async def end_paused(self, heard: Sequence[Message] = ()) -> Generation:
         mark = await self.pausing.pause(heard)
         return await self.finished(self.said, paused=[*mark.waiting, *mark.below])
 
     async def quietly(self, turn: int) -> Generation:
-        await self.offspring.helpers.until_quiet(self.stop)
-        mode = requested(self.stop)
+        await self.children.helpers.until_quiet(self.options.stop)
+        mode = requested(self.options.stop)
         if mode is not None:
             return await self.halt(turn, self.said, mode)
-        return await self.pause()
+        return await self.end_paused()
 
     async def halt(self, turn: int, reply_text: str, mode: Stopped) -> Generation:
-        helpers = self.offspring.helpers
+        helpers = self.children.helpers
         if helpers.fatal is not None:
             raise helpers.fatal
         await self.pausing.let_go()
-        await helpers.settle(mode, self.stop)
-        mode = requested(self.stop) or mode
+        await helpers.settle(mode, self.options.stop)
+        mode = requested(self.options.stop) or mode
         await self.took(turn, *self.drain(whole=False))
         return await self.finished(reply_text, mode)
 
+    async def pick_up(self, mark: Pause) -> Generation | None:
+        helpers = self.children.helpers
+        self.unheard = [_handed(message) for message in mark.held]
+        moved = await self.pausing.resume(mark, self.options.answers, self.options.stop)
+        heard = [*self.unheard, *self.losses]
+        idle = not moved and helpers.paused_on_calls()
+        if open_calls(self.pausing.still_open()) or idle:
+            await helpers.until_quiet(self.options.stop)
+            if requested(self.options.stop) is None:
+                return await self.end_paused([*heard, *self.follows])
+            await self.pausing.let_go()
+        self.transcript.messages.extend([*heard, *self.follows])
+        self.unheard = []
+        self.transcript.forget_mark()
+        await self.took(0, heard, [])
+        return None
+
+    async def call_tools(self, turn: int) -> Generation | None:
+        helpers = self.children.helpers
+        rest = list(self.batch.asked)
+        held_up = False
+        while rest:
+            at_output = next(
+                (
+                    n
+                    for n, c in enumerate(rest)
+                    if self.options.expect is not None and c.name == OUTPUT_TOOL
+                ),
+                len(rest),
+            )
+            pressed = await self.batch.run(rest[:at_output], self.options.stop)
+            rest = rest[at_output:]
+            if not rest or self.options.expect is None:
+                break
+            if pressed:
+                await self.batch.answer_all(rest, [None] * len(rest), time.monotonic())
+                return await self.halt(turn + 1, self.said, "now")
+            output, rest = rest[0], rest[1:]
+            if self.batch.waits() or helpers.paused():
+                names = ", ".join(
+                    [*self.batch.held_names(), *(helper.job for helper in helpers.paused())]
+                )
+                self.batch.refuse(
+                    output,
+                    f"engine: waiting for an answer: {names}; call {OUTPUT_TOOL} again once they have one",
+                )
+                held_up = held_up or helpers.paused_on_calls()
+                continue
+            running = [helper.job for helper in helpers.running()]
+            if running:
+                self.batch.refuse(
+                    output,
+                    f"engine: still running: {', '.join(running)}; stop them or wait for them, then call {OUTPUT_TOOL} again",
+                )
+                continue
+            try:
+                parsed = self.options.expect.model_validate(_copied(output.args))
+            except ValidationError as exc:
+                self.batch.refuse(
+                    output,
+                    f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}",
+                )
+                continue
+            self.batch.accept(output)
+            for call in rest:
+                self.batch.not_run(call, f"{OUTPUT_TOOL} ended the run")
+            await helpers.settled()
+            await self.took(turn + 1, *self.drain(whole=False))
+            return await self.finished(parsed.model_dump_json())
+        if self.batch.waits() or (held_up and helpers.paused_on_calls()):
+            return await self.quietly(turn + 1)
+        return None
+
     async def go(self) -> Generation:
-        helpers = self.offspring.helpers
+        helpers = self.children.helpers
         try:
             await self.tool_calls.emit(
                 RunStarted(
-                    run_id=self.run_id,
-                    agent=self.spec.name,
+                    run_id=self.children.run_id,
+                    agent=self.children.spec.name,
                     call=self.started_call,
                     input=_given(self.input),
                     tools=[_fresh(tool) for tool in self.specs],
@@ -1730,22 +1803,12 @@ class _Turns:
                 )
             )
             if self.resuming is None:
-                await self.offspring.go_on(self.options.answers)
+                await self.children.go_on(self.options.answers)
                 await self.took(0, [*self.carried, *self.losses], [])
             else:
-                self.unheard = [_handed(message) for message in self.resuming.held]
-                moved = await self.pausing.resume(self.resuming, self.options.answers, self.stop)
-                heard = [*self.unheard, *self.losses]
-                idle = not moved and helpers.paused_on_calls()
-                if open_calls(self.pausing.still_open()) or idle:
-                    await helpers.until_quiet(self.stop)
-                    if requested(self.stop) is None:
-                        return await self.pause([*heard, *self.follows])
-                    await self.pausing.let_go()
-                self.transcript.messages.extend([*heard, *self.follows])
-                self.unheard = []
-                self.transcript.forget_mark()
-                await self.took(0, heard, [])
+                record = await self.pick_up(self.resuming)
+                if record is not None:
+                    return record
             if self.options.lead is not None:
                 self.options.lead[0].told = None
             replied = _replied(self.transcript.messages) if self.options.reattached else None
@@ -1756,64 +1819,30 @@ class _Turns:
                     if helpers.paused():
                         return await self.quietly(0)
                     return await self.finished(
-                        replied, "now" if requested(self.stop) == "now" else None
+                        replied, "now" if requested(self.options.stop) == "now" else None
                     )
-                self.woken.extend(await helpers.wake(self.inbox, self.stop))
+                self.woken.extend(await helpers.wake(self.options.inbox, self.options.stop))
             for turn in range(self.most_calls):
                 self.turn = turn
-                mode = requested(self.stop)
+                mode = requested(self.options.stop)
                 if mode is not None:
                     return await self.halt(turn, self.said, mode)
                 if (turn or replied is not None) and await self.took(turn, *self.drain()):
-                    mode = requested(self.stop)
+                    mode = requested(self.options.stop)
                     if mode is not None:
                         return await self.halt(turn, self.said, mode)
                 await self.transcript.save()
-                await self.windowed()
+                await self.apply_window()
                 self.streamed.clear()
                 self.called_model = True
                 asking = asyncio.ensure_future(self.ask())
-                if await wait([asking], self.stop):
+                if await wait([asking], self.options.stop):
                     partial = "".join(self.streamed)
                     if partial:
                         self.transcript.messages.append(Message(role="assistant", content=partial))
                     return await self.halt(turn + 1, partial or self.said, "now")
                 reply = asking.result()
-                self.ended = reply.stop_reason
-                self.said = reply.text
-                self.calls += 1
-                if reply.usage is not None:
-                    self.usage = self.usage + reply.usage
-                if reply.model:
-                    self.model = reply.model
-                self.settings = (
-                    reply.settings if reply.settings is not None else _settings(self.adapter)
-                )
-                prefix = await self.transcript.stamp() if reply.reasoning is not None else None
-                assistant = _assistant(
-                    reply, prefix, _declared(self.adapter), _settings(self.adapter)
-                )
-                self.transcript.messages.append(assistant)
-                self.batch.asked = list(assistant.tool_calls)
-                self.tool_calls.ran.clear()
-                reported = ReplyReady(
-                    run_id=self.run_id,
-                    agent=self.spec.name,
-                    turn=turn,
-                    model=assistant.model,
-                    usage=reply.usage,
-                    settings=assistant.settings,
-                    stop_reason=reply.stop_reason,
-                )
-                try:
-                    await self.transcript.save()
-                except Exception:
-                    with suppress(Exception):
-                        await self.tool_calls.emit(reported)
-                    raise
-                await self.tool_calls.emit(reported)
-                if not self.streaming and reply.text:
-                    await self.delta(reply.text)
+                await self.add_reply(turn, reply)
                 if reply.stop_reason != "tool_use" or not self.batch.asked:
                     for call in self.batch.asked:
                         self.batch.not_run(call, f"the reply ended with {reply.stop_reason}")
@@ -1821,66 +1850,17 @@ class _Turns:
                     if helpers.running() or helpers.waiting():
                         if turn + 1 == self.most_calls:
                             break
-                        self.woken.extend(await helpers.wake(self.inbox, self.stop))
+                        self.woken.extend(await helpers.wake(self.options.inbox, self.options.stop))
                         continue
                     if helpers.paused():
                         return await self.quietly(turn + 1)
                     return await self.finished(
-                        reply.text, "now" if requested(self.stop) == "now" else None
+                        reply.text, "now" if requested(self.options.stop) == "now" else None
                     )
-                rest = list(self.batch.asked)
-                held_up = False
-                while rest:
-                    at_output = next(
-                        (
-                            n
-                            for n, c in enumerate(rest)
-                            if self.expect is not None and c.name == OUTPUT_TOOL
-                        ),
-                        len(rest),
-                    )
-                    pressed = await self.batch.run(rest[:at_output], self.stop)
-                    rest = rest[at_output:]
-                    if not rest or self.expect is None:
-                        break
-                    if pressed:
-                        await self.batch.answer_all(rest, [None] * len(rest), time.monotonic())
-                        return await self.halt(turn + 1, self.said, "now")
-                    output, rest = rest[0], rest[1:]
-                    if self.batch.waits() or helpers.paused():
-                        names = ", ".join(
-                            [*self.batch.held_names(), *(helper.job for helper in helpers.paused())]
-                        )
-                        self.batch.refuse(
-                            output,
-                            f"engine: waiting for an answer: {names}; call {OUTPUT_TOOL} again once they have one",
-                        )
-                        held_up = held_up or helpers.paused_on_calls()
-                        continue
-                    running = [helper.job for helper in helpers.running()]
-                    if running:
-                        self.batch.refuse(
-                            output,
-                            f"engine: still running: {', '.join(running)}; stop them or wait for them, then call {OUTPUT_TOOL} again",
-                        )
-                        continue
-                    try:
-                        parsed = self.expect.model_validate(_copied(output.args))
-                    except ValidationError as exc:
-                        self.batch.refuse(
-                            output,
-                            f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}",
-                        )
-                        continue
-                    self.batch.accept(output)
-                    for call in rest:
-                        self.batch.not_run(call, f"{OUTPUT_TOOL} ended the run")
-                    await helpers.settled()
-                    await self.took(turn + 1, *self.drain(whole=False))
-                    return await self.finished(parsed.model_dump_json())
-                if self.batch.waits() or (held_up and helpers.paused_on_calls()):
-                    return await self.quietly(turn + 1)
-            mode = requested(self.stop)
+                record = await self.call_tools(turn)
+                if record is not None:
+                    return record
+            mode = requested(self.options.stop)
             if mode is not None:
                 return await self.halt(self.most_calls, self.said, mode)
             if helpers.fatal is not None:
@@ -1891,7 +1871,7 @@ class _Turns:
             raise
         finally:
             try:
-                given_back(self.inbox, self.woken)
+                given_back(self.options.inbox, self.woken)
             finally:
                 await helpers.cancel()
 
@@ -1908,7 +1888,7 @@ class _Turns:
             self.batch.unwait(lambda call, step: unrun(call, "the run failed"))
         if self.parent_run_id is not None:
             left_open = open_calls(live(self.transcript.messages))
-            for call in [_call(call) for call in self.made if call.id in left_open]:
+            for call in [_call(call) for call in self.pausing.made if call.id in left_open]:
                 self.batch.not_run(call, "the run failed")
         kept_open = open_calls(
             live(self.transcript.messages) if kept is None else self.pausing.still_open()
@@ -1917,11 +1897,11 @@ class _Turns:
             self.transcript.messages.extend(ended_calls(self.transcript.messages, kept_open))
         if self.parent_run_id is not None:
             kept_open = frozenset()
-        await self.offspring.stop_parked(kept_open)
-        await self.offspring.helpers.settle(
-            "now", self.stop, paused_too=self.called_model or self.parent_run_id is not None
+        await self.children.stop_parked(kept_open)
+        await self.children.helpers.settle(
+            "now", self.options.stop, paused_too=self.called_model or self.parent_run_id is not None
         )
-        taken = self.offspring.helpers.take()
+        taken = self.children.helpers.take()
         if kept is None:
             if self.unheard and (taken or self.transcript.messages[-1].pause is None):
                 self.transcript.messages.extend(self.unheard)
@@ -1929,7 +1909,7 @@ class _Turns:
         elif taken or self.transcript.past_mark():
             again = self.pausing.still_open([*(_handed(message) for message in kept.held), *taken])
             self.transcript.close(again)
-        self.offspring.adopt_all()
+        self.children.adopt_all()
         try:
             await self.transcript.save()
         except Exception as error:
@@ -1938,7 +1918,9 @@ class _Turns:
                 or self.transcript.conversation.failed is not error
             ):
                 raise
-            logger.error("engine: the store failed while run %s ended", self.run_id, exc_info=True)
+            logger.error(
+                "engine: the store failed while run %s ended", self.children.run_id, exc_info=True
+            )
         failure = self.finish("", error=exc)
         self.options.failed.append(failure)
         await self.announce(failure)
@@ -2734,6 +2716,44 @@ class Engine:
             raise failed.exceptions[0] from None
         return {qid: task.result() for qid, task in filling.items()}
 
+    def _tool_specs(
+        self,
+        spec: AgentSpec,
+        offered: Tools,
+        room: Workspace | None,
+        bridging: bool,
+        expect: type[BaseModel] | None,
+    ) -> list[ToolSpec]:
+        specs = [ToolSpec.model_validate(_copied(d)) for d in offered.definitions()]
+        if room is not None:
+            told = room._told(spec.allowed_folders, bridging)
+            specs = [
+                s.model_copy(update={"description": s.description + told})
+                if s.name == "Shell"
+                else s
+                for s in specs
+            ]
+        if spec.background:
+            specs = [
+                ToolSpec(
+                    name=DELEGATE_TOOL,
+                    description=delegate_description(self, spec, background=True),
+                    input_schema=delegate_schema(self, spec, background=True),
+                )
+                if s.name == DELEGATE_TOOL
+                else s
+                for s in specs
+            ]
+        if expect is not None:
+            specs.append(
+                ToolSpec(
+                    name=OUTPUT_TOOL,
+                    description="Emit the final reply. Call exactly once with the complete result.",
+                    input_schema=expect.model_json_schema(),
+                )
+            )
+        return specs
+
     async def _generation(
         self,
         spec: AgentSpec,
@@ -2747,12 +2767,6 @@ class Engine:
         model_ = cast(GenerationModel, self._adapter(spec, options.models))
         started = time.monotonic()
         at = _now()
-        expect, on_event, stop, inbox = (
-            options.expect,
-            options.on_event,
-            options.stop,
-            options.inbox,
-        )
         conversation = (
             None
             if options.store is None or options.key is None
@@ -2804,8 +2818,7 @@ class Engine:
             models={**options.models, spec.model: model_},
         )
         room = options.workspace if spec.workspace else None
-        children = _Children(self, spec, scope, run_id, options, stop, transcript, given)
-        helpers = children.helpers
+        children = _Children(self, spec, scope, run_id, options, options.stop, transcript, given)
         deadline = smallest(spec.tool_timeout, self.tool_timeout)
         helping = spec.background and JOB_TOOL in spec.granted
         asks = frozenset() if options.lead is None else frozenset({ASK_TOOL})
@@ -2818,7 +2831,7 @@ class Engine:
         offered: Tools = surface
         if helping:
             offered = Tools(
-                [surface.without(*HELPER_TOOLS), *helper_tools(helpers, room, deadline)]
+                [surface.without(*HELPER_TOOLS), *helper_tools(children.helpers, room, deadline)]
             )
         if options.lead is not None:
             offered = Tools([offered, ask_tool(*options.lead)])
@@ -2826,34 +2839,7 @@ class Engine:
         reachable = offered.without(*barred)
         bridging = room is not None and room._bridging and bool(reachable)
         variables = {"RFNRY_TREE": room.tree} if room is not None and room.tree is not None else {}
-        specs = [ToolSpec.model_validate(_copied(d)) for d in offered.definitions()]
-        if room is not None:
-            told = room._told(spec.allowed_folders, bridging)
-            specs = [
-                s.model_copy(update={"description": s.description + told})
-                if s.name == "Shell"
-                else s
-                for s in specs
-            ]
-        if spec.background:
-            specs = [
-                ToolSpec(
-                    name=DELEGATE_TOOL,
-                    description=delegate_description(self, spec, background=True),
-                    input_schema=delegate_schema(self, spec, background=True),
-                )
-                if s.name == DELEGATE_TOOL
-                else s
-                for s in specs
-            ]
-        if expect is not None:
-            specs.append(
-                ToolSpec(
-                    name=OUTPUT_TOOL,
-                    description="Emit the final reply. Call exactly once with the complete result.",
-                    input_schema=expect.model_json_schema(),
-                )
-            )
+        specs = self._tool_specs(spec, offered, room, bridging, options.expect)
         fingerprint = Fingerprint(
             agent=spec.fingerprint, tools=tools_fingerprint(specs), questions=None
         )
@@ -2879,9 +2865,18 @@ class Engine:
         shell_slots = _slots(None) if bridging else tool_slots
         model = _declared(model_)
         settings = _settings(model_)
-        streaming = on_event is not None and hasattr(model_, "generate_stream")
+        streaming = options.on_event is not None and hasattr(model_, "generate_stream")
         most_calls = _lowered(spec.max_model_calls, self.max_model_calls)
-        bridge = Bridge(run_id, spec.name, stop, on_event, variables, bridging, reachable, steps)
+        bridge = BridgedCalls(
+            run_id=run_id,
+            agent=spec.name,
+            stop=options.stop,
+            on_event=options.on_event,
+            variables=variables,
+            bridging=bridging,
+            reachable=reachable,
+            steps=steps,
+        )
         tool_calls = _ToolCalls(
             spec=spec,
             run_id=run_id,
@@ -2892,8 +2887,8 @@ class Engine:
             own_deadline=own_deadline,
             tool_slots=tool_slots,
             approve=options.approve,
-            on_event=on_event,
-            stop=stop,
+            on_event=options.on_event,
+            stop=options.stop,
             shell_slots=shell_slots,
             unslotted=asks,
             lend=bridge.lend if room is not None else None,
@@ -2918,12 +2913,9 @@ class Engine:
         children.park(made, resuming)
         children.restore(restorable, listed)
         return await _Turns(
-            spec=spec,
-            scope=scope,
             input=input,
             options=options,
             parent_run_id=parent_run_id,
-            run_id=run_id,
             caller=caller,
             started=started,
             at=at,
@@ -2934,17 +2926,12 @@ class Engine:
             fingerprint=fingerprint,
             streaming=streaming,
             most_calls=most_calls,
-            expect=expect,
-            stop=stop,
-            inbox=inbox,
             resuming=resuming,
-            made=made,
             carried=carried,
             losses=losses,
             follows=follows,
-            steps=steps,
             transcript=transcript,
-            offspring=children,
+            children=children,
             tool_calls=tool_calls,
             batch=batch,
             pausing=pausing,
