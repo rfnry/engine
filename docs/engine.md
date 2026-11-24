@@ -1540,16 +1540,18 @@ that does not route keeps no conversation, so its body stops after `unknown`; an
 longer holds is named as one that keeps it. The notice's `Notice` has `kind` `lost` and `run_id`
 `None`, since the helper's `run_id` was on its `Delegate` step, not in the conversation. A `lost`
 notice is an outcome, so a later resume tells it no more, as is a notice a paused run's mark holds
-for its resume ([Approving tool calls](#approving-tool-calls)): its helper is never told `lost`. The
-helper of a `lost` notice is not one of the run's own: `Job` on its id is the tool error
-`tools/helpers: there is no helper d2`. The `Delegate` call that started it stays in the stored
-conversation, where `History` reads it once the window has passed it. The run sends its lost notices
-in one `MessagesTaken` at turn 0, right after its `RunStarted`, with `messages=[]`. The ended
-results and lost notices are the run's own messages, appended after what it read and before its
-input: its record holds them when its first window does, a first window that starts past them leaves
-them in the store but out of `run.messages` and `run.conversation`, a run that ends before its first
-model call records its lost notices but not the ended results, whose calls its record does not hold,
-and `run.added`, which starts at the input, never holds them.
+for its resume ([Approving tool calls](#approving-tool-calls)): its helper is never told `lost`. A
+helper whose last notice is `paused` is not lost either: the run registers it again
+([In the background](#in-the-background)), and tells it `lost` only when the folder no longer holds
+its agent. The helper of a `lost` notice is not one of the run's own: `Job` on its id is the tool
+error `tools/helpers: there is no helper d2`. The `Delegate` call that started it stays in the
+stored conversation, where `History` reads it once the window has passed it. The run sends its lost
+notices in one `MessagesTaken` at turn 0, right after its `RunStarted`, with `messages=[]`. The
+ended results and lost notices are the run's own messages, appended after what it read and before
+its input: its record holds them when its first window does, a first window that starts past them
+leaves them in the store but out of `run.messages` and `run.conversation`, a run that ends before
+its first model call records its lost notices but not the ended results, whose calls its record does
+not hold, and `run.added`, which starts at the input, never holds them.
 
 With a refinery attached, a crash keeps every row written before it: those of each helper and
 synchronous child whose record was written, and of the runs below it that the record carried. It
@@ -2006,6 +2008,16 @@ has a tool named 'Ask', which agent 'lead' gives every helper it starts in the b
 the tool`), and a run's `tools=` holding one answers every background `Delegate` of a generation
 agent with a tool error (`tools/engine_tools: a tool named 'Ask' collides with the builtin`),
 starting no helper and spending no id. A folder that does not opt in keeps any tool named `Ask`.
+
+A run with a store that continues a conversation in which a helper paused registers that helper
+again as it starts, under its old job id and its name (`survey-1/d1`), never told `lost`: `Job`
+reads it paused, `Jobs` lists it `ended` `paused` with `started` the moment it was registered, and
+new ids go on after the highest `dN` as before. It runs again — a new run of its agent from its
+stored conversation, `input` `""`, its end told as a new notice — when an answer of the resume
+reaches one of its calls ([Approving tool calls](#approving-tool-calls)), and a helper paused on
+its `Ask` when its lead answers it: `Job(id, send=)` gives the text as its `Ask`'s result, and a
+reply of the lead with no tool call answers it `tools/helpers: your lead ended its turn without
+answering`. Until then the lead goes on beside it, as beside a helper that paused while it ran.
 
 A run with helpers ends when its model replies with no tool call, no helper of its own runs or is
 being recorded, and no notice waits; such a reply first answers with a tool error every `Ask` it was
@@ -2943,15 +2955,27 @@ goes on working: `Job` reads the helper `"running": false` with what it waits fo
 error. It is unfinished work all the same: a reply of the lead with no tool call, while none of its
 helpers runs and one is paused, pauses the lead instead of ending it, and an `Output` then is
 refused (`engine: waiting for an answer: d1; call Output again once they have one`), the lead
-pausing after that batch. The lead's mark lists the helper's calls in `below`, after those of its
-waiting `Delegate` calls, so the top-level `run.paused` lists them too. A lead pauses only once
-nothing below it runs: when its own call waits, or its child paused, it calls no model but first
-waits for each of its helpers still running to end or pause, their notices waiting in its mark's
-`held`, so a pause never throws work away. A helper that calls `Ask` meanwhile, or waits in `Ask`
-then, pauses on it: its mark names that call in `asking`, never in `waiting`, since only its lead
-can answer it, its notice reads `waits for your answer to its question`, and a second question it
-asks at once reads `tools/helpers: your lead ended its turn without answering`. A stop pressed
-meanwhile wins, as everywhere: the lead stops, and its helpers with it.
+pausing after that batch; refused only for a helper paused on its `Ask`, the lead goes on to answer
+it. The lead's mark lists the helper's calls in `below`, after those of its waiting `Delegate`
+calls, so the top-level `run.paused` lists them too. A lead pauses only once nothing below it runs:
+when its own call waits, or its child paused, it calls no model but first waits for each of its
+helpers still running to end or pause, their notices waiting in its mark's `held`, so a pause never
+throws work away. A helper that calls `Ask` meanwhile, or waits in `Ask` then, pauses on it: its
+mark names that call in `asking`, never in `waiting`, since only its lead can answer it, its notice
+reads `waits for your answer to its question`, and a second question it asks at once reads
+`tools/helpers: your lead ended its turn without answering`. A stop pressed meanwhile wins, as
+everywhere: the lead stops, and its helpers with it.
+
+The resume registers each paused helper again under its job id
+([In the background](#in-the-background)), and walks down to it as to a child: a helper an answer
+reaches — an id in `below` whose `conversation` is its name or one below it — runs again, answering
+its own calls and those below it, and ends with a new notice, while one the resume does not reach
+stays paused, its calls listed once in the lead's next mark. The lead goes on to its next model
+call beside the helpers still paused, as it goes on beside a helper that pauses while it runs, but a
+resume that answers none of the calls that wait pauses again at once, with no model call, holding
+its `input` for the next resume. A helper whose calls the lead's last mark no longer lists, because
+a resume was cut off after its fresh mark and before the helper ran, runs again as the next run
+starts, and pauses again on the same calls, under the same ids, for the app to answer once more.
 
 `Job(id, stop=true)` on a paused helper, once its paused run is recorded and its `paused` notice
 posted, continues it from its stored conversation as a new run of its agent, `input` `""` and

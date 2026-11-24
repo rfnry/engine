@@ -1122,3 +1122,397 @@ async def test_a_resume_whose_stop_is_pressed_ends_its_children_two_levels_down(
     [desk] = mid.children
     assert isinstance(desk, Generation) and desk.stopped == "now"
     assert refunds.done == [] and len(model.calls["refund it"]) == 1
+
+
+class Looked:
+    def __init__(self) -> None:
+        self.times = 0
+        self.refunds = Refunds()
+
+    def tools(self) -> Tools:
+        async def lookup(args: dict[str, Any]) -> str:
+            self.times += 1
+            return "found"
+
+        return Tools([Tool("lookup", "Look an order up", body=lookup), self.refunds.tools()])
+
+
+async def team_run(
+    engine: Engine, store: MemoryStore, looked: Looked, input: str = "go", **options: Any
+) -> Generation:
+    options.setdefault("approve", later_for("lookup"))
+    run = await engine.run(
+        "lead",
+        "acme",
+        input,
+        store=store,
+        conversation="c1",
+        tools=looked.tools(),
+        **options,
+    )
+    assert isinstance(run, Generation)
+    return run
+
+
+def ended_of(*agents: str, count: int = 1) -> tuple[asyncio.Event, Any]:
+    ended, seen = asyncio.Event(), []
+
+    async def watch(event: Any) -> None:
+        if isinstance(event, RunEnded) and event.call is not None and event.agent in agents:
+            seen.append(event)
+            if len(seen) == count:
+                ended.set()
+
+    return ended, watch
+
+
+def notices_of(store: MemoryStore, job: str, key: tuple[str, str] = KEY) -> list[str]:
+    return [m.notice.kind for m in store.held[key] if m.notice is not None and m.notice.job == job]
+
+
+def answer_in(store: MemoryStore, key: tuple[str, str], call_id: str) -> Message:
+    [message] = [m for m in store.held[key] if m.tool_call_id == call_id]
+    return message
+
+
+async def test_a_resume_reattaches_a_paused_helper_under_its_job_id(tmp_path: Path) -> None:
+    store, looked = MemoryStore(), Looked()
+    model = Crew(
+        [
+            background("part one"),
+            text_reply("waiting"),
+            text_reply("it waits"),
+            background("part two", prefix="e"),
+            text_reply("both going"),
+            text_reply("all done"),
+        ],
+        {
+            "part one": [calling(LOOKUP), text_reply("part one done")],
+            "part two": [text_reply("part two done")],
+        },
+    )
+    engine = helped(tmp_path, model)
+    first = await team_run(engine, store, looked)
+    [w] = first.paused
+    assert w.conversation == "c1/d1" and looked.times == 0
+    again = await team_run(engine, store, looked, "go on", answers={w.id: True})
+    assert looked.times == 1
+    assert answer_in(store, HELPER_KEY, "c-lookup").content == "found"
+    assert set(store.held) == {KEY, HELPER_KEY, ("acme", "c1/d2")}
+    assert notices_of(store, "d1")[-1] == "finished"
+    assert not any(m.notice and m.notice.kind == "lost" for m in store.held[KEY])
+    assert result_of(again, "e1") == {"job": "d2"}
+    assert again.error is None and again.paused == [] and again.reply == "all done"
+    by_input = {str(c.input): c for c in again.children if isinstance(c, Generation)}
+    resumed = by_input[""]
+    assert resumed.agent == "worker" and resumed.resumed and resumed.reply == "part one done"
+    assert resumed.run_id != first.children[0].run_id
+    assert resumed.call is not None
+    assert (resumed.call.run_id, resumed.call.call_id) == (again.run_id, "b1")
+    assert live(store.held[HELPER_KEY]) is None
+
+
+async def test_a_paused_helper_with_no_answer_stays_paused(tmp_path: Path) -> None:
+    store, looked = MemoryStore(), Looked()
+    both_ended, watch = ended_of("worker", count=2)
+    second = ToolCall(id="c-lookup-2", name="lookup", args={})
+    sending = ToolCall(id="c-job", name="Job", args={"id": "d2", "send": "hurry"})
+    model = Crew(
+        [
+            background("Work on d1", "Work on d2"),
+            both_ended,
+            text_reply("both heard"),
+            text_reply("both wait"),
+            calling(JOBS, sending),
+            text_reply("d1 goes on"),
+            text_reply("d2 waits"),
+        ],
+        {
+            "Work on d1": [calling(LOOKUP), text_reply("d1 done")],
+            "Work on d2": [calling(second), text_reply("never")],
+        },
+    )
+    engine = helped(tmp_path, model)
+    first = await team_run(engine, store, looked, on_event=watch)
+    w1, w2 = first.paused
+    assert (w1.conversation, w2.conversation) == ("c1/d1", "c1/d2")
+    calls_before = len(model.calls["Work on d2"])
+    again = await team_run(engine, store, looked, "go on", answers={w1.id: True})
+    assert len(model.calls["Work on d2"]) == calls_before
+    assert again.paused == [w2] and mark_of(store.held[KEY]).below == [w2]
+    listed = {job["job"]: job for job in result_of(again, "c-jobs")["jobs"]}
+    assert listed["d2"]["ended"] == "paused" and listed["d2"]["running"] is False
+    assert listed["d2"]["input"] == "Work on d2"
+    [refused] = [m for m in again.conversation if m.tool_call_id == "c-job"]
+    assert refused.is_error and refused.content == E11.replace("d1", "d2")
+    assert notices_of(store, "d1")[-1] == "finished" and notices_of(store, "d2") == ["paused"]
+    assert live(store.held[("acme", "c1/d2")]) is not None and looked.times == 1
+
+
+async def test_calls_with_the_same_model_id_in_two_helpers_wait_apart(tmp_path: Path) -> None:
+    store, looked = MemoryStore(), Looked()
+    both_ended, watch = ended_of("worker", count=2)
+    model = Crew(
+        [
+            background("Work on d1", "Work on d2"),
+            both_ended,
+            text_reply("both heard"),
+            text_reply("both wait"),
+            text_reply("d2 goes on"),
+            text_reply("d1 waits"),
+        ],
+        {
+            "Work on d1": [calling(LOOKUP), text_reply("never")],
+            "Work on d2": [calling(LOOKUP), text_reply("d2 done")],
+        },
+    )
+    engine = helped(tmp_path, model)
+    lead = await team_run(engine, store, looked, on_event=watch)
+    assert [w.call.id for w in lead.paused] == ["c-lookup", "c-lookup"]
+    assert len({w.id for w in lead.paused}) == 2
+    w1, w2 = lead.paused
+    again = await team_run(engine, store, looked, "go on", answers={w2.id: True})
+    assert looked.times == 1 and again.paused == [w1]
+    assert answer_in(store, ("acme", "c1/d2"), "c-lookup").content == "found"
+    assert not [m for m in store.held[HELPER_KEY] if m.tool_call_id == "c-lookup"]
+    assert len(model.calls["Work on d1"]) == 1
+
+
+async def asked_and_paused(tmp_path: Path, *lead: Reply) -> tuple[Engine, MemoryStore, Crew]:
+    store, gate = MemoryStore(), asyncio.Event()
+    model = Crew(
+        [beside_its_own("part one"), *lead],
+        {"part one": [gate, calling(ASK), text_reply("part done")]},
+    )
+    engine = helped(tmp_path, model)
+    running = asyncio.create_task(crew_run(engine, store, approve=later_for("refund")))
+    await until(lambda: batch_stored(store), "the lead's batch was stored")
+    gate.set()
+    await asyncio.wait_for(running, 5)
+    assert mark_of(store.held[HELPER_KEY]).asking == "a1"
+    return engine, store, model
+
+
+async def test_a_helper_paused_on_its_ask_runs_again_once_its_lead_answers(
+    tmp_path: Path,
+) -> None:
+    answering = ToolCall(id="c-job", name="Job", args={"id": "d1", "send": "yes"})
+    engine, store, model = await asked_and_paused(
+        tmp_path, calling(answering), text_reply("waiting"), text_reply("all done")
+    )
+    [w] = mark_of(store.held[KEY]).waiting
+    again = await team_run(
+        engine, store, Looked(), "go on", answers={w.id: True}, approve=later_for("refund")
+    )
+    assert answer_in(store, HELPER_KEY, "a1").content == "yes"
+    assert not answer_in(store, HELPER_KEY, "a1").is_error
+    assert notices_of(store, "d1")[-1] == "finished"
+    assert again.error is None and again.paused == [] and again.reply == "all done"
+    job_result = result_of(again, "c-job")
+    assert job_result["running"] is True and job_result["asking"] is None
+    [worker] = [c for c in again.children if isinstance(c, Generation)]
+    assert worker.reply == "part done" and worker.input == ""
+    [ask] = [s for s in worker.steps if s.tool == "Ask"]
+    assert (ask.result, ask.is_error, ask.waiting) == ("yes", False, False)
+    assert live(store.held[HELPER_KEY]) is None
+
+
+async def test_a_lead_that_answers_no_ask_lets_its_paused_helper_go_on(tmp_path: Path) -> None:
+    engine, store, model = await asked_and_paused(
+        tmp_path, text_reply("not now"), text_reply("all done")
+    )
+    [w] = mark_of(store.held[KEY]).waiting
+    again = await team_run(
+        engine, store, Looked(), "go on", answers={w.id: True}, approve=later_for("refund")
+    )
+    answered = answer_in(store, HELPER_KEY, "a1")
+    assert answered.is_error and answered.content == (
+        "InputError: tools/helpers: your lead ended its turn without answering"
+    )
+    assert notices_of(store, "d1")[-1] == "finished"
+    assert again.error is None and again.paused == [] and again.reply == "all done"
+    assert model.calls["part one"][-1][-1].content == answered.content
+
+
+async def paused_alone(
+    tmp_path: Path, *lead: Reply, **engine: Any
+) -> tuple[Engine, MemoryStore, Crew, Generation]:
+    store = MemoryStore()
+    model = Crew(
+        [background("part one"), text_reply("waiting"), text_reply("it waits"), *lead],
+        {"part one": [calling(LOOKUP), text_reply("part one done")]},
+    )
+    built = helped(tmp_path, model, **engine)
+    first = await team_run(built, store, Looked())
+    assert len(first.paused) == 1 and len(model.calls["lead"]) == 3
+    return built, store, model, first
+
+
+async def test_a_resume_that_answers_no_helper_call_pauses_again_at_once(tmp_path: Path) -> None:
+    engine, store, model, first = await paused_alone(tmp_path)
+    again = await team_run(engine, store, Looked(), "any news?", answers={})
+    assert again.resumed and again.paused == first.paused and again.calls == 0
+    assert len(model.calls["lead"]) == 3 and len(model.calls["part one"]) == 1
+    mark = mark_of(store.held[KEY])
+    assert mark.below == first.paused and mark.held[-1].content == "any news?"
+    assert notices_of(store, "d1") == ["paused"]
+
+
+async def test_an_output_refused_for_a_helper_paused_on_its_ask_lets_the_lead_answer_it(
+    tmp_path: Path,
+) -> None:
+    store, gate = MemoryStore(), asyncio.Event()
+    output = ToolCall(id="c-out", name="Output", args={"text": "done"})
+    answering = ToolCall(id="c-job", name="Job", args={"id": "d1", "send": "the first"})
+    model = Crew(
+        [
+            beside_its_own("part one"),
+            calling(output),
+            calling(answering),
+            text_reply("waiting"),
+            calling(output.model_copy(update={"id": "c-out-2"})),
+        ],
+        {"part one": [gate, calling(ASK), text_reply("part done")]},
+    )
+    engine = helped(tmp_path, model)
+    running = asyncio.create_task(
+        crew_run(engine, store, approve=later_for("refund"), expect=Reported)
+    )
+    await until(lambda: batch_stored(store), "the lead's batch was stored")
+    gate.set()
+    first = await asyncio.wait_for(running, 5)
+    [w] = first.paused
+    again = await team_run(
+        engine,
+        store,
+        Looked(),
+        "go on",
+        answers={w.id: True},
+        approve=later_for("refund"),
+        expect=Reported,
+    )
+    refused = next(s for s in again.steps if s.tool == "Output")
+    assert refused.result == PAUSED.format(names="d1") and refused.is_error
+    assert again.paused == [] and again.error is None
+    assert json.loads(again.reply) == {"text": "done"}
+    assert answer_in(store, HELPER_KEY, "a1").content == "the first"
+    [fresh] = [m.pause for m in store.held[KEY] if m.pause and m.pause.run_id == again.run_id]
+    assert fresh.waiting == [] and live(store.held[KEY]) is None
+
+
+async def test_a_resume_whose_stop_is_pressed_ends_its_restored_paused_helper(
+    tmp_path: Path,
+) -> None:
+    engine, store, model, first = await paused_alone(tmp_path)
+    stop = Stop()
+    stop.now()
+    again = await team_run(engine, store, Looked(), "go on", answers={}, stop=stop)
+    assert again.stopped == "now" and again.paused == []
+    assert answer_in(store, HELPER_KEY, "c-lookup").content == "stopped by the user"
+    assert live(store.held[HELPER_KEY]) is None and live(store.held[KEY]) is None
+    assert notices_of(store, "d1") == ["paused", "stopped"]
+    [stopped] = again.children
+    assert isinstance(stopped, Generation) and stopped.stopped == "now"
+    assert stopped.call is not None
+    assert (stopped.call.run_id, stopped.call.call_id) == (again.run_id, "b1")
+    assert len(model.calls["part one"]) == 1
+
+
+async def test_a_stopped_helper_stops_its_own_paused_helpers(tmp_path: Path) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    folder = tree(tmp_path, background=True)
+    amend(folder, "mid", orchestration={"delegate_to": ["desk"], "background": True})
+    mid_ended, watch = ended_of("mid")
+    desk_ended, _ = ended_of("desk")
+
+    async def both(event: Any) -> None:
+        await watch(event)
+        if isinstance(event, RunEnded) and event.agent == "desk":
+            desk_ended.set()
+
+    model = Crew(
+        [background("pass it on", agent="mid"), mid_ended, calling(JOBS), text_reply("waits")],
+        {
+            "pass it on": [
+                background("refund it", agent="desk"),
+                desk_ended,
+                calling(JOBS),
+                text_reply("mid waits"),
+            ],
+            "refund it": [calling(REFUND), text_reply("never")],
+        },
+    )
+    engine = Engine(folder, providers=provided({"crew": model, "judge": None}))
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=both)
+    [w] = first.paused
+    assert w.conversation == "c1/d1/d1"
+    stop = Stop()
+    stop.now()
+    again = await lead_run(engine, store, refunds, "go on", stop=stop)
+    assert again.stopped == "now" and again.paused == []
+    desk_key, mid_key = ("acme", "c1/d1/d1"), ("acme", "c1/d1")
+    assert answer_in(store, desk_key, "c-refund").content == "stopped by the user"
+    for key in (KEY, mid_key, desk_key):
+        assert live(store.held[key]) is None
+    assert notices_of(store, "d1", mid_key) == ["paused", "stopped"]
+    assert notices_of(store, "d1") == ["paused", "stopped"]
+    assert refunds.done == [] and len(model.calls["refund it"]) == 1
+
+
+async def test_a_paused_helper_its_leads_mark_no_longer_lists_goes_on(tmp_path: Path) -> None:
+    engine, store, model, first = await paused_alone(
+        tmp_path, text_reply("heard"), text_reply("still waits")
+    )
+    [w] = first.paused
+    cut = mark_of(store.held[KEY]).model_copy(update={"below": [], "run_id": "cut-off"})
+    store.held[KEY].append(Message(role="assistant", content="[paused]", pause=cut))
+    again = await team_run(engine, store, Looked(), "the process restarted; carry on")
+    assert not again.resumed and again.paused == [w]
+    assert len(model.calls["part one"]) == 1
+    assert not [m for m in store.held[HELPER_KEY] if m.tool_call_id == "c-lookup"]
+    assert mark_of(store.held[HELPER_KEY]).waiting == [w]
+    assert notices_of(store, "d1") == ["paused", "paused"]
+    assert not any(m.notice and m.notice.kind == "lost" for m in store.held[KEY])
+
+
+async def test_a_paused_helper_whose_agent_is_gone_is_told_lost(tmp_path: Path) -> None:
+    engine, store, model, first = await paused_alone(tmp_path)
+    for message in store.held[KEY]:
+        for call in message.tool_calls:
+            if call.name == "Delegate":
+                call.args["agent"] = "retired"
+        if message.notice is not None:
+            message.notice.agent = "retired"
+    cut = mark_of(store.held[KEY]).model_copy(update={"below": [], "run_id": "cut-off"})
+    store.held[KEY].append(Message(role="assistant", content="[paused]", pause=cut))
+    model.replies["lead"].append(text_reply("noted"))
+    again = await team_run(engine, store, Looked(), "carry on")
+    assert again.paused == [] and again.reply == "noted"
+    assert notices_of(store, "d1") == ["paused", "lost"]
+    assert len(model.calls["part one"]) == 1
+
+
+async def test_a_reattached_helper_holds_its_conversation_while_it_runs(tmp_path: Path) -> None:
+    store, gate, looked = MemoryStore(), asyncio.Event(), Looked()
+    model = Crew(
+        [
+            background("part one"),
+            text_reply("waiting"),
+            text_reply("it waits"),
+            text_reply("going"),
+            text_reply("all done"),
+        ],
+        {"part one": [calling(LOOKUP), gate, text_reply("part one done")]},
+    )
+    engine = helped(tmp_path, model)
+    first = await team_run(engine, store, looked)
+    [w] = first.paused
+    running = asyncio.create_task(team_run(engine, store, looked, "go on", answers={w.id: True}))
+    await until(lambda: looked.times == 1, "the re-attached helper ran its call")
+    with pytest.raises(
+        InputError, match=re.escape("conversation 'c1/d1' of scope 'acme' is in use")
+    ):
+        await engine.run("worker", "acme", "x", store=store, conversation="c1/d1")
+    gate.set()
+    again = await asyncio.wait_for(running, 5)
+    assert again.error is None and notices_of(store, "d1")[-1] == "finished"

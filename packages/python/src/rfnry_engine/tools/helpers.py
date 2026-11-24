@@ -96,11 +96,11 @@ def helper_tools(
                 raise InputError(
                     f"tools/helpers: helper {a.id} is a decision run and reads no messages"
                 )
-            if helper.ended == "paused":
+            if helper.ended == "paused" and not helper.on_its_ask():
                 raise InputError(
                     f"tools/helpers: helper {a.id} is paused until its calls are answered; send reaches only a helper running or waiting on Ask"
                 )
-            if helper.ended is not None:
+            if helper.ended not in (None, "paused"):
                 raise InputError(
                     f"tools/helpers: helper {a.id} has ended; send reaches only a helper still running"
                 )

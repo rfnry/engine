@@ -14,7 +14,7 @@ from rfnry_engine.conversation import live
 from rfnry_engine.errors import _Unpausable, error_text
 from rfnry_engine.foreground import FOREGROUND, Foreground, halted
 from rfnry_engine.manifest import Kind
-from rfnry_engine.models import Message, Notice, Pause, ToolCall
+from rfnry_engine.models import Message, Notice, Pause, ToolCall, Waiting
 from rfnry_engine.records import Decision, Generation
 from rfnry_engine.stop import Stop, Stopped, asked, cut_through, press, pressed, requested, wait
 from rfnry_engine.tools.delegate import DELEGATE_TOOL, BackgroundArgs, child_result, run_result
@@ -22,6 +22,7 @@ from rfnry_engine.tools.workspace import JOB_TOOL, JOBS_TOOL
 
 Ending = Literal["finished", "failed", "stopped", "paused"]
 OUTCOMES = frozenset({"finished", "failed", "stopped", "lost"})
+ENDINGS = OUTCOMES | {"paused"}
 HELPER_ID = re.compile(r"d([0-9]+)")
 ON_ITS_QUESTION = "waits for your answer to its question"
 
@@ -86,12 +87,12 @@ def first_job(history: Sequence[Message]) -> int:
     return max([*named, *shown, *noticed], default=0) + 1
 
 
-def _background(call: ToolCall) -> str | None:
+def _background(call: ToolCall) -> BackgroundArgs | None:
     try:
         held = BackgroundArgs.model_validate(call.args)
     except ValidationError:
         return None
-    return held.agent if held.background else None
+    return held if held.background else None
 
 
 def _started(message: Message) -> str | None:
@@ -105,38 +106,87 @@ def _started(message: Message) -> str | None:
     return job if isinstance(job, str) and _number(job) else None
 
 
-def lost_notices(history: Sequence[Message], key: str, nameless: Collection[str]) -> list[Message]:
+def _jobs(history: Sequence[Message]) -> dict[str, tuple[ToolCall, BackgroundArgs]]:
     calls = {
-        call.id: agent
+        call.id: (call, held)
         for message in history
         for call in message.tool_calls
-        if call.name == DELEGATE_TOOL and (agent := _background(call)) is not None
+        if call.name == DELEGATE_TOOL and (held := _background(call)) is not None
     }
-    jobs = {
-        job: agent
+    return {
+        job: calls[message.tool_call_id or ""]
         for message in history
         if message.role == "tool"
-        and (agent := calls.get(message.tool_call_id or "")) is not None
+        and (message.tool_call_id or "") in calls
         and (job := _started(message)) is not None
     }
+
+
+def _body(message: Message) -> str:
+    return message.content.partition("\n")[2] if isinstance(message.content, str) else ""
+
+
+def _told(history: Sequence[Message]) -> list[tuple[Notice, str]]:
     paused = live(history)
-    ended = {
-        message.notice.job
+    return [
+        (message.notice, _body(message))
         for message in [*history, *([] if paused is None else paused.held)]
-        if message.notice is not None and message.notice.kind in OUTCOMES
-    }
+        if message.notice is not None
+    ]
+
+
+@dataclass(frozen=True)
+class PausedJob:
+    job: str
+    call: ToolCall
+    agent: str
+    input: str
+    run_id: str
+    said: str
+    question: str | None
+
+
+def paused_jobs(history: Sequence[Message]) -> list[PausedJob]:
+    told = _told(history)
+    last = {notice.job: (notice, body) for notice, body in told if notice.kind in ENDINGS}
+    asks = {notice.job: body for notice, body in told if notice.kind == "asks"}
+    paused = []
+    for job, (call, held) in sorted(_jobs(history).items(), key=lambda item: _number(item[0])):
+        notice, body = last.get(job, (None, ""))
+        if notice is not None and notice.kind == "paused":
+            paused.append(
+                PausedJob(
+                    job=job,
+                    call=call,
+                    agent=held.agent,
+                    input=held.input,
+                    run_id=notice.run_id or "",
+                    said=body,
+                    question=asks.get(job) if body == ON_ITS_QUESTION else None,
+                )
+            )
+    return paused
+
+
+def lost_notices(
+    history: Sequence[Message], key: str, nameless: Collection[str], gone: Collection[str] = ()
+) -> list[Message]:
+    jobs = _jobs(history)
+    ended = {notice.job for notice, _ in _told(history) if notice.kind in ENDINGS}
     unknown = (
         "the run that started it ended before its outcome reached you, and what it did is unknown"
     )
     return [
         _notice(
             job,
-            jobs[job],
+            jobs[job][1].agent,
             None,
             "lost",
-            unknown if jobs[job] in nameless else f"{unknown}; its conversation is {key}/{job}",
+            unknown
+            if jobs[job][1].agent in nameless
+            else f"{unknown}; its conversation is {key}/{job}",
         )
-        for job in sorted(jobs.keys() - ended, key=_number)
+        for job in sorted(jobs.keys() - (ended - set(gone)), key=_number)
     ]
 
 
@@ -192,17 +242,22 @@ class Helper:
     stop: Stop
     inbox: asyncio.Queue[Any]
     started: datetime
-    again: Callable[[Helper], None]
+    again: Callable[[Helper, bool], None]
     ended: Ending | None = None
     said: str = ""
     record: Generation | Decision | None = None
     asks: list[Asking] = field(default_factory=list)
     question: str | None = None
+    waits: list[Waiting] = field(default_factory=list)
+    told: str | Unanswered | None = None
     over: asyncio.Future[None] = field(init=False)
-    task: asyncio.Task[None] = field(init=False)
+    task: asyncio.Future[None] = field(init=False)
 
     def pending(self) -> list[Asking]:
         return [asking for asking in self.asks if not asking.answer.done()]
+
+    def on_its_ask(self) -> bool:
+        return self.ended == "paused" and self.said == ON_ITS_QUESTION
 
 
 class Helpers:
@@ -234,7 +289,7 @@ class Helpers:
         run_id: str,
         stop: Stop,
         input: str,
-        again: Callable[[Helper], None],
+        again: Callable[[Helper, bool], None],
     ) -> Helper:
         helper = Helper(
             job=self.upcoming(),
@@ -250,6 +305,44 @@ class Helpers:
         self.skip()
         self._helpers[helper.job] = helper
         return helper
+
+    def restore(
+        self,
+        held: PausedJob,
+        kind: Kind,
+        waits: list[Waiting],
+        again: Callable[[Helper, bool], None],
+    ) -> Helper:
+        helper = Helper(
+            job=held.job,
+            agent=held.agent,
+            input=held.input,
+            kind=kind,
+            run_id=held.run_id,
+            stop=Stop(),
+            inbox=asyncio.Queue(),
+            started=datetime.now(UTC),
+            again=again,
+            ended="paused",
+            said=held.said,
+            question=held.question,
+            waits=waits,
+        )
+        helper.over = asyncio.get_running_loop().create_future()
+        helper.over.set_result(None)
+        helper.task = helper.over
+        self._helpers[helper.job] = helper
+        return helper
+
+    async def rerun(
+        self, helper: Helper, stopping: bool = False, told: str | Unanswered | None = None
+    ) -> bool:
+        await asyncio.wait([helper.task])
+        if helper.ended != "paused":
+            return False
+        helper.told = told
+        helper.again(helper, stopping)
+        return True
 
     def run(
         self,
@@ -296,6 +389,7 @@ class Helpers:
         self, helper: Helper, record: Generation | Decision | None, kind: Ending, body: str
     ) -> None:
         helper.ended, helper.said, helper.record = kind, body, record
+        helper.waits, helper.told = [] if record is None else list(record.paused), None
         helper.over.set_result(None)
 
     def _noticed(self, helper: Helper, kind: Ending | Literal["asks"], body: str) -> None:
@@ -309,6 +403,9 @@ class Helpers:
         return Unanswered.PAUSED
 
     async def ask(self, helper: Helper, question: str) -> str | Unanswered:
+        if helper.told is not None:
+            told, helper.told = helper.told, None
+            return told
         if self._settling:
             return Unanswered.STOPPED
         if self.pausing:
@@ -321,11 +418,14 @@ class Helpers:
         self._noticed(helper, "asks", question)
         return await asking.answer
 
-    def fail_given_asks(self) -> None:
+    async def fail_given_asks(self) -> None:
         for helper in self._helpers.values():
             for asking in helper.pending():
                 if asking.given:
                     asking.answer.set_result(Unanswered.ENDED)
+        for helper in self.paused():
+            if helper.on_its_ask():
+                await self.rerun(helper, told=Unanswered.ENDED)
 
     def running(self) -> list[Helper]:
         return [helper for helper in self._helpers.values() if helper.ended is None]
@@ -395,11 +495,7 @@ class Helpers:
         helper = self._helpers[job]
         loop = asyncio.get_running_loop()
         until = None if seconds is None else loop.time() + seconds
-        if helper.ended == "paused":
-            await asyncio.wait([helper.task])
-        if helper.ended == "paused":
-            helper.again(helper)
-        else:
+        if not (helper.ended == "paused" and await self.rerun(helper, stopping=True)):
             press(helper.stop)
         await asyncio.wait(
             [helper.over, helper.task],
@@ -409,6 +505,8 @@ class Helpers:
 
     async def send(self, job: str, text: str) -> None:
         helper = self._helpers[job]
+        if helper.on_its_ask() and await self.rerun(helper, told=text):
+            return
         pending = helper.pending()
         if pending:
             pending[0].answer.set_result(text)
@@ -418,7 +516,7 @@ class Helpers:
     def waiting(self) -> bool:
         return bool(self._notices or self._keeping or self.fatal)
 
-    def _unfinished(self) -> list[asyncio.Task[None]]:
+    def _unfinished(self) -> list[asyncio.Future[None]]:
         return [helper.task for helper in self._helpers.values() if not helper.task.done()]
 
     async def settled(self) -> None:
@@ -481,7 +579,7 @@ class Helpers:
         while True:
             for helper in self.paused():
                 if helper.task.done():
-                    helper.again(helper)
+                    helper.again(helper, True)
             if not (running := self._unfinished()):
                 return
             await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)

@@ -57,7 +57,14 @@ from rfnry_engine.foreground import (
     taking,
 )
 from rfnry_engine.frontmatter import plainly
-from rfnry_engine.helpers import Helper, Helpers, first_job, given_back, lost_notices
+from rfnry_engine.helpers import (
+    Helper,
+    Helpers,
+    first_job,
+    given_back,
+    lost_notices,
+    paused_jobs,
+)
 from rfnry_engine.manifest import Kind, ModelEntry, read_manifest
 from rfnry_engine.models import (
     CONTAINERS,
@@ -1946,6 +1953,12 @@ class Engine:
         if parent_run_id is None:
             _resumable(spec, resuming, options)
         repairs = [] if conversation is None else ended_calls(given, open_calls(resuming))
+        held_jobs = [] if conversation is None else paused_jobs(given)
+        restorable = [
+            job
+            for job in held_jobs
+            if (agent := self._agents.get(job.agent)) is not None and _named(agent)
+        ]
         losses = (
             []
             if conversation is None
@@ -1953,8 +1966,10 @@ class Engine:
                 given,
                 conversation.key,
                 {name for name, agent in self._agents.items() if not _named(agent)},
+                {job.job for job in held_jobs if job not in restorable},
             )
         )
+        listed = next((message.pause for message in reversed(given) if message.pause), None)
         replied = _replied(given) if options.reattached and not repairs and not losses else None
         messages: list[Message] = []
         window = 0
@@ -2261,27 +2276,40 @@ class Engine:
 
             helper.task.add_done_callback(gone)
 
-        def reattach(called: CallInfo | None, helper: Helper) -> None:
+        def reattach(called: CallInfo | None, helper: Helper, stopping: bool) -> None:
             target = self._agents[helper.agent]
             helper.run_id, helper.stop = uuid4().hex, stop._below()
-            helper.stop.now()
+            if stopping:
+                helper.stop.now()
             token = CALL.set(called)
             try:
                 follow(helper, target, "", {}, keyed(target, helper.job), True)
             finally:
                 CALL.reset(token)
 
+        def again_under(called: CallInfo | None) -> Callable[[Helper, bool], None]:
+            return lambda helper, stopping: reattach(called, helper, stopping)
+
+        async def go_on(answers: Mapping[str, bool | Refused]) -> bool:
+            if requested(stop) is not None:
+                return False
+            moved = False
+            for helper in helpers.paused():
+                reached = not helper.waits or any(w.id in answers for w in helper.waits)
+                if reached and not helper.on_its_ask() and await helpers.rerun(helper):
+                    moved = True
+            return moved
+
         def launch(
             target: AgentSpec, args: DelegateArgs, questions: dict[str, Question], key: str | None
         ) -> tuple[Content, bool, str | None, bool]:
-            called = CALL.get()
             helper = helpers.start(
                 args.agent,
                 target.kind,
                 uuid4().hex,
                 stop._below(),
                 args.input,
-                lambda helper: reattach(called, helper),
+                again_under(CALL.get()),
             )
             follow(helper, target, args.input, questions, key, False)
             return json.dumps({"job": helper.job}), False, helper.run_id, False
@@ -2604,10 +2632,14 @@ class Engine:
             if not settled:
                 begun, sent, settled = at, list(seen), True
 
-        async def resume(mark: Pause, answers: Mapping[str, bool | Refused], stop: Stop) -> Pause:
+        async def resume(
+            mark: Pause, answers: Mapping[str, bool | Refused], stop: Stop
+        ) -> tuple[Pause, bool]:
             nonlocal asked
             answered = [waiting for waiting in mark.waiting if waiting.id in answers]
             taken = [waiting for waiting in mark.below if waiting.id in answers]
+            told = options.lead is not None and options.lead[0].told is not None
+            asking = next((call for call in made if told and call.id == mark.asking), None)
 
             def reached(key: str) -> bool:
                 under = [waiting for waiting in mark.below if _under(waiting.conversation, key)]
@@ -2641,18 +2673,21 @@ class Engine:
                 answer(call, step)
                 refused.append((call, step))
             still = [_waited(waiting) for waiting in mark.waiting if waiting.id not in answers]
-            if conversation is not None and (answered or taken or repairs):
+            left_asking = None if asking is not None else mark.asking
+            if conversation is not None and (answered or taken or repairs or asking is not None):
                 fresh = _paused(mark).model_copy(
                     update={
                         "waiting": still,
                         "below": [
                             _waited(waiting) for waiting in mark.below if waiting.id not in answers
                         ],
+                        "asking": left_asking,
                         "run_id": run_id,
                     }
                 )
                 messages.append(Message(role="assistant", content="[paused]", pause=fresh))
                 await save()
+            reattached = await go_on(answers)
             failures: list[Exception] = []
             for call, step in refused:
                 try:
@@ -2661,7 +2696,7 @@ class Engine:
                     failures.append(exc)
             asked = [
                 *(_call(waiting.call) for waiting in answered if answers[waiting.id] is True),
-                *(_call(call) for call in made if call.id in again),
+                *(_call(call) for call in made if call.id in again or call is asking),
             ]
             tool_calls.granted.update(id(call) for call in asked)
             try:
@@ -2677,22 +2712,23 @@ class Engine:
                 )
             if failures:
                 raise failures[0]
-            return mark.model_copy(
+            delegated = {
+                call_id: key for call_id, key in mark.delegated.items() if call_id not in again
+            }
+            left = mark.model_copy(
                 update={
                     "waiting": still,
                     "below": [
                         _waited(waiting)
                         for waiting in mark.below
-                        if not any(_under(waiting.conversation, key) for key in again.values())
+                        if any(_under(waiting.conversation, key) for key in delegated.values())
                     ],
-                    "delegated": {
-                        call_id: key
-                        for call_id, key in mark.delegated.items()
-                        if call_id not in again
-                    },
+                    "delegated": delegated,
+                    "asking": left_asking,
                     "held": [],
                 }
             )
+            return left, bool(answered or taken or again or asking or reattached)
 
         async def ask() -> Reply:
             sending = [
@@ -2848,12 +2884,7 @@ class Engine:
                 below=[
                     *left.below,
                     *(_waited(w) for _, _, below in pending for w in below),
-                    *(
-                        _waited(w)
-                        for helper in helpers.paused()
-                        if helper.record is not None
-                        for w in helper.record.paused
-                    ),
+                    *(_waited(w) for helper in helpers.paused() for w in helper.waits),
                 ],
                 delegated={**left.delegated, **{call_id: key for call_id, key, _ in pending}},
                 asking=next(
@@ -2895,6 +2926,20 @@ class Engine:
                 )
             )
 
+        for job in restorable:
+            target = self._agents[job.agent]
+            key = cast(str, keyed(target, job.job))
+            helpers.restore(
+                job,
+                target.kind,
+                [
+                    _waited(waiting)
+                    for waiting in ([] if listed is None else listed.below)
+                    if _under(waiting.conversation, key)
+                ],
+                again_under(tool_calls.called(job.call)),
+            )
+
         try:
             await emit(
                 RunStarted(
@@ -2908,11 +2953,13 @@ class Engine:
             if replied is not None:
                 return await finished(replied)
             if resuming is None:
+                await go_on(options.answers)
                 await took(0, losses, [])
             else:
-                left = await resume(resuming, options.answers, stop)
+                left, moved = await resume(resuming, options.answers, stop)
                 heard = [*(_handed(message) for message in resuming.held), *losses]
-                if _open(left) or waits():
+                idle = not moved and any(not helper.on_its_ask() for helper in helpers.paused())
+                if _open(left) or waits() or idle:
                     await helpers.until_quiet(stop)
                     if requested(stop) is None:
                         return await pause(left, [*heard, *follows])
@@ -2971,7 +3018,7 @@ class Engine:
                 if reply.stop_reason != "tool_use" or not asked:
                     for call in asked:
                         not_run(call, f"the reply ended with {reply.stop_reason}")
-                    helpers.fail_given_asks()
+                    await helpers.fail_given_asks()
                     if helpers.running() or helpers.waiting():
                         if turn + 1 == most_calls:
                             break
@@ -3015,7 +3062,9 @@ class Engine:
                             output,
                             f"engine: waiting for an answer: {names}; call {OUTPUT_TOOL} again once they have one",
                         )
-                        held_up = True
+                        held_up = held_up or any(
+                            not helper.on_its_ask() for helper in helpers.paused()
+                        )
                         continue
                     running = [helper.job for helper in helpers.running()]
                     if running:
