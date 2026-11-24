@@ -236,11 +236,18 @@ class Generation(BaseModel):
     def _input_reads_back(self, info: ValidationInfo) -> Self:
         if not _reading_back(info) or not isinstance(self.input, list) or not self.messages:
             return self
-        sent = self.messages[-1].content
-        if self.skill is not None and isinstance(sent, list):
-            sent = sent[1:]
-        if isinstance(sent, list) and PARTS.dump_python(sent, mode="json") == self.input:
-            self.input = list(sent)
+        last = self.messages[-1]
+        sent = [last.content]
+        if last.pause is not None:
+            mark = self.conversation[-1].pause
+            after = [*self.conversation[len(self.messages) :], *([] if mark is None else mark.held)]
+            sent = [message.content for message in after if message.role == "user"]
+        elif self.skill is not None and isinstance(last.content, list):
+            sent = [last.content[1:]]
+        for content in sent:
+            if isinstance(content, list) and PARTS.dump_python(content, mode="json") == self.input:
+                self.input = list(content)
+                break
         return self
 
     @property

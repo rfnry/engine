@@ -1412,7 +1412,9 @@ what it added — while those ended results stay in the store only, as a first w
 them leaves them. A resume that ends before its first model call begins at the reply whose calls its
 pause held: `run.messages` is that reply through the mark, and `run.conversation` that and every
 message it appended. A record never begins with a result whose call it does not hold, so it replays
-as any record does.
+as any record does, except such a resume's, which sent no model call: its replay gives the pair its
+`error` (`InputError: refinery: run 'r1' resumed a paused conversation and ended before its first
+model call; it cannot be replayed`).
 
 A store run replays as a run given its history does ([Long conversations](#long-conversations)),
 since a replay keeps no store: with `conversation=` it is offered `History` only when its recorded

@@ -12,7 +12,7 @@ from rfnry_engine import Later, Pause, Refused, Review, Waiting, chain
 from rfnry_engine.conversation import ended_calls, live
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import ConfigurationError, InputError
-from rfnry_engine.models import Answer, ChoiceAnswer, Message, Reply, ToolCall, ToolSpec
+from rfnry_engine.models import Answer, ChoiceAnswer, Message, Reply, Text, ToolCall, ToolSpec
 from rfnry_engine.records import (
     Decision,
     Generation,
@@ -560,6 +560,55 @@ async def test_a_paused_record_reads_back(tmp_path: Path, storage: Storage) -> N
     assert isinstance(again, Generation)
     assert again.paused == run.paused and again.steps[0].waiting
     assert again.conversation[-1].pause == run.conversation[-1].pause
+
+
+async def test_a_resume_that_ends_before_its_model_call_reads_back_and_is_not_replayed(
+    tmp_path: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    engine = desk(
+        tmp_path / "recorded",
+        Scripted(calling(REFUND, LOOKUP), text_reply("never")),
+        refinery=refinery,
+    )
+    run = await engine.run(
+        "desk",
+        "acme",
+        "refund it",
+        tools=desk_tools(Refunds()),
+        approve=later_for("refund", "lookup"),
+    )
+    assert isinstance(run, Generation)
+    refund, lookup = run.paused
+    stop = Stop()
+    stop.now()
+    approved = [Text(text="A person approved it.")]
+    again = await engine.run(
+        "desk",
+        "acme",
+        approved,
+        history=run.conversation,
+        tools=desk_tools(Refunds()),
+        answers={refund.id: True, lookup.id: False},
+        stop=stop,
+    )
+    assert isinstance(again, Generation) and again.calls == 0 and again.input == approved
+    assert again.messages[-1].pause is not None and again.stopped == "now"
+    kept = await refinery.run("acme", again.run_id)
+    assert isinstance(kept, Generation) and kept.input == approved
+    candidate = desk(tmp_path / "candidate", Scripted(text_reply("x"), text_reply("y")))
+    pairs = [
+        pair
+        async for pair in refinery.replay(
+            "acme", candidate, agent="desk", tools=desk_tools(Refunds())
+        )
+    ]
+    assert [pair.recorded.run_id for pair in pairs] == [run.run_id, again.run_id]
+    assert pairs[0].error is None and pairs[1].candidate is None
+    assert pairs[1].error == (
+        f"InputError: refinery: run {again.run_id!r} resumed a paused conversation and ended "
+        "before its first model call; it cannot be replayed"
+    )
 
 
 async def test_an_export_leaves_marks_out(tmp_path: Path, storage: Storage) -> None:

@@ -12,7 +12,16 @@ from rfnry_engine import Later, Stop
 from rfnry_engine.conversation import live
 from rfnry_engine.engine import Engine
 from rfnry_engine.errors import InputError
-from rfnry_engine.models import Message, Pause, Refused, Reply, ToolCall, ToolSpec
+from rfnry_engine.models import (
+    Message,
+    Pause,
+    Refused,
+    Reply,
+    State,
+    Text,
+    ToolCall,
+    ToolSpec,
+)
 from rfnry_engine.records import (
     Decision,
     Generation,
@@ -1259,7 +1268,7 @@ class Looked:
 
 
 async def team_run(
-    engine: Engine, store: MemoryStore, looked: Looked, input: str = "go", **options: Any
+    engine: Engine, store: MemoryStore, looked: Looked, input: State = "go", **options: Any
 ) -> Generation:
     options.setdefault("approve", later_for("lookup"))
     run = await engine.run(
@@ -1530,6 +1539,30 @@ async def test_a_resume_that_answers_no_helper_call_pauses_again_at_once(tmp_pat
     mark = mark_of(store.held[KEY])
     assert mark.below == first.paused and mark.held[-1].content == "any news?"
     assert notices_of(store, "d1") == ["paused"]
+
+
+async def test_a_resume_that_pauses_again_at_once_reads_back_and_is_not_replayed(
+    tmp_path: Path, storage: Storage
+) -> None:
+    refinery = Refinery(storage)
+    engine, store, model, first = await paused_alone(tmp_path, refinery=refinery)
+    news = [Text(text="any news?")]
+    again = await team_run(engine, store, Looked(), news, answers={})
+    assert again.calls == 0 and again.paused == first.paused and again.input == news
+    assert again.messages[-1].pause is not None
+    assert mark_of(again.conversation).held[-1].content == news
+    kept = await refinery.run("acme", again.run_id)
+    assert isinstance(kept, Generation) and kept.input == news
+    candidate = helped(tmp_path / "candidate", Crew([text_reply("x")]))
+    pairs = [
+        pair
+        async for pair in refinery.replay("acme", candidate, agent="lead", tools=Looked().tools())
+    ]
+    [replayed] = [pair for pair in pairs if pair.recorded.run_id == again.run_id]
+    assert replayed.candidate is None and replayed.error == (
+        f"InputError: refinery: run {again.run_id!r} resumed a paused conversation and ended "
+        "before its first model call; it cannot be replayed"
+    )
 
 
 async def test_an_output_refused_for_a_helper_paused_on_its_ask_lets_the_lead_answer_it(

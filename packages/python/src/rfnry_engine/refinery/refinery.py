@@ -511,6 +511,10 @@ class Refinery:
                     waits=REPLAY_CANNOT_WAIT,
                 )
                 return cast(Run, again)
+            if run.messages and run.messages[-1].pause is not None:
+                raise InputError(
+                    f"refinery: run {recorded.run_id!r} resumed a paused conversation and ended before its first model call; it cannot be replayed"
+                )
             sent = run.messages[-1].content if run.messages else None
             if run.skill is not None and isinstance(sent, list):
                 sent = sent[1:] or None
