@@ -120,7 +120,13 @@ create table if not exists gate_log (
     at timestamptz not null default now()
 );
 create index if not exists gate_log_by_run on gate_log (scope, survey, run_id);
-alter table gate_log add column if not exists task text;
+create table if not exists tasks (
+    scope text not null,
+    survey text not null,
+    run_id text not null,
+    task text,
+    primary key (scope, survey, run_id)
+);
 create table if not exists provider_log (
     id bigserial primary key,
     scope text not null,

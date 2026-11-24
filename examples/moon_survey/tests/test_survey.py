@@ -304,8 +304,8 @@ class Unsure(FakeGate):
         self.seen.append(state)
         decided = await super().decide(state, questions)
         region = state["region"] or state["args"].get("region")
-        step = self.steps.get(region)
-        if state["agent"] == "surveyor" and step is not None and STEPS[step](state):
+        steps = self.steps.get(region, ()) if state["agent"] == "surveyor" else ()
+        if any(STEPS[step](state) for step in steps):
             unsure = CheckAnswer(probability=harness.UNSURE)
             return decided.model_copy(update={"answers": dict.fromkeys(questions, unsure)})
         return decided
@@ -317,7 +317,7 @@ async def test_a_survey_whose_gate_is_unsure_pauses_and_a_resume_lands_every_reg
     walk = [r for share in moon.shares(25) for r in share][:10]
     unsure = walk[3:7]
     steps = dict(zip(unsure, STEPS, strict=True))
-    gate = Unsure(steps)
+    gate = Unsure({region: (step,) for region, step in steps.items()})
     await service(gate=gate)
     name = fresh()
     await harness.run(name, mode="fake", shape="crews", size=10, cap=2.0)
@@ -413,6 +413,52 @@ async def test_a_survey_whose_gate_is_unsure_pauses_and_a_resume_lands_every_reg
     inputs = [m.content for m in messages if m.role == "user" and m.notice is None]
     assert inputs == [harness.START, harness.WHY["paused"]]
     assert not any(m.notice is not None and m.notice.kind == "lost" for m in messages)
+
+
+async def test_a_survey_that_pauses_twice_judges_each_resumed_run_against_its_task(
+    service, pool, engine_pool
+):
+    walk = [r for share in moon.shares(25) for r in share][:4]
+    gate = Unsure({walk[1]: ("fetch", "Write")})
+    await service(gate=gate)
+    name = fresh()
+    await harness.run(name, mode="fake", shape="crews", size=4, cap=2.0)
+    for _ in range(2):
+        assert (await ended(name))["status"] == "paused"
+        await harness.close()
+        await service(gate=gate)
+        await harness.resume(name)
+    done = await ended(name)
+    assert done["status"] == "done"
+    assert done["counts"] == {"landed": 4, "failed": 0, "claimed": 0, "free": 0}
+    assert all(row["attempts"] == 1 for row in await board_of(pool, name).landed())
+
+    records = await records_of(engine_pool, name)
+    assert Counter((r.agent, r.body["resumed"]) for r in records) == {
+        ("lead", False): 1,
+        ("lead", True): 2,
+        ("captain", False): 2,
+        ("captain", True): 2,
+        ("surveyor", False): 4,
+        ("surveyor", True): 2,
+        ("crosscheck_second", False): 4,
+    }
+    asked = {state["run_id"] for state in gate.seen}
+    captains = [r for r in records if r.agent == "captain" and r.body["resumed"]]
+    assert sum(r.run_id not in asked for r in captains) == 1
+    tasks = {
+        row["run_id"]: row["task"]
+        for row in await pool.fetch(
+            "select run_id, task from tasks where scope = 'moon' and survey = $1", name
+        )
+    }
+    assert set(tasks) == {r.run_id for r in records}
+    [first] = [r for r in records if r.agent == "captain" and walk[1] in r.body["input"]]
+    assert all(tasks[r.run_id] == first.body["input"] for r in captains)
+    assert all(state["task"] == tasks[state["run_id"]] for state in gate.seen)
+    judged = [state for state in gate.seen if state["run_id"] in {r.run_id for r in captains}]
+    assert {state["tool"] for state in judged} == {"Delegate", "note"}
+    assert all(state["task"] == first.body["input"] for state in judged)
 
 
 async def test_a_survey_landed_and_crosschecked_throughout_has_nothing_to_resume(service, pool):

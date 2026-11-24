@@ -39,7 +39,7 @@ uv run src/main.py
 The app's tables go in the schema `moon` and engine's in `moon_engine`. `setup.py data` downloads the Lunar Prospector
 files and checks them against `data/lp/SOURCES.md`. The service listens on `127.0.0.1:8000`. `.work/` (or
 `MOON_SURVEY_WORK`) can be removed once a survey has ended.
-An existing database runs `uv run src/setup.py tables` again, which adds the gate log's new `task` column.
+An existing database runs `uv run src/setup.py tables` again, which adds the `tasks` table that keeps each run's task.
 
 `POST /surveys` takes a JSON body of `name` (1 to 64 letters, digits, `.`, `_` or `-`, the first a letter or a digit),
 `mode` (`fake`, `real` or `hostile`, which is `real` with a hostile note planted on the board first), `shape` (`crews`:

@@ -109,13 +109,13 @@ KEPT = """
 select distinct conversation from messages where scope = $1 and starts_with(conversation, $2)
 """
 GATE_LOG = """
-insert into gate_log (scope, survey, run_id, agent, tool, allowed, probability, error, task)
-values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+insert into gate_log (scope, survey, run_id, agent, tool, allowed, probability, error)
+values ($1, $2, $3, $4, $5, $6, $7, $8)
 """
 TASK = """
-select task from gate_log where scope = $1 and survey = $2 and run_id = $3 and task is not null
-order by id limit 1
+insert into tasks (scope, survey, run_id, task) values ($1, $2, $3, $4) on conflict do nothing
 """
+TASK_OF = "select task from tasks where scope = $1 and survey = $2 and run_id = $3"
 
 logger = logging.getLogger("harness")
 
@@ -145,6 +145,7 @@ class Survey:
     error: str | None = None
     reply: str | None = None
     live: dict[str, RunStarted] = field(default_factory=dict)
+    tasks: dict[str, Any] = field(default_factory=dict)
 
     @property
     def running(self) -> bool:
@@ -575,6 +576,7 @@ def gate(
     name: str,
     models: dict[str, Any] | None,
     live: dict[str, RunStarted],
+    tasks: dict[str, Any],
     waits: bool,
 ) -> Callable[[str, ToolCall], Any]:
     async def priced(event: Event) -> None:
@@ -586,13 +588,11 @@ def gate(
         found = current_call()
         run_id = "" if found is None else found.run_id
         began = live.get(run_id)
-        task = None if began is None else began.input
+        task = tasks.get(run_id)
         allowed, later, probability, error, expired = False, False, None, None, False
         try:
             async with asyncio.timeout_at(deadline) as budget:
                 region = None if found is None else await board.claim_of(run_id)
-                if began is not None and began.resumes is not None and not task:
-                    task = await opened.pool.fetchval(TASK, SCOPE, name, began.resumes) or task
                 state = {
                     "agent": agent,
                     "tool": call.name,
@@ -620,16 +620,7 @@ def gate(
         try:
             async with writing:
                 await opened.pool.execute(
-                    GATE_LOG,
-                    SCOPE,
-                    name,
-                    run_id,
-                    agent,
-                    call.name,
-                    logged,
-                    probability,
-                    error,
-                    task if isinstance(task, str) else None,
+                    GATE_LOG, SCOPE, name, run_id, agent, call.name, logged, probability, error
                 )
         except Exception as failed:
             logger.warning(
@@ -692,6 +683,7 @@ class Shared:
                     await self.board.moved(event.resumes, event.run_id)
                     await self.fetches.moved(event.resumes, event.run_id)
                     self.opened.sandboxes.moved(event.resumes, event.run_id)
+                await self.keep_task(event)
             elif isinstance(event, ReplyReady):
                 await self.spend.replied(event)
             try:
@@ -699,10 +691,19 @@ class Shared:
             finally:
                 if isinstance(event, RunEnded):
                     self.survey.live.pop(event.run_id, None)
+                    self.survey.tasks.pop(event.run_id, None)
                     if ended is not None and event.call is None:
                         ended(event)
 
         return handle
+
+    async def keep_task(self, event: RunStarted) -> None:
+        pool, name = self.opened.pool, self.survey.name
+        task = event.input
+        if event.resumes is not None and not task:
+            task = await pool.fetchval(TASK_OF, SCOPE, name, event.resumes) or task
+        self.survey.tasks[event.run_id] = task
+        await pool.execute(TASK, SCOPE, name, event.run_id, task if isinstance(task, str) else None)
 
     async def run(
         self,
@@ -989,7 +990,7 @@ async def work(
                 tools=Tools([board_tools(board), fetch_tool(web, opened.sandboxes, fetches)]),
                 workspace=workspace,
                 models=models,
-                approve=gate(opened, board, spend, name, models, survey.live, waits),
+                approve=gate(opened, board, spend, name, models, survey.live, survey.tasks, waits),
                 top=top,
             )
             if survey.shape == "app":
@@ -1017,6 +1018,7 @@ async def work(
                 logger.exception("survey: survey '%s' could not be marked failed", name)
     finally:
         survey.live.clear()
+        survey.tasks.clear()
         try:
             await unlock(opened.pool, conn, name)
         except Exception:
