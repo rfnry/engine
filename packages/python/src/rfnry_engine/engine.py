@@ -9,7 +9,6 @@ from collections.abc import (
     Awaitable,
     Callable,
     Collection,
-    Iterator,
     Mapping,
     Sequence,
 )
@@ -17,7 +16,6 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcon
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from functools import partial
-from itertools import count
 from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Any, Literal, NamedTuple, NoReturn, Protocol, TypeGuard, cast
@@ -26,7 +24,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
-from rfnry_engine.batch import STOPPED, Batch, _now, _raise_first, _refusal, unrun
+from rfnry_engine.batch import STOPPED, Batch, Bridge, _now, _raise_first, _refusal, unrun
 from rfnry_engine.bundle import build_bundle
 from rfnry_engine.compiled import compile_folder
 from rfnry_engine.conversation import HISTORY, Conversation, ended_calls, live, open_calls
@@ -47,7 +45,6 @@ from rfnry_engine.foreground import (
     FOREGROUND,
     RECORDING,
     Foreground,
-    Lent,
     answer_stopped,
     answers_stopped,
     beneath,
@@ -108,13 +105,11 @@ from rfnry_engine.models import (
 )
 from rfnry_engine.records import (
     CallInfo,
-    CommandOutput,
     Decision,
     EventHandler,
     Fingerprint,
     Generation,
     MessagesTaken,
-    Pipe,
     ReasoningDelta,
     ReplyReady,
     Run,
@@ -2115,18 +2110,6 @@ class Engine:
         ended: StopReason | None = None
         most_calls = _lowered(spec.max_model_calls, self.max_model_calls)
 
-        async def show(call: ToolCall, here: Foreground, stream: Pipe, text: str) -> None:
-            if here.failed is not None:
-                return
-            try:
-                await emit(
-                    CommandOutput(
-                        run_id=run_id, agent=spec.name, call_id=call.id, stream=stream, text=text
-                    )
-                )
-            except Exception as exc:
-                here.failed = exc
-
         async def delta(text: str, *, reasoning: bool = False) -> None:
             if reasoning:
                 await emit(ReasoningDelta(run_id=run_id, agent=spec.name, turn=turn, text=text))
@@ -2401,66 +2384,7 @@ class Engine:
                 children.append(delegated.pop(child_run_id))
             return child_run_id
 
-        async def bridged(
-            shell: ToolCall,
-            here: Foreground,
-            numbers: Iterator[int],
-            name: str,
-            args: dict[str, Any],
-        ) -> dict[str, Any]:
-            if name not in reachable:
-                return {"error": error_text(InputError(f"tools: unknown tool {name!r}"))}
-            call = ToolCall(id=f"{shell.id}.{next(numbers)}", name=name, args=args)
-            began = time.monotonic()
-            calling = asyncio.ensure_future(call_tool(call, shell.id))
-            while not calling.done():
-                try:
-                    await asyncio.wait([calling])
-                except asyncio.CancelledError:
-                    own = foregrounds.get(id(call))
-                    if runner is not None and runner.cancelling() > calm:
-                        calling.cancel()
-                    elif requested(stop) == "now" and own is not None and own.live > 0:
-                        own.pressed = True
-                    elif not any(done is call for done, _ in ran):
-                        calling.cancel()
-            cut_step = stopped(call, began, shell.id) if calling.cancelled() else None
-            foregrounds.pop(id(call), None)
-            if cut_step is not None:
-                steps.append(cut_step)
-                try:
-                    await hand_over(call, cut_step)
-                except Exception as exc:
-                    here.failed = here.failed or exc
-                return {"error": STOPPED}
-            failed = calling.exception()
-            if isinstance(failed, Exception):
-                steps.extend(built for done, built in ran if done is call)
-                here.failed = here.failed or failed
-                return {"error": error_text(failed)}
-            step = calling.result()
-            steps.append(step)
-            shown = (
-                step.result
-                if isinstance(step.result, str)
-                else [part.model_dump(mode="json") for part in step.result]
-            )
-            return {"error" if step.is_error else "result": shown}
-
-        def lend(call: ToolCall, here: Foreground) -> None:
-            if call.name != "Shell":
-                return
-            numbers = count(1)
-            here.lent = Lent(
-                env=variables,
-                said=None
-                if on_event is None
-                else lambda stream, text: show(call, here, stream, text),
-                call=(lambda name, args: bridged(call, here, numbers, name, args))
-                if bridging
-                else None,
-            )
-
+        bridge = Bridge(run_id, spec.name, stop, on_event, variables, bridging, reachable, steps)
         tool_calls = _ToolCalls(
             spec=spec,
             run_id=run_id,
@@ -2475,23 +2399,14 @@ class Engine:
             stop=stop,
             shell_slots=shell_slots,
             unslotted=asks,
-            lend=lend if room is not None else None,
+            lend=bridge.lend if room is not None else None,
             delegate=delegate if spec.agents else None,
             waits=options.waits,
             conversation=None if conversation is None else conversation.key,
         )
-        emit, hand_over, stopped, call_tool = (
-            tool_calls.emit,
-            tool_calls.hand_over,
-            tool_calls.stopped,
-            tool_calls.run,
-        )
-        ran, foregrounds, runner, calm = (
-            tool_calls.ran,
-            tool_calls.foregrounds,
-            tool_calls.runner,
-            tool_calls.calm,
-        )
+        bridge.calls = tool_calls
+        emit, hand_over = tool_calls.emit, tool_calls.hand_over
+        ran = tool_calls.ran
 
         def adopt(child_run_id: str | None) -> None:
             if child_run_id in delegated:

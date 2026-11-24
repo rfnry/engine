@@ -1,13 +1,17 @@
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from itertools import count
+from typing import TYPE_CHECKING, Any
 
+from rfnry_engine.errors import InputError, error_text
+from rfnry_engine.foreground import Foreground, Lent
 from rfnry_engine.models import Message, Refused, ToolCall, Waiting
-from rfnry_engine.records import Step
+from rfnry_engine.records import CommandOutput, EventHandler, Pipe, Step
 from rfnry_engine.stop import Stop, requested, wait
+from rfnry_engine.tools.tools import Tools
 from rfnry_engine.transcript import Transcript
 from rfnry_engine.tree import OUTPUT_TOOL
 
@@ -209,3 +213,103 @@ class Batch:
             built = self.built(call)
             if built is not None and not any(built is kept for kept in self.steps):
                 self.answer(call, built)
+
+
+class Bridge:
+    calls: _ToolCalls
+
+    def __init__(
+        self,
+        run_id: str,
+        agent: str,
+        stop: Stop,
+        on_event: EventHandler | None,
+        variables: dict[str, str],
+        bridging: bool,
+        reachable: Tools,
+        steps: list[Step],
+    ) -> None:
+        self.run_id = run_id
+        self.agent = agent
+        self.stop = stop
+        self.on_event = on_event
+        self.variables = variables
+        self.bridging = bridging
+        self.reachable = reachable
+        self.steps = steps
+
+    async def show(self, call: ToolCall, here: Foreground, stream: Pipe, text: str) -> None:
+        if here.failed is not None:
+            return
+        try:
+            await self.calls.emit(
+                CommandOutput(
+                    run_id=self.run_id, agent=self.agent, call_id=call.id, stream=stream, text=text
+                )
+            )
+        except Exception as exc:
+            here.failed = exc
+
+    async def bridged(
+        self,
+        shell: ToolCall,
+        here: Foreground,
+        numbers: Iterator[int],
+        name: str,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        if name not in self.reachable:
+            return {"error": error_text(InputError(f"tools: unknown tool {name!r}"))}
+        call = ToolCall(id=f"{shell.id}.{next(numbers)}", name=name, args=args)
+        began = time.monotonic()
+        calling = asyncio.ensure_future(self.calls.run(call, shell.id))
+        while not calling.done():
+            try:
+                await asyncio.wait([calling])
+            except asyncio.CancelledError:
+                own = self.calls.foregrounds.get(id(call))
+                if (
+                    self.calls.runner is not None
+                    and self.calls.runner.cancelling() > self.calls.calm
+                ):
+                    calling.cancel()
+                elif requested(self.stop) == "now" and own is not None and own.live > 0:
+                    own.pressed = True
+                elif not any(done is call for done, _ in self.calls.ran):
+                    calling.cancel()
+        cut_step = self.calls.stopped(call, began, shell.id) if calling.cancelled() else None
+        self.calls.foregrounds.pop(id(call), None)
+        if cut_step is not None:
+            self.steps.append(cut_step)
+            try:
+                await self.calls.hand_over(call, cut_step)
+            except Exception as exc:
+                here.failed = here.failed or exc
+            return {"error": STOPPED}
+        failed = calling.exception()
+        if isinstance(failed, Exception):
+            self.steps.extend(built for done, built in self.calls.ran if done is call)
+            here.failed = here.failed or failed
+            return {"error": error_text(failed)}
+        step = calling.result()
+        self.steps.append(step)
+        shown = (
+            step.result
+            if isinstance(step.result, str)
+            else [part.model_dump(mode="json") for part in step.result]
+        )
+        return {"error" if step.is_error else "result": shown}
+
+    def lend(self, call: ToolCall, here: Foreground) -> None:
+        if call.name != "Shell":
+            return
+        numbers = count(1)
+        here.lent = Lent(
+            env=self.variables,
+            said=None
+            if self.on_event is None
+            else lambda stream, text: self.show(call, here, stream, text),
+            call=(lambda name, args: self.bridged(call, here, numbers, name, args))
+            if self.bridging
+            else None,
+        )
