@@ -1917,56 +1917,59 @@ Lemma 4 holds; the proof is on branch prover-d1.
 ```
 
 What follows is the helper's reply — a decision helper's answers as JSON, as `Delegate` returns them
-— or, after `failed`, its error as a tool's result would show it, and after `stopped`, what it had
-said. A run with a store that continues a conversation cut off mid-way reads a fourth, `lost`, for a
-helper whose outcome never reached the store, its body saying that what the helper did is unknown
-and, for a helper that keeps one, the name its conversation is kept under
-([After a crash](#after-a-crash)). A helper that fails, or runs past its own `max_model_calls`,
-never fails its lead: the lead reads `failed` and goes on, and the helper's record joins `children`
-with its `error`. The message carries `notice`, a `Notice` naming the helper's `job`, `agent` and
-`run_id` and the `kind` of notice, so the record and a dataset tell it from the person's words; a
-model is sent only the text and reads the first line. That `run_id`, as the step's `child_run_id`,
-names no record when the helper left none: a decision helper whose call a stop cut or kept from
-starting, and a helper that failed before its run made a record, such as one past `max_depth`; a
-`lost` notice's is `None`. A helper's reply holds whatever the helper read, a hostile document
-included, so write the lead's instructions to treat a notice as it treats a tool result, not as the
-person. Every helper that ended since the last model call is taken at once, in the order they ended,
-or with a store in the order their records were written, so many helpers ending together are one
-wake-up and one model call.
+— or, after `failed`, its error as a tool's result would show it, after `stopped`, what it had said,
+and after `paused`, what it waits for, for a helper an `approve` answered `Later()` for
+([Approving tool calls](#approving-tool-calls)). A run with a store that continues a conversation
+cut off mid-way reads a fifth, `lost`, for a helper whose outcome never reached the store, its body
+saying that what the helper did is unknown and, for a helper that keeps one, the name its
+conversation is kept under ([After a crash](#after-a-crash)). A helper that fails, or runs past its
+own `max_model_calls`, never fails its lead: the lead reads `failed` and goes on, and the helper's
+record joins `children` with its `error`. The message carries `notice`, a `Notice` naming the
+helper's `job`, `agent` and `run_id` and the `kind` of notice, so the record and a dataset tell it
+from the person's words; a model is sent only the text and reads the first line. That `run_id`, as
+the step's `child_run_id`, names no record when the helper left none: a decision helper whose call a
+stop cut or kept from starting, and a helper that failed before its run made a record, such as one
+past `max_depth`; a `lost` notice's is `None`. A helper's reply holds whatever the helper read, a
+hostile document included, so write the lead's instructions to treat a notice as it treats a tool
+result, not as the person. Every helper that ended since the last model call is taken at once, in
+the order they ended, or with a store in the order their records were written, so many helpers
+ending together are one wake-up and one model call.
 
 The lead also gets two tools over its helpers, `Job` and `Jobs`, workspace or not. `Job(id, wait=0,
 stop=false, send=null)` reads one helper by its id: `{"running": true, "agent": "prover", "input":
 "Prove lemma 3", "asking": null}` while it runs — `asking` is the question it waits on through
 `Ask`, below, `null` when none — and once it has ended the same with its `reply`, a decision
-helper's `answers` (and `routed_to`, as `Delegate` returns them), its `error`, or under `stopped`
-what it had said. `wait` is seconds to wait first, up to the call's deadline (the entry's
-`tools.timeout` and `Engine(tool_timeout=)`, as for any call; no bound when both are `None`), and
-returns as soon as that helper ends or any notice for the lead arrives, one already waiting
-included, so a lead waiting on one helper never sleeps through another, and at once while that
-helper waits in `Ask`, which it cannot leave before the lead answers. `stop=true` stops the helper
-after the wait, exactly as `engine.stop` on its `run_id` does — it and everything below it, its own
-helpers included, while its siblings and the lead go on — and then waits for that helper to end, for
-what is left of the call's deadline, so it returns the helper's `stopped` read even while another
-helper's notice waits; on a helper that has already ended it reads how it ended. Its notice reads
-`stopped`. `send` answers the question under `asking`; when there is none, it puts a message on a
-running generation helper's inbox, which it reads before its next model call, as it reads one
-`engine.send` gives it; a message sent as the helper gives its last reply is never read. Sending to
-a decision helper or to one that has ended is a tool error (`tools/helpers: helper d1 is a decision
-run and reads no messages`), and so is a `d` id no helper has, `d0` and `d01` included, workspace or
-not (`tools/helpers: there is no helper d9`), and a `wait` outside its bounds (`tools/helpers: wait
-must be between 0 and 30 seconds; got 40`). `Jobs()` lists the run's helpers in the order they
-started, `{"job": "d1", "agent": "prover", "input": "Prove lemma 3", "started":
-"2026-11-21T10:00:00+00:00", "running": true}`, one that ended with `"running": false` and `ended`:
-`finished`, `failed` or `stopped`. A helper's notice reaches the lead whether or not `Job` read it
-first: the record is the truth, and reading a reply twice costs less than missing an end. The
-`input` is the helper's `Delegate` input, whole and as given, never cut, so a lead whose window has
-left its `Delegate` calls behind still tells which job was which task. `Job` and `Jobs` go through
-`approve` and are recorded as steps like any call, and a command's tool bridge carries neither, as
-it carries no `Delegate`. The two names come with `background: true` as they come with `workspace:
-true`: `tools.allow` may name them, `tools.deny` drops the two together — with `Shell` too when the
-agent has a workspace — and a run's `tools=` holding one is a `ConfigurationError`
-(`tools/engine_tools: duplicate tool name 'Job'`), as an `EngineTools` given one for such an agent
-is. With a workspace too, the same two tools hold both kinds of id, as [Workspace](#workspace) says.
+helper's `answers` (and `routed_to`, as `Delegate` returns them), its `error`, under `stopped` what
+it had said, or under `paused` what it waits for. `wait` is seconds to wait first, up to the call's
+deadline (the entry's `tools.timeout` and `Engine(tool_timeout=)`, as for any call; no bound when
+both are `None`), and returns as soon as that helper ends or any notice for the lead arrives, one
+already waiting included, so a lead waiting on one helper never sleeps through another, and at once
+while that helper waits in `Ask`, which it cannot leave before the lead answers. `stop=true` stops
+the helper after the wait, exactly as `engine.stop` on its `run_id` does — it and everything below
+it, its own helpers included, while its siblings and the lead go on — and then waits for that helper
+to end, for what is left of the call's deadline, so it returns the helper's `stopped` read even
+while another helper's notice waits; on a helper that has already ended it reads how it ended. Its
+notice reads `stopped`. `send` answers the question under `asking`; when there is none, it puts a
+message on a running generation helper's inbox, which it reads before its next model call, as it
+reads one `engine.send` gives it; a message sent as the helper gives its last reply is never read.
+Sending to a decision helper or to one that has ended is a tool error (`tools/helpers: helper d1 is
+a decision run and reads no messages`), one that paused on its calls too (`tools/helpers: helper d1
+is paused until its calls are answered; send reaches only a helper running or waiting on Ask`), and
+so is a `d` id no helper has, `d0` and `d01` included, workspace or not (`tools/helpers: there is no
+helper d9`), and a `wait` outside its bounds (`tools/helpers: wait must be between 0 and 30 seconds;
+got 40`). `Jobs()` lists the run's helpers in the order they started, `{"job": "d1", "agent":
+"prover", "input": "Prove lemma 3", "started": "2026-11-21T10:00:00+00:00", "running": true}`, one
+that ended with `"running": false` and `ended`: `finished`, `failed`, `stopped` or `paused`. A
+helper's notice reaches the lead whether or not `Job` read it first: the record is the truth, and
+reading a reply twice costs less than missing an end. The `input` is the helper's `Delegate` input,
+whole and as given, never cut, so a lead whose window has left its `Delegate` calls behind still
+tells which job was which task. `Job` and `Jobs` go through `approve` and are recorded as steps like
+any call, and a command's tool bridge carries neither, as it carries no `Delegate`. The two names
+come with `background: true` as they come with `workspace: true`: `tools.allow` may name them,
+`tools.deny` drops the two together — with `Shell` too when the agent has a workspace — and a run's
+`tools=` holding one is a `ConfigurationError` (`tools/engine_tools: duplicate tool name 'Job'`), as
+an `EngineTools` given one for such an agent is. With a workspace too, the same two tools hold both
+kinds of id, as [Workspace](#workspace) says.
 
 A helper gets one tool of its own, `Ask(question)`, whose description names its lead. The call puts
 a notice on the lead and waits until the lead answers it with `Job(id, send=)`; the lead's text is
@@ -2006,20 +2009,21 @@ starting no helper and spending no id. A folder that does not opt in keeps any t
 
 A run with helpers ends when its model replies with no tool call, no helper of its own runs or is
 being recorded, and no notice waits; such a reply first answers with a tool error every `Ask` it was
-given, as above. A reply with no tool call while a helper runs or is being recorded, or while a
-notice waits, stays in the conversation and streams as any reply, and the run waits for the next
-notice, a message on its inbox or its stop, then calls the model again. Each such call counts toward
-`max_model_calls`, so a lead that waits through many ends needs a higher one, and such a reply on
-the run's last allowed call raises `RunawayError` at once, unless its stop is pending, rather than
-wait for a call it cannot make. A message on the inbox wakes a waiting run, so a reminder reaches a
-lead whose helpers still work, but it never keeps a run going: a lead with no helper running or
-being recorded ends as any run does, and what is left on its inbox stays there. The message that
-wakes it is the run's from then on, never put back while the run waits: it goes first among the
-inbox's messages at the run's next boundary, and joins the conversation, with its `MessagesTaken`,
-even when the run's stop ends it before its next model call, while the rest of the inbox stays
-there. An `Output` (with `expect=`) while a helper runs is answered with a tool error naming them,
-`engine: still running: d1, d3; stop them or wait for them, then call Output again`, and the run
-goes on: a typed reply is a final answer, given once the helpers have ended.
+given, as above, and while a helper is paused it pauses the run instead
+([Approving tool calls](#approving-tool-calls)). A reply with no tool call while a helper runs or is
+being recorded, or while a notice waits, stays in the conversation and streams as any reply, and the
+run waits for the next notice, a message on its inbox or its stop, then calls the model again. Each
+such call counts toward `max_model_calls`, so a lead that waits through many ends needs a higher
+one, and such a reply on the run's last allowed call raises `RunawayError` at once, unless its stop
+is pending, rather than wait for a call it cannot make. A message on the inbox wakes a waiting run,
+so a reminder reaches a lead whose helpers still work, but it never keeps a run going: a lead with
+no helper running or being recorded ends as any run does, and what is left on its inbox stays there.
+The message that wakes it is the run's from then on, never put back while the run waits: it goes
+first among the inbox's messages at the run's next boundary, and joins the conversation, with its
+`MessagesTaken`, even when the run's stop ends it before its next model call, while the rest of the
+inbox stays there. An `Output` (with `expect=`) while a helper runs is answered with a tool error
+naming them, `engine: still running: d1, d3; stop them or wait for them, then call Output again`,
+and the run goes on: a typed reply is a final answer, given once the helpers have ended.
 
 A run returns, or raises, only once every helper of its own has ended, whichever way it ends, so no
 helper outlives its lead. The lead's stop reaches its helpers: `now()` stops a generation helper as
@@ -2861,19 +2865,19 @@ result yet. The conversation ends with a mark, an assistant message whose `pause
 of those calls: it is stored with the rest when the run has a store, and it is never sent to a
 model. The notices of background helpers that ended before the run paused, and that its model has
 not read, wait in the mark's `held`, never in the conversation before it; a helper still running
-when the run pauses is cancelled. `RunEnded.paused` lists the same calls. A stop pressed while the batch runs wins, in either
-mode: the waiting call is answered `stopped by the user`, as a call a stop cuts is, and the run ends
-stopped; a run that fails instead answers it `NotRun: refund was not run; the run failed`. An
-`Output` after the waiting call in the same reply is refused (`engine: waiting for an answer:
-refund; call Output again once they have one`), and the run pauses. A call a command makes
-through the tool bridge cannot wait: `Later()` for it is answered `NotApproved: lookup waits for an
-answer a command cannot wait for` and the command goes on. The top-level `engine.run` pauses, a
-run its route starts pauses with it, and with a store so does a synchronous `Delegate`'s child,
-below; a `Later()` in a voice session, in a run `engine.tool` or `EngineTools` starts, in a replay,
-in a background helper, or in a run delegated below a top-level run without a store is a
-`ConfigurationError` that fails every run up to the top, never a tool error a model reads
-(`engine: approve answered Later() for lookup of agent 'worker', which cannot wait: a run below
-the top waits only in a store; pass store= and conversation= to engine.run`).
+is waited for first, below. `RunEnded.paused` lists the same calls. A stop pressed while the batch
+runs wins, in either mode: the waiting call is answered `stopped by the user`, as a call a stop cuts
+is, and the run ends stopped; a run that fails instead answers it `NotRun: refund was not run; the
+run failed`. An `Output` after the waiting call in the same reply is refused (`engine: waiting for
+an answer: refund; call Output again once they have one`), and the run pauses. A call a command
+makes through the tool bridge cannot wait: `Later()` for it is answered `NotApproved: lookup waits
+for an answer a command cannot wait for` and the command goes on. The top-level `engine.run` pauses,
+a run its route starts pauses with it, and with a store so do a synchronous `Delegate`'s child and a
+background helper, below; a `Later()` in a voice session, in a run `engine.tool` or `EngineTools`
+starts, in a replay, or in a run below a top-level run without a store, delegated or in the
+background, is a `ConfigurationError` that fails every run up to the top, never a tool error a model
+reads (`engine: approve answered Later() for lookup of agent 'worker', which cannot wait: a run
+below the top waits only in a store; pass store= and conversation= to engine.run`).
 
 To go on, run the same agent again on the paused conversation — `history=run.conversation` without
 a store, or the same `store=` and `conversation=` — with `answers`, which maps each waiting call's
@@ -2930,6 +2934,33 @@ deciding again. A child that pauses again leaves its `Delegate` waiting, and the
 at once, with no model call, its fresh mark holding its `input` for the next resume, which appends
 it after the notices the old mark held. The pause names no new conversation: every run keeps the
 name it had.
+
+A background helper pauses as a child does, in its own conversation (`c1/d1`), and ends `paused`:
+its record joins `children`, and its lead hears it as it hears any end, `[helper d1 · worker · paused]`
+then `waits for an answer to: lookup`, the tools of the calls that wait in it and below it. The lead
+goes on working: `Job` reads the helper `"running": false` with what it waits for under `paused`,
+`Jobs` lists it `ended` `paused`, it holds no `max_background` place, and sending to it is a tool
+error. It is unfinished work all the same: a reply of the lead with no tool call, while none of its
+helpers runs and one is paused, pauses the lead instead of ending it, and an `Output` then is
+refused (`engine: waiting for an answer: d1; call Output again once they have one`), the lead
+pausing after that batch. The lead's mark lists the helper's calls in `below`, after those of its
+waiting `Delegate` calls, so the top-level `run.paused` lists them too. A lead pauses only once
+nothing below it runs: when its own call waits, or its child paused, it calls no model but first
+waits for each of its helpers still running to end or pause, their notices waiting in its mark's
+`held`, so a pause never throws work away. A helper that calls `Ask` meanwhile, or waits in `Ask`
+then, pauses on it: its mark names that call in `asking`, never in `waiting`, since only its lead
+can answer it, its notice reads `waits for your answer to its question`, and a second question it
+asks at once reads `tools/helpers: your lead ended its turn without answering`. A stop pressed
+meanwhile wins, as everywhere: the lead stops, and its helpers with it.
+
+`Job(id, stop=true)` on a paused helper continues it from its stored conversation as a new run of
+its agent, `input` `""` and `resumed`, whose stop is pressed before it starts: every call it waits
+on — its own, its `Ask`, and each `Delegate` whose child paused, that child ended the same way — is
+answered `stopped by the user` in its own conversation, the helper ends `stopped`, and its lead
+hears a `stopped` notice. A lead that ends without pausing — stopped, failed or past
+`max_model_calls` — ends each of its paused helpers so, and each paused child of a `Delegate` its
+conversation no longer waits on, so no call is left waiting in the store with nothing that will
+answer it; a resume that a stop reaches while a call is still open answers it the same way.
 
 ### Refining
 

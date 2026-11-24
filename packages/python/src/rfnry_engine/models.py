@@ -110,7 +110,7 @@ class Notice(BaseModel):
     job: str
     agent: str
     run_id: str | None
-    kind: Literal["finished", "failed", "stopped", "asks", "lost"]
+    kind: Literal["finished", "failed", "stopped", "paused", "asks", "lost"]
 
     @model_validator(mode="after")
     def _run_id_unless_lost(self) -> Self:

@@ -3,14 +3,14 @@ from typing import Any, cast
 
 from pydantic import BaseModel
 
-from rfnry_engine.errors import InputError
+from rfnry_engine.errors import InputError, _AskPaused
 from rfnry_engine.helpers import HELPER_ID, Helper, Helpers, Unanswered
 from rfnry_engine.tools.tools import Tool
 from rfnry_engine.tools.workspace import JOB_TOOL, JOBS_TOOL, JobArgs, Workspace
 
 HELPER_TOOLS = frozenset({JOB_TOOL, JOBS_TOOL})
 ASK_TOOL = "Ask"
-ENDED = "and whether it is running or, once it has ended, how: finished, failed or stopped."
+ENDED = "and whether it is running or, once it has ended, how: finished, failed, stopped or paused."
 
 
 class HelperJobArgs(JobArgs):
@@ -27,7 +27,8 @@ def _helper(deadline: float | None) -> str:
     return (
         "whether it is running, its agent, its input, under asking the question it waits on you to "
         "answer through Ask (null when none), and once it has ended its reply (a decision agent's "
-        f"answers), its error, or what it had said when it was stopped. wait is seconds{upto} to "
+        "answers), its error, what it had said when it was stopped, or under paused what it "
+        f"waits for. wait is seconds{upto} to "
         "wait first; it returns as soon as the helper ends or any notice from a helper reaches "
         "you, and at once while the helper waits on your answer. "
         "stop=true stops the helper and every helper it started, after the wait, and waits for it "
@@ -95,6 +96,10 @@ def helper_tools(
                 raise InputError(
                     f"tools/helpers: helper {a.id} is a decision run and reads no messages"
                 )
+            if helper.ended == "paused":
+                raise InputError(
+                    f"tools/helpers: helper {a.id} is paused until its calls are answered; send reaches only a helper running or waiting on Ask"
+                )
             if helper.ended is not None:
                 raise InputError(
                     f"tools/helpers: helper {a.id} has ended; send reaches only a helper still running"
@@ -131,6 +136,8 @@ def ask_tool(helper: Helper, helpers: Helpers) -> Tool:
             raise InputError(
                 "tools/helpers: your lead was stopped or failed before it answered; you stop with it"
             )
+        if answer is Unanswered.PAUSED:
+            raise _AskPaused()
         raise InputError("tools/helpers: your lead ended its turn without answering")
 
     return Tool(

@@ -39,6 +39,10 @@ ALLOWED: dict[tuple[str, str], str] = {
         "helpers.fatal",
     ): "a helper's Later() that cannot wait fails its lead with the helper's own error",
     (
+        "tools/helpers.py",
+        "_AskPaused()",
+    ): "an Ask while its lead waits to pause leaves the call waiting, never a tool error",
+    (
         "frontmatter.py",
         "yaml.constructor.ConstructorError(None, None, f'duplicate key {key!r}', key_node.start_mark)",
     ): "a YAML error, which parse_frontmatter_doc reports as frontmatter: invalid YAML in its file",
