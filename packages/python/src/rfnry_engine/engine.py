@@ -2989,7 +2989,7 @@ class Engine:
                 unheard = [_handed(message) for message in resuming.held]
                 moved = await resume(resuming, options.answers, stop)
                 heard = [*unheard, *losses]
-                idle = not moved and any(not helper.on_its_ask() for helper in helpers.paused())
+                idle = not moved and helpers.paused_on_calls()
                 if open_calls(still_open()) or idle:
                     await helpers.until_quiet(stop)
                     if requested(stop) is None:
@@ -2998,6 +2998,8 @@ class Engine:
                 messages.extend([*heard, *follows])
                 unheard, open_mark = [], None
                 await took(0, heard, [])
+            if options.lead is not None:
+                options.lead[0].told = None
             for turn in range(most_calls):
                 mode = requested(stop)
                 if mode is not None:
@@ -3095,9 +3097,7 @@ class Engine:
                             output,
                             f"engine: waiting for an answer: {names}; call {OUTPUT_TOOL} again once they have one",
                         )
-                        held_up = held_up or any(
-                            not helper.on_its_ask() for helper in helpers.paused()
-                        )
+                        held_up = held_up or helpers.paused_on_calls()
                         continue
                     running = [helper.job for helper in helpers.running()]
                     if running:
@@ -3132,7 +3132,7 @@ class Engine:
                     await helpers.settled()
                     await took(turn + 1, *drain(whole=False))
                     return await finished(parsed.model_dump_json())
-                if waits() or held_up:
+                if waits() or (held_up and helpers.paused_on_calls()):
                     return await quietly(turn + 1)
             mode = requested(stop)
             if mode is not None:

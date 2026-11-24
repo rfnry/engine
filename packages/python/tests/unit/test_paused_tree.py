@@ -1576,6 +1576,58 @@ async def test_an_output_refused_for_a_helper_paused_on_its_ask_lets_the_lead_an
     assert after.held == fresh.held and kinds(after.held)[-1] == "paused"
 
 
+async def test_an_output_refused_for_a_helper_its_reply_then_stops_lets_the_lead_go_on(
+    tmp_path: Path,
+) -> None:
+    store, ended = MemoryStore(), asyncio.Event()
+    output = ToolCall(id="c-out", name="Output", args={"text": "done"})
+    stopping = ToolCall(id="c-job", name="Job", args={"id": "d1", "stop": True})
+    model = Crew(
+        [
+            background("part one"),
+            ended,
+            calling(output, stopping),
+            calling(output.model_copy(update={"id": "c-out-2"})),
+        ],
+        {"part one": [calling(LOOKUP), text_reply("never")]},
+    )
+    lead = await crew_run(
+        helped(tmp_path, model), store, expect=Reported, on_event=ended_below(ended)
+    )
+    refused = next(s for s in lead.steps if s.tool == "Output")
+    assert refused.result == PAUSED.format(names="d1") and refused.is_error
+    assert lead.error is None and lead.paused == [] and json.loads(lead.reply) == {"text": "done"}
+    assert all(m.pause is None for m in store.held[KEY]) and len(model.calls["lead"]) == 3
+    assert notices_of(store, "d1") == ["paused", "stopped"]
+
+
+async def test_a_send_answers_only_the_ask_its_helper_paused_on(tmp_path: Path) -> None:
+    answering = ToolCall(id="c-job", name="Job", args={"id": "d1", "send": "yes"})
+    waiting = ToolCall(id="c-wait", name="Job", args={"id": "d1", "wait": 5})
+    again_asked = ToolCall(id="c-job-2", name="Job", args={"id": "d1", "send": "the second"})
+    engine, store, model = await asked_and_paused(
+        tmp_path,
+        calling(answering),
+        calling(waiting),
+        calling(again_asked),
+        text_reply("all done"),
+        text_reply("all done"),
+    )
+    mark = mark_of(store.held[HELPER_KEY])
+    cut = mark.model_copy(update={"asking": None, "run_id": "cut-off"})
+    store.held[HELPER_KEY].append(Message(role="assistant", content="[paused]", pause=cut))
+    second = ToolCall(id="a2", name="Ask", args={"question": "and which day?"})
+    model.replies["part one"] = [calling(second), text_reply("part done")]
+    [w] = mark_of(store.held[KEY]).waiting
+    again = await team_run(
+        engine, store, Looked(), "go on", answers={w.id: True}, approve=later_for("refund")
+    )
+    assert str(answer_in(store, HELPER_KEY, "a1").content).startswith("Ended: Ask did not return")
+    assert answer_in(store, HELPER_KEY, "a2").content == "the second"
+    assert again.error is None and again.paused == [] and again.reply == "all done"
+    assert notices_of(store, "d1")[-2:] == ["asks", "finished"]
+
+
 async def test_a_resume_whose_stop_is_pressed_ends_its_restored_paused_helper(
     tmp_path: Path,
 ) -> None:

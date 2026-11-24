@@ -437,6 +437,9 @@ class Helpers:
     def paused(self) -> list[Helper]:
         return [helper for helper in self._helpers.values() if helper.ended == "paused"]
 
+    def paused_on_calls(self) -> bool:
+        return any(not helper.on_its_ask() for helper in self.paused())
+
     def running_or_paused(self) -> list[Helper]:
         return [helper for helper in self._helpers.values() if helper.ended in (None, "paused")]
 

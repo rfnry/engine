@@ -2016,10 +2016,11 @@ again as it starts, under its old job id and its name (`survey-1/d1`), never tol
 reads it paused, `Jobs` lists it `ended` `paused` with `started` the moment it was registered, and
 new ids go on after the highest `dN` as before. It runs again — a new run of its agent from its
 stored conversation, `input` `""`, its end told as a new notice — when an answer of the resume
-reaches one of its calls ([Approving tool calls](#approving-tool-calls)), and a helper paused on
-its `Ask` when its lead answers it: `Job(id, send=)` gives the text as its `Ask`'s result, and a
-reply of the lead with no tool call answers it `tools/helpers: your lead ended its turn without
-answering`. Until then the lead goes on beside it, as beside a helper that paused while it ran.
+reaches one of its calls ([Approving tool calls](#approving-tool-calls)), and a helper paused on its
+`Ask` when its lead answers it: `Job(id, send=)` gives the text as that `Ask`'s result, and never a
+later one's, and a reply of the lead with no tool call answers it `tools/helpers: your lead ended
+its turn without answering`. Until then the lead goes on beside it, as beside a helper that paused
+while it ran.
 
 A run with helpers ends when its model replies with no tool call, no helper of its own runs or is
 being recorded, and no notice waits; such a reply first answers with a tool error every `Ask` it was
@@ -3030,16 +3031,17 @@ goes on working: `Job` reads the helper `"running": false` with what it waits fo
 error. It is unfinished work all the same: a reply of the lead with no tool call, while none of its
 helpers runs and one is paused, pauses the lead instead of ending it, and an `Output` then is
 refused (`engine: waiting for an answer: d1; call Output again once they have one`), the lead
-pausing after that batch; refused only for a helper paused on its `Ask`, the lead goes on to answer
-it. The lead's mark lists the helper's calls in `below`, after those of its waiting `Delegate`
-calls, so the top-level `run.paused` lists them too. A lead pauses only once nothing below it runs:
-when its own call waits, or its child paused, it calls no model but first waits for each of its
-helpers still running to end or pause, their notices waiting in its mark's `held`, so a pause never
-throws work away. A helper that calls `Ask` meanwhile, or waits in `Ask` then, pauses on it: its
-mark names that call in `asking`, never in `waiting`, since only its lead can answer it, its notice
-reads `waits for your answer to its question`, and a second question it asks at once reads
-`tools/helpers: your lead ended its turn without answering`. A stop pressed meanwhile wins, as
-everywhere: the lead stops, and its helpers with it.
+pausing after that batch while a helper is still paused on its calls; refused only for a helper
+paused on its `Ask`, or for helpers a later call of the batch stopped, the lead goes on, to answer
+it or to call `Output` again. The lead's mark lists the helper's calls in `below`, after those of
+its waiting `Delegate` calls, so the top-level `run.paused` lists them too. A lead pauses only once
+nothing below it runs: when its own call waits, or its child paused, it calls no model but first
+waits for each of its helpers still running to end or pause, their notices waiting in its mark's
+`held`, so a pause never throws work away. A helper that calls `Ask` meanwhile, or waits in `Ask`
+then, pauses on it: its mark names that call in `asking`, never in `waiting`, since only its lead
+can answer it, its notice reads `waits for your answer to its question`, and a second question it
+asks at once reads `tools/helpers: your lead ended its turn without answering`. A stop pressed
+meanwhile wins, as everywhere: the lead stops, and its helpers with it.
 
 The resume registers each paused helper again under its job id
 ([In the background](#in-the-background)), and walks down to it as to a child: a helper an answer
