@@ -15,7 +15,6 @@ from collections.abc import (
 )
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 from fnmatch import fnmatch
 from functools import partial
 from itertools import count
@@ -27,6 +26,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
+from rfnry_engine.batch import STOPPED, _now, _raise_first, _refusal, unrun
 from rfnry_engine.bundle import build_bundle
 from rfnry_engine.compiled import compile_folder
 from rfnry_engine.conversation import HISTORY, Conversation, ended_calls, live, open_calls
@@ -164,7 +164,6 @@ from rfnry_engine.tree import (
 )
 from rfnry_engine.workers.pool import Script, Workers
 
-STOPPED = "stopped by the user"
 NO_TOOLS = tools_fingerprint([])
 
 VOICE_CANNOT_WAIT = "a voice session cannot wait for an answer"
@@ -488,17 +487,38 @@ def _resumable(spec: AgentSpec, paused: Pause | None, options: _Options) -> None
         )
 
 
-def _raise_first(failures: Sequence[BaseException]) -> None:
-    for error in failures[1:]:
-        logger.error("engine: a further call of the same batch failed: %s", error, exc_info=error)
-    if failures:
-        raise failures[0]
-
-
-def _refusal(name: str, answer: bool | Refused) -> str:
-    said = f"NotApproved: {name} was not approved"
-    reason = answer.reason.strip() if isinstance(answer, Refused) else ""
-    return f"{said}: {reason}" if reason else said
+def _forwarded(
+    options: _Options,
+    target: AgentSpec,
+    questions: Mapping[str, Question],
+    below: Stop,
+    queue: asyncio.Queue[Any],
+    failed: list[Generation | Decision],
+    lead: tuple[Helper, Helpers] | None,
+    key: str | None,
+    waits: str | None,
+    claimed: bool = False,
+) -> _Options:
+    return replace(
+        options,
+        questions=questions,
+        context=options.context if target.context == "inherit" else None,
+        history=[],
+        expect=None,
+        stop=below,
+        inbox=queue,
+        skill=None,
+        start=0,
+        source=None,
+        failed=failed,
+        lead=lead,
+        store=None if key is None else options.store,
+        key=key,
+        claimed=claimed,
+        waits=waits,
+        opened=None,
+        reattached=False,
+    )
 
 
 def _stored(
@@ -679,10 +699,6 @@ def _fresh[M: BaseModel](model: M) -> M:
             if isinstance(value, CONTAINERS)
         }
     )
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
 
 
 def _caller(scope: str) -> CallInfo | None:
@@ -2140,25 +2156,8 @@ class Engine:
             waits: str | None,
             claimed: bool = False,
         ) -> _Options:
-            return replace(
-                options,
-                questions=questions,
-                context=options.context if target.context == "inherit" else None,
-                history=[],
-                expect=None,
-                stop=below,
-                inbox=queue,
-                skill=None,
-                start=0,
-                source=None,
-                failed=failed,
-                lead=lead,
-                store=None if key is None else options.store,
-                key=key,
-                claimed=claimed,
-                waits=waits,
-                opened=None,
-                reattached=False,
+            return _forwarded(
+                options, target, questions, below, queue, failed, lead, key, waits, claimed
             )
 
         below_waits = BELOW_CANNOT_WAIT if options.waits is None else options.waits
@@ -2520,16 +2519,6 @@ class Engine:
             steps.append(step)
             if step.child_run_id in delegated:
                 children.append(delegated.pop(step.child_run_id))
-
-        def unrun(call: ToolCall, why: str) -> Step:
-            return Step(
-                tool=call.name,
-                args=call.args,
-                result=f"NotRun: {call.name} was not run; {why}",
-                is_error=True,
-                at=_now(),
-                duration_ms=0,
-            )
 
         def not_run(call: ToolCall, why: str) -> None:
             answer(call, unrun(call, why))
