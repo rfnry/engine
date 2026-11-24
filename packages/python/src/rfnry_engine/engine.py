@@ -2178,7 +2178,11 @@ class Engine:
         ) -> tuple[Content, bool, str | None, bool]:
             async with starting:
                 try:
-                    permit_background(helpers.cap, [helper.job for helper in helpers.running()])
+                    permit_background(
+                        helpers.cap,
+                        [helper.job for helper in helpers.running()],
+                        [helper.job for helper in helpers.paused()],
+                    )
                     if target.kind == "generation":
                         refuse_builtin(options.tools, ASK_TOOL)
                     questions = _asked(target, args.questions)

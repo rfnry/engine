@@ -826,6 +826,125 @@ async def test_send_to_a_helper_paused_on_its_calls_is_refused(tmp_path: Path) -
     assert lead.paused == lead.children[0].paused
 
 
+CAPPED = (
+    "InputError: tools/delegate: max_background is {cap}, and {held}; "
+    "wait for a helper to end or stop one"
+)
+
+
+class Overlapping:
+    def __init__(self) -> None:
+        self.now = 0
+        self.most = 0
+
+    def tools(self) -> Tools:
+        async def lookup(args: dict[str, Any]) -> str:
+            self.now += 1
+            self.most = max(self.most, self.now)
+            await asyncio.sleep(0.05)
+            self.now -= 1
+            return "found"
+
+        return Tools([Tool("lookup", "Look an order up", body=lookup), Refunds().tools()])
+
+
+def capped(tmp_path: Path, model: Crew, cap: int) -> Engine:
+    folder = crew(
+        tmp_path / "crew",
+        worker={"tools": {"allow": ["lookup"]}},
+        background=True,
+        max_background=cap,
+    )
+    amend(folder, "lead", tools={"allow": ["refund"]})
+    return team(folder, model)
+
+
+def refusal_of(run: Generation, *call_ids: str) -> str:
+    [refused] = [m for m in run.conversation if m.tool_call_id in call_ids and m.is_error]
+    return str(refused.content)
+
+
+async def test_a_paused_helper_keeps_its_max_background_place_through_its_resume(
+    tmp_path: Path,
+) -> None:
+    store, overlapping, ended = MemoryStore(), Overlapping(), asyncio.Event()
+    model = Crew(
+        [
+            background("part one"),
+            ended,
+            background("part two", prefix="e"),
+            text_reply("one at a time"),
+            text_reply("part one goes on"),
+            text_reply("all done"),
+        ],
+        {
+            "part one": [calling(LOOKUP), text_reply("part one done")],
+            "part two": [calling(LOOKUP), text_reply("part two done")],
+        },
+    )
+    engine = capped(tmp_path, model, 1)
+    first = await engine.run(
+        "lead",
+        "acme",
+        "go",
+        store=store,
+        conversation="c1",
+        tools=overlapping.tools(),
+        approve=later_for("lookup"),
+        on_event=ended_below(ended),
+    )
+    assert isinstance(first, Generation)
+    assert refusal_of(first, "e1") == CAPPED.format(cap=1, held="paused until answered: d1")
+    [w] = first.paused
+    assert w.conversation == "c1/d1" and model.calls["part two"] == []
+    again = await engine.run(
+        "lead",
+        "acme",
+        "go on",
+        store=store,
+        conversation="c1",
+        tools=overlapping.tools(),
+        approve=later_for("lookup"),
+        answers={w.id: True for w in first.paused},
+    )
+    assert isinstance(again, Generation)
+    assert again.error is None and again.paused == [] and again.reply == "all done"
+    assert overlapping.most == 1 and notices_of(store, "d1") == ["paused", "finished"]
+
+
+async def test_a_background_delegate_past_the_cap_names_the_helpers_running_and_paused(
+    tmp_path: Path,
+) -> None:
+    store, ended, gate = MemoryStore(), asyncio.Event(), asyncio.Event()
+    model = Crew(
+        [
+            background("part one"),
+            ended,
+            background("part two", "part three", prefix="e"),
+            text_reply("waiting on part two"),
+            text_reply("part one waits"),
+        ],
+        {
+            "part one": [calling(LOOKUP), text_reply("never")],
+            "part two": [gate, text_reply("part two done")],
+            "part three": [text_reply("never")],
+        },
+    )
+    watch = ended_below(ended)
+
+    async def opened(event: Any) -> None:
+        await watch(event)
+        if isinstance(event, ToolResultReady) and event.step.is_error:
+            gate.set()
+
+    lead = await asyncio.wait_for(crew_run(capped(tmp_path, model, 2), store, on_event=opened), 10)
+    held = "running now: d2; paused until answered: d1"
+    assert refusal_of(lead, "e1", "e2") == CAPPED.format(cap=2, held=held)
+    assert model.calls["part three"] == [] and len(model.calls["part two"]) == 1
+    assert [w.conversation for w in lead.paused] == ["c1/d1"]
+    assert notices_of(store, "d2") == ["finished"]
+
+
 class Breaks(Crew):
     def __init__(self, at: int, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)

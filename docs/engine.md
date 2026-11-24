@@ -667,13 +667,15 @@ after `approve`, so a call waiting on a person holds none, and its deadline star
 A call a command makes through the tool bridge takes a slot of `tools.max_parallel`, so a script's
 fan-out stays under the cap, and a `Shell` on a run with a bridge takes none, so a command never
 waits on a slot its own call holds. `orchestration.max_background` caps how many of a run's
-[helpers](#in-the-background) run at once, and `Engine(max_background=)` is its ceiling: the
-smaller holds, and with neither, `None` by default, they are not capped. A background `Delegate`
-past the cap is answered at once with a tool error naming the helpers running (`tools/delegate:
-max_background is 2, and running now: d1, d3; wait for a helper to end or stop one`), never
-queued, and a helper takes no slot of `orchestration.max_parallel`, which counts only the
-`Delegate` calls the run waits on. Every helper of every tenant shares the process's event loop,
-so a service that serves many tenants in one process sets `Engine(max_background=)`.
+[helpers](#in-the-background) run at once, a paused one keeping its place until it ends, so a
+resume, which runs again the paused helpers its answers reach, stays under the cap they paused
+under; `Engine(max_background=)` is its ceiling: the smaller holds, and with neither, `None` by
+default, they are not capped. A background `Delegate` past the cap is answered at once with a tool
+error naming the helpers that hold its places (`tools/delegate: max_background is 2, and running
+now: d3; paused until answered: d1; wait for a helper to end or stop one`, each part only when it
+names one), never queued, and a helper takes no slot of `orchestration.max_parallel`, which counts
+only the `Delegate` calls the run waits on. Every helper of every tenant shares the process's event
+loop, so a service that serves many tenants in one process sets `Engine(max_background=)`.
 
 ### Skills
 
@@ -1458,18 +1460,18 @@ child when it ends, with the runs under it, so a crash keeps the records written
 ([After a crash](#after-a-crash)): a helper, generation or decision, once its run returns or fails
 and before its lead hears its notice, and a synchronous child once it returns or fails, before its
 `Delegate` is answered. While its record is written a helper reads as ended: `Job` and `Jobs` show
-how it ended, a `send` to it is refused, and it holds no `max_background` place and holds back no
-`Output`. It joins its lead's `children` and its lead hears it once the record is written, so both
-follow the order the records were written in, and the lead never ends before: a reply with no tool
-call waits for it as for a notice, and an accepted `Output` waits for it before the run ends. The
-lead is recorded when it ends, as any run is. Every row is written once. A rewritten row would be
-stamped `recorded` again and reach a second `export(since=…)`, so the engine keeps the ids of the
-runs it has recorded since the top run started, and each later record leaves their rows out — a
-helper's, of the helpers it recorded below it, and the lead's, of all of them. A record that fails
-is logged as any recording is ([Refining](#refining)), and its rows go with the record of the run
-above it. A stop never cuts a child's record: the run waits for it, then stops. `record=False`
-records none of them. Without a store nothing changes: the lead's record holds its whole tree,
-written once, when the lead ends.
+how it ended, and one that did not pause is refused a `send`, holds no `max_background` place and
+holds back no `Output`. It joins its lead's `children` and its lead hears it once the record is
+written, so both follow the order the records were written in, and the lead never ends before: a
+reply with no tool call waits for it as for a notice, and an accepted `Output` waits for it before
+the run ends. The lead is recorded when it ends, as any run is. Every row is written once. A
+rewritten row would be stamped `recorded` again and reach a second `export(since=…)`, so the engine
+keeps the ids of the runs it has recorded since the top run started, and each later record leaves
+their rows out — a helper's, of the helpers it recorded below it, and the lead's, of all of them. A
+record that fails is logged as any recording is ([Refining](#refining)), and its rows go with the
+record of the run above it. A stop never cuts a child's record: the run waits for it, then stops.
+`record=False` records none of them. Without a store nothing changes: the lead's record holds its
+whole tree, written once, when the lead ends.
 
 A store call that raises fails the run with that error, and the engine never retries one. A store
 retries what it can, such as a brief database error, before it raises. An `append` whose outcome it
@@ -3024,7 +3026,7 @@ A background helper pauses as a child does, in its own conversation (`c1/d1`), a
 its record joins `children`, and its lead hears it as it hears any end, `[helper d1 · worker · paused]`
 then `waits for an answer to: lookup`, the tools of the calls that wait in it and below it. The lead
 goes on working: `Job` reads the helper `"running": false` with what it waits for under `paused`,
-`Jobs` lists it `ended` `paused`, it holds no `max_background` place, and sending to it is a tool
+`Jobs` lists it `ended` `paused`, it keeps its `max_background` place, and sending to it is a tool
 error. It is unfinished work all the same: a reply of the lead with no tool call, while none of its
 helpers runs and one is paused, pauses the lead instead of ending it, and an `Output` then is
 refused (`engine: waiting for an answer: d1; call Output again once they have one`), the lead

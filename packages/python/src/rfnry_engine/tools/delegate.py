@@ -121,11 +121,16 @@ def permit[A: DelegateArgs](spec: AgentSpec, args: dict[str, Any], shape: type[A
     return parsed
 
 
-def permit_background(cap: int | None, running: Sequence[str]) -> None:
-    if cap is not None and len(running) >= cap:
-        raise InputError(
-            f"tools/delegate: max_background is {cap}, and running now: {', '.join(running)}; wait for a helper to end or stop one"
-        )
+def permit_background(cap: int | None, running: Sequence[str], paused: Sequence[str]) -> None:
+    if cap is None or len(running) + len(paused) < cap:
+        return
+    held = [
+        *([f"running now: {', '.join(running)}"] if running else []),
+        *([f"paused until answered: {', '.join(paused)}"] if paused else []),
+    ]
+    raise InputError(
+        f"tools/delegate: max_background is {cap}, and {'; '.join(held)}; wait for a helper to end or stop one"
+    )
 
 
 def folder_reach(levels_below: int | None) -> int | None:
