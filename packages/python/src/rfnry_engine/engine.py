@@ -62,6 +62,7 @@ from rfnry_engine.helpers import (
     Helpers,
     first_job,
     given_back,
+    held_over,
     lost_notices,
     paused_jobs,
 )
@@ -2062,9 +2063,10 @@ class Engine:
         if options.skill is not None:
             opening = _invoked(spec.skills[options.skill], opening)
         follows = [] if options.reattached else [Message(role="user", content=opening)]
+        carried = [] if resuming is not None else [_handed(message) for message in held_over(given)]
         messages.extend([*history, *repairs])
         if resuming is None:
-            messages.extend([*losses, *follows])
+            messages.extend([*carried, *losses, *follows])
         begun = 0 if conversation is None else len(history) + len(repairs)
         if resuming is not None and conversation is not None:
             begun = next(
@@ -2788,6 +2790,7 @@ class Engine:
         started_call = CALL.get()
 
         said_end = False
+        called_model = False
 
         async def announce(record: Generation) -> None:
             nonlocal said_end
@@ -2954,7 +2957,7 @@ class Engine:
                 return await finished(replied)
             if resuming is None:
                 await go_on(options.answers)
-                await took(0, losses, [])
+                await took(0, [*carried, *losses], [])
             else:
                 left, moved = await resume(resuming, options.answers, stop)
                 heard = [*(_handed(message) for message in resuming.held), *losses]
@@ -2977,6 +2980,7 @@ class Engine:
                 await save()
                 await windowed()
                 streamed.clear()
+                called_model = True
                 asking = asyncio.ensure_future(ask())
                 if await wait([asking], stop):
                     partial = "".join(streamed)
@@ -3128,7 +3132,7 @@ class Engine:
                         call_id,
                         exc_info=True,
                     )
-            await helpers.settle("now", stop)
+            await helpers.settle("now", stop, paused_too=called_model)
             messages.extend(helpers.take())
             children.extend(sorted(delegated.values(), key=lambda run: (run.at, run.run_id)))
             try:

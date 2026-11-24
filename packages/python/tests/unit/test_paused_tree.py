@@ -18,6 +18,7 @@ from rfnry_engine.records import (
     Generation,
     Run,
     RunEnded,
+    RunStarted,
     ToolCallStarted,
     ToolResultReady,
 )
@@ -1516,3 +1517,168 @@ async def test_a_reattached_helper_holds_its_conversation_while_it_runs(tmp_path
     gate.set()
     again = await asyncio.wait_for(running, 5)
     assert again.error is None and notices_of(store, "d1")[-1] == "finished"
+
+
+def cut_after_its_fresh_mark(store: MemoryStore) -> Message:
+    mark = mark_of(store.held[KEY])
+    cut = mark.model_copy(update={"waiting": [], "below": [], "run_id": "cut-off"})
+    store.held[KEY].append(Message(role="assistant", content="[paused]", pause=cut))
+    [held] = [m for m in mark.held if m.notice is not None]
+    return held
+
+
+async def test_a_cut_resume_keeps_a_helper_whose_paused_notice_its_mark_held(
+    tmp_path: Path,
+) -> None:
+    store, looked = MemoryStore(), Looked()
+    both = later_for("lookup", "refund")
+    model = Crew(
+        [beside_its_own("part one"), text_reply("heard"), text_reply("still waits")],
+        {"part one": [calling(LOOKUP), text_reply("never")]},
+    )
+    engine = helped(tmp_path, model)
+    first = await team_run(engine, store, looked, approve=both)
+    own, lookup = first.paused
+    assert (own.call.name, lookup.call.name) == ("refund", "lookup")
+    assert kinds(mark_of(store.held[KEY]).held) == ["paused"]
+    held = cut_after_its_fresh_mark(store)
+    again = await team_run(engine, store, looked, "the process restarted; carry on", approve=both)
+    assert held.notice is not None
+    told = [m for m in store.held[KEY] if m.notice and m.notice.run_id == held.notice.run_id]
+    assert told == [held]
+    assert notices_of(store, "d1") == ["paused", "paused"]
+    assert not again.resumed and again.paused == [lookup]
+    assert mark_of(store.held[HELPER_KEY]).waiting == [lookup]
+    assert len(model.calls["part one"]) == 1 and looked.times == 0
+
+
+async def test_an_inert_marks_held_outcome_is_appended_once_and_not_lost(tmp_path: Path) -> None:
+    store, gate = MemoryStore(), asyncio.Event()
+    model = Crew(
+        [beside_its_own("part one"), text_reply("done")],
+        {"part one": [gate, text_reply("part done")]},
+    )
+    engine = helped(tmp_path, model)
+    running = asyncio.create_task(crew_run(engine, store, approve=later_for("refund")))
+    await until(lambda: batch_stored(store), "the lead's batch was stored")
+    gate.set()
+    await asyncio.wait_for(running, 5)
+    held = cut_after_its_fresh_mark(store)
+    assert held.notice is not None and held.notice.kind == "finished"
+    again = await team_run(engine, store, Looked(), "carry on")
+    assert again.error is None and again.reply == "done" and again.paused == []
+    assert notices_of(store, "d1") == ["finished"]
+    assert [m for m in store.held[KEY] if m.notice is not None] == [held]
+    assert held.content in [m.content for m in model.calls["lead"][-1]]
+
+
+def split(tmp_path: Path, *lead: Reply) -> tuple[Engine, Crew]:
+    calls = [
+        ToolCall(
+            id="b1",
+            name="Delegate",
+            args={"agent": "desk", "input": "refund later", "background": True},
+        ),
+        ToolCall(id="s1", name="Delegate", args={"agent": "desk", "input": "refund it"}),
+    ]
+    model = Crew(
+        [Reply(tool_calls=calls, stop_reason="tool_use"), *lead],
+        {
+            "refund later": [calling(REFUND), text_reply("later done")],
+            "refund it": [calling(SECOND), text_reply("it done")],
+        },
+    )
+    return engine_of(tmp_path, model, background=True), model
+
+
+async def paused_split(
+    tmp_path: Path, store: MemoryStore, refunds: Refunds, *lead: Reply
+) -> tuple[Engine, Generation, dict[tuple[str, str], list[Message]]]:
+    engine, _ = split(tmp_path, *lead)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"))
+    assert [w.conversation for w in first.paused][1] == "c1/d1"
+    assert live(store.held[KEY]) is not None
+    return engine, first, {key: list(held) for key, held in store.held.items()}
+
+
+def nothing_stopped(store: MemoryStore) -> bool:
+    return not any(
+        m.content == "stopped by the user" or (m.notice and m.notice.kind == "stopped")
+        for held in store.held.values()
+        for m in held
+    )
+
+
+async def retried(
+    engine: Engine, store: MemoryStore, refunds: Refunds, first: Generation
+) -> Generation:
+    again = await lead_run(
+        engine, store, refunds, "go on", answers={w.id: True for w in first.paused}
+    )
+    assert again.error is None and again.paused == [] and again.reply == "all done"
+    assert sorted(done["amount"] for done in refunds.done) == [5, 10]
+    assert notices_of(store, "d1")[-1] == "finished"
+    return again
+
+
+async def test_a_resume_whose_run_started_handler_raises_leaves_the_tree_paused(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    engine, first, before = await paused_split(
+        tmp_path, store, refunds, text_reply("going"), text_reply("all done")
+    )
+
+    async def breaks(event: Any) -> None:
+        if isinstance(event, RunStarted) and event.call is None:
+            raise RuntimeError("the handler broke")
+
+    with pytest.raises(RuntimeError, match="the handler broke"):
+        await lead_run(
+            engine,
+            store,
+            refunds,
+            "go on",
+            answers={w.id: True for w in first.paused},
+            on_event=breaks,
+        )
+    assert store.held == before and nothing_stopped(store) and refunds.done == []
+    await retried(engine, store, refunds, first)
+
+
+async def test_a_resume_whose_store_fails_to_append_leaves_the_tree_paused(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    engine, first, before = await paused_split(
+        tmp_path, store, refunds, text_reply("going"), text_reply("all done")
+    )
+    store.fail["append"] = OSError("the store is down")
+    with pytest.raises(OSError, match="the store is down"):
+        await lead_run(engine, store, refunds, "go on", answers={w.id: True for w in first.paused})
+    assert store.held == before and nothing_stopped(store) and refunds.done == []
+    await retried(engine, store, refunds, first)
+
+
+async def test_a_resume_whose_window_fails_leaves_its_unreached_helper_paused(
+    tmp_path: Path,
+) -> None:
+    broken = False
+
+    def windows(conversation: str, length: int) -> int:
+        return -1 if broken and conversation == "c1" else 0
+
+    store, refunds = MemoryStore(windows), Refunds()
+    engine, first, before = await paused_split(tmp_path, store, refunds, text_reply("d1 waits"))
+    sync, background_call = first.paused
+    broken = True
+    with pytest.raises(InputError, match="the store's window for conversation 'c1'"):
+        await lead_run(engine, store, refunds, "go on", answers={sync.id: True})
+    assert store.held[HELPER_KEY] == before[HELPER_KEY] and nothing_stopped(store)
+    assert refunds.done == [{"amount": 5}] and notices_of(store, "d1") == ["paused"]
+    broken = False
+    with pytest.raises(InputError, match=re.escape(NO_WAITING.format(id=sync.id))):
+        await lead_run(engine, store, refunds, "go on", answers={sync.id: True})
+    again = await lead_run(engine, store, refunds, "carry on")
+    assert again.error is None and again.paused == [background_call]
+    assert store.held[HELPER_KEY] == before[HELPER_KEY]

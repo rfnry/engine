@@ -2918,11 +2918,13 @@ results and a fresh mark of what still waits before it runs an approved call or 
 call runs at most once: a resume cut off while the call runs leaves it `Ended: refund did not
 return; …`, as a crash leaves any call, and an answer sent again for it is refused as answering no
 waiting call. A mark is a pause only while it names a call still open, so the fresh mark such a
-resume leaves, with nothing open, is inert and the run after it is a plain run. Without a store, at
-most once is yours: keep the resumed run's `conversation`, or append its `added` to what you kept,
-and never resume one paused conversation twice. A router given its paused conversation runs the
-agent its mark names, when its route reaches that agent, without asking its decision model again,
-and returns that agent's `Generation`.
+resume leaves, with nothing open, is inert and the run after it is a plain run, which appends the
+notices that mark held after its `Ended:` results and before its `input`, so a helper whose notice
+it held is neither lost nor told twice. Without a store, at most once is yours: keep the resumed
+run's `conversation`, or append its `added` to what you kept, and never resume one paused
+conversation twice. A router given its paused conversation runs the agent its mark names, when its
+route reaches that agent, without asking its decision model again, and returns that agent's
+`Generation`.
 
 With a store, the pause travels up the tree. A synchronous `Delegate`'s child pauses as a top-level
 run does, in its own conversation (`c1/<run_id>`); its lead's `Delegate` then waits on it, with no
@@ -2986,7 +2988,12 @@ lead that ends without pausing — stopped, failed or past `max_model_calls` —
 helpers so, and each paused child of a `Delegate` its conversation no longer waits on, so no call is
 left waiting in the store with nothing that will answer it; a resume that a stop reaches while a
 call is still open answers it the same way, and a child it would go on with, the stop pressed before
-the child starts again, is ended the same way rather than left paused.
+the child starts again, is ended the same way rather than left paused. A resume that fails before
+its first model call — a `RunStarted` handler that raises, a store that fails as it stores the fresh
+mark, a window it cannot use — ends only the helpers it had set running again, and leaves every
+other paused helper and child as stored, so the same resume can run again once the cause is fixed;
+what it stored before it failed stays stored, so an answer it had already stored is refused as
+answering no waiting call.
 
 ### Refining
 

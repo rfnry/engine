@@ -126,11 +126,15 @@ def _body(message: Message) -> str:
     return message.content.partition("\n")[2] if isinstance(message.content, str) else ""
 
 
+def held_over(history: Sequence[Message]) -> list[Message]:
+    last = history[-1].pause if history else None
+    return [] if last is None else last.held
+
+
 def _told(history: Sequence[Message]) -> list[tuple[Notice, str]]:
-    paused = live(history)
     return [
         (message.notice, _body(message))
-        for message in [*history, *([] if paused is None else paused.held)]
+        for message in [*history, *held_over(history)]
         if message.notice is not None
     ]
 
@@ -560,7 +564,7 @@ class Helpers:
             return []
         return [first]
 
-    async def settle(self, mode: Stopped, stop: Stop) -> None:
+    async def settle(self, mode: Stopped, stop: Stop, paused_too: bool = True) -> None:
         self._settling = True
         for helper in self.running():
             for asking in helper.pending():
@@ -577,7 +581,7 @@ class Helpers:
                 helper.stop.now()
             cut_through(helper.stop)
         while True:
-            for helper in self.paused():
+            for helper in self.paused() if paused_too else []:
                 if helper.task.done():
                     helper.again(helper, True)
             if not (running := self._unfinished()):
