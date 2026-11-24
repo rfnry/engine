@@ -14,6 +14,7 @@ from collections.abc import (
 )
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from fnmatch import fnmatch
 from functools import partial
 from pathlib import Path
@@ -1488,6 +1489,461 @@ class _Children:
         self.children.extend(sorted(self.delegated.values(), key=lambda run: (run.at, run.run_id)))
 
 
+class _Turns:
+    def __init__(
+        self,
+        spec: AgentSpec,
+        scope: str,
+        input: State,
+        options: _Options,
+        parent_run_id: str | None,
+        run_id: str,
+        caller: CallInfo | None,
+        started: float,
+        at: datetime,
+        adapter: GenerationModel,
+        system: str,
+        specs: list[ToolSpec],
+        preload: list[Message],
+        fingerprint: Fingerprint,
+        streaming: bool,
+        most_calls: int,
+        expect: type[BaseModel] | None,
+        stop: Stop,
+        inbox: asyncio.Queue[Any],
+        resuming: Pause | None,
+        made: list[ToolCall],
+        carried: list[Message],
+        losses: list[Message],
+        follows: list[Message],
+        steps: list[Step],
+        transcript: Transcript,
+        offspring: _Children,
+        tool_calls: _ToolCalls,
+        batch: Batch,
+        pausing: Pausing,
+        started_call: CallInfo | None,
+        model: str | None,
+        settings: dict[str, JsonValue] | None,
+    ) -> None:
+        self.spec = spec
+        self.scope = scope
+        self.input = input
+        self.options = options
+        self.parent_run_id = parent_run_id
+        self.run_id = run_id
+        self.caller = caller
+        self.started = started
+        self.at = at
+        self.adapter = adapter
+        self.system = system
+        self.specs = specs
+        self.preload = preload
+        self.fingerprint = fingerprint
+        self.streaming = streaming
+        self.most_calls = most_calls
+        self.expect = expect
+        self.stop = stop
+        self.inbox = inbox
+        self.resuming = resuming
+        self.made = made
+        self.carried = carried
+        self.losses = losses
+        self.follows = follows
+        self.steps = steps
+        self.transcript = transcript
+        self.offspring = offspring
+        self.tool_calls = tool_calls
+        self.batch = batch
+        self.pausing = pausing
+        self.started_call = started_call
+        self.model = model
+        self.settings = settings
+        self.turn = 0
+        self.said = ""
+        self.usage = Usage()
+        self.calls = 0
+        self.ended: StopReason | None = None
+        self.streamed: list[str] = []
+        self.woken: list[Any] = []
+        self.unheard: list[Message] = []
+        self.said_end = False
+        self.called_model = False
+
+    async def delta(self, text: str, *, reasoning: bool = False) -> None:
+        if reasoning:
+            await self.tool_calls.emit(
+                ReasoningDelta(run_id=self.run_id, agent=self.spec.name, turn=self.turn, text=text)
+            )
+            return
+        self.streamed.append(text)
+        await self.tool_calls.emit(
+            TextDelta(run_id=self.run_id, agent=self.spec.name, turn=self.turn, text=text)
+        )
+
+    def drain(self, whole: bool = True) -> tuple[list[Message], list[Message]]:
+        helpers = self.offspring.helpers
+        if helpers.fatal is not None:
+            raise helpers.fatal
+        notices = helpers.take()
+        self.transcript.messages.extend(notices)
+        taken: list[Message] = []
+        while self.woken or (whole and not self.inbox.empty()):
+            item = self.woken.pop(0) if self.woken else self.inbox.get_nowait()
+            taken.append(Message(role="user", content=_own(_content(item))))
+            self.inbox.task_done()
+        self.transcript.messages.extend(taken)
+        return notices, taken
+
+    async def took(self, turn: int, notices: list[Message], taken: list[Message]) -> bool:
+        if not notices and not taken:
+            return False
+        await self.tool_calls.emit(
+            MessagesTaken(
+                run_id=self.run_id,
+                agent=self.spec.name,
+                turn=turn,
+                messages=[_handed(message) for message in taken],
+                notices=[_handed(message) for message in notices],
+            )
+        )
+        return True
+
+    async def windowed(self) -> None:
+        at = await self.transcript.position()
+        if at is not None:
+            _paired(
+                self.transcript.messages[at:],
+                at,
+                f"the window of conversation {self.transcript.key!r}",
+            )
+        await self.transcript.windowed(at)
+
+    async def ask(self) -> Reply:
+        sending = self.transcript.sending(self.preload)
+        offered = [_fresh(tool) for tool in self.specs]
+        if self.streaming:
+            return as_reply(
+                await cast(StreamingGenerationModel, self.adapter).generate_stream(
+                    self.system, sending, offered, self.delta
+                )
+            )
+        return as_reply(await self.adapter.generate(self.system, sending, offered))
+
+    def finish(
+        self,
+        reply_text: str,
+        stopped: Stopped | None = None,
+        error: Exception | None = None,
+        paused: Sequence[Waiting] = (),
+    ) -> Generation:
+        begun, sent, whole = self.transcript.for_record()
+        return Generation(
+            run_id=self.run_id,
+            parent_run_id=self.parent_run_id,
+            call=self.caller,
+            agent=self.spec.name,
+            scope=self.scope,
+            tags=dict(self.options.tags),
+            mode=self.spec.mode,
+            skill=self.options.skill,
+            context=self.options.context,
+            at=self.at,
+            duration_ms=int((time.monotonic() - self.started) * 1000),
+            model=self.model,
+            settings=self.settings,
+            fingerprint=self.fingerprint,
+            input=self.input,
+            system=self.system,
+            preload=[part.model_copy() for part in self.spec.preload],
+            start=self.options.start + begun,
+            messages=sent,
+            conversation=whole,
+            tools=self.specs,
+            steps=self.steps,
+            calls=self.calls,
+            reply=reply_text,
+            usage=self.usage,
+            children=self.offspring.children,
+            stopped=stopped,
+            stop_reason=self.ended,
+            error=None if error is None else error_text(error),
+            paused=[_waited(waiting) for waiting in paused],
+            resumed=self.resuming is not None,
+        )
+
+    async def announce(self, record: Generation) -> None:
+        if self.said_end:
+            return
+        self.said_end = True
+        await self.tool_calls.emit(
+            RunEnded(
+                run_id=self.run_id,
+                agent=self.spec.name,
+                call=self.started_call,
+                stopped=record.stopped,
+                error=record.error,
+                paused=[_waited(waiting) for waiting in record.paused],
+            )
+        )
+
+    async def finished(
+        self, reply_text: str, stopped: Stopped | None = None, paused: Sequence[Waiting] = ()
+    ) -> Generation:
+        await self.transcript.save()
+        record = self.finish(reply_text, stopped, paused=paused)
+        await self.announce(record)
+        return record
+
+    async def pause(self, heard: Sequence[Message] = ()) -> Generation:
+        mark = await self.pausing.pause(heard)
+        return await self.finished(self.said, paused=[*mark.waiting, *mark.below])
+
+    async def quietly(self, turn: int) -> Generation:
+        await self.offspring.helpers.until_quiet(self.stop)
+        mode = requested(self.stop)
+        if mode is not None:
+            return await self.halt(turn, self.said, mode)
+        return await self.pause()
+
+    async def halt(self, turn: int, reply_text: str, mode: Stopped) -> Generation:
+        helpers = self.offspring.helpers
+        if helpers.fatal is not None:
+            raise helpers.fatal
+        await self.pausing.let_go()
+        await helpers.settle(mode, self.stop)
+        mode = requested(self.stop) or mode
+        await self.took(turn, *self.drain(whole=False))
+        return await self.finished(reply_text, mode)
+
+    async def go(self) -> Generation:
+        helpers = self.offspring.helpers
+        try:
+            await self.tool_calls.emit(
+                RunStarted(
+                    run_id=self.run_id,
+                    agent=self.spec.name,
+                    call=self.started_call,
+                    input=_given(self.input),
+                    tools=[_fresh(tool) for tool in self.specs],
+                    resumes=None if self.resuming is None else self.resuming.run_id,
+                )
+            )
+            if self.resuming is None:
+                await self.offspring.go_on(self.options.answers)
+                await self.took(0, [*self.carried, *self.losses], [])
+            else:
+                self.unheard = [_handed(message) for message in self.resuming.held]
+                moved = await self.pausing.resume(self.resuming, self.options.answers, self.stop)
+                heard = [*self.unheard, *self.losses]
+                idle = not moved and helpers.paused_on_calls()
+                if open_calls(self.pausing.still_open()) or idle:
+                    await helpers.until_quiet(self.stop)
+                    if requested(self.stop) is None:
+                        return await self.pause([*heard, *self.follows])
+                    await self.pausing.let_go()
+                self.transcript.messages.extend([*heard, *self.follows])
+                self.unheard = []
+                self.transcript.forget_mark()
+                await self.took(0, heard, [])
+            if self.options.lead is not None:
+                self.options.lead[0].told = None
+            replied = _replied(self.transcript.messages) if self.options.reattached else None
+            if replied is not None:
+                self.said = replied
+                await helpers.fail_given_asks()
+                if not (helpers.running() or helpers.waiting()):
+                    if helpers.paused():
+                        return await self.quietly(0)
+                    return await self.finished(
+                        replied, "now" if requested(self.stop) == "now" else None
+                    )
+                self.woken.extend(await helpers.wake(self.inbox, self.stop))
+            for turn in range(self.most_calls):
+                self.turn = turn
+                mode = requested(self.stop)
+                if mode is not None:
+                    return await self.halt(turn, self.said, mode)
+                if (turn or replied is not None) and await self.took(turn, *self.drain()):
+                    mode = requested(self.stop)
+                    if mode is not None:
+                        return await self.halt(turn, self.said, mode)
+                await self.transcript.save()
+                await self.windowed()
+                self.streamed.clear()
+                self.called_model = True
+                asking = asyncio.ensure_future(self.ask())
+                if await wait([asking], self.stop):
+                    partial = "".join(self.streamed)
+                    if partial:
+                        self.transcript.messages.append(Message(role="assistant", content=partial))
+                    return await self.halt(turn + 1, partial or self.said, "now")
+                reply = asking.result()
+                self.ended = reply.stop_reason
+                self.said = reply.text
+                self.calls += 1
+                if reply.usage is not None:
+                    self.usage = self.usage + reply.usage
+                if reply.model:
+                    self.model = reply.model
+                self.settings = (
+                    reply.settings if reply.settings is not None else _settings(self.adapter)
+                )
+                prefix = await self.transcript.stamp() if reply.reasoning is not None else None
+                assistant = _assistant(
+                    reply, prefix, _declared(self.adapter), _settings(self.adapter)
+                )
+                self.transcript.messages.append(assistant)
+                self.batch.asked = list(assistant.tool_calls)
+                self.tool_calls.ran.clear()
+                reported = ReplyReady(
+                    run_id=self.run_id,
+                    agent=self.spec.name,
+                    turn=turn,
+                    model=assistant.model,
+                    usage=reply.usage,
+                    settings=assistant.settings,
+                    stop_reason=reply.stop_reason,
+                )
+                try:
+                    await self.transcript.save()
+                except Exception:
+                    with suppress(Exception):
+                        await self.tool_calls.emit(reported)
+                    raise
+                await self.tool_calls.emit(reported)
+                if not self.streaming and reply.text:
+                    await self.delta(reply.text)
+                if reply.stop_reason != "tool_use" or not self.batch.asked:
+                    for call in self.batch.asked:
+                        self.batch.not_run(call, f"the reply ended with {reply.stop_reason}")
+                    await helpers.fail_given_asks()
+                    if helpers.running() or helpers.waiting():
+                        if turn + 1 == self.most_calls:
+                            break
+                        self.woken.extend(await helpers.wake(self.inbox, self.stop))
+                        continue
+                    if helpers.paused():
+                        return await self.quietly(turn + 1)
+                    return await self.finished(
+                        reply.text, "now" if requested(self.stop) == "now" else None
+                    )
+                rest = list(self.batch.asked)
+                held_up = False
+                while rest:
+                    at_output = next(
+                        (
+                            n
+                            for n, c in enumerate(rest)
+                            if self.expect is not None and c.name == OUTPUT_TOOL
+                        ),
+                        len(rest),
+                    )
+                    pressed = await self.batch.run(rest[:at_output], self.stop)
+                    rest = rest[at_output:]
+                    if not rest or self.expect is None:
+                        break
+                    if pressed:
+                        await self.batch.answer_all(rest, [None] * len(rest), time.monotonic())
+                        return await self.halt(turn + 1, self.said, "now")
+                    output, rest = rest[0], rest[1:]
+                    if self.batch.waits() or helpers.paused():
+                        names = ", ".join(
+                            [*self.batch.held_names(), *(helper.job for helper in helpers.paused())]
+                        )
+                        self.batch.refuse(
+                            output,
+                            f"engine: waiting for an answer: {names}; call {OUTPUT_TOOL} again once they have one",
+                        )
+                        held_up = held_up or helpers.paused_on_calls()
+                        continue
+                    running = [helper.job for helper in helpers.running()]
+                    if running:
+                        self.batch.refuse(
+                            output,
+                            f"engine: still running: {', '.join(running)}; stop them or wait for them, then call {OUTPUT_TOOL} again",
+                        )
+                        continue
+                    try:
+                        parsed = self.expect.model_validate(_copied(output.args))
+                    except ValidationError as exc:
+                        self.batch.refuse(
+                            output,
+                            f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}",
+                        )
+                        continue
+                    self.batch.accept(output)
+                    for call in rest:
+                        self.batch.not_run(call, f"{OUTPUT_TOOL} ended the run")
+                    await helpers.settled()
+                    await self.took(turn + 1, *self.drain(whole=False))
+                    return await self.finished(parsed.model_dump_json())
+                if self.batch.waits() or (held_up and helpers.paused_on_calls()):
+                    return await self.quietly(turn + 1)
+            mode = requested(self.stop)
+            if mode is not None:
+                return await self.halt(self.most_calls, self.said, mode)
+            if helpers.fatal is not None:
+                raise helpers.fatal
+            raise RunawayError(f"engine: run exceeded {self.most_calls} model calls")
+        except Exception as exc:
+            await self.failed(exc)
+            raise
+        finally:
+            try:
+                given_back(self.inbox, self.woken)
+            finally:
+                await helpers.cancel()
+
+    async def failed(self, exc: Exception) -> None:
+        self.batch.keep_built()
+        kept = (
+            self.transcript.open_mark
+            if self.transcript.conversation is not None
+            and self.parent_run_id is None
+            and not self.called_model
+            else None
+        )
+        if kept is None:
+            self.batch.unwait(lambda call, step: unrun(call, "the run failed"))
+        if self.parent_run_id is not None:
+            left_open = open_calls(live(self.transcript.messages))
+            for call in [_call(call) for call in self.made if call.id in left_open]:
+                self.batch.not_run(call, "the run failed")
+        kept_open = open_calls(
+            live(self.transcript.messages) if kept is None else self.pausing.still_open()
+        )
+        if self.transcript.conversation is not None and self.transcript.conversation.failed is None:
+            self.transcript.messages.extend(ended_calls(self.transcript.messages, kept_open))
+        if self.parent_run_id is not None:
+            kept_open = frozenset()
+        await self.offspring.stop_parked(kept_open)
+        await self.offspring.helpers.settle(
+            "now", self.stop, paused_too=self.called_model or self.parent_run_id is not None
+        )
+        taken = self.offspring.helpers.take()
+        if kept is None:
+            if self.unheard and (taken or self.transcript.messages[-1].pause is None):
+                self.transcript.messages.extend(self.unheard)
+            self.transcript.messages.extend(taken)
+        elif taken or self.transcript.past_mark():
+            again = self.pausing.still_open([*(_handed(message) for message in kept.held), *taken])
+            self.transcript.close(again)
+        self.offspring.adopt_all()
+        try:
+            await self.transcript.save()
+        except Exception as error:
+            if (
+                self.transcript.conversation is None
+                or self.transcript.conversation.failed is not error
+            ):
+                raise
+            logger.error("engine: the store failed while run %s ended", self.run_id, exc_info=True)
+        failure = self.finish("", error=exc)
+        self.options.failed.append(failure)
+        await self.announce(failure)
+
+
 def check_folder(
     root: Path, max_worker_processes: int = MAX_WORKER_PROCESSES
 ) -> dict[str, AgentInfo]:
@@ -2330,7 +2786,6 @@ class Engine:
         )
         listed = next((message.pause for message in reversed(given) if message.pause), None)
         transcript = Transcript(conversation)
-        messages = transcript.messages
         surface = RunTools(
             self,
             source=None
@@ -2351,7 +2806,6 @@ class Engine:
         room = options.workspace if spec.workspace else None
         children = _Children(self, spec, scope, run_id, options, stop, transcript, given)
         helpers = children.helpers
-        go_on = children.go_on
         deadline = smallest(spec.tool_timeout, self.tool_timeout)
         helping = spec.background and JOB_TOOL in spec.granted
         asks = frozenset() if options.lead is None else frozenset({ASK_TOOL})
@@ -2421,26 +2875,12 @@ class Engine:
         carried = [] if resuming is not None else [_handed(message) for message in held_over(given)]
         transcript.start(history, repairs, [*carried, *losses, *follows], resuming, head, chained)
         steps: list[Step] = []
-        woken: list[Any] = []
         tool_slots = _slots(spec.tool_parallel)
         shell_slots = _slots(None) if bridging else tool_slots
-        usage = Usage()
-        calls = 0
         model = _declared(model_)
         settings = _settings(model_)
         streaming = on_event is not None and hasattr(model_, "generate_stream")
-        streamed: list[str] = []
-        said = ""
-        ended: StopReason | None = None
         most_calls = _lowered(spec.max_model_calls, self.max_model_calls)
-
-        async def delta(text: str, *, reasoning: bool = False) -> None:
-            if reasoning:
-                await emit(ReasoningDelta(run_id=run_id, agent=spec.name, turn=turn, text=text))
-                return
-            streamed.append(text)
-            await emit(TextDelta(run_id=run_id, agent=spec.name, turn=turn, text=text))
-
         bridge = Bridge(run_id, spec.name, stop, on_event, variables, bridging, reachable, steps)
         tool_calls = _ToolCalls(
             spec=spec,
@@ -2463,8 +2903,6 @@ class Engine:
         )
         children.called = tool_calls.called
         bridge.calls = tool_calls
-        emit = tool_calls.emit
-        ran = tool_calls.ran
         batch = Batch(tool_calls, transcript, steps, children.adopt)
         pausing = Pausing(
             agent=spec.name,
@@ -2476,349 +2914,41 @@ class Engine:
             repaired=bool(repairs),
             lead=options.lead,
         )
-        still_open, resume, let_go = pausing.still_open, pausing.resume, pausing.let_go
-        save = transcript.save
-
-        def drain(whole: bool = True) -> tuple[list[Message], list[Message]]:
-            if helpers.fatal is not None:
-                raise helpers.fatal
-            notices = helpers.take()
-            messages.extend(notices)
-            taken: list[Message] = []
-            while woken or (whole and not inbox.empty()):
-                item = woken.pop(0) if woken else inbox.get_nowait()
-                taken.append(Message(role="user", content=_own(_content(item))))
-                inbox.task_done()
-            messages.extend(taken)
-            return notices, taken
-
-        async def took(turn: int, notices: list[Message], taken: list[Message]) -> bool:
-            if not notices and not taken:
-                return False
-            await emit(
-                MessagesTaken(
-                    run_id=run_id,
-                    agent=spec.name,
-                    turn=turn,
-                    messages=[_handed(message) for message in taken],
-                    notices=[_handed(message) for message in notices],
-                )
-            )
-            return True
-
-        async def windowed() -> None:
-            at = await transcript.position()
-            if at is not None:
-                _paired(
-                    transcript.messages[at:],
-                    at,
-                    f"the window of conversation {transcript.key!r}",
-                )
-            await transcript.windowed(at)
-
-        async def ask() -> Reply:
-            sending = transcript.sending(preload)
-            offered = [_fresh(tool) for tool in specs]
-            if streaming:
-                return as_reply(
-                    await cast(StreamingGenerationModel, model_).generate_stream(
-                        system, sending, offered, delta
-                    )
-                )
-            return as_reply(await model_.generate(system, sending, offered))
-
-        def finish(
-            reply_text: str,
-            stopped: Stopped | None = None,
-            error: Exception | None = None,
-            paused: Sequence[Waiting] = (),
-        ) -> Generation:
-            begun, sent, whole = transcript.for_record()
-            return Generation(
-                run_id=run_id,
-                parent_run_id=parent_run_id,
-                call=caller,
-                agent=spec.name,
-                scope=scope,
-                tags=dict(options.tags),
-                mode=spec.mode,
-                skill=options.skill,
-                context=options.context,
-                at=at,
-                duration_ms=int((time.monotonic() - started) * 1000),
-                model=model,
-                settings=settings,
-                fingerprint=fingerprint,
-                input=input,
-                system=system,
-                preload=[part.model_copy() for part in spec.preload],
-                start=options.start + begun,
-                messages=sent,
-                conversation=whole,
-                tools=specs,
-                steps=steps,
-                calls=calls,
-                reply=reply_text,
-                usage=usage,
-                children=children.children,
-                stopped=stopped,
-                stop_reason=ended,
-                error=None if error is None else error_text(error),
-                paused=[_waited(waiting) for waiting in paused],
-                resumed=resuming is not None,
-            )
-
         started_call = CALL.get()
-
-        said_end = False
-        called_model = False
-
-        async def announce(record: Generation) -> None:
-            nonlocal said_end
-            if said_end:
-                return
-            said_end = True
-            await emit(
-                RunEnded(
-                    run_id=run_id,
-                    agent=spec.name,
-                    call=started_call,
-                    stopped=record.stopped,
-                    error=record.error,
-                    paused=[_waited(waiting) for waiting in record.paused],
-                )
-            )
-
-        async def finished(
-            reply_text: str, stopped: Stopped | None = None, paused: Sequence[Waiting] = ()
-        ) -> Generation:
-            await save()
-            record = finish(reply_text, stopped, paused=paused)
-            await announce(record)
-            return record
-
-        async def quietly(turn: int) -> Generation:
-            await helpers.until_quiet(stop)
-            mode = requested(stop)
-            if mode is not None:
-                return await halt(turn, said, mode)
-            mark = await pausing.pause()
-            return await finished(said, paused=[*mark.waiting, *mark.below])
-
-        async def halt(turn: int, reply_text: str, mode: Stopped) -> Generation:
-            if helpers.fatal is not None:
-                raise helpers.fatal
-            await let_go()
-            await helpers.settle(mode, stop)
-            mode = requested(stop) or mode
-            await took(turn, *drain(whole=False))
-            return await finished(reply_text, mode)
-
         children.park(made, resuming)
-        unheard: list[Message] = []
         children.restore(restorable, listed)
-
-        try:
-            await emit(
-                RunStarted(
-                    run_id=run_id,
-                    agent=spec.name,
-                    call=started_call,
-                    input=_given(input),
-                    tools=[_fresh(tool) for tool in specs],
-                    resumes=None if resuming is None else resuming.run_id,
-                )
-            )
-            if resuming is None:
-                await go_on(options.answers)
-                await took(0, [*carried, *losses], [])
-            else:
-                unheard = [_handed(message) for message in resuming.held]
-                moved = await resume(resuming, options.answers, stop)
-                heard = [*unheard, *losses]
-                idle = not moved and helpers.paused_on_calls()
-                if open_calls(still_open()) or idle:
-                    await helpers.until_quiet(stop)
-                    if requested(stop) is None:
-                        mark = await pausing.pause([*heard, *follows])
-                        return await finished(said, paused=[*mark.waiting, *mark.below])
-                    await let_go()
-                messages.extend([*heard, *follows])
-                unheard = []
-                transcript.forget_mark()
-                await took(0, heard, [])
-            if options.lead is not None:
-                options.lead[0].told = None
-            replied = _replied(messages) if options.reattached else None
-            if replied is not None:
-                said = replied
-                await helpers.fail_given_asks()
-                if not (helpers.running() or helpers.waiting()):
-                    if helpers.paused():
-                        return await quietly(0)
-                    return await finished(replied, "now" if requested(stop) == "now" else None)
-                woken.extend(await helpers.wake(inbox, stop))
-            for turn in range(most_calls):
-                mode = requested(stop)
-                if mode is not None:
-                    return await halt(turn, said, mode)
-                if (turn or replied is not None) and await took(turn, *drain()):
-                    mode = requested(stop)
-                    if mode is not None:
-                        return await halt(turn, said, mode)
-                await save()
-                await windowed()
-                streamed.clear()
-                called_model = True
-                asking = asyncio.ensure_future(ask())
-                if await wait([asking], stop):
-                    partial = "".join(streamed)
-                    if partial:
-                        messages.append(Message(role="assistant", content=partial))
-                    return await halt(turn + 1, partial or said, "now")
-                reply = asking.result()
-                ended = reply.stop_reason
-                said = reply.text
-                calls += 1
-                if reply.usage is not None:
-                    usage = usage + reply.usage
-                if reply.model:
-                    model = reply.model
-                settings = reply.settings if reply.settings is not None else _settings(model_)
-                prefix = await transcript.stamp() if reply.reasoning is not None else None
-                assistant = _assistant(reply, prefix, _declared(model_), _settings(model_))
-                messages.append(assistant)
-                batch.asked = list(assistant.tool_calls)
-                ran.clear()
-                reported = ReplyReady(
-                    run_id=run_id,
-                    agent=spec.name,
-                    turn=turn,
-                    model=assistant.model,
-                    usage=reply.usage,
-                    settings=assistant.settings,
-                    stop_reason=reply.stop_reason,
-                )
-                try:
-                    await save()
-                except Exception:
-                    with suppress(Exception):
-                        await emit(reported)
-                    raise
-                await emit(reported)
-                if not streaming and reply.text:
-                    await delta(reply.text)
-                if reply.stop_reason != "tool_use" or not batch.asked:
-                    for call in batch.asked:
-                        batch.not_run(call, f"the reply ended with {reply.stop_reason}")
-                    await helpers.fail_given_asks()
-                    if helpers.running() or helpers.waiting():
-                        if turn + 1 == most_calls:
-                            break
-                        woken.extend(await helpers.wake(inbox, stop))
-                        continue
-                    if helpers.paused():
-                        return await quietly(turn + 1)
-                    return await finished(reply.text, "now" if requested(stop) == "now" else None)
-                rest = list(batch.asked)
-                held_up = False
-                while rest:
-                    at_output = next(
-                        (
-                            n
-                            for n, c in enumerate(rest)
-                            if expect is not None and c.name == OUTPUT_TOOL
-                        ),
-                        len(rest),
-                    )
-                    pressed = await batch.run(rest[:at_output], stop)
-                    rest = rest[at_output:]
-                    if not rest or expect is None:
-                        break
-                    if pressed:
-                        await batch.answer_all(rest, [None] * len(rest), time.monotonic())
-                        return await halt(turn + 1, said, "now")
-                    output, rest = rest[0], rest[1:]
-                    if batch.waits() or helpers.paused():
-                        names = ", ".join(
-                            [*batch.held_names(), *(helper.job for helper in helpers.paused())]
-                        )
-                        batch.refuse(
-                            output,
-                            f"engine: waiting for an answer: {names}; call {OUTPUT_TOOL} again once they have one",
-                        )
-                        held_up = held_up or helpers.paused_on_calls()
-                        continue
-                    running = [helper.job for helper in helpers.running()]
-                    if running:
-                        batch.refuse(
-                            output,
-                            f"engine: still running: {', '.join(running)}; stop them or wait for them, then call {OUTPUT_TOOL} again",
-                        )
-                        continue
-                    try:
-                        parsed = expect.model_validate(_copied(output.args))
-                    except ValidationError as exc:
-                        batch.refuse(
-                            output,
-                            f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}",
-                        )
-                        continue
-                    batch.accept(output)
-                    for call in rest:
-                        batch.not_run(call, f"{OUTPUT_TOOL} ended the run")
-                    await helpers.settled()
-                    await took(turn + 1, *drain(whole=False))
-                    return await finished(parsed.model_dump_json())
-                if batch.waits() or (held_up and helpers.paused_on_calls()):
-                    return await quietly(turn + 1)
-            mode = requested(stop)
-            if mode is not None:
-                return await halt(most_calls, said, mode)
-            if helpers.fatal is not None:
-                raise helpers.fatal
-            raise RunawayError(f"engine: run exceeded {most_calls} model calls")
-        except Exception as exc:
-            batch.keep_built()
-            kept = (
-                transcript.open_mark
-                if conversation is not None and parent_run_id is None and not called_model
-                else None
-            )
-            if kept is None:
-                batch.unwait(lambda call, step: unrun(call, "the run failed"))
-            if parent_run_id is not None:
-                left_open = open_calls(live(messages))
-                for call in [_call(call) for call in made if call.id in left_open]:
-                    batch.not_run(call, "the run failed")
-            kept_open = open_calls(live(messages) if kept is None else still_open())
-            if conversation is not None and conversation.failed is None:
-                messages.extend(ended_calls(messages, kept_open))
-            if parent_run_id is not None:
-                kept_open = frozenset()
-            await children.stop_parked(kept_open)
-            await helpers.settle("now", stop, paused_too=called_model or parent_run_id is not None)
-            taken = helpers.take()
-            if kept is None:
-                if unheard and (taken or messages[-1].pause is None):
-                    messages.extend(unheard)
-                messages.extend(taken)
-            elif taken or transcript.past_mark():
-                again = still_open([*(_handed(message) for message in kept.held), *taken])
-                transcript.close(again)
-            children.adopt_all()
-            try:
-                await save()
-            except Exception as error:
-                if conversation is None or conversation.failed is not error:
-                    raise
-                logger.error("engine: the store failed while run %s ended", run_id, exc_info=True)
-            failure = finish("", error=exc)
-            options.failed.append(failure)
-            await announce(failure)
-            raise
-        finally:
-            try:
-                given_back(inbox, woken)
-            finally:
-                await helpers.cancel()
+        return await _Turns(
+            spec=spec,
+            scope=scope,
+            input=input,
+            options=options,
+            parent_run_id=parent_run_id,
+            run_id=run_id,
+            caller=caller,
+            started=started,
+            at=at,
+            adapter=model_,
+            system=system,
+            specs=specs,
+            preload=preload,
+            fingerprint=fingerprint,
+            streaming=streaming,
+            most_calls=most_calls,
+            expect=expect,
+            stop=stop,
+            inbox=inbox,
+            resuming=resuming,
+            made=made,
+            carried=carried,
+            losses=losses,
+            follows=follows,
+            steps=steps,
+            transcript=transcript,
+            offspring=children,
+            tool_calls=tool_calls,
+            batch=batch,
+            pausing=pausing,
+            started_call=started_call,
+            model=model,
+            settings=settings,
+        ).go()
