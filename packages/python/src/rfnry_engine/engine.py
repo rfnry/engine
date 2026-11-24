@@ -3007,7 +3007,7 @@ class Engine:
                 if not (helpers.running() or helpers.waiting()):
                     if helpers.paused():
                         return await quietly(0)
-                    return await finished(replied)
+                    return await finished(replied, "now" if requested(stop) == "now" else None)
                 woken.extend(await helpers.wake(inbox, stop))
             for turn in range(most_calls):
                 mode = requested(stop)

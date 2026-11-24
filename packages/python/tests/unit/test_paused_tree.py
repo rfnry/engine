@@ -2256,8 +2256,9 @@ async def test_a_resumed_lead_whose_reply_called_no_tool_waits_for_its_helpers_n
     assert notices_of(store, "d1")[-1] == "finished"
 
 
+@pytest.mark.parametrize("stopped", [False, True], ids=["going on", "stopped now"])
 async def test_a_resumed_lead_whose_reply_called_no_tool_ends_with_it_when_nothing_of_its_runs(
-    tmp_path: Path,
+    tmp_path: Path, stopped: bool
 ) -> None:
     store, refunds = MemoryStore(), Refunds()
     engine, model, ends = paused_mid(tmp_path)
@@ -2274,13 +2275,18 @@ async def test_a_resumed_lead_whose_reply_called_no_tool_ends_with_it_when_nothi
             "notice": notice.model_copy(update={"kind": "finished"}),
         }
     )
-    calls = len(model.calls["pass it on"])
-    again = await lead_run(engine, store, refunds, "go on", answers={w.id: True})
+    calls, stop = len(model.calls["pass it on"]), Stop()
+    if stopped:
+        stop.now()
+    again = await lead_run(engine, store, refunds, "go on", answers={w.id: True}, stop=stop)
     assert len(model.calls["pass it on"]) == calls and refunds.done == []
-    assert again.error is None and again.paused == [] and again.reply == "done"
+    assert again.error is None and again.paused == []
+    assert (again.stopped, again.reply) == (("now", "") if stopped else (None, "done"))
     [mid] = [c for c in again.children if isinstance(c, Generation) and c.agent == "mid"]
-    assert (mid.reply, mid.calls, mid.paused) == ("mid waits", 0, [])
-    assert notices_of(store, "d1")[-1] == "finished" and live(store.held[mid_key]) is None
+    ended = "now" if stopped else None
+    assert (mid.reply, mid.calls, mid.paused, mid.stopped) == ("mid waits", 0, [], ended)
+    assert notices_of(store, "d1")[-1] == ("stopped" if stopped else "finished")
+    assert live(store.held[mid_key]) is None
 
 
 async def test_a_reattached_helper_that_fails_before_its_model_call_stops_its_helpers(
