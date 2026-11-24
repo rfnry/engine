@@ -437,6 +437,9 @@ class Helpers:
     def paused(self) -> list[Helper]:
         return [helper for helper in self._helpers.values() if helper.ended == "paused"]
 
+    def running_or_paused(self) -> list[Helper]:
+        return [helper for helper in self._helpers.values() if helper.ended in (None, "paused")]
+
     async def until_quiet(self, stop: Stop) -> None:
         if requested(stop) is not None:
             return

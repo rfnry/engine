@@ -2652,6 +2652,13 @@ class Engine:
                 for call_id, key in base.delegated.items()
                 if call_id not in answered and call_id not in pending
             }
+
+            def waits_of(helper: Helper) -> list[Waiting]:
+                if helper.ended == "paused":
+                    return helper.waits
+                key = keyed(self._agents[helper.agent], helper.job)
+                return [wait for wait in base.below if key and _under(wait.conversation, key)]
+
             return Pause(
                 agent=base.agent,
                 run_id=run_id,
@@ -2673,8 +2680,8 @@ class Engine:
                     *(_waited(wait) for _, below in pending.values() for wait in below),
                     *(
                         _waited(wait)
-                        for helper in helpers.paused()
-                        for wait in helper.waits
+                        for helper in helpers.running_or_paused()
+                        for wait in waits_of(helper)
                         if wait.id not in answers
                     ),
                 ],
@@ -2753,6 +2760,11 @@ class Engine:
                 )
             if failures:
                 raise failures[0]
+            if conversation is not None and len(messages) > open_at + 1:
+                after = still_open([_handed(message) for message in mark.held])
+                if _open(after) or after.held:
+                    append_mark(after)
+                await save()
             return bool(answered or taken or again or asking or reattached)
 
         async def ask() -> Reply:
