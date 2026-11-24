@@ -2973,6 +2973,7 @@ class Engine:
                     call=started_call,
                     input=_given(input),
                     tools=[_fresh(tool) for tool in specs],
+                    resumes=None if resuming is None else resuming.run_id,
                 )
             )
             if replied is not None:

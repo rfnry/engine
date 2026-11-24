@@ -1040,6 +1040,44 @@ async def test_a_resume_of_a_resume_adds_from_the_mark_it_resumed(tmp_path: Path
     assert refunds.done == [{"amount": 5}]
 
 
+async def test_a_resumes_run_started_names_the_run_that_wrote_the_mark_it_resumes(
+    tmp_path: Path,
+) -> None:
+    store, seen = MemoryStore(), Seen()
+    second = ToolCall(id="c-refund-2", name="refund", args={"amount": 5})
+    engine, run, refunds, _ = await pausing(
+        tmp_path,
+        calling(REFUND, LOOKUP),
+        calling(second),
+        text_reply("both done"),
+        text_reply("nothing waits"),
+        on_event=seen,
+        **stored(store),
+    )
+    assert isinstance(run, Generation)
+    again = await going_on(
+        engine,
+        run,
+        refunds,
+        {run.paused[0].id: True},
+        store,
+        approve=later_for("refund"),
+        on_event=seen,
+    )
+    assert isinstance(again, Generation) and again.paused
+    last = await going_on(engine, again, refunds, {again.paused[0].id: True}, store, on_event=seen)
+    plain = await going_on(engine, last, refunds, None, store, on_event=seen)
+    assert isinstance(last, Generation) and isinstance(plain, Generation)
+    assert not plain.resumed and plain.reply == "nothing waits"
+    resumes = {e.run_id: e.resumes for e in seen.events if isinstance(e, RunStarted)}
+    assert resumes == {
+        run.run_id: None,
+        again.run_id: run.run_id,
+        last.run_id: again.run_id,
+        plain.run_id: None,
+    }
+
+
 @pytest.mark.parametrize("with_store", [False, True], ids=["history", "store"])
 async def test_a_router_resumes_the_agent_its_mark_names(tmp_path: Path, with_store: bool) -> None:
     store, judge = MemoryStore() if with_store else None, Fixed(HELPS)

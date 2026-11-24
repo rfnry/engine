@@ -2981,20 +2981,21 @@ answer under id '…'; give it one in answers= before the run goes on`), as are 
 under (`engine: no call waits for an answer under id 'ghost'`), another agent than the one that
 paused, and a skill or a `/name` input, each refused before the run starts, unrecorded. Then come
 the notices the mark held, then `input`, the next message of the conversation; the record says
-`resumed`, and its `added` starts at the answered results. With a store, the run stores the refused
-results and a fresh mark of what still waits before it runs an approved call or a child, so each
-call runs at most once: a resume cut off while the call runs leaves it `Ended: refund did not
-return; …`, as a crash leaves any call, and an answer sent again for it is refused as answering no
-waiting call. The results of the calls it runs then are stored as soon as they are all in, with a
-mark of what is still open, or that still holds the notices, so a resume cut off once they are in
-keeps each result and its pause. A mark is a pause only while it names a call still open, so the
-fresh mark such a resume leaves, with nothing open, is inert and the run after it is a plain run,
-which appends the notices that mark held after its `Ended:` results and before its `input`, so a
-helper whose notice it held is neither lost nor told twice. Without a store, at most once is yours:
-keep the resumed run's `conversation`, or append its `added` to what you kept, and never resume one
-paused conversation twice. A router given its paused conversation runs the agent its mark names,
-when its route reaches that agent, without asking its decision model again, and returns that agent's
-`Generation`.
+`resumed`, its `RunStarted.resumes` names the run that wrote the mark, which links the two for an
+app that keys its work by `run_id`, and its `added` starts at the answered results. With a store,
+the run stores the refused results and a fresh mark of what still waits before it runs an approved
+call or a child, so each call runs at most once: a resume cut off while the call runs leaves it
+`Ended: refund did not return; …`, as a crash leaves any call, and an answer sent again for it is
+refused as answering no waiting call. The results of the calls it runs then are stored as soon as
+they are all in, with a mark of what is still open, or that still holds the notices, so a resume
+cut off once they are in keeps each result and its pause. A mark is a pause only while it names a
+call still open, so the fresh mark such a resume leaves, with nothing open, is inert and the run
+after it is a plain run, which appends the notices that mark held after its `Ended:` results and
+before its `input`, so a helper whose notice it held is neither lost nor told twice. Without a
+store, at most once is yours: keep the resumed run's `conversation`, or append its `added` to what
+you kept, and never resume one paused conversation twice. A router given its paused conversation
+runs the agent its mark names, when its route reaches that agent, without asking its decision
+model again, and returns that agent's `Generation`.
 
 With a store, the pause travels up the tree. A synchronous `Delegate`'s child pauses as a top-level
 run does, in its own conversation (`c1/<run_id>`); its lead's `Delegate` then waits on it, with no

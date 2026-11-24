@@ -106,6 +106,7 @@ class RunStarted(BaseModel):
     call: CallInfo | None
     input: State = ""
     tools: list[ToolSpec] = Field(default_factory=list)
+    resumes: str | None = None
 
 
 class RunEnded(BaseModel):

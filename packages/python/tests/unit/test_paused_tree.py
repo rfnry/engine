@@ -1214,6 +1214,59 @@ async def test_a_resume_reattaches_a_paused_helper_under_its_job_id(tmp_path: Pa
     assert live(store.held[HELPER_KEY]) is None
 
 
+async def test_a_reattached_helpers_run_started_names_its_paused_run(tmp_path: Path) -> None:
+    store, looked, seen = MemoryStore(), Looked(), Seen()
+    model = Crew(
+        [
+            background("part one"),
+            text_reply("waiting"),
+            text_reply("it waits"),
+            background("part two", prefix="e"),
+            text_reply("both going"),
+            text_reply("all done"),
+        ],
+        {
+            "part one": [calling(LOOKUP), text_reply("part one done")],
+            "part two": [text_reply("part two done")],
+        },
+    )
+    engine = helped(tmp_path, model)
+    first = await team_run(engine, store, looked, on_event=seen)
+    [w] = first.paused
+    [paused] = first.children
+    again = await team_run(engine, store, looked, "go on", answers={w.id: True}, on_event=seen)
+    assert again.error is None and again.reply == "all done"
+    by_input = {str(c.input): c for c in again.children if isinstance(c, Generation)}
+    assert w.run_id == paused.run_id and by_input[""].resumed
+    resumes = {e.run_id: e.resumes for e in seen.events if isinstance(e, RunStarted)}
+    assert resumes == {
+        first.run_id: None,
+        paused.run_id: None,
+        again.run_id: first.run_id,
+        by_input[""].run_id: paused.run_id,
+        by_input["part two"].run_id: None,
+    }
+
+
+async def test_a_helper_run_again_after_a_cut_resume_names_the_run_that_wrote_its_mark(
+    tmp_path: Path,
+) -> None:
+    engine, store, _, first = await paused_alone(
+        tmp_path, text_reply("heard"), text_reply("still waits")
+    )
+    [w] = first.paused
+    cut = mark_of(store.held[KEY]).model_copy(update={"below": [], "run_id": "cut-off"})
+    store.held[KEY].append(Message(role="assistant", content="[paused]", pause=cut))
+    found = mark_of(store.held[HELPER_KEY]).run_id
+    seen = Seen()
+    again = await team_run(
+        engine, store, Looked(), "the process restarted; carry on", on_event=seen
+    )
+    assert not again.resumed and again.paused == [w] and found == w.run_id
+    started = [(e.agent, e.resumes) for e in seen.events if isinstance(e, RunStarted)]
+    assert started == [("lead", None), ("worker", found)]
+
+
 async def test_a_paused_helper_with_no_answer_stays_paused(tmp_path: Path) -> None:
     store, looked = MemoryStore(), Looked()
     both_ended, watch = ended_of("worker", count=2)
