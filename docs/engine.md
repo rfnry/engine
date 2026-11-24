@@ -1547,15 +1547,16 @@ notice is an outcome, so a later resume tells it no more, as is a notice a pause
 for its resume ([Approving tool calls](#approving-tool-calls)): its helper is never told `lost`. A
 helper whose last notice is `paused` is not lost either: the run registers it again
 ([In the background](#in-the-background)), and tells it `lost` only when the folder no longer holds
-its agent. The helper of a `lost` notice is not one of the run's own: `Job` on its id is the tool
-error `tools/helpers: there is no helper d2`. The `Delegate` call that started it stays in the
-stored conversation, where `History` reads it once the window has passed it. The run sends its lost
-notices in one `MessagesTaken` at turn 0, right after its `RunStarted`, with `messages=[]`. The
-ended results and lost notices are the run's own messages, appended after what it read and before
-its input: its record holds them when its first window does, a first window that starts past them
-leaves them in the store but out of `run.messages` and `run.conversation`, a run that ends before
-its first model call records its lost notices but not the ended results, whose calls its record does
-not hold, and `run.added`, which starts at the input, never holds them.
+its agent, or holds it as a decision agent that does not route. The helper of a `lost` notice is not
+one of the run's own: `Job` on its id is the tool error `tools/helpers: there is no helper d2`. The
+`Delegate` call that started it stays in the stored conversation, where `History` reads it once the
+window has passed it. The run sends its lost notices in one `MessagesTaken` at turn 0, right after
+its `RunStarted`, with `messages=[]`. The ended results and lost notices are the run's own messages,
+appended after what it read and before its input: its record holds them when its first window does,
+a first window that starts past them leaves them in the store but out of `run.messages` and
+`run.conversation`, a run that ends before its first model call records its lost notices but not the
+ended results, whose calls its record does not hold, and `run.added`, which starts at the input,
+never holds them.
 
 With a refinery attached, a crash keeps every row written before it: those of each helper and
 synchronous child whose record was written, and of the runs below it that the record carried. It
@@ -2251,8 +2252,8 @@ async def reply_to(ticket):
 run = await durable(reply_to, 17)
 ```
 
-`durable` stands for the engine's step runner. The conversation name is the step's idempotency key,
-so a step that runs again continues the stored conversation, not a new one
+`durable` stands for your workflow engine's step runner. The conversation name is the step's
+idempotency key, so a step that runs again continues the stored conversation, not a new one
 ([A conversation in your store](#a-conversation-in-your-store)). A call the crash cut off reads
 `Ended: … unknown` there, and the model decides again whether to make it. The app holds its lock
 around the name, since two steps of one ticket must not run at once. A run that pauses returns, as
@@ -2297,7 +2298,9 @@ reply = await checkpointed("refund-18", steps, message)
 ```
 
 Run it again after a crash and the steps already in the record are not run again. The record holds a
-run once it returns, so a step the crash cut off runs again whole.
+run once it returns, so a step the crash cut off runs again whole. A step whose run paused is not
+done either, and is resumed with `answers=` — on `history=run.conversation`, or the same `store=`
+and `conversation=` — never run again, which would make its calls and ask for their answers anew.
 
 A budget across a tree is an `on_event` that counts `RunStarted`, which every generation run in the
 tree sends, and adds up the `usage` of every `ReplyReady`, which every model reply sends, a decision
@@ -2893,8 +2896,9 @@ another scope refuses it before anything runs — `engine: workspace belongs to 
 
 By default an agent calls any tool it has. Pass `approve` and every tool call waits for your answer
 first — the shell, a `Write`, a refund, a `Delegate`. It receives the agent's name and the call, and
-returns `True` to run it, `False` to refuse, `Refused(reason)` to refuse with a reason the model reads
-(`NotApproved: Shell was not approved: it writes outside the repo`), or `Later()` to answer later:
+returns `True` to run it, `False` to refuse, `Refused(reason)` to refuse with a reason the model
+reads (`NotApproved: Shell was not approved: it writes outside the repo`), or `Later()` to answer
+later:
 
 ```python
 async def approve(agent, call):
@@ -2910,12 +2914,12 @@ Where the person is — a thread, a dashboard, a chat app — is yours; the engi
 everything" is no `approve`; "ask every time" is one that always asks; "allow edits, ask for the
 rest" is the function above; "always allow this command" is a set the function keeps. A refused call
 does not run: the model reads `NotApproved: Shell was not approved`, or with a reason the text after
-it, and carries on; a `Refused` whose reason is blank reads as a plain `False`. A call to a name the run does not offer is never put to `approve`:
-it is answered `InputError: tools: unknown tool 'ghost'` at once and leaves its error step. Each
-step records `approved` — `True`, `False`, or `None` when nobody was asked — and the exported rows
-keep it, so a person's refusals become labels. A
-workspace's calls carry what a person needs to decide: `background` on `Shell`, `wait` and `stop` on
-`Job`, a lead's `Job` its `send` too, and a helper's `Ask` its `question`.
+it, and carries on; a `Refused` whose reason is blank reads as a plain `False`. A call to a name the
+run does not offer is never put to `approve`: it is answered `InputError: tools: unknown tool
+'ghost'` at once and leaves its error step. Each step records `approved` — `True`, `False`, or
+`None` when nobody was asked — and the exported rows keep it, so a person's refusals become labels.
+A workspace's calls carry what a person needs to decide: `background` on `Shell`, `wait` and `stop`
+on `Job`, a lead's `Job` its `send` too, and a helper's `Ask` its `question`.
 
 To know what a tool does, keep each run's tools from its `RunStarted` and find the run through
 `current_call().run_id`:
@@ -2998,9 +3002,10 @@ A mark is a pause only while it names a call still open, so the fresh mark such 
 with nothing open, is inert and the run after it is a plain run, which appends the notices that mark
 held after its `Ended:` results and before its `input`, so a helper whose notice it held is neither
 lost nor told twice. Without a store, at most once is yours: keep the resumed run's `conversation`,
-or append its `added` to what you kept, and never resume one paused conversation twice. A router
-given its paused conversation runs the agent its mark names, when its route reaches that agent,
-without asking its decision model again, and returns that agent's `Generation`.
+or append its `added` to what you kept, and never resume one paused conversation twice. When a tool
+must never run twice, pass `store=`: the store is what saves the answer before the call runs. A
+router given its paused conversation runs the agent its mark names, when its route reaches that
+agent, without asking its decision model again, and returns that agent's `Generation`.
 
 With a store, the pause travels up the tree. A synchronous `Delegate`'s child pauses as a top-level
 run does, in its own conversation (`c1/<run_id>`); its lead's `Delegate` then waits on it, with no
@@ -3026,14 +3031,14 @@ it after the notices the old mark held. The pause names no new conversation: eve
 name it had.
 
 A background helper pauses as a child does, in its own conversation (`c1/d1`), and ends `paused`:
-its record joins `children`, and its lead hears it as it hears any end, `[helper d1 · worker · paused]`
-then `waits for an answer to: lookup`, the tools of the calls that wait in it and below it. The lead
-goes on working: `Job` reads the helper `"running": false` with what it waits for under `paused`,
-`Jobs` lists it `ended` `paused`, it keeps its `max_background` place, and sending to it is a tool
-error. It is unfinished work all the same: a reply of the lead with no tool call, while none of its
-helpers runs and one is paused, pauses the lead instead of ending it, and an `Output` then is
-refused (`engine: waiting for an answer: d1; call Output again once they have one`), the lead
-pausing after that batch while a helper is still paused on its calls; refused only for a helper
+its record joins `children`, and its lead hears it as it hears any end, `[helper d1 · worker ·
+paused]` then `waits for an answer to: lookup`, the tools of the calls that wait in it and below it.
+The lead goes on working: `Job` reads the helper `"running": false` with what it waits for under
+`paused`, `Jobs` lists it `ended` `paused`, it keeps its `max_background` place, and sending to it
+is a tool error. It is unfinished work all the same: a reply of the lead with no tool call, while
+none of its helpers runs and one is paused, pauses the lead instead of ending it, and an `Output`
+then is refused (`engine: waiting for an answer: d1; call Output again once they have one`), the
+lead pausing after that batch while a helper is still paused on its calls; refused only for a helper
 paused on its `Ask`, or for helpers a later call of the batch stopped, the lead goes on, to answer
 it or to call `Output` again. The lead's mark lists the helper's calls in `below`, after those of
 its waiting `Delegate` calls, so the top-level `run.paused` lists them too. A lead pauses only once
@@ -3081,8 +3086,9 @@ stored is refused as answering no waiting call. One that fails later, at its win
 first model call, has stored its `input`, and the run after it is a plain run. Below the top, a run
 that fails ends its paused helpers and children at once, appends the notices its mark held once it
 has stored past it, after its `Ended:` results and before the notices of the helpers it stops, and
-answers each call its mark left open `NotRun: refund was not run; the run failed`, since its lead
-takes the failure as its outcome and nothing would resume it.
+answers each call its mark left open `NotRun: refund was not run; the run failed`, or `Ended:
+refund did not return; …` once it has stored past that mark, since its lead takes the failure as its
+outcome and nothing would resume it.
 
 ### Refining
 
@@ -4337,52 +4343,52 @@ without `spawn`, `read` and `write`, a `Workspace` without a scope, a `timeout` 
 that is not positive, an `approve` that returns anything but `True`, `False`, `Refused(reason)` or
 `Later()` or answers `Later()` for a call that cannot wait — in a voice session, in a run
 `engine.tool` or `EngineTools` starts, in a replay, in a background helper, or in a run delegated
-below a top-level `engine.run` without a store — a judge that is not a decision agent or a teacher that is not a generation agent. `NotFoundError` for an agent the
-folder does not have — a judge, a teacher or a replay's agent in the candidate included — a mode it
-does not have, a skill the agent does not have (`engine: agent 'support' has no skill 'refund'; its
-skills are escalate`), found when the run starts, a run the refinery does not, or a run
-`engine.send` or `engine.stop` does not find its engine running under its scope. `InputError` for a
-call the library refuses: an empty scope, an input that is not a string, a JSON object or a list of
-JSON values and parts, a workspace of another scope, a history that breaks a tool call from its
-result, a `start` outside the history or without one, a `store=` without `conversation=` or a
-`conversation=` without `store=`, a store without `length`, `read`, `append` and `window`, a blank
-conversation name, `history=` or `start=` beside a store, a conversation a run in flight holds, a
-store whose `length` is not a whole number from 0 or whose `read` returns a number of messages
-other than its `length` or messages that do not fit, tags outside their limits, runtime questions
-that do not fit, a runtime id the run already asks, questions for a generation agent, a skill for a
-decision agent, a run without a mode of an agent that needs one, a voice agent given to `engine.run`
-or `engine.tool` and another kind given to `engine.talk`, a run given a skill both by `skill=` and
-by an input that starts with a public `/name` (`engine: a run invokes one skill, by skill= or by an
-input that starts with /<name>; got skill='escalate' and /close`), a decision run with no question
-to ask, media the decision model does not declare, a media part with both or neither of `data` and
-`url`, a correction of the wrong shape or for a question the run was not asked, a message
-`engine.send` sends to a decision run or one a run could not read, a `delete_runs` or
-`verify_absent` given both `run_ids` and `tags` or an empty one, a `delete_runs` given neither, an
-`export` or a `replay` given a `holdout_percent` outside 0 to 100, a `replay` given empty `tags` or
-a `limit`, `concurrency` or `repeat` below 1, a tool called with bad arguments, arguments JSON
-cannot hold or a path outside the folder, a `Delegate` given `background` by an agent that does not
-opt in or past `max_background`, `answers` that are not a mapping of ids to `True`, `False` or a
-`Refused` whose reason is a string, an answer for an id no call waits under, a run on a paused
-conversation by another agent, with a skill or without an answer for each call it waits on, an `Ask`
-its lead leaves unanswered — its lead ends its turn without answering (`tools/helpers: your lead
-ended its turn without answering`), stops with `after_step()` or fails — and any use of an engine
-after `close()` (`engine: this engine was closed; build a new Engine`). `ModelError` when an adapter
-breaks the contract — a result whose fields do not fit, a missing answer, probabilities that do not
-cover the options, lie outside 0 and 1 or do not sum to 1, a score outside its levels — or a folder
-tool's result does not match its `output_schema`, or a question's script returns anything but an
-object, a key its JSON sets or one its type does not take, or a question that does not fit.
-`RunawayError` when a loop passes its limit of model calls, the smaller of
-`Engine(max_model_calls=)`, 200 unless you set another, and its entry's. `DelegationLoopError` for a
-route into an agent already in the same chain of routes; `DelegationDepthError` for nesting past
-`max_depth`, which reaches the model as a tool error through `Delegate` and raises through a route.
-`StorageError` for the database. `WorkerError` for a tool or a question's script that fails in its
-worker process: what its script raised, `sys.exit()` included, a result JSON cannot hold, a result
-or error over `worker_result_bytes`, a worker that stopped while the call was in flight
-(`workers/pool: the worker for lookup_order stopped: exited with code 3`) or a call in flight when
-`close()` stopped its worker. Inside a run, a tool's error is the model's to read, never raised. A
-run that raises stops its [helpers](#in-the-background) first, and their records join the failure's
-`children`. All under `EngineException` — the root takes the `Exception` suffix, every child ends in
-`Error`, the same shape as rfnry-memory's. Every message names the module that raised it, then says
-what went wrong in lowercase: `engine: agent 'ghost' was not found`, `tools/workspace: path outside
-the workspace: ../x`. A tool's error reaches the model with its type in front: `InputError: tools:
-unknown tool 'Ghost'`.
+below a top-level `engine.run` without a store — a judge that is not a decision agent or a teacher
+that is not a generation agent. `NotFoundError` for an agent the folder does not have — a judge, a
+teacher or a replay's agent in the candidate included — a mode it does not have, a skill the agent
+does not have (`engine: agent 'support' has no skill 'refund'; its skills are escalate`), found when
+the run starts, a run the refinery does not, or a run `engine.send` or `engine.stop` does not find
+its engine running under its scope. `InputError` for a call the library refuses: an empty scope, an
+input that is not a string, a JSON object or a list of JSON values and parts, a workspace of another
+scope, a history that breaks a tool call from its result, a `start` outside the history or without
+one, a `store=` without `conversation=` or a `conversation=` without `store=`, a store without
+`length`, `read`, `append` and `window`, a blank conversation name, `history=` or `start=` beside a
+store, a conversation a run in flight holds, a store whose `length` is not a whole number from 0 or
+whose `read` returns a number of messages other than its `length` or messages that do not fit, tags
+outside their limits, runtime questions that do not fit, a runtime id the run already asks,
+questions for a generation agent, a skill for a decision agent, a run without a mode of an agent
+that needs one, a voice agent given to `engine.run` or `engine.tool` and another kind given to
+`engine.talk`, a run given a skill both by `skill=` and by an input that starts with a public
+`/name` (`engine: a run invokes one skill, by skill= or by an input that starts with /<name>; got
+skill='escalate' and /close`), a decision run with no question to ask, media the decision model does
+not declare, a media part with both or neither of `data` and `url`, a correction of the wrong shape
+or for a question the run was not asked, a message `engine.send` sends to a decision run or one a
+run could not read, a `delete_runs` or `verify_absent` given both `run_ids` and `tags` or an empty
+one, a `delete_runs` given neither, an `export` or a `replay` given a `holdout_percent` outside 0 to
+100, a `replay` given empty `tags` or a `limit`, `concurrency` or `repeat` below 1, a tool called
+with bad arguments, arguments JSON cannot hold or a path outside the folder, a `Delegate` given
+`background` by an agent that does not opt in or past `max_background`, `answers` that are not a
+mapping of ids to `True`, `False` or a `Refused` whose reason is a string, an answer for an id no
+call waits under, a run on a paused conversation by another agent, with a skill or without an answer
+for each call it waits on, an `Ask` its lead leaves unanswered — its lead ends its turn without
+answering (`tools/helpers: your lead ended its turn without answering`), stops with `after_step()`
+or fails — and any use of an engine after `close()` (`engine: this engine was closed; build a new
+Engine`). `ModelError` when an adapter breaks the contract — a result whose fields do not fit, a
+missing answer, probabilities that do not cover the options, lie outside 0 and 1 or do not sum to 1,
+a score outside its levels — or a folder tool's result does not match its `output_schema`, or a
+question's script returns anything but an object, a key its JSON sets or one its type does not take,
+or a question that does not fit. `RunawayError` when a loop passes its limit of model calls, the
+smaller of `Engine(max_model_calls=)`, 200 unless you set another, and its entry's.
+`DelegationLoopError` for a route into an agent already in the same chain of routes;
+`DelegationDepthError` for nesting past `max_depth`, which reaches the model as a tool error through
+`Delegate` and raises through a route. `StorageError` for the database. `WorkerError` for a tool or
+a question's script that fails in its worker process: what its script raised, `sys.exit()` included,
+a result JSON cannot hold, a result or error over `worker_result_bytes`, a worker that stopped while
+the call was in flight (`workers/pool: the worker for lookup_order stopped: exited with code 3`) or
+a call in flight when `close()` stopped its worker. Inside a run, a tool's error is the model's to
+read, never raised. A run that raises stops its [helpers](#in-the-background) first, and their
+records join the failure's `children`. All under `EngineException` — the root takes the `Exception`
+suffix, every child ends in `Error`, the same shape as rfnry-memory's. Every message names the
+module that raised it, then says what went wrong in lowercase: `engine: agent 'ghost' was not
+found`, `tools/workspace: path outside the workspace: ../x`. A tool's error reaches the model with
+its type in front: `InputError: tools: unknown tool 'Ghost'`.
