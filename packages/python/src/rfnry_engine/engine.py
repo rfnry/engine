@@ -2653,11 +2653,6 @@ class Engine:
                 if call.id in mark.delegated and reached(mark.delegated[call.id])
             }
             rerun.update(again)
-            parked.update(
-                (call.id, (call, mark.delegated[call.id]))
-                for call in made
-                if call.id in mark.delegated
-            )
             refused: list[tuple[ToolCall, Step]] = []
             for waiting in answered:
                 if answers[waiting.id] is True:
@@ -2929,6 +2924,13 @@ class Engine:
                 )
             )
 
+        if resuming is not None:
+            parked.update(
+                (call.id, (call, resuming.delegated[call.id]))
+                for call in made
+                if call.id in resuming.delegated
+            )
+        unheard: list[Message] = []
         for job in restorable:
             target = self._agents[job.agent]
             key = cast(str, keyed(target, job.job))
@@ -2959,8 +2961,9 @@ class Engine:
                 await go_on(options.answers)
                 await took(0, [*carried, *losses], [])
             else:
+                unheard = [_handed(message) for message in resuming.held]
                 left, moved = await resume(resuming, options.answers, stop)
-                heard = [*(_handed(message) for message in resuming.held), *losses]
+                heard = [*unheard, *losses]
                 idle = not moved and any(not helper.on_its_ask() for helper in helpers.paused())
                 if _open(left) or waits() or idle:
                     await helpers.until_quiet(stop)
@@ -2968,6 +2971,7 @@ class Engine:
                         return await pause(left, [*heard, *follows])
                     await let_go(left)
                 messages.extend([*heard, *follows])
+                unheard = []
                 await took(0, heard, [])
             for turn in range(most_calls):
                 mode = requested(stop)
@@ -3117,9 +3121,13 @@ class Engine:
                 if built is not None and not any(built is kept for kept in steps):
                     answer(call, built)
             unwait(lambda call, step: unrun(call, "the run failed"))
+            if parent_run_id is not None:
+                still_open = open_calls(live(messages))
+                for call in [_call(call) for call in made if call.id in still_open]:
+                    not_run(call, "the run failed")
             if conversation is not None and conversation.failed is None:
                 messages.extend(ended_calls(messages, open_calls(live(messages))))
-            kept_open = open_calls(live(messages))
+            kept_open = open_calls(live(messages)) if parent_run_id is None else frozenset()
             for call_id, held in list(parked.items()):
                 if call_id in kept_open:
                     continue
@@ -3132,8 +3140,11 @@ class Engine:
                         call_id,
                         exc_info=True,
                     )
-            await helpers.settle("now", stop, paused_too=called_model)
-            messages.extend(helpers.take())
+            await helpers.settle("now", stop, paused_too=called_model or parent_run_id is not None)
+            taken = helpers.take()
+            if unheard and (taken or messages[-1].pause is None):
+                messages.extend(unheard)
+            messages.extend(taken)
             children.extend(sorted(delegated.values(), key=lambda run: (run.at, run.run_id)))
             try:
                 await save()

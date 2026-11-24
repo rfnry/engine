@@ -1682,3 +1682,161 @@ async def test_a_resume_whose_window_fails_leaves_its_unreached_helper_paused(
     again = await lead_run(engine, store, refunds, "carry on")
     assert again.error is None and again.paused == [background_call]
     assert store.held[HELPER_KEY] == before[HELPER_KEY]
+
+
+async def test_a_resume_step_that_fails_keeps_the_notices_its_mark_held(tmp_path: Path) -> None:
+    store, looked = MemoryStore(), Looked()
+    both = later_for("lookup", "refund")
+    model = Crew(
+        [
+            beside_its_own("part one"),
+            text_reply("still waits"),
+            text_reply("going"),
+            text_reply("all done"),
+        ],
+        {"part one": [calling(LOOKUP), text_reply("part one done")]},
+    )
+    engine = helped(tmp_path, model)
+    first = await team_run(engine, store, looked, approve=both)
+    own, lookup = first.paused
+    [held] = mark_of(store.held[KEY]).held
+    before = list(store.held[HELPER_KEY])
+
+    async def breaks(event: Any) -> None:
+        if isinstance(event, ToolResultReady) and event.call_id == "c-own":
+            raise RuntimeError("the handler broke")
+
+    with pytest.raises(RuntimeError, match="the handler broke"):
+        await team_run(engine, store, looked, "go on", answers={own.id: True}, on_event=breaks)
+    assert store.held[KEY][-1] == held and store.held[HELPER_KEY] == before
+    again = await team_run(engine, store, looked, "carry on", approve=both)
+    assert again.paused == [lookup] and not again.resumed
+    assert notices_of(store, "d1") == ["paused"]
+    last = await team_run(engine, store, looked, "go on", answers={lookup.id: True})
+    assert last.error is None and last.paused == [] and last.reply == "all done"
+    assert notices_of(store, "d1") == ["paused", "finished"] and looked.times == 1
+
+
+def nested(
+    tmp_path: Path, mid: dict[str, Any], *lead: Reply | asyncio.Event
+) -> tuple[Engine, Crew]:
+    folder = tree(tmp_path, background=True)
+    amend(folder, "mid", orchestration=mid)
+    model = Crew(
+        list(lead),
+        {
+            "pass it on": [],
+            "refund it": [calling(REFUND), text_reply("never")],
+        },
+    )
+    return Engine(folder, providers=provided({"crew": model, "judge": None})), model
+
+
+def fails_on_start(agent: str) -> Any:
+    async def breaks(event: Any) -> None:
+        if isinstance(event, RunStarted) and event.agent == agent:
+            raise RuntimeError(f"{agent}'s handler broke")
+
+    return breaks
+
+
+async def test_a_reattached_helper_that_fails_before_its_model_call_stops_its_helpers(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    mid_ended, watch = ended_of("mid")
+    desk_ended, watch_desk = ended_of("desk")
+
+    async def both(event: Any) -> None:
+        await watch(event)
+        await watch_desk(event)
+
+    engine, model = nested(
+        tmp_path,
+        {"delegate_to": ["desk"], "background": True},
+        background("pass it on", agent="mid"),
+        mid_ended,
+        calling(JOBS),
+        text_reply("waits"),
+        text_reply("noted"),
+        text_reply("done"),
+    )
+    model.replies["pass it on"] = [
+        background("refund it", agent="desk"),
+        desk_ended,
+        calling(JOBS),
+        text_reply("mid waits"),
+    ]
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=both)
+    [w] = first.paused
+    again = await lead_run(
+        engine, store, refunds, "go on", answers={w.id: True}, on_event=fails_on_start("mid")
+    )
+    desk_key, mid_key = ("acme", "c1/d1/d1"), ("acme", "c1/d1")
+    assert answer_in(store, desk_key, "c-refund").content == "stopped by the user"
+    assert live(store.held[desk_key]) is None and live(store.held[mid_key]) is None
+    assert notices_of(store, "d1", mid_key) == ["paused", "stopped"]
+    assert notices_of(store, "d1") == ["paused", "failed"]
+    assert again.error is None and again.reply == "done" and refunds.done == []
+
+
+async def test_a_resumed_child_that_fails_before_its_model_call_stops_its_helpers(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    desk_ended, watch = ended_of("desk")
+    engine, model = nested(
+        tmp_path,
+        {"delegate_to": ["desk"], "background": True},
+        delegating("mid", "pass it on"),
+        text_reply("noted"),
+    )
+    model.replies["pass it on"] = [
+        background("refund it", agent="desk"),
+        desk_ended,
+        calling(JOBS),
+        text_reply("mid waits"),
+    ]
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=watch)
+    [w] = first.paused
+    mid_key = ("acme", str(mark_of(store.held[KEY]).delegated["d1"]))
+    desk_key = (mid_key[0], f"{mid_key[1]}/d1")
+    again = await lead_run(
+        engine, store, refunds, "go on", answers={w.id: True}, on_event=fails_on_start("mid")
+    )
+    assert answer_in(store, desk_key, "c-refund").content == "stopped by the user"
+    assert live(store.held[desk_key]) is None and live(store.held[mid_key]) is None
+    assert notices_of(store, "d1", mid_key) == ["paused", "stopped"]
+    [delegated] = [s for s in again.steps if s.tool == "Delegate"]
+    assert delegated.result == "RuntimeError: mid's handler broke" and delegated.is_error
+    assert again.error is None and again.reply == "noted" and refunds.done == []
+
+
+async def test_a_reattached_helper_that_fails_before_its_model_call_stops_its_children(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    mid_ended, watch = ended_of("mid")
+    engine, model = nested(
+        tmp_path,
+        {"delegate_to": ["desk"]},
+        background("pass it on", agent="mid"),
+        mid_ended,
+        calling(JOBS),
+        text_reply("waits"),
+        text_reply("noted"),
+        text_reply("done"),
+    )
+    model.replies["pass it on"] = [delegating("desk", "refund it"), text_reply("never")]
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=watch)
+    [w] = first.paused
+    [desk_key] = [k for k in store.held if k[1].count("/") == 2]
+    again = await lead_run(
+        engine, store, refunds, "go on", answers={w.id: True}, on_event=fails_on_start("mid")
+    )
+    assert answer_in(store, desk_key, "c-refund").content == "stopped by the user"
+    assert live(store.held[desk_key]) is None and live(store.held[HELPER_KEY]) is None
+    delegated = answer_in(store, HELPER_KEY, "d1")
+    assert delegated.content == "NotRun: Delegate was not run; the run failed"
+    assert notices_of(store, "d1") == ["paused", "failed"]
+    assert again.error is None and again.reply == "done" and refunds.done == []

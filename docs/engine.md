@@ -2988,12 +2988,17 @@ lead that ends without pausing — stopped, failed or past `max_model_calls` —
 helpers so, and each paused child of a `Delegate` its conversation no longer waits on, so no call is
 left waiting in the store with nothing that will answer it; a resume that a stop reaches while a
 call is still open answers it the same way, and a child it would go on with, the stop pressed before
-the child starts again, is ended the same way rather than left paused. A resume that fails before
-its first model call — a `RunStarted` handler that raises, a store that fails as it stores the fresh
-mark, a window it cannot use — ends only the helpers it had set running again, and leaves every
-other paused helper and child as stored, so the same resume can run again once the cause is fixed;
-what it stored before it failed stays stored, so an answer it had already stored is refused as
-answering no waiting call.
+the child starts again, is ended the same way rather than left paused. A top-level resume that
+fails before its first model call — a `RunStarted` handler that raises, a store that fails as it
+stores the fresh mark, a window it cannot use — ends only the helpers it had set running again, and
+leaves every other paused helper and child as stored, so the same resume can run again once the
+cause is fixed; what it stored before it failed stays stored, so an answer it had already stored is
+refused as answering no waiting call. A run that fails once it has stored past the mark it resumed
+appends the notices that mark held, after its `Ended:` results and before the notices of the
+helpers it stops, so a helper paused there is registered again by the next run. Below the top, a
+run that fails ends its paused helpers and children at once, and answers each call its mark left
+open `NotRun: refund was not run; the run failed`, since its lead takes the failure as its outcome
+and nothing would resume it.
 
 ### Refining
 
