@@ -1,9 +1,18 @@
+import asyncio
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
-from rfnry_engine.models import Refused, ToolCall
+from rfnry_engine.models import Message, Refused, ToolCall, Waiting
 from rfnry_engine.records import Step
+from rfnry_engine.stop import Stop, requested, wait
+from rfnry_engine.transcript import Transcript
+from rfnry_engine.tree import OUTPUT_TOOL
+
+if TYPE_CHECKING:
+    from rfnry_engine.engine import _ToolCalls
 
 STOPPED = "stopped by the user"
 
@@ -36,3 +45,167 @@ def unrun(call: ToolCall, why: str) -> Step:
         at=_now(),
         duration_ms=0,
     )
+
+
+class Batch:
+    def __init__(
+        self,
+        calls: _ToolCalls,
+        transcript: Transcript,
+        steps: list[Step],
+        adopt: Callable[[str | None], None],
+    ) -> None:
+        self.calls = calls
+        self.transcript = transcript
+        self.steps = steps
+        self.adopt = adopt
+        self.asked: list[ToolCall] = []
+
+    def answer(self, call: ToolCall, step: Step) -> None:
+        if not step.waiting:
+            self.transcript.messages.append(
+                Message(
+                    role="tool",
+                    tool_call_id=call.id,
+                    content=step.result,
+                    is_error=step.is_error,
+                )
+            )
+        self.steps.append(step)
+        self.adopt(step.child_run_id)
+
+    def not_run(self, call: ToolCall, why: str) -> None:
+        self.answer(call, unrun(call, why))
+
+    def unwait(self, answered: Callable[[ToolCall, Step], Step]) -> list[tuple[ToolCall, Step]]:
+        held = [(call, step) for call, step in self.calls.ran if step.waiting]
+        self.calls.waiting.clear()
+        self.calls.delegated.clear()
+        self.calls.asking.clear()
+        self.calls.ran[:] = [(call, step) for call, step in self.calls.ran if not step.waiting]
+        given = []
+        for call, step in held:
+            made = answered(call, step)
+            self.steps[next(n for n, kept in enumerate(self.steps) if kept is step)] = made
+            self.transcript.messages.append(
+                Message(role="tool", tool_call_id=call.id, content=made.result, is_error=True)
+            )
+            given.append((call, made))
+        return given
+
+    async def answer_all(
+        self, batch: list[ToolCall], tasks: Sequence[asyncio.Task[Step] | None], began: float
+    ) -> None:
+        raised: list[BaseException] = []
+        held: list[Exception] = []
+        for call, task in zip(batch, tasks, strict=True):
+            try:
+                if task is None or task.cancelled():
+                    await self.calls.cut(call, began)
+                elif (failed := task.exception()) is not None:
+                    raised.append(failed)
+            except Exception as exc:
+                raised.append(exc)
+            built = self.built(call)
+            if built is not None:
+                self.answer(call, built)
+            here = self.calls.foregrounds.pop(id(call), None)
+            if here is not None and here.failed is not None and here.failed not in raised:
+                held.append(here.failed)
+        failures = [*raised, *held]
+        lost = self.transcript.lost
+        if lost is not None and any(error is lost for error in failures):
+            failures = [lost, *(error for error in failures if error is not lost)]
+        _raise_first(failures)
+
+    async def run(self, batch: list[ToolCall], stop: Stop, stored: bool = True) -> bool:
+        began = time.monotonic()
+        if requested(stop) == "now":
+            await self.answer_all(batch, [None] * len(batch), began)
+            if stored:
+                await self.transcript.save()
+            return True
+        tasks = [asyncio.ensure_future(self.calls.run(c)) for c in batch]
+
+        def finishing() -> list[asyncio.Task[Step]]:
+            kept = []
+            for call, task in zip(batch, tasks, strict=True):
+                here = self.calls.foregrounds.get(id(call))
+                if here is not None and here.live > 0:
+                    here.pressed = True
+                    kept.append(task)
+                elif id(call) in self.calls.approving or any(
+                    call is done for done, _ in self.calls.ran
+                ):
+                    kept.append(task)
+            return kept
+
+        cut_short = await wait(tasks, stop, finishing)
+        await self.answer_all(batch, tasks, began)
+        if stored:
+            await self.transcript.save()
+        return cut_short
+
+    def waiting(self) -> list[Waiting]:
+        return [
+            self.calls.waiting[id(call)] for call in self.asked if id(call) in self.calls.waiting
+        ]
+
+    def waits(self) -> bool:
+        return bool(self.calls.waiting or self.calls.delegated or self.calls.asking)
+
+    def built(self, call: ToolCall) -> Step | None:
+        return next((step for done, step in self.calls.ran if done is call), None)
+
+    def pending(self) -> dict[str, tuple[str, list[Waiting]]]:
+        return {
+            call.id: self.calls.delegated[id(call)]
+            for call in self.asked
+            if id(call) in self.calls.delegated
+        }
+
+    def asking(self) -> str | None:
+        return next((call.id for call in self.asked if id(call) in self.calls.asking), None)
+
+    def held_names(self) -> list[str]:
+        return [
+            call.name
+            for call in self.asked
+            if id(call) in self.calls.waiting or id(call) in self.calls.delegated
+        ]
+
+    def refuse(self, output: ToolCall, why: str) -> None:
+        self.transcript.messages.append(
+            Message(role="tool", tool_call_id=output.id, content=why, is_error=True)
+        )
+        self.steps.append(
+            Step(
+                tool=OUTPUT_TOOL,
+                args=output.args,
+                result=why,
+                is_error=True,
+                at=_now(),
+                duration_ms=0,
+            )
+        )
+
+    def accept(self, output: ToolCall) -> None:
+        self.transcript.messages.append(
+            Message(role="tool", tool_call_id=output.id, content="accepted")
+        )
+        self.steps.append(
+            Step(
+                tool=OUTPUT_TOOL,
+                args=output.args,
+                result="accepted",
+                is_error=False,
+                at=_now(),
+                duration_ms=0,
+            )
+        )
+
+    def keep_built(self) -> None:
+        for call in self.asked:
+            built = self.built(call)
+            if built is not None and not any(built is kept for kept in self.steps):
+                self.answer(call, built)

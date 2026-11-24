@@ -26,7 +26,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
-from rfnry_engine.batch import STOPPED, _now, _raise_first, _refusal, unrun
+from rfnry_engine.batch import STOPPED, Batch, _now, _raise_first, _refusal, unrun
 from rfnry_engine.bundle import build_bundle
 from rfnry_engine.compiled import compile_folder
 from rfnry_engine.conversation import HISTORY, Conversation, ended_calls, live, open_calls
@@ -2105,7 +2105,6 @@ class Engine:
         shell_slots = _slots(None) if bridging else tool_slots
         delegate_slots = _slots(spec.delegate_parallel)
         starting = asyncio.Lock()
-        asked: list[ToolCall] = []
         usage = Usage()
         calls = 0
         model = _declared(model_)
@@ -2481,106 +2480,25 @@ class Engine:
             waits=options.waits,
             conversation=None if conversation is None else conversation.key,
         )
-        emit, hand_over, stopped, cut, call_tool = (
+        emit, hand_over, stopped, call_tool = (
             tool_calls.emit,
             tool_calls.hand_over,
             tool_calls.stopped,
-            tool_calls.cut,
             tool_calls.run,
         )
-        ran, approving, foregrounds, runner, calm = (
+        ran, foregrounds, runner, calm = (
             tool_calls.ran,
-            tool_calls.approving,
             tool_calls.foregrounds,
             tool_calls.runner,
             tool_calls.calm,
         )
 
-        def answer(call: ToolCall, step: Step) -> None:
-            if not step.waiting:
-                messages.append(
-                    Message(
-                        role="tool",
-                        tool_call_id=call.id,
-                        content=step.result,
-                        is_error=step.is_error,
-                    )
-                )
-            steps.append(step)
-            if step.child_run_id in delegated:
-                children.append(delegated.pop(step.child_run_id))
+        def adopt(child_run_id: str | None) -> None:
+            if child_run_id in delegated:
+                children.append(delegated.pop(child_run_id))
 
-        def not_run(call: ToolCall, why: str) -> None:
-            answer(call, unrun(call, why))
-
-        def unwait(answered: Callable[[ToolCall, Step], Step]) -> list[tuple[ToolCall, Step]]:
-            held = [(call, step) for call, step in ran if step.waiting]
-            tool_calls.waiting.clear()
-            tool_calls.delegated.clear()
-            tool_calls.asking.clear()
-            ran[:] = [(call, step) for call, step in ran if not step.waiting]
-            given = []
-            for call, step in held:
-                made = answered(call, step)
-                steps[next(n for n, kept in enumerate(steps) if kept is step)] = made
-                messages.append(
-                    Message(role="tool", tool_call_id=call.id, content=made.result, is_error=True)
-                )
-                given.append((call, made))
-            return given
-
-        async def answer_all(
-            batch: list[ToolCall], tasks: Sequence[asyncio.Task[Step] | None], began: float
-        ) -> None:
-            raised: list[BaseException] = []
-            held: list[Exception] = []
-            for call, task in zip(batch, tasks, strict=True):
-                try:
-                    if task is None or task.cancelled():
-                        await cut(call, began)
-                    elif (failed := task.exception()) is not None:
-                        raised.append(failed)
-                except Exception as exc:
-                    raised.append(exc)
-                built = next((step for done, step in ran if done is call), None)
-                if built is not None:
-                    answer(call, built)
-                here = foregrounds.pop(id(call), None)
-                if here is not None and here.failed is not None and here.failed not in raised:
-                    held.append(here.failed)
-            failures = [*raised, *held]
-            lost = transcript.lost
-            if lost is not None and any(error is lost for error in failures):
-                failures = [lost, *(error for error in failures if error is not lost)]
-            _raise_first(failures)
-
+        batch = Batch(tool_calls, transcript, steps, adopt)
         save = transcript.save
-
-        async def run_batch(batch: list[ToolCall], stop: Stop, stored: bool = True) -> bool:
-            began = time.monotonic()
-            if requested(stop) == "now":
-                await answer_all(batch, [None] * len(batch), began)
-                if stored:
-                    await save()
-                return True
-            tasks = [asyncio.ensure_future(call_tool(c)) for c in batch]
-
-            def finishing() -> list[asyncio.Task[Step]]:
-                kept = []
-                for call, task in zip(batch, tasks, strict=True):
-                    here = foregrounds.get(id(call))
-                    if here is not None and here.live > 0:
-                        here.pressed = True
-                        kept.append(task)
-                    elif id(call) in approving or any(call is done for done, _ in ran):
-                        kept.append(task)
-                return kept
-
-            cut_short = await wait(tasks, stop, finishing)
-            await answer_all(batch, tasks, began)
-            if stored:
-                await save()
-            return cut_short
 
         def drain(whole: bool = True) -> tuple[list[Message], list[Message]]:
             if helpers.fatal is not None:
@@ -2629,11 +2547,7 @@ class Engine:
             )
             after = transcript.after_mark()
             answered = {message.tool_call_id for message in after if message.role == "tool"}
-            pending = {
-                call.id: tool_calls.delegated[id(call)]
-                for call in asked
-                if id(call) in tool_calls.delegated
-            }
+            pending = batch.pending()
             kept = {
                 call_id: key
                 for call_id, key in base.delegated.items()
@@ -2646,6 +2560,9 @@ class Engine:
                 key = keyed(self._agents[helper.agent], helper.job)
                 return [wait for wait in base.below if key and _under(wait.conversation, key)]
 
+            asking = batch.asking()
+            if asking is None and not told and base.asking not in answered:
+                asking = base.asking
             return Pause(
                 agent=base.agent,
                 run_id=run_id,
@@ -2655,7 +2572,7 @@ class Engine:
                         for wait in base.waiting
                         if wait.id not in answers and wait.call.id not in answered
                     ),
-                    *(_waited(wait) for wait in waiting()),
+                    *(_waited(wait) for wait in batch.waiting()),
                 ],
                 below=[
                     *(
@@ -2673,15 +2590,11 @@ class Engine:
                     ),
                 ],
                 delegated={**kept, **{call_id: key for call_id, (key, _) in pending.items()}},
-                asking=next(
-                    (call.id for call in asked if id(call) in tool_calls.asking),
-                    None if told or base.asking in answered else base.asking,
-                ),
+                asking=asking,
                 held=list(held),
             )
 
         async def resume(mark: Pause, answers: Mapping[str, bool | Refused], stop: Stop) -> bool:
-            nonlocal asked
             answered = [waiting for waiting in mark.waiting if waiting.id in answers]
             taken = [waiting for waiting in mark.below if waiting.id in answers]
             told = options.lead is not None and options.lead[0].told is not None
@@ -2711,7 +2624,7 @@ class Engine:
                     duration_ms=0,
                     approved=False,
                 )
-                answer(call, step)
+                batch.answer(call, step)
                 refused.append((call, step))
             if conversation is not None and (answered or taken or repairs or asking is not None):
                 held = [_handed(message) for message in mark.held]
@@ -2724,14 +2637,14 @@ class Engine:
                     await tool_calls.answered(call, step)
                 except Exception as exc:
                     failures.append(exc)
-            asked = [
+            batch.asked = [
                 *(_call(waiting.call) for waiting in answered if answers[waiting.id] is True),
                 *(_call(call) for call in made if call.id in children_again or call is asking),
             ]
-            tool_calls.granted.update(id(call) for call in asked)
+            tool_calls.granted.update(id(call) for call in batch.asked)
             try:
-                if asked:
-                    await run_batch(asked, stop, stored=False)
+                if batch.asked:
+                    await batch.run(batch.asked, stop, stored=False)
             except Exception as exc:
                 failures.append(exc)
             finally:
@@ -2824,16 +2737,8 @@ class Engine:
             await announce(record)
             return record
 
-        def waiting() -> list[Waiting]:
-            return [
-                tool_calls.waiting[id(call)] for call in asked if id(call) in tool_calls.waiting
-            ]
-
-        def waits() -> bool:
-            return bool(tool_calls.waiting or tool_calls.delegated or tool_calls.asking)
-
         async def let_go() -> None:
-            answered = unwait(
+            answered = batch.unwait(
                 lambda call, step: step.model_copy(
                     update={
                         "result": STOPPED,
@@ -2861,7 +2766,7 @@ class Engine:
                     child_run_id=child_run_id,
                     stopped=True,
                 )
-                answer(call, cut_step)
+                batch.answer(call, cut_step)
                 given_up.append((call, cut_step))
             for call_id, held in list(parked.items()):
                 child_run_id = await stop_child(*held)
@@ -2899,21 +2804,6 @@ class Engine:
             mode = requested(stop) or mode
             await took(turn, *drain(whole=False))
             return await finished(reply_text, mode)
-
-        def refuse(output: ToolCall, why: str) -> None:
-            messages.append(
-                Message(role="tool", tool_call_id=output.id, content=why, is_error=True)
-            )
-            steps.append(
-                Step(
-                    tool=OUTPUT_TOOL,
-                    args=output.args,
-                    result=why,
-                    is_error=True,
-                    at=_now(),
-                    duration_ms=0,
-                )
-            )
 
         if resuming is not None:
             parked.update(
@@ -3005,7 +2895,7 @@ class Engine:
                 prefix = await transcript.stamp() if reply.reasoning is not None else None
                 assistant = _assistant(reply, prefix, _declared(model_), _settings(model_))
                 messages.append(assistant)
-                asked = list(assistant.tool_calls)
+                batch.asked = list(assistant.tool_calls)
                 ran.clear()
                 reported = ReplyReady(
                     run_id=run_id,
@@ -3025,9 +2915,9 @@ class Engine:
                 await emit(reported)
                 if not streaming and reply.text:
                     await delta(reply.text)
-                if reply.stop_reason != "tool_use" or not asked:
-                    for call in asked:
-                        not_run(call, f"the reply ended with {reply.stop_reason}")
+                if reply.stop_reason != "tool_use" or not batch.asked:
+                    for call in batch.asked:
+                        batch.not_run(call, f"the reply ended with {reply.stop_reason}")
                     await helpers.fail_given_asks()
                     if helpers.running() or helpers.waiting():
                         if turn + 1 == most_calls:
@@ -3037,7 +2927,7 @@ class Engine:
                     if helpers.paused():
                         return await quietly(turn + 1)
                     return await finished(reply.text, "now" if requested(stop) == "now" else None)
-                rest = list(asked)
+                rest = list(batch.asked)
                 held_up = False
                 while rest:
                     at_output = next(
@@ -3048,27 +2938,19 @@ class Engine:
                         ),
                         len(rest),
                     )
-                    pressed = await run_batch(rest[:at_output], stop)
+                    pressed = await batch.run(rest[:at_output], stop)
                     rest = rest[at_output:]
                     if not rest or expect is None:
                         break
                     if pressed:
-                        await answer_all(rest, [None] * len(rest), time.monotonic())
+                        await batch.answer_all(rest, [None] * len(rest), time.monotonic())
                         return await halt(turn + 1, said, "now")
                     output, rest = rest[0], rest[1:]
-                    if waits() or helpers.paused():
+                    if batch.waits() or helpers.paused():
                         names = ", ".join(
-                            [
-                                *(
-                                    call.name
-                                    for call in asked
-                                    if id(call) in tool_calls.waiting
-                                    or id(call) in tool_calls.delegated
-                                ),
-                                *(helper.job for helper in helpers.paused()),
-                            ]
+                            [*batch.held_names(), *(helper.job for helper in helpers.paused())]
                         )
-                        refuse(
+                        batch.refuse(
                             output,
                             f"engine: waiting for an answer: {names}; call {OUTPUT_TOOL} again once they have one",
                         )
@@ -3076,7 +2958,7 @@ class Engine:
                         continue
                     running = [helper.job for helper in helpers.running()]
                     if running:
-                        refuse(
+                        batch.refuse(
                             output,
                             f"engine: still running: {', '.join(running)}; stop them or wait for them, then call {OUTPUT_TOOL} again",
                         )
@@ -3084,30 +2966,18 @@ class Engine:
                     try:
                         parsed = expect.model_validate(_copied(output.args))
                     except ValidationError as exc:
-                        refuse(
+                        batch.refuse(
                             output,
                             f"invalid; fix and call {OUTPUT_TOOL} again: {exc.errors(include_url=False)}",
                         )
                         continue
-                    messages.append(
-                        Message(role="tool", tool_call_id=output.id, content="accepted")
-                    )
-                    steps.append(
-                        Step(
-                            tool=OUTPUT_TOOL,
-                            args=output.args,
-                            result="accepted",
-                            is_error=False,
-                            at=_now(),
-                            duration_ms=0,
-                        )
-                    )
+                    batch.accept(output)
                     for call in rest:
-                        not_run(call, f"{OUTPUT_TOOL} ended the run")
+                        batch.not_run(call, f"{OUTPUT_TOOL} ended the run")
                     await helpers.settled()
                     await took(turn + 1, *drain(whole=False))
                     return await finished(parsed.model_dump_json())
-                if waits() or (held_up and helpers.paused_on_calls()):
+                if batch.waits() or (held_up and helpers.paused_on_calls()):
                     return await quietly(turn + 1)
             mode = requested(stop)
             if mode is not None:
@@ -3116,21 +2986,18 @@ class Engine:
                 raise helpers.fatal
             raise RunawayError(f"engine: run exceeded {most_calls} model calls")
         except Exception as exc:
-            for call in asked:
-                built = next((step for done, step in ran if done is call), None)
-                if built is not None and not any(built is kept for kept in steps):
-                    answer(call, built)
+            batch.keep_built()
             kept = (
                 transcript.open_mark
                 if conversation is not None and parent_run_id is None and not called_model
                 else None
             )
             if kept is None:
-                unwait(lambda call, step: unrun(call, "the run failed"))
+                batch.unwait(lambda call, step: unrun(call, "the run failed"))
             if parent_run_id is not None:
                 left_open = open_calls(live(messages))
                 for call in [_call(call) for call in made if call.id in left_open]:
-                    not_run(call, "the run failed")
+                    batch.not_run(call, "the run failed")
             kept_open = open_calls(live(messages) if kept is None else still_open())
             if conversation is not None and conversation.failed is None:
                 messages.extend(ended_calls(messages, kept_open))
