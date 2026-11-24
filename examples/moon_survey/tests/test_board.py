@@ -102,6 +102,18 @@ async def test_a_claim_of_a_run_no_longer_in_flight_is_taken_over(pool, scope):
     assert await board.claim_of("a") is None
 
 
+async def test_a_claim_moves_to_the_run_that_resumes_its_holder(pool, scope):
+    board, _ = await made(pool, scope)
+    await board.claim(REGIONS[0], "a")
+    await board.claim(REGIONS[1], "b")
+    at = await board.claimed_at("a")
+    await board.moved("a", "c")
+    assert await board.claim_of("a") is None
+    assert await board.claim_of("c") == REGIONS[0] and await board.claimed_at("c") == at
+    assert await board.claim_of("b") == REGIONS[1]
+    assert await board.claim(REGIONS[0], "c") == {"claimed": True, "by": "c"}
+
+
 async def test_a_landed_region_is_never_claimed_again(pool, scope):
     board, flight = await made(pool, scope)
     await board.claim(REGIONS[0], "a")

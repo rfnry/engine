@@ -204,7 +204,7 @@ class Merge:
         self.lock = asyncio.Lock()
 
     async def on_event(self, event: Event) -> None:
-        if not isinstance(event, RunEnded):
+        if not isinstance(event, RunEnded) or event.paused:
             return
         if event.agent == "surveyor":
             await self.surveyor(event)

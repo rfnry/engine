@@ -109,8 +109,12 @@ KEPT = """
 select distinct conversation from messages where scope = $1 and starts_with(conversation, $2)
 """
 GATE_LOG = """
-insert into gate_log (scope, survey, run_id, agent, tool, allowed, probability, error)
-values ($1, $2, $3, $4, $5, $6, $7, $8)
+insert into gate_log (scope, survey, run_id, agent, tool, allowed, probability, error, task)
+values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+"""
+TASK = """
+select task from gate_log where scope = $1 and survey = $2 and run_id = $3 and task is not null
+order by id limit 1
 """
 
 logger = logging.getLogger("harness")
@@ -587,6 +591,8 @@ def gate(
         try:
             async with asyncio.timeout_at(deadline) as budget:
                 region = None if found is None else await board.claim_of(run_id)
+                if began is not None and began.resumes is not None and not task:
+                    task = await opened.pool.fetchval(TASK, SCOPE, name, began.resumes) or task
                 state = {
                     "agent": agent,
                     "tool": call.name,
@@ -614,7 +620,16 @@ def gate(
         try:
             async with writing:
                 await opened.pool.execute(
-                    GATE_LOG, SCOPE, name, run_id, agent, call.name, logged, probability, error
+                    GATE_LOG,
+                    SCOPE,
+                    name,
+                    run_id,
+                    agent,
+                    call.name,
+                    logged,
+                    probability,
+                    error,
+                    task if isinstance(task, str) else None,
                 )
         except Exception as failed:
             logger.warning(
@@ -672,6 +687,8 @@ class Shared:
                 self.survey.live[event.run_id] = event
                 if event.call is None:
                     self.top.append(event.run_id)
+                if event.resumes is not None:
+                    await self.board.moved(event.resumes, event.run_id)
             elif isinstance(event, ReplyReady):
                 await self.spend.replied(event)
             try:

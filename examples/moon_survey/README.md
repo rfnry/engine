@@ -51,9 +51,10 @@ or `hostile` survey is refused with 503 while `ANTHROPIC_API_KEY`, `GEMINI_API_K
 On fakes, in the `crews` and `flat` shapes, the gate may answer later: a `fits` probability from `UNSURE` (0.2) up to
 `FITS` (0.5), where the gate is unsure, answers `Later()` instead of refusing the call. The call waits for a person, the
 run that made it pauses once nothing below it runs, the pause travels up to the lead, and the survey ends `paused`, its
-waiting calls in the lead's stored conversation. Its resume has a stand-in person approve each of them, and every
-paused captain and surveyor goes on under its own job, so no region starts twice. A real survey has no person to hand a
-call to, and the `app` shape starts each run itself, so there a call below `FITS` is refused.
+waiting calls in the lead's stored conversation. Its resume has a stand-in person approve each of them, and every paused
+captain and surveyor goes on under its own job, so no region starts twice: a resumed run is a new run, which takes the
+claim of the run its `RunStarted.resumes` names, and the gate judges its calls against that run's task. A real survey
+has no person to hand a call to, and the `app` shape starts each run itself, so there a call below `FITS` is refused.
 
 ```bash
 uv run src/merge.py <survey> map/moon.json

@@ -195,6 +195,15 @@ class Board:
                 if moved is not None:
                     return {"claimed": True, "by": run_id}
 
+    async def moved(self, run_id: str, to: str) -> None:
+        await self.pool.execute(
+            "update claims set run_id = $4 where scope = $1 and survey = $2 and run_id = $3",
+            self.scope,
+            self.survey,
+            run_id,
+            to,
+        )
+
     async def _inside(self, region: str) -> None:
         checked_region(region)
         _, regions = await self._survey()

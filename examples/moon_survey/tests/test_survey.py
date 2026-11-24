@@ -286,13 +286,17 @@ async def test_a_crashed_survey_resumes(service, pool, engine_pool):
 
 
 class Unsure(FakeGate):
-    def __init__(self, regions):
+    def __init__(self, claims, fetches=()):
         super().__init__()
-        self.regions = set(regions)
+        self.claims = set(claims)
+        self.fetches = set(fetches)
+        self.seen = []
 
     async def decide(self, state, questions):
+        self.seen.append(state)
         decided = await super().decide(state, questions)
-        if state["tool"] == "claim" and state["args"]["region"] in self.regions:
+        claim = state["tool"] == "claim" and state["args"]["region"] in self.claims
+        if claim or (state["tool"] == "fetch" and state["region"] in self.fetches):
             unsure = CheckAnswer(probability=harness.UNSURE)
             return decided.model_copy(update={"answers": dict.fromkeys(questions, unsure)})
         return decided
@@ -303,7 +307,8 @@ async def test_a_survey_whose_gate_is_unsure_pauses_and_a_resume_lands_every_reg
 ):
     walk = [r for share in moon.shares(25) for r in share][:10]
     unsure = walk[3:7]
-    await service(gate=Unsure(unsure))
+    gate = Unsure(unsure[:2], fetches=unsure[2:])
+    await service(gate=gate)
     name = fresh()
     await harness.run(name, mode="fake", shape="crews", size=10, cap=2.0)
     paused = await ended(name)
@@ -312,8 +317,15 @@ async def test_a_survey_whose_gate_is_unsure_pauses_and_a_resume_lands_every_reg
     [lead] = [r for r in await records_of(engine_pool, name) if r.agent == "lead"]
     waits = lead.body["paused"]
     assert len(waits) == 4 and {w["agent"] for w in waits} == {"surveyor"}
-    assert sorted(w["call"]["args"]["region"] for w in waits) == sorted(unsure)
-    assert all(w["call"]["name"] == "claim" for w in waits)
+    claimed = {
+        row["run_id"]: row["region"]
+        for row in await pool.fetch(
+            "select region, run_id from claims where scope = 'moon' and survey = $1", name
+        )
+    }
+    calls = {tool: [w for w in waits if w["call"]["name"] == tool] for tool in ("claim", "fetch")}
+    assert sorted(w["call"]["args"]["region"] for w in calls["claim"]) == sorted(unsure[:2])
+    assert sorted(claimed[w["run_id"]] for w in calls["fetch"]) == sorted(unsure[2:])
     held = await pool.fetch(
         "select allowed, probability from gate_log"
         " where scope = 'moon' and survey = $1 and probability < $2",
@@ -323,7 +335,7 @@ async def test_a_survey_whose_gate_is_unsure_pauses_and_a_resume_lands_every_reg
     assert [(g["allowed"], g["probability"]) for g in held] == [(None, harness.UNSURE)] * 4
 
     await harness.close()
-    await service()
+    await service(gate=gate)
     assert (await harness.progress(name))["status"] == "paused"
     await harness.resume(name)
     done = await ended(name)
@@ -344,15 +356,28 @@ async def test_a_survey_whose_gate_is_unsure_pauses_and_a_resume_lands_every_reg
     resumed = [r for r in records if r.body["resumed"]]
     assert Counter(r.agent for r in resumed) == {"lead": 1, "captain": 2, "surveyor": 4}
     assert all(r.body["paused"] == [] and r.body["error"] is None for r in resumed)
-    claims = [
-        step
-        for r in resumed
-        if r.agent == "surveyor"
-        for step in r.body["steps"]
-        if step["tool"] == "claim"
-    ]
-    assert sorted(s["args"]["region"] for s in claims) == sorted(unsure)
-    assert all(s["approved"] is True and not s["waiting"] for s in claims)
+    answered = [r.body["steps"][0] for r in resumed if r.agent == "surveyor"]
+    assert sorted(s["tool"] for s in answered) == ["claim", "claim", "fetch", "fetch"]
+    assert all(s["approved"] is True and not s["waiting"] for s in answered)
+    claims = {
+        row["region"]: row["run_id"]
+        for row in await pool.fetch(
+            "select region, run_id from claims where scope = 'moon' and survey = $1", name
+        )
+    }
+    landed_by = {row["region"]: row["run_id"] for row in rows}
+    assert claims == landed_by
+    resumed_ids = {r.run_id for r in resumed}
+    assert {landed_by[r] for r in unsure} <= resumed_ids
+    asked = [state for state in gate.seen if state["run_id"] in resumed_ids]
+    assert {state["agent"] for state in asked} == {"lead", "captain", "surveyor"}
+    for state in asked:
+        if state["agent"] == "lead":
+            assert state["task"] == harness.WHY["paused"]
+        elif state["agent"] == "captain":
+            assert json.loads(state["task"])["share"]
+        else:
+            assert json.loads(state["task"]) == {"region": state["region"]}
     started = [
         json.loads(step["args"]["input"])["region"]
         for r in records
