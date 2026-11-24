@@ -1688,12 +1688,7 @@ async def test_a_resume_step_that_fails_keeps_the_notices_its_mark_held(tmp_path
     store, looked = MemoryStore(), Looked()
     both = later_for("lookup", "refund")
     model = Crew(
-        [
-            beside_its_own("part one"),
-            text_reply("still waits"),
-            text_reply("going"),
-            text_reply("all done"),
-        ],
+        [beside_its_own("part one"), text_reply("going"), text_reply("all done")],
         {"part one": [calling(LOOKUP), text_reply("part one done")]},
     )
     engine = helped(tmp_path, model)
@@ -1708,12 +1703,91 @@ async def test_a_resume_step_that_fails_keeps_the_notices_its_mark_held(tmp_path
 
     with pytest.raises(RuntimeError, match="the handler broke"):
         await team_run(engine, store, looked, "go on", answers={own.id: True}, on_event=breaks)
-    assert store.held[KEY][-1] == held and store.held[HELPER_KEY] == before
-    again = await team_run(engine, store, looked, "carry on", approve=both)
-    assert again.paused == [lookup] and not again.resumed
-    assert notices_of(store, "d1") == ["paused"]
+    mark = live(store.held[KEY])
+    assert mark is not None and mark.held == [held]
+    assert (mark.waiting, mark.below) == ([], [lookup])
+    assert answer_in(store, KEY, "c-own").content == "refunded"
+    assert store.held[HELPER_KEY] == before
+    again = await team_run(engine, store, looked, "carry on", answers={}, approve=both)
+    assert again.resumed and again.paused == [lookup] and again.calls == 0
+    assert not any(m.notice and m.notice.kind == "lost" for m in store.held[KEY])
     last = await team_run(engine, store, looked, "go on", answers={lookup.id: True})
     assert last.error is None and last.paused == [] and last.reply == "all done"
+    assert notices_of(store, "d1") == ["paused", "finished"] and looked.times == 1
+    assert len(looked.refunds.done) == 1
+
+
+async def breaks_at_its_start(event: Any) -> None:
+    if isinstance(event, RunStarted) and event.call is None:
+        raise RuntimeError("the handler broke")
+
+
+async def test_a_cut_resume_whose_next_resume_fails_at_its_start_stays_paused(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Blocking()
+    model = Crew(
+        [both(), text_reply("it may have gone through")],
+        {"refund it": [calling(REFUND), text_reply("it was cut off")]},
+    )
+    engine = engine_of(tmp_path, model)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"))
+    own, below = first.paused
+    cut = asyncio.create_task(
+        lead_run(engine, store, refunds, "go on", answers={own.id: True, below.id: True})
+    )
+    await until(lambda: refunds.started == 2, "both approved refunds started")
+    cut.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cut
+    cut_mark = mark_of(store.held[KEY])
+    [desk_key] = [k for k in store.held if k != KEY]
+    child, length = list(store.held[desk_key]), len(store.held[KEY])
+    with pytest.raises(RuntimeError, match="the handler broke"):
+        await lead_run(engine, store, refunds, "go on", answers={}, on_event=breaks_at_its_start)
+    assert store.appended[-1] == ("c1", length, 2)
+    mark = live(store.held[KEY])
+    assert mark is not None and mark.delegated == cut_mark.delegated
+    ended = [m for m in store.held[KEY] if str(m.content).startswith("Ended:")]
+    assert [m.tool_call_id for m in ended] == ["c-own"]
+    assert store.held[desk_key] == child and nothing_stopped(store)
+    third = await lead_run(engine, store, refunds, "go on", answers={})
+    assert third.error is None and third.resumed and third.reply == "it may have gone through"
+    ended = [m for m in store.held[KEY] if str(m.content).startswith("Ended:")]
+    assert [m.tool_call_id for m in ended] == ["c-own"]
+    assert answer_in(store, KEY, "d1").content == "it was cut off"
+    assert refunds.started == 2
+
+
+async def test_a_paused_helper_stays_restorable_when_a_cut_resume_fails_at_its_start(
+    tmp_path: Path,
+) -> None:
+    store, looked = MemoryStore(), Looked()
+    both = later_for("lookup", "refund")
+    model = Crew(
+        [beside_its_own("part one"), text_reply("going"), text_reply("all done")],
+        {"part one": [calling(LOOKUP), text_reply("part one done")]},
+    )
+    engine = helped(tmp_path, model)
+    first = await team_run(engine, store, looked, approve=both)
+    _, lookup = first.paused
+    mark = mark_of(store.held[KEY])
+    [held] = mark.held
+    cut = mark.model_copy(update={"waiting": [], "run_id": "cut-off"})
+    store.held[KEY].append(Message(role="assistant", content="[paused]", pause=cut))
+    before = list(store.held[HELPER_KEY])
+    with pytest.raises(RuntimeError, match="the handler broke"):
+        await team_run(
+            engine, store, looked, "go on", answers={}, on_event=breaks_at_its_start, approve=both
+        )
+    again = live(store.held[KEY])
+    assert again is not None and again.held == [held] and again.below == [lookup]
+    assert store.held[HELPER_KEY] == before and nothing_stopped(store)
+    retried = await team_run(engine, store, looked, "carry on", answers={}, approve=both)
+    assert retried.resumed and retried.paused == [lookup]
+    assert not any(m.notice and m.notice.kind == "lost" for m in store.held[KEY])
+    last = await team_run(engine, store, looked, "go on", answers={lookup.id: True})
+    assert last.error is None and last.reply == "all done"
     assert notices_of(store, "d1") == ["paused", "finished"] and looked.times == 1
 
 

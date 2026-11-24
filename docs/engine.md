@@ -2989,16 +2989,19 @@ helpers so, and each paused child of a `Delegate` its conversation no longer wai
 left waiting in the store with nothing that will answer it; a resume that a stop reaches while a
 call is still open answers it the same way, and a child it would go on with, the stop pressed before
 the child starts again, is ended the same way rather than left paused. A top-level resume that
-fails before its first model call — a `RunStarted` handler that raises, a store that fails as it
-stores the fresh mark, a window it cannot use — ends only the helpers it had set running again, and
-leaves every other paused helper and child as stored, so the same resume can run again once the
-cause is fixed; what it stored before it failed stays stored, so an answer it had already stored is
-refused as answering no waiting call. A run that fails once it has stored past the mark it resumed
-appends the notices that mark held, after its `Ended:` results and before the notices of the
-helpers it stops, so a helper paused there is registered again by the next run. Below the top, a
-run that fails ends its paused helpers and children at once, and answers each call its mark left
-open `NotRun: refund was not run; the run failed`, since its lead takes the failure as its outcome
-and nothing would resume it.
+fails in or before answering its mark — a `RunStarted` handler that raises, a store that fails as it
+stores the fresh mark, a handler that raises on a result it answers with — ends only the helpers it
+had set running again, leaves every other paused helper and child as stored, and leaves its
+conversation ending in a live mark: what it stored past the mark it resumed, such as the `Ended:`
+result of a call a cut-off resume left, goes in one `append` with that mark again, less what it
+answered, its `held` kept and the notices of the helpers it stopped added, and it closes no call
+that mark names open. The next resume then goes on from what the failed one left, once the cause is
+fixed; an answer it had already stored is refused as answering no waiting call. One that fails
+later, at its window or past its first model call, has stored its `input`, and the run after it is
+a plain run. Below the top, a run that fails ends its paused helpers and children at once, appends
+the notices its mark held once it has stored past it, after its `Ended:` results and before the
+notices of the helpers it stops, and answers each call its mark left open `NotRun: refund was not
+run; the run failed`, since its lead takes the failure as its outcome and nothing would resume it.
 
 ### Refining
 

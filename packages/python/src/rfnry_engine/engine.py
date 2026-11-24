@@ -2080,6 +2080,7 @@ class Engine:
         delegated: dict[str, Generation | Decision] = {}
         rerun: dict[str, str] = {}
         parked: dict[str, tuple[ToolCall, str]] = {}
+        open_mark = resuming
         woken: list[Any] = []
         tool_slots = _slots(spec.tool_parallel)
         shell_slots = _slots(None) if bridging else tool_slots
@@ -2637,7 +2638,7 @@ class Engine:
         async def resume(
             mark: Pause, answers: Mapping[str, bool | Refused], stop: Stop
         ) -> tuple[Pause, bool]:
-            nonlocal asked
+            nonlocal asked, open_mark
             answered = [waiting for waiting in mark.waiting if waiting.id in answers]
             taken = [waiting for waiting in mark.below if waiting.id in answers]
             told = options.lead is not None and options.lead[0].told is not None
@@ -2683,6 +2684,7 @@ class Engine:
                     }
                 )
                 messages.append(Message(role="assistant", content="[paused]", pause=fresh))
+                open_mark = fresh
                 await save()
             reattached = await go_on(answers)
             failures: list[Exception] = []
@@ -2971,7 +2973,7 @@ class Engine:
                         return await pause(left, [*heard, *follows])
                     await let_go(left)
                 messages.extend([*heard, *follows])
-                unheard = []
+                unheard, open_mark = [], None
                 await took(0, heard, [])
             for turn in range(most_calls):
                 mode = requested(stop)
@@ -3121,13 +3123,24 @@ class Engine:
                 if built is not None and not any(built is kept for kept in steps):
                     answer(call, built)
             unwait(lambda call, step: unrun(call, "the run failed"))
+            kept = (
+                open_mark
+                if conversation is not None
+                and parent_run_id is None
+                and not called_model
+                and open_mark is not None
+                and _open(open_mark)
+                else None
+            )
             if parent_run_id is not None:
                 still_open = open_calls(live(messages))
                 for call in [_call(call) for call in made if call.id in still_open]:
                     not_run(call, "the run failed")
+            kept_open = open_calls(kept if kept is not None else live(messages))
             if conversation is not None and conversation.failed is None:
-                messages.extend(ended_calls(messages, open_calls(live(messages))))
-            kept_open = open_calls(live(messages)) if parent_run_id is None else frozenset()
+                messages.extend(ended_calls(messages, kept_open))
+            if parent_run_id is not None:
+                kept_open = frozenset()
             for call_id, held in list(parked.items()):
                 if call_id in kept_open:
                     continue
@@ -3142,9 +3155,15 @@ class Engine:
                     )
             await helpers.settle("now", stop, paused_too=called_model or parent_run_id is not None)
             taken = helpers.take()
-            if unheard and (taken or messages[-1].pause is None):
-                messages.extend(unheard)
-            messages.extend(taken)
+            if kept is not None and (taken or live(messages) is None):
+                again_marked = _paused(kept).model_copy(
+                    update={"run_id": run_id, "held": [*_paused(kept).held, *taken]}
+                )
+                messages.append(Message(role="assistant", content="[paused]", pause=again_marked))
+            elif kept is None:
+                if unheard and (taken or messages[-1].pause is None):
+                    messages.extend(unheard)
+                messages.extend(taken)
             children.extend(sorted(delegated.values(), key=lambda run: (run.at, run.run_id)))
             try:
                 await save()
