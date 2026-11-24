@@ -20,6 +20,10 @@ def open_calls(pause: Pause | None) -> frozenset[str]:
     return frozenset([*(waiting.call.id for waiting in pause.waiting), *pause.delegated, *asking])
 
 
+def _under(conversation: str | None, key: str) -> bool:
+    return conversation is not None and (conversation == key or conversation.startswith(f"{key}/"))
+
+
 def ended_calls(history: Sequence[Message], named: Collection[str] = ()) -> list[Message]:
     last = next(
         (

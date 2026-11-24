@@ -24,10 +24,10 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, JsonValue, TypeAdapter, ValidationError
 
 from rfnry_engine import chain
-from rfnry_engine.batch import STOPPED, Batch, Bridge, _now, _raise_first, _refusal, unrun
+from rfnry_engine.batch import STOPPED, Batch, Bridge, _now, _refusal, unrun
 from rfnry_engine.bundle import build_bundle
 from rfnry_engine.compiled import compile_folder
-from rfnry_engine.conversation import HISTORY, Conversation, ended_calls, live, open_calls
+from rfnry_engine.conversation import HISTORY, Conversation, _under, ended_calls, live, open_calls
 from rfnry_engine.errors import (
     ConfigurationError,
     InputError,
@@ -104,6 +104,7 @@ from rfnry_engine.models import (
     as_reply,
     settle,
 )
+from rfnry_engine.pause import Pausing
 from rfnry_engine.records import (
     CallInfo,
     Decision,
@@ -452,10 +453,6 @@ def _replied(history: Sequence[Message]) -> str | None:
     ):
         return None
     return last.content if any(message.pause is not None for message in history) else None
-
-
-def _under(conversation: str | None, key: str) -> bool:
-    return conversation is not None and (conversation == key or conversation.startswith(f"{key}/"))
 
 
 def _resumable(spec: AgentSpec, paused: Pause | None, options: _Options) -> None:
@@ -2353,8 +2350,8 @@ class Engine:
         )
         room = options.workspace if spec.workspace else None
         children = _Children(self, spec, scope, run_id, options, stop, transcript, given)
-        helpers, rerun, parked = children.helpers, children.rerun, children.parked
-        go_on, stop_child = children.go_on, children.stop_child
+        helpers = children.helpers
+        go_on = children.go_on
         deadline = smallest(spec.tool_timeout, self.tool_timeout)
         helping = spec.background and JOB_TOOL in spec.granted
         asks = frozenset() if options.lead is None else frozenset({ASK_TOOL})
@@ -2466,9 +2463,20 @@ class Engine:
         )
         children.called = tool_calls.called
         bridge.calls = tool_calls
-        emit, hand_over = tool_calls.emit, tool_calls.hand_over
+        emit = tool_calls.emit
         ran = tool_calls.ran
         batch = Batch(tool_calls, transcript, steps, children.adopt)
+        pausing = Pausing(
+            agent=spec.name,
+            run_id=run_id,
+            transcript=transcript,
+            batch=batch,
+            children=children,
+            made=made,
+            repaired=bool(repairs),
+            lead=options.lead,
+        )
+        still_open, resume, let_go = pausing.still_open, pausing.resume, pausing.let_go
         save = transcript.save
 
         def drain(whole: bool = True) -> tuple[list[Message], list[Message]]:
@@ -2507,125 +2515,6 @@ class Engine:
                     f"the window of conversation {transcript.key!r}",
                 )
             await transcript.windowed(at)
-
-        def still_open(
-            held: Sequence[Message] = (), answers: Collection[str] = (), told: bool = False
-        ) -> Pause:
-            base = (
-                Pause(agent=spec.name, run_id=run_id)
-                if transcript.open_mark is None
-                else transcript.open_mark
-            )
-            after = transcript.after_mark()
-            answered = {message.tool_call_id for message in after if message.role == "tool"}
-            pending = batch.pending()
-            kept = {
-                call_id: key
-                for call_id, key in base.delegated.items()
-                if call_id not in answered and call_id not in pending
-            }
-
-            def waits_of(helper: Helper) -> list[Waiting]:
-                if helper.ended == "paused":
-                    return helper.waits
-                key = children.key_of(helper)
-                return [wait for wait in base.below if key and _under(wait.conversation, key)]
-
-            asking = batch.asking()
-            if asking is None and not told and base.asking not in answered:
-                asking = base.asking
-            return Pause(
-                agent=base.agent,
-                run_id=run_id,
-                waiting=[
-                    *(
-                        _waited(wait)
-                        for wait in base.waiting
-                        if wait.id not in answers and wait.call.id not in answered
-                    ),
-                    *(_waited(wait) for wait in batch.waiting()),
-                ],
-                below=[
-                    *(
-                        _waited(wait)
-                        for wait in base.below
-                        if wait.id not in answers
-                        and any(_under(wait.conversation, key) for key in kept.values())
-                    ),
-                    *(_waited(wait) for _, below in pending.values() for wait in below),
-                    *(
-                        _waited(wait)
-                        for helper in helpers.running_or_paused()
-                        for wait in waits_of(helper)
-                        if wait.id not in answers
-                    ),
-                ],
-                delegated={**kept, **{call_id: key for call_id, (key, _) in pending.items()}},
-                asking=asking,
-                held=list(held),
-            )
-
-        async def resume(mark: Pause, answers: Mapping[str, bool | Refused], stop: Stop) -> bool:
-            answered = [waiting for waiting in mark.waiting if waiting.id in answers]
-            taken = [waiting for waiting in mark.below if waiting.id in answers]
-            told = options.lead is not None and options.lead[0].told is not None
-            asking = next((call for call in made if told and call.id == mark.asking), None)
-
-            def reached(key: str) -> bool:
-                under = [waiting for waiting in mark.below if _under(waiting.conversation, key)]
-                return not under or any(waiting.id in answers for waiting in under)
-
-            children_again = {
-                call.id: mark.delegated[call.id]
-                for call in made
-                if call.id in mark.delegated and reached(mark.delegated[call.id])
-            }
-            rerun.update(children_again)
-            refused: list[tuple[ToolCall, Step]] = []
-            for waiting in answered:
-                if answers[waiting.id] is True:
-                    continue
-                call = _call(waiting.call)
-                step = Step(
-                    tool=call.name,
-                    args=call.args,
-                    result=_refusal(call.name, answers[waiting.id]),
-                    is_error=True,
-                    at=_now(),
-                    duration_ms=0,
-                    approved=False,
-                )
-                batch.answer(call, step)
-                refused.append((call, step))
-            if conversation is not None and (answered or taken or repairs or asking is not None):
-                held = [_handed(message) for message in mark.held]
-                transcript.mark(still_open(held, answers, told=asking is not None))
-                await save()
-            reattached = await go_on(answers)
-            failures: list[Exception] = []
-            for call, step in refused:
-                try:
-                    await tool_calls.answered(call, step)
-                except Exception as exc:
-                    failures.append(exc)
-            batch.asked = [
-                *(_call(waiting.call) for waiting in answered if answers[waiting.id] is True),
-                *(_call(call) for call in made if call.id in children_again or call is asking),
-            ]
-            tool_calls.granted.update(id(call) for call in batch.asked)
-            try:
-                if batch.asked:
-                    await batch.run(batch.asked, stop, stored=False)
-            except Exception as exc:
-                failures.append(exc)
-            finally:
-                tool_calls.granted.clear()
-            _raise_first(failures)
-            if conversation is not None and transcript.past_mark():
-                after = still_open([_handed(message) for message in mark.held])
-                transcript.remark(after)
-                await save()
-            return bool(answered or taken or children_again or asking or reattached)
 
         async def ask() -> Reply:
             sending = transcript.sending(preload)
@@ -2708,64 +2597,13 @@ class Engine:
             await announce(record)
             return record
 
-        async def let_go() -> None:
-            answered = batch.unwait(
-                lambda call, step: step.model_copy(
-                    update={
-                        "result": STOPPED,
-                        "is_error": True,
-                        "stopped": True,
-                        "waiting": False,
-                        "at": _now(),
-                    }
-                )
-            )
-            for call, cut_step in answered:
-                await hand_over(call, cut_step)
-            given_up: list[tuple[ToolCall, Step]] = []
-            still = open_calls(still_open())
-            for call in [_call(call) for call in made if call.id in still]:
-                held = parked.get(call.id)
-                child_run_id = None if held is None else await stop_child(*held)
-                cut_step = Step(
-                    tool=call.name,
-                    args=call.args,
-                    result=STOPPED,
-                    is_error=True,
-                    at=_now(),
-                    duration_ms=0,
-                    child_run_id=child_run_id,
-                    stopped=True,
-                )
-                batch.answer(call, cut_step)
-                given_up.append((call, cut_step))
-            for call_id, held in list(parked.items()):
-                child_run_id = await stop_child(*held)
-                linked = next((step for done, step in ran if done.id == call_id), None)
-                if linked is not None and child_run_id is not None:
-                    linked.child_run_id = child_run_id
-            failures: list[Exception] = []
-            for call, cut_step in given_up:
-                try:
-                    await tool_calls.answered(call, cut_step)
-                except Exception as exc:
-                    failures.append(exc)
-            _raise_first(failures)
-
-        async def pause(heard: Sequence[Message] = ()) -> Generation:
-            await helpers.settled()
-            if helpers.fatal is not None:
-                raise helpers.fatal
-            mark = still_open([*heard, *helpers.take()])
-            transcript.mark(mark)
-            return await finished(said, paused=[*mark.waiting, *mark.below])
-
         async def quietly(turn: int) -> Generation:
             await helpers.until_quiet(stop)
             mode = requested(stop)
             if mode is not None:
                 return await halt(turn, said, mode)
-            return await pause()
+            mark = await pausing.pause()
+            return await finished(said, paused=[*mark.waiting, *mark.below])
 
         async def halt(turn: int, reply_text: str, mode: Stopped) -> Generation:
             if helpers.fatal is not None:
@@ -2802,7 +2640,8 @@ class Engine:
                 if open_calls(still_open()) or idle:
                     await helpers.until_quiet(stop)
                     if requested(stop) is None:
-                        return await pause([*heard, *follows])
+                        mark = await pausing.pause([*heard, *follows])
+                        return await finished(said, paused=[*mark.waiting, *mark.below])
                     await let_go()
                 messages.extend([*heard, *follows])
                 unheard = []

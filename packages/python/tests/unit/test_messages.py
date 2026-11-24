@@ -39,6 +39,10 @@ ALLOWED: dict[tuple[str, str], str] = {
         "helpers.fatal",
     ): "a helper's Later() that cannot wait fails its lead with the helper's own error",
     (
+        "pause.py",
+        "helpers.fatal",
+    ): "a helper's Later() that cannot wait fails its lead with the helper's own error",
+    (
         "tools/helpers.py",
         "_AskPaused()",
     ): "an Ask while its lead waits to pause leaves the call waiting, never a tool error",
