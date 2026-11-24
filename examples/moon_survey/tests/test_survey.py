@@ -25,6 +25,7 @@ from fakes import FakeGate
 from merge import Price, cost_of
 from providers import ProviderError
 from store import Store
+from tools import FetchLog
 
 EXAMPLE = Path(__file__).resolve().parent.parent
 PRICE = Price(10.0, 10.0, 10.0, 10.0, 100_000)
@@ -285,18 +286,26 @@ async def test_a_crashed_survey_resumes(service, pool, engine_pool):
     assert [messages[n].content for n in inputs] == [harness.START, harness.RESTARTED]
 
 
+STEPS = {
+    "claim": lambda state: state["tool"] == "claim",
+    "fetch": lambda state: state["tool"] == "fetch",
+    "Write": lambda state: state["tool"] == "Write",
+    "Shell": lambda state: "check.py" in state["args"].get("command", ""),
+}
+
+
 class Unsure(FakeGate):
-    def __init__(self, claims, fetches=()):
+    def __init__(self, steps):
         super().__init__()
-        self.claims = set(claims)
-        self.fetches = set(fetches)
+        self.steps = steps
         self.seen = []
 
     async def decide(self, state, questions):
         self.seen.append(state)
         decided = await super().decide(state, questions)
-        claim = state["tool"] == "claim" and state["args"]["region"] in self.claims
-        if claim or (state["tool"] == "fetch" and state["region"] in self.fetches):
+        region = state["region"] or state["args"].get("region")
+        step = self.steps.get(region)
+        if state["agent"] == "surveyor" and step is not None and STEPS[step](state):
             unsure = CheckAnswer(probability=harness.UNSURE)
             return decided.model_copy(update={"answers": dict.fromkeys(questions, unsure)})
         return decided
@@ -307,7 +316,8 @@ async def test_a_survey_whose_gate_is_unsure_pauses_and_a_resume_lands_every_reg
 ):
     walk = [r for share in moon.shares(25) for r in share][:10]
     unsure = walk[3:7]
-    gate = Unsure(unsure[:2], fetches=unsure[2:])
+    steps = dict(zip(unsure, STEPS, strict=True))
+    gate = Unsure(steps)
     await service(gate=gate)
     name = fresh()
     await harness.run(name, mode="fake", shape="crews", size=10, cap=2.0)
@@ -323,9 +333,12 @@ async def test_a_survey_whose_gate_is_unsure_pauses_and_a_resume_lands_every_reg
             "select region, run_id from claims where scope = 'moon' and survey = $1", name
         )
     }
-    calls = {tool: [w for w in waits if w["call"]["name"] == tool] for tool in ("claim", "fetch")}
-    assert sorted(w["call"]["args"]["region"] for w in calls["claim"]) == sorted(unsure[:2])
-    assert sorted(claimed[w["run_id"]] for w in calls["fetch"]) == sorted(unsure[2:])
+    waited = {w["call"]["args"].get("region") or claimed[w["run_id"]]: w for w in waits}
+    assert {region: w["call"]["name"] for region, w in waited.items()} == steps
+    sandboxes = harness.held.sandboxes
+    wrote, checking = (sandboxes.place(waited[r]["run_id"]) for r in unsure[2:])
+    assert (wrote / "dossier.json").exists() is False
+    assert (checking / "dossier.json").exists() is True
     held = await pool.fetch(
         "select allowed, probability from gate_log"
         " where scope = 'moon' and survey = $1 and probability < $2",
@@ -356,9 +369,9 @@ async def test_a_survey_whose_gate_is_unsure_pauses_and_a_resume_lands_every_reg
     resumed = [r for r in records if r.body["resumed"]]
     assert Counter(r.agent for r in resumed) == {"lead": 1, "captain": 2, "surveyor": 4}
     assert all(r.body["paused"] == [] and r.body["error"] is None for r in resumed)
-    answered = [r.body["steps"][0] for r in resumed if r.agent == "surveyor"]
-    assert sorted(s["tool"] for s in answered) == ["claim", "claim", "fetch", "fetch"]
-    assert all(s["approved"] is True and not s["waiting"] for s in answered)
+    answered = {r.run_id: r.body["steps"][0] for r in resumed if r.agent == "surveyor"}
+    assert sorted(s["tool"] for s in answered.values()) == sorted(steps.values())
+    assert all(s["approved"] is True and not s["waiting"] for s in answered.values())
     claims = {
         row["region"]: row["run_id"]
         for row in await pool.fetch(
@@ -369,6 +382,14 @@ async def test_a_survey_whose_gate_is_unsure_pauses_and_a_resume_lands_every_reg
     assert claims == landed_by
     resumed_ids = {r.run_id for r in resumed}
     assert {landed_by[r] for r in unsure} <= resumed_ids
+    checked = answered[landed_by[unsure[3]]]
+    assert checked["tool"] == "Shell" and json.loads(checked["result"])["exit_code"] == 0
+    for region in unsure:
+        assert not sandboxes.place(waited[region]["run_id"]).exists()
+        assert (sandboxes.place(landed_by[region]) / "dossier.json").exists()
+    fetches = FetchLog(pool, "moon", name)
+    for row in rows:
+        assert await fetches.urls(row["run_id"]) == set(harness.PAGES), row["region"]
     asked = [state for state in gate.seen if state["run_id"] in resumed_ids]
     assert {state["agent"] for state in asked} == {"lead", "captain", "surveyor"}
     for state in asked:

@@ -219,6 +219,11 @@ class Sandboxes:
             raise SandboxError(f"sandbox: run id {run_id!r} cannot name a directory")
         return self.base / run_id
 
+    def moved(self, run_id: str, to: str) -> None:
+        held = self.place(run_id)
+        if held.is_dir():
+            held.rename(self.place(to))
+
     def shell(self, place: Path) -> list[str]:
         if self.bwrap is None:
             raise SandboxError("sandbox: bwrap was not found; install bubblewrap")

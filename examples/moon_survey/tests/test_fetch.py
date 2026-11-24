@@ -310,6 +310,17 @@ async def test_every_fetch_is_logged(pool, caller, tmp_path):
     assert await log.urls("r3") == set()
 
 
+async def test_the_fetches_of_a_run_move_to_the_run_that_resumes_it(pool, caller, tmp_path):
+    log = FetchLog(pool, "moon", secrets.token_hex(4))
+    tool = tool_of(web_over(lambda request: ok(b"abc")), tmp_path, log)
+    await caller(tool, {"url": "https://arxiv.org/a"}, run_id="r1")
+    await caller(tool, {"url": "https://arxiv.org/b"}, run_id="r2")
+    await log.moved("r1", "r3")
+    assert await log.urls("r1") == set()
+    assert await log.urls("r3") == {"https://arxiv.org/a"}
+    assert await log.urls("r2") == {"https://arxiv.org/b"}
+
+
 async def test_a_refused_fetch_is_logged_and_still_an_error(caller, tmp_path):
     log = Recorder()
     tool = tool_of(web_over(lambda request: ok()), tmp_path, log)

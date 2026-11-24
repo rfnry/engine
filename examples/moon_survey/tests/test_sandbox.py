@@ -86,6 +86,16 @@ async def test_a_command_runs_in_its_own_place(sandboxes, base, run_as):
     assert await run(sandboxes, "pwd") == (0, f"{base.resolve() / 'b'}\n", "")
 
 
+async def test_a_place_moves_to_the_run_that_resumes_its_run(sandboxes, run_as):
+    run_as("a")
+    await sandboxes.write("dossier.json", b"{}")
+    sandboxes.moved("a", "b")
+    assert not sandboxes.place("a").exists()
+    assert (sandboxes.place("b") / "dossier.json").read_bytes() == b"{}"
+    sandboxes.moved("never", "c")
+    assert not sandboxes.place("c").exists()
+
+
 async def test_a_command_outside_a_call_is_refused(sandboxes, monkeypatch):
     monkeypatch.setattr(sandbox_module, "current_call", lambda: None)
     with pytest.raises(SandboxError, match="^sandbox: no run is calling"):

@@ -673,6 +673,7 @@ class Shared:
     board: Board
     store: Store
     merge: Merge
+    fetches: FetchLog
     tools: Tools
     workspace: Workspace
     models: dict[str, Any] | None
@@ -689,6 +690,8 @@ class Shared:
                     self.top.append(event.run_id)
                 if event.resumes is not None:
                     await self.board.moved(event.resumes, event.run_id)
+                    await self.fetches.moved(event.resumes, event.run_id)
+                    self.opened.sandboxes.moved(event.resumes, event.run_id)
             elif isinstance(event, ReplyReady):
                 await self.spend.replied(event)
             try:
@@ -982,6 +985,7 @@ async def work(
                 board=board,
                 store=Store(opened.pool, size=settings.size),
                 merge=merge,
+                fetches=fetches,
                 tools=Tools([board_tools(board), fetch_tool(web, opened.sandboxes, fetches)]),
                 workspace=workspace,
                 models=models,

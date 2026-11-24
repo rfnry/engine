@@ -60,6 +60,7 @@ insert into fetches (scope, survey, run_id, url, status, bytes, saved, cached)
 values ($1, $2, $3, $4, $5, $6, $7, $8)
 """
 URLS = "select distinct url from fetches where scope = $1 and survey = $2 and run_id = $3"
+MOVED = "update fetches set run_id = $4 where scope = $1 and survey = $2 and run_id = $3"
 
 
 class FetchError(Exception):
@@ -309,6 +310,9 @@ class FetchLog:
         await self.pool.execute(
             WRITE, self.scope, self.survey, run_id, url, status, bytes, saved, cached
         )
+
+    async def moved(self, run_id: str, to: str) -> None:
+        await self.pool.execute(MOVED, self.scope, self.survey, run_id, to)
 
     async def urls(self, run_id: str) -> set[str]:
         rows = await self.pool.fetch(URLS, self.scope, self.survey, run_id)
