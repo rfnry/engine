@@ -16,6 +16,7 @@ from rfnry_engine.models import Message, Pause, Refused, Reply, ToolCall, ToolSp
 from rfnry_engine.records import (
     Decision,
     Generation,
+    MessagesTaken,
     Run,
     RunEnded,
     RunStarted,
@@ -1783,6 +1784,12 @@ async def test_a_paused_helper_stays_restorable_when_a_cut_resume_fails_at_its_s
     again = live(store.held[KEY])
     assert again is not None and again.held == [held] and again.below == [lookup]
     assert store.held[HELPER_KEY] == before and nothing_stopped(store)
+    stored = list(store.held[KEY])
+    with pytest.raises(RuntimeError, match="the handler broke"):
+        await team_run(
+            engine, store, looked, "go on", answers={}, on_event=breaks_at_its_start, approve=both
+        )
+    assert store.held[KEY] == stored
     retried = await team_run(engine, store, looked, "carry on", answers={}, approve=both)
     assert retried.resumed and retried.paused == [lookup]
     assert not any(m.notice and m.notice.kind == "lost" for m in store.held[KEY])
@@ -1914,3 +1921,219 @@ async def test_a_reattached_helper_that_fails_before_its_model_call_stops_its_ch
     assert delegated.content == "NotRun: Delegate was not run; the run failed"
     assert notices_of(store, "d1") == ["paused", "failed"]
     assert again.error is None and again.reply == "done" and refunds.done == []
+
+
+def breaks_on(call_id: str) -> Any:
+    async def breaks(event: Any) -> None:
+        if isinstance(event, ToolResultReady) and event.call_id == call_id:
+            raise RuntimeError("the handler broke")
+
+    return breaks
+
+
+async def test_a_resume_step_that_fails_after_its_delegate_returned_answers_it_once(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    engine, first, _ = await paused_split(
+        tmp_path, store, refunds, text_reply("going"), text_reply("all done")
+    )
+    sync, waiting = first.paused
+    [held] = mark_of(store.held[KEY]).held
+    with pytest.raises(RuntimeError, match="the handler broke"):
+        await lead_run(
+            engine, store, refunds, "go on", answers={sync.id: True}, on_event=breaks_on("s1")
+        )
+    mark = live(store.held[KEY])
+    assert mark is not None and (mark.waiting, mark.delegated, mark.below) == ([], {}, [waiting])
+    assert mark.held == [held] and answer_in(store, KEY, "s1").content == "it done"
+    again = await lead_run(engine, store, refunds, "carry on", answers={})
+    assert again.error is None and again.resumed and again.paused == [waiting]
+    assert again.calls == 0 and answer_in(store, KEY, "s1").content == "it done"
+    last = await lead_run(engine, store, refunds, "go on", answers={waiting.id: True})
+    assert last.error is None and last.paused == [] and last.reply == "all done"
+    assert answer_in(store, KEY, "s1").content == "it done"
+    assert sorted(done["amount"] for done in refunds.done) == [5, 10]
+    assert notices_of(store, "d1") == ["paused", "finished"]
+
+
+async def test_a_resume_step_that_fails_once_every_call_returned_leaves_a_plain_conversation(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    model = Crew(
+        [both(), text_reply("lead done")],
+        {"refund it": [calling(REFUND), text_reply("desk done")]},
+    )
+    engine = engine_of(tmp_path, model)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"))
+    own, below = first.paused
+    with pytest.raises(RuntimeError, match="the handler broke"):
+        await lead_run(
+            engine,
+            store,
+            refunds,
+            "go on",
+            answers={own.id: True, below.id: True},
+            on_event=breaks_on("d1"),
+        )
+    held = store.held[KEY]
+    assert live(held) is None and held[-1].tool_call_id == "d1"
+    assert answer_in(store, KEY, "d1").content == "desk done"
+    again = await lead_run(engine, store, refunds, "carry on")
+    assert again.error is None and not again.resumed and again.reply == "lead done"
+    assert answer_in(store, KEY, "d1").content == "desk done"
+    assert answer_in(store, KEY, "c-own").content == "refunded"
+    assert len(refunds.done) == 2
+
+
+async def test_a_resume_after_a_cut_one_that_fails_once_its_delegate_returned_answers_it_once(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Blocking()
+    model = Crew(
+        [both(), text_reply("it may have gone through")],
+        {"refund it": [calling(REFUND), text_reply("it was cut off")]},
+    )
+    engine = engine_of(tmp_path, model)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"))
+    own, below = first.paused
+    cut = asyncio.create_task(
+        lead_run(engine, store, refunds, "go on", answers={own.id: True, below.id: True})
+    )
+    await until(lambda: refunds.started == 2, "both approved refunds started")
+    cut.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cut
+    with pytest.raises(RuntimeError, match="the handler broke"):
+        await lead_run(engine, store, refunds, "go on", answers={}, on_event=breaks_on("d1"))
+    assert live(store.held[KEY]) is None
+    assert answer_in(store, KEY, "d1").content == "it was cut off"
+    again = await lead_run(engine, store, refunds, "carry on")
+    assert again.error is None and not again.resumed
+    assert again.reply == "it may have gone through"
+    assert answer_in(store, KEY, "d1").content == "it was cut off"
+    assert refunds.started == 2
+
+
+async def breaks_once_the_lead_ends(event: Any) -> None:
+    if isinstance(event, RunEnded) and event.call is None:
+        raise RuntimeError("the handler broke")
+
+
+@pytest.mark.parametrize(
+    "breaks",
+    [breaks_on("c-own"), breaks_once_the_lead_ends],
+    ids=["on-a-result", "once-the-lead-ends"],
+)
+async def test_a_child_that_paused_again_stays_listed_when_its_resume_fails(
+    breaks: Any, tmp_path: Path
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    model = Crew(
+        [both(), text_reply("lead done")],
+        {"refund it": [calling(REFUND), calling(SECOND), text_reply("desk done")]},
+    )
+    engine = engine_of(tmp_path, model)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"))
+    own, below = first.paused
+    with pytest.raises(RuntimeError, match="the handler broke"):
+        await lead_run(
+            engine,
+            store,
+            refunds,
+            "go on",
+            answers={own.id: True, below.id: True},
+            on_event=breaks,
+            approve=later_for("refund"),
+        )
+    [desk_key] = [key for key in store.held if key != KEY]
+    desk, mark = live(store.held[desk_key]), live(store.held[KEY])
+    assert desk is not None and mark is not None
+    assert mark.delegated == {"d1": desk_key[1]} and mark.below == desk.waiting
+    [again] = mark.below
+    assert again.call.id == SECOND.id and again.id != below.id
+    assert not any(m.tool_call_id == "d1" for m in store.held[KEY])
+    assert answer_in(store, KEY, "c-own").content == "refunded"
+    last = await lead_run(engine, store, refunds, "go on", answers={again.id: True})
+    assert last.error is None and last.paused == [] and last.reply == "lead done"
+    assert answer_in(store, KEY, "d1").content == "desk done"
+    assert [done["amount"] for done in refunds.done] == [3, 10, 5]
+
+
+class Stuck(Looked):
+    def tools(self) -> Tools:
+        async def lookup(args: dict[str, Any]) -> str:
+            self.times += 1
+            await asyncio.Event().wait()
+            return "found"
+
+        return Tools([Tool("lookup", "Look an order up", body=lookup), self.refunds.tools()])
+
+
+async def test_a_failed_resume_step_lists_no_call_of_a_helper_it_stopped(tmp_path: Path) -> None:
+    store, looked = MemoryStore(), Stuck()
+    second = LOOKUP.model_copy(update={"id": "c-lookup-2"})
+    both = later_for("lookup", "refund")
+    model = Crew(
+        [beside_its_own("part one"), text_reply("going")],
+        {"part one": [calling(LOOKUP, second), text_reply("never")]},
+    )
+    engine = helped(tmp_path, model)
+    first = await team_run(engine, store, looked, approve=both)
+    own, lookup, _ = first.paused
+    with pytest.raises(RuntimeError, match="the handler broke"):
+        await team_run(
+            engine,
+            store,
+            looked,
+            "go on",
+            answers={own.id: True, lookup.id: True},
+            on_event=breaks_on("c-own"),
+            approve=both,
+        )
+    assert live(store.held[KEY]) is None and live(store.held[HELPER_KEY]) is None
+    assert notices_of(store, "d1") == ["paused", "stopped"]
+    assert answer_in(store, HELPER_KEY, "c-lookup-2").content == "stopped by the user"
+    again = await team_run(engine, store, looked, "carry on", approve=both)
+    assert again.error is None and not again.resumed and again.reply == "going"
+    assert not any(m.notice and m.notice.kind == "lost" for m in store.held[KEY])
+
+
+async def test_a_resume_cut_before_it_goes_on_keeps_the_notices_its_mark_held(
+    tmp_path: Path,
+) -> None:
+    store, looked = MemoryStore(), Looked()
+    both = later_for("lookup", "refund")
+    model = Crew(
+        [beside_its_own("part one"), text_reply("going"), text_reply("all done")],
+        {"part one": [calling(LOOKUP), text_reply("part one done")]},
+    )
+    engine = helped(tmp_path, model)
+    first = await team_run(engine, store, looked, approve=both)
+    own, lookup = first.paused
+    [held] = mark_of(store.held[KEY]).held
+    taking = asyncio.Event()
+
+    async def hangs(event: Any) -> None:
+        if isinstance(event, MessagesTaken) and event.agent == "lead":
+            taking.set()
+            await asyncio.Event().wait()
+
+    cut = asyncio.create_task(
+        team_run(engine, store, looked, "go on", answers={own.id: True}, on_event=hangs)
+    )
+    await asyncio.wait_for(taking.wait(), 5)
+    cut.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cut
+    assert len(looked.refunds.done) == 1
+    mark = live(store.held[KEY])
+    assert mark is not None and mark.held == [held] and mark.below == [lookup]
+    again = await team_run(engine, store, looked, "carry on", answers={}, approve=both)
+    assert again.resumed and again.paused == [lookup] and again.calls == 0
+    assert str(answer_in(store, KEY, "c-own").content).startswith("Ended: refund")
+    assert not any(m.notice and m.notice.kind == "lost" for m in store.held[KEY])
+    last = await team_run(engine, store, looked, "go on", answers={lookup.id: True})
+    assert last.error is None and last.reply == "all done"
+    assert notices_of(store, "d1") == ["paused", "finished"] and len(looked.refunds.done) == 1
