@@ -2216,6 +2216,73 @@ def fails_on_start(agent: str) -> Any:
     return breaks
 
 
+def paused_mid(tmp_path: Path, *after: Reply) -> tuple[Engine, Crew, Ends]:
+    ends = Ends()
+    engine, model = nested(
+        tmp_path,
+        {"delegate_to": ["desk"], "background": True},
+        background("pass it on", agent="mid"),
+        ends.of("mid"),
+        calling(JOBS),
+        text_reply("waits"),
+        text_reply("noted"),
+        text_reply("done"),
+    )
+    model.replies["pass it on"] = [
+        background("refund it", agent="desk"),
+        ends.of("desk"),
+        calling(JOBS),
+        text_reply("mid waits"),
+        *after,
+    ]
+    return engine, model, ends
+
+
+async def test_a_resumed_lead_whose_reply_called_no_tool_waits_for_its_helpers_notice(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    engine, model, ends = paused_mid(tmp_path, text_reply("mid done"))
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=ends)
+    [w] = first.paused
+    assert mark_of(store.held[("acme", "c1/d1")]).held == []
+    again = await lead_run(engine, store, refunds, "go on", answers={w.id: True})
+    assert again.error is None and again.paused == [] and refunds.done == [{"amount": 10}]
+    sent = model.calls["pass it on"]
+    assert all(call[-1].role != "assistant" for call in sent)
+    assert len(sent) == 4 and [m.role for m in sent[-1][-2:]] == ["assistant", "user"]
+    assert str(sent[-1][-1].content).startswith("[helper d1 · desk · finished]")
+    assert notices_of(store, "d1", ("acme", "c1/d1")) == ["paused", "finished"]
+    assert notices_of(store, "d1")[-1] == "finished"
+
+
+async def test_a_resumed_lead_whose_reply_called_no_tool_ends_with_it_when_nothing_of_its_runs(
+    tmp_path: Path,
+) -> None:
+    store, refunds = MemoryStore(), Refunds()
+    engine, model, ends = paused_mid(tmp_path)
+    first = await lead_run(engine, store, refunds, approve=later_for("refund"), on_event=ends)
+    [w] = first.paused
+    mid_key = ("acme", "c1/d1")
+    held = store.held[mid_key]
+    [n] = [n for n, m in enumerate(held) if m.notice is not None and m.notice.kind == "paused"]
+    notice = held[n].notice
+    assert notice is not None
+    held[n] = held[n].model_copy(
+        update={
+            "content": "[helper d1 · desk · finished]\nrefunded",
+            "notice": notice.model_copy(update={"kind": "finished"}),
+        }
+    )
+    calls = len(model.calls["pass it on"])
+    again = await lead_run(engine, store, refunds, "go on", answers={w.id: True})
+    assert len(model.calls["pass it on"]) == calls and refunds.done == []
+    assert again.error is None and again.paused == [] and again.reply == "done"
+    [mid] = [c for c in again.children if isinstance(c, Generation) and c.agent == "mid"]
+    assert (mid.reply, mid.calls, mid.paused) == ("mid waits", 0, [])
+    assert notices_of(store, "d1")[-1] == "finished" and live(store.held[mid_key]) is None
+
+
 async def test_a_reattached_helper_that_fails_before_its_model_call_stops_its_helpers(
     tmp_path: Path,
 ) -> None:

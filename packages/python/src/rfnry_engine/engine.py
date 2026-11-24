@@ -448,12 +448,11 @@ def _in_place(
 
 
 def _replied(history: Sequence[Message]) -> str | None:
-    last = history[-1] if history else None
+    last = next((message for message in reversed(history) if message.pause is None), None)
     if (
         last is None
         or last.role != "assistant"
         or last.tool_calls
-        or last.pause is not None
         or not isinstance(last.content, str)
     ):
         return None
@@ -1986,7 +1985,6 @@ class Engine:
             )
         )
         listed = next((message.pause for message in reversed(given) if message.pause), None)
-        replied = _replied(given) if options.reattached and not repairs and not losses else None
         messages: list[Message] = []
         window = 0
         surface = RunTools(
@@ -2984,8 +2982,6 @@ class Engine:
                     resumes=None if resuming is None else resuming.run_id,
                 )
             )
-            if replied is not None:
-                return await finished(replied)
             if resuming is None:
                 await go_on(options.answers)
                 await took(0, [*carried, *losses], [])
@@ -3004,11 +3000,20 @@ class Engine:
                 await took(0, heard, [])
             if options.lead is not None:
                 options.lead[0].told = None
+            replied = _replied(messages) if options.reattached else None
+            if replied is not None:
+                said = replied
+                await helpers.fail_given_asks()
+                if not (helpers.running() or helpers.waiting()):
+                    if helpers.paused():
+                        return await quietly(0)
+                    return await finished(replied)
+                woken.extend(await helpers.wake(inbox, stop))
             for turn in range(most_calls):
                 mode = requested(stop)
                 if mode is not None:
                     return await halt(turn, said, mode)
-                if turn and await took(turn, *drain()):
+                if (turn or replied is not None) and await took(turn, *drain()):
                     mode = requested(stop)
                     if mode is not None:
                         return await halt(turn, said, mode)
