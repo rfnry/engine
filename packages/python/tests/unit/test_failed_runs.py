@@ -39,6 +39,7 @@ from .fakes import (
     Answering,
     Desk,
     Ledger,
+    MemoryStore,
     Scripted,
     delegate_triage,
     delegating,
@@ -288,6 +289,24 @@ async def test_a_run_refused_before_its_first_model_call_is_not_recorded(
     with pytest.raises(ConfigurationError):
         await engine.run("support", "acme", "x", expect=Verdict, tools=collide)
     assert kept.runs == [] and llm.calls == []
+
+
+async def test_a_run_that_fails_at_the_end_of_setup_sends_no_event_and_records_nothing(
+    fixtures: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args: object) -> None:
+        raise OSError("the restore broke")
+
+    monkeypatch.setattr("rfnry_engine.engine._Children.restore", broken)
+    kept, store, events, llm = Kept(), MemoryStore(), list[Event](), Scripted(text_reply("Done."))
+
+    async def heard(event: Event) -> None:
+        events.append(event)
+
+    engine = Engine(fixtures, refinery=kept, providers=provided({"strong": llm, "judge": None}))
+    with pytest.raises(OSError, match="the restore broke"):
+        await engine.run("support", "acme", "x", store=store, conversation="c1", on_event=heard)
+    assert events == [] and kept.runs == [] and store.held == {} and llm.calls == []
 
 
 async def test_a_runaway_run_is_recorded(fixtures: Path) -> None:
