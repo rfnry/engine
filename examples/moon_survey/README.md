@@ -50,13 +50,16 @@ or `hostile` survey is refused with 503 while `ANTHROPIC_API_KEY`, `GEMINI_API_K
 `POST /surveys/{name}/resume` carries a stopped or interrupted survey on, with an optional new `cap`.
 
 On fakes, in the `crews` and `flat` shapes, the gate may answer later: a `fits` probability from `UNSURE` (0.2) up to
-`FITS` (0.5), where the gate is unsure, answers `Later()` instead of refusing the call. The call waits for a person, the
-run that made it pauses once nothing below it runs, the pause travels up to the lead, and the survey ends `paused`, its
-waiting calls in the lead's stored conversation. Its resume has a stand-in person approve each of them, and every paused
-captain and surveyor goes on under its own job, so no region starts twice: a resumed run is a new run, which takes the
-claim, the sandbox and the fetch log of the run its `RunStarted.resumes` names, and the gate judges its calls against
-that run's task. A real survey has no person to hand a call to, and the `app` shape starts each run itself, so there a
-call below `FITS` is refused.
+`FITS` (0.5), where the gate is unsure, answers `Later()` instead of refusing the call. The fake gate the service runs
+answers only 0 or 1, so a survey started here never enters that band; the test suite's unsure gate (`Unsure` in
+`tests/test_survey.py`) puts calls there. The call waits for a person, the run that made it pauses once nothing below it
+runs, the pause travels up to the lead, and the survey ends `paused`, its waiting calls in the lead's stored
+conversation. Its resume has a stand-in person approve each of them, and every paused captain and surveyor goes on
+under its own job, so no region starts twice: a resumed run is a new run, which takes the claim, the sandbox and the
+fetch log of the run its `RunStarted.resumes` names, and the gate judges its calls against that run's task. The
+stand-in person serves fake surveys alone: a paused survey of another mode is refused its resume with 409. A real
+survey has no person to hand a call to, and the `app` shape starts each run itself, so there a call below `FITS` is
+refused; `measure.py` counts as refused only the calls the gate refused, never one it left waiting.
 
 ```bash
 uv run src/merge.py <survey> map/moon.json

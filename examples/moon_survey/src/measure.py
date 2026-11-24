@@ -38,7 +38,7 @@ select count(*) as count, coalesce(sum(wait), 0) as waited from provider_log
 where scope = $1 and survey = $2 and status = 429
 """
 GATE = """
-select count(*) as calls, count(*) filter (where allowed is not true) as refused from gate_log
+select count(*) as calls, count(*) filter (where allowed is false) as refused from gate_log
 where scope = $1 and survey = $2
 """
 SPENT = "select total from spend where scope = $1 and survey = $2"

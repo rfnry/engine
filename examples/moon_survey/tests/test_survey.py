@@ -16,6 +16,7 @@ from rfnry_engine import CheckAnswer, PostgresStorage, RunEnded, RunStarted
 
 import board as board_module
 import harness
+import measure
 import merge
 import moon
 import providers
@@ -346,6 +347,24 @@ async def test_a_survey_whose_gate_is_unsure_pauses_and_a_resume_lands_every_reg
         harness.FITS,
     )
     assert [(g["allowed"], g["probability"]) for g in held] == [(None, harness.UNSURE)] * 4
+    calls = await pool.fetchval(
+        "select count(*) from gate_log where scope = 'moon' and survey = $1", name
+    )
+    assert (await measure.measure(pool, engine_pool, name))["gate"] == {
+        "calls": calls,
+        "refused": 0,
+    }
+
+    moded = "update surveys set mode = $2 where scope = 'moon' and survey = $1"
+    await pool.execute(moded, name, "real")
+    with pytest.raises(harness.SurveyError) as refused:
+        await harness.resume(name)
+    assert refused.value.status == 409 and str(refused.value) == (
+        f"survey: '{name}' is paused on calls only a person can answer, and only a fake survey"
+        " has a stand-in person to answer them; it cannot be resumed"
+    )
+    assert (await harness.progress(name))["status"] == "paused"
+    await pool.execute(moded, name, "fake")
 
     await harness.close()
     await service(gate=gate)

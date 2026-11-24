@@ -461,9 +461,15 @@ async def resume(name: Any, *, cap: Any = None) -> dict[str, Any]:
         context = planned(name, left, shares, second, check)
         why = WHY.get(row["status"], RESTARTED)
         survey = Survey(name, row["mode"], row["shape"])
-        answers = {waiting.id: True for waiting in waits} or None
+        answers = stand_in(row["mode"], waits)
         begin(opened, survey, why, context, row["cap"] if cap is None else cap, conn, answers)
     return await progress(name)
+
+
+def stand_in(mode: str, waits: list[Waiting]) -> dict[str, bool] | None:
+    if mode != "fake":
+        return None
+    return {waiting.id: True for waiting in waits} or None
 
 
 async def waiting_of(pool: asyncpg.Pool, name: str) -> list[Waiting]:
@@ -481,6 +487,13 @@ async def reopened(
         row = await conn.fetchrow(SURVEY, SCOPE, name)
         if row is None:
             raise SurveyError(f"survey: survey '{name}' does not exist", 404)
+        waits = await waiting_of(opened.pool, name)
+        if waits and row["mode"] != "fake":
+            raise SurveyError(
+                f"survey: '{name}' is paused on calls only a person can answer, and only a fake"
+                " survey has a stand-in person to answer them; it cannot be resumed",
+                409,
+            )
         keyed(row["mode"])
         spent = await conn.fetchval(SPENT, SCOPE, name) or 0.0
         if cap is not None and cap <= spent:
@@ -499,7 +512,6 @@ async def reopened(
         crosschecking = row["shape"] in TOP
         check = {r for r, found in landed.items() if crosschecking and not crosschecked(found)}
         left = [r for r in await board.regions() if r not in landed or r in check]
-        waits = await waiting_of(opened.pool, name)
         if not left and not waits:
             done = "landed and been crosschecked" if crosschecking else "landed"
             raise SurveyError(
