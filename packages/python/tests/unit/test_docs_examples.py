@@ -150,13 +150,12 @@ SETUPS = {
             )
         }
     ),
-    "async def checkpointed(workflow_id, steps, input):": Setup(
+    "def ending(run):": Setup(
         replace={
-            'reply = await checkpointed("refund-18", [("bill", "billing"), ("answer", "support")], message)': (
-                'steps = [("bill", "billing"), ("answer", "support")]\n'
+            'reply = await checkpointed("refund-18", steps, message)': (
                 'reply = await checkpointed("refund-18", steps, message)\n'
                 "calls = len(llm.systems)\n"
-                'assert calls == 2 and await checkpointed("refund-18", steps, message) == reply\n'
+                'assert calls == 3 and await checkpointed("refund-18", steps, message) == reply\n'
                 "assert len(llm.systems) == calls"
             )
         }

@@ -2257,27 +2257,38 @@ any run does, and a later step resumes it with `answers=`
 #### The record as a checkpoint
 
 A workflow without a durable engine can be its own checkpoint: tag each step with the workflow's id
-and its name, and after a crash read the record back. A step whose top-level run ended with no
-`error`, no `stopped` and no `paused` is done, and its `reply` is reused:
+and its name, and after a crash read the record back. A step is done when the run it ended in, the
+one a router routed to included, ended with no `error`, no `stopped` and no `paused`, and its
+`reply` is reused:
 
 ```python
+def ending(run):
+    while isinstance(run, Decision) and run.routed_to is not None:
+        run = run.routed_to
+    return run
+
+def finished(run):
+    return isinstance(run, Generation) and not (run.error or run.stopped or run.paused)
+
 async def checkpointed(workflow_id, steps, input):
     rows = await refinery.storage.run_tree("acme", tags={"workflow": workflow_id})
-    done = {
-        row.body["tags"]["step"]: row.body["reply"]
-        for row in rows
-        if row.parent_run_id is None
-        and not (row.body["error"] or row.body["stopped"] or row.body["paused"])
-    }
+    done = {}
+    for row in rows:
+        step = row.body["tags"].get("step")
+        if row.parent_run_id is None and step is not None:
+            last = ending(await refinery.run("acme", row.run_id))
+            if finished(last):
+                done[step] = last.reply
     for name, agent in steps:
         if name not in done:
             tags = {"workflow": workflow_id, "step": name}
             run = await engine.run(agent, scope="acme", input=input, tags=tags)
-            done[name] = run.reply
+            done[name] = ending(run).reply
         input = done[name]
     return input
 
-reply = await checkpointed("refund-18", [("bill", "billing"), ("answer", "support")], message)
+steps = [("bill", "billing"), ("route", "frontdesk"), ("answer", "support")]
+reply = await checkpointed("refund-18", steps, message)
 ```
 
 Run it again after a crash and the steps already in the record are not run again. The record holds a
