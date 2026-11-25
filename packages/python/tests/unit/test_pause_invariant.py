@@ -1,22 +1,28 @@
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from rfnry_engine import Later
 from rfnry_engine.conversation import live, open_calls
 from rfnry_engine.models import Message, ToolCall
-from rfnry_engine.records import Generation, RunEnded, ToolCallStarted, ToolResultReady
+from rfnry_engine.records import Generation, ToolCallStarted
 
 from .fakes import Crew, MemoryStore, background, crew, delegating, team, text_reply
 from .test_approve import Refunds
 from .test_paused import KEY, LOOKUP, REFUND, calling, later_for, pausing, stored
 from .test_paused_tree import (
+    ASK,
+    HELPER_KEY,
+    OWN,
     SECOND,
     Looked,
     beside_its_own,
     both,
+    breaks_on,
+    breaks_once_the_lead_ends,
     crew_run,
     engine_of,
     helped,
@@ -44,25 +50,23 @@ def marked(conversation: Sequence[Message]) -> set[str]:
     return set(left)
 
 
+def checked(held: Mapping[str, Sequence[Message]]) -> dict[str, set[str]]:
+    found = {key: marked(conversation) for key, conversation in held.items()}
+    marks = {key: live(conversation) for key, conversation in held.items()}
+    for key, mark in marks.items():
+        below = set() if mark is None else {(w.conversation, w.call.id, w.id) for w in mark.below}
+        under = {
+            (other, w.call.id, w.id)
+            for other, theirs in marks.items()
+            if theirs is not None and other.startswith(f"{key}/")
+            for w in theirs.waiting
+        }
+        assert below == under, key
+    return found
+
+
 def every(store: MemoryStore) -> dict[str, set[str]]:
-    return {key: marked(held) for (_, key), held in store.held.items()}
-
-
-def kept(run: Generation, store: MemoryStore | None) -> list[Message]:
-    return run.conversation if store is None else store.held[KEY]
-
-
-def breaks_on(call_id: str) -> Any:
-    async def breaks(event: Any) -> None:
-        if isinstance(event, ToolResultReady) and event.call_id == call_id:
-            raise RuntimeError("the handler broke")
-
-    return breaks
-
-
-async def breaks_once_it_ends(event: Any) -> None:
-    if isinstance(event, RunEnded) and event.call is None:
-        raise RuntimeError("the handler broke")
+    return checked({key: held for (_, key), held in store.held.items()})
 
 
 @pytest.mark.parametrize("with_store", [False, True], ids=["history", "store"])
@@ -74,9 +78,8 @@ async def test_a_call_answered_later_is_the_one_call_its_mark_names(
         tmp_path, calling(REFUND, LOOKUP), text_reply("never"), **stored(store)
     )
     assert isinstance(run, Generation) and [w.call.id for w in run.paused] == ["c-refund"]
-    assert marked(kept(run, store)) == {"c-refund"}
-    if store is not None:
-        assert every(store) == {"c1": {"c-refund"}}
+    held = checked({"c1": run.conversation}) if store is None else every(store)
+    assert held == {"c1": {"c-refund"}}
 
 
 async def test_a_resume_that_answers_the_lead_s_call_leaves_a_mark_over_its_helper_s_call(
@@ -110,6 +113,20 @@ async def test_a_child_that_pauses_leaves_its_parent_a_mark_naming_its_delegate(
     assert every(store) == {"c1": {"d1"}, f"c1/{child.run_id}": {"c-refund"}}
 
 
+async def test_a_helper_paused_on_its_ask_names_the_ask_beside_its_lead_s_own_call(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore()
+    model = Crew(
+        [background("part one"), text_reply("waiting"), calling(OWN), text_reply("never")],
+        {"part one": [calling(ASK), text_reply("never")]},
+    )
+    lead = await crew_run(helped(tmp_path, model), store, approve=later_for("refund"))
+    assert [w.call for w in lead.paused] == [OWN]
+    assert mark_of(store.held[HELPER_KEY]).asking == "a1"
+    assert every(store) == {"c1": {"c-own"}, "c1/d1": {"a1"}}
+
+
 async def test_a_paused_helper_and_its_paused_lead_each_name_their_own_calls(
     tmp_path: Path,
 ) -> None:
@@ -133,13 +150,12 @@ async def test_a_lead_paused_only_by_its_helper_names_no_call_of_its_own(tmp_pat
     )
     lead = await crew_run(helped(tmp_path, model), store)
     assert [w.call.id for w in lead.paused] == ["c-lookup"]
-    assert live(store.held[KEY]) is not None
     assert every(store) == {"c1": set(), "c1/d1": {"c-lookup"}}
 
 
 @pytest.mark.parametrize(
     "breaks",
-    [breaks_on("c-own"), breaks_once_it_ends],
+    [breaks_on("c-own"), breaks_once_the_lead_ends],
     ids=["in-its-answers", "once-paused-again"],
 )
 async def test_a_resume_that_fails_before_its_model_call_keeps_a_mark_naming_its_delegate(
@@ -184,7 +200,6 @@ async def test_a_resume_that_fails_beside_a_paused_helper_keeps_a_mark_naming_no
             engine, store, looked, "go on", answers={own.id: True}, on_event=breaks_on("c-own")
         )
     assert looked.refunds.done == [{"amount": 3}]
-    assert live(store.held[KEY]) is not None
     assert every(store) == {"c1": set(), "c1/d1": {"c-lookup"}}
 
 
@@ -202,6 +217,33 @@ async def test_a_run_that_fails_while_its_call_waits_ends_with_no_mark_and_nothi
         )
     assert live(store.held[KEY]) is None
     assert every(store) == {"c1": set()}
+
+
+async def test_a_child_that_fails_while_its_call_waits_leaves_no_mark_and_nothing_open(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore()
+    model = Crew(
+        [delegating("desk", "refund it"), text_reply("the desk failed")],
+        {"refund it": [calling(REFUND, SECOND), text_reply("never")]},
+    )
+
+    async def approve(agent: str, call: ToolCall) -> bool | Later:
+        return Later() if call.id == REFUND.id else True
+
+    lead = await lead_run(
+        engine_of(tmp_path, model),
+        store,
+        Refunds(),
+        approve=approve,
+        on_event=breaks_on(SECOND.id),
+    )
+    [child] = lead.children
+    assert lead.error is None and child.error == "RuntimeError: the handler broke"
+    desk = f"c1/{child.run_id}"
+    assert store.held[("acme", desk)][-1].content == "NotRun: refund was not run; the run failed"
+    assert all(live(held) is None for held in store.held.values())
+    assert every(store) == {"c1": set(), desk: set()}
 
 
 async def test_a_run_that_fails_during_a_batch_ends_with_no_mark_and_nothing_open(
