@@ -1879,13 +1879,7 @@ class _Turns:
 
     async def failed(self, exc: Exception) -> None:
         self.batch.keep_built()
-        kept = (
-            self.transcript.open_mark
-            if self.transcript.conversation is not None
-            and self.parent_run_id is None
-            and not self.called_model
-            else None
-        )
+        kept = self.pausing.kept_mark(self.parent_run_id is None, self.called_model)
         if kept is None:
             self.batch.unwait(lambda call, step: unrun(call, "the run failed"))
         if self.parent_run_id is not None:
@@ -1908,9 +1902,8 @@ class _Turns:
             if self.unheard and (taken or self.transcript.messages[-1].pause is None):
                 self.transcript.messages.extend(self.unheard)
             self.transcript.messages.extend(taken)
-        elif taken or self.transcript.past_mark():
-            again = self.pausing.still_open([*(_handed(message) for message in kept.held), *taken])
-            self.transcript.close(again)
+        else:
+            self.pausing.end_kept(kept, taken)
         self.children.adopt_all()
         try:
             await self.transcript.save()
