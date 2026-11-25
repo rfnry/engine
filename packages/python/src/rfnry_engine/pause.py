@@ -210,7 +210,7 @@ class Pausing:
         self.transcript.mark(mark)
         return mark
 
-    def kept_mark(self, top_level: bool, called_model: bool) -> Pause | None:
+    def kept_mark(self, *, top_level: bool, called_model: bool) -> Pause | None:
         return (
             self.transcript.open_mark
             if self.transcript.conversation is not None and top_level and not called_model

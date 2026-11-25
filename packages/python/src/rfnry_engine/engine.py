@@ -1879,7 +1879,9 @@ class _Turns:
 
     async def failed(self, exc: Exception) -> None:
         self.batch.keep_built()
-        kept = self.pausing.kept_mark(self.parent_run_id is None, self.called_model)
+        kept = self.pausing.kept_mark(
+            top_level=self.parent_run_id is None, called_model=self.called_model
+        )
         if kept is None:
             self.batch.unwait(lambda call, step: unrun(call, "the run failed"))
         if self.parent_run_id is not None:
